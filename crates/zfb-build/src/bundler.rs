@@ -923,6 +923,35 @@ const MIRROR_SKIP_DIRS: &[&str] = &[
     ".next",
     ".vercel",
 ];
+/// First-party dot-path staging allowlist (issue #1840): project-relative
+/// DIRECTORIES whose whole subtree is staged into the shadow even though every
+/// generic walker skips them (hidden at the top level, and conventionally
+/// gitignored — `enumerate_extra_top_level_dirs`'s `standard_filters` honors
+/// the consumer's `.gitignore`, so removing the dot-filter alone could never
+/// reach these). zudo-doc 4.x's `packageOwnedRoutes` mechanism generates REAL
+/// first-party route source into `<project>/.zudo-doc/routes-src/*.tsx`;
+/// without a staged spelling esbuild resolves the LIVE files via the
+/// dual-target tsconfig fallback and the (correct) stage-escape audit
+/// hard-fails with case 4 ("first-party input resolved outside every stage
+/// root, no staged spelling"). Staging the narrow compatibility surface makes
+/// the staged spelling exist so the audit's in-stage rule allows it naturally
+/// — the metafile stays the oracle; the audit itself is untouched.
+///
+/// Deliberately NOT the whole dot-dir (`.zudo-doc/` may hold caches / private
+/// metadata), and NOT a permanent contract — this is compatibility for the
+/// CURRENT zudo-doc 4.x mechanism; zfb's long-term plan is real injected
+/// routes (see `crates/zfb/tests/build_package_routes_consumer.rs`).
+const KNOWN_FIRST_PARTY_STAGING_DIRS: &[&str] = &[".zudo-doc/routes-src"];
+/// Companion to [`KNOWN_FIRST_PARTY_STAGING_DIRS`] (issue #1840): dot-dirs
+/// whose TOP-LEVEL `*.json` meta files are staged — zudo-doc's docHistory
+/// writes `<project>/.zfb/doc-history-meta.json`, imported by the generated
+/// route source above. Only depth-1 `*.json` files; anything else in the dir
+/// (caches, lockfiles, nested state) never reaches the stage. The staged
+/// basenames don't collide with `is_synthetic_input` (metafile_deps.rs — the
+/// `.zfb-` BASENAME prefix; `.zfb` here is a directory component) nor with
+/// `is_reserved_shadow_root_name` (reserved `.zfb-*` FILE names at the shadow
+/// root, not a `.zfb/` dir).
+const KNOWN_FIRST_PARTY_STAGING_JSON_DIRS: &[&str] = &[".zfb"];
 /// Filename of the project-root global override map (sub-issue #616). Both
 /// the on-disk source convention and the materialised shadow copy use this
 /// exact name; it is the public file-convention contract relied on by #618.
@@ -2393,6 +2422,16 @@ pub fn bundle_with_session(
             &input.project_root,
             KNOWN_SOURCE_DIRS,
         ));
+        // The dot-path staging allowlist (issue #1840) is staged like an extra
+        // source dir, so its files must seed the module graph too —
+        // `enumerate_extra_top_level_dirs` above can never see them (hidden +
+        // conventionally gitignored), and an import FROM `.zudo-doc/routes-src`
+        // would otherwise be missing from the staged-dependency closure.
+        source_graph_roots.extend(
+            enumerate_first_party_staging_dirs(&input.project_root)
+                .into_iter()
+                .map(|(src, _)| src),
+        );
         collect_project_source_module_graph_seed_files(
             &source_graph_roots,
             &project_root,
@@ -2512,6 +2551,7 @@ pub fn bundle_with_session(
     let shadow_components = shadow.join("components");
     let shadow_layouts = shadow.join("layouts");
     let extra_source_dirs = enumerate_extra_top_level_dirs(&input.project_root, KNOWN_SOURCE_DIRS);
+    let first_party_staging_dirs = enumerate_first_party_staging_dirs(&input.project_root);
 
     // Preflight every source root before materialising any of them. An
     // importer under a later root may target a JS-looking file under an
@@ -2538,6 +2578,12 @@ pub fn bundle_with_session(
             &shadow.join(src_dir.file_name().unwrap_or_default()),
             &mat_ctx,
         )?;
+    }
+    // Dot-path staging allowlist (issue #1840) — preflight the allowlisted
+    // trees like any other source root so a `?raw` edge from/into one is
+    // established before anything is materialised.
+    for (src_dir, rel) in &first_party_staging_dirs {
+        preflight_raw_tree(src_dir, &shadow.join(rel), &mat_ctx)?;
     }
     mat_ctx.raw_preflight_complete.set(true);
 
@@ -2788,6 +2834,67 @@ pub fn bundle_with_session(
             all_markdown_diagnostics.extend(md_diags);
             all_cross_file_links.extend(cfl);
             all_file_headings.extend(fh);
+        }
+    }
+
+    // 2a-dot. First-party dot-path staging allowlist (issue #1840). Stage the
+    // narrow zudo-doc 4.x compatibility surface — `.zudo-doc/routes-src/**`
+    // (generated first-party route source) and the top-level `.zfb/*.json`
+    // meta files — that every generic walker above deliberately skips (hidden
+    // dirs pruned; `.gitignore` honored). Materialised through the SAME
+    // `mat_ctx`/`ShadowWriter` machinery as the extra dirs so the session
+    // visited/prune bookkeeping applies: deleting `.zudo-doc/` live prunes the
+    // staged copy on the next session call. Additive only — the shared
+    // `is_pruned_infra_dir` semantics are untouched (each allowlisted dir is
+    // its own walk ROOT, which the depth-0 guard never prunes).
+    {
+        for (src_dir, rel) in &first_party_staging_dirs {
+            let dst_dir = shadow.join(rel);
+            let mut broken = Vec::new();
+            let mut md_diags = Vec::new();
+            let mut cfl = Vec::new();
+            let mut fh = Vec::new();
+            materialise_shadow(
+                src_dir,
+                &dst_dir,
+                &mut Vec::new(),
+                &mat_ctx,
+                &mut broken,
+                &mut md_diags,
+                &mut cfl,
+                &mut fh,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: failed materialising first-party staging dir {} into shadow",
+                    src_dir.display()
+                )
+            })?;
+            all_broken_links.extend(broken);
+            all_markdown_diagnostics.extend(md_diags);
+            all_cross_file_links.extend(cfl);
+            all_file_headings.extend(fh);
+        }
+        for (src, rel) in enumerate_first_party_staging_json_files(&input.project_root) {
+            if bundle_exclude.is_excluded(&src, &input.project_root) {
+                continue;
+            }
+            let dest = shadow.join(&rel);
+            if let Some(parent) = dest.parent() {
+                writer.ensure_dir(parent).with_context(|| {
+                    format!(
+                        "bundler: create first-party staging meta dir {}",
+                        parent.display()
+                    )
+                })?;
+            }
+            writer.copy_if_changed(&src, &dest).with_context(|| {
+                format!(
+                    "bundler: stage first-party meta file {} -> {}",
+                    src.display(),
+                    dest.display()
+                )
+            })?;
         }
     }
 
@@ -4174,6 +4281,61 @@ fn enumerate_extra_top_level_dirs(project_root: &Path, known_skip_list: &[&str])
     out
 }
 
+/// Enumerate the [`KNOWN_FIRST_PARTY_STAGING_DIRS`] allowlist entries that
+/// exist under `project_root` (issue #1840), as `(live absolute dir,
+/// project-relative path)` pairs. DELIBERATELY bypasses the hidden-dir and
+/// `.gitignore` filters every generic walker applies — that is the whole
+/// point: these paths are conventionally gitignored, yet hold real first-party
+/// source that must gain a staged spelling. Symlinked allowlist paths are NOT
+/// followed (a symlink here could alias arbitrary trees into the stage; the
+/// zudo-doc generator writes real directories).
+fn enumerate_first_party_staging_dirs(project_root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    KNOWN_FIRST_PARTY_STAGING_DIRS
+        .iter()
+        .map(|rel| (project_root.join(rel), PathBuf::from(rel)))
+        .filter(|(src, _)| {
+            fs::symlink_metadata(src).is_ok_and(|meta| meta.is_dir())
+                && src
+                    .parent()
+                    .is_some_and(|p| fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()))
+        })
+        .collect()
+}
+
+/// Enumerate the TOP-LEVEL `*.json` meta files inside each
+/// [`KNOWN_FIRST_PARTY_STAGING_JSON_DIRS`] dir (issue #1840), as `(live
+/// absolute file, project-relative path)` pairs. Same deliberate
+/// hidden/gitignore bypass as [`enumerate_first_party_staging_dirs`]; depth-1
+/// regular `*.json` files only — nested files, non-JSON files, and symlinks
+/// are never staged (narrow compatibility surface).
+fn enumerate_first_party_staging_json_files(project_root: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let mut out = Vec::new();
+    for dir_rel in KNOWN_FIRST_PARTY_STAGING_JSON_DIRS {
+        let dir = project_root.join(dir_rel);
+        // Same no-symlink boundary as the dir helper: `fs::read_dir` would
+        // FOLLOW a symlinked `.zfb`, staging meta files from an arbitrary
+        // external target.
+        if !fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
+                continue;
+            }
+            let name = entry.file_name();
+            if !name.to_string_lossy().ends_with(".json") {
+                continue;
+            }
+            out.push((entry.path(), Path::new(dir_rel).join(&name)));
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Walk `root` with the same `ignore::WalkBuilder` machinery
 /// [`enumerate_extra_top_level_dirs`] uses (`.gitignore` / `.git/info/exclude`
 /// / global-git honored via `standard_filters`, `require_git(false)` so the
@@ -4985,6 +5147,83 @@ fn preflight_raw_file(physical: &Path, logical: &Path, ctx: &MaterialiseCtx<'_, 
     }
 }
 
+/// Classify a `walkdir::Error` from a `follow_links(true)` (or
+/// `follow_links(copy_mode)` with `copy_mode` true) walk as a SKIPPABLE
+/// dangling symlink rather than a genuine read failure: the link itself
+/// exists (`symlink_metadata` succeeds and reports a symlink) but stat-ing
+/// through it failed with `NotFound` because its target is gone. Returns
+/// the link path and its target so callers can warn-and-continue instead
+/// of aborting the whole build on one stale link (e.g. a gitignored
+/// fixture dir with a link whose target was deleted — issue #1838, where
+/// this previously surfaced as a bare `os error 2` with no mention of a
+/// symlink). Any other error (permission denied, a non-symlink `NotFound`,
+/// etc.) returns `None` so the caller keeps propagating it as fatal.
+///
+/// The `fs::metadata(path).is_ok()` re-check guards a TOCTOU window: the
+/// walk's own `NotFound` only proves the target was unreachable AT THAT
+/// INSTANT. If a fresh stat right now says the path resolves fine after
+/// all, this was some other transient condition (a race, a flaky
+/// filesystem) rather than a genuinely dangling link — treat it as fatal
+/// (return `None`) rather than silently skipping a subtree that might
+/// still hold real, needed files.
+fn dangling_symlink_from_walk_error(err: &walkdir::Error) -> Option<(PathBuf, PathBuf)> {
+    if err.io_error().map(|e| e.kind()) != Some(std::io::ErrorKind::NotFound) {
+        return None;
+    }
+    let path = err.path()?;
+    if fs::metadata(path).is_ok() {
+        return None;
+    }
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_symlink() {
+        return None;
+    }
+    let target = fs::read_link(path).ok()?;
+    Some((path.to_path_buf(), target))
+}
+
+/// Shared per-entry handling for the three `follow_links(true)`-shaped
+/// `WalkDir` loops below: on a classified dangling symlink (see
+/// [`dangling_symlink_from_walk_error`]), warn loudly through BOTH channels
+/// — `tracing::warn!` (so tests can assert on it via `logs_contain`) and
+/// `eprintln!` (the channel real `zfb` CLI users actually see: no
+/// `tracing_subscriber` is installed anywhere in the `zfb` binary, so a
+/// bare `tracing::warn!` alone is a silent no-op there) — and return
+/// `Ok(None)` so the caller skips the entry. Any other error is wrapped
+/// with `context` and returned as `Err`, matching each walk's original
+/// fatal behavior.
+///
+/// `read_link` only resolves the IMMEDIATE target, so a multi-hop chain
+/// (`link1 -> link2 -> missing`) is reported as "cannot be resolved" rather
+/// than a (possibly inaccurate) claim that the immediate target itself is
+/// missing.
+fn skip_dangling_symlink_or_fail<T>(
+    err: walkdir::Error,
+    context: impl FnOnce() -> String,
+) -> Result<Option<T>> {
+    if let Some((link, target)) = dangling_symlink_from_walk_error(&err) {
+        let msg = dangling_symlink_warning_message(&link, &target);
+        tracing::warn!("{msg}");
+        eprintln!("zfb warn: {msg}");
+        return Ok(None);
+    }
+    Err(err).with_context(context)
+}
+
+/// Text of the dangling-symlink warning shared by both emission channels in
+/// [`skip_dangling_symlink_or_fail`] (`tracing::warn!`, captured by tests via
+/// `logs_contain`, and the `eprintln!("zfb warn: {msg}")` channel real `zfb`
+/// CLI users actually see). Factored out as a pure function so a unit test
+/// can pin exactly what reaches the user-visible `eprintln!` form without
+/// needing to capture the process's real stderr file descriptor.
+fn dangling_symlink_warning_message(link: &Path, target: &Path) -> String {
+    format!(
+        "dangling symlink: {} -> {} (cannot be resolved); skipping",
+        link.display(),
+        target.display()
+    )
+}
+
 fn preflight_raw_tree(src: &Path, dest: &Path, ctx: &MaterialiseCtx<'_, '_>) -> Result<()> {
     if !src.exists() {
         return Ok(());
@@ -4995,8 +5234,17 @@ fn preflight_raw_tree(src: &Path, dest: &Path, ctx: &MaterialiseCtx<'_, '_>) -> 
         .into_iter()
         .filter_entry(|entry| !is_pruned_infra_dir(entry))
     {
-        let entry =
-            entry.with_context(|| format!("preflight raw imports under {}", src.display()))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                match skip_dangling_symlink_or_fail(err, || {
+                    format!("preflight raw imports under {}", src.display())
+                })? {
+                    Some(entry) => entry,
+                    None => continue,
+                }
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -5033,13 +5281,21 @@ fn materialise_symlinked_dir(
         .into_iter()
         .filter_entry(|e| !is_pruned_infra_dir(e))
     {
-        let entry = entry.with_context(|| {
-            format!(
-                "walking symlinked source dir {} via {}",
-                logical_root.display(),
-                physical_root.display()
-            )
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                match skip_dangling_symlink_or_fail(err, || {
+                    format!(
+                        "walking symlinked source dir {} via {}",
+                        logical_root.display(),
+                        physical_root.display()
+                    )
+                })? {
+                    Some(entry) => entry,
+                    None => continue,
+                }
+            }
+        };
         let physical = entry.path();
         let rel = match physical.strip_prefix(&physical_root) {
             Ok(r) => r,
@@ -5111,13 +5367,19 @@ fn materialise_isolated_exact_dir(
             )
         })
     {
-        let entry = entry.with_context(|| {
-            format!(
-                "walking isolated exact-target dir {} via {}",
-                source_root.display(),
-                physical_root.display()
-            )
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => match skip_dangling_symlink_or_fail(err, || {
+                format!(
+                    "walking isolated exact-target dir {} via {}",
+                    source_root.display(),
+                    physical_root.display()
+                )
+            })? {
+                Some(entry) => entry,
+                None => continue,
+            },
+        };
         let physical = entry.path();
         let Ok(relative) = physical.strip_prefix(&physical_root) else {
             continue;
@@ -9104,6 +9366,13 @@ fn run_esbuild(
     cmd.arg("--tree-shaking=true");
     cmd.arg("--sourcemap=linked");
     cmd.arg("--log-level=warning");
+    // esbuild caps its own error/warning output at 10 messages by default and
+    // silently drops the rest. `friendly_esbuild_error`'s note loop below
+    // walks every `Could not resolve` block in stderr to report ALL escaping
+    // imports in one shot (issue #1839) — without uncapping the limit here,
+    // a project with more than 10 offenders would only ever surface the
+    // first batch, forcing a fix-one/rebuild/discover-next loop.
+    cmd.arg("--log-limit=0");
     // The `.wasm=copy` loader emits these beside the bundle. Pin the basename
     // format so both production passes produce deterministic deployment asset
     // paths that can be safely handed to an adapter.
@@ -9539,7 +9808,13 @@ fn run_esbuild(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let friendly = friendly_esbuild_error(stderr.trim(), shadow, &input.project_root);
+        let friendly = friendly_esbuild_error(
+            stderr.trim(),
+            shadow,
+            &input.project_root,
+            first_party_root,
+            work_root,
+        );
         bail!(
             "bundler: esbuild exited with status {}: {}",
             output.status,
@@ -9584,34 +9859,86 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
 
 /// Post-processes esbuild's captured stderr from `run_esbuild`'s failure
 /// branch so a build failure is actionable instead of naming the ephemeral
-/// shadow-copy tempdir the user never created (#1385 pt.2 / issue #1388).
+/// shadow-copy tempdir the user never created (#1385 pt.2 / issue #1388;
+/// extended for the workspace tier by issue #1839).
 ///
 /// This is **diagnose-only** — the owner decision recorded on the #1386
 /// epic is that a relative import which escapes the project root under
 /// shadow-copy bundling stays unsupported; this function only changes the
 /// REPORTED message, never resolution behaviour.
 ///
+/// Two staged roots can appear in esbuild's raw stderr, narrowest first:
+///
+/// - `shadow` — the project mirror (`work_root` itself outside a
+///   workspace, or `work_root/<workspace_rel>` inside one — see
+///   `run_esbuild`'s doc comment) — maps back to the real `project_root`.
+/// - `work_root` — the wholesale-mirrored first-party workspace root a
+///   claimed sibling package's own source is staged under — maps back to
+///   the real `first_party_root`.
+///
+/// `shadow` is always nested *under* `work_root` (or equal to it, outside a
+/// workspace), so every prefix check below tries `shadow` FIRST:
+/// longest-prefix-first. Checking `work_root` first would also match paths
+/// that are really under the narrower `shadow`, and report them relative to
+/// the coarser `first_party_root` instead of the caller's own
+/// (possibly differently-spelled — e.g. not yet lexically normalized)
+/// `project_root`.
+///
 /// Two independent passes:
 ///
-/// 1. **Defensive catch-all** — any literal absolute `shadow` path embedded
-///    in the text (e.g. a malformed-tsconfig diagnostic can echo the
-///    `--tsconfig=<shadow>/…` flag verbatim) is rewritten to the real
-///    `project_root`, so no ephemeral tempdir path ever reaches the user.
+/// 1. **Defensive catch-all** — any literal absolute `shadow` or
+///    `work_root` path embedded in the text (e.g. a malformed-tsconfig
+///    diagnostic can echo the `--tsconfig=<shadow>/…` flag verbatim) is
+///    rewritten to the matching real root, longest-prefix first, so no
+///    ephemeral tempdir path ever reaches the user.
 /// 2. **Escape detection** — for every `Could not resolve "<specifier>"`
-///    failure where `specifier` is relative (`./` or `../`) and — joined
+///    failure, first place the *importer* in exactly one scope: `project`
+///    (staged under `shadow`) or `workspace` (staged only under the wider
+///    `work_root` — a wholesale-mirrored sibling's own source). That
+///    scope's OWN staged root is the only boundary its relative imports
+///    (`./` or `../`) are allowed to stay inside — a project importer's
+///    import landing inside `work_root` but outside `shadow` is STILL an
+///    escape (the pre-existing #1386 decision: a plain relative import
+///    crossing `project_root` is unsupported regardless of whether the
+///    workspace happens to mirror that location too; the sibling mirror is
+///    reached only via tsconfig aliases / bare imports, never a relative
+///    walk across the project boundary). When the target — joined
 ///    lexically against the reported importer's directory — falls outside
-///    the shadow root, append a note naming the importer's REAL
-///    project-root path, explaining the shadow-copy build boundary, and
-///    pointing at the package-specifier + wildcard-`exports` workaround.
-///    The join is purely lexical (string arithmetic, no filesystem access)
-///    — it does not matter whether the target actually exists.
-fn friendly_esbuild_error(stderr: &str, shadow: &Path, project_root: &Path) -> String {
-    let shadow_display = shadow.to_string_lossy();
-    let mut out = if shadow_display.is_empty() {
-        stderr.to_string()
-    } else {
-        stderr.replace(shadow_display.as_ref(), &project_root.to_string_lossy())
-    };
+///    that boundary, append a note naming the importer's REAL source path
+///    (under `project_root` for a project importer, under
+///    `first_party_root` for a workspace-sibling one), explaining the
+///    matching (project- or workspace-scoped) shadow-copy build boundary,
+///    and pointing at the package-specifier + wildcard-`exports`
+///    workaround. The join is purely lexical (string arithmetic, no
+///    filesystem access) — it does not matter whether the target actually
+///    exists. `run_esbuild` passes `--log-limit=0` so esbuild's own default
+///    10-message cap never truncates the input here, meaning every
+///    offending block in stderr is walked and named, not just the first
+///    batch.
+///
+/// Windows note: `esbuild_location_path` (used to parse each offender's
+/// source location) does not handle drive-letter paths (`C:\...`), so the
+/// "never leak a tempdir path" guarantee below is only verified for the
+/// POSIX-style paths esbuild reports on the platforms zfb's Rust suite
+/// actually runs on (ubuntu/macOS — see the T3 cutover manifest); it is not
+/// exercised on Windows.
+fn friendly_esbuild_error(
+    stderr: &str,
+    shadow: &Path,
+    project_root: &Path,
+    first_party_root: &Path,
+    work_root: &Path,
+) -> String {
+    // Longest-prefix-first (see doc comment above): `shadow` before
+    // `work_root`. Outside a workspace the two pairs are identical, so the
+    // second replace is a harmless no-op on already-rewritten text.
+    let mut out = stderr.to_string();
+    for (staged, real) in [(shadow, project_root), (work_root, first_party_root)] {
+        let staged_display = staged.to_string_lossy();
+        if !staged_display.is_empty() {
+            out = out.replace(staged_display.as_ref(), &real.to_string_lossy());
+        }
+    }
 
     let lines: Vec<&str> = stderr.lines().collect();
     let mut notes: Vec<String> = Vec::new();
@@ -9635,33 +9962,63 @@ fn friendly_esbuild_error(stderr: &str, shadow: &Path, project_root: &Path) -> S
             continue;
         };
         let target = normalize_path_lexical(&importer_dir.join(specifier));
-        if target.strip_prefix(shadow).is_ok() {
-            // Stays inside the shadow root (e.g. `../sibling/file.ts`
-            // resolving to a valid project-relative location) — not an
-            // escape, so the raw esbuild message is left to speak for
-            // itself.
-            continue;
-        }
-        let real_importer = match importer_abs.strip_prefix(shadow) {
-            Ok(rel) => project_root.join(rel),
-            // Already outside the shadow (can happen when
+
+        // Place the importer in exactly one scope FIRST, longest-prefix
+        // (narrower `shadow`) before the wider `work_root` it is nested
+        // under — see the doc comment above. That scope's own staged root
+        // (never the other one) is the boundary THIS import must stay
+        // inside.
+        let (scope, staged_boundary, real_importer, real_root): (
+            &'static str,
+            &Path,
+            PathBuf,
+            &Path,
+        ) = if let Ok(rel) = importer_abs.strip_prefix(shadow) {
+            ("project", shadow, project_root.join(rel), project_root)
+        } else if let Ok(rel) = importer_abs.strip_prefix(work_root) {
+            // A wholesale-mirrored workspace-sibling importer (staged
+            // under `work_root`, outside the narrower `shadow`) — map
+            // through `first_party_root` so its real live-tree path is
+            // named instead of the ephemeral work-mirror one.
+            (
+                "workspace",
+                work_root,
+                first_party_root.join(rel),
+                first_party_root,
+            )
+        } else {
+            // Already outside every staged root (can happen when
             // `--preserve-symlinks` is off and the importer is a
             // symlink whose realpath esbuild reports) — that path IS
-            // the real one already.
-            Err(_) => importer_abs.clone(),
+            // the real one already; treat it as project-scoped, the
+            // common case this fallback exists for.
+            ("project", shadow, importer_abs.clone(), project_root)
         };
+
+        if target.strip_prefix(staged_boundary).is_ok() {
+            // Stays inside the importer's OWN staged boundary (e.g.
+            // `../sibling/file.ts` from a project page resolving to a
+            // valid project-relative location, or a workspace-sibling's
+            // own import resolving elsewhere inside the wholesale work
+            // mirror) — not an escape, so the raw esbuild message is left
+            // to speak for itself. A project importer's target landing
+            // inside `work_root` but outside `shadow` is deliberately NOT
+            // matched here (see the doc comment above) — it still falls
+            // through to the note below.
+            continue;
+        }
         notes.push(format!(
-            "zfb: \"{specifier}\" (imported from {}) escapes the project \
+            "zfb: \"{specifier}\" (imported from {}) escapes the {scope} \
              root's shadow-copy build boundary. zfb bundles from a \
              temporary copy of {}; a relative import that walks above the \
-             project root cannot be followed there. Move the target inside \
-             the project, or expose it as a package import instead: add a \
+             {scope} root cannot be followed there. Move the target inside \
+             the {scope}, or expose it as a package import instead: add a \
              wildcard `exports` entry to the target package's \
              `package.json` (e.g. `\"./src/*\": \"./src/*\"`) and import it \
              by package specifier (e.g. `@scope/pkg/src/button.ts`) — \
              `node_modules` IS included in the shadow copy.",
             real_importer.display(),
-            project_root.display(),
+            real_root.display(),
         ));
     }
 
@@ -10343,7 +10700,10 @@ mod tests {
         // escapes the shadow root, matching the #1385 pt.2 repro shape).
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../../outside/shared.ts\";\n        \u{2575}                    ~~~~~~~~~~~~~~~~~~~~~~~~~\n\n1 error";
 
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        // Non-workspace: `first_party_root == project_root`, `work_root ==
+        // shadow` (see `run_esbuild`'s doc comment) — the sibling tier is
+        // inert.
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
 
         // Names the REAL source path, not a tempdir.
         assert!(
@@ -10377,7 +10737,7 @@ mod tests {
         // boundary annotation.
         let stderr = "\u{2718} [ERROR] Could not resolve \"../sibling/file.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../sibling/file.ts\";\n\n1 error";
 
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
         assert_eq!(
             friendly, stderr,
             "non-escaping resolve failures should pass through unchanged"
@@ -10389,10 +10749,137 @@ mod tests {
         let shadow = Path::new("/tmp/zfb-bundler-abc123");
         let project_root = Path::new("/Users/dev/my-project");
         let stderr = "some diagnostic mentioning /tmp/zfb-bundler-abc123/tsconfig.json directly";
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
         assert_eq!(
             friendly,
             "some diagnostic mentioning /Users/dev/my-project/tsconfig.json directly"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_maps_work_root_prefixed_sibling_importer_to_first_party_root() {
+        // Workspace shape: `shadow` (the narrower project mirror) is nested
+        // under `work_root` (the wholesale-mirrored workspace root). A
+        // claimed sibling package's own source is staged only under
+        // `work_root`, outside `shadow` — e.g. `work_root/lib/shared/helper.ts`
+        // when `shadow == work_root/sub-packages/host`. esbuild's cwd is
+        // `shadow`, so it reports the importer as a relative path that
+        // climbs OUT of shadow and back into the sibling.
+        let work_root = Path::new("/tmp/zfb-bundler-abc123");
+        let shadow = Path::new("/tmp/zfb-bundler-abc123/sub-packages/host");
+        let project_root = Path::new("/workspace/sub-packages/host");
+        let first_party_root = Path::new("/workspace");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../../outside/escaped.ts\"\n\n    ../../lib/shared/helper.ts:1:19:\n      1 \u{2502} import x from \"../../../outside/escaped.ts\";\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+
+        // Names the sibling's REAL live-tree path (mapped through
+        // `first_party_root`), not the ephemeral `work_root` tempdir.
+        assert!(
+            friendly.contains("/workspace/lib/shared/helper.ts"),
+            "should name the real workspace-sibling path: {friendly}"
+        );
+        assert!(
+            !friendly.contains("zfb-bundler-abc123"),
+            "should not leak the work_root tempdir name: {friendly}"
+        );
+        assert!(
+            friendly.to_lowercase().contains("shadow-copy"),
+            "should explain the shadow-copy boundary: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_prefers_shadow_prefix_over_work_root_prefix() {
+        // `shadow` is nested under `work_root`, so an importer that lives
+        // INSIDE shadow also lexically satisfies a `work_root` prefix
+        // check. `project_root` is deliberately NOT the lexical
+        // `first_party_root.join(<workspace-rel>)` composition (it carries
+        // a `.` component `first_party_root` doesn't normalize away in
+        // this fabricated case) so the two mappings are texually
+        // distinguishable — proving the longest-prefix-first order picks
+        // the caller-supplied `project_root` (via `shadow`) rather than
+        // deriving a path through `first_party_root` (via `work_root`).
+        let work_root = Path::new("/tmp/zfb-bundler-abc123");
+        let shadow = Path::new("/tmp/zfb-bundler-abc123/sub-packages/host");
+        let project_root = Path::new("/workspace/./sub-packages/host");
+        let first_party_root = Path::new("/workspace");
+        // 2 levels up from `pages/foo.tsx` escapes `shadow` — enough to
+        // trigger the note, since a PROJECT importer's boundary is
+        // `shadow` alone (see the escape-scoping test below); this test is
+        // only about which of the two prefix mappings names the importer.
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import x from \"../../outside/shared.ts\";\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+
+        assert!(
+            friendly.contains("/workspace/./sub-packages/host/pages/foo.tsx"),
+            "should map through the more specific `shadow` prefix (using \
+             the caller's own `project_root` spelling) rather than the \
+             wider `work_root` prefix (which would derive \
+             /workspace/sub-packages/host/pages/foo.tsx instead): {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_scopes_project_importer_escape_to_shadow_even_inside_work_root() {
+        // Codex review finding on issue #1839: a PROJECT importer (staged
+        // under `shadow`) must be judged against the `shadow` boundary
+        // ALONE, never `work_root` — even though the target here happens
+        // to land inside the wider `work_root` mirror, the pre-existing
+        // #1386 decision is that a relative import crossing `project_root`
+        // stays unsupported regardless (the sibling mirror is reached only
+        // via tsconfig aliases / bare imports, never a relative walk across
+        // the project boundary), so this must still be flagged, not
+        // silently swallowed just because a workspace sibling happens to
+        // live at that lexical location too.
+        let work_root = Path::new("/tmp/zfb-bundler-abc123");
+        let shadow = Path::new("/tmp/zfb-bundler-abc123/sub-packages/host");
+        let project_root = Path::new("/workspace/sub-packages/host");
+        let first_party_root = Path::new("/workspace");
+        // 3 levels up from `pages/foo.tsx` reaches `work_root`, then back
+        // down into `lib/shared/other.ts` — a location the WORKSPACE
+        // wholesale mirror does stage, but the PROJECT's own `shadow`
+        // boundary never claims.
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../../lib/shared/other.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import x from \"../../../lib/shared/other.ts\";\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+
+        assert!(
+            friendly.contains("/workspace/sub-packages/host/pages/foo.tsx"),
+            "should still name the real project importer path: {friendly}"
+        );
+        assert!(
+            friendly.to_lowercase().contains("shadow-copy"),
+            "must NOT be silently suppressed just because the target \
+             happens to land inside work_root — a project importer's \
+             boundary is `shadow` alone: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_reports_every_offender_in_one_run() {
+        // Two independent escaping imports in the SAME stderr blob — proves
+        // the note loop (paired with `run_esbuild`'s `--log-limit=0`) names
+        // every offender in a single run instead of stopping at the first.
+        let shadow = Path::new("/tmp/zfb-bundler-abc123");
+        let project_root = Path::new("/Users/dev/my-project");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/one.ts\"\n\n    pages/one.tsx:1:19:\n      1 \u{2502} import a from \"../../outside/one.ts\";\n\n\u{2718} [ERROR] Could not resolve \"../../outside/two.ts\"\n\n    pages/two.tsx:1:19:\n      1 \u{2502} import b from \"../../outside/two.ts\";\n\n2 errors";
+
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
+
+        assert!(
+            friendly.contains("../../outside/one.ts")
+                && friendly.contains("/Users/dev/my-project/pages/one.tsx"),
+            "first offender must be named: {friendly}"
+        );
+        assert!(
+            friendly.contains("../../outside/two.ts")
+                && friendly.contains("/Users/dev/my-project/pages/two.tsx"),
+            "second offender must ALSO be named, not truncated: {friendly}"
         );
     }
 
@@ -13440,6 +13927,293 @@ mod tests {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))));
+    }
+
+    // ---- dangling symlink preflight (issue #1838) --------------------------
+
+    /// The classifier's exact `NotFound` guard: rejects any non-`NotFound`
+    /// error immediately, before it ever inspects the path. Deterministic —
+    /// a missing root is always reported as `NotFound` on every platform
+    /// this crate targets, no race required.
+    #[test]
+    fn dangling_symlink_classifier_rejects_notfound_on_nonexistent_non_symlink_path() {
+        let project = tempfile::tempdir().unwrap();
+        let missing = project.path().join("never-existed");
+        let mut walk = WalkDir::new(&missing).into_iter();
+        let err = walk
+            .next()
+            .expect("a walk over a missing root yields one item")
+            .expect_err("a missing root must be a walk error, not a successful entry");
+        assert_eq!(
+            err.io_error().map(|e| e.kind()),
+            Some(std::io::ErrorKind::NotFound)
+        );
+
+        // The path was never a symlink (it never existed at all), so even
+        // though the io error kind matches, this must NOT be classified as
+        // a dangling symlink — it must stay fatal.
+        assert!(
+            dangling_symlink_from_walk_error(&err).is_none(),
+            "a NotFound error on a path that is not (and never was) a symlink \
+             must not be classified as dangling"
+        );
+    }
+
+    /// The classifier's positive existence re-check (review-mandated,
+    /// issue #1838): a `NotFound` walk error is only trustworthy at the
+    /// instant it happened. This deterministically (no real race needed)
+    /// simulates the TOCTOU window the re-check guards: capture a genuine
+    /// `NotFound` error from a dangling symlink, then make the target exist
+    /// BEFORE handing that stale error to the classifier. The classifier
+    /// must re-verify against the current filesystem state and refuse to
+    /// call it dangling.
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_classifier_rechecks_before_trusting_a_stale_notfound() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let target = root.join("target.ts");
+        let link = root.join("link.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let mut walk = WalkDir::new(root).follow_links(true).into_iter();
+        walk.next().unwrap().unwrap(); // the root itself
+        let err = walk
+            .next()
+            .expect("the walk yields the dangling entry")
+            .expect_err("following the still-missing target must fail");
+        assert_eq!(
+            err.io_error().map(|e| e.kind()),
+            Some(std::io::ErrorKind::NotFound)
+        );
+
+        // The target now exists — the classifier must re-check rather than
+        // trust the walk's (now stale) NotFound result.
+        fs::write(&target, "now exists").unwrap();
+
+        assert!(
+            dangling_symlink_from_walk_error(&err).is_none(),
+            "a symlink whose target now resolves must not be classified as \
+             dangling, even though the original walk error reported NotFound"
+        );
+    }
+
+    /// Pins the exact text shared by both emission channels in
+    /// `skip_dangling_symlink_or_fail` — including the user-visible
+    /// `eprintln!("zfb warn: {msg}")` form, which cannot be asserted on
+    /// directly without capturing the process's real stderr fd.
+    #[test]
+    fn dangling_symlink_warning_message_names_link_and_target() {
+        let link = Path::new("/proj/components/dangling.ts");
+        let target = Path::new("/proj/components/missing-target.ts");
+        let msg = dangling_symlink_warning_message(link, target);
+        assert!(msg.contains("dangling symlink"), "{msg}");
+        assert!(msg.contains("/proj/components/dangling.ts"), "{msg}");
+        assert!(msg.contains("/proj/components/missing-target.ts"), "{msg}");
+        assert!(msg.contains("cannot be resolved"), "{msg}");
+    }
+
+    /// A dangling symlink (target deleted) under a `copy_mode` tree must not
+    /// abort `preflight_raw_tree` — it used to propagate a bare `os error 2`
+    /// with no mention of a symlink. Also pins the warning text names both
+    /// the link and its (missing) target.
+    #[cfg(unix)]
+    #[test]
+    #[tracing_test::traced_test]
+    fn preflight_raw_tree_skips_dangling_symlink_with_warning() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        fs::create_dir_all(&components).unwrap();
+        fs::write(components.join("real.ts"), "export default 1;\n").unwrap();
+        let target = components.join("missing-target.ts");
+        let link = components.join("dangling.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+
+        preflight_raw_tree(&components, &shadow_components, &ctx)
+            .expect("a dangling symlink must be skipped, not fatal");
+
+        assert!(
+            logs_contain("dangling symlink"),
+            "expected a warning naming the dangling symlink"
+        );
+        assert!(
+            logs_contain(&link.display().to_string()),
+            "expected the warning to name the link path"
+        );
+        assert!(
+            logs_contain(&target.display().to_string()),
+            "expected the warning to name the missing target"
+        );
+    }
+
+    /// `materialise_symlinked_dir` gets the same classifier via
+    /// `skip_dangling_symlink_or_fail` as `preflight_raw_tree` — the two were
+    /// hand-copied `match` blocks before the shared helper existed, so a
+    /// refactor could silently revert either without either's own test
+    /// catching it. Direct coverage per call site (review-mandated).
+    #[cfg(unix)]
+    #[test]
+    fn materialise_symlinked_dir_skips_dangling_symlink_with_warning() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let symlinked_dir = root.join("aliased");
+        fs::create_dir_all(&symlinked_dir).unwrap();
+        fs::write(symlinked_dir.join("real.ts"), "export default 1;\n").unwrap();
+        let target = symlinked_dir.join("missing-target.ts");
+        let link = symlinked_dir.join("dangling.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let dest = shadow.path().join("aliased");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+        let is_excluded = |_: &Path| false;
+
+        materialise_symlinked_dir(&symlinked_dir, &dest, &ctx, &is_excluded)
+            .expect("a dangling symlink inside a symlinked source dir must be skipped, not fatal");
+
+        assert!(
+            dest.join("real.ts").is_file(),
+            "the real sibling file must still be staged"
+        );
+        assert!(
+            !dest.join("dangling.ts").exists(),
+            "the dangling symlink must not be staged"
+        );
+    }
+
+    /// `materialise_isolated_exact_dir` gets the same classifier — direct
+    /// coverage per call site (review-mandated), see the doc comment on
+    /// `materialise_symlinked_dir_skips_dangling_symlink_with_warning` above.
+    #[cfg(unix)]
+    #[test]
+    fn materialise_isolated_exact_dir_skips_dangling_symlink_with_warning() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let source_root = root.join("vendored-pkg");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(source_root.join("real.ts"), "export default 1;\n").unwrap();
+        let target = source_root.join("missing-target.ts");
+        let link = source_root.join("dangling.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let dest = shadow.path().join("vendored-pkg");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let is_excluded = |_: &Path| false;
+
+        materialise_isolated_exact_dir(&source_root, &source_root, &dest, &writer, &is_excluded)
+            .expect(
+                "a dangling symlink inside an isolated exact-target dir must be \
+                 skipped, not fatal",
+            );
+
+        assert!(
+            dest.join("real.ts").is_file(),
+            "the real sibling file must still be staged"
+        );
+        assert!(
+            !dest.join("dangling.ts").exists(),
+            "the dangling symlink must not be staged"
+        );
+    }
+
+    /// A genuine non-`NotFound` walk error (an unreadable directory) must
+    /// still propagate as fatal — the dangling-symlink classifier must not
+    /// swallow errors it wasn't built for. Some environments (root, certain
+    /// sandboxes) bypass directory permission checks entirely, so this test
+    /// only asserts when the walk actually hits a non-NotFound error (same
+    /// skip-rather-than-false-pass guard used by
+    /// `stale_sweep_keeps_session_when_lock_open_fails_non_notfound` in
+    /// `crates/zfb/src/commands/watcher_liveness_probe.rs`). Perms are
+    /// restored BEFORE the assertion (not after) so a failing assertion
+    /// can't leave a chmod-000 directory behind for the tempdir's `Drop` to
+    /// choke on.
+    #[cfg(unix)]
+    #[test]
+    fn preflight_raw_tree_propagates_non_dangling_walk_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        let locked = components.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("entry.ts"), "export default 1;\n").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let enforced = fs::read_dir(&locked).is_err();
+
+        let result = enforced.then(|| {
+            let shadow = tempfile::tempdir().unwrap();
+            let shadow_components = shadow.path().join("components");
+            let exclude = no_bundle_exclude();
+            let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+            let ctx = MaterialiseCtx {
+                pipeline_spec: zfb_content::PipelineSpec::default(),
+                copy_mode: true,
+                bundle_exclude: &exclude,
+                project_root: root,
+                writer: &writer,
+                glob_matched_files: RefCell::new(BTreeSet::new()),
+                raw_import_edges: RefCell::new(BTreeSet::new()),
+                raw_import_aliases: RawImportAliasContext::empty(),
+                module_worker_dependencies: RefCell::new(BTreeSet::new()),
+                worker_build_context: ModuleWorkerBuildContext::default(),
+                raw_preflight_complete: Cell::new(false),
+                snapshot_specifiers: None,
+            };
+            preflight_raw_tree(&components, &shadow_components, &ctx)
+        });
+
+        // Restore perms BEFORE asserting, so a panicking assertion can never
+        // skip this and leave a 0o000 directory behind.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        match result {
+            Some(result) => assert!(
+                result.is_err(),
+                "a genuine permission-denied walk error must still be fatal, not silently skipped"
+            ),
+            None => eprintln!(
+                "[preflight_raw_tree_propagates_non_dangling_walk_errors] directory \
+                 permissions not enforced (running as root?); skipping assertion."
+            ),
+        }
     }
 
     #[test]
@@ -16763,6 +17537,129 @@ mod tests {
             !names.contains(&".foo".to_string()),
             ".foo hidden dir must be excluded; got {names:?}"
         );
+    }
+
+    // ── issue #1840 first-party dot-path staging allowlist tests ─────────
+
+    /// The whole point of the allowlist: `.zudo-doc/routes-src` is enumerated
+    /// EVEN WHEN gitignored (and hidden), while the generic extra-dirs walker
+    /// keeps excluding the dot-dir — the allowlist is additive, not a filter
+    /// loosening.
+    #[test]
+    fn first_party_staging_dirs_included_even_when_gitignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".zudo-doc/routes-src")).unwrap();
+        fs::write(
+            root.join(".zudo-doc/routes-src/generated.tsx"),
+            "export default () => null;\n",
+        )
+        .unwrap();
+        fs::write(root.join(".gitignore"), ".zudo-doc/\n").unwrap();
+
+        let result = enumerate_first_party_staging_dirs(root);
+        assert_eq!(
+            result,
+            vec![(
+                root.join(".zudo-doc/routes-src"),
+                PathBuf::from(".zudo-doc/routes-src")
+            )],
+            "gitignored allowlisted dir must still be enumerated"
+        );
+
+        // The generic walker still prunes the hidden dir — unchanged behavior.
+        let extra = dir_names(enumerate_extra_top_level_dirs(root, &[]));
+        assert!(
+            !extra.contains(&".zudo-doc".to_string()),
+            ".zudo-doc must stay excluded from the generic extra-dirs pass; got {extra:?}"
+        );
+    }
+
+    /// Absent allowlist paths are not enumerated — `.zudo-doc` without a
+    /// `routes-src` child yields nothing, as does an empty project.
+    #[test]
+    fn first_party_staging_dirs_absent_paths_not_enumerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(enumerate_first_party_staging_dirs(root).is_empty());
+        fs::create_dir_all(root.join(".zudo-doc/cache")).unwrap();
+        assert!(
+            enumerate_first_party_staging_dirs(root).is_empty(),
+            ".zudo-doc without routes-src must not be enumerated"
+        );
+    }
+
+    /// A symlinked allowlist path (or a symlinked parent) is never enumerated
+    /// — the allowlist stages real generated directories, not aliased trees.
+    #[cfg(unix)]
+    #[test]
+    fn first_party_staging_dirs_symlinked_paths_not_enumerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(outside.join("routes-src")).unwrap();
+
+        // routes-src itself a symlink.
+        fs::create_dir_all(root.join("a/.zudo-doc")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("routes-src"),
+            root.join("a/.zudo-doc/routes-src"),
+        )
+        .unwrap();
+        assert!(enumerate_first_party_staging_dirs(&root.join("a")).is_empty());
+
+        // The parent `.zudo-doc` a symlink.
+        fs::create_dir_all(root.join("b")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("b/.zudo-doc")).unwrap();
+        assert!(enumerate_first_party_staging_dirs(&root.join("b")).is_empty());
+    }
+
+    /// `.zfb/*.json` enumeration: top-level regular `*.json` files only —
+    /// nested files, non-JSON files, and the gitignore are all irrelevant.
+    #[test]
+    fn first_party_staging_json_files_top_level_json_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".zfb/nested")).unwrap();
+        fs::write(root.join(".zfb/doc-history-meta.json"), "{}\n").unwrap();
+        fs::write(root.join(".zfb/cache.bin"), "binary\n").unwrap();
+        fs::write(root.join(".zfb/nested/deep.json"), "{}\n").unwrap();
+        fs::write(root.join(".gitignore"), ".zfb/\n").unwrap();
+
+        let result = enumerate_first_party_staging_json_files(root);
+        assert_eq!(
+            result,
+            vec![(
+                root.join(".zfb/doc-history-meta.json"),
+                PathBuf::from(".zfb/doc-history-meta.json")
+            )],
+            "only top-level .zfb/*.json must be enumerated (gitignore bypassed)"
+        );
+    }
+
+    /// A symlinked `.zfb` dir (or a symlinked `*.json` inside a real one) is
+    /// never enumerated — `fs::read_dir` would follow the dir symlink and
+    /// stage meta files from an arbitrary external target, breaking the
+    /// bounded staging surface.
+    #[cfg(unix)]
+    #[test]
+    fn first_party_staging_json_files_symlinked_paths_not_enumerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("leaked.json"), "{}\n").unwrap();
+
+        // `.zfb` itself a symlink.
+        fs::create_dir_all(root.join("a")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("a/.zfb")).unwrap();
+        assert!(enumerate_first_party_staging_json_files(&root.join("a")).is_empty());
+
+        // A symlinked json file inside a real `.zfb`.
+        fs::create_dir_all(root.join("b/.zfb")).unwrap();
+        std::os::unix::fs::symlink(outside.join("leaked.json"), root.join("b/.zfb/alias.json"))
+            .unwrap();
+        assert!(enumerate_first_party_staging_json_files(&root.join("b")).is_empty());
     }
 
     // ── issue #1692 claim-plan / wholesale-mirror helper tests ───────────

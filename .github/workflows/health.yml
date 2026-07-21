@@ -236,6 +236,20 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored
 
+      # Real-esbuild stage-escape-audit confirmation for the first-party
+      # dot-path staging allowlist (issue #1841, epic #1836): the
+      # `bundler_dot_path_staging.rs` mock suite (#1840) drives every fixture
+      # through `mock_subprocess_output`, so the stage-escape audit
+      # (`workspace_rel.is_some()`, #1706) never actually runs there —
+      # `metafile_path` stays `None` on the mock path. This step proves real
+      # esbuild resolves both allowlisted dot-path spellings (`.zudo-doc/
+      # routes-src/**`, `.zfb/*.json`) out of the shadow and that the audit
+      # passes them.
+      - name: Run zfb-build dot-path staging esbuild regression test
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored
+
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are
       # staged by the assert step above but, like the zfb-islands suite before

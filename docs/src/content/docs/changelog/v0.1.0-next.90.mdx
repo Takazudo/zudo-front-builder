@@ -7,6 +7,12 @@ sidebar_position: 1090
 
 Released: 2026-07-21
 
+## Breaking Changes
+
+- A relative import (`./` or `../`) that resolves *above* your project root — including from a claimed workspace-sibling package's own source — now hard-fails with `Could not resolve`, where it previously succeeded by accident. On a pnpm workspace, before this release, a dual-target tsconfig rebase kept a graceful fallback to the LIVE tree, so a walk-above-root import happened to resolve against your real filesystem. `0906fb0f` (#1692) replaced that with a wholesale mirror of the first-party workspace tree; an import that escapes even that wider mirror has nowhere staged left to land. The `#1702` stage-escape guard family (which closes an unrelated symlink-escape hole) then correctly classifies this same accidental live-tree reach as an offender, so it is rejected rather than quietly re-admitted. **This behavior is intentional and stays** — it is not a regression to be reverted; see the tracked decision issues (#1726/#1730/#1733) if you believe your project needs the old fallback restored.
+  - **Migration**: move the target inside the project, or expose it as a real package import — add a wildcard `exports` entry to the target package's `package.json` (e.g. `"./src/*": "./src/*"`) and import it by package specifier (e.g. `@scope/pkg/src/button.ts`) instead of a relative path. `node_modules` is always included in the staged build tree, so a package-specifier import keeps resolving.
+  - **Diagnostics**: the build error now names every escaping import in one run (esbuild's own 10-message cap is uncapped for this diagnostic) and reports the REAL source path of each offending importer — never the ephemeral shadow-copy tempdir — even when the importer is itself a wholesale-mirrored workspace-sibling file (issue #1839). One caveat: esbuild never visits an unresolved module's own imports, so this report is *per-run* complete (every offender esbuild actually attempted), not *migration* complete — fixing the imports it names can surface further offenders on the next run. A lexical pre-scan that predicted every offender up front was deliberately not built: it would have to re-implement esbuild's own resolution algorithm to stay accurate, the unbounded-parity trap this project's build tooling avoids elsewhere.
+
 ## Features
 
 - feat(zfb): feed sibling mirror roots into Tailwind @source content globs (b6aaee26)

@@ -144,3 +144,7 @@ zfb-css = { path = "../zfb-css" }
 # the duplicated locate_esbuild() bodies that previously lived in each
 # integration test file.
 zfb-test-utils = { path = "../zfb-test-utils" }
+# Captures `tracing` output in-test via `#[traced_test]` / `logs_contain`
+# (issue #1838's dangling-symlink warning assertion). Same version already
+# used by `zfb-router` for its own warning-capture test.
+tracing-test = "0.2"
