@@ -3158,17 +3158,21 @@ fn resolve_defer_bundle(var: Option<&str>) -> bool {
 /// until its own first request re-renders it, with no seed to soften that
 /// window — the epic's accepted trade-off.
 ///
-/// This function's *result* still matters under Cold, though, for a second,
-/// independent reason: the generic dev-server serve waterfall (`PageCache →
-/// html_root → public_root → dist_root → 404`, `zfb-server`'s
-/// `serve_page`/`read_from_dist`) has no notion of [`BootLazyMode`] at all —
-/// it always tries `dist_root` as a fallback leg ahead of the 404. If a
-/// `dist/` from a prior `pnpm build` happens to already sit on disk when
-/// Cold boots (this gate never asked for or validated it), that leg still
-/// serves those — possibly stale — bytes for any route not yet re-rendered
-/// on request, exactly as it already does for Auto's (checked-servable)
-/// seed today. Cold just never required that seed to exist, or be fresh, in
-/// order to boot lazily.
+/// This function itself is irrelevant under Cold — not just for the
+/// boot-lazy decision above, but full stop: nothing on the Cold path calls
+/// it. The generic dev-server serve waterfall (`PageCache → html_root →
+/// public_root → dist_root → 404`, `zfb-server`'s `serve_page`/
+/// `read_from_dist`) is a SEPARATE, mode-agnostic check that never consults
+/// this gate — it just reads whatever is actually on disk at `dist_root`
+/// per request. So the "every route serves `DEV_404_BODY`" statement above
+/// is the common case, not an absolute guarantee: if a `dist/` from a prior
+/// `pnpm build` happens to already sit on disk when Cold boots (this gate
+/// was never called to check it, so its presence or freshness was never
+/// validated), the `read_from_dist` leg still serves those — possibly
+/// stale — bytes for any route not yet re-rendered on request, ahead of the
+/// 404 page, exactly as it already does for Auto's (checked-servable) seed
+/// today. Cold just never required that leftover `dist/` to exist, or be
+/// fresh, in order to boot lazily.
 fn dist_is_servable_seed(dist_root: &Path) -> bool {
     fn has_index_html(dir: &Path, depth: usize) -> bool {
         // Bounded walk: a built site writes `index.html` at the root and/or

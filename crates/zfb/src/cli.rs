@@ -68,14 +68,18 @@ pub struct NewArgs {
 /// precise override that wins over `ZFB_DEV_EAGER` when both are set.
 /// `ZFB_DEV_BOOT_LAZY=1` (issue #1057) additionally defers the BOOT
 /// render: a valid prebuilt `dist/` is served immediately and each route
-/// re-renders on its first request; with no servable `dist/` it silently
-/// falls back to the eager boot render. `ZFB_DEV_BOOT_LAZY=cold` (issue
-/// #1806) is the seedless variant: it defers the same way with no `dist/`
-/// required at all, at the cost of every route serving the dev 404 page
-/// (with livereload) until its own first request. `ZFB_DEV_DEFER_BUNDLE=0`
-/// (issue #1188) opts out of the #1182 bundle deferral under boot-lazy
-/// (either variant), so the renderer is built before bind (no SSR-only 404
-/// window) at the cost of a slower first-accept.
+/// re-renders on its first request; with no servable `dist/` it warns and
+/// falls back to the eager boot render (hinting `cold`). `ZFB_DEV_BOOT_LAZY=cold`
+/// (issue #1806) is the seedless variant: it defers the same way with no
+/// `dist/` required at all, at the cost of every route serving the dev 404
+/// page (with livereload) until its own first request — unless a `dist/`
+/// from an unrelated prior build happens to already sit on disk, in which
+/// case the server's disk waterfall keeps serving those (possibly stale)
+/// bytes for not-yet-rendered routes, same as Auto's seed does today.
+/// `ZFB_DEV_DEFER_BUNDLE=0` (issue #1188) opts out of the #1182 bundle
+/// deferral under boot-lazy (either variant), so the renderer is built
+/// before bind (no SSR-only 404 window) at the cost of a slower
+/// first-accept.
 #[derive(Debug, Args)]
 #[command(after_help = "Environment variables:
   ZFB_DEV_EAGER=1          Disable lazy dev rendering: re-render every affected
@@ -88,16 +92,20 @@ pub struct NewArgs {
                            present, serve it immediately and defer per-route
                            rendering to the first request, instead of rendering
                            every route at boot. Requires lazy rendering (no-op
-                           when ZFB_DEV_EAGER is set). Falls back to the eager
-                           boot render when no servable `dist/` exists. Off by
-                           default.
+                           when ZFB_DEV_EAGER is set). Warns and falls back to
+                           the eager boot render (hinting `cold`) when no
+                           servable `dist/` exists. Off by default.
   ZFB_DEV_BOOT_LAZY=cold   Seedless boot-lazy: defers per-route rendering to
                            the first request the same way, but WITHOUT
-                           requiring a prebuilt `dist/` — every route serves
-                           the dev 404 page (with livereload) until its first
-                           request re-renders it. Use when no `dist/` exists
-                           yet; `=1` would silently fall back to the eager
-                           boot render in that case instead.
+                           requiring a prebuilt `dist/` — a route with no
+                           fallback artifact on disk serves the dev 404 page
+                           (with livereload) until its first request; a
+                           leftover `dist/` from an unrelated prior build (not
+                           required or checked here) still serves its
+                           possibly-stale bytes first, same as Auto's seed
+                           does. Use when no `dist/` exists yet; `=1` would
+                           warn and fall back to the eager boot render in
+                           that case instead.
   ZFB_DEV_DEFER_BUNDLE=0   Opt out of the #1182 boot-lazy bundle deferral: build
                            the renderer before bind (no SSR-only 404 window)
                            at the cost of a slower first-accept. On by default
