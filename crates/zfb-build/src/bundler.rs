@@ -4311,7 +4311,14 @@ fn enumerate_first_party_staging_dirs(project_root: &Path) -> Vec<(PathBuf, Path
 fn enumerate_first_party_staging_json_files(project_root: &Path) -> Vec<(PathBuf, PathBuf)> {
     let mut out = Vec::new();
     for dir_rel in KNOWN_FIRST_PARTY_STAGING_JSON_DIRS {
-        let Ok(entries) = fs::read_dir(project_root.join(dir_rel)) else {
+        let dir = project_root.join(dir_rel);
+        // Same no-symlink boundary as the dir helper: `fs::read_dir` would
+        // FOLLOW a symlinked `.zfb`, staging meta files from an arbitrary
+        // external target.
+        if !fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -17628,6 +17635,31 @@ mod tests {
             )],
             "only top-level .zfb/*.json must be enumerated (gitignore bypassed)"
         );
+    }
+
+    /// A symlinked `.zfb` dir (or a symlinked `*.json` inside a real one) is
+    /// never enumerated — `fs::read_dir` would follow the dir symlink and
+    /// stage meta files from an arbitrary external target, breaking the
+    /// bounded staging surface.
+    #[cfg(unix)]
+    #[test]
+    fn first_party_staging_json_files_symlinked_paths_not_enumerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("leaked.json"), "{}\n").unwrap();
+
+        // `.zfb` itself a symlink.
+        fs::create_dir_all(root.join("a")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("a/.zfb")).unwrap();
+        assert!(enumerate_first_party_staging_json_files(&root.join("a")).is_empty());
+
+        // A symlinked json file inside a real `.zfb`.
+        fs::create_dir_all(root.join("b/.zfb")).unwrap();
+        std::os::unix::fs::symlink(outside.join("leaked.json"), root.join("b/.zfb/alias.json"))
+            .unwrap();
+        assert!(enumerate_first_party_staging_json_files(&root.join("b")).is_empty());
     }
 
     // ── issue #1692 claim-plan / wholesale-mirror helper tests ───────────
