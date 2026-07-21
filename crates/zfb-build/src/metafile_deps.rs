@@ -192,6 +192,36 @@ fn canonical_or_self(p: &Path) -> Option<PathBuf> {
     Some(std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
 }
 
+/// Case-1 fallback for [`audit_metafile_stage_escape`]'s discriminator: does
+/// `logical_path` name a directory ENTRY that physically sits inside one of
+/// `canonical_stage_roots`? Canonicalise the PARENT directory and re-append
+/// the file name — deliberately not the full path, which would follow the
+/// staged symlink itself out of the stage (that resolved location is exactly
+/// the `canonical_path` the caller already knows escaped). The pure-lexical
+/// check this backs up is symlink-blind: when `metafile_cwd` is spelled
+/// through a symlink alias whose resolved location sits at a different DEPTH
+/// (macOS `/var` -> `/private/var`), esbuild's `..` count is computed against
+/// the RESOLVED cwd, so the lexical collapse pops one component too many and
+/// never re-matches the stage root spelling even though the staged entry is
+/// real.
+///
+/// Fail-closed: only a SUCCESSFUL `std::fs::canonicalize` of the parent may
+/// accept — [`canonical_or_self`]'s as-given fallback must not be used here,
+/// since a failed canonicalisation would echo back an unproven spelling as if
+/// the filesystem had vouched for it.
+fn logical_path_names_staged_entry(logical_path: &Path, canonical_stage_roots: &[PathBuf]) -> bool {
+    let (Some(parent), Some(name)) = (logical_path.parent(), logical_path.file_name()) else {
+        return false;
+    };
+    let Ok(canonical_parent) = std::fs::canonicalize(parent) else {
+        return false;
+    };
+    let reconstructed = canonical_parent.join(name);
+    canonical_stage_roots
+        .iter()
+        .any(|root| reconstructed.starts_with(root))
+}
+
 /// True when any path component is literally `node_modules` — i.e. the path
 /// was reached by resolving a bare package specifier through some install
 /// root, rather than a relative/project-rooted import. Used by
@@ -387,7 +417,22 @@ pub fn audit_metafile_exclusions_at_path(
 ///    two spellings — case 1 and case 4 are told apart by whether the
 ///    *logical* (pre-canonicalisation, symlink-unaware) spelling itself
 ///    still names a location inside a stage root, not by whether the key
-///    string happens to be absolute.
+///    string happens to be absolute. That lexical answer alone is wrong
+///    when `metafile_cwd` is itself spelled through a symlink alias whose
+///    resolved location sits at a different DEPTH (macOS `/var` ->
+///    `/private/var`): esbuild's `..` count is computed against the
+///    RESOLVED cwd, so the lexical collapse escapes the stage spelling even
+///    for a genuinely staged entry. So when the lexical check fails, the
+///    filesystem gets the last word via
+///    [`logical_path_names_staged_entry`]: canonicalise the logical path's
+///    parent (fail-closed — only a successful canonicalisation may accept)
+///    and allow iff the named entry physically sits inside a canonical
+///    stage root. Deliberate consequence: a key that lexically LEAVES a
+///    stage root and RE-ENTERS one (`../../../alias/stage/…`) is allowed —
+///    what matters is that the entry it names IS a staged directory entry,
+///    i.e. a staged spelling exists; do not re-tighten this to "never
+///    leaves the stage". A genuine climb to live source still
+///    parent-canonicalises OUTSIDE every stage root and stays flagged.
 ///
 /// An input whose canonical path falls under neither `first_party_root` nor
 /// any `stage_roots` entry (e.g. a genuinely external symlink) is outside
@@ -488,6 +533,18 @@ pub fn audit_metafile_stage_escape(
 
         if logical_in_stage {
             continue; // case 1: allowed by design.
+        }
+
+        // The lexical pass above is symlink-blind in BOTH directions: a
+        // symlink-aliased `metafile_cwd` spelling at a different depth than
+        // its resolved location (macOS `/var` -> `/private/var`) makes it
+        // fail for a genuinely staged entry. Ask the filesystem before
+        // flagging: canonicalise the logical path's parent and accept iff
+        // the named entry physically sits inside a canonical stage root.
+        // Kept AFTER the cheap lexical pass so the syscall only runs for
+        // inputs whose canonical path already left the stage.
+        if logical_path_names_staged_entry(&record.logical_path, &canonical_stage_roots) {
+            continue; // still case 1, through an aliased cwd spelling.
         }
 
         if in_first_party {
@@ -1054,6 +1111,155 @@ mod tests {
         assert!(
             err.to_string().contains("../workspace/pages/other.tsx"),
             "error must name the offending relative key; got {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_allows_staged_symlink_reached_through_symlink_aliased_cwd() {
+        // Repro for issue #1795 (epic #1794): on macOS `$TMPDIR` is spelled
+        // `/var/folders/…` while `/var` is a symlink to `/private/var`, so
+        // the alias spelling is one component SHALLOWER than the
+        // kernel-resolved location. esbuild's Go-side cwd is the RESOLVED
+        // spelling, so the `..` count in a relative metafile key matches the
+        // resolved depth; joining that key onto the unresolved
+        // `metafile_cwd` and collapsing lexically pops one component too
+        // many and never re-matches the stage root spelling — a
+        // legitimately staged symlink (case 1) was misclassified as a
+        // case-4 escape. Portable mirror of that topology: `alias ->
+        // physical/real` (depth-changing; a same-depth sibling alias does
+        // NOT reproduce the bug).
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+
+        let real_stage = base.join("physical/real/stage");
+        std::fs::create_dir_all(base.join("physical/real")).unwrap();
+        std::os::unix::fs::symlink(base.join("physical/real"), base.join("alias")).unwrap();
+
+        let first_party = base.join("workspace");
+        let real_source = first_party.join("packages/shared/src/Header.tsx");
+        write(&first_party, "packages/shared/src/Header.tsx", "header");
+
+        let link = real_stage.join("components/Header.tsx");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_source, &link).unwrap();
+
+        // The caller passes the ALIAS spelling for both the cwd and the
+        // stage root, exactly as the macOS `$TMPDIR`-derived paths arrive.
+        let alias_stage = base.join("alias/stage");
+
+        // The `..` count matches the RESOLVED cwd depth
+        // (`physical/real/stage` = three components below `base`), and the
+        // key re-enters the stage through the alias spelling.
+        let key = "../../../alias/stage/components/Header.tsx";
+
+        // Precondition 1: the pure-lexical comparison FAILS — the `..`
+        // count exceeds the alias spelling's depth, so the lexical collapse
+        // escapes `base` and never re-matches the lexical stage root.
+        let lexical_joined = normalize_path_lexical(&alias_stage.join(key));
+        assert!(
+            !lexical_joined.starts_with(normalize_path_lexical(&alias_stage)),
+            "precondition: the pure-lexical comparison must fail; got {lexical_joined:?}"
+        );
+
+        // Precondition 2: canonicalising the same logical path's PARENT
+        // lands under the CANONICAL stage root — a staged spelling exists.
+        let logical = alias_stage.join(key);
+        let canonical_parent = std::fs::canonicalize(logical.parent().unwrap())
+            .expect("precondition: the logical parent must canonicalise");
+        assert!(
+            canonical_parent.starts_with(std::fs::canonicalize(&real_stage).unwrap()),
+            "precondition: the canonical parent must land inside the canonical stage root; got {canonical_parent:?}"
+        );
+
+        let metafile = format!(r#"{{"inputs": {{"{key}": {{"imports": []}}}}}}"#);
+
+        let result = audit_metafile_stage_escape(
+            metafile.as_bytes(),
+            &alias_stage,
+            &[&alias_stage],
+            &first_party,
+        );
+        assert!(
+            result.is_ok(),
+            "a staged symlink reached through a symlink-aliased cwd spelling is case 1 and must be allowed; got {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_flags_genuine_climb_to_live_source_under_symlink_aliased_cwd() {
+        // Guard-not-weakened companion to the aliased-cwd acceptance above:
+        // a GENUINE case-4 climb — a key that reaches live first-party
+        // source directly, never naming a staged entry — must STILL be
+        // flagged when the cwd is spelled through the depth-changing alias.
+        // Its logical parent canonicalises fine, but lands under the live
+        // workspace, not under any canonical stage root.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+
+        std::fs::create_dir_all(base.join("physical/real/stage")).unwrap();
+        std::os::unix::fs::symlink(base.join("physical/real"), base.join("alias")).unwrap();
+
+        let first_party = base.join("workspace");
+        write(&first_party, "pages/other.tsx", "other");
+
+        let alias_stage = base.join("alias/stage");
+        // Same resolved-depth `..` count as the acceptance repro, but the
+        // climb descends into live workspace source instead of re-entering
+        // the stage through the alias.
+        let key = "../../../workspace/pages/other.tsx";
+
+        let metafile = format!(r#"{{"inputs": {{"{key}": {{"imports": []}}}}}}"#);
+
+        let result = audit_metafile_stage_escape(
+            metafile.as_bytes(),
+            &alias_stage,
+            &[&alias_stage],
+            &first_party,
+        );
+        let err = result.expect_err(
+            "a genuine `..`-climb to live source must stay flagged under an aliased cwd spelling",
+        );
+        assert!(
+            err.to_string().contains(key),
+            "error must name the offending key; got {err}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_retains_offender_when_logical_parent_cannot_canonicalize() {
+        // Fail-closed: the aliased-cwd acceptance path may only accept when
+        // canonicalising the logical parent SUCCEEDS. An absolute
+        // first-party key whose path does not exist on disk
+        // (`canonical_or_self` falls back to the as-given spelling in
+        // `resolve_metafile_inputs`) has an unprovable spelling — the
+        // offender must be retained, never accepted on the fallback.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let stage = base.join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        let first_party = base.join("workspace");
+        std::fs::create_dir_all(&first_party).unwrap();
+
+        let ghost = first_party.join("ghost/dir/file.tsx"); // never created
+        assert!(
+            std::fs::canonicalize(ghost.parent().unwrap()).is_err(),
+            "precondition: the logical parent must NOT canonicalise"
+        );
+
+        let metafile = format!(
+            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
+            ghost.display()
+        );
+
+        let result =
+            audit_metafile_stage_escape(metafile.as_bytes(), &stage, &[&stage], &first_party);
+        let err =
+            result.expect_err("an unprovable first-party spelling must be retained as an offender");
+        assert!(
+            err.to_string().contains("ghost/dir/file.tsx"),
+            "error must name the offender; got {err}"
         );
     }
 
