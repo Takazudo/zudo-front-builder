@@ -128,3 +128,37 @@ Scoped to the normalization ONLY. See the `PageSelection::All` trap below for wh
   one run. **Instrument before theorising.**
 - The initial theory that the handshake's `__warmup-N.mdx` files were the whole story.
   They were a real second defect, but ablation proved they were not the primary cause.
+
+## 2026-07 — a SECOND dynamic-watch registry: `css_mirror_roots` (epic #1799, issues #1801/#1802/#1805)
+
+The watcher API surface grew a second dynamic-registration channel alongside the
+file-parent `watch_additional_files`/`dynamic_dependency_paths()` pair this file
+already covers: `Watcher::sync_recursive_dir_watches` (zfb-watcher, #1801) plus a
+`css_mirror_roots` registry on `RawImportInvalidation`/`GranularityPolicy`, exposed via
+`css_mirror_root_paths()` (zfb-build, #1802). Both channels are reconciled from the
+SAME `orchestrator.rs` function, `register_dynamic_dependency_watches`, and both reuse
+the SAME `watch-extra registered:` `ZFB_DEV_TIMING` signal — but they are watching for
+structurally different things:
+
+- `watch_additional_files` / `dynamic_dependency_paths()` — **non-recursive, file-parent**
+  watches for out-of-root `?raw`/worker/plain-module import targets discovered by the
+  browser pipeline (#1678/#1710/#1711).
+- `sync_recursive_dir_watches` / `css_mirror_root_paths()` — **recursive-directory**
+  watches for `zfb_build::SiblingMirrorPlan` mirror roots (tsconfig/plugin alias claims,
+  computed by `build_default_css_payload_with_source_plan` on EVERY CSS-triggering tick,
+  regardless of whether Tailwind is enabled or anything actually imports the alias
+  target).
+
+**Watch for next time:** a sibling directory can be claimed by BOTH channels
+simultaneously (e.g. this repo's `dev_sibling_watch_1678_e2e.rs` fixture's `sub/shared`:
+it is both a `?raw`/worker/plain-module import target AND carries a tsconfig alias
+pointing at itself). If you write a confirm-e2e for ONE of the two channels reusing a
+sibling directory already covered by the OTHER, the test proves nothing — it will keep
+passing even with the channel under test fully reverted, because the other channel
+already keeps the directory watched. `e2e_dev_sibling_tailwind_utility_class_refreshes_served_css`
+(issue #1805) sidesteps this by using a fixture whose sibling is reached ONLY through
+the tsconfig alias — no import touches it — verified by actually reverting
+`sync_recursive_dir_watches`'s call site and confirming the test times out on
+`wait_for_watch_extra` before restoring it. When adding a new dynamic-watch confirm-test,
+check whether your chosen sibling path is already claimed by a channel you are not
+trying to test.
