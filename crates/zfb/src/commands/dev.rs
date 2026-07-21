@@ -82,8 +82,8 @@ use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
 use zfb_build::{
-    atomic_write, validate_companion_file_set, validate_output_path, BuildContext,
-    BuildOrchestrator, BuildOutcome, ClientScriptsRunner, ContentCollectionId,
+    atomic_write, validate_companion_file_set, validate_output_path, AssetEmitterPayload,
+    BuildContext, BuildOrchestrator, BuildOutcome, ClientScriptsRunner, ContentCollectionId,
     ContentCollectionMembership, ContentProvenance, CssRunner, DevAssetPipeline, DiscoveryOutcome,
     IslandsBundleInfo, IslandsRunner, OrchestratorConfig, PageRenderer, RefreshOutcome,
     RelDistPath, RenderedPage, RendererReloader, TrackedContentRead,
@@ -1048,6 +1048,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .with_content_roots(content_roots)
                 .with_raw_import_invalidation(raw_import_invalidation.clone())
                 .with_known_content(known_content.clone()),
+        )
+        // Issue #1802 — the same skip-dir names the CSS-scan sibling walk
+        // already excludes (`CSS_SIBLING_MIRROR_SKIP_DIRS`), threaded down
+        // so `Watcher::sync_recursive_dir_watches` (issue #1801) suppresses
+        // the same infra subtrees under a registered mirror root.
+        .with_css_mirror_skip_dir_names(
+            crate::commands::build::css_sibling_mirror_skip_dir_names()
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
         );
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
@@ -1167,13 +1177,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // change.
     let dev_css_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
-    match crate::commands::build::build_default_css_payload(
+    match build_dev_css_and_publish_mirror_roots(
         &project_root,
         &dev_assets_root,
         &cfg,
-        &[],
         &islands_plugin_config.alias_entries,
         &islands_plugin_config.virtual_modules,
+        &raw_import_invalidation,
     ) {
         Ok(Some(payload)) => {
             // Write the bytes to the isolated dev-assets root (issue #1189)
@@ -1224,14 +1234,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let plugin_virtual_modules_for_css = islands_plugin_config.virtual_modules.clone();
         let url_prefix = dev_css_url_prefix.clone();
         let url_handle = Arc::clone(&css_bundle_url_handle);
+        // Issue #1802: share the same mirror-root publication seam the boot
+        // pass uses above, so every CSS rebuild tick (not just boot) keeps
+        // the dev-watch registration's source plan current.
+        let raw_import_invalidation_for_css = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
-            let payload = crate::commands::build::build_default_css_payload(
+            let payload = build_dev_css_and_publish_mirror_roots(
                 &project_root_for_css,
                 &dev_assets_root_for_css,
                 &cfg_for_css,
-                &[],
                 &plugin_alias_entries_for_css,
                 &plugin_virtual_modules_for_css,
+                &raw_import_invalidation_for_css,
             )?;
             let mut guard = url_handle.write().unwrap_or_else(|p| {
                 tracing::warn!(
@@ -2506,6 +2520,37 @@ fn resolve_css_import_watch_targets(project_root: &Path) -> Vec<PathBuf> {
         return Vec::new();
     };
     zfb_css::resolve_css_imports(&entry, project_root)
+}
+
+/// Shared tail for the boot CSS pass and the `run_css` watcher-tick closure
+/// (issue #1802, epic #1799 gap (a)): builds the CSS payload through the
+/// [`crate::commands::build::build_default_css_payload_with_source_plan`]
+/// seam, publishing the sibling mirror roots it computes to
+/// `raw_import_invalidation` — consumed via
+/// `zfb_build::GranularityPolicy::css_mirror_root_paths` by the
+/// orchestrator's dynamic-watch reconciliation
+/// (`register_dynamic_dependency_watches`) — UNCONDITIONALLY, even when the
+/// Tailwind subprocess that consumes those same roots as `@source` globs
+/// later fails. A failed boot CSS build must still register sibling
+/// watches, or there is no filesystem event through which recovery could
+/// ever trigger.
+fn build_dev_css_and_publish_mirror_roots(
+    project_root: &Path,
+    dev_assets_root: &Path,
+    cfg: &config::Config,
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+    raw_import_invalidation: &zfb_build::RawImportInvalidation,
+) -> Result<Option<AssetEmitterPayload>> {
+    crate::commands::build::build_default_css_payload_with_source_plan(
+        project_root,
+        dev_assets_root,
+        cfg,
+        &[],
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        &|roots| raw_import_invalidation.replace_css_mirror_roots(roots.to_vec()),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -11524,5 +11569,75 @@ mod tests {
         assert_lookup(&session, "/new", "/new");
         assert_lookup(&session, "/new/", "/new");
         assert_lookup(&session, "/new/index.html", "/new");
+    }
+
+    /// Issue #1802 (epic #1799 gap (a)): the dev boot CSS pass must publish
+    /// a NON-EMPTY `css_mirror_roots` registry when the project genuinely
+    /// claims a workspace sibling — proven by calling
+    /// `build_dev_css_and_publish_mirror_roots` (the exact helper the boot
+    /// pass and the `run_css` watcher-tick closure both call) against a
+    /// real pnpm-workspace-shaped fixture and asserting the registry
+    /// afterwards, per `l-lessons-dev-watcher-narrowing`'s "prove
+    /// registries are POPULATED, don't assume" rule — a guard keyed on an
+    /// empty registry is dead code that silently does nothing.
+    ///
+    /// Whether the Tailwind subprocess itself then succeeds or fails is
+    /// irrelevant to this assertion (no tailwind binary is required for
+    /// this test to be meaningful): the seam publishes the mirror roots
+    /// BEFORE that subprocess ever runs, so the result is ignored here.
+    #[test]
+    fn build_dev_css_and_publish_mirror_roots_populates_registry_in_boot_scenario() {
+        // Minimal pnpm-workspace-shaped fixture: a project claiming a
+        // sibling package via a tsconfig path alias, so
+        // `SiblingMirrorPlan::compute` resolves a non-empty mirror root
+        // (mirrors `commands::build::tests::sibling_css_workspace_fixture`,
+        // which cannot be reused here — it lives in a private `mod tests`
+        // in a different module).
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let project = ws.join("sub-packages/host");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(ws.join("lib/shared")).unwrap();
+        std::fs::write(
+            ws.join("lib/shared/Button.tsx"),
+            "export default function Button() { return null }\n",
+        )
+        .unwrap();
+
+        // `config::Config::default()` leaves Tailwind ENABLED (the
+        // default) — the seam only computes mirror roots on that branch
+        // (the `tailwind.enabled = false` path never scans for `@source`
+        // mirror roots at all, since there is no Tailwind scan to feed).
+        let cfg = config::Config::default();
+        let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+
+        let _ = build_dev_css_and_publish_mirror_roots(
+            &project,
+            &project.join(".zfb-dev-assets"),
+            &cfg,
+            &[],
+            &[],
+            &raw_import_invalidation,
+        );
+
+        let policy = zfb_build::GranularityPolicy::default()
+            .with_raw_import_invalidation(raw_import_invalidation);
+        let roots = policy.css_mirror_root_paths();
+        assert!(
+            !roots.is_empty(),
+            "the dev boot CSS pass must publish a non-empty mirror-root set for a \
+             project claiming a workspace sibling via a tsconfig alias — got an empty \
+             registry: {roots:?}"
+        );
     }
 }

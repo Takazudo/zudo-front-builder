@@ -747,6 +747,52 @@ impl BuildRunner for DefaultRunner {
     }
 }
 
+/// Observer invoked with the CSS source-plan seam's computed sibling
+/// mirror roots (issue #1802, epic #1799 gap (a)) as soon as they are
+/// known — BEFORE the Tailwind subprocess runs and regardless of whether
+/// that subprocess later succeeds or fails. This is the seam the dev-watch
+/// registration hooks into: a failed boot CSS build must still register
+/// sibling watches, or there is no filesystem event through which recovery
+/// could ever trigger. See
+/// [`build_default_css_payload_with_source_plan`] for exactly when it
+/// fires.
+pub(crate) type CssSourcePlanObserver<'a> = &'a dyn Fn(&[PathBuf]);
+
+/// The CSS sibling-mirror-root skip-dir name list
+/// ([`CSS_SIBLING_MIRROR_SKIP_DIRS`]) exposed to callers outside this
+/// module — currently the dev command layer, which threads it down to
+/// `zfb_build::OrchestratorConfig::with_css_mirror_skip_dir_names` (issue
+/// #1802) so `Watcher::sync_recursive_dir_watches` (issue #1801)
+/// suppresses the same infra subtrees the CSS-scan sibling walk already
+/// excludes.
+pub(crate) fn css_sibling_mirror_skip_dir_names() -> &'static [&'static str] {
+    CSS_SIBLING_MIRROR_SKIP_DIRS
+}
+
+/// Compatibility wrapper around
+/// [`build_default_css_payload_with_source_plan`] for every existing call
+/// site (unit tests, `DefaultRunner::emit_prod_assets`) that has no use for
+/// the CSS source-plan seam (issue #1802) — byte-identical to the
+/// pre-#1802 behaviour, with a no-op observer.
+pub(crate) fn build_default_css_payload(
+    project_root: &Path,
+    outdir: &Path,
+    config: &Config,
+    package_route_entrypoints: &[PathBuf],
+    plugin_alias_entries: &[(String, String)],
+    plugin_virtual_modules: &[(String, String)],
+) -> Result<Option<AssetEmitterPayload>> {
+    build_default_css_payload_with_source_plan(
+        project_root,
+        outdir,
+        config,
+        package_route_entrypoints,
+        plugin_alias_entries,
+        plugin_virtual_modules,
+        &|_roots| {},
+    )
+}
+
 /// Run the real `CssPipeline::build_emitter` for a project and return
 /// its bytes packaged for [`ProductionAssetPipeline`].
 ///
@@ -771,7 +817,16 @@ impl BuildRunner for DefaultRunner {
 /// (`zfb_css::css_relative_path` and `zfb_types::STABLE_CSS_URL`) so
 /// the renderer's head injector and the prod pipeline's URL rewriter
 /// agree on the same key without a separate string channel.
-pub(crate) fn build_default_css_payload(
+///
+/// `on_source_plan` (issue #1802) is called EXACTLY ONCE with the computed
+/// sibling mirror roots — empty on the `tailwind.enabled = false` path (no
+/// Tailwind `@source` scan runs, so there is nothing to watch for it),
+/// otherwise the same slice [`assemble_css_content_globs`] folds into the
+/// Tailwind content-glob list. The call happens strictly BEFORE the
+/// Tailwind subprocess is invoked, so it fires even when that subprocess
+/// later fails — the seam dev-watch registration needs (see the type's own
+/// doc comment).
+pub(crate) fn build_default_css_payload_with_source_plan(
     project_root: &Path,
     outdir: &Path,
     config: &Config,
@@ -798,6 +853,7 @@ pub(crate) fn build_default_css_payload(
     // direct alias) is scanned and shipped too. Empty on the no-virtual-
     // module path (byte-identical parity).
     plugin_virtual_modules: &[(String, String)],
+    on_source_plan: CssSourcePlanObserver<'_>,
 ) -> Result<Option<AssetEmitterPayload>> {
     // Build the same `ModuleWorkerBuildContext` shape esbuild will see for
     // this project's plugin registrations, then discover the file set behind
@@ -813,7 +869,31 @@ pub(crate) fn build_default_css_payload(
         plugin_virtual_modules,
     );
     let discovered_graph_files =
-        discover_css_plugin_virtual_files(project_root, &virtual_worker_context)?;
+        match discover_css_plugin_virtual_files(project_root, &virtual_worker_context) {
+            Ok(files) => files,
+            Err(err) => {
+                // Issue #1802 (review finding): even when virtual-module
+                // discovery itself fails — BEFORE the full mirror-root set
+                // below can be computed — publish the alias/tsconfig-derived
+                // claim on its own (an empty `discovered_graph_files`, so only
+                // claim source b, not the virtual-module claim sources a+c)
+                // rather than nothing at all. The same "a failed boot CSS
+                // build must still register sibling watches" contract this
+                // seam exists for applies to this earlier failure mode too.
+                let fallback_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
+                    project_root,
+                    &zfb_types::first_party_root_for(project_root),
+                    &std::collections::BTreeSet::new(),
+                    &read_tsconfig_paths(project_root),
+                    plugin_alias_entries,
+                )
+                .mirror_roots()
+                .map(Path::to_path_buf)
+                .collect();
+                on_source_plan(&fallback_roots);
+                return Err(err);
+            }
+        };
 
     // `.module.css` files a virtual module imports DIRECTLY (issue #1775
     // follow-up): fed into CSS emission's explicit module slot so a direct
@@ -821,6 +901,34 @@ pub(crate) fn build_default_css_payload(
     // `compute_css_module_class_maps` produces for the same set. Empty on the
     // no-virtual-module path.
     let direct_css_modules = discovered_direct_css_modules(&discovered_graph_files);
+
+    // Sibling Mirror (issue #1691/#1776): computed here, BEFORE the
+    // Tailwind-enabled branch below, and published unconditionally (issue
+    // #1802) — `build_authored_only_css_payload` on the `tailwind.enabled =
+    // false` path ALSO discovers sibling `.module.css` files through this
+    // same claim plan (issue #824: disabling Tailwind opts out of the
+    // Tailwind layers, not CSS Modules), so the dev-watch registration
+    // needs this set on BOTH paths, not just the Tailwind-scan one. A
+    // review finding caught an earlier version of this seam publishing an
+    // empty set whenever Tailwind was disabled, which would have left a
+    // claimed sibling's CSS Modules unwatched.
+    let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
+        project_root,
+        &zfb_types::first_party_root_for(project_root),
+        &discovered_graph_files,
+        &read_tsconfig_paths(project_root),
+        plugin_alias_entries,
+    )
+    .mirror_roots()
+    .map(Path::to_path_buf)
+    .collect();
+
+    // Issue #1802 (epic #1799 gap (a)): publish the mirror roots NOW —
+    // before the Tailwind subprocess below ever runs (on the Tailwind-
+    // enabled path), and therefore even if that subprocess later fails. A
+    // failed boot CSS build must still register sibling watches, or there
+    // is no filesystem event through which recovery could ever trigger.
+    on_source_plan(&sibling_mirror_roots);
 
     // `tailwind: { enabled: false }` disables only the Tailwind layers,
     // not the authored-CSS pipeline. Route to the Tailwind-free path so
@@ -867,33 +975,22 @@ pub(crate) fn build_default_css_payload(
         .map(|root| project_root.join(root).to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    // Sibling Mirror (issue #1691/#1776): the same claim plan
-    // `discover_css_source_files` above just used to wholesale-walk sibling
-    // source files is recomputed here (cheap — it only iterates the already-
-    // collected `discovered_graph_files` / alias sets) so its mirror roots
-    // can extend Tailwind's own `@source` scan. Without this, a utility
-    // class used ONLY inside a claimed sibling file is scanned for CSS
-    // Modules discovery but never reaches Tailwind's content scan, so the
-    // class would silently never be emitted (green build, unstyled page —
-    // the same failure shape fix-A [5] closed for package routes below).
-    let sibling_mirror_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
-        project_root,
-        &zfb_types::first_party_root_for(project_root),
-        &discovered_graph_files,
-        &read_tsconfig_paths(project_root),
-        plugin_alias_entries,
-    )
-    .mirror_roots()
-    .map(Path::to_path_buf)
-    .collect();
-
+    // `sibling_mirror_roots` is computed once above, BEFORE the
+    // Tailwind-enabled branch, so the issue #1802 seam can publish it on
+    // both paths. It extends Tailwind's own `@source` scan here: without
+    // it, a utility class used ONLY inside a claimed sibling file is
+    // scanned for CSS Modules discovery but never reaches Tailwind's
+    // content scan, so the class would silently never be emitted (green
+    // build, unstyled page — the same failure shape fix-A [5] closed for
+    // package routes below).
+    //
     // Issue #1803 (epic #1799 gap b): `discover_css_source_files` already
     // skips `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs when it wholesale-walks
-    // a mirror root above, but the Tailwind `@source` scan fed by
-    // `content_globs` has no equivalent exclusion — an ungitignored
-    // generated subtree inside a mirror root (e.g. a stale `dist/`) can
-    // leak stale class strings into the emitted stylesheet. Mirror that
-    // exclusion onto the engine via `negative_source_globs`.
+    // a mirror root, but the Tailwind `@source` scan fed by `content_globs`
+    // has no equivalent exclusion — an ungitignored generated subtree inside
+    // a mirror root (e.g. a stale `dist/`) can leak stale class strings into
+    // the emitted stylesheet. Mirror that exclusion onto the engine via
+    // `negative_source_globs`.
     let (content_globs, negative_source_globs) = assemble_css_content_globs(
         &default_content_globs,
         package_route_entrypoints,
@@ -15103,6 +15200,131 @@ mod tests {
             bundle_calls[0].base_prefix.is_none(),
             "zero-script build must pass base_prefix=None to the bundler; got {:?}",
             bundle_calls[0].base_prefix,
+        );
+    }
+
+    /// Issue #1802 (epic #1799, gap (a)): the CSS source-plan seam must
+    /// publish its computed sibling mirror roots to the caller-supplied
+    /// observer BEFORE the Tailwind subprocess ever runs — and therefore
+    /// even when that subprocess later fails. Without this, a failed boot
+    /// CSS build in dev would leave the dev-watch reconciliation with no
+    /// root to register, and there would be no filesystem event through
+    /// which recovery could ever trigger.
+    ///
+    /// Forces the Tailwind engine to fail deterministically WITHOUT
+    /// spawning a real subprocess: `TailwindSubprocessEngine::produce_utility_css`
+    /// (crates/zfb-css/src/engine.rs) checks `binary_path.exists()` before
+    /// ever exec'ing, so pointing `ZFB_TAILWIND_BIN` at a path that is
+    /// guaranteed not to exist is a fast, hermetic, deterministic failure —
+    /// no real tailwind binary is spawned. Scope-guarded (`EnvGuard`
+    /// restores the previous value on drop, panic included) so the
+    /// mutation cannot leak past this test; no other test in this module
+    /// reads or writes `ZFB_TAILWIND_BIN`, so there is nothing else in the
+    /// parallel test run to race against.
+    #[test]
+    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_even_on_tailwind_failure()
+    {
+        struct EnvGuard {
+            prev: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.prev {
+                    Some(v) => std::env::set_var("ZFB_TAILWIND_BIN", v),
+                    None => std::env::remove_var("ZFB_TAILWIND_BIN"),
+                }
+            }
+        }
+        let prev = std::env::var_os("ZFB_TAILWIND_BIN");
+        std::env::set_var(
+            "ZFB_TAILWIND_BIN",
+            "/nonexistent/zfb-test-tailwind-missing-binary",
+        );
+        let _guard = EnvGuard { prev };
+
+        let (_tmp, project) = sibling_css_workspace_fixture();
+
+        // `Config::default()` leaves Tailwind ENABLED (the default) — the
+        // `tailwind.enabled = false` path never computes mirror roots at
+        // all (there is no `@source` scan to feed), so this must exercise
+        // the Tailwind-enabled branch to reach the seam under test.
+        let cfg = Config::default();
+        let observed: std::cell::RefCell<Option<Vec<PathBuf>>> = std::cell::RefCell::new(None);
+
+        let result = build_default_css_payload_with_source_plan(
+            &project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|roots| {
+                *observed.borrow_mut() = Some(roots.to_vec());
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "expected the Tailwind engine to fail deterministically (missing binary); \
+             got {result:?}"
+        );
+        let observed = observed.borrow();
+        assert!(
+            observed.is_some(),
+            "the mirror-root observer must fire even though the Tailwind subprocess \
+             later fails — otherwise a failed boot CSS build never registers sibling \
+             watches"
+        );
+        assert!(
+            !observed.as_ref().unwrap().is_empty(),
+            "this fixture claims a workspace sibling via a tsconfig alias, so the \
+             published set must be non-empty: {observed:?}"
+        );
+    }
+
+    /// Review finding (issue #1802): `tailwind.enabled = false` opts out of
+    /// the Tailwind `@source` scan, NOT out of CSS Modules discovery — see
+    /// `css_payload_emits_claimed_sibling_module_css_and_matches_class_map`,
+    /// which proves `build_authored_only_css_payload` still ships a claimed
+    /// sibling's `.module.css` bytes on this exact path. An earlier version
+    /// of this seam published an EMPTY mirror-root set whenever Tailwind was
+    /// disabled, which would have left that same sibling directory
+    /// unwatched in dev — a claimed sibling's CSS Module edit would go
+    /// stale until restart even though Tailwind was never involved. The
+    /// observer must fire with the SAME non-empty set regardless of
+    /// `tailwind.enabled`.
+    #[test]
+    fn build_default_css_payload_with_source_plan_publishes_mirror_roots_with_tailwind_disabled() {
+        let (_tmp, project) = sibling_css_workspace_fixture();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let observed: std::cell::RefCell<Option<Vec<PathBuf>>> = std::cell::RefCell::new(None);
+
+        let payload = build_default_css_payload_with_source_plan(
+            &project,
+            &project.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+            &|roots| {
+                *observed.borrow_mut() = Some(roots.to_vec());
+            },
+        )
+        .expect("authored-only path must not error (hermetic, no tailwind binary required)");
+        assert!(payload.is_some());
+
+        let observed = observed.borrow();
+        let roots = observed
+            .as_ref()
+            .expect("the observer must fire on the tailwind-disabled path too");
+        assert!(
+            !roots.is_empty(),
+            "mirror roots must still be published with tailwind.enabled = false, since \
+             CSS Modules discovery still scans them: {roots:?}"
         );
     }
 }

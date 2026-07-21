@@ -75,6 +75,19 @@ pub struct RawImportInvalidation {
     /// preprocess stage (issue #1710) — neither a terminal `?raw` target nor
     /// a worker dependency, so distinct from both sets above.
     client_script_siblings: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// CSS sibling-mirror-root DIRECTORIES the CSS source-plan seam
+    /// (`crate::commands::build::build_default_css_payload_with_source_plan`
+    /// in the `zfb` crate, issue #1802 / epic #1799) publishes on every CSS
+    /// recompute — including when the Tailwind subprocess that consumes
+    /// them as `@source` globs later fails. Distinct in KIND from the three
+    /// sets above: those hold FILE targets matched by exact-path
+    /// containment (`is_*_target`); this holds DIRECTORY roots consumed
+    /// wholesale by `zfb_watcher::Watcher::sync_recursive_dir_watches`
+    /// (issue #1801), which does its own alias/canonicalisation handling —
+    /// so no per-path alias expansion happens at this layer (contrast with
+    /// `Self::replace`/`Self::aliases` above, used by the file-shaped sets).
+    css_mirror_roots: Arc<RwLock<BTreeSet<PathBuf>>>,
 }
 
 impl RawImportInvalidation {
@@ -197,6 +210,27 @@ impl RawImportInvalidation {
     /// the current client-script preprocess stage (issue #1710).
     pub fn is_client_script_sibling_target(&self, path: &Path) -> bool {
         Self::contains(&self.client_script_siblings, path)
+    }
+
+    /// Atomically replace the CSS sibling-mirror-root set (issue #1802).
+    /// Replace, not append/union — a project whose sibling claim set
+    /// shrinks (or disappears entirely, e.g. Tailwind gets disabled) must
+    /// stop watching the roots it no longer claims, or a stale root would
+    /// stay registered forever.
+    pub fn replace_css_mirror_roots(&self, roots: impl IntoIterator<Item = PathBuf>) {
+        if let Ok(mut set) = self.css_mirror_roots.write() {
+            *set = roots.into_iter().collect();
+        }
+    }
+
+    /// Snapshot the current CSS sibling-mirror-root set for dynamic
+    /// recursive-directory watch reconciliation
+    /// (`crate::orchestrator`'s `register_dynamic_dependency_watches`).
+    pub fn css_mirror_roots(&self) -> BTreeSet<PathBuf> {
+        self.css_mirror_roots
+            .read()
+            .map(|roots| roots.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -631,6 +665,18 @@ impl GranularityPolicy {
             .is_client_script_sibling_target(path)
     }
 
+    /// Snapshot the live CSS sibling-mirror-root set (issue #1802) for
+    /// dynamic recursive-directory watch reconciliation. Deliberately a
+    /// DISTINCT accessor from [`Self::dynamic_dependency_paths`]: that
+    /// union feeds the non-recursive `watch_additional_files` API and is
+    /// file-shaped, while these are directory roots consumed by
+    /// `zfb_watcher::Watcher::sync_recursive_dir_watches` — folding them
+    /// into `dynamic_dependency_paths` would register a directory root as
+    /// a non-recursive file-parent watch, which is not what that API does.
+    pub fn css_mirror_root_paths(&self) -> BTreeSet<PathBuf> {
+        self.raw_import_invalidation.css_mirror_roots()
+    }
+
     /// Decide whether a `Module` change is inside an islands root.
     ///
     /// We do not parse the file here to check for the `"use client"`
@@ -712,6 +758,44 @@ mod tests {
         invalidation.replace_client_script_workers(Vec::new());
         assert!(!invalidation.is_client_script_worker_target(&worker));
         assert!(!invalidation.is_client_script_worker_target(&importer));
+    }
+
+    /// Issue #1802: `css_mirror_roots` follows the same replace-not-union
+    /// contract as the other `RawImportInvalidation` sets — a root dropped
+    /// by a later CSS recompute (the sibling claim shrank, or Tailwind got
+    /// disabled) must not linger, and a full clear must empty the set.
+    #[test]
+    fn css_mirror_roots_replace_semantics_drop_stale_roots() {
+        let invalidation = RawImportInvalidation::default();
+        let first_root = PathBuf::from("/workspace/lib/shared");
+        let second_root = PathBuf::from("/workspace/lib/other");
+        invalidation.replace_css_mirror_roots([first_root.clone(), second_root.clone()]);
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        let first = policy.css_mirror_root_paths();
+        assert!(first.contains(&first_root));
+        assert!(first.contains(&second_root));
+        // Deliberately NOT folded into the file-shaped union (see both
+        // accessors' doc comments) — a directory root must never be
+        // registered as a non-recursive file-parent watch.
+        assert!(!policy.dynamic_dependency_paths().contains(&first_root));
+
+        // A later recompute that no longer claims `second_root` must retire
+        // it — replace, not union.
+        invalidation.replace_css_mirror_roots([first_root.clone()]);
+        let second = policy.css_mirror_root_paths();
+        assert!(second.contains(&first_root));
+        assert!(
+            !second.contains(&second_root),
+            "a replaced mirror-root set must not retain a stale root: {second:?}"
+        );
+
+        // Clearing entirely (e.g. Tailwind gets disabled) empties the set.
+        invalidation.replace_css_mirror_roots(Vec::new());
+        assert!(
+            policy.css_mirror_root_paths().is_empty(),
+            "an empty replace must clear every previously published root"
+        );
     }
 
     #[test]
