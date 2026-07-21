@@ -517,4 +517,8 @@ fn dangling_symlink_under_extra_dir_does_not_abort_copy_mode_build() {
         staged_extra.join("present.ts").is_file(),
         "a real sibling file under the same extra dir must still be staged"
     );
+    assert!(
+        !staged_extra.join("dangling.ts").exists(),
+        "the dangling symlink itself must NOT be staged (it was skipped, not materialised)"
+    );
 }
