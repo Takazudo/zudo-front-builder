@@ -887,16 +887,23 @@ pub(crate) fn build_default_css_payload(
     .map(Path::to_path_buf)
     .collect();
 
-    let content_globs = assemble_css_content_globs(
+    // Issue #1803 (epic #1799 gap b): `discover_css_source_files` already
+    // skips `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs when it wholesale-walks
+    // a mirror root above, but the Tailwind `@source` scan fed by
+    // `content_globs` has no equivalent exclusion — an ungitignored
+    // generated subtree inside a mirror root (e.g. a stale `dist/`) can
+    // leak stale class strings into the emitted stylesheet. Mirror that
+    // exclusion onto the engine via `negative_source_globs`.
+    let (content_globs, negative_source_globs) = assemble_css_content_globs(
         &default_content_globs,
         package_route_entrypoints,
         &sibling_mirror_roots,
     );
-    let _ = &sibling_mirror_roots;
 
     let mut tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
         .with_content_globs(content_globs)
+        .with_negative_source_globs(negative_source_globs)
         .with_inline_sources(role_classes_inline_sources(config));
 
     // Sub #212 — wire in the embedded-binary extraction tier so consumers
@@ -960,11 +967,23 @@ pub(crate) fn build_default_css_payload(
 /// function so this wiring — as opposed to "does `@source` become CSS
 /// output" (covered by `zfb-css`'s own tests) — is unit-testable without a
 /// real project tree.
+///
+/// Issue #1803 (epic #1799 gap b): also returns the `@source not`
+/// exclusion globs for [`TailwindSubprocessConfig::negative_source_globs`]
+/// — one `<root>/**/<skip_dir>/**` glob per (mirror root, skip dir) pair
+/// for every entry in [`CSS_SIBLING_MIRROR_SKIP_DIRS`], matching the
+/// infra-dir exclusion `discover_css_source_files`'s `filter_entry`
+/// already applies when it wholesale-walks the same mirror root. Emitted
+/// *only* for mirror roots that are freshly appended above (the same
+/// `seen`-gated branch) — a mirror root that dedupes away against a
+/// default root or a package-route dir carries no exclusions either,
+/// keeping "scope: mirror roots only" exact: package-route dirs (and any
+/// root coinciding with one) keep their pre-#1803 behavior untouched.
 fn assemble_css_content_globs(
     defaults: &[String],
     package_route_entrypoints: &[PathBuf],
     sibling_mirror_roots: &[PathBuf],
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     let mut content_globs = defaults.to_vec();
     let mut seen: std::collections::HashSet<String> = content_globs.iter().cloned().collect();
     for entry in package_route_entrypoints {
@@ -975,13 +994,17 @@ fn assemble_css_content_globs(
             }
         }
     }
+    let mut negative_source_globs = Vec::new();
     for root in sibling_mirror_roots {
         let glob = root.to_string_lossy().into_owned();
         if seen.insert(glob.clone()) {
+            for skip_dir in CSS_SIBLING_MIRROR_SKIP_DIRS.iter() {
+                negative_source_globs.push(format!("{glob}/**/{skip_dir}/**"));
+            }
             content_globs.push(glob);
         }
     }
-    content_globs
+    (content_globs, negative_source_globs)
 }
 
 /// Resolve the `framework_css` block ([`CssPipelineConfig::framework_css`])
@@ -8776,6 +8799,13 @@ mod tests {
     /// content-glob list, in that order, and de-dupes against the
     /// defaults (and against each other). Pure logic — no project tree,
     /// no Tailwind binary.
+    ///
+    /// Issue #1803: also asserts the companion `@source not` exclusion
+    /// globs — one per `CSS_SIBLING_MIRROR_SKIP_DIRS` entry for the
+    /// freshly appended mirror root (`/workspace/lib/shared`) only. The
+    /// mirror root that dedupes away as a duplicate of a default
+    /// (`/proj/pages`) never reaches the fresh-append branch, so it
+    /// contributes none.
     #[test]
     fn assemble_css_content_globs_appends_mirror_roots_deduped_after_defaults() {
         let defaults = vec!["/proj/pages".to_string(), "/proj/components".to_string()];
@@ -8786,7 +8816,7 @@ mod tests {
             PathBuf::from("/workspace/lib/shared"),
         ];
 
-        let globs = assemble_css_content_globs(
+        let (globs, negative_globs) = assemble_css_content_globs(
             &defaults,
             &package_route_entrypoints,
             &sibling_mirror_roots,
@@ -8803,18 +8833,33 @@ mod tests {
             "expected defaults, then the package-route entrypoint's parent dir, \
              then the sibling mirror root (dup of a default dropped): {globs:?}"
         );
+        assert_eq!(
+            negative_globs,
+            CSS_SIBLING_MIRROR_SKIP_DIRS
+                .iter()
+                .map(|skip_dir| format!("/workspace/lib/shared/**/{skip_dir}/**"))
+                .collect::<Vec<_>>(),
+            "expected one @source not exclusion glob per CSS_SIBLING_MIRROR_SKIP_DIRS \
+             entry for the freshly appended mirror root only: {negative_globs:?}"
+        );
     }
 
     /// A mirror root that happens to coincide with a package-route
     /// entrypoint's parent dir is de-duped too — the `seen` set is shared
     /// across both extension passes, not reset between them.
+    ///
+    /// Issue #1803: since this mirror root dedupes away (it was already
+    /// seen via the package-route entrypoint's parent dir), it never
+    /// reaches the fresh-append branch either, so it carries no skip-dir
+    /// exclusions — "scope: mirror roots only" leaves package-route dirs
+    /// (and anything deduped against one) on their pre-#1803 behavior.
     #[test]
     fn assemble_css_content_globs_dedupes_mirror_root_against_package_route_dir() {
         let defaults = vec!["/proj/pages".to_string()];
         let package_route_entrypoints = vec![PathBuf::from("/workspace/lib/shared/page.tsx")];
         let sibling_mirror_roots = vec![PathBuf::from("/workspace/lib/shared")];
 
-        let globs = assemble_css_content_globs(
+        let (globs, negative_globs) = assemble_css_content_globs(
             &defaults,
             &package_route_entrypoints,
             &sibling_mirror_roots,
@@ -8828,6 +8873,11 @@ mod tests {
             ],
             "the mirror root duplicating the package-route parent dir must \
              appear exactly once: {globs:?}"
+        );
+        assert!(
+            negative_globs.is_empty(),
+            "a mirror root deduped against a package-route dir must not gain \
+             skip-dir exclusions: {negative_globs:?}"
         );
     }
 
