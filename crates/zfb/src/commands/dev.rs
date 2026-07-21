@@ -2376,11 +2376,26 @@ fn run_boot_render(
             )
         })
         .unwrap_or(BootLazyMode::Off);
-    let dist_servable = dist_is_servable_seed(dist_root);
-    // Cold is seedless by design (issue #1806) — it takes the boot-lazy
-    // branch below regardless of a servable `dist/` seed. Auto's
-    // servable-seed requirement is untouched (#1807's no-behavior-change
-    // contract for that mode).
+    // ONLY Auto consults the seed, and evaluating it lazily is load-bearing
+    // (issue #1806 review finding): `dist_is_servable_seed` walks `dist/`
+    // recursively. Before this epic the `&&` below short-circuited past it
+    // whenever boot-lazy was inactive, so a normal (eager) `zfb dev` start
+    // never paid for the walk. Hoisting it to an unconditional `let` would
+    // have made every default start scan a possibly-large `dist/` tree
+    // before the initial render, needlessly extending the post-bind window.
+    //
+    // Cold is seedless by design — it takes the boot-lazy branch regardless
+    // of a servable seed — and Off never takes that branch at all, so
+    // neither mode has any use for the answer. Auto's servable-seed
+    // requirement is untouched (#1807's no-behavior-change contract).
+    //
+    // `false` is the correct value for the other two modes, not merely a
+    // cheap placeholder: `should_hint_cold_mode` below is
+    // `Auto && !dist_servable`, so it never reads this outside Auto.
+    let dist_servable = match mode {
+        BootLazyMode::Auto => dist_is_servable_seed(dist_root),
+        BootLazyMode::Cold | BootLazyMode::Off => false,
+    };
     let boot_lazy = mode.is_active() && (mode == BootLazyMode::Cold || dist_servable);
 
     if boot_lazy {
