@@ -170,7 +170,10 @@ enum DevMode {
     Lazy,
 }
 
-fn spawn_dev(root: PathBuf, esbuild: &Path, mode: DevMode) -> DevSession {
+/// `boot_lazy` sets `ZFB_DEV_BOOT_LAZY` explicitly (e.g. `Some("cold")`);
+/// `None` keeps the pre-epic-#1806 default of removing the var entirely
+/// (Off), matching every pre-existing test in this binary.
+fn spawn_dev(root: PathBuf, esbuild: &Path, mode: DevMode, boot_lazy: Option<&str>) -> DevSession {
     let stdout_path = root.join(".zfb-dev-stdout.log");
     let stderr_path = root.join(".zfb-dev-stderr.log");
     let stdout_file = fs::File::create(&stdout_path).expect("create stdout log");
@@ -192,6 +195,9 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, mode: DevMode) -> DevSession {
         .stderr(Stdio::from(stderr_file));
     if matches!(mode, DevMode::Eager) {
         command.env("ZFB_DEV_EAGER", "1");
+    }
+    if let Some(value) = boot_lazy {
+        command.env("ZFB_DEV_BOOT_LAZY", value);
     }
     command.process_group(0);
 
@@ -466,9 +472,12 @@ async fn drain_ticks_until_quiescent(client: &reqwest::Client, base: &str) {
     }
 }
 
-async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest::Client)> {
+/// Shared by both handshake variants below: parse the ready port from the
+/// log, or detect a known-unavailable-dependency skip. Touches only the
+/// process's own log files — no network I/O, so it makes no page request.
+async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
     let boot_start = Instant::now();
-    let port = loop {
+    loop {
         if let Some(status) = session.guard.try_exit_status() {
             let combined = format!(
                 "{}{}",
@@ -492,7 +501,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
             );
         }
         if let Some(port) = parse_ready_port(&read_log(&session.stdout_path)) {
-            break port;
+            return Some(port);
         }
         assert!(
             boot_start.elapsed() < BOOT_DEADLINE,
@@ -501,34 +510,15 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
             session.logs(),
         );
         tokio::time::sleep(POLL_INTERVAL).await;
-    };
-    let base = format!("http://localhost:{port}");
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("build reqwest client");
-
-    let ready_start = Instant::now();
-    loop {
-        if matches!(
-            client.get(format!("{base}/")).send().await,
-            Ok(response) if response.status().as_u16() == 200
-        ) {
-            break;
-        }
-        assert!(
-            ready_start.elapsed() < BOOT_DEADLINE,
-            "GET / never answered 200 within {}s after the ready banner.\n{}",
-            BOOT_DEADLINE.as_secs(),
-            session.logs(),
-        );
-        tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
 
-    // Repeated edits of an already-existing entry prove the watch stream is
-    // live without adding a route that could race the post-edit assertions.
-    let sse = subscribe_sse(&client, &base).await;
+/// Shared by both handshake variants below: repeated edits of an
+/// already-existing entry prove the watch stream is live without adding or
+/// requesting a route that could race the caller's own post-edit
+/// assertions.
+async fn confirm_watcher_live(session: &DevSession, base: &str, client: &reqwest::Client) {
+    let sse = subscribe_sse(client, base).await;
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let warmup = session.root.join("content/posts/__warmup.md");
@@ -559,6 +549,76 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
         SSE_DEADLINE.as_secs(),
         session.logs(),
     );
+}
+
+fn build_reqwest_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build reqwest client")
+}
+
+async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest::Client)> {
+    let port = wait_for_ready_port(session).await?;
+    let base = format!("http://localhost:{port}");
+    let client = build_reqwest_client();
+
+    let ready_start = Instant::now();
+    loop {
+        if matches!(
+            client.get(format!("{base}/")).send().await,
+            Ok(response) if response.status().as_u16() == 200
+        ) {
+            break;
+        }
+        assert!(
+            ready_start.elapsed() < BOOT_DEADLINE,
+            "GET / never answered 200 within {}s after the ready banner.\n{}",
+            BOOT_DEADLINE.as_secs(),
+            session.logs(),
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    confirm_watcher_live(session, &base, &client).await;
+
+    Some((base, client))
+}
+
+/// Banner-only variant for tests that must prove behavior under ZERO prior
+/// page requests (issue #1812). Waits for the ready banner and for the
+/// watcher to come live WITHOUT ever requesting a page route: readiness is
+/// polled via the `/__zfb/reload` SSE control endpoint instead of `GET /`.
+/// That endpoint is registered independently of `page_root`/`page_handler`
+/// (see `crates/zfb-server/src/routes.rs`), so polling it never triggers the
+/// request-time lazy-render path this test exists to keep untouched until
+/// the caller's own first assertion request.
+async fn boot_and_handshake_banner_only(
+    session: &mut DevSession,
+) -> Option<(String, reqwest::Client)> {
+    let port = wait_for_ready_port(session).await?;
+    let base = format!("http://localhost:{port}");
+    let client = build_reqwest_client();
+
+    let ready_start = Instant::now();
+    loop {
+        if matches!(
+            client.get(format!("{base}/__zfb/reload")).send().await,
+            Ok(response) if response.status().as_u16() == 200
+        ) {
+            break;
+        }
+        assert!(
+            ready_start.elapsed() < BOOT_DEADLINE,
+            "GET /__zfb/reload never answered 200 within {}s after the ready banner.\n{}",
+            BOOT_DEADLINE.as_secs(),
+            session.logs(),
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+
+    confirm_watcher_live(session, &base, &client).await;
 
     Some((base, client))
 }
@@ -596,7 +656,7 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         "fixture must have no persisted dev graph or prior render output before cold boot"
     );
 
-    let mut session = spawn_dev(root, &esbuild, DevMode::Eager);
+    let mut session = spawn_dev(root, &esbuild, DevMode::Eager, None);
     let pgid = session.guard.pgid;
     let body = async {
         let Some((base, client)) = boot_and_handshake(&mut session).await else {
@@ -851,6 +911,185 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
     }
 }
 
+/// Confirm sub-issue for epic #1806 (issue #1812): cold-lazy
+/// (`ZFB_DEV_BOOT_LAZY=cold`) skips the eager boot render entirely, so
+/// `complete_boot_content_provenance` (only called from the eager
+/// `initial_build` success path — see `run_boot_render`) never runs and
+/// `clear_boot_content_provenance` (called unconditionally on every boot,
+/// eager or cold — see the boot hook right before step 4) leaves the
+/// dependency graph with ZERO `DepKind::Content` edges for any pre-existing
+/// collection entry. This test proves the resulting conservative
+/// `PageSelection::All` fallback (an unknown content path always trips it —
+/// see `zfb-build/src/policy.rs`'s `KnownContentEntries` doc comment) still
+/// invalidates the entry route AND every aggregate reader even though NO
+/// page has EVER been rendered or requested when the content edit lands —
+/// there is no prior boot render to even be "stale" relative to.
+///
+/// Falsifiability: the assertion right after the banner-only handshake, that
+/// every route's `.zfb-build/dev-pages` output does not exist yet, is the
+/// direct proof of the "zero renders so far" premise this test exists to
+/// establish, and is what actually falsifies this test under Off mode
+/// (`ZFB_DEV_BOOT_LAZY` unset) — see this test's own `#[ignore]`-free
+/// sibling run recorded in the PR description for the observed failure.
+/// Off/Auto without a Cold conjunct fall through `run_boot_render`'s eager
+/// branch, which renders every route (and completes content provenance)
+/// synchronously inside the same deferred boot task this handshake waits on
+/// — before this test's content edit ever lands — so those `.html` files
+/// already exist by the time the assertion below runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregates() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[content_aggregate_cold_boot_e2e] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let temp = tempfile::tempdir().expect("create tempdir for cold zero-request fixture");
+    let root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize cold zero-request fixture root");
+    copy_dir(&fixture_dir(), &root).expect("copy cold zero-request fixture");
+    assert!(
+        !root.join(".zfb-build").exists(),
+        "fixture must have no persisted dev graph or prior render output before cold boot"
+    );
+
+    // Boot Cold explicitly. `DevMode::Lazy` (the request-time lazy render
+    // strategy) is required for boot-lazy to activate at all
+    // (`boot_lazy_decision`); it is also this binary's default when
+    // `ZFB_DEV_EAGER` is unset.
+    let mut session = spawn_dev(root, &esbuild, DevMode::Lazy, Some("cold"));
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some((base, client)) = boot_and_handshake_banner_only(&mut session).await else {
+            return ScenarioOutcome::Skipped;
+        };
+
+        assert!(
+            read_log(&session.stdout_path).contains("cold-lazy"),
+            "expected dev's cold-lazy boot log line confirming ZFB_DEV_BOOT_LAZY=cold took the \
+             seedless boot-lazy branch in `run_boot_render` rather than silently falling back to \
+             the eager boot render.\n{}",
+            session.logs(),
+        );
+
+        let html_root = session.html_root();
+        let entry = html_root.join("posts/alpha/index.html");
+        let post_index = html_root.join("posts/index.html");
+        let tag_page = html_root.join("tags/guide/index.html");
+        let pagination = html_root.join("posts/page/1/index.html");
+        let home = html_root.join("index.html");
+
+        // Zero requests AND zero renders so far: Cold must not have written
+        // any route to disk yet. This is the direct falsifiability proof —
+        // Off/Auto without the Cold conjunct render every route eagerly
+        // during the same deferred boot task the handshake above already
+        // waited on, so these files would already exist by this point.
+        for (path, phase) in [
+            (&entry, "entry route"),
+            (&post_index, "post index"),
+            (&tag_page, "tag page"),
+            (&pagination, "paginated listing"),
+            (&home, "home route"),
+        ] {
+            assert!(
+                !path.exists(),
+                "[{phase}] {} already exists before any request or edit — cold-lazy must skip \
+                 the eager boot render entirely, leaving every route unrendered until its own \
+                 first request.\n{}",
+                path.display(),
+                session.logs(),
+            );
+        }
+
+        let entry_url = format!("{base}/posts/alpha/");
+        let post_index_url = format!("{base}/posts/");
+        let tag_url = format!("{base}/tags/guide/");
+        let pagination_url = format!("{base}/posts/page/1/");
+
+        // The defining edit: alpha.md is a PRE-EXISTING collection entry (not
+        // newly created), so the discovery hook never recorded a Content
+        // edge for it either (that hook only fires for newly-created
+        // files — see `KnownContentEntries`'s doc comment). With zero prior
+        // renders, no `DepKind::Content` edge for alpha exists anywhere in
+        // the graph, so this edit can only be handled by the conservative
+        // `PageSelection::All` fallback.
+        let sse = subscribe_sse(&client, &base).await;
+        fs::write(
+            session.root.join("content/posts/alpha.md"),
+            "---\ntitle: Alpha Cold Zero Frontmatter\ndate: 2026-01-02\ntags:\n  - guide\n---\n\nCOLD-ZERO-BODY-ALPHA edited before any request.\n",
+        )
+        .expect("edit existing alpha entry before any page has ever been requested");
+
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(name)) => assert_eq!(
+                name.as_str(),
+                "page",
+                "cold zero-prior-requests alpha edit broadcast an unexpected SSE event.\n{}",
+                session.logs(),
+            ),
+            Ok(None) | Err(_) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE page event observed for the cold \
+                 zero-prior-requests edit; relying on the authoritative first-request response \
+                 checks."
+            ),
+        }
+
+        // Each of these is the route's FIRST-EVER request. A pass here
+        // requires the request-time render to read the just-edited content
+        // from disk, not some snapshot the (skipped) boot render or the
+        // boot-time collection walk captured earlier.
+        poll_until_response_contains(
+            &client,
+            &entry_url,
+            "COLD-ZERO-BODY-ALPHA",
+            "entry route serves fresh content on its first-ever request",
+            &session,
+        )
+        .await;
+        for (url, phase) in [
+            (
+                &post_index_url,
+                "post index serves fresh content on its first-ever request",
+            ),
+            (
+                &tag_url,
+                "tag page serves fresh content on its first-ever request",
+            ),
+            (
+                &pagination_url,
+                "paginated listing serves fresh content on its first-ever request",
+            ),
+        ] {
+            poll_until_response_contains(
+                &client,
+                url,
+                "Alpha Cold Zero Frontmatter",
+                phase,
+                &session,
+            )
+            .await;
+        }
+
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] cold zero-prior-requests content invalidation dev E2E did not finish \
+             within {}s. Process group {pgid} will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
+    }
+}
+
 /// A restart must load the persisted graph for non-Content data edges, then
 /// discard its stale Content evidence and rebuild it from the new worker. The
 /// cache is intentionally retagged after gamma is created, with every aggregate
@@ -880,7 +1119,7 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         .expect("write initial data cache probe");
 
     let body = async {
-        let mut first = spawn_dev(root.clone(), &esbuild, DevMode::Lazy);
+        let mut first = spawn_dev(root.clone(), &esbuild, DevMode::Lazy, None);
         let Some((first_base, first_client)) = boot_and_handshake(&mut first).await else {
             return ScenarioOutcome::Skipped;
         };
@@ -949,7 +1188,7 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         // provenance from its fresh worker rather than trusting it.
         prepare_stale_persisted_content_graph(&root);
 
-        let mut second = spawn_dev(root.clone(), &esbuild, DevMode::Lazy);
+        let mut second = spawn_dev(root.clone(), &esbuild, DevMode::Lazy, None);
         let Some((second_base, second_client)) = boot_and_handshake(&mut second).await else {
             return ScenarioOutcome::Skipped;
         };
