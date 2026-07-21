@@ -4985,6 +4985,83 @@ fn preflight_raw_file(physical: &Path, logical: &Path, ctx: &MaterialiseCtx<'_, 
     }
 }
 
+/// Classify a `walkdir::Error` from a `follow_links(true)` (or
+/// `follow_links(copy_mode)` with `copy_mode` true) walk as a SKIPPABLE
+/// dangling symlink rather than a genuine read failure: the link itself
+/// exists (`symlink_metadata` succeeds and reports a symlink) but stat-ing
+/// through it failed with `NotFound` because its target is gone. Returns
+/// the link path and its target so callers can warn-and-continue instead
+/// of aborting the whole build on one stale link (e.g. a gitignored
+/// fixture dir with a link whose target was deleted — issue #1838, where
+/// this previously surfaced as a bare `os error 2` with no mention of a
+/// symlink). Any other error (permission denied, a non-symlink `NotFound`,
+/// etc.) returns `None` so the caller keeps propagating it as fatal.
+///
+/// The `fs::metadata(path).is_ok()` re-check guards a TOCTOU window: the
+/// walk's own `NotFound` only proves the target was unreachable AT THAT
+/// INSTANT. If a fresh stat right now says the path resolves fine after
+/// all, this was some other transient condition (a race, a flaky
+/// filesystem) rather than a genuinely dangling link — treat it as fatal
+/// (return `None`) rather than silently skipping a subtree that might
+/// still hold real, needed files.
+fn dangling_symlink_from_walk_error(err: &walkdir::Error) -> Option<(PathBuf, PathBuf)> {
+    if err.io_error().map(|e| e.kind()) != Some(std::io::ErrorKind::NotFound) {
+        return None;
+    }
+    let path = err.path()?;
+    if fs::metadata(path).is_ok() {
+        return None;
+    }
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_symlink() {
+        return None;
+    }
+    let target = fs::read_link(path).ok()?;
+    Some((path.to_path_buf(), target))
+}
+
+/// Shared per-entry handling for the three `follow_links(true)`-shaped
+/// `WalkDir` loops below: on a classified dangling symlink (see
+/// [`dangling_symlink_from_walk_error`]), warn loudly through BOTH channels
+/// — `tracing::warn!` (so tests can assert on it via `logs_contain`) and
+/// `eprintln!` (the channel real `zfb` CLI users actually see: no
+/// `tracing_subscriber` is installed anywhere in the `zfb` binary, so a
+/// bare `tracing::warn!` alone is a silent no-op there) — and return
+/// `Ok(None)` so the caller skips the entry. Any other error is wrapped
+/// with `context` and returned as `Err`, matching each walk's original
+/// fatal behavior.
+///
+/// `read_link` only resolves the IMMEDIATE target, so a multi-hop chain
+/// (`link1 -> link2 -> missing`) is reported as "cannot be resolved" rather
+/// than a (possibly inaccurate) claim that the immediate target itself is
+/// missing.
+fn skip_dangling_symlink_or_fail<T>(
+    err: walkdir::Error,
+    context: impl FnOnce() -> String,
+) -> Result<Option<T>> {
+    if let Some((link, target)) = dangling_symlink_from_walk_error(&err) {
+        let msg = dangling_symlink_warning_message(&link, &target);
+        tracing::warn!("{msg}");
+        eprintln!("zfb warn: {msg}");
+        return Ok(None);
+    }
+    Err(err).with_context(context)
+}
+
+/// Text of the dangling-symlink warning shared by both emission channels in
+/// [`skip_dangling_symlink_or_fail`] (`tracing::warn!`, captured by tests via
+/// `logs_contain`, and the `eprintln!("zfb warn: {msg}")` channel real `zfb`
+/// CLI users actually see). Factored out as a pure function so a unit test
+/// can pin exactly what reaches the user-visible `eprintln!` form without
+/// needing to capture the process's real stderr file descriptor.
+fn dangling_symlink_warning_message(link: &Path, target: &Path) -> String {
+    format!(
+        "dangling symlink: {} -> {} (cannot be resolved); skipping",
+        link.display(),
+        target.display()
+    )
+}
+
 fn preflight_raw_tree(src: &Path, dest: &Path, ctx: &MaterialiseCtx<'_, '_>) -> Result<()> {
     if !src.exists() {
         return Ok(());
@@ -4995,8 +5072,17 @@ fn preflight_raw_tree(src: &Path, dest: &Path, ctx: &MaterialiseCtx<'_, '_>) -> 
         .into_iter()
         .filter_entry(|entry| !is_pruned_infra_dir(entry))
     {
-        let entry =
-            entry.with_context(|| format!("preflight raw imports under {}", src.display()))?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                match skip_dangling_symlink_or_fail(err, || {
+                    format!("preflight raw imports under {}", src.display())
+                })? {
+                    Some(entry) => entry,
+                    None => continue,
+                }
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
@@ -5033,13 +5119,21 @@ fn materialise_symlinked_dir(
         .into_iter()
         .filter_entry(|e| !is_pruned_infra_dir(e))
     {
-        let entry = entry.with_context(|| {
-            format!(
-                "walking symlinked source dir {} via {}",
-                logical_root.display(),
-                physical_root.display()
-            )
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                match skip_dangling_symlink_or_fail(err, || {
+                    format!(
+                        "walking symlinked source dir {} via {}",
+                        logical_root.display(),
+                        physical_root.display()
+                    )
+                })? {
+                    Some(entry) => entry,
+                    None => continue,
+                }
+            }
+        };
         let physical = entry.path();
         let rel = match physical.strip_prefix(&physical_root) {
             Ok(r) => r,
@@ -5111,13 +5205,19 @@ fn materialise_isolated_exact_dir(
             )
         })
     {
-        let entry = entry.with_context(|| {
-            format!(
-                "walking isolated exact-target dir {} via {}",
-                source_root.display(),
-                physical_root.display()
-            )
-        })?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => match skip_dangling_symlink_or_fail(err, || {
+                format!(
+                    "walking isolated exact-target dir {} via {}",
+                    source_root.display(),
+                    physical_root.display()
+                )
+            })? {
+                Some(entry) => entry,
+                None => continue,
+            }
+        };
         let physical = entry.path();
         let Ok(relative) = physical.strip_prefix(&physical_root) else {
             continue;
@@ -13665,6 +13765,294 @@ mod tests {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with(".zfb-raw-") && name.ends_with(".mjs"))));
+    }
+
+    // ---- dangling symlink preflight (issue #1838) --------------------------
+
+    /// The classifier's exact `NotFound` guard: rejects any non-`NotFound`
+    /// error immediately, before it ever inspects the path. Deterministic —
+    /// a missing root is always reported as `NotFound` on every platform
+    /// this crate targets, no race required.
+    #[test]
+    fn dangling_symlink_classifier_rejects_notfound_on_nonexistent_non_symlink_path() {
+        let project = tempfile::tempdir().unwrap();
+        let missing = project.path().join("never-existed");
+        let mut walk = WalkDir::new(&missing).into_iter();
+        let err = walk
+            .next()
+            .expect("a walk over a missing root yields one item")
+            .expect_err("a missing root must be a walk error, not a successful entry");
+        assert_eq!(
+            err.io_error().map(|e| e.kind()),
+            Some(std::io::ErrorKind::NotFound)
+        );
+
+        // The path was never a symlink (it never existed at all), so even
+        // though the io error kind matches, this must NOT be classified as
+        // a dangling symlink — it must stay fatal.
+        assert!(
+            dangling_symlink_from_walk_error(&err).is_none(),
+            "a NotFound error on a path that is not (and never was) a symlink \
+             must not be classified as dangling"
+        );
+    }
+
+    /// The classifier's positive existence re-check (review-mandated,
+    /// issue #1838): a `NotFound` walk error is only trustworthy at the
+    /// instant it happened. This deterministically (no real race needed)
+    /// simulates the TOCTOU window the re-check guards: capture a genuine
+    /// `NotFound` error from a dangling symlink, then make the target exist
+    /// BEFORE handing that stale error to the classifier. The classifier
+    /// must re-verify against the current filesystem state and refuse to
+    /// call it dangling.
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_classifier_rechecks_before_trusting_a_stale_notfound() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let target = root.join("target.ts");
+        let link = root.join("link.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let mut walk = WalkDir::new(root).follow_links(true).into_iter();
+        walk.next().unwrap().unwrap(); // the root itself
+        let err = walk
+            .next()
+            .expect("the walk yields the dangling entry")
+            .expect_err("following the still-missing target must fail");
+        assert_eq!(
+            err.io_error().map(|e| e.kind()),
+            Some(std::io::ErrorKind::NotFound)
+        );
+
+        // The target now exists — the classifier must re-check rather than
+        // trust the walk's (now stale) NotFound result.
+        fs::write(&target, "now exists").unwrap();
+
+        assert!(
+            dangling_symlink_from_walk_error(&err).is_none(),
+            "a symlink whose target now resolves must not be classified as \
+             dangling, even though the original walk error reported NotFound"
+        );
+    }
+
+    /// Pins the exact text shared by both emission channels in
+    /// `skip_dangling_symlink_or_fail` — including the user-visible
+    /// `eprintln!("zfb warn: {msg}")` form, which cannot be asserted on
+    /// directly without capturing the process's real stderr fd.
+    #[test]
+    fn dangling_symlink_warning_message_names_link_and_target() {
+        let link = Path::new("/proj/components/dangling.ts");
+        let target = Path::new("/proj/components/missing-target.ts");
+        let msg = dangling_symlink_warning_message(link, target);
+        assert!(msg.contains("dangling symlink"), "{msg}");
+        assert!(msg.contains("/proj/components/dangling.ts"), "{msg}");
+        assert!(msg.contains("/proj/components/missing-target.ts"), "{msg}");
+        assert!(msg.contains("cannot be resolved"), "{msg}");
+    }
+
+    /// A dangling symlink (target deleted) under a `copy_mode` tree must not
+    /// abort `preflight_raw_tree` — it used to propagate a bare `os error 2`
+    /// with no mention of a symlink. Also pins the warning text names both
+    /// the link and its (missing) target.
+    #[cfg(unix)]
+    #[test]
+    #[tracing_test::traced_test]
+    fn preflight_raw_tree_skips_dangling_symlink_with_warning() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        fs::create_dir_all(&components).unwrap();
+        fs::write(components.join("real.ts"), "export default 1;\n").unwrap();
+        let target = components.join("missing-target.ts");
+        let link = components.join("dangling.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_components = shadow.path().join("components");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+
+        preflight_raw_tree(&components, &shadow_components, &ctx)
+            .expect("a dangling symlink must be skipped, not fatal");
+
+        assert!(
+            logs_contain("dangling symlink"),
+            "expected a warning naming the dangling symlink"
+        );
+        assert!(
+            logs_contain(&link.display().to_string()),
+            "expected the warning to name the link path"
+        );
+        assert!(
+            logs_contain(&target.display().to_string()),
+            "expected the warning to name the missing target"
+        );
+    }
+
+    /// `materialise_symlinked_dir` gets the same classifier via
+    /// `skip_dangling_symlink_or_fail` as `preflight_raw_tree` — the two were
+    /// hand-copied `match` blocks before the shared helper existed, so a
+    /// refactor could silently revert either without either's own test
+    /// catching it. Direct coverage per call site (review-mandated).
+    #[cfg(unix)]
+    #[test]
+    fn materialise_symlinked_dir_skips_dangling_symlink_with_warning() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let symlinked_dir = root.join("aliased");
+        fs::create_dir_all(&symlinked_dir).unwrap();
+        fs::write(symlinked_dir.join("real.ts"), "export default 1;\n").unwrap();
+        let target = symlinked_dir.join("missing-target.ts");
+        let link = symlinked_dir.join("dangling.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let dest = shadow.path().join("aliased");
+        let exclude = no_bundle_exclude();
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let ctx = MaterialiseCtx {
+            pipeline_spec: zfb_content::PipelineSpec::default(),
+            copy_mode: true,
+            bundle_exclude: &exclude,
+            project_root: root,
+            writer: &writer,
+            glob_matched_files: RefCell::new(BTreeSet::new()),
+            raw_import_edges: RefCell::new(BTreeSet::new()),
+            raw_import_aliases: RawImportAliasContext::empty(),
+            module_worker_dependencies: RefCell::new(BTreeSet::new()),
+            worker_build_context: ModuleWorkerBuildContext::default(),
+            raw_preflight_complete: Cell::new(false),
+            snapshot_specifiers: None,
+        };
+        let is_excluded = |_: &Path| false;
+
+        materialise_symlinked_dir(&symlinked_dir, &dest, &ctx, &is_excluded).expect(
+            "a dangling symlink inside a symlinked source dir must be skipped, not fatal",
+        );
+
+        assert!(
+            dest.join("real.ts").is_file(),
+            "the real sibling file must still be staged"
+        );
+        assert!(
+            !dest.join("dangling.ts").exists(),
+            "the dangling symlink must not be staged"
+        );
+    }
+
+    /// `materialise_isolated_exact_dir` gets the same classifier — direct
+    /// coverage per call site (review-mandated), see the doc comment on
+    /// `materialise_symlinked_dir_skips_dangling_symlink_with_warning` above.
+    #[cfg(unix)]
+    #[test]
+    fn materialise_isolated_exact_dir_skips_dangling_symlink_with_warning() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let source_root = root.join("vendored-pkg");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::write(source_root.join("real.ts"), "export default 1;\n").unwrap();
+        let target = source_root.join("missing-target.ts");
+        let link = source_root.join("dangling.ts");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let dest = shadow.path().join("vendored-pkg");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        let is_excluded = |_: &Path| false;
+
+        materialise_isolated_exact_dir(&source_root, &source_root, &dest, &writer, &is_excluded)
+            .expect(
+                "a dangling symlink inside an isolated exact-target dir must be \
+                 skipped, not fatal",
+            );
+
+        assert!(
+            dest.join("real.ts").is_file(),
+            "the real sibling file must still be staged"
+        );
+        assert!(
+            !dest.join("dangling.ts").exists(),
+            "the dangling symlink must not be staged"
+        );
+    }
+
+    /// A genuine non-`NotFound` walk error (an unreadable directory) must
+    /// still propagate as fatal — the dangling-symlink classifier must not
+    /// swallow errors it wasn't built for. Some environments (root, certain
+    /// sandboxes) bypass directory permission checks entirely, so this test
+    /// only asserts when the walk actually hits a non-NotFound error (same
+    /// skip-rather-than-false-pass guard used by
+    /// `stale_sweep_keeps_session_when_lock_open_fails_non_notfound` in
+    /// `crates/zfb/src/commands/watcher_liveness_probe.rs`). Perms are
+    /// restored BEFORE the assertion (not after) so a failing assertion
+    /// can't leave a chmod-000 directory behind for the tempdir's `Drop` to
+    /// choke on.
+    #[cfg(unix)]
+    #[test]
+    fn preflight_raw_tree_propagates_non_dangling_walk_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        let components = root.join("components");
+        let locked = components.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("entry.ts"), "export default 1;\n").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let enforced = fs::read_dir(&locked).is_err();
+
+        let result = enforced.then(|| {
+            let shadow = tempfile::tempdir().unwrap();
+            let shadow_components = shadow.path().join("components");
+            let exclude = no_bundle_exclude();
+            let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+            let ctx = MaterialiseCtx {
+                pipeline_spec: zfb_content::PipelineSpec::default(),
+                copy_mode: true,
+                bundle_exclude: &exclude,
+                project_root: root,
+                writer: &writer,
+                glob_matched_files: RefCell::new(BTreeSet::new()),
+                raw_import_edges: RefCell::new(BTreeSet::new()),
+                raw_import_aliases: RawImportAliasContext::empty(),
+                module_worker_dependencies: RefCell::new(BTreeSet::new()),
+                worker_build_context: ModuleWorkerBuildContext::default(),
+                raw_preflight_complete: Cell::new(false),
+                snapshot_specifiers: None,
+            };
+            preflight_raw_tree(&components, &shadow_components, &ctx)
+        });
+
+        // Restore perms BEFORE asserting, so a panicking assertion can never
+        // skip this and leave a 0o000 directory behind.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        match result {
+            Some(result) => assert!(
+                result.is_err(),
+                "a genuine permission-denied walk error must still be fatal, not silently skipped"
+            ),
+            None => eprintln!(
+                "[preflight_raw_tree_propagates_non_dangling_walk_errors] directory \
+                 permissions not enforced (running as root?); skipping assertion."
+            ),
+        }
     }
 
     #[test]
