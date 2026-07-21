@@ -1841,15 +1841,36 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             }
                         }
                         Err(e) => {
-                            // Same warn-and-continue contract as the eager
-                            // islands boot build below: the server stays up
-                            // serving the prebuilt `dist/`, the renderer slot
-                            // stays `None`, and the next watcher tick's
-                            // `reload_renderer` retries the bundle.
-                            output::warn(format!(
-                                "deferred dev bundle failed (serving prebuilt dist/ until \
-                                 the next successful rebuild): {e:#}"
-                            ));
+                            let msg = deferred_bundle_failure_message(
+                                boot_lazy_mode_now,
+                                &format!("{e:#}"),
+                            );
+                            if arm_cold_bootstrap_recovery_decision(boot_lazy_mode_now) {
+                                // Issue #1809 — Cold has NO seed to degrade to:
+                                // the tables stay the empty scaffold while
+                                // `run_boot_render` (below in this same hook)
+                                // consumes `boot_render_pending` against them,
+                                // so a later successful publish would come up
+                                // with zero stale routes and 404 forever. Arm
+                                // the recovery latch so that FIRST successful
+                                // `refresh_bundle_and_routes` publish re-runs
+                                // the skipped boot seeding (graph page IDs +
+                                // mark-all-stale + `pages_stale` broadcast) —
+                                // see `recover_cold_bootstrap_after_publish`.
+                                // Error level, not warn: until a renderer-
+                                // relevant edit or a restart, the server
+                                // serves 404s for everything.
+                                session.inner.arm_cold_bootstrap_recovery();
+                                output::error(msg);
+                            } else {
+                                // Auto — same warn-and-continue contract as
+                                // the eager islands boot build below: the
+                                // server stays up serving the prebuilt
+                                // `dist/`, the renderer slot stays `None`,
+                                // and the next watcher tick's
+                                // `reload_renderer` retries the bundle.
+                                output::warn(msg);
+                            }
                         }
                     }
                 }
@@ -3032,6 +3053,54 @@ fn premark_stale_after_deferred_publish_decision(mode: BootLazyMode) -> bool {
     mode == BootLazyMode::Cold
 }
 
+/// Issue #1809 (epic #1806) — should the deferred boot task's bundle-FAILURE
+/// arm arm the cold-bootstrap recovery latch
+/// ([`DevRenderInner::arm_cold_bootstrap_recovery`])?
+///
+/// Only Cold. By the time the deferred bundle fails, `boot_render_pending`
+/// has been (or is about to be — `run_boot_render` runs later in the same
+/// boot hook) consumed against the EMPTY scaffold route tables, so no route
+/// is ever marked stale; being seedless, Cold would then 404 every route
+/// permanently once a later publish lands without re-marking. Auto never
+/// arms — its servable `dist/` seed keeps serving (today's warn-and-continue
+/// contract, unchanged); Off never defers a bundle at all
+/// ([`defer_dev_bundle_decision`] requires an active mode), so it cannot
+/// reach the failure arm.
+#[cfg(feature = "embed_v8")]
+fn arm_cold_bootstrap_recovery_decision(mode: BootLazyMode) -> bool {
+    mode == BootLazyMode::Cold
+}
+
+/// Issue #1809 — mode-aware message for a FAILED deferred dev bundle
+/// (the boot hook's step 0).
+///
+/// Cold (emitted at error level): there is no `dist/` seed, so until
+/// recovery every route serves the controlled dev 404 page. The retry
+/// trigger is the next RENDERER-RELEVANT edit — one that classifies as
+/// Content/Page/Module/Data/External and therefore reaches
+/// `reload_renderer` or the discovery hook — or a `zfb dev` restart.
+/// Deliberately NOT "any watcher tick": a tick that touches none of those
+/// (say, a pure `styles/*.css` edit) never re-bundles, so promising a
+/// retry on any tick would be actively misleading.
+///
+/// Auto (emitted at warn level): today's seeded wording, unchanged — the
+/// prebuilt `dist/` keeps serving until the next successful rebuild.
+#[cfg(feature = "embed_v8")]
+fn deferred_bundle_failure_message(mode: BootLazyMode, err_chain: &str) -> String {
+    match mode {
+        BootLazyMode::Cold => format!(
+            "deferred dev bundle failed — cold-lazy (ZFB_DEV_BOOT_LAZY=cold) has no \
+             prebuilt dist/ seed to fall back on, so EVERY route serves the dev 404 \
+             page until the next renderer-relevant edit (a content/page/component/data \
+             change) retries the bundle, or `zfb dev` is restarted: {err_chain}"
+        ),
+        _ => format!(
+            "deferred dev bundle failed (serving prebuilt dist/ until \
+             the next successful rebuild): {err_chain}"
+        ),
+    }
+}
+
 /// Pure precedence rule for the boot-lazy mode (issue #1057; 3-state since
 /// the #1806/#1807 Cold Lazy Boot epic, `cold` activated by #1808):
 /// `ZFB_DEV_BOOT_LAZY=1|true` → [`BootLazyMode::Auto`]; `=cold` (same
@@ -3183,6 +3252,28 @@ impl DevRenderInner {
         !self
             .boot_render_done
             .swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Arm the cold-bootstrap recovery latch (issue #1809): the deferred
+    /// boot task's bundle step failed in Cold, so the route tables are
+    /// still the empty scaffold and no route was ever marked stale. Set
+    /// (never swapped) so repeated failures before a recovery are
+    /// idempotent, and a failure AFTER a recovery re-arms cleanly.
+    #[cfg(feature = "embed_v8")]
+    fn arm_cold_bootstrap_recovery(&self) {
+        self.cold_bootstrap_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Consume the cold-bootstrap recovery latch (issue #1809): `true`
+    /// for exactly ONE caller per arming — the atomic swap picks a
+    /// single winner even if several successful publishes land in quick
+    /// succession, which is what guarantees recovery's stale-marking
+    /// runs exactly once.
+    #[cfg(feature = "embed_v8")]
+    fn take_cold_bootstrap_pending(&self) -> bool {
+        self.cold_bootstrap_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Mark `output_paths` stale at the current generation and queue
@@ -3662,6 +3753,24 @@ struct DevRenderInner {
     /// Consumed via [`Self::take_boot_render_pending`]; only read on
     /// the lazy branch.
     boot_render_done: std::sync::atomic::AtomicBool,
+
+    /// Cold-bootstrap recovery latch (issue #1809, Cold Lazy Boot epic
+    /// #1806). Armed by the deferred boot task when its bundle step
+    /// FAILS in [`BootLazyMode::Cold`]: by then `boot_render_pending`
+    /// was already consumed against the EMPTY scaffold route tables
+    /// (zero routes marked stale), and — Cold being seedless — a later
+    /// successful publish would otherwise leave every route resolvable
+    /// but NOT stale over an empty `html_root`: the request hook
+    /// returns `NotStale`, every route 404s permanently until restart.
+    /// (Auto never arms this: its servable `dist/` seed keeps serving,
+    /// today's graceful degradation.) Consumed — `swap` to `false`,
+    /// exactly once per arming — by the FIRST subsequent successful
+    /// [`DevRenderSession::refresh_bundle_and_routes`] publish, which
+    /// then performs the boot seeding the failure skipped (see
+    /// [`DevRenderSession::recover_cold_bootstrap_after_publish`]). A
+    /// later failure may re-arm it.
+    #[cfg(feature = "embed_v8")]
+    cold_bootstrap_pending: std::sync::atomic::AtomicBool,
 
     /// Static injected-route seeds (epic #1228, S3 #1231). One
     /// [`RouteUniverseEntry`] per **static, SSG** package-owned injected
@@ -4423,6 +4532,52 @@ impl DevRenderSession {
         n
     }
 
+    /// Cold-bootstrap recovery (issue #1809, epic #1806): consume the
+    /// pending latch and, for the single winning publish, re-run the boot
+    /// seeding the FAILED deferred bundle skipped — now against the route
+    /// tables this publish just populated.
+    ///
+    /// Returns `Some(marked_route_count)` when this call won the latch
+    /// (recovery ran), `None` otherwise (never armed — Auto/Off, or a
+    /// healthy Cold boot — or another publish already recovered). Steps,
+    /// in order:
+    ///
+    /// 1. Seed the graph page IDs the failed boot left unseeded: the boot
+    ///    hook's [`assemble_boot_graph`] ran against `page_ids()` == `[]`
+    ///    (the scaffold tables were still empty when the bundle failed),
+    ///    so without this re-seed an unknown-path tick's
+    ///    `PageSelection::All` could keep resolving to an empty page
+    ///    list. Reuses [`assemble_boot_graph`]'s seed step (persisted =
+    ///    `None`): only pages with NO existing record are seeded, so
+    ///    records populated meanwhile — e.g. this very publish's
+    ///    [`Self::populate_module_edges`] — keep their edges.
+    /// 2. Mark every published route stale
+    ///    ([`Self::mark_all_routes_stale`]). Besides making each route
+    ///    claimable by the request-time render hook, the marks land in
+    ///    the tick-stale buffer, which the CURRENT tick's stale probe
+    ///    drains into `BuildOutcome::pages_stale` — the #1390 broadcast —
+    ///    so livereload tabs showing the dev 404 body reload and
+    ///    re-render to a 200.
+    ///
+    /// Called from [`Self::refresh_bundle_and_routes`]'s success path,
+    /// AFTER the P4 table swap, so the tables it seeds and marks against
+    /// are the newly-published ones. Exactly-once across racing publishes
+    /// is guaranteed by [`DevRenderInner::take_cold_bootstrap_pending`]'s
+    /// atomic swap; re-arming after a later failure is the arm side's
+    /// plain store ([`DevRenderInner::arm_cold_bootstrap_recovery`]).
+    #[cfg(feature = "embed_v8")]
+    fn recover_cold_bootstrap_after_publish(&self) -> Option<usize> {
+        if !self.inner.take_cold_bootstrap_pending() {
+            return None;
+        }
+        if let Some(graph) = self.content_graph() {
+            if let Ok(mut g) = graph.lock() {
+                assemble_boot_graph(&mut g, None, self.page_ids());
+            }
+        }
+        Some(self.mark_all_routes_stale())
+    }
+
     /// Tear down the underlying [`RendererState`] cleanly. Safe to call
     /// multiple times — subsequent calls are a no-op.
     fn shutdown_explicit(&self) {
@@ -4813,6 +4968,26 @@ impl DevRenderSession {
         // fully (Correctness Req 1). See `commit_skip_key` for the
         // `None`-clears-the-key rationale.
         self.inner.commit_skip_key(new_skip_key);
+
+        // Issue #1809 (epic #1806) — cold-bootstrap recovery. If the DEFERRED
+        // boot bundle failed in Cold, this successful publish is the first
+        // moment the route tables exist: consume the latch (exactly once even
+        // across publishes landing in quick succession), seed the graph page
+        // IDs the failed boot skipped, and mark every route stale so the
+        // current tick's stale probe broadcasts `pages_stale` — livereload
+        // tabs showing the dev 404 body self-heal, and the request hook can
+        // claim + render everything else on first GET. Placed on the shared
+        // success path so EVERY publisher (the edit-tick `reload_renderer`,
+        // the watch-ADD discovery hook) triggers it. No-op unless the latch
+        // was armed — Auto/Off never arm it, and a healthy Cold boot premarks
+        // in the boot hook's success arm instead (see
+        // `premark_stale_after_deferred_publish_decision`).
+        if let Some(n) = self.recover_cold_bootstrap_after_publish() {
+            output::info(format!(
+                "dev: cold-lazy bootstrap recovered — {n} route(s) published and marked \
+                 stale; each renders on first request"
+            ));
+        }
 
         // Print one stderr line per tick when ZFB_DEV_TIMING=1.
         if let Some(tick_elapsed) = tick_start.map(|t| t.elapsed().as_millis()) {
@@ -6422,6 +6597,8 @@ fn boot_dev_renderer(
             lazy_render: lazy_dev_render_enabled(),
             // The next render-callback invocation is the boot build.
             boot_render_done: std::sync::atomic::AtomicBool::new(false),
+            // Issue #1809 — armed only by a Cold deferred-bundle failure.
+            cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — the static injected-route seeds + post-precedence
             // survivor set, both built from the same survivor list above.
             injected_static_seeds,
@@ -7705,6 +7882,8 @@ pub(crate) fn stub_session_for_adapter_tests(
             lazy_render,
             // Stubs model a session mid-flight: boot already rendered.
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
+            // Issue #1809 — armed only by a Cold deferred-bundle failure.
+            cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — adapter tests inject routes directly; no injected
             // package routes in the stub universe.
             injected_static_seeds: Vec::new(),
@@ -8127,6 +8306,8 @@ mod tests {
             lazy_render: false,
             // Stubs model a session mid-flight: boot already rendered.
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
+            // Issue #1809 — armed only by a Cold deferred-bundle failure.
+            cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
@@ -10081,6 +10262,240 @@ mod tests {
                     session.claim_stale(Path::new("index.html")).is_some(),
                     "post-publish marking must make the route claimable \
                      before the manifest-digest walk / run_boot_render"
+                );
+            }
+
+            // ── cold-bootstrap recovery (issue #1809, epic #1806) ─────
+
+            /// Two-route session fixture for the recovery state-machine
+            /// tests: mirrors the world right after a successful
+            /// `refresh_bundle_and_routes` publish (routes resolvable,
+            /// nothing stale).
+            fn recovery_session() -> DevRenderSession {
+                let mk = |url: &str, out_path: &str| RouteUniverseEntry {
+                    url_path: url.into(),
+                    output_path: PathBuf::from(out_path),
+                    route_key: url.into(),
+                    static_html: false,
+                    source_path: None,
+                };
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                routes.insert(
+                    PathBuf::from("pages/index.tsx"),
+                    vec![DevRouteEntry {
+                        entry: mk("/", "index.html"),
+                        params: None,
+                    }],
+                );
+                routes.insert(
+                    PathBuf::from("pages/about.tsx"),
+                    vec![DevRouteEntry {
+                        entry: mk("/about", "about/index.html"),
+                        params: None,
+                    }],
+                );
+                DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+                }
+            }
+
+            /// Issue #1809 — the recovery latch arms ONLY in Cold. Auto
+            /// degrades gracefully to its servable seed (today's
+            /// warn-and-continue contract) and Off can never reach the
+            /// deferred failure arm at all — neither must ever trigger
+            /// recovery's stale-marking.
+            #[test]
+            fn arm_cold_bootstrap_recovery_decision_only_for_cold() {
+                assert!(arm_cold_bootstrap_recovery_decision(BootLazyMode::Cold));
+                assert!(!arm_cold_bootstrap_recovery_decision(BootLazyMode::Auto));
+                assert!(!arm_cold_bootstrap_recovery_decision(BootLazyMode::Off));
+            }
+
+            /// Issue #1809 — deferred-bundle failure messaging is
+            /// mode-aware: Cold names the 404 consequence and the REAL
+            /// retry triggers (a renderer-relevant edit, or a restart) —
+            /// and must NOT promise a retry on "any watcher tick", since
+            /// ticks that touch no renderer-relevant input never
+            /// re-bundle. Auto keeps today's seeded wording byte-for-byte.
+            #[test]
+            fn deferred_bundle_failure_message_is_mode_aware() {
+                let cold = deferred_bundle_failure_message(BootLazyMode::Cold, "boom");
+                assert!(cold.contains("404"), "cold must state the 404 consequence");
+                assert!(
+                    cold.contains("renderer-relevant edit"),
+                    "cold must name the real retry trigger"
+                );
+                assert!(cold.contains("restart"), "cold must offer the restart exit");
+                assert!(cold.contains("boom"), "the error chain must be included");
+                assert!(
+                    !cold.to_lowercase().contains("watcher tick")
+                        && !cold.to_lowercase().contains("any tick"),
+                    "cold must NOT claim any watcher tick retries the bundle"
+                );
+
+                let auto_msg = deferred_bundle_failure_message(BootLazyMode::Auto, "boom");
+                assert_eq!(
+                    auto_msg,
+                    "deferred dev bundle failed (serving prebuilt dist/ until \
+                     the next successful rebuild): boom",
+                    "Auto keeps today's wording unchanged"
+                );
+                assert_eq!(
+                    deferred_bundle_failure_message(BootLazyMode::Off, "boom"),
+                    auto_msg
+                );
+            }
+
+            /// Issue #1809 — the core exactly-once contract. A publish
+            /// with the latch never armed (the Auto/Off/healthy-Cold
+            /// shape) is a strict no-op: no marks, nothing broadcast.
+            /// After a failure arms the latch, the FIRST publish recovers
+            /// (all routes claimable + fed into the tick-stale buffer the
+            /// stale probe drains into `BuildOutcome::pages_stale`, the
+            /// #1390 broadcast); the second and third publishes in quick
+            /// succession get `None`, re-mark nothing, and broadcast
+            /// nothing — proven by the drained buffer staying empty, not
+            /// merely by the return value.
+            #[test]
+            fn cold_bootstrap_recovery_fires_exactly_once_and_feeds_pages_stale() {
+                let session = recovery_session();
+
+                // Never armed → publish-side recovery is a strict no-op.
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), None);
+                assert!(
+                    session.inner.take_tick_stale().is_empty(),
+                    "an unarmed publish must not feed the pages_stale channel"
+                );
+                assert!(session.claim_stale(Path::new("index.html")).is_none());
+
+                // Deferred bundle FAILS in Cold → latch armed. The first
+                // successful publish wins the latch: every route marked...
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+                assert!(session.claim_stale(Path::new("index.html")).is_some());
+                assert!(session.claim_stale(Path::new("about/index.html")).is_some());
+                // ...and the marks land in the tick-stale buffer → this
+                // tick's `BuildOutcome::pages_stale` → SSE reload.
+                let drained = session.inner.take_tick_stale();
+                assert_eq!(
+                    drained.len(),
+                    2,
+                    "recovery must feed every route into the pages_stale broadcast"
+                );
+
+                // Publishes landing right after: latch already consumed.
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), None);
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), None);
+                assert!(
+                    session.inner.take_tick_stale().is_empty(),
+                    "stale-marking must happen exactly once per arming — later \
+                     publishes must not re-feed the broadcast channel"
+                );
+            }
+
+            /// Issue #1809 — repeated failures BEFORE any publish are
+            /// idempotent (still exactly one recovery), and a SECOND
+            /// failure AFTER a recovery re-arms the latch so the next
+            /// publish recovers again, feeding the broadcast channel a
+            /// second time.
+            #[test]
+            fn cold_bootstrap_recovery_idempotent_failures_and_rearms_after_recovery() {
+                let session = recovery_session();
+
+                // Three failures back-to-back (e.g. the boot failure and
+                // nothing else re-arming) still yield ONE recovery.
+                session.inner.arm_cold_bootstrap_recovery();
+                session.inner.arm_cold_bootstrap_recovery();
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+                assert_eq!(session.inner.take_tick_stale().len(), 2);
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), None);
+                assert!(session.inner.take_tick_stale().is_empty());
+
+                // A second failure after the recovery re-arms cleanly:
+                // the next publish recovers (and broadcasts) again.
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+                assert_eq!(
+                    session.inner.take_tick_stale().len(),
+                    2,
+                    "a re-armed latch must drive a fresh full recovery"
+                );
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), None);
+            }
+
+            /// Issue #1809 — hard exactly-once under RACING publishes:
+            /// eight threads hit the recovery seam simultaneously after
+            /// one arming; the atomic latch swap must pick exactly one
+            /// winner (in production the tick loop serializes publishes,
+            /// so this is defense in depth for the async state machine).
+            #[test]
+            fn cold_bootstrap_recovery_single_winner_across_racing_publishes() {
+                let session = recovery_session();
+                session.inner.arm_cold_bootstrap_recovery();
+
+                let winners = std::sync::atomic::AtomicUsize::new(0);
+                let barrier = std::sync::Barrier::new(8);
+                std::thread::scope(|s| {
+                    for _ in 0..8 {
+                        s.spawn(|| {
+                            barrier.wait();
+                            if session.recover_cold_bootstrap_after_publish().is_some() {
+                                winners.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            }
+                        });
+                    }
+                });
+                assert_eq!(
+                    winners.load(std::sync::atomic::Ordering::SeqCst),
+                    1,
+                    "exactly one racing publish may win the recovery latch"
+                );
+                assert_eq!(
+                    session.inner.take_tick_stale().len(),
+                    2,
+                    "the single winner marked each route exactly once"
+                );
+            }
+
+            /// Issue #1809 — recovery re-runs the boot graph seed the
+            /// failed deferred bundle skipped: page IDs the graph has NO
+            /// record of are seeded with an empty dep set (so
+            /// `PageSelection::All` resolves them from the next tick on),
+            /// while pages that already carry edges — e.g. from the
+            /// recovering publish's own `populate_module_edges` — are
+            /// left untouched ("prove registries are populated, don't
+            /// assume": asserted against the graph, not inferred).
+            #[test]
+            fn cold_bootstrap_recovery_seeds_missing_graph_page_ids_preserving_existing() {
+                let session = recovery_session();
+                let graph = Arc::new(Mutex::new(DependencyGraph::new()));
+                // One page already tracked WITH a Module edge, as the
+                // publish's metafile pass would have left it.
+                let tracked = PageId::new(PathBuf::from("pages/index.tsx"));
+                let component = PathBuf::from("components/hero.tsx");
+                graph.lock().unwrap().upsert(PageDeps::new(
+                    tracked.clone(),
+                    vec![(component.clone(), zfb_graph::DepKind::Module)],
+                ));
+                session.set_dep_graph(Arc::clone(&graph));
+
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+
+                let g = graph.lock().unwrap();
+                assert!(
+                    g.knows(Path::new("pages/about.tsx")),
+                    "a page id the failed boot never seeded must be seeded on recovery"
+                );
+                assert!(g.knows(Path::new("pages/index.tsx")));
+                assert!(
+                    g.deps_of(&tracked)
+                        .iter()
+                        .any(|(dep, kind)| dep == &component
+                            && *kind == zfb_graph::DepKind::Module),
+                    "recovery's seed must not clobber edges already populated \
+                     by the recovering publish"
                 );
             }
 
