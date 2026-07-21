@@ -428,3 +428,205 @@ async fn retired_root_that_is_a_dependency_parent_keeps_direct_child_delivery() 
 
     watcher.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shrinking_to_a_nested_root_keeps_nested_coverage_and_drops_the_rest() {
+    // Overlap transition /sib → /sib/sub: the outer root's unwatch must not
+    // strip the surviving nested root's coverage (on inotify an unwatch
+    // removes every watch entry underneath it — the retire path re-registers
+    // surviving roots nested under a retired one).
+    let (_tmp, ws, project) = workspace();
+    let sib = ws.join("sib");
+    let sub = sib.join("sub");
+    std::fs::create_dir_all(sub.join("deep")).expect("nested dirs");
+    std::fs::create_dir_all(sib.join("other")).expect("outer-only dir");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&sib], SKIPS),
+        vec![sib.clone()]
+    );
+    sentinel_round_trip(&mut rx, &sub.join("deep"), "outer-live").await;
+    drain_batch_tail(&mut rx).await;
+
+    // Shrink: only the nested root stays desired. It was covered by the
+    // outer root before, so it registers (and reports) now.
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&sub], SKIPS),
+        vec![sub.clone()]
+    );
+
+    // Nested coverage survives the outer root's retirement.
+    sentinel_round_trip(&mut rx, &sub.join("deep"), "nested-live").await;
+
+    // The outer-only subtree stops delivering.
+    std::fs::write(sib.join("other/gone.ts"), b"outer only").expect("write outer-only");
+    let mut seen = sentinel_round_trip(&mut rx, &sub.join("deep"), "after-doubt").await;
+    seen.extend(drain_batch_tail(&mut rx).await);
+    assert_none_under(&seen, &sib.join("other"), "retired outer subtree");
+
+    watcher.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn growing_to_an_outer_root_transfers_nested_coverage_without_unwatch() {
+    // Overlap transition /sib/sub → /sib: the nested root's registration is
+    // covered by the new outer root, so retirement is a pure coverage
+    // transfer (no unwatch — on inotify it would strip shared descriptors).
+    let (_tmp, ws, project) = workspace();
+    let sib = ws.join("sib");
+    let sub = sib.join("sub");
+    std::fs::create_dir_all(sub.join("deep")).expect("nested dirs");
+    std::fs::create_dir_all(sib.join("other")).expect("outer-only dir");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&sub], SKIPS),
+        vec![sub.clone()]
+    );
+    sentinel_round_trip(&mut rx, &sub.join("deep"), "nested-live").await;
+
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&sib], SKIPS),
+        vec![sib.clone()]
+    );
+
+    // Both the previously-nested subtree and the newly-covered outer
+    // subtree deliver after the transition.
+    sentinel_round_trip(&mut rx, &sub.join("deep"), "still-live").await;
+    sentinel_round_trip(&mut rx, &sib.join("other"), "outer-live").await;
+
+    watcher.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retiring_outer_root_restores_nested_dependency_parent_watch() {
+    // A #1678 dependency parent NESTED under a retired outer root: on
+    // inotify the outer unwatch removes the dependency dir's entry too, so
+    // the retire path must re-register it (collateral repair).
+    let (_tmp, ws, project) = workspace();
+    let sib = ws.join("sib");
+    let sib_lib = sib.join("lib");
+    std::fs::create_dir_all(sib_lib.join("deep")).expect("sibling lib dirs");
+    let dependency = sib_lib.join("helper.ts");
+    std::fs::write(&dependency, "export const marker = 'one';\n").expect("seed dep");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.watch_additional_files([&dependency]),
+        vec![sib_lib.clone()]
+    );
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&sib], SKIPS),
+        vec![sib.clone()]
+    );
+    sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "recursive-live").await;
+    drain_batch_tail(&mut rx).await;
+
+    let retired = watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS);
+    assert!(
+        retired.is_empty(),
+        "retiring reports nothing, got {retired:?}"
+    );
+
+    // The dependency parent's direct-children delivery survives the outer
+    // root's retirement.
+    sentinel_round_trip(&mut rx, &sib_lib, "dep-live").await;
+
+    // Recursion below the dependency parent (and the rest of the retired
+    // subtree) is gone.
+    std::fs::write(sib_lib.join("deep/gone.ts"), b"deep").expect("write deep post-retire");
+    std::fs::write(sib.join("elsewhere.ts"), b"outer").expect("write outer post-retire");
+    let mut seen = sentinel_round_trip(&mut rx, &sib_lib, "after-doubt").await;
+    seen.extend(drain_batch_tail(&mut rx).await);
+    assert_none_under(
+        &seen,
+        &sib_lib.join("deep"),
+        "retired recursion below dep parent",
+    );
+    assert!(
+        !seen.iter().any(|c| c.path == sib.join("elsewhere.ts")),
+        "retired outer root must stop delivering, got {seen:#?}",
+    );
+
+    watcher.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dependency_registration_after_sync_does_not_downgrade_recursion() {
+    // Reverse order of the upgrade test: the root is synced FIRST, then a
+    // dependency file directly inside it is registered. notify backends
+    // replace a re-watched path's mode, so without the guarded watcher the
+    // NonRecursive dependency-parent registration would strip deep delivery
+    // from the active synced root.
+    let (_tmp, ws, project) = workspace();
+    let sib_lib = ws.join("sib/lib");
+    std::fs::create_dir_all(sib_lib.join("deep")).expect("sibling lib dirs");
+    let dependency = sib_lib.join("helper.ts");
+    std::fs::write(&dependency, "export const marker = 'one';\n").expect("seed dep");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&sib_lib], SKIPS),
+        vec![sib_lib.clone()]
+    );
+    sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "recursive-live").await;
+
+    // The dependency registration must not disturb the recursive watch.
+    watcher.watch_additional_files([&dependency]);
+    sentinel_round_trip(&mut rx, &sib_lib.join("deep"), "still-recursive").await;
+    drain_batch_tail(&mut rx).await;
+
+    // And the recorded dependency ownership still drives the retire path:
+    // direct children keep delivering, recursion stops.
+    let retired = watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS);
+    assert!(
+        retired.is_empty(),
+        "retiring reports nothing, got {retired:?}"
+    );
+    sentinel_round_trip(&mut rx, &sib_lib, "dep-live").await;
+    std::fs::write(sib_lib.join("deep/gone.ts"), b"deep").expect("write deep post-retire");
+    let mut seen = sentinel_round_trip(&mut rx, &sib_lib, "after-doubt").await;
+    seen.extend(drain_batch_tail(&mut rx).await);
+    assert_none_under(&seen, &sib_lib.join("deep"), "retired recursion");
+
+    watcher.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn symlinked_descendant_and_physical_ancestor_collapse_to_one() {
+    // Order-independence of the overlap reduction: a symlink-spelled
+    // descendant can sort BEFORE its physical ancestor by raw path, so the
+    // reduction ranks by canonical path instead. `alink/sub` canonicalizes
+    // under `zreal`, which must win as the single outermost registration.
+    let (_tmp, ws, project) = workspace();
+    let zreal = ws.join("zreal");
+    std::fs::create_dir_all(zreal.join("sub/deep")).expect("physical dirs");
+    let alink = ws.join("alink");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&zreal, &alink).expect("symlink alias");
+    #[cfg(not(unix))]
+    {
+        // No symlink primitive to exercise on this platform; the canonical
+        // ranking still holds trivially.
+        std::fs::create_dir_all(&alink).expect("plain dir");
+    }
+    let linked_sub = alink.join("sub");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    let newly = watcher.sync_recursive_dir_watches([linked_sub.clone(), zreal.clone()], SKIPS);
+    assert_eq!(
+        newly,
+        vec![zreal.clone()],
+        "the physical ancestor must be the single registration"
+    );
+    let again = watcher.sync_recursive_dir_watches([linked_sub, zreal.clone()], SKIPS);
+    assert!(
+        again.is_empty(),
+        "repeat sync must be a no-op, got {again:?}"
+    );
+
+    sentinel_round_trip(&mut rx, &zreal.join("sub/deep"), "live").await;
+
+    watcher.shutdown().await;
+}

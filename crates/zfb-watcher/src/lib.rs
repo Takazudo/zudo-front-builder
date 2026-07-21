@@ -89,7 +89,9 @@ pub struct Change {
 /// receiver end of the `Change` channel.
 pub struct Watcher {
     // Kept alive: dropping the notify watcher stops the OS-level watch.
-    _notify: RecommendedWatcher,
+    // Wrapped so a dependency-parent registration can never downgrade an
+    // active synced recursive root — see `GuardedNotifyWatcher`.
+    _notify: GuardedNotifyWatcher,
     // Some(_) until Drop fires the shutdown signal.
     shutdown: Option<oneshot::Sender<()>>,
     // Detached on drop (JoinHandle dropped without abort); the task
@@ -149,6 +151,52 @@ impl SharedPathSet {
 
     fn extend<I: IntoIterator<Item = PathBuf>>(&self, paths: I) {
         lock_ignoring_poison(&self.inner).extend(paths);
+    }
+
+    /// Point-in-time copy, used by the retire-time collateral repair scan
+    /// (which must not hold the lock while issuing notify calls).
+    fn snapshot(&self) -> BTreeSet<PathBuf> {
+        lock_ignoring_poison(&self.inner).clone()
+    }
+}
+
+/// Thin wrapper around the notify watcher that protects active synced
+/// recursive roots from being silently downgraded.
+///
+/// notify backends REPLACE the registration for an exact path on a repeat
+/// `watch()` call, so a `watch_additional_files` invocation whose dependency
+/// parent IS a currently-synced recursive root would swap that root's
+/// registration to non-recursive and strip deep delivery while
+/// `synced_recursive_dirs` still records it as recursive. The recursive
+/// watch already delivers everything a non-recursive dir watch would (the
+/// dir itself plus direct children), so such a call is answered `Ok` without
+/// touching the OS watch. Dependency ownership still lands in
+/// `watched_dependency_dirs` (the caller's own bookkeeping line), which the
+/// retire path later uses to downgrade rather than unwatch — so the
+/// dependency consumer's coverage survives the whole lifecycle.
+///
+/// Everything else passes straight through.
+struct GuardedNotifyWatcher {
+    inner: RecommendedWatcher,
+    filter: Arc<Mutex<RecursiveDirFilterCore>>,
+}
+
+impl GuardedNotifyWatcher {
+    fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+        if matches!(mode, RecursiveMode::NonRecursive) {
+            let covered = {
+                let filter = lock_ignoring_poison(&self.filter);
+                watch_aliases(path).any(|alias| filter.active_roots.contains(&alias))
+            };
+            if covered {
+                return Ok(());
+            }
+        }
+        self.inner.watch(path, mode)
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        self.inner.unwatch(path)
     }
 }
 
@@ -385,7 +433,10 @@ impl Watcher {
 
         Ok((
             Self {
-                _notify: notify_watcher,
+                _notify: GuardedNotifyWatcher {
+                    inner: notify_watcher,
+                    filter: Arc::clone(&recursive_dir_filter),
+                },
                 shutdown: Some(shutdown_tx),
                 debouncer: Some(debouncer),
                 watched_recursive_roots,
@@ -504,9 +555,20 @@ impl Watcher {
     ///
     /// Ordering within a call leaves no window that could leak a skip-dir
     /// storm from a NEW root or lose events from a still-covered subtree:
-    /// the filter learns the new roots before they are watched, new roots
-    /// are watched before stale ones are unwatched (overlap, never a gap),
-    /// and retired roots leave the filter last.
+    /// the filter learns the new roots before they are watched, and new
+    /// roots are watched before stale ones are unwatched (overlap, never a
+    /// gap). A retired root whose subtree a surviving root spans is not
+    /// unwatched at all — its coverage simply transfers.
+    ///
+    /// Retirement repairs its own collateral: notify's inotify backend
+    /// removes every watch entry underneath an unwatched recursive root,
+    /// including entries owned by other registrations, so after each real
+    /// unwatch any surviving synced root, boot root, or dependency parent
+    /// nested under the retired root is re-registered. (On FSEvents, where
+    /// registrations are independent streams, the re-registration is a
+    /// redundant stream rebuild — briefly re-entering that stream's startup
+    /// dead window — which is the accepted cost of keeping Linux coverage
+    /// correct.)
     pub fn sync_recursive_dir_watches<I, P, N, S>(
         &mut self,
         desired_roots: I,
@@ -523,8 +585,7 @@ impl Watcher {
             .map(|name| OsString::from(name.as_ref()))
             .collect();
 
-        // Validate the desired roots. BTreeSet order puts ancestors before
-        // descendants, so nested roots below dedupe against their parent.
+        // Validate the desired roots.
         let mut candidates: BTreeSet<PathBuf> = BTreeSet::new();
         for root in desired_roots {
             let root = root.as_ref();
@@ -539,12 +600,26 @@ impl Watcher {
             candidates.insert(root.to_path_buf());
         }
 
+        // Rank candidates by CANONICAL path so ancestors are considered
+        // before their descendants across spellings — raw-path order would
+        // let a symlinked descendant (`/a-link/sub` canonicalizing under a
+        // later `/z-real`) be accepted before the root that covers it,
+        // producing a duplicate registration.
+        let mut ranked: Vec<(PathBuf, BTreeSet<PathBuf>, PathBuf)> = candidates
+            .into_iter()
+            .map(|root| {
+                let aliases: BTreeSet<PathBuf> = watch_aliases(&root).collect();
+                let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+                (root, aliases, canonical)
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.2.cmp(&b.2));
+
         // Reduce to the target registration plan: drop roots already covered
         // by a boot recursive root or by an accepted target root above them.
         let mut target: Vec<(PathBuf, BTreeSet<PathBuf>)> = Vec::new();
         let mut target_aliases: BTreeSet<PathBuf> = BTreeSet::new();
-        for root in candidates {
-            let aliases: BTreeSet<PathBuf> = watch_aliases(&root).collect();
+        for (root, aliases, _canonical) in ranked {
             let boot_covered = aliases.iter().any(|alias| {
                 self.watched_recursive_roots
                     .iter()
@@ -601,45 +676,111 @@ impl Watcher {
             }
         }
 
+        // Shrink the filter to exactly the surviving registrations BEFORE
+        // retiring the stale ones: the retire path may re-register a
+        // dependency-parent watch for a just-retired root, and the
+        // `GuardedNotifyWatcher` would no-op that call while the root still
+        // counted as active. The cost is a micro-window in which a dying
+        // root's skip-dir events are unfiltered but the root is still
+        // watched — at most a handful of stray changes, never a storm (the
+        // unwatch lands within this same call).
+        let surviving_aliases: BTreeSet<PathBuf> = surviving
+            .values()
+            .flat_map(|aliases| aliases.iter().cloned())
+            .collect();
+        {
+            let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
+            filter.active_roots = surviving_aliases.clone();
+        }
+
         // Retire registrations that fell out of the target set — AFTER the
         // new roots are live, so a subtree whose coverage merely moved to a
         // different root never has a watch gap.
         let previous = std::mem::take(&mut self.synced_recursive_dirs);
+        let dependency_dirs = self.watched_dependency_dirs.snapshot();
         for (root, aliases) in previous {
             if surviving.contains_key(&root) {
                 continue;
             }
-            let doubles_as_dependency_dir = aliases
+            let covered_by_surviving = aliases
                 .iter()
-                .any(|alias| self.watched_dependency_dirs.contains(alias));
-            if doubles_as_dependency_dir {
-                // The recursive registration upgraded a `watch_additional_files`
-                // dependency-parent watch in place (same path replaces the
-                // notify entry); a bare unwatch here would strip that
-                // consumer's coverage too. Downgrade back instead.
+                .any(|alias| surviving_aliases.iter().any(|kept| alias.starts_with(kept)));
+            if covered_by_surviving {
+                // Coverage transfer: a surviving root spans this subtree.
+                // Leave the notify registration alone — its events are still
+                // wanted, and on inotify an unwatch here would strip watch
+                // descriptors the surviving root's coverage shares. The
+                // lingering entry is removed whenever the covering root is
+                // itself retired (its recursive unwatch spans this path).
+                continue;
+            }
+            if let Err(error) = self._notify.unwatch(&root) {
+                // Benign cases: the root itself was deleted (often exactly
+                // WHY it fell out of the desired set), or a previously
+                // retired ANCESTOR root's recursive unwatch already removed
+                // this entry on inotify (surfaced as WatchNotFound).
+                warn!(path = %root.display(), %error, "failed to unwatch retired recursive dir root");
+            }
+            if aliases.iter().any(|alias| dependency_dirs.contains(alias)) {
+                // This dir doubles as a `watch_additional_files` dependency
+                // parent (either upgraded by an earlier sync or claimed while
+                // synced). Restore the non-recursive watch the dependency
+                // consumer relies on. The unwatch above ran first so notify's
+                // per-path mode replacement cannot leave stale recursive
+                // descendant entries behind (inotify).
                 if let Err(error) = self._notify.watch(&root, RecursiveMode::NonRecursive) {
                     warn!(
                         path = %root.display(), %error,
-                        "failed to downgrade retired recursive dir root to a dependency-parent watch"
+                        "failed to restore dependency-parent watch for retired recursive dir root"
                     );
                 }
-            } else if let Err(error) = self._notify.unwatch(&root) {
-                // Common benign case: the root itself was deleted — often
-                // exactly WHY it fell out of the desired set.
-                warn!(path = %root.display(), %error, "failed to unwatch retired recursive dir root");
+            }
+            // Collateral repair (inotify): unwatching a recursive root
+            // removes every notify watch entry beneath it, including entries
+            // owned by OTHER registrations. Re-register any surviving synced
+            // root, boot root, or dependency parent nested under the retired
+            // root. On FSEvents these are independent streams the unwatch
+            // never touched, so the re-watch is a redundant rebuild — the
+            // accepted cross-platform cost (see the method docs).
+            let under_retired = |path: &Path| aliases.iter().any(|alias| path.starts_with(alias));
+            for (kept_root, kept_aliases) in surviving.iter() {
+                if kept_aliases.iter().any(|kept| under_retired(kept)) {
+                    if let Err(error) = self._notify.watch(kept_root, RecursiveMode::Recursive) {
+                        warn!(
+                            path = %kept_root.display(), %error,
+                            "failed to re-register surviving recursive dir root after retirement"
+                        );
+                    }
+                }
+            }
+            for boot in self
+                .watched_recursive_roots
+                .iter()
+                .filter(|boot| under_retired(boot))
+            {
+                if let Err(error) = self._notify.watch(boot, RecursiveMode::Recursive) {
+                    warn!(
+                        path = %boot.display(), %error,
+                        "failed to re-register boot root after retirement"
+                    );
+                }
+            }
+            for dep in dependency_dirs
+                .iter()
+                .filter(|dep| dep.as_path() != root.as_path() && under_retired(dep))
+            {
+                // The guarded watcher no-ops this when `dep` is itself a
+                // surviving synced root (already re-registered recursively
+                // above), so the repair cannot downgrade one.
+                if let Err(error) = self._notify.watch(dep, RecursiveMode::NonRecursive) {
+                    warn!(
+                        path = %dep.display(), %error,
+                        "failed to re-register dependency-parent watch after retirement"
+                    );
+                }
             }
         }
         self.synced_recursive_dirs = surviving;
-
-        // Shrink the filter to exactly the surviving registrations.
-        {
-            let mut filter = lock_ignoring_poison(&self.recursive_dir_filter);
-            filter.active_roots = self
-                .synced_recursive_dirs
-                .values()
-                .flat_map(|aliases| aliases.iter().cloned())
-                .collect();
-        }
 
         newly_watched
     }
