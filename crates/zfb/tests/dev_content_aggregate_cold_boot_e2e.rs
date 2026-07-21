@@ -164,6 +164,22 @@ fn parse_ready_port(log: &str) -> Option<u16> {
     None
 }
 
+/// Extract the `{n}` route count from `run_boot_render`'s Cold boot log line
+/// ("dev: cold-lazy — no prebuilt dist/ seed required; {n} route(s) render
+/// on first request (ZFB_DEV_BOOT_LAZY=cold)"). `None` if the line is
+/// missing or the count is unparseable — see this helper's call site for
+/// why a bare substring match on "cold-lazy" is not enough (codex review
+/// finding, issue #1812).
+fn parse_cold_lazy_route_count(log: &str) -> Option<usize> {
+    let marker = "no prebuilt dist/ seed required; ";
+    let start = log.find(marker)? + marker.len();
+    let digits: String = log[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
 #[derive(Clone, Copy)]
 enum DevMode {
     Eager,
@@ -551,6 +567,56 @@ async fn confirm_watcher_live(session: &DevSession, base: &str, client: &reqwest
     );
 }
 
+/// Banner-only sibling of [`confirm_watcher_live`]: proves the watch stream
+/// is live by editing a `data/` (Data-classified) probe file instead of a
+/// content-collection entry (codex review finding, issue #1812).
+/// `content_narrowing`'s eager carve-out (see `lazy_render_tick` in
+/// `commands/dev.rs`) eagerly refreshes an edited content entry's OWN route
+/// even under lazy dev render — a genuine render this test's "zero renders
+/// before the defining edit" premise must not tolerate, even though it never
+/// touches the routes this test later asserts on. A Data-classified edit
+/// carries no such carve-out (`compute_lazy_eager_sets` returns an empty map
+/// whenever the hint is `None`, which it always is for non-Content paths),
+/// so every affected route is only ever marked stale, never rendered.
+///
+/// `probe_path`'s parent directory must already exist when `zfb dev` binds
+/// (create it before spawning) — a watch target that doesn't exist yet at
+/// boot is never registered (this fixture's own boot log warns exactly that
+/// for the unused `data`/`components`/etc. roots).
+async fn confirm_watcher_live_via_data_probe(
+    session: &DevSession,
+    base: &str,
+    client: &reqwest::Client,
+    probe_path: &Path,
+) {
+    let sse = subscribe_sse(client, base).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let probe_path = probe_path.to_path_buf();
+        let stop = Arc::clone(&stop);
+        tokio::spawn(async move {
+            let mut revision = 0u32;
+            while !stop.load(Ordering::SeqCst) {
+                fs::write(&probe_path, format!("{{\"revision\":{revision}}}\n"))
+                    .expect("edit handshake data probe");
+                revision += 1;
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            }
+        })
+    };
+    let first = next_sse_event_name(sse, SSE_DEADLINE)
+        .await
+        .expect("read SSE stream during banner-only watcher-live handshake");
+    stop.store(true, Ordering::SeqCst);
+    let _ = writer.await;
+    assert!(
+        first.is_some(),
+        "watcher never became live: no edit-induced SSE event within {}s.\n{}",
+        SSE_DEADLINE.as_secs(),
+        session.logs(),
+    );
+}
+
 fn build_reqwest_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -587,15 +653,19 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
 }
 
 /// Banner-only variant for tests that must prove behavior under ZERO prior
-/// page requests (issue #1812). Waits for the ready banner and for the
-/// watcher to come live WITHOUT ever requesting a page route: readiness is
-/// polled via the `/__zfb/reload` SSE control endpoint instead of `GET /`.
-/// That endpoint is registered independently of `page_root`/`page_handler`
-/// (see `crates/zfb-server/src/routes.rs`), so polling it never triggers the
-/// request-time lazy-render path this test exists to keep untouched until
-/// the caller's own first assertion request.
+/// page requests AND zero prior renders (issue #1812). Waits for the ready
+/// banner and for the watcher to come live WITHOUT ever requesting a page
+/// route or rendering any content: readiness is polled via the
+/// `/__zfb/reload` SSE control endpoint instead of `GET /` (that endpoint is
+/// registered independently of `page_root`/`page_handler` — see
+/// `crates/zfb-server/src/routes.rs`), and the watcher-live handshake edits
+/// `data_probe_path` (a `data/`-rooted, Data-classified file the caller must
+/// pre-create) rather than a content-collection entry — see
+/// [`confirm_watcher_live_via_data_probe`] for why a content edit here would
+/// have been a genuine (if invisible-to-the-caller's-assertions) render.
 async fn boot_and_handshake_banner_only(
     session: &mut DevSession,
+    data_probe_path: &Path,
 ) -> Option<(String, reqwest::Client)> {
     let port = wait_for_ready_port(session).await?;
     let base = format!("http://localhost:{port}");
@@ -618,7 +688,7 @@ async fn boot_and_handshake_banner_only(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 
-    confirm_watcher_live(session, &base, &client).await;
+    confirm_watcher_live_via_data_probe(session, &base, &client, data_probe_path).await;
 
     Some((base, client))
 }
@@ -959,6 +1029,17 @@ async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregat
         "fixture must have no persisted dev graph or prior render output before cold boot"
     );
 
+    // Pre-create the `data/` watch root (this fixture doesn't ship one) so
+    // it is a live watch target from boot — a directory that doesn't exist
+    // yet at boot is never registered (see this binary's own "does not
+    // exist yet" boot warnings for the unused roots). The handshake edits
+    // this Data-classified probe file, not a content entry, to prove the
+    // watcher is live without rendering anything (codex review finding,
+    // issue #1812 — see `confirm_watcher_live_via_data_probe`).
+    fs::create_dir_all(root.join("data")).expect("create handshake-probe data directory");
+    let data_probe_path = root.join("data/handshake-probe.json");
+    fs::write(&data_probe_path, "{\"revision\":0}\n").expect("write initial handshake probe");
+
     // Boot Cold explicitly. `DevMode::Lazy` (the request-time lazy render
     // strategy) is required for boot-lazy to activate at all
     // (`boot_lazy_decision`); it is also this binary's default when
@@ -966,15 +1047,25 @@ async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregat
     let mut session = spawn_dev(root, &esbuild, DevMode::Lazy, Some("cold"));
     let pgid = session.guard.pgid;
     let body = async {
-        let Some((base, client)) = boot_and_handshake_banner_only(&mut session).await else {
+        let Some((base, client)) =
+            boot_and_handshake_banner_only(&mut session, &data_probe_path).await
+        else {
             return ScenarioOutcome::Skipped;
         };
 
+        // A deferred-bundle FAILURE still prints this exact log line with a
+        // route count of 0 (`run_boot_render`'s Cold branch logs
+        // `session.route_count()` unconditionally — see its own doc comment).
+        // A bare substring match would pass against a broken/empty route
+        // table just as readily as a working boot (codex review finding,
+        // issue #1812), so require a NONZERO count too.
+        let cold_lazy_route_count = parse_cold_lazy_route_count(&read_log(&session.stdout_path));
         assert!(
-            read_log(&session.stdout_path).contains("cold-lazy"),
+            matches!(cold_lazy_route_count, Some(n) if n > 0),
             "expected dev's cold-lazy boot log line confirming ZFB_DEV_BOOT_LAZY=cold took the \
-             seedless boot-lazy branch in `run_boot_render` rather than silently falling back to \
-             the eager boot render.\n{}",
+             seedless boot-lazy branch in `run_boot_render` with a NONZERO published route \
+             count, not a silent fallback to the eager boot render or a broken/empty deferred \
+             bundle. Parsed route count: {cold_lazy_route_count:?}\n{}",
             session.logs(),
         );
 
