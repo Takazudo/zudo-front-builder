@@ -780,3 +780,134 @@ fn sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted() {
         truncate(&css_body, 1200),
     );
 }
+
+/// Issue #1803 (epic #1799 gap b): extends `write_utility_only_sibling_fixture`
+/// with an UNGITIGNORED `dist/`-style generated directory inside the SAME
+/// sibling mirror root (`lib/ushared/dist/`), carrying its own
+/// arbitrary-value utility class (`bg-[#9f8e7d]`) that appears NOWHERE else
+/// in the fixture. Real generated-output directories are typically
+/// build-tool-emitted, not authored source — `discover_css_source_files`
+/// already skips `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs (including
+/// `dist`) when it wholesale-walks a mirror root for CSS Modules discovery,
+/// but (pre-#1803) Tailwind's own `@source` content-glob scan had no
+/// equivalent exclusion and would see the mirror root wholesale, leaking
+/// this class into the emitted stylesheet.
+///
+/// The sibling itself carries no `.gitignore` — only the PROJECT's
+/// `.gitignore` (written by `write_utility_only_sibling_fixture`, covering
+/// `.zfb-build/`/`dist/`/`node_modules/` INSIDE THE PROJECT) exists, and
+/// that file governs the project dir, not the workspace-sibling mirror
+/// root under `ws_root/lib/`. So Tailwind's `.gitignore`-respecting
+/// automatic content detection does not save this test from the leak on
+/// its own — verified empirically (a throwaway `tailwindcss` run against
+/// an ungitignored sibling `dist/` leaks its class; the same run with a
+/// `.gitignore` covering that `dist/` does not) — the exclusion must come
+/// from `negative_source_globs`.
+fn write_utility_only_sibling_fixture_with_generated_dir_leak(
+    ws_root: &Path,
+) -> (PathBuf, tempfile::TempDir) {
+    let (project, nm_handle) = write_utility_only_sibling_fixture(ws_root);
+
+    let generated_dir = ws_root.join("lib/ushared/dist");
+    fs::create_dir_all(&generated_dir).unwrap();
+    // A class string that appears NOWHERE else in the fixture — its
+    // presence in the emitted stylesheet would mean the generated `dist/`
+    // subtree leaked into Tailwind's content scan.
+    fs::write(
+        generated_dir.join("Generated.tsx"),
+        r#"export default function Generated() {
+  return <span class="bg-[#9f8e7d]">generated</span>;
+}
+"#,
+    )
+    .unwrap();
+
+    (project, nm_handle)
+}
+
+/// Issue #1803 (epic #1799 gap b): a generated-looking `dist/` subtree
+/// INSIDE a sibling mirror root must NOT leak its class strings into
+/// Tailwind's content scan, while the sibling's legitimate utility class
+/// (outside that subtree, already proven reachable by
+/// `sibling_only_utility_class_reaches_tailwind_source_scan_and_is_emitted`
+/// above) MUST still reach the emitted stylesheet — proving selective
+/// exclusion rather than a change that broke sibling scanning wholesale
+/// (which would also make the leak class absent, but for the wrong
+/// reason).
+///
+/// ## Regression criterion
+///
+/// Verified to FAIL (the leak class `9f8e7d` present in the emitted
+/// stylesheet) with the `negative_source_globs` wiring in
+/// `assemble_css_content_globs` / `build_default_css_payload`
+/// (`crates/zfb/src/commands/build.rs`) reverted, and PASS with it in
+/// place — the #1776 cherry-pick-out precedent; see the PR/issue
+/// description for both run transcripts.
+#[test]
+#[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb --test \
+            sibling_css_module_command_layer_build -- --ignored \
+            (ZFB_TAILWIND_BIN or the staged crates/zfb/binaries/tailwindcss-v4 \
+            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH)"]
+fn sibling_generated_dir_utility_class_is_excluded_from_tailwind_source_scan() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (project, _nm_handle) =
+        write_utility_only_sibling_fixture_with_generated_dir_leak(tmp.path());
+
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(&project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn `zfb build`");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected `zfb build` to succeed for the sibling generated-dir leak \
+         fixture; got status={:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        output.status,
+    );
+
+    let dist = project.join("dist");
+    let assets_dir = dist.join("assets");
+    let css_paths = collect_files(&assets_dir, "css");
+    let styles_css = css_paths
+        .iter()
+        .find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.starts_with("styles-") && n.ends_with(".css"))
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| {
+            panic!("expected dist/assets/styles-<hash>.css to be emitted; got: {css_paths:#?}")
+        });
+    let css_body = fs::read_to_string(styles_css).unwrap();
+
+    assert!(
+        !css_body.contains("9f8e7d"),
+        "expected the sibling generated-dir (`lib/ushared/dist/`) utility class \
+         to be EXCLUDED from {}; its presence means the mirror root's `dist/` \
+         subtree leaked into Tailwind's `@source` content-glob scan.\n--- css ---\n{}",
+        styles_css.display(),
+        truncate(&css_body, 1200),
+    );
+    assert!(
+        css_body.contains("1a2b3c"),
+        "expected the sibling's legitimate `bg-[#1a2b3c]` utility (outside the \
+         generated dir) to REMAIN present in {} — its absence would mean \
+         sibling scanning broke wholesale rather than the generated subtree \
+         being selectively excluded.\n--- css ---\n{}",
+        styles_css.display(),
+        truncate(&css_body, 1200),
+    );
+}

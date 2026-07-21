@@ -71,9 +71,28 @@ addition to the relative paths joined against `project_root`. Use this for
 out-of-tree directories (e.g. a shared design-token package) that must
 participate in dev-mode rebuilds without being under the project root.
 
+## Reconciled recursive dir watches
+
+`Watcher::sync_recursive_dir_watches(desired_roots, skip_dir_names)` maintains
+a replace-semantics set of recursively watched directory roots (built for CSS
+sibling mirror roots — issue #1801) on top of a running watcher:
+
+- Skip-dir names are **caller-supplied** and matched as exact path components
+  at any depth, on delivery — so `dist` never suppresses `distress`, and a
+  `node_modules/` created after registration is still suppressed. Filtering
+  happens in the notify callback, before the debounce pipeline, so a skip-dir
+  flood (a cargo build in a watched sibling's `target/`) never reaches the
+  channel.
+- Each call supplies the full desired set; roots that fall out are unwatched
+  (a root that doubles as a `watch_additional_files` dependency parent is
+  downgraded back to non-recursive instead, preserving that consumer's
+  coverage). Only genuinely new roots are returned.
+- Suppression never narrows boot-root or dependency-parent delivery — the
+  watcher's output stays a superset of what it delivered before the sync.
+
 ## Non-goals
 
-- **Polling for re-appearance** of a top-level missing path is *not*
+- **Polling for re-appearance** of a top-level missing path is _not_
   implemented. Sub-directories appearing under an already-watched parent
   are picked up automatically by recursive watching; if `data/` itself
   is created later the dev server is expected to restart the watcher.

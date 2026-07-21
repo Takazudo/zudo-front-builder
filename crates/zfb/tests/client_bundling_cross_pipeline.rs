@@ -1126,6 +1126,72 @@ fn run_and_assert_reroot_host_production(host_root: &Path, esbuild: &Path) {
         &["?raw", "import.meta.glob("],
         "reroot host production virtual-module sibling worker",
     );
+
+    // Issue #1758: the ISLANDS pipeline bundles this same registered virtual
+    // module through a `"use client"` island (RerootIsland.tsx), independent
+    // of the client-script entry above — proving
+    // `remap_project_plugin_virtual_modules_to_shadow` (reached via
+    // `build_default_islands_payload`) carries the sibling `?raw` +
+    // nested-module-worker rewrites through the ISLANDS call site too.
+    let islands_dir = host_root.join("dist/assets");
+    let island_entry = read_text(&find_single_asset(&islands_dir, "islands-"));
+    assert_contains_all(
+        &island_entry,
+        &[
+            "ZFB_REROOT_ISLAND",
+            REROOT_VMODULE_ENTRY_MARKER,
+            REROOT_VMODULE_RAW,
+        ],
+        "reroot host production islands entry",
+    );
+    assert_contains_none(
+        &island_entry,
+        &[
+            "?raw",
+            "import.meta.glob(",
+            REROOT_VMODULE_WORKER_ORIGINAL_URL,
+        ],
+        "reroot host production islands entry",
+    );
+    assert_parent_worker_url(
+        &island_entry,
+        &vmodule_worker_filename,
+        "reroot host production islands entry",
+    );
+
+    // The islands pipeline is a separate esbuild flow from the client-script
+    // pipeline, so it emits its OWN copy of the shared vmodule worker
+    // companion into the islands namespace (`dist/assets/`) — distinct from
+    // the client-script copy already asserted above (`dist/assets/client/`).
+    let islands_vmodule_worker_path = islands_dir.join(&vmodule_worker_filename);
+    assert!(
+        islands_vmodule_worker_path.is_file(),
+        "reroot host production build must emit the virtual-module sibling worker companion \
+         into the islands namespace at {}",
+        islands_vmodule_worker_path.display(),
+    );
+    let islands_vmodule_worker = read_text(&islands_vmodule_worker_path);
+    assert_contains_all(
+        &islands_vmodule_worker,
+        &[REROOT_VMODULE_WORKER_MARKER],
+        "reroot host production islands virtual-module sibling worker",
+    );
+    assert_contains_none(
+        &islands_vmodule_worker,
+        &["?raw", "import.meta.glob("],
+        "reroot host production islands virtual-module sibling worker",
+    );
+
+    let html = read_text(&host_root.join("dist/index.html"));
+    assert_contains_all(
+        &html,
+        &[
+            "ZFB_REROOT_HOST_PAGE",
+            "ZFB_REROOT_ISLAND",
+            "/assets/islands-",
+        ],
+        "reroot host production HTML",
+    );
 }
 
 async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path) {
@@ -1137,6 +1203,24 @@ async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path
         .timeout(Duration::from_secs(10))
         .build()
         .expect("build loopback HTTP client");
+
+    let html = poll_body(
+        &client,
+        &format!("{origin}/"),
+        "ZFB_REROOT_HOST_PAGE",
+        "reroot host development SSR page",
+        &session,
+    )
+    .await;
+    // Unlike the production HTML (which injects an `/assets/islands-<hash>`
+    // hydration script tag), the development SSR pass does not embed an
+    // `/assets/islands.js` reference — only the island's server-rendered
+    // content, matching the base fixture's own dev-HTML assertion shape.
+    assert_contains_all(
+        &html,
+        &["ZFB_REROOT_ISLAND"],
+        "reroot host development SSR HTML",
+    );
 
     let client_entry = poll_body(
         &client,
@@ -1199,6 +1283,52 @@ async fn run_and_assert_reroot_host_development(host_root: &Path, esbuild: &Path
         &vmodule_worker,
         &["?raw", "import.meta.glob("],
         "reroot host development virtual-module sibling worker",
+    );
+
+    // Issue #1758: the ISLANDS pipeline serves its own copy of the same
+    // registered virtual module (through RerootIsland.tsx) under the islands
+    // namespace (`/assets/`), independent of the client-script copy above
+    // (`/assets/client/`).
+    let island_entry = poll_body(
+        &client,
+        &format!("{origin}/assets/islands.js"),
+        "ZFB_REROOT_ISLAND",
+        "reroot host development islands entry",
+        &session,
+    )
+    .await;
+    assert_contains_all(
+        &island_entry,
+        &[REROOT_VMODULE_ENTRY_MARKER, REROOT_VMODULE_RAW],
+        "reroot host development islands entry",
+    );
+    assert_contains_none(
+        &island_entry,
+        &[
+            "?raw",
+            "import.meta.glob(",
+            REROOT_VMODULE_WORKER_ORIGINAL_URL,
+        ],
+        "reroot host development islands entry",
+    );
+    assert_parent_worker_url(
+        &island_entry,
+        &vmodule_worker_filename,
+        "reroot host development islands entry",
+    );
+
+    let islands_vmodule_worker = poll_body(
+        &client,
+        &format!("{origin}/assets/{vmodule_worker_filename}"),
+        REROOT_VMODULE_WORKER_MARKER,
+        "reroot host development islands virtual-module sibling worker",
+        &session,
+    )
+    .await;
+    assert_contains_none(
+        &islands_vmodule_worker,
+        &["?raw", "import.meta.glob("],
+        "reroot host development islands virtual-module sibling worker",
     );
 }
 
