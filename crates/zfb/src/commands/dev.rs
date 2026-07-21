@@ -11615,9 +11615,13 @@ mod tests {
         .unwrap();
 
         // `config::Config::default()` leaves Tailwind ENABLED (the
-        // default) — the seam only computes mirror roots on that branch
-        // (the `tailwind.enabled = false` path never scans for `@source`
-        // mirror roots at all, since there is no Tailwind scan to feed).
+        // default), which is the branch this boot-scenario assertion is
+        // about. Note the seam publishes mirror roots on the
+        // `tailwind.enabled = false` path too — `.module.css` discovery
+        // runs through the same claim plan regardless of Tailwind (issue
+        // #824), and `build_default_css_payload_with_source_plan` computes
+        // and publishes the roots BEFORE that branch. See
+        // `build_default_css_payload_with_source_plan_publishes_mirror_roots_with_tailwind_disabled`.
         let cfg = config::Config::default();
         let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
 

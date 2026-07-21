@@ -186,7 +186,20 @@ impl GuardedNotifyWatcher {
         if matches!(mode, RecursiveMode::NonRecursive) {
             let covered = {
                 let filter = lock_ignoring_poison(&self.filter);
-                watch_aliases(path).any(|alias| filter.active_roots.contains(&alias))
+                // Ancestry, not exact equality (issue #1799 review): a
+                // recursive root covers everything BENEATH it, so a
+                // dependency parent nested under an active synced root is
+                // already fully delivered. Matching only the root itself
+                // let such a path through to a redundant OS watch —
+                // duplicate delivery on inotify, plus a spurious
+                // `watch-extra registered:` line that the dev e2e tests
+                // key their waits on.
+                watch_aliases(path).any(|alias| {
+                    filter
+                        .active_roots
+                        .iter()
+                        .any(|root| alias.starts_with(root))
+                })
             };
             if covered {
                 return Ok(());
@@ -765,10 +778,18 @@ impl Watcher {
                     );
                 }
             }
-            for dep in dependency_dirs
-                .iter()
-                .filter(|dep| dep.as_path() != root.as_path() && under_retired(dep))
-            {
+            // Compare against the retired root's ALIASES, not just its
+            // literal spelling (issue #1799 review): where `canonicalize()`
+            // differs from the as-given path, a `dep` equal to the root's
+            // other spelling slipped past a `dep != root` check and
+            // resurrected the just-retired root as a non-recursive watch.
+            let retired_aliases: Vec<PathBuf> = watch_aliases(root.as_path()).collect();
+            for dep in dependency_dirs.iter().filter(|dep| {
+                !retired_aliases
+                    .iter()
+                    .any(|alias| alias.as_path() == dep.as_path())
+                    && under_retired(dep)
+            }) {
                 // The guarded watcher no-ops this when `dep` is itself a
                 // surviving synced root (already re-registered recursively
                 // above), so the repair cannot downgrade one.

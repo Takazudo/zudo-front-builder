@@ -214,9 +214,18 @@ impl RawImportInvalidation {
 
     /// Atomically replace the CSS sibling-mirror-root set (issue #1802).
     /// Replace, not append/union — a project whose sibling claim set
-    /// shrinks (or disappears entirely, e.g. Tailwind gets disabled) must
-    /// stop watching the roots it no longer claims, or a stale root would
-    /// stay registered forever.
+    /// shrinks must stop watching the roots it no longer claims, or a stale
+    /// root would stay registered forever.
+    ///
+    /// Note `tailwind.enabled = false` is NOT such a case: that path still
+    /// publishes the full claimed set, because `.module.css` discovery runs
+    /// through the same claim plan regardless of Tailwind (issue #824).
+    ///
+    /// Because this is replace semantics, a caller must never publish a
+    /// deliberately NARROWED set as a "partial" update — doing so unwatches
+    /// the difference, and if the edit that would repair the caller's error
+    /// lives under a dropped root, no event can arrive to retry. Publish the
+    /// complete set or publish nothing (preserving the last successful one).
     pub fn replace_css_mirror_roots(&self, roots: impl IntoIterator<Item = PathBuf>) {
         if let Ok(mut set) = self.css_mirror_roots.write() {
             *set = roots.into_iter().collect();

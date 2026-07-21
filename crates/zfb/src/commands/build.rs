@@ -819,13 +819,21 @@ pub(crate) fn build_default_css_payload(
 /// agree on the same key without a separate string channel.
 ///
 /// `on_source_plan` (issue #1802) is called EXACTLY ONCE with the computed
-/// sibling mirror roots — empty on the `tailwind.enabled = false` path (no
-/// Tailwind `@source` scan runs, so there is nothing to watch for it),
-/// otherwise the same slice [`assemble_css_content_globs`] folds into the
-/// Tailwind content-glob list. The call happens strictly BEFORE the
-/// Tailwind subprocess is invoked, so it fires even when that subprocess
-/// later fails — the seam dev-watch registration needs (see the type's own
-/// doc comment).
+/// sibling mirror roots, on BOTH the Tailwind-enabled and the
+/// `tailwind.enabled = false` paths. It is deliberately NOT empty when
+/// Tailwind is disabled: `build_authored_only_css_payload` still discovers
+/// a claimed sibling's `.module.css` files through the same claim plan
+/// (issue #824 — disabling Tailwind opts out of the Tailwind layers, not
+/// CSS Modules), so dev-watch registration needs the roots on that path
+/// too. On the Tailwind path it is the same slice
+/// [`assemble_css_content_globs`] folds into the content-glob list.
+///
+/// The call happens strictly BEFORE the Tailwind subprocess is invoked, so
+/// it fires even when that subprocess later fails — the seam dev-watch
+/// registration needs (see the type's own doc comment). The one path that
+/// does NOT publish is a `discover_css_plugin_virtual_files` failure, where
+/// publishing the narrower alias-only set would retire live roots under
+/// replace semantics; see the comment at that call site.
 pub(crate) fn build_default_css_payload_with_source_plan(
     project_root: &Path,
     outdir: &Path,
@@ -872,25 +880,31 @@ pub(crate) fn build_default_css_payload_with_source_plan(
         match discover_css_plugin_virtual_files(project_root, &virtual_worker_context) {
             Ok(files) => files,
             Err(err) => {
-                // Issue #1802 (review finding): even when virtual-module
-                // discovery itself fails — BEFORE the full mirror-root set
-                // below can be computed — publish the alias/tsconfig-derived
-                // claim on its own (an empty `discovered_graph_files`, so only
-                // claim source b, not the virtual-module claim sources a+c)
-                // rather than nothing at all. The same "a failed boot CSS
-                // build must still register sibling watches" contract this
-                // seam exists for applies to this earlier failure mode too.
-                let fallback_roots: Vec<PathBuf> = zfb_build::SiblingMirrorPlan::compute(
-                    project_root,
-                    &zfb_types::first_party_root_for(project_root),
-                    &std::collections::BTreeSet::new(),
-                    &read_tsconfig_paths(project_root),
-                    plugin_alias_entries,
-                )
-                .mirror_roots()
-                .map(Path::to_path_buf)
-                .collect();
-                on_source_plan(&fallback_roots);
+                // Deliberately publish NOTHING here (issue #1799 review).
+                //
+                // An earlier revision published an alias/tsconfig-derived
+                // fallback claim on this path, reasoning that "a failed boot
+                // CSS build must still register sibling watches". That is
+                // actively harmful: the fallback is a strict SUBSET of the
+                // real root set (empty `discovered_graph_files` yields claim
+                // source b only, dropping the virtual-module sources a+c),
+                // and the whole chain is replace-semantics
+                // (`replace_css_mirror_roots` -> `sync_recursive_dir_watches`).
+                // Publishing the subset therefore UNWATCHES every root reached
+                // only through the virtual-module graph — so if the edit that
+                // would fix `err` lives in one of those siblings, no
+                // filesystem event can ever arrive to retry. That is exactly
+                // the recovery lock this seam exists to prevent.
+                //
+                // Skipping publication instead preserves the last successful
+                // set, which is the documented orchestrator contract: "the
+                // registry exposes the last successful closures, so a
+                // transient failed rebuild never drops recovery watches"
+                // (`zfb-build/src/orchestrator.rs`, boot registration). On a
+                // FIRST-boot failure nothing was registered yet, so nothing is
+                // lost either — and recovery still arrives through the boot
+                // watcher on the project root, whose next in-project edit
+                // re-runs discovery.
                 return Err(err);
             }
         };
@@ -6801,6 +6815,15 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
     use tempfile::tempdir;
+
+    /// Serialises the two tests that touch the process-wide
+    /// `ZFB_TAILWIND_BIN` variable: one `set_var`s a deliberately bogus path
+    /// to force a hermetic Tailwind failure, the other is env-gated ON that
+    /// variable pointing at a real binary. `cargo test` runs tests on
+    /// parallel threads in ONE process, so a scope guard bounds the
+    /// mutation in time but not across threads — without this lock the
+    /// first can flake the second (issue #1799 review finding).
+    static TAILWIND_BIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
@@ -13847,6 +13870,14 @@ mod tests {
                 commands::build:: -- --include-ignored (ZFB_TAILWIND_BIN or the \
                 staged crates/zfb/binaries/tailwindcss-v4 slot)"]
     fn default_runner_emit_prod_assets_returns_non_empty_css_for_real_project() {
+        // Serialise against the `..._even_on_tailwind_failure` test above,
+        // which `set_var`s `ZFB_TAILWIND_BIN` process-wide. Both run in this
+        // binary under the `--include-ignored` command in this test's own
+        // `#[ignore]` reason (issue #1799 review finding).
+        let _env_lock = TAILWIND_BIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         std::fs::create_dir_all(project_root.join("pages")).unwrap();
@@ -15216,14 +15247,24 @@ mod tests {
     /// (crates/zfb-css/src/engine.rs) checks `binary_path.exists()` before
     /// ever exec'ing, so pointing `ZFB_TAILWIND_BIN` at a path that is
     /// guaranteed not to exist is a fast, hermetic, deterministic failure —
-    /// no real tailwind binary is spawned. Scope-guarded (`EnvGuard`
-    /// restores the previous value on drop, panic included) so the
-    /// mutation cannot leak past this test; no other test in this module
-    /// reads or writes `ZFB_TAILWIND_BIN`, so there is nothing else in the
-    /// parallel test run to race against.
+    /// no real tailwind binary is spawned.
+    ///
+    /// `set_var` is PROCESS-wide, and `ZFB_TAILWIND_BIN` is genuinely read
+    /// elsewhere in this same binary — by production code (the
+    /// `with_embedded_binary` skip above) and by the env-gated
+    /// `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project`
+    /// below, which CLAUDE.md documents running in this very process via
+    /// `cargo test -p zfb --lib commands::build:: -- --include-ignored`.
+    /// `EnvGuard` bounds the mutation in TIME but not across THREADS, so
+    /// both tests take [`TAILWIND_BIN_ENV_LOCK`] to serialise against each
+    /// other; without it this test can point that one at a bogus path
+    /// mid-run and flake it (issue #1799 review finding).
     #[test]
     fn build_default_css_payload_with_source_plan_publishes_mirror_roots_even_on_tailwind_failure()
     {
+        let _env_lock = TAILWIND_BIN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         struct EnvGuard {
             prev: Option<std::ffi::OsString>,
         }
