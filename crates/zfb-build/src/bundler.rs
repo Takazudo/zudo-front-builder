@@ -9104,6 +9104,13 @@ fn run_esbuild(
     cmd.arg("--tree-shaking=true");
     cmd.arg("--sourcemap=linked");
     cmd.arg("--log-level=warning");
+    // esbuild caps its own error/warning output at 10 messages by default and
+    // silently drops the rest. `friendly_esbuild_error`'s note loop below
+    // walks every `Could not resolve` block in stderr to report ALL escaping
+    // imports in one shot (issue #1839) — without uncapping the limit here,
+    // a project with more than 10 offenders would only ever surface the
+    // first batch, forcing a fix-one/rebuild/discover-next loop.
+    cmd.arg("--log-limit=0");
     // The `.wasm=copy` loader emits these beside the bundle. Pin the basename
     // format so both production passes produce deterministic deployment asset
     // paths that can be safely handed to an adapter.
@@ -9539,7 +9546,13 @@ fn run_esbuild(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let friendly = friendly_esbuild_error(stderr.trim(), shadow, &input.project_root);
+        let friendly = friendly_esbuild_error(
+            stderr.trim(),
+            shadow,
+            &input.project_root,
+            first_party_root,
+            work_root,
+        );
         bail!(
             "bundler: esbuild exited with status {}: {}",
             output.status,
@@ -9584,34 +9597,86 @@ fn esbuild_location_path(line: &str) -> Option<&str> {
 
 /// Post-processes esbuild's captured stderr from `run_esbuild`'s failure
 /// branch so a build failure is actionable instead of naming the ephemeral
-/// shadow-copy tempdir the user never created (#1385 pt.2 / issue #1388).
+/// shadow-copy tempdir the user never created (#1385 pt.2 / issue #1388;
+/// extended for the workspace tier by issue #1839).
 ///
 /// This is **diagnose-only** — the owner decision recorded on the #1386
 /// epic is that a relative import which escapes the project root under
 /// shadow-copy bundling stays unsupported; this function only changes the
 /// REPORTED message, never resolution behaviour.
 ///
+/// Two staged roots can appear in esbuild's raw stderr, narrowest first:
+///
+/// - `shadow` — the project mirror (`work_root` itself outside a
+///   workspace, or `work_root/<workspace_rel>` inside one — see
+///   `run_esbuild`'s doc comment) — maps back to the real `project_root`.
+/// - `work_root` — the wholesale-mirrored first-party workspace root a
+///   claimed sibling package's own source is staged under — maps back to
+///   the real `first_party_root`.
+///
+/// `shadow` is always nested *under* `work_root` (or equal to it, outside a
+/// workspace), so every prefix check below tries `shadow` FIRST:
+/// longest-prefix-first. Checking `work_root` first would also match paths
+/// that are really under the narrower `shadow`, and report them relative to
+/// the coarser `first_party_root` instead of the caller's own
+/// (possibly differently-spelled — e.g. not yet lexically normalized)
+/// `project_root`.
+///
 /// Two independent passes:
 ///
-/// 1. **Defensive catch-all** — any literal absolute `shadow` path embedded
-///    in the text (e.g. a malformed-tsconfig diagnostic can echo the
-///    `--tsconfig=<shadow>/…` flag verbatim) is rewritten to the real
-///    `project_root`, so no ephemeral tempdir path ever reaches the user.
+/// 1. **Defensive catch-all** — any literal absolute `shadow` or
+///    `work_root` path embedded in the text (e.g. a malformed-tsconfig
+///    diagnostic can echo the `--tsconfig=<shadow>/…` flag verbatim) is
+///    rewritten to the matching real root, longest-prefix first, so no
+///    ephemeral tempdir path ever reaches the user.
 /// 2. **Escape detection** — for every `Could not resolve "<specifier>"`
-///    failure where `specifier` is relative (`./` or `../`) and — joined
+///    failure, first place the *importer* in exactly one scope: `project`
+///    (staged under `shadow`) or `workspace` (staged only under the wider
+///    `work_root` — a wholesale-mirrored sibling's own source). That
+///    scope's OWN staged root is the only boundary its relative imports
+///    (`./` or `../`) are allowed to stay inside — a project importer's
+///    import landing inside `work_root` but outside `shadow` is STILL an
+///    escape (the pre-existing #1386 decision: a plain relative import
+///    crossing `project_root` is unsupported regardless of whether the
+///    workspace happens to mirror that location too; the sibling mirror is
+///    reached only via tsconfig aliases / bare imports, never a relative
+///    walk across the project boundary). When the target — joined
 ///    lexically against the reported importer's directory — falls outside
-///    the shadow root, append a note naming the importer's REAL
-///    project-root path, explaining the shadow-copy build boundary, and
-///    pointing at the package-specifier + wildcard-`exports` workaround.
-///    The join is purely lexical (string arithmetic, no filesystem access)
-///    — it does not matter whether the target actually exists.
-fn friendly_esbuild_error(stderr: &str, shadow: &Path, project_root: &Path) -> String {
-    let shadow_display = shadow.to_string_lossy();
-    let mut out = if shadow_display.is_empty() {
-        stderr.to_string()
-    } else {
-        stderr.replace(shadow_display.as_ref(), &project_root.to_string_lossy())
-    };
+///    that boundary, append a note naming the importer's REAL source path
+///    (under `project_root` for a project importer, under
+///    `first_party_root` for a workspace-sibling one), explaining the
+///    matching (project- or workspace-scoped) shadow-copy build boundary,
+///    and pointing at the package-specifier + wildcard-`exports`
+///    workaround. The join is purely lexical (string arithmetic, no
+///    filesystem access) — it does not matter whether the target actually
+///    exists. `run_esbuild` passes `--log-limit=0` so esbuild's own default
+///    10-message cap never truncates the input here, meaning every
+///    offending block in stderr is walked and named, not just the first
+///    batch.
+///
+/// Windows note: `esbuild_location_path` (used to parse each offender's
+/// source location) does not handle drive-letter paths (`C:\...`), so the
+/// "never leak a tempdir path" guarantee below is only verified for the
+/// POSIX-style paths esbuild reports on the platforms zfb's Rust suite
+/// actually runs on (ubuntu/macOS — see the T3 cutover manifest); it is not
+/// exercised on Windows.
+fn friendly_esbuild_error(
+    stderr: &str,
+    shadow: &Path,
+    project_root: &Path,
+    first_party_root: &Path,
+    work_root: &Path,
+) -> String {
+    // Longest-prefix-first (see doc comment above): `shadow` before
+    // `work_root`. Outside a workspace the two pairs are identical, so the
+    // second replace is a harmless no-op on already-rewritten text.
+    let mut out = stderr.to_string();
+    for (staged, real) in [(shadow, project_root), (work_root, first_party_root)] {
+        let staged_display = staged.to_string_lossy();
+        if !staged_display.is_empty() {
+            out = out.replace(staged_display.as_ref(), &real.to_string_lossy());
+        }
+    }
 
     let lines: Vec<&str> = stderr.lines().collect();
     let mut notes: Vec<String> = Vec::new();
@@ -9635,33 +9700,63 @@ fn friendly_esbuild_error(stderr: &str, shadow: &Path, project_root: &Path) -> S
             continue;
         };
         let target = normalize_path_lexical(&importer_dir.join(specifier));
-        if target.strip_prefix(shadow).is_ok() {
-            // Stays inside the shadow root (e.g. `../sibling/file.ts`
-            // resolving to a valid project-relative location) — not an
-            // escape, so the raw esbuild message is left to speak for
-            // itself.
-            continue;
-        }
-        let real_importer = match importer_abs.strip_prefix(shadow) {
-            Ok(rel) => project_root.join(rel),
-            // Already outside the shadow (can happen when
+
+        // Place the importer in exactly one scope FIRST, longest-prefix
+        // (narrower `shadow`) before the wider `work_root` it is nested
+        // under — see the doc comment above. That scope's own staged root
+        // (never the other one) is the boundary THIS import must stay
+        // inside.
+        let (scope, staged_boundary, real_importer, real_root): (
+            &'static str,
+            &Path,
+            PathBuf,
+            &Path,
+        ) = if let Ok(rel) = importer_abs.strip_prefix(shadow) {
+            ("project", shadow, project_root.join(rel), project_root)
+        } else if let Ok(rel) = importer_abs.strip_prefix(work_root) {
+            // A wholesale-mirrored workspace-sibling importer (staged
+            // under `work_root`, outside the narrower `shadow`) — map
+            // through `first_party_root` so its real live-tree path is
+            // named instead of the ephemeral work-mirror one.
+            (
+                "workspace",
+                work_root,
+                first_party_root.join(rel),
+                first_party_root,
+            )
+        } else {
+            // Already outside every staged root (can happen when
             // `--preserve-symlinks` is off and the importer is a
             // symlink whose realpath esbuild reports) — that path IS
-            // the real one already.
-            Err(_) => importer_abs.clone(),
+            // the real one already; treat it as project-scoped, the
+            // common case this fallback exists for.
+            ("project", shadow, importer_abs.clone(), project_root)
         };
+
+        if target.strip_prefix(staged_boundary).is_ok() {
+            // Stays inside the importer's OWN staged boundary (e.g.
+            // `../sibling/file.ts` from a project page resolving to a
+            // valid project-relative location, or a workspace-sibling's
+            // own import resolving elsewhere inside the wholesale work
+            // mirror) — not an escape, so the raw esbuild message is left
+            // to speak for itself. A project importer's target landing
+            // inside `work_root` but outside `shadow` is deliberately NOT
+            // matched here (see the doc comment above) — it still falls
+            // through to the note below.
+            continue;
+        }
         notes.push(format!(
-            "zfb: \"{specifier}\" (imported from {}) escapes the project \
+            "zfb: \"{specifier}\" (imported from {}) escapes the {scope} \
              root's shadow-copy build boundary. zfb bundles from a \
              temporary copy of {}; a relative import that walks above the \
-             project root cannot be followed there. Move the target inside \
-             the project, or expose it as a package import instead: add a \
+             {scope} root cannot be followed there. Move the target inside \
+             the {scope}, or expose it as a package import instead: add a \
              wildcard `exports` entry to the target package's \
              `package.json` (e.g. `\"./src/*\": \"./src/*\"`) and import it \
              by package specifier (e.g. `@scope/pkg/src/button.ts`) — \
              `node_modules` IS included in the shadow copy.",
             real_importer.display(),
-            project_root.display(),
+            real_root.display(),
         ));
     }
 
@@ -10343,7 +10438,10 @@ mod tests {
         // escapes the shadow root, matching the #1385 pt.2 repro shape).
         let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../../outside/shared.ts\";\n        \u{2575}                    ~~~~~~~~~~~~~~~~~~~~~~~~~\n\n1 error";
 
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        // Non-workspace: `first_party_root == project_root`, `work_root ==
+        // shadow` (see `run_esbuild`'s doc comment) — the sibling tier is
+        // inert.
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
 
         // Names the REAL source path, not a tempdir.
         assert!(
@@ -10377,7 +10475,7 @@ mod tests {
         // boundary annotation.
         let stderr = "\u{2718} [ERROR] Could not resolve \"../sibling/file.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import Button from \"../sibling/file.ts\";\n\n1 error";
 
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
         assert_eq!(
             friendly, stderr,
             "non-escaping resolve failures should pass through unchanged"
@@ -10389,10 +10487,137 @@ mod tests {
         let shadow = Path::new("/tmp/zfb-bundler-abc123");
         let project_root = Path::new("/Users/dev/my-project");
         let stderr = "some diagnostic mentioning /tmp/zfb-bundler-abc123/tsconfig.json directly";
-        let friendly = friendly_esbuild_error(stderr, shadow, project_root);
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
         assert_eq!(
             friendly,
             "some diagnostic mentioning /Users/dev/my-project/tsconfig.json directly"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_maps_work_root_prefixed_sibling_importer_to_first_party_root() {
+        // Workspace shape: `shadow` (the narrower project mirror) is nested
+        // under `work_root` (the wholesale-mirrored workspace root). A
+        // claimed sibling package's own source is staged only under
+        // `work_root`, outside `shadow` — e.g. `work_root/lib/shared/helper.ts`
+        // when `shadow == work_root/sub-packages/host`. esbuild's cwd is
+        // `shadow`, so it reports the importer as a relative path that
+        // climbs OUT of shadow and back into the sibling.
+        let work_root = Path::new("/tmp/zfb-bundler-abc123");
+        let shadow = Path::new("/tmp/zfb-bundler-abc123/sub-packages/host");
+        let project_root = Path::new("/workspace/sub-packages/host");
+        let first_party_root = Path::new("/workspace");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../../outside/escaped.ts\"\n\n    ../../lib/shared/helper.ts:1:19:\n      1 \u{2502} import x from \"../../../outside/escaped.ts\";\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+
+        // Names the sibling's REAL live-tree path (mapped through
+        // `first_party_root`), not the ephemeral `work_root` tempdir.
+        assert!(
+            friendly.contains("/workspace/lib/shared/helper.ts"),
+            "should name the real workspace-sibling path: {friendly}"
+        );
+        assert!(
+            !friendly.contains("zfb-bundler-abc123"),
+            "should not leak the work_root tempdir name: {friendly}"
+        );
+        assert!(
+            friendly.to_lowercase().contains("shadow-copy"),
+            "should explain the shadow-copy boundary: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_prefers_shadow_prefix_over_work_root_prefix() {
+        // `shadow` is nested under `work_root`, so an importer that lives
+        // INSIDE shadow also lexically satisfies a `work_root` prefix
+        // check. `project_root` is deliberately NOT the lexical
+        // `first_party_root.join(<workspace-rel>)` composition (it carries
+        // a `.` component `first_party_root` doesn't normalize away in
+        // this fabricated case) so the two mappings are texually
+        // distinguishable — proving the longest-prefix-first order picks
+        // the caller-supplied `project_root` (via `shadow`) rather than
+        // deriving a path through `first_party_root` (via `work_root`).
+        let work_root = Path::new("/tmp/zfb-bundler-abc123");
+        let shadow = Path::new("/tmp/zfb-bundler-abc123/sub-packages/host");
+        let project_root = Path::new("/workspace/./sub-packages/host");
+        let first_party_root = Path::new("/workspace");
+        // 2 levels up from `pages/foo.tsx` escapes `shadow` — enough to
+        // trigger the note, since a PROJECT importer's boundary is
+        // `shadow` alone (see the escape-scoping test below); this test is
+        // only about which of the two prefix mappings names the importer.
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/shared.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import x from \"../../outside/shared.ts\";\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+
+        assert!(
+            friendly.contains("/workspace/./sub-packages/host/pages/foo.tsx"),
+            "should map through the more specific `shadow` prefix (using \
+             the caller's own `project_root` spelling) rather than the \
+             wider `work_root` prefix (which would derive \
+             /workspace/sub-packages/host/pages/foo.tsx instead): {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_scopes_project_importer_escape_to_shadow_even_inside_work_root() {
+        // Codex review finding on issue #1839: a PROJECT importer (staged
+        // under `shadow`) must be judged against the `shadow` boundary
+        // ALONE, never `work_root` — even though the target here happens
+        // to land inside the wider `work_root` mirror, the pre-existing
+        // #1386 decision is that a relative import crossing `project_root`
+        // stays unsupported regardless (the sibling mirror is reached only
+        // via tsconfig aliases / bare imports, never a relative walk across
+        // the project boundary), so this must still be flagged, not
+        // silently swallowed just because a workspace sibling happens to
+        // live at that lexical location too.
+        let work_root = Path::new("/tmp/zfb-bundler-abc123");
+        let shadow = Path::new("/tmp/zfb-bundler-abc123/sub-packages/host");
+        let project_root = Path::new("/workspace/sub-packages/host");
+        let first_party_root = Path::new("/workspace");
+        // 3 levels up from `pages/foo.tsx` reaches `work_root`, then back
+        // down into `lib/shared/other.ts` — a location the WORKSPACE
+        // wholesale mirror does stage, but the PROJECT's own `shadow`
+        // boundary never claims.
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../../lib/shared/other.ts\"\n\n    pages/foo.tsx:1:19:\n      1 \u{2502} import x from \"../../../lib/shared/other.ts\";\n\n1 error";
+
+        let friendly =
+            friendly_esbuild_error(stderr, shadow, project_root, first_party_root, work_root);
+
+        assert!(
+            friendly.contains("/workspace/sub-packages/host/pages/foo.tsx"),
+            "should still name the real project importer path: {friendly}"
+        );
+        assert!(
+            friendly.to_lowercase().contains("shadow-copy"),
+            "must NOT be silently suppressed just because the target \
+             happens to land inside work_root — a project importer's \
+             boundary is `shadow` alone: {friendly}"
+        );
+    }
+
+    #[test]
+    fn friendly_esbuild_error_reports_every_offender_in_one_run() {
+        // Two independent escaping imports in the SAME stderr blob — proves
+        // the note loop (paired with `run_esbuild`'s `--log-limit=0`) names
+        // every offender in a single run instead of stopping at the first.
+        let shadow = Path::new("/tmp/zfb-bundler-abc123");
+        let project_root = Path::new("/Users/dev/my-project");
+        let stderr = "\u{2718} [ERROR] Could not resolve \"../../outside/one.ts\"\n\n    pages/one.tsx:1:19:\n      1 \u{2502} import a from \"../../outside/one.ts\";\n\n\u{2718} [ERROR] Could not resolve \"../../outside/two.ts\"\n\n    pages/two.tsx:1:19:\n      1 \u{2502} import b from \"../../outside/two.ts\";\n\n2 errors";
+
+        let friendly = friendly_esbuild_error(stderr, shadow, project_root, project_root, shadow);
+
+        assert!(
+            friendly.contains("../../outside/one.ts")
+                && friendly.contains("/Users/dev/my-project/pages/one.tsx"),
+            "first offender must be named: {friendly}"
+        );
+        assert!(
+            friendly.contains("../../outside/two.ts")
+                && friendly.contains("/Users/dev/my-project/pages/two.tsx"),
+            "second offender must ALSO be named, not truncated: {friendly}"
         );
     }
 
