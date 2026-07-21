@@ -3138,17 +3138,37 @@ fn resolve_defer_bundle(var: Option<&str>) -> bool {
     }
 }
 
-/// Freshness gate for boot-lazy (issue #1057): is `dist_root` a prebuilt
-/// site we can safely serve immediately as the cold seed?
+/// Freshness gate for boot-lazy's Auto mode (issue #1057): is `dist_root` a
+/// prebuilt site we can safely serve immediately as the cold seed?
 ///
 /// Minimal, conservative check: the directory exists and contains at least
 /// one `index.html` (the shape every built route writes). When this is
-/// false — no prior `pnpm build`, or an empty/partial `dist/` — boot-lazy is
-/// declined and the eager boot render runs instead, so the server never
-/// comes up serving 404s. Content staleness is NOT gated here: boot-lazy
-/// marks every route stale, so the first request to each route re-renders it
-/// fresh through the live host; the prebuilt bytes are only the
-/// before-first-request seed.
+/// false — no prior `pnpm build`, or an empty/partial `dist/` — Auto
+/// declines boot-lazy and the eager boot render runs instead, so **Auto**
+/// never comes up serving 404s. Content staleness is NOT gated here:
+/// boot-lazy marks every route stale, so the first request to each route
+/// re-renders it fresh through the live host; the prebuilt bytes are only
+/// the before-first-request seed.
+///
+/// **Cold (issue #1806/#1808) never consults this gate for its own
+/// decision** — [`defer_dev_bundle_decision`] and `run_boot_render` both
+/// take the boot-lazy branch for Cold unconditionally, seed or no seed. So
+/// the "never comes up serving 404s" guarantee above does NOT extend to
+/// Cold: every route serves the controlled `DEV_404_BODY` (with livereload)
+/// until its own first request re-renders it, with no seed to soften that
+/// window — the epic's accepted trade-off.
+///
+/// This function's *result* still matters under Cold, though, for a second,
+/// independent reason: the generic dev-server serve waterfall (`PageCache →
+/// html_root → public_root → dist_root → 404`, `zfb-server`'s
+/// `serve_page`/`read_from_dist`) has no notion of [`BootLazyMode`] at all —
+/// it always tries `dist_root` as a fallback leg ahead of the 404. If a
+/// `dist/` from a prior `pnpm build` happens to already sit on disk when
+/// Cold boots (this gate never asked for or validated it), that leg still
+/// serves those — possibly stale — bytes for any route not yet re-rendered
+/// on request, exactly as it already does for Auto's (checked-servable)
+/// seed today. Cold just never required that seed to exist, or be fresh, in
+/// order to boot lazily.
 fn dist_is_servable_seed(dist_root: &Path) -> bool {
     fn has_index_html(dir: &Path, depth: usize) -> bool {
         // Bounded walk: a built site writes `index.html` at the root and/or
@@ -10052,8 +10072,10 @@ mod tests {
 
             /// Issue #1057 — the freshness gate accepts a `dist/` only when it
             /// contains at least one `index.html` (root or nested), and
-            /// declines an absent / empty / html-less directory so boot-lazy
-            /// never comes up serving 404s.
+            /// declines an absent / empty / html-less directory so Auto's
+            /// boot-lazy never comes up serving 404s. (Cold, issue #1806,
+            /// never calls this gate for its own decision — see
+            /// `dist_is_servable_seed`'s doc comment.)
             #[test]
             fn dist_servable_seed_gate() {
                 use std::fs;

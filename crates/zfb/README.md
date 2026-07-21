@@ -45,8 +45,9 @@ Dev-render environment switches:
 | --- | --- |
 | `ZFB_DEV_EAGER=1` | Disable lazy dev rendering and render affected routes eagerly on every file change |
 | `ZFB_LAZY_DEV_RENDER=0|1` | Precise lazy/eager override; wins over `ZFB_DEV_EAGER` |
-| `ZFB_DEV_BOOT_LAZY=1` | Serve a valid prebuilt `dist/` immediately and render each route on first request |
-| `ZFB_DEV_DEFER_BUNDLE=0` | Opt out of boot-lazy bundle deferral; build the renderer before bind |
+| `ZFB_DEV_BOOT_LAZY=1` | Serve a valid prebuilt `dist/` immediately and render each route on first request; falls back to the eager boot render when no servable `dist/` exists |
+| `ZFB_DEV_BOOT_LAZY=cold` | Seedless variant of the above: render each route on first request without requiring a prebuilt `dist/` at all — every route serves the dev 404 page (with livereload) until its own first request |
+| `ZFB_DEV_DEFER_BUNDLE=0` | Opt out of boot-lazy bundle deferral (either variant); build the renderer before bind |
 
 ### `zfb build`
 
