@@ -779,10 +779,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     );
 
     // Issue #1808 — resolve the boot-lazy MODE once here too (Off/Auto/Cold,
-    // not just the `defer_dev_bundle` gate above), so the non-deferred
-    // Cold path's pre-bind stale-mark below and `run_boot_render`'s
-    // post-bind mark (which recomputes the same decision) agree on whether
-    // pre-marking already happened. See `premark_stale_before_bind_decision`.
+    // not just the `defer_dev_bundle` gate above): the non-deferred Cold
+    // path's pre-bind stale-mark below needs it (see
+    // `premark_stale_before_bind_decision`), and the deferred boot task
+    // (spawned further down) needs the SAME resolved value for its own
+    // Cold-only post-publish premark (its `refresh_bundle_and_routes`
+    // success arm) — both must agree on what the env asked for.
     let boot_lazy_mode_now = boot_lazy_decision(
         lazy_dev_render_enabled(),
         std::env::var("ZFB_DEV_BOOT_LAZY").ok().as_deref(),
@@ -834,9 +836,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // manifest-digest walk) this would leave a needless [bind → mark-stale]
     // 404 window — Cold has no `dist/` seed to cover it the way Auto's
     // equivalent non-deferred window is covered. See
-    // `premark_stale_before_bind_decision` for the full rationale;
-    // `run_boot_render` recomputes the same decision to skip its own
-    // (otherwise redundant) post-bind mark for this exact case.
+    // `premark_stale_before_bind_decision` for the full rationale, including
+    // Cold's DEFERRED-path counterpart (a different call site, inside the
+    // boot task below) and why `run_boot_render` never needs to mark Cold's
+    // routes itself once either premark has run.
     if premark_stale_before_bind_decision(boot_lazy_mode_now, defer_dev_bundle) {
         if let Some(session) = dev_session.as_ref() {
             session.mark_all_routes_stale();
@@ -1814,6 +1817,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             if let Some(handle) = &ssr_route_set_for_boot {
                                 refresh_live_ssr_routes(session, handle);
                             }
+                            // Issue #1808 (post-implementation review finding):
+                            // Cold has no `dist/` seed to serve during the gap
+                            // between this publish and `run_boot_render`'s
+                            // stale-mark further down — steps 1-3 (the
+                            // manifest-digest walk + persisted-graph load,
+                            // #1161) run in between and can be slow on a large
+                            // tree. Left unmarked, a request in that gap
+                            // resolves the route (the tables just published)
+                            // but finds it not stale (`claim_stale` returns
+                            // `None`), so the render-on-request hook is a
+                            // no-op and the request falls through to a
+                            // straight 404 — Auto's identical gap is masked by
+                            // its servable `dist/` seed, which Cold doesn't
+                            // have. Mark stale immediately so the very next
+                            // request after this publish can already claim +
+                            // render. `run_boot_render`'s Cold branch detects
+                            // this already happened and skips its own
+                            // (otherwise redundant) mark. See
+                            // `premark_stale_after_deferred_publish_decision`.
+                            if premark_stale_after_deferred_publish_decision(boot_lazy_mode_now) {
+                                session.mark_all_routes_stale();
+                            }
                         }
                         Err(e) => {
                             // Same warn-and-continue contract as the eager
@@ -1889,7 +1914,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 ctx,
                 dev_session_for_boot.as_ref(),
                 &dist_root_for_boot,
-                defer_dev_bundle,
             );
 
             // 5. Eager islands bundle (issue #1170). This is the last
@@ -2322,13 +2346,6 @@ fn run_boot_render(
     ctx: &BuildContext,
     dev_session: Option<&DevRenderSession>,
     dist_root: &Path,
-    // Issue #1808 — whether `run`'s pre-bind gate already deferred the dev
-    // bundle for THIS boot. Needed here only to detect (and skip) the one
-    // redundant case: Cold's non-deferred path already marked every route
-    // stale PRE-BIND (see `premark_stale_before_bind_decision`), so this
-    // function's post-bind mark would just duplicate this tick's
-    // `pages_stale` entries for that one combination.
-    defer_dev_bundle: bool,
 ) -> Option<BuildOutcome> {
     let mode = dev_session
         .map(|s| {
@@ -2352,11 +2369,20 @@ fn run_boot_render(
             // FIRST watcher edit takes the normal lazy path, not the
             // boot-eager one.
             let _ = session.inner.take_boot_render_pending();
-            // #1808 — skip the mark (but still report route_count) when
-            // Cold's non-deferred pre-bind gate already did it; see the
-            // `defer_dev_bundle` param doc above.
-            let premarked = premark_stale_before_bind_decision(mode, defer_dev_bundle);
-            let n = if premarked {
+            // #1808 — Cold's routes are ALREADY marked stale by this point,
+            // by an earlier call site: the non-deferred path marks PRE-BIND
+            // (`run`, right after `boot_dev_renderer` returns — see
+            // `premark_stale_before_bind_decision`); the deferred path marks
+            // immediately after `refresh_bundle_and_routes` publishes, in
+            // this same boot hook's step 0, before the manifest-digest walk
+            // that runs between there and here (a Codex review finding: Cold
+            // has no `dist/` seed to serve during that gap the way Auto's
+            // does). A deferred bundle that FAILED never published — the
+            // route tables stay the empty scaffold, so `route_count()` is
+            // `0` and this is a harmless no-op either way. So for Cold this
+            // is a report-only path; Auto still marks HERE (it never
+            // premarks — its servable seed covers the equivalent windows).
+            let n = if mode == BootLazyMode::Cold {
                 session.route_count()
             } else {
                 session.mark_all_routes_stale()
@@ -2956,7 +2982,7 @@ fn should_hint_cold_mode(mode: BootLazyMode, dist_servable: bool) -> bool {
 /// Issue #1808 — should the boot session mark every route stale PRE-BIND,
 /// before `TcpListener::bind`?
 ///
-/// Only Cold's non-deferred path needs this. On that path
+/// Only Cold's non-deferred path needs this HERE. On that path
 /// (`defer_dev_bundle == false`) `boot_dev_renderer` already built the route
 /// tables + renderer state EAGERLY, before bind, so leaving the stale-mark
 /// to `run_boot_render` (which only runs post-bind, inside the deferred boot
@@ -2966,17 +2992,44 @@ fn should_hint_cold_mode(mode: BootLazyMode, dist_servable: bool) -> bool {
 /// prebuilt `dist/` seed (Cold is seedless by design). Auto's equivalent
 /// non-deferred window (a servable seed present but `ZFB_DEV_DEFER_BUNDLE=0`)
 /// is untouched — the servable seed already covers it, so `run_boot_render`
-/// alone is correct there. Deferred boots (Cold or Auto) don't need this
-/// either: their route tables don't exist until the deferred task publishes
-/// them, well after bind, and `run_boot_render` marks them stale at that
-/// point.
+/// alone is correct there.
+///
+/// Cold's DEFERRED path has its own analogous premark, at a different call
+/// site: the boot hook marks stale immediately after
+/// `DevRenderSession::refresh_bundle_and_routes` successfully publishes the
+/// route tables (step 0, inline — no separate decision fn, since the only
+/// condition is `mode == Cold`), rather than waiting for `run_boot_render`
+/// after the manifest-digest walk that runs in between (a Codex review
+/// finding — Cold has no `dist/` seed to serve during that gap either).
+/// Between the two, Cold's routes are ALWAYS stale by the time
+/// `run_boot_render` runs, so it never needs to mark them itself — see its
+/// Cold branch, which just reports `route_count()` instead.
 ///
 /// Called from `run`, right after `boot_dev_renderer` returns, still before
-/// `TcpListener::bind`. `run_boot_render` recomputes the same decision to
-/// skip its own (otherwise redundant) post-bind mark for this exact case —
-/// see its Cold branch.
+/// `TcpListener::bind`.
 fn premark_stale_before_bind_decision(mode: BootLazyMode, defer_dev_bundle: bool) -> bool {
     mode == BootLazyMode::Cold && !defer_dev_bundle
+}
+
+/// Issue #1808 (post-implementation review finding) — Cold's DEFERRED-path
+/// counterpart to [`premark_stale_before_bind_decision`]: should the boot
+/// hook mark every route stale immediately after
+/// `DevRenderSession::refresh_bundle_and_routes` successfully PUBLISHES the
+/// route tables, rather than waiting for `run_boot_render` (which runs
+/// afterward, past the manifest-digest walk)?
+///
+/// Only Cold needs this — its seedless design means the gap between publish
+/// and `run_boot_render`'s stale-mark would otherwise serve a straight 404
+/// for however long that walk takes (routes resolve but aren't stale yet,
+/// so the request-time render-on-request hook is a no-op). Auto's identical
+/// gap is masked by its servable `dist/` seed (`read_from_dist` serves the
+/// prebuilt bytes in the meantime), so it does not premark here.
+///
+/// Called only from inside the `refresh_bundle_and_routes` success arm of
+/// the deferred boot task (so it never fires against the still-empty
+/// scaffold tables a failed refresh would leave behind).
+fn premark_stale_after_deferred_publish_decision(mode: BootLazyMode) -> bool {
+    mode == BootLazyMode::Cold
 }
 
 /// Pure precedence rule for the boot-lazy mode (issue #1057; 3-state since
@@ -9962,6 +10015,72 @@ mod tests {
                 assert!(
                     session.claim_stale(Path::new("index.html")).is_some(),
                     "pre-bind marking must make the route claimable before bind"
+                );
+            }
+
+            /// Issue #1808 (post-implementation review finding) —
+            /// `premark_stale_after_deferred_publish_decision` says yes ONLY
+            /// for Cold; Auto never premarks after a deferred publish — its
+            /// servable seed already covers the equivalent window.
+            #[test]
+            fn premark_stale_after_deferred_publish_decision_only_for_cold() {
+                assert!(premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Cold
+                ));
+                assert!(!premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Auto
+                ));
+                assert!(!premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Off
+                ));
+            }
+
+            /// Issue #1808 (post-implementation review finding) — BEHAVIORAL
+            /// proof for Cold's DEFERRED-path premark: immediately after a
+            /// simulated successful `refresh_bundle_and_routes` publish,
+            /// calling `mark_all_routes_stale` (gated by
+            /// `premark_stale_after_deferred_publish_decision`) makes the
+            /// route claimable — closing the gap a Codex review pass found
+            /// between that publish and `run_boot_render`'s post-digest-walk
+            /// stale-mark, during which Cold (having no `dist/` seed) would
+            /// otherwise serve a straight 404.
+            #[test]
+            fn cold_deferred_premark_after_publish_makes_route_claimable() {
+                let entry = RouteUniverseEntry {
+                    url_path: "/".into(),
+                    output_path: PathBuf::from("index.html"),
+                    route_key: "/".into(),
+                    static_html: false,
+                    source_path: None,
+                };
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                routes.insert(
+                    PathBuf::from("pages/index.tsx"),
+                    vec![DevRouteEntry {
+                        entry,
+                        params: None,
+                    }],
+                );
+                let session = DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(routes, Vec::new())),
+                };
+
+                // Baseline: right after a simulated `refresh_bundle_and_routes`
+                // publish (routes exist, nothing rendered/staled yet).
+                assert!(session.claim_stale(Path::new("index.html")).is_none());
+
+                // Cold's deferred boot hook fires the post-publish premark...
+                assert!(premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Cold
+                ));
+                session.mark_all_routes_stale();
+
+                // ...so the route is claimable well before `run_boot_render`
+                // (and the manifest-digest walk that precedes it) ever runs.
+                assert!(
+                    session.claim_stale(Path::new("index.html")).is_some(),
+                    "post-publish marking must make the route claimable \
+                     before the manifest-digest walk / run_boot_render"
                 );
             }
 
