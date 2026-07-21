@@ -71,6 +71,28 @@
 //!    a seeded servable `dist/` and pins the bundle's position past bind via
 //!    TWO co-located `ZFB_DEV_TEST_SLOW_BUNDLE_MS` seams (deferred + eager) so
 //!    an un-defer revert is caught.
+//! 6. `cold_lazy_binds_and_serves_dev_404_during_held_bundle_window` — the
+//!    Cold (seedless) counterpart to Test 5's held-window guard (issue
+//!    #1806/#1808): `ZFB_DEV_BOOT_LAZY=cold`, NO `dist/` seed, holds the
+//!    deferred bundle open via `ZFB_DEV_TEST_SLOW_BUNDLE_MS`. Falsifies an
+//!    accidental eager fallback (the banner must still land fast) and
+//!    proves every route serves the controlled `DEV_404_BODY` — WITH the
+//!    live-reload script — during the window, never a connection error or
+//!    eager-rendered content (Cold has no `dist/` to fall back on at all).
+//! 7. `cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200` — a
+//!    normal (unslowed) Cold session, no seed: proves the deferred
+//!    publish's stale-mark actually reaches the browser as a real SSE
+//!    `page` event on `/__zfb/reload` (not just "GET eventually returns
+//!    200" — that alone would only prove render-on-request, not the
+//!    broadcast an already-open tab needs to self-heal), then that `GET /`
+//!    serves 200 with freshly rendered content — a 200 from nothing.
+//! 8. `cold_lazy_broken_bundle_recovers_after_source_fix` — the live e2e
+//!    proof of the #1809 cold-bootstrap recovery mechanism: boot Cold with
+//!    a deliberately broken `pages/index.tsx` so the FIRST deferred bundle
+//!    fails; asserts the controlled 404 plus the error-level cold-lazy
+//!    failure message, then restores the valid source and asserts recovery
+//!    — an SSE `page` event, the "cold-lazy bootstrap recovered" info
+//!    line, and a first-request 200.
 //!
 //! ## Spawn / teardown discipline (from `dev_serve_e2e.rs` /
 //! `build_terminates.rs`)
@@ -89,7 +111,7 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
 
 /// Serializes the spawning tests in this file: each boots a full V8 +
 /// esbuild dev session; running them concurrently would double memory
@@ -165,6 +187,19 @@ const _: () = assert!(
     "SLOW_BUNDLE_MS must exceed BANNER_DEADLINE — otherwise an un-deferred pre-bind dev \
      bundle would still print the banner within the deadline and the guard proves nothing"
 );
+
+/// Test 8 (`cold_lazy_broken_bundle_recovers_after_source_fix`) corruption
+/// window: reusing the SAME `ZFB_DEV_TEST_SLOW_BUNDLE_MS` seam as `SLOW_BUNDLE_MS`
+/// above, but for a different purpose. `SLOW_BUNDLE_MS` must exceed
+/// `BANNER_DEADLINE` (it's a bind-ordering guard); this constant has no such
+/// requirement — it only needs to outlast a single local file write, done
+/// right after the ready banner and BEFORE the deferred boot task's bundle
+/// call (which sleeps for this long immediately before reading
+/// `pages/index.tsx`). That ordering — sleep-then-read, inside the SAME boot
+/// hook — is what makes the corruption write race-free: anything written
+/// before the window elapses is guaranteed to be on disk when the bundle
+/// call finally reads the file.
+const COLD_CORRUPTION_WINDOW_MS: u64 = 5_000;
 
 /// Deadline for the FIRST successful HTTP response after the banner. The banner
 /// timeout is the PRIMARY bind-ordering signal (see `SLOW_DIGEST_MS`); this is
@@ -413,6 +448,40 @@ fn client() -> reqwest::Client {
         .timeout(Duration::from_secs(5))
         .build()
         .expect("build reqwest client")
+}
+
+/// Reqwest client for the SSE live-reload subscription (Tests 7/8).
+/// Deliberately no overall `.timeout()`, unlike `client()` above: the SSE
+/// stream is a legitimately long-lived connection kept open until the dev
+/// server publishes, and the read side is bounded by
+/// `next_sse_event_name`'s own `dur` argument instead. A client with a
+/// bounded total-request timeout would error the stream mid-read on a
+/// perfectly healthy tick that just took a while — indistinguishable from a
+/// real regression.
+fn sse_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("build reqwest SSE client")
+}
+
+/// Subscribe to the dev server's SSE live-reload endpoint. Must be called
+/// BEFORE the event it is meant to observe — the channel is a broadcast, not
+/// a queue, so an event that fires before subscription is gone forever.
+/// Mirrors `dev_dep_invalidation_1284_e2e.rs`'s helper of the same
+/// name/contract.
+async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
+    let resp = client
+        .get(format!("{base}/__zfb/reload"))
+        .send()
+        .await
+        .expect("subscribe to /__zfb/reload");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "SSE endpoint /__zfb/reload must answer 200"
+    );
+    resp
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,4 +1139,422 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
     );
 
     // The deferred bundle slow step is still sleeping; Drop group-kills it.
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — cold-lazy held-bundle-window guard (issue #1806/#1808).
+// ---------------------------------------------------------------------------
+
+/// Cold-lazy (`ZFB_DEV_BOOT_LAZY=cold`) counterpart to Test 5's held-window
+/// guard, seedless: NO `dist/` is written before spawning. Cold defers the
+/// dev bundle exactly like Auto+seeded-dist does (`defer_dev_bundle_decision`'s
+/// Cold conjunct — issue #1808), so the SAME `ZFB_DEV_TEST_SLOW_BUNDLE_MS`
+/// seam applies; this test holds that window open and asserts TWO things:
+///
+/// 1. **No accidental eager fallback.** The ready banner still lands at boot
+///    time (well under `BANNER_DEADLINE`), proving Cold takes the deferred
+///    branch even without a seed. Falsifiability: if
+///    `defer_dev_bundle_decision`'s Cold conjunct were reverted (Cold
+///    treated like Auto, requiring a servable seed it doesn't have), the
+///    eager pre-bind bundle path in `boot_dev_renderer` would run instead —
+///    firing the EAGER `ZFB_DEV_TEST_SLOW_BUNDLE_MS` seam before bind and
+///    delaying the banner past `BANNER_DEADLINE`, timing out
+///    `wait_for_banner_port`. Observed directly (see the PR/report).
+/// 2. **The controlled 404, not a connection error or eager content.**
+///    `GET /` during the held window must return the controlled
+///    `DEV_404_BODY` — WITH the live-reload script, so an open tab
+///    self-heals via the post-publish `pages_stale` broadcast (Tests 7/8) —
+///    never hang, never a connection refusal, never eager-rendered content.
+///    Cold has no `dist/` seed at all (unlike Test 5's Auto + seeded-dist
+///    window, which serves the seed here instead).
+///
+/// Terminates without waiting for the window to close — Drop group-kills the
+/// whole process tree while the deferred bundle is still sleeping.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // No dist/ seed written: cold-lazy is seedless by design (issue #1806).
+    let slow = SLOW_BUNDLE_MS.to_string();
+    let spawn_t = Instant::now();
+    let mut session = spawn_dev(
+        &tmp,
+        &esbuild,
+        &[
+            ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", slow.as_str()),
+            ("ZFB_DEV_BOOT_LAZY", "cold"),
+        ],
+    );
+
+    // Guarantee 1 (no accidental eager fallback): see doc comment above.
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip (no V8 / no esbuild)
+    };
+    let banner_elapsed = spawn_t.elapsed();
+    assert!(
+        (banner_elapsed.as_millis() as u64) < SLOW_BUNDLE_MS,
+        "ready banner appeared {}ms after spawn, but the injected dev-bundle slow-step is \
+         {}ms — cold-lazy (ZFB_DEV_BOOT_LAZY=cold) ran the deferred bundle (and its sleep) \
+         BEFORE the bind/banner, an accidental eager fallback (issue #1808).\n{}",
+        banner_elapsed.as_millis(),
+        SLOW_BUNDLE_MS,
+        session.logs(),
+    );
+
+    let base = format!("http://localhost:{port}");
+    let client = client();
+
+    // Guarantee 2 (the controlled 404, with live-reload, not a connection
+    // error or eager content):
+    let root_url = format!("{base}/");
+    let request_start = Instant::now();
+    let mut observed: Option<(u16, String)> = None;
+    while request_start.elapsed() < FIRST_RESPONSE_DEADLINE {
+        if let Ok(resp) = client.get(&root_url).send().await {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            observed = Some((status, body));
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let (status, body) = observed.unwrap_or_else(|| {
+        panic!(
+            "the dev server did not answer GET / within {}s of the banner while the cold \
+             deferred-bundle slow-step was in flight — the serve path is blocking on the \
+             deferred bundle.\n{}",
+            FIRST_RESPONSE_DEADLINE.as_secs(),
+            session.logs(),
+        )
+    });
+    assert_eq!(
+        status,
+        404,
+        "GET / during the held cold-lazy bundle window must serve the controlled dev 404 \
+         (no eager fallback, no wrong body, no seed to fall back on); got status {status}, \
+         body:\n{body}\n{}",
+        session.logs(),
+    );
+    assert!(
+        body.contains("404"),
+        "GET / during the held window returned status 404 but a body that doesn't look \
+         like the controlled dev 404 page; body:\n{body}\n{}",
+        session.logs(),
+    );
+    assert!(
+        body.contains("<script src=\"/__zfb/livereload.js\"></script>"),
+        "the cold dev-404 body must carry the live-reload script — that's what lets an \
+         open tab self-heal via the post-publish `pages_stale` broadcast once the bundle \
+         lands; got body:\n{body}\n{}",
+        session.logs(),
+    );
+
+    // The deferred bundle slow step is still sleeping; Drop group-kills it.
+}
+
+// ---------------------------------------------------------------------------
+// Test 7 — cold-lazy deferred publish: SSE self-heal + fresh 200 (issue
+// #1806/#1808).
+// ---------------------------------------------------------------------------
+
+/// A normal (unslowed) Cold session, no `dist/` seed: proves the deferred
+/// publish's post-publish stale-mark actually reaches the browser as a REAL
+/// SSE `page` event on `/__zfb/reload` — not just "GET eventually returns
+/// 200", which alone would only prove render-on-request, not the broadcast
+/// that makes an already-open tab (still showing the dev 404 body from Test
+/// 6's window) self-heal.
+///
+/// Subscribes to SSE the instant the ready banner appears — the deferred
+/// boot task starts the moment the listener binds, so this is the earliest
+/// possible subscribe point; the broadcast channel has no replay buffer, so
+/// subscribing any later risks missing the one `page` event this tick
+/// emits.
+///
+/// After the event, `GET /` must serve 200 with the fixture's real homepage
+/// content — a 200 from nothing: Cold has no `dist/` seed, so the only
+/// possible source for that 200 is the request-time render-on-request hook
+/// rendering the route from SOURCE.
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // No dist/ seed, no injected slow-step: the deferred bundle runs at its
+    // natural speed on this small fixture.
+    let mut session = spawn_dev(&tmp, &esbuild, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
+
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip
+    };
+    let base = format!("http://localhost:{port}");
+
+    // Subscribe to SSE immediately after the banner — see doc comment above
+    // on why this must happen as early as possible.
+    let sse_subscriber = sse_client();
+    let sse = subscribe_sse(&sse_subscriber, &base).await;
+
+    // The authoritative proof (issue #1811 requires this be HARD-asserted,
+    // not best-effort like `dev_dep_invalidation_1284_e2e.rs`'s watcher-tick
+    // pattern): an actual SSE `page` event.
+    let event = next_sse_event_name(sse, RENDER_DEADLINE)
+        .await
+        .expect("read SSE stream after the cold-lazy deferred publish");
+    assert_eq!(
+        event.as_deref(),
+        Some("page"),
+        "expected a `page` SSE event once the cold-lazy deferred bundle publishes and \
+         marks every route stale (issue #1808); got {event:?} within {}s.\n{}",
+        RENDER_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    // GET / now serves 200 with freshly rendered content.
+    let client = client();
+    let root_url = format!("{base}/");
+    let start = Instant::now();
+    let mut served: Option<(u16, String)> = None;
+    while start.elapsed() < RENDER_DEADLINE {
+        if let Ok(resp) = client.get(&root_url).send().await {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if status == 200 {
+                served = Some((status, body));
+                break;
+            }
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let (status, body) = served.unwrap_or_else(|| {
+        panic!(
+            "GET / did not serve 200 within {}s of the cold-lazy deferred publish's `page` \
+             SSE event.\n{}",
+            RENDER_DEADLINE.as_secs(),
+            session.logs(),
+        )
+    });
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("<h1>dev-loop-basic</h1>"),
+        "GET / after the cold-lazy deferred publish must serve the freshly-rendered \
+         fixture homepage (a 200 from nothing — Cold has no dist/ seed); got body:\n{body}\n{}",
+        session.logs(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — cold-bootstrap recovery after a broken deferred bundle (issue
+// #1809).
+// ---------------------------------------------------------------------------
+
+/// Live e2e proof of the #1809 cold-bootstrap recovery mechanism: when
+/// Cold's FIRST deferred bundle attempt fails, later publishes must still
+/// reach the browser rather than 404ing forever (the failed attempt
+/// consumes the boot-render-pending flag against the empty scaffold route
+/// tables — see `arm_cold_bootstrap_recovery_decision` /
+/// `recover_cold_bootstrap_after_publish` in `commands/dev.rs`).
+///
+/// ## Deterministic corruption — no pre-spawn race
+///
+/// `ZFB_DEV_TEST_SLOW_BUNDLE_MS=COLD_CORRUPTION_WINDOW_MS` buys a window,
+/// AFTER the ready banner (bind — proving Cold binds and starts serving
+/// without the source ever having to be valid) and BEFORE the deferred
+/// bundle actually reads `pages/index.tsx`, in which this test overwrites
+/// that file with deliberately invalid syntax. This sidesteps racing the
+/// corruption write against the boot task: the sleep runs INSIDE the boot
+/// hook, immediately before the bundle call, so any write completed before
+/// the window elapses is guaranteed to land before the bundle reads the
+/// file. See `COLD_CORRUPTION_WINDOW_MS`'s doc comment for why it does NOT
+/// need to exceed `BANNER_DEADLINE` like `SLOW_BUNDLE_MS` does.
+///
+/// ## Sequence
+///
+/// 1. Boot Cold; corrupt `pages/index.tsx` inside the held window.
+/// 2. Assert the FIRST deferred bundle fails: the error-level cold-lazy
+///    failure message (`deferred_bundle_failure_message`'s Cold branch)
+///    appears in the logs, and `GET /` serves the controlled 404 (no route
+///    table was ever published).
+/// 3. Subscribe to SSE (before the fix, so the recovery event can't be
+///    missed), then restore the ORIGINAL `pages/index.tsx` source — an
+///    ordinary watcher-tick edit, exercising the SAME
+///    `refresh_bundle_and_routes` success path any other content change
+///    does.
+/// 4. Assert recovery: a hard-asserted `page` SSE event, the "cold-lazy
+///    bootstrap recovered" info line (the mechanism's own explicit signal —
+///    proves THIS is what fired, not just any successful publish), and a
+///    first-request 200 with the real homepage content.
+///
+/// ## Falsifiability
+///
+/// If `arm_cold_bootstrap_recovery_decision` were reverted (Cold's bundle
+/// failure never arms the recovery latch), the fix's successful publish
+/// would find `take_cold_bootstrap_pending()` false and skip the mark-stale
+/// + broadcast entirely — no `page` SSE event ever fires, and the hard SSE
+/// assertion below times out and fails. Observed directly (see the
+/// PR/report).
+#[tokio::test(flavor = "multi_thread")]
+async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let window = COLD_CORRUPTION_WINDOW_MS.to_string();
+    let mut session = spawn_dev(
+        &tmp,
+        &esbuild,
+        &[
+            ("ZFB_DEV_TEST_SLOW_BUNDLE_MS", window.as_str()),
+            ("ZFB_DEV_BOOT_LAZY", "cold"),
+        ],
+    );
+
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip
+    };
+    let base = format!("http://localhost:{port}");
+    let client = client();
+    let root_url = format!("{base}/");
+
+    // Step 1 — corrupt pages/index.tsx INSIDE the held window (guaranteed
+    // to land before the deferred bundle reads it — see the fn doc
+    // comment). Capture the original bytes first so the fix step restores
+    // byte-identical valid source without hardcoding the fixture's
+    // content.
+    let index_path = session.root.join("pages").join("index.tsx");
+    let original_index =
+        fs::read_to_string(&index_path).expect("read original pages/index.tsx before breaking it");
+    fs::write(&index_path, "export default function HomePage( {\n")
+        .expect("write deliberately-broken pages/index.tsx");
+
+    // Step 2 — the FIRST deferred bundle must fail LOUDLY. Wait for the
+    // error-level cold-lazy failure message first: it is the authoritative
+    // signal that the bundle attempt actually ran and failed, unlike "GET /
+    // is 404" — which is ALSO (trivially) true before the bundle even
+    // attempts, since routes start as the empty scaffold.
+    let error_deadline = Instant::now();
+    let mut saw_error_message = false;
+    while error_deadline.elapsed() < RENDER_DEADLINE {
+        if session
+            .logs()
+            .contains("cold-lazy (ZFB_DEV_BOOT_LAZY=cold) has no prebuilt dist/ seed")
+        {
+            saw_error_message = true;
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    assert!(
+        saw_error_message,
+        "the error-level cold-lazy deferred-bundle-failure message never appeared within \
+         {}s.\n{}",
+        RENDER_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    // Confirm the route table was never published: GET / still serves the
+    // controlled 404 (never a wrong/empty/partial body).
+    let confirm_start = Instant::now();
+    let mut confirmed_404: Option<(u16, String)> = None;
+    while confirm_start.elapsed() < FIRST_RESPONSE_DEADLINE {
+        if let Ok(resp) = client.get(&root_url).send().await {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            confirmed_404 = Some((status, body));
+            break;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let (status, body) = confirmed_404.unwrap_or_else(|| {
+        panic!(
+            "GET / after the broken deferred bundle failed to answer.\n{}",
+            session.logs()
+        )
+    });
+    assert_eq!(
+        status,
+        404,
+        "GET / after the broken deferred bundle must still serve the controlled dev 404 \
+         (cold-lazy has no dist/ seed to fall back on); got status {status}, body:\n{body}\n{}",
+        session.logs(),
+    );
+    assert!(
+        body.contains("404"),
+        "GET / after the broken deferred bundle returned status 404 but a body that \
+         doesn't look like the controlled dev 404 page; body:\n{body}\n{}",
+        session.logs(),
+    );
+
+    // Step 3 — subscribe to SSE BEFORE the fix (broadcast, not a queue: an
+    // event fired before subscription is gone forever).
+    let sse_subscriber = sse_client();
+    let sse = subscribe_sse(&sse_subscriber, &base).await;
+
+    fs::write(&index_path, &original_index).expect("restore original pages/index.tsx");
+
+    // Step 4 — assert recovery. A hard-asserted `page` SSE event (see Test
+    // 7's doc comment on why this must be hard, not best-effort).
+    let event = next_sse_event_name(sse, RENDER_DEADLINE)
+        .await
+        .expect("read SSE stream after fixing pages/index.tsx");
+    assert_eq!(
+        event.as_deref(),
+        Some("page"),
+        "expected a `page` SSE event once the fixed source republishes and the \
+         cold-bootstrap recovery latch fires (issue #1809); got {event:?} within {}s.\n{}",
+        RENDER_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    // The mechanism's own explicit signal — proves the RECOVERY path fired
+    // (not merely "some publish succeeded").
+    assert!(
+        session.logs().contains("cold-lazy bootstrap recovered"),
+        "expected the \"dev: cold-lazy bootstrap recovered\" info line after the fixed \
+         source republished (issue #1809's recovery latch).\n{}",
+        session.logs(),
+    );
+
+    // First request after recovery: 200 with the real homepage content.
+    let start = Instant::now();
+    let mut served: Option<(u16, String)> = None;
+    while start.elapsed() < RENDER_DEADLINE {
+        if let Ok(resp) = client.get(&root_url).send().await {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if status == 200 {
+                served = Some((status, body));
+                break;
+            }
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let (status, body) = served.unwrap_or_else(|| {
+        panic!(
+            "GET / did not serve 200 within {}s of the cold-bootstrap recovery's `page` SSE \
+             event.\n{}",
+            RENDER_DEADLINE.as_secs(),
+            session.logs(),
+        )
+    });
+    assert_eq!(status, 200);
+    assert!(
+        body.contains("<h1>dev-loop-basic</h1>"),
+        "GET / after cold-bootstrap recovery must serve the freshly-rendered fixture \
+         homepage; got body:\n{body}\n{}",
+        session.logs(),
+    );
 }
