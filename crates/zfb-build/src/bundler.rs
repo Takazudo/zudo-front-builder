@@ -2404,7 +2404,7 @@ pub fn bundle_with_session(
         &project_root,
         &first_party_root,
         &plugin_preprocessing_files,
-        &BTreeMap::new(),
+        &input.tsconfig_paths,
         &input.plugin_alias_entries,
     );
 
@@ -4857,6 +4857,8 @@ fn collect_runtime_alias_claim_graph(
 /// - a claim outside `first_party_root`, or under (i.e. local to)
 ///   `project_root` — those are the project mirror's own concern,
 /// - a claim reached through a `node_modules` component (vendored, not source),
+/// - a hidden or infrastructure directory as the mirror root (the ignore
+///   walker deliberately does not filter its own root),
 /// - `first_party_root` itself (never mirrored wholesale), and
 /// - a region that would CONTAIN `project_root` (an ancestor-of-project dir):
 ///   mirroring it would double-stage the project subtree over its own mirror.
@@ -4900,14 +4902,21 @@ fn resolve_mirror_root(
             break;
         }
         if dir.join("package.json").is_file() {
-            return Some(dir.to_path_buf());
+            return mirror_root_is_stageable(dir).then(|| dir.to_path_buf());
         }
         match dir.parent() {
             Some(parent) => dir = parent,
             None => break,
         }
     }
-    Some(claim_dir)
+    mirror_root_is_stageable(&claim_dir).then_some(claim_dir)
+}
+
+fn mirror_root_is_stageable(root: &Path) -> bool {
+    root.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        !name.starts_with('.') && !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip)
+    })
 }
 
 /// The claim plan (issue #1691/#1692): the set of distinct workspace-sibling
@@ -18233,6 +18242,16 @@ mod tests {
         fs::create_dir_all(vendored.parent().unwrap()).unwrap();
         fs::write(&vendored, "x").unwrap();
         assert_eq!(resolve_mirror_root(&vendored, &project, ws), None);
+
+        // A directly claimed hidden/infra directory cannot become the walk
+        // root: ignore walkers preserve their own root even when it would be
+        // pruned as a descendant.
+        for root_name in [".unstaged", "dist"] {
+            let skipped = ws.join(root_name).join("escape.ts");
+            fs::create_dir_all(skipped.parent().unwrap()).unwrap();
+            fs::write(&skipped, "x").unwrap();
+            assert_eq!(resolve_mirror_root(&skipped, &project, ws), None);
+        }
 
         // The first-party root itself is never mirrored wholesale.
         let root_file = ws.join("root.ts");
