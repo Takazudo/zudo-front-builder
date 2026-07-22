@@ -112,7 +112,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -145,6 +145,7 @@ use crate::adapter::run_capturing;
 use crate::glob_expand::expand_import_meta_glob_with_matches;
 use crate::module_worker::{
     collect_runtime_import_specifiers_from_file, discover_module_preprocessing_with_context,
+    discover_module_preprocessing_with_tsconfig_paths,
     discover_registered_virtual_preprocessing_with_context,
     remap_virtual_module_project_imports_to_shadow, rewrite_module_worker_urls_with_context,
     ModuleWorkerBuildContext, ModuleWorkerDependency,
@@ -2374,6 +2375,25 @@ pub fn bundle_with_session(
             );
     }
 
+    // A workspace-root wildcard such as `@/* -> <workspace>/*` is too broad
+    // to be a staging claim by itself. Resolve only specifiers that actually
+    // occur in runtime position, then walk those concrete files' ordinary
+    // first-party graphs. This keeps the workspace root from becoming a
+    // wholesale mirror while still giving the existing materialisation pass
+    // every reached file (including CSS and JSON leaves).
+    let (runtime_alias_claims, runtime_alias_raw_import_edges) = collect_runtime_alias_claim_graph(
+        &project_root,
+        &first_party_root,
+        &input.tsconfig_paths,
+        &bundle_exclude,
+        &effective_virtual_context,
+    )?;
+    plugin_preprocessing_files.extend(runtime_alias_claims);
+    mat_ctx
+        .raw_import_edges
+        .borrow_mut()
+        .extend(runtime_alias_raw_import_edges);
+
     // Issue #1692: the claim plan — computed ONCE here now that
     // `plugin_preprocessing_files` (claim sources a + c) is fully populated,
     // alongside the tsconfig/plugin alias targets (claim source b). It drives
@@ -4388,6 +4408,446 @@ fn alias_target_claim_path(target: &str) -> PathBuf {
     normalize_path_lexical(Path::new(trimmed))
 }
 
+fn concrete_alias_targets(specifier: &str, paths: &BTreeMap<String, Vec<String>>) -> Vec<PathBuf> {
+    let mut matches = paths
+        .iter()
+        .filter_map(|(pattern, targets)| {
+            if let Some((prefix, suffix)) = pattern.split_once('*') {
+                if !specifier.starts_with(prefix)
+                    || !specifier.ends_with(suffix)
+                    || specifier.len() < prefix.len() + suffix.len()
+                {
+                    return None;
+                }
+                let capture = &specifier[prefix.len()..specifier.len() - suffix.len()];
+                Some((false, prefix.len() + suffix.len(), capture, targets))
+            } else if pattern == specifier {
+                Some((true, pattern.len(), "", targets))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|candidate| std::cmp::Reverse((candidate.0, candidate.1)));
+    let Some((_, _, capture, targets)) = matches.first() else {
+        return Vec::new();
+    };
+    targets
+        .iter()
+        .map(|target| normalize_path_lexical(Path::new(&target.replacen('*', capture, 1))))
+        .collect()
+}
+
+fn resolve_concrete_alias_file(candidate: &Path) -> Option<PathBuf> {
+    if candidate.is_file() {
+        return Some(candidate.to_path_buf());
+    }
+    let name = candidate.file_name()?;
+    for extension in SSR_RESOLVE_EXTENSIONS {
+        let mut path = candidate.to_path_buf();
+        let mut appended = name.to_os_string();
+        appended.push(format!(".{extension}"));
+        path.set_file_name(appended);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    if candidate.is_dir() {
+        return resolve_concrete_alias_file(&candidate.join("index"));
+    }
+    None
+}
+
+fn workspace_package_root_for(path: &Path, workspace_root: &Path) -> PathBuf {
+    let mut dir = path.parent().unwrap_or(path);
+    loop {
+        if dir.join("package.json").is_file() {
+            return dir.to_path_buf();
+        }
+        if dir == workspace_root {
+            return workspace_root.to_path_buf();
+        }
+        match dir.parent() {
+            Some(parent) if parent.starts_with(workspace_root) => dir = parent,
+            _ => return workspace_root.to_path_buf(),
+        }
+    }
+}
+
+fn workspace_root_tree(path: &Path, workspace_root: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(workspace_root).ok()?;
+    let first = relative.components().next()?;
+    Some(workspace_root.join(first.as_os_str()))
+}
+
+fn runtime_alias_path_has_workspace_membership(
+    path: &Path,
+    workspace_root: &Path,
+    project_root: &Path,
+    root_package_claimed: bool,
+) -> bool {
+    let package_root = workspace_package_root_for(path, workspace_root);
+    if package_root == workspace_root {
+        root_package_claimed
+    } else {
+        zfb_types::first_party::workspace_claims_package(project_root, &package_root)
+    }
+}
+
+fn canonical_runtime_alias_path(
+    path: &Path,
+    canonical_workspace_root: &Path,
+    workspace_root: &Path,
+) -> Option<PathBuf> {
+    let canonical = path.canonicalize().ok()?;
+    let relative = canonical.strip_prefix(canonical_workspace_root).ok()?;
+    Some(normalize_path_lexical(&workspace_root.join(relative)))
+}
+
+fn runtime_alias_path_is_claimable(
+    path: &Path,
+    canonical_workspace_root: &Path,
+    workspace_root: &Path,
+    project_root: &Path,
+    root_package_claimed: bool,
+    bundle_exclude: &BundleExcludeMatcher,
+) -> Result<bool> {
+    if !path.starts_with(workspace_root)
+        || !runtime_alias_claim_is_allowed(path, workspace_root, project_root, bundle_exclude)?
+    {
+        return Ok(false);
+    }
+    let Some(canonical_logical) =
+        canonical_runtime_alias_path(path, canonical_workspace_root, workspace_root)
+    else {
+        return Ok(false);
+    };
+    if path_is_inside_node_modules(&canonical_logical)
+        || !runtime_alias_claim_is_allowed(
+            &canonical_logical,
+            workspace_root,
+            project_root,
+            bundle_exclude,
+        )?
+    {
+        return Ok(false);
+    }
+    if path.starts_with(project_root) {
+        return Ok(canonical_logical.starts_with(project_root));
+    }
+    Ok(runtime_alias_path_has_workspace_membership(
+        path,
+        workspace_root,
+        project_root,
+        root_package_claimed,
+    ) && runtime_alias_path_has_workspace_membership(
+        &canonical_logical,
+        workspace_root,
+        project_root,
+        root_package_claimed,
+    ))
+}
+
+fn runtime_alias_claim_is_allowed(
+    path: &Path,
+    workspace_root: &Path,
+    project_root: &Path,
+    bundle_exclude: &BundleExcludeMatcher,
+) -> Result<bool> {
+    let Ok(relative) = path.strip_prefix(workspace_root) else {
+        return Ok(false);
+    };
+    if bundle_exclude.is_excluded(path, project_root)
+        || relative.components().any(|component| {
+            let Component::Normal(name) = component else {
+                return false;
+            };
+            let name = name.to_string_lossy();
+            name.starts_with('.') || MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip)
+        })
+        || (relative
+            .parent()
+            .is_some_and(|parent| parent.as_os_str().is_empty())
+            && relative
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_reserved_shadow_root_name))
+    {
+        return Ok(false);
+    }
+
+    // Match the wholesale mirror's `.gitignore` posture without enumerating
+    // (and therefore accidentally treating as a staging claim) any sibling
+    // tree. Nested ignore files are added in root-to-leaf order.
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(workspace_root);
+    let mut ancestors = path
+        .parent()
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .take_while(|ancestor| ancestor.starts_with(workspace_root))
+        .collect::<Vec<_>>();
+    ancestors.reverse();
+    for ancestor in ancestors {
+        let ignore_file = ancestor.join(".gitignore");
+        if ignore_file.is_file() {
+            if let Some(error) = builder.add(ignore_file) {
+                return Err(error).context("bundler: parse first-party .gitignore");
+            }
+        }
+    }
+    let matcher = builder
+        .build()
+        .context("bundler: build first-party .gitignore matcher")?;
+    Ok(!matcher.matched_path_or_any_parents(path, false).is_ignore())
+}
+
+fn reject_root_package_relative_tree_escapes(
+    files: &BTreeSet<PathBuf>,
+    workspace_root: &Path,
+) -> Result<()> {
+    for importer in files {
+        if workspace_package_root_for(importer, workspace_root) != workspace_root {
+            continue;
+        }
+        let Some(importer_tree) = workspace_root_tree(importer, workspace_root) else {
+            continue;
+        };
+        let Ok(specifiers) = collect_runtime_import_specifiers_from_file(importer) else {
+            continue;
+        };
+        for specifier in specifiers {
+            let path = specifier
+                .split_once(['?', '#'])
+                .map(|(path, _)| path)
+                .unwrap_or(&specifier);
+            if !path.starts_with("../") {
+                continue;
+            }
+            let target =
+                normalize_path_lexical(&importer.parent().unwrap_or(workspace_root).join(path));
+            if target.starts_with(workspace_root) && !target.starts_with(&importer_tree) {
+                bail!(
+                    "bundler: parent-escaping relative value import {specifier:?} in {} crosses the staged root-package source-tree boundary {}; use a tsconfig alias spelling instead",
+                    importer.display(),
+                    importer_tree.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_runtime_alias_claim_graph(
+    project_root: &Path,
+    first_party_root: &Path,
+    tsconfig_paths: &BTreeMap<String, Vec<String>>,
+    bundle_exclude: &BundleExcludeMatcher,
+    context: &ModuleWorkerBuildContext,
+) -> Result<(BTreeSet<PathBuf>, BTreeSet<RawImportEdge>)> {
+    if first_party_root == project_root || tsconfig_paths.is_empty() {
+        return Ok((BTreeSet::new(), BTreeSet::new()));
+    }
+    let root_package_claimed =
+        zfb_types::first_party::workspace_explicitly_claims_root_package(project_root);
+    let canonical_root = first_party_root.canonicalize().with_context(|| {
+        format!(
+            "bundler: canonicalize first-party root {}",
+            first_party_root.display()
+        )
+    })?;
+    let mut concrete_entries = BTreeSet::new();
+    for entry in WalkDir::new(project_root)
+        .follow_links(true)
+        .into_iter()
+        .filter_entry(|entry| !is_pruned_infra_dir(entry))
+        .filter_map(std::result::Result::ok)
+    {
+        let importer = entry.path();
+        if !entry.file_type().is_file()
+            || bundle_exclude.is_excluded(importer, project_root)
+            || !(raw_source_extension(importer)
+                || importer
+                    .extension()
+                    .is_some_and(|extension| extension == "css"))
+        {
+            continue;
+        }
+        let Ok(specifiers) = collect_runtime_import_specifiers_from_file(importer) else {
+            continue;
+        };
+        for specifier in specifiers {
+            let alias_specifier = specifier
+                .split_once(['?', '#'])
+                .map(|(path, _)| path)
+                .unwrap_or(&specifier);
+            for target in concrete_alias_targets(alias_specifier, tsconfig_paths) {
+                let Some(file) = resolve_concrete_alias_file(&target) else {
+                    continue;
+                };
+                if path_is_inside_node_modules(&file)
+                    || !file.starts_with(first_party_root)
+                    || file.starts_with(project_root)
+                {
+                    continue;
+                }
+                if !runtime_alias_path_is_claimable(
+                    &file,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    continue;
+                }
+                concrete_entries.insert(file);
+                break;
+            }
+        }
+    }
+
+    let mut claims = BTreeSet::new();
+    let mut raw_import_edges = BTreeSet::new();
+    let mut pending = concrete_entries;
+    while let Some(entry) = pending.pop_first() {
+        if entry.starts_with(project_root)
+            || !runtime_alias_path_is_claimable(
+                &entry,
+                &canonical_root,
+                first_party_root,
+                project_root,
+                root_package_claimed,
+                bundle_exclude,
+            )?
+        {
+            continue;
+        }
+        if !claims.insert(entry.clone()) {
+            continue;
+        }
+        if raw_source_extension(&entry)
+            || entry
+                .extension()
+                .is_some_and(|extension| extension == "css")
+        {
+            let discovery = discover_module_preprocessing_with_tsconfig_paths(
+                &entry,
+                project_root,
+                context,
+                tsconfig_paths,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: discover runtime alias claim graph from {}",
+                    entry.display()
+                )
+            })?;
+            for file in discovery.files {
+                if !runtime_alias_path_is_claimable(
+                    &file,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    continue;
+                }
+                if !claims.contains(&file) {
+                    pending.insert(file);
+                }
+            }
+            for edge in discovery.worker_edges {
+                if !runtime_alias_path_is_claimable(
+                    &edge.importer,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? || !runtime_alias_path_is_claimable(
+                    &edge.source_path,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    bail!(
+                        "bundler: runtime alias module worker from {} reached unclaimed or excluded source {}",
+                        edge.importer.display(),
+                        edge.source_path.display()
+                    );
+                }
+            }
+            for edge in discovery.raw_import_edges {
+                if !runtime_alias_path_is_claimable(
+                    &edge.importer,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? || !runtime_alias_path_is_claimable(
+                    &edge.target,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    bail!(
+                        "bundler: runtime alias raw import from {} reached unclaimed or excluded target {}",
+                        edge.importer.display(),
+                        edge.target.display()
+                    );
+                }
+                raw_import_edges.insert(RawImportEdge {
+                    importer: edge.importer,
+                    target: edge.target,
+                });
+            }
+        }
+        let Ok(specifiers) = collect_runtime_import_specifiers_from_file(&entry) else {
+            continue;
+        };
+        for specifier in specifiers {
+            let alias_specifier = specifier
+                .split_once(['?', '#'])
+                .map(|(path, _)| path)
+                .unwrap_or(&specifier);
+            for target in concrete_alias_targets(alias_specifier, tsconfig_paths) {
+                let Some(file) = resolve_concrete_alias_file(&target) else {
+                    continue;
+                };
+                if path_is_inside_node_modules(&file)
+                    || !file.starts_with(first_party_root)
+                    || file.starts_with(project_root)
+                {
+                    continue;
+                }
+                if !runtime_alias_path_is_claimable(
+                    &file,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    continue;
+                }
+                if claims.contains(&file) {
+                    continue;
+                }
+                pending.insert(file);
+                break;
+            }
+        }
+    }
+    reject_root_package_relative_tree_escapes(&claims, first_party_root)?;
+    Ok((claims, raw_import_edges))
+}
+
 /// Resolve a claim path to its **mirror root** per issue #1691's claim policy:
 /// the nearest ancestor directory that directly contains a `package.json`,
 /// else the claim's own directory. Returns `None` for anything that is not a
@@ -4397,6 +4857,8 @@ fn alias_target_claim_path(target: &str) -> PathBuf {
 /// - a claim outside `first_party_root`, or under (i.e. local to)
 ///   `project_root` — those are the project mirror's own concern,
 /// - a claim reached through a `node_modules` component (vendored, not source),
+/// - a hidden or infrastructure directory as the mirror root (the ignore
+///   walker deliberately does not filter its own root),
 /// - `first_party_root` itself (never mirrored wholesale), and
 /// - a region that would CONTAIN `project_root` (an ancestor-of-project dir):
 ///   mirroring it would double-stage the project subtree over its own mirror.
@@ -4440,14 +4902,21 @@ fn resolve_mirror_root(
             break;
         }
         if dir.join("package.json").is_file() {
-            return Some(dir.to_path_buf());
+            return mirror_root_is_stageable(dir).then(|| dir.to_path_buf());
         }
         match dir.parent() {
             Some(parent) => dir = parent,
             None => break,
         }
     }
-    Some(claim_dir)
+    mirror_root_is_stageable(&claim_dir).then_some(claim_dir)
+}
+
+fn mirror_root_is_stageable(root: &Path) -> bool {
+    root.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        !name.starts_with('.') && !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip)
+    })
 }
 
 /// The claim plan (issue #1691/#1692): the set of distinct workspace-sibling
@@ -8675,14 +9144,24 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 // workspace-relative slot in the WORK mirror — work-first with
                 // the real-tree fallback under an empty exclude, staged-only
                 // under exclusions (the same uniform rule as the project tier).
-                let work_prefix = shadow_path_for_project_path(
-                    prefix_path,
-                    project_root,
-                    first_party_root,
-                    shadow,
-                    work_root,
-                    node_modules_isolation_root,
-                );
+                // `shadow_path_for_project_path` deliberately leaves the
+                // first-party root itself unchanged because its usual callers
+                // map concrete files, not a whole workspace. A broad root
+                // alias (`@/* -> <workspace>/*`) is the one exception: only
+                // its concrete runtime claims were staged into `work_root`, so
+                // the wildcard must resolve against that staged view first.
+                let work_prefix = if prefix_path == first_party_root {
+                    work_root.to_path_buf()
+                } else {
+                    shadow_path_for_project_path(
+                        prefix_path,
+                        project_root,
+                        first_party_root,
+                        shadow,
+                        work_root,
+                        node_modules_isolation_root,
+                    )
+                };
                 let mut work_target = preserve_trailing_path_separator(
                     work_prefix.to_string_lossy().into_owned(),
                     prefix,
@@ -10664,6 +11143,38 @@ mod tests {
             "under exclusions a workspace-sibling alias is work-mirror-only (no live-real fallback)"
         );
         assert_eq!(out["@ext/*"], vec!["/elsewhere/pkg/*".to_string()]);
+    }
+
+    #[test]
+    fn rebase_tsconfig_paths_workspace_root_target_maps_to_work_mirror() {
+        let project = Path::new("/ws/sub-packages/host");
+        let first_party = Path::new("/ws");
+        let shadow = Path::new("/work/sub-packages/host");
+        let work = Path::new("/work");
+        let paths = BTreeMap::from([("@/*".to_string(), vec!["/ws/*".to_string()])]);
+        let empty = BundleExcludeMatcher::new(&[]).unwrap();
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            project,
+            shadow,
+            first_party,
+            work,
+            Some(&empty),
+            None,
+        );
+        assert_eq!(out["@/*"], vec!["/work/*", "/ws/*"]);
+
+        let excluded = BundleExcludeMatcher::new(&["**/*.secret".to_string()]).unwrap();
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            project,
+            shadow,
+            first_party,
+            work,
+            Some(&excluded),
+            None,
+        );
+        assert_eq!(out["@/*"], vec!["/work/*"]);
     }
 
     // ── friendly_esbuild_error + its parsing helpers (#1388) ────────────────
@@ -17731,6 +18242,16 @@ mod tests {
         fs::create_dir_all(vendored.parent().unwrap()).unwrap();
         fs::write(&vendored, "x").unwrap();
         assert_eq!(resolve_mirror_root(&vendored, &project, ws), None);
+
+        // A directly claimed hidden/infra directory cannot become the walk
+        // root: ignore walkers preserve their own root even when it would be
+        // pruned as a descendant.
+        for root_name in [".unstaged", "dist"] {
+            let skipped = ws.join(root_name).join("escape.ts");
+            fs::create_dir_all(skipped.parent().unwrap()).unwrap();
+            fs::write(&skipped, "x").unwrap();
+            assert_eq!(resolve_mirror_root(&skipped, &project, ws), None);
+        }
 
         // The first-party root itself is never mirrored wholesale.
         let root_file = ws.join("root.ts");

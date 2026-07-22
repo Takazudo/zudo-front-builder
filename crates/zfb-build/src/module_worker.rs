@@ -25,7 +25,9 @@ use swc_core::ecma::ast::{
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::{Visit, VisitWith};
-use zfb_plugin_resolver::{read_tsconfig_paths_file, TsConfigDependencyInput, TsConfigPaths};
+use zfb_plugin_resolver::{
+    read_tsconfig_paths_file, TsConfigDependencyInput, TsConfigPaths, TsPathAlias,
+};
 use zfb_types::{
     module_worker_content_hash, module_worker_url_specifier_scoped, normalize_path_lexical,
 };
@@ -807,6 +809,7 @@ struct ProjectGraphResolver {
     plugin_aliases: BTreeMap<String, String>,
     plugin_virtual_modules: BTreeSet<String>,
     allow_unresolved_bare: bool,
+    uses_tsconfig_override: bool,
 }
 
 enum GraphResolution {
@@ -964,6 +967,24 @@ impl ProjectGraphResolver {
         allow_unresolved_bare: bool,
         include_plugin_inputs: bool,
     ) -> Self {
+        Self::new_with_tsconfig_override(
+            project_root,
+            worker_entry,
+            context,
+            allow_unresolved_bare,
+            include_plugin_inputs,
+            None,
+        )
+    }
+
+    fn new_with_tsconfig_override(
+        project_root: &Path,
+        worker_entry: &Path,
+        context: &ModuleWorkerBuildContext,
+        allow_unresolved_bare: bool,
+        include_plugin_inputs: bool,
+        tsconfig_override: Option<&BTreeMap<String, Vec<String>>>,
+    ) -> Self {
         // `compilerOptions.paths` keeps the first exact key on collision.
         // Preserve that same behavior for duplicate plugin registrations.
         let mut plugin_aliases = BTreeMap::new();
@@ -975,11 +996,24 @@ impl ProjectGraphResolver {
             }
         }
         let selected_config = nearest_typescript_config(worker_entry);
+        let overridden_paths = tsconfig_override.map(|paths| TsConfigPaths {
+            base_dir: project_root.to_path_buf(),
+            base_url: None,
+            aliases: paths
+                .iter()
+                .map(|(pattern, targets)| TsPathAlias {
+                    pattern: pattern.clone(),
+                    targets: targets.clone(),
+                })
+                .collect(),
+        });
         Self {
             project_root: project_root.to_path_buf(),
-            tsconfig_paths: selected_config
-                .as_deref()
-                .and_then(read_tsconfig_paths_file),
+            tsconfig_paths: overridden_paths.or_else(|| {
+                selected_config
+                    .as_deref()
+                    .and_then(read_tsconfig_paths_file)
+            }),
             plugin_aliases,
             plugin_virtual_modules: if include_plugin_inputs {
                 context
@@ -991,6 +1025,7 @@ impl ProjectGraphResolver {
                 BTreeSet::new()
             },
             allow_unresolved_bare,
+            uses_tsconfig_override: tsconfig_override.is_some(),
         }
     }
 
@@ -1004,7 +1039,8 @@ impl ProjectGraphResolver {
     }
 
     fn uses_synthetic_config(&self) -> bool {
-        !self.plugin_aliases.is_empty()
+        self.uses_tsconfig_override
+            || !self.plugin_aliases.is_empty()
             || self
                 .plugin_virtual_modules
                 .iter()
@@ -1912,11 +1948,19 @@ fn inspect_worker_graph(
     project_root: &Path,
     context: &ModuleWorkerBuildContext,
     allow_unresolved_bare: bool,
+    tsconfig_override: Option<&BTreeMap<String, Vec<String>>>,
 ) -> Result<WorkerGraph> {
     let entry = entry.to_path_buf();
     let mut job_resolvers = BTreeMap::from([(
         entry.clone(),
-        ProjectGraphResolver::new(project_root, &entry, context, allow_unresolved_bare, true),
+        ProjectGraphResolver::new_with_tsconfig_override(
+            project_root,
+            &entry,
+            context,
+            allow_unresolved_bare,
+            true,
+            tsconfig_override,
+        ),
     )]);
     let mut native_resolvers = BTreeMap::new();
     let mut visited = BTreeSet::new();
@@ -1926,7 +1970,14 @@ fn inspect_worker_graph(
     let mut file_bytes: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
     let mut worker_edges = BTreeSet::new();
     let mut raw_import_edges = BTreeSet::new();
-    let initial_config = config_resolution_for_source(&entry)?;
+    let initial_config = if tsconfig_override.is_some() {
+        SourceConfigResolution {
+            hash_inputs: Vec::new(),
+            watch_paths: Vec::new(),
+        }
+    } else {
+        config_resolution_for_source(&entry)?
+    };
     let mut config_hash_inputs = initial_config
         .hash_inputs
         .into_iter()
@@ -1942,12 +1993,13 @@ fn inspect_worker_graph(
                 continue;
             }
             job_resolvers.entry(job_entry.clone()).or_insert_with(|| {
-                ProjectGraphResolver::new(
+                ProjectGraphResolver::new_with_tsconfig_override(
                     project_root,
                     &job_entry,
                     context,
                     allow_unresolved_bare,
                     true,
+                    tsconfig_override,
                 )
             });
             let uses_synthetic_config = job_resolvers
@@ -1956,12 +2008,17 @@ fn inspect_worker_graph(
                 .uses_synthetic_config();
             if !uses_synthetic_config {
                 native_resolvers.entry(current.clone()).or_insert_with(|| {
-                    ProjectGraphResolver::new(
+                    ProjectGraphResolver::new_with_tsconfig_override(
                         project_root,
                         &current,
                         context,
                         allow_unresolved_bare,
                         false,
+                        if job_entry == entry {
+                            tsconfig_override
+                        } else {
+                            None
+                        },
                     )
                 });
             }
@@ -2035,12 +2092,16 @@ fn inspect_worker_graph(
                 }
                 let nested = resolve_worker_target(&current, &occurrence.specifier, project_root)?;
                 job_resolvers.entry(nested.clone()).or_insert_with(|| {
-                    ProjectGraphResolver::new(
+                    ProjectGraphResolver::new_with_tsconfig_override(
                         project_root,
                         &nested,
                         context,
                         allow_unresolved_bare,
                         true,
+                        // A worker companion is a separate esbuild job whose
+                        // resolver is selected from the worker entry itself.
+                        // The host override belongs only to the outer SSR job.
+                        None,
                     )
                 });
                 if job_resolvers
@@ -2225,7 +2286,27 @@ pub fn discover_module_preprocessing_with_context(
     context: &ModuleWorkerBuildContext,
 ) -> Result<ModulePreprocessingDiscovery> {
     validate_first_party_path(entry, project_root, "module preprocessing entry")?;
-    let graph = inspect_worker_graph(entry, project_root, context, true)?;
+    let graph = inspect_worker_graph(entry, project_root, context, true, None)?;
+    Ok(ModulePreprocessingDiscovery {
+        files: graph.files.into_iter().collect(),
+        worker_edges: graph.worker_edges.into_iter().collect(),
+        raw_import_edges: graph.raw_import_edges.into_iter().collect(),
+        config_dependencies: graph.config_files.into_iter().collect(),
+    })
+}
+
+/// Discover preprocessing through the exact TypeScript path map that the
+/// bundler's synthetic tsconfig will hand to esbuild. This prevents a reached
+/// workspace package's own nearest tsconfig from inventing a different alias
+/// graph during staging preflight.
+pub fn discover_module_preprocessing_with_tsconfig_paths(
+    entry: &Path,
+    project_root: &Path,
+    context: &ModuleWorkerBuildContext,
+    tsconfig_paths: &BTreeMap<String, Vec<String>>,
+) -> Result<ModulePreprocessingDiscovery> {
+    validate_first_party_path(entry, project_root, "module preprocessing entry")?;
+    let graph = inspect_worker_graph(entry, project_root, context, true, Some(tsconfig_paths))?;
     Ok(ModulePreprocessingDiscovery {
         files: graph.files.into_iter().collect(),
         worker_edges: graph.worker_edges.into_iter().collect(),
@@ -2284,7 +2365,8 @@ pub fn discover_registered_virtual_preprocessing_with_context(
                     }
                 }
                 GraphResolution::File(dependency) => {
-                    let graph = inspect_worker_graph(&dependency, project_root, context, true)?;
+                    let graph =
+                        inspect_worker_graph(&dependency, project_root, context, true, None)?;
                     files.extend(graph.files);
                     worker_edges.extend(graph.worker_edges);
                     raw_import_edges.extend(graph.raw_import_edges);
@@ -2371,7 +2453,7 @@ pub fn rewrite_module_worker_urls_with_context(
             );
         }
         let worker = resolve_worker_target(importer, &occurrence.specifier, project_root)?;
-        let graph = inspect_worker_graph(&worker, project_root, context, false)?;
+        let graph = inspect_worker_graph(&worker, project_root, context, false, None)?;
         let rewritten = module_worker_url_specifier_scoped(
             project_root,
             &first_party_root,

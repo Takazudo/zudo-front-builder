@@ -61,6 +61,66 @@ pub fn first_party_root_for(project_root: &Path) -> PathBuf {
     }
 }
 
+/// Whether the pnpm workspace which claims `project_root` also explicitly
+/// claims its root package with `.`.
+///
+/// This is deliberately stronger than [`first_party_root_for`]: a nested host
+/// may be a workspace member through `sub-packages/*` while the workspace root
+/// itself is not a package. Callers must use this predicate before treating a
+/// path directly under the workspace root as root-package first-party source.
+pub fn workspace_explicitly_claims_root_package(project_root: &Path) -> bool {
+    let project_root = normalize_path_lexical(project_root);
+    let workspace_root = first_party_root_for(&project_root);
+    if workspace_root == project_root {
+        return false;
+    }
+    let marker = workspace_root.join("pnpm-workspace.yaml");
+    std::fs::read_to_string(marker)
+        .ok()
+        .map(|yaml| {
+            let mut explicitly_claimed = false;
+            for glob in workspace_package_globs(&yaml) {
+                let (negated, pattern) = match glob.strip_prefix('!') {
+                    Some(rest) => (true, rest),
+                    None => (false, glob.as_str()),
+                };
+                let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
+                let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
+                if negated {
+                    let segments = if pattern == "." || pattern.is_empty() {
+                        Vec::new()
+                    } else {
+                        pattern.split('/').collect::<Vec<_>>()
+                    };
+                    if glob_segments_match(&segments, &[]) {
+                        explicitly_claimed = false;
+                    }
+                } else if pattern == "." || pattern.is_empty() {
+                    explicitly_claimed = true;
+                }
+            }
+            explicitly_claimed
+        })
+        .unwrap_or(false)
+}
+
+/// Whether the same pnpm workspace that claims `project_root` also claims the
+/// concrete package directory `candidate`.
+pub fn workspace_claims_package(project_root: &Path, candidate: &Path) -> bool {
+    let project_root = normalize_path_lexical(project_root);
+    let workspace_root = first_party_root_for(&project_root);
+    let candidate = normalize_path_lexical(candidate);
+    if workspace_root == project_root || !candidate.starts_with(&workspace_root) {
+        return false;
+    }
+    std::fs::read_to_string(workspace_root.join("pnpm-workspace.yaml"))
+        .ok()
+        .map(|yaml| {
+            workspace_claims_member(&workspace_package_globs(&yaml), &candidate, &workspace_root)
+        })
+        .unwrap_or(false)
+}
+
 /// Extract the `packages:` glob list from `pnpm-workspace.yaml` without a
 /// YAML dependency. Handles the two shapes pnpm documents: a block sequence
 /// (`packages:\n  - 'sub-packages/*'`) and an inline flow sequence
@@ -68,16 +128,32 @@ pub fn first_party_root_for(project_root: &Path) -> PathBuf {
 /// stripped. Unknown/exotic shapes yield an empty list, which fails closed
 /// (no widening).
 fn workspace_package_globs(yaml: &str) -> Vec<String> {
+    fn strip_unquoted_comment(raw: &str) -> &str {
+        let mut quote = None;
+        let mut escaped = false;
+        for (index, ch) in raw.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match quote {
+                Some('"') if ch == '\\' => escaped = true,
+                Some(active) if ch == active => quote = None,
+                Some(_) => {}
+                None if ch == '\'' || ch == '"' => quote = Some(ch),
+                None if ch == '#' => return &raw[..index],
+                None => {}
+            }
+        }
+        raw
+    }
+
     fn clean(raw: &str) -> Option<String> {
-        let mut value = raw.trim();
-        // A `#` comment only starts a comment when unquoted; strip the quoted
-        // form first, then cut any remaining comment tail.
+        let mut value = strip_unquoted_comment(raw).trim();
         if (value.starts_with('\'') && value.len() >= 2 && value.ends_with('\''))
             || (value.starts_with('"') && value.len() >= 2 && value.ends_with('"'))
         {
             value = &value[1..value.len() - 1];
-        } else if let Some(hash) = value.find('#') {
-            value = value[..hash].trim_end();
         }
         let value = value.trim();
         (!value.is_empty()).then(|| value.to_string())
@@ -88,7 +164,7 @@ fn workspace_package_globs(yaml: &str) -> Vec<String> {
     for line in yaml.lines() {
         let trimmed = line.trim_end();
         if let Some(rest) = trimmed.strip_prefix("packages:") {
-            let rest = rest.trim();
+            let rest = strip_unquoted_comment(rest).trim();
             if let Some(inline) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
                 globs.extend(inline.split(',').filter_map(clean));
                 return globs;
@@ -218,6 +294,66 @@ mod tests {
             first_party_root_for(&project),
             normalize_path_lexical(&workspace)
         );
+    }
+
+    #[test]
+    fn root_package_membership_requires_an_explicit_dot_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        let project = workspace.join("sub-packages/host");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages: ['sub-packages/*']\n",
+        )
+        .unwrap();
+        assert_eq!(
+            first_party_root_for(&project),
+            normalize_path_lexical(&workspace)
+        );
+        assert!(!workspace_explicitly_claims_root_package(&project));
+
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.' # root package\n  - 'sub-packages/*' # hosts\n",
+        )
+        .unwrap();
+        assert!(workspace_explicitly_claims_root_package(&project));
+
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages: ['.', 'sub-packages/*'] # inline comment\n",
+        )
+        .unwrap();
+        assert!(workspace_explicitly_claims_root_package(&project));
+
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages: ['**', 'sub-packages/*']\n",
+        )
+        .unwrap();
+        assert!(!workspace_explicitly_claims_root_package(&project));
+
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages: ['.', 'sub-packages/*']\n",
+        )
+        .unwrap();
+        assert!(workspace_explicitly_claims_root_package(&project));
+
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages: ['.', 'sub-packages/*', '! .']\n",
+        )
+        .unwrap();
+        // Whitespace makes this a different literal, so use the actual pnpm
+        // negation spelling for the fail-closed, later-pattern-wins case.
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages: ['.', 'sub-packages/*', '!.']\n",
+        )
+        .unwrap();
+        assert!(!workspace_explicitly_claims_root_package(&project));
     }
 
     #[test]
