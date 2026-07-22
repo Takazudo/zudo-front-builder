@@ -263,9 +263,11 @@ jobs:
       # Workspace-root alias regression (issue #1885, epic #1883): this is a
       # separate real-esbuild binary because its positive fixture proves the
       # #1884 staging claim composes with root-package TS/TSX/CSS/JSON, a
-      # claimed sibling package, and #1840's dot-path allowlist. Its two
-      # negative tests separately retain parent-relative rejection and guard
-      # (b)'s fail-closed metafile audit. The provisioning assertion above is
+      # claimed sibling package, and #1840's dot-path allowlist. Issue #1905
+      # extends that same env-gate with its 17-residual-input combined
+      # topology (six generated routes, nine package exports, two JSON
+      # leaves), while the separate negatives retain parent-relative rejection
+      # and guard (b)'s fail-closed metafile audit. The provisioning assertion above is
       # deliberately shared, but this named target is not: `--ignored` is the
       # only way these env-gated tests execute, so an explicit step prevents a
       # future edit from silently dropping the binary from CI.
