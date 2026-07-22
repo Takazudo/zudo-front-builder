@@ -119,6 +119,30 @@ export interface CompileResult {
   diagnostics: Diagnostic[];
 }
 
+/**
+ * Result document of `parseToAst`.
+ *
+ * PROTOTYPE (zfb#1855, epic zfb#1854 — go/no-go spike; NOT a documented or
+ * supported API surface — do not build on it): `ast` is the RAW markdown-rs
+ * mdast tree (unist-shaped: `type` tag, camelCase fields, optional
+ * `position` with 1-based `line`/`column` + 0-based `offset` already
+ * shifted back into original-source coordinates past the stripped
+ * frontmatter). Typed `unknown` on purpose — full mdast typings are
+ * deferred until the epic's Wave-2 decision locks (or prunes) this export.
+ *
+ * KNOWN CONTRACT GAP (decision-sub input, zfb#1856): `position` offsets and
+ * columns are UTF-8 BYTE units straight from markdown-rs, NOT the UTF-16
+ * code-unit indices remark/unist consumers expect — on non-ASCII sources,
+ * `String.prototype.slice` with these offsets selects the wrong text.
+ */
+export interface ParseToAstResult {
+  /** Serialized raw mdast root on success, `null` on failure. */
+  ast: unknown;
+  /** Parsed YAML frontmatter as JSON, `null` when absent or unextractable. */
+  frontmatter: unknown;
+  diagnostics: Diagnostic[];
+}
+
 /** Result document of `renderHtml`. */
 export interface RenderHtmlResult {
   /** HTML fragment on success, `null` on failure. */

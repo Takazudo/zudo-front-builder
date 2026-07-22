@@ -475,6 +475,41 @@ pub fn render_mdx_jsx_module(
     mdx_to_jsx_module_with_pipeline(input, opts, pipeline)
 }
 
+/// PROTOTYPE (zfb#1855, epic zfb#1854 — `parseToAst` go/no-go spike): parse
+/// `input` into a RAW markdown-rs mdast tree.
+///
+/// Contract locked at epic planning: the returned tree is the raw parser
+/// output — post-frontmatter-strip (the caller strips frontmatter before
+/// calling this; see `zfb-md-wasm`'s `parseToAst`), PRE-zfb-visitors — so
+/// every node carries real parser `position` info and no visitor-synthesized
+/// `position: None` nodes exist. Parse options mirror [`Pipeline::run`]'s
+/// exactly: [`crate::pipeline::constructs_for_pipeline`] over the resolved
+/// GFM set, on top of [`markdown::ParseOptions::mdx`] (math constructs stay
+/// off — same as the HTML-serializer path; the JSX-emit path's math-enabled
+/// constructs are deliberately NOT used here).
+///
+/// Only [`PipelineOptions::gfm`] participates — every other option drives
+/// visitor/serializer behavior this raw-parse entry point never runs. Takes
+/// the full options struct anyway so the wasm boundary passes one options
+/// document to every tier.
+///
+/// If the epic's Wave-2 decision is no-go, this function (and its callers in
+/// `zfb-md-wasm`) are pruned; nothing else in this module depends on it.
+///
+/// # Errors
+/// Returns [`PipelineError::Parse`] if markdown-rs rejects `input`.
+pub fn parse_mdast(
+    options: &PipelineOptions,
+    input: &str,
+) -> Result<markdown::mdast::Node, PipelineError> {
+    let resolved_gfm: ResolvedGfmConstructs = options.gfm.into();
+    let parse_options = markdown::ParseOptions {
+        constructs: crate::pipeline::constructs_for_pipeline(resolved_gfm),
+        ..markdown::ParseOptions::mdx()
+    };
+    markdown::to_mdast(input, &parse_options).map_err(|m| PipelineError::Parse(m.to_string()))
+}
+
 /// One-shot convenience: parse `config_json`, build a [`Pipeline`], and
 /// render `source` to an HTML fragment string.
 ///

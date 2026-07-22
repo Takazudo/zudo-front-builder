@@ -679,3 +679,96 @@ fn theme_null_uses_built_in_default_theme_not_no_highlighting() {
         "theme: null must still emit inline per-token color — highlighting is NOT disabled: {explicit_null}"
     );
 }
+
+// ── parse_mdast (PROTOTYPE — zfb#1855, epic zfb#1854) ───────────────────────
+//
+// Raw-parser mdast export spike. Level 1 (pure `&str` → tree logic). These
+// tests pin the LOCKED contract: raw markdown-rs output under the exact
+// `constructs_for_pipeline` construct set — no visitors, every node carrying
+// real parser positions. Pruned with the facade fn on a Wave-2 no-go.
+
+#[test]
+fn parse_mdast_returns_raw_tree_with_positions() {
+    use markdown::mdast::Node;
+    let options = PipelineOptions::default();
+    let ast = zfb_content::facade::parse_mdast(&options, "# Hi\n\nSome *em* text.\n")
+        .expect("valid markdown parses");
+    let Node::Root(root) = &ast else {
+        panic!("top node is a Root");
+    };
+    assert_eq!(root.children.len(), 2, "heading + paragraph");
+    assert!(
+        matches!(root.children[0], Node::Heading(_)),
+        "first child is the heading"
+    );
+    fn assert_positions(node: &Node) {
+        assert!(
+            node.position().is_some(),
+            "raw parser mdast node must carry a position: {node:?}"
+        );
+        if let Some(children) = node.children() {
+            for child in children {
+                assert_positions(child);
+            }
+        }
+    }
+    assert_positions(&ast);
+}
+
+#[test]
+fn parse_mdast_respects_resolved_gfm_construct_toggles() {
+    use markdown::mdast::Node;
+    let table_src = "| a | b |\n| - | - |\n| 1 | 2 |\n";
+    fn contains_table(node: &Node) -> bool {
+        matches!(node, Node::Table(_))
+            || node
+                .children()
+                .is_some_and(|c| c.iter().any(contains_table))
+    }
+
+    let default_on = zfb_content::facade::parse_mdast(&PipelineOptions::default(), table_src)
+        .expect("table source parses");
+    assert!(
+        contains_table(&default_on),
+        "conservative default has gfm_table ON"
+    );
+
+    let options = PipelineOptions {
+        gfm: GfmOptions {
+            table: false,
+            ..GfmOptions::default()
+        },
+        ..PipelineOptions::default()
+    };
+    let toggled_off =
+        zfb_content::facade::parse_mdast(&options, table_src).expect("still parses without table");
+    assert!(
+        !contains_table(&toggled_off),
+        "gfm.table=false must not produce a Table node"
+    );
+}
+
+#[test]
+fn parse_mdast_keeps_mdx_constructs_and_surfaces_parse_errors() {
+    use markdown::mdast::Node;
+    let options = PipelineOptions::default();
+    let ast = zfb_content::facade::parse_mdast(&options, "<Card label=\"x\" />\n")
+        .expect("MDX JSX parses under the mdx construct set");
+    fn contains_jsx(node: &Node) -> bool {
+        matches!(
+            node,
+            Node::MdxJsxFlowElement(_) | Node::MdxJsxTextElement(_)
+        ) || node.children().is_some_and(|c| c.iter().any(contains_jsx))
+    }
+    assert!(contains_jsx(&ast), "JSX element parses as an mdx node");
+
+    // An OPENED-but-never-closed element errors at EOF; a merely incomplete
+    // tag (`<Card` with no `>`) is NOT an error at the raw-mdast stage —
+    // markdown-rs degrades it to text.
+    let err = zfb_content::facade::parse_mdast(&options, "<Card>\n")
+        .expect_err("unclosed JSX element is a parse error");
+    assert!(
+        matches!(err, zfb_content::pipeline::PipelineError::Parse(_)),
+        "parse failures surface as PipelineError::Parse: {err:?}"
+    );
+}

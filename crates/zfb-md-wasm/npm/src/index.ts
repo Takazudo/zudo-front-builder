@@ -38,6 +38,9 @@ export const {
   init,
   compile,
   renderHtml,
+  // PROTOTYPE (zfb#1855, epic zfb#1854): raw-mdast export spike — not a
+  // documented/supported API; pruned on a Wave-2 no-go.
+  parseToAst,
   highlightCode,
   version,
   __forceTrapForTests,
@@ -49,6 +52,7 @@ export { ZfbMdWasmTrapError, ZfbMdWasmTrapRecoveryLimitError } from "./runtime.j
 export type {
   CompileResult,
   RenderHtmlResult,
+  ParseToAstResult,
   Diagnostic,
   DiagnosticSource,
   ZfbMdWasmOptions,
