@@ -3407,6 +3407,7 @@ pub fn bundle_with_session(
             &dest,
             target_writer,
             &is_plugin_preprocessing_excluded,
+            false,
         )
         .with_context(|| {
             format!(
@@ -3429,12 +3430,16 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
+        let prune_workspace_infra = source_root.canonicalize().is_ok_and(|canonical| {
+            canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
+        });
         materialise_isolated_exact_dir(
             source_root,
             logical_root,
             &dest,
             target_writer,
             &is_plugin_preprocessing_excluded,
+            prune_workspace_infra,
         )
         .with_context(|| {
             format!(
@@ -5815,6 +5820,7 @@ fn materialise_isolated_exact_dir(
     dest: &Path,
     writer: &ShadowWriter<'_>,
     is_excluded: &dyn Fn(&Path) -> bool,
+    prune_workspace_infra: bool,
 ) -> Result<()> {
     let physical_root = source_root.canonicalize().with_context(|| {
         format!(
@@ -5830,10 +5836,9 @@ fn materialise_isolated_exact_dir(
             if entry.depth() == 0 || !entry.file_type().is_dir() {
                 return true;
             }
-            !matches!(
-                entry.file_name().to_string_lossy().as_ref(),
-                "node_modules" | ".git"
-            )
+            let name = entry.file_name().to_string_lossy();
+            !matches!(name.as_ref(), "node_modules" | ".git")
+                && (!prune_workspace_infra || !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip))
         })
     {
         let entry = match entry {
@@ -8319,6 +8324,109 @@ fn package_source_identity(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| normalize_path_lexical(path))
 }
 
+/// Classify an installed package before it is copied into the staged
+/// dependency view. Ordinary npm/pnpm packages retain their historical
+/// behavior. A symlink which canonicalises directly into first-party source,
+/// however, is a workspace-package claim and is accepted only when all three
+/// authorities agree: the installed owner name, pnpm workspace membership,
+/// and the nearest importing package's dependency manifest.
+fn workspace_package_source_is_eligible(
+    manifest_importer: &Path,
+    package_name: &str,
+    source_dependency: &Path,
+    project_root: &Path,
+) -> bool {
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    if first_party_root == project_root {
+        return true;
+    }
+    let Ok(canonical_source) = source_dependency.canonicalize() else {
+        return false;
+    };
+
+    let importer_package = nearest_package_root(manifest_importer, &first_party_root)
+        .and_then(|root| fs::read(root.join("package.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let declared_value = importer_package.as_ref().and_then(|package| {
+        ["dependencies", "optionalDependencies", "peerDependencies"]
+            .iter()
+            .find_map(|section| {
+                package
+                    .get(section)
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|dependencies| dependencies.get(package_name))
+            })
+    });
+    let declared_workspace = declared_value
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|requirement| requirement.starts_with("workspace:"));
+
+    // A normal npm/pnpm package remains under a node_modules component after
+    // canonicalisation (including pnpm's content-addressable store). Preserve
+    // its historical staging unless the importer explicitly says workspace:*,
+    // in which case an outside-workspace target is an invalid installed link.
+    if path_is_inside_node_modules(&canonical_source) && !declared_workspace {
+        return true;
+    }
+    let Some(_logical_source) =
+        canonical_workspace_package_logical_path(&canonical_source, project_root)
+    else {
+        return false;
+    };
+
+    let Ok(package_bytes) = fs::read(canonical_source.join("package.json")) else {
+        return false;
+    };
+    let Ok(package): Result<serde_json::Value, _> = serde_json::from_slice(&package_bytes) else {
+        return false;
+    };
+    package.get("name").and_then(serde_json::Value::as_str) == Some(package_name)
+        && declared_value.is_some()
+}
+
+/// Convert a canonical installed-link target back to the workspace's logical
+/// spelling before applying pnpm membership. This is load-bearing on macOS,
+/// where temp paths commonly canonicalise from `/var/...` to `/private/var/...`.
+fn canonical_workspace_package_logical_path(
+    canonical_source: &Path,
+    project_root: &Path,
+) -> Option<PathBuf> {
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    if first_party_root == project_root {
+        return None;
+    }
+    let canonical_first_party_root = first_party_root.canonicalize().ok()?;
+    let relative = canonical_source
+        .strip_prefix(&canonical_first_party_root)
+        .ok()?;
+    let logical_source = normalize_path_lexical(&first_party_root.join(relative));
+    zfb_types::first_party::workspace_claims_package(project_root, &logical_source)
+        .then_some(logical_source)
+}
+
+fn nearest_package_root(importer: &Path, boundary: &Path) -> Option<PathBuf> {
+    let canonical_boundary = boundary.canonicalize().ok();
+    let boundary = canonical_boundary
+        .as_deref()
+        .filter(|canonical| importer.starts_with(canonical))
+        .unwrap_or(boundary);
+    let mut directory = if importer.is_dir() {
+        importer
+    } else {
+        importer.parent()?
+    };
+    while directory.starts_with(boundary) {
+        if directory.join("package.json").is_file() {
+            return Some(directory.to_path_buf());
+        }
+        if directory == boundary {
+            break;
+        }
+        directory = directory.parent()?;
+    }
+    None
+}
+
 /// Return whether `package_name` already has an equivalent staged package at
 /// one of the locations Node resolution will search from `importer`.
 ///
@@ -8440,6 +8548,7 @@ fn package_is_external(package_name: &str, external_specifiers: &[String]) -> bo
 #[allow(clippy::too_many_arguments)]
 fn stage_dependency_candidate(
     importer: &Path,
+    manifest_importer: &Path,
     package_name: &str,
     logical_dependency: PathBuf,
     source_dependency: PathBuf,
@@ -8452,6 +8561,14 @@ fn stage_dependency_candidate(
     pending: &mut BTreeMap<PathBuf, PathBuf>,
 ) {
     if bundle_exclude.is_excluded(&logical_dependency, project_root) {
+        return;
+    }
+    if !workspace_package_source_is_eligible(
+        manifest_importer,
+        package_name,
+        &source_dependency,
+        project_root,
+    ) {
         return;
     }
     if staged_equivalent_dependency_is_reachable(
@@ -8552,6 +8669,19 @@ fn extend_node_modules_dependency_staging(
     let canonical_project_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let workspace_node_modules_dir = (first_party_root != project_root)
+        .then(|| first_party_root.join("node_modules"))
+        .filter(|candidate| candidate.is_dir());
+    // Preserve package-local precedence, then consult the same workspace
+    // install root that the WORK mirror exposes to esbuild. This second tier
+    // is what makes a nested host's hoisted workspace:* link stageable even
+    // when it has no project-local node_modules entry.
+    let resolve_configured_package = |package_name: &str| {
+        resolve_vendored_package_dir(node_modules_dir, package_name).or_else(|| {
+            resolve_vendored_package_dir(workspace_node_modules_dir.as_deref(), package_name)
+        })
+    };
     // Staged-dependency-view contract seed set: every package root already
     // staged as an exact target whose own bare dependencies must therefore be
     // present in the isolated view too. Two seed kinds:
@@ -8601,9 +8731,7 @@ fn extend_node_modules_dependency_staging(
             resolve_installed_package_dir(&synthetic_importer, &package_name, project_root)
         {
             (dependency.clone(), dependency)
-        } else if let Some(dependency) =
-            resolve_vendored_package_dir(node_modules_dir, &package_name)
-        {
+        } else if let Some(dependency) = resolve_configured_package(&package_name) {
             (
                 project_root.join("node_modules").join(&package_name),
                 dependency,
@@ -8612,6 +8740,7 @@ fn extend_node_modules_dependency_staging(
             continue;
         };
         stage_dependency_candidate(
+            &synthetic_importer,
             &synthetic_importer,
             &package_name,
             logical_dependency,
@@ -8663,9 +8792,7 @@ fn extend_node_modules_dependency_staging(
                         resolve_installed_package_dir(logical_importer, &package_name, project_root)
                     {
                         (dependency.clone(), dependency)
-                    } else if let Some(dependency) =
-                        resolve_vendored_package_dir(node_modules_dir, &package_name)
-                    {
+                    } else if let Some(dependency) = resolve_configured_package(&package_name) {
                         (
                             project_root.join("node_modules").join(&package_name),
                             dependency,
@@ -8686,6 +8813,7 @@ fn extend_node_modules_dependency_staging(
                     continue;
                 };
             stage_dependency_candidate(
+                logical_importer,
                 logical_importer,
                 &package_name,
                 logical_dependency,
@@ -8789,9 +8917,7 @@ fn extend_node_modules_dependency_staging(
                     resolve_installed_package_dir(&logical_importer, &package_name, project_root)
                 {
                     (dependency.clone(), dependency)
-                } else if let Some(dependency) =
-                    resolve_vendored_package_dir(node_modules_dir, &package_name)
-                {
+                } else if let Some(dependency) = resolve_configured_package(&package_name) {
                     // The configured EXTERNAL vendored node_modules
                     // (`BundlerInput::node_modules_dir`) is a closure source too:
                     // a bare dep that lives only in the vendor tree (outside
@@ -8826,6 +8952,7 @@ fn extend_node_modules_dependency_staging(
                 }
                 stage_dependency_candidate(
                     &logical_importer,
+                    &physical_importer,
                     &package_name,
                     logical_dependency,
                     source_dependency,
@@ -10612,6 +10739,133 @@ mod tests {
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
 
     // --- #1645 staged-dependency-view seed predicates ---
+
+    fn write_package_staging_workspace() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let host = workspace.join("apps/host");
+        let sibling = workspace.join("packages/ui");
+        fs::create_dir_all(host.join("pages")).unwrap();
+        fs::create_dir_all(sibling.join("src")).unwrap();
+        fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        fs::write(
+            sibling.join("package.json"),
+            r#"{"name":"@acme/ui","exports":{"./button":"./src/button.ts"}}"#,
+        )
+        .unwrap();
+        let importer = host.join("pages/index.tsx");
+        fs::write(&importer, "export default null;\n").unwrap();
+        (temp, host, sibling, importer)
+    }
+
+    #[test]
+    fn workspace_package_staging_accepts_only_runtime_manifest_sections() {
+        let (_temp, host, sibling, importer) = write_package_staging_workspace();
+        for section in ["dependencies", "optionalDependencies", "peerDependencies"] {
+            fs::write(
+                host.join("package.json"),
+                format!(r#"{{"name":"host","{section}":{{"@acme/ui":"workspace:*"}}}}"#),
+            )
+            .unwrap();
+            assert!(workspace_package_source_is_eligible(
+                &importer, "@acme/ui", &sibling, &host,
+            ));
+        }
+        fs::write(
+            host.join("package.json"),
+            r#"{"name":"host","devDependencies":{"@acme/ui":"workspace:*"}}"#,
+        )
+        .unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &sibling, &host,
+        ));
+    }
+
+    #[test]
+    fn workspace_package_staging_rejects_unclaimed_mismatched_and_outside_targets() {
+        let (temp, host, sibling, importer) = write_package_staging_workspace();
+        fs::write(
+            host.join("package.json"),
+            r#"{"name":"host","dependencies":{"@acme/ui":"workspace:*"}}"#,
+        )
+        .unwrap();
+
+        let unclaimed = temp.path().join("workspace/unclaimed/ui");
+        fs::create_dir_all(&unclaimed).unwrap();
+        fs::write(unclaimed.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &unclaimed, &host,
+        ));
+
+        let invalid_subdirectory_target = sibling.join("src");
+        assert!(!workspace_package_source_is_eligible(
+            &importer,
+            "@acme/ui",
+            &invalid_subdirectory_target,
+            &host,
+        ));
+
+        fs::write(sibling.join("package.json"), r#"{"name":"@acme/not-ui"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &sibling, &host,
+        ));
+
+        let outside = temp.path().join("outside/ui");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &outside, &host,
+        ));
+
+        let outside_node_modules = temp.path().join("outside/node_modules/@acme/ui");
+        fs::create_dir_all(&outside_node_modules).unwrap();
+        fs::write(
+            outside_node_modules.join("package.json"),
+            r#"{"name":"@acme/ui"}"#,
+        )
+        .unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer,
+            "@acme/ui",
+            &outside_node_modules,
+            &host,
+        ));
+
+        fs::write(sibling.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        fs::write(host.join("package.json"), r#"{"name":"host"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &sibling, &host,
+        ));
+    }
+
+    #[test]
+    fn bare_package_owner_parsing_handles_scoped_unscoped_and_subpaths() {
+        assert_eq!(
+            bare_package_name("toolkit/feature").as_deref(),
+            Some("toolkit")
+        );
+        assert_eq!(
+            bare_package_name("@acme/ui/button").as_deref(),
+            Some("@acme/ui")
+        );
+        assert_eq!(bare_package_name("./relative"), None);
+    }
+
+    #[test]
+    fn workspace_package_staging_keeps_ordinary_npm_dependency_behavior() {
+        let (temp, host, _sibling, importer) = write_package_staging_workspace();
+        let ordinary = temp
+            .path()
+            .join("workspace/node_modules/.pnpm/left-pad@1/node_modules/left-pad");
+        fs::create_dir_all(&ordinary).unwrap();
+        assert!(workspace_package_source_is_eligible(
+            &importer, "left-pad", &ordinary, &host,
+        ));
+    }
 
     #[test]
     fn specifier_matches_alias_key_exact_and_anchored_wildcard() {
@@ -14647,11 +14901,18 @@ mod tests {
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let is_excluded = |_: &Path| false;
 
-        materialise_isolated_exact_dir(&source_root, &source_root, &dest, &writer, &is_excluded)
-            .expect(
-                "a dangling symlink inside an isolated exact-target dir must be \
+        materialise_isolated_exact_dir(
+            &source_root,
+            &source_root,
+            &dest,
+            &writer,
+            &is_excluded,
+            false,
+        )
+        .expect(
+            "a dangling symlink inside an isolated exact-target dir must be \
                  skipped, not fatal",
-            );
+        );
 
         assert!(
             dest.join("real.ts").is_file(),
@@ -14660,6 +14921,51 @@ mod tests {
         assert!(
             !dest.join("dangling.ts").exists(),
             "the dangling symlink must not be staged"
+        );
+    }
+
+    #[test]
+    fn materialise_workspace_package_is_real_bounded_copy_on_every_platform() {
+        let source = tempfile::tempdir().unwrap();
+        let source_root = source.path().join("ui");
+        fs::create_dir_all(source_root.join("src/assets")).unwrap();
+        fs::create_dir_all(source_root.join("dist")).unwrap();
+        fs::create_dir_all(source_root.join("node_modules/vendor")).unwrap();
+        fs::write(source_root.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        fs::write(source_root.join("src/index.ts"), "export default 1;\n").unwrap();
+        fs::write(source_root.join("src/assets/icon.svg"), "<svg/>\n").unwrap();
+        fs::write(source_root.join("dist/leak.js"), "generated\n").unwrap();
+        fs::write(
+            source_root.join("node_modules/vendor/index.js"),
+            "vendored\n",
+        )
+        .unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let dest = shadow.path().join("node_modules/@acme/ui");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        materialise_isolated_exact_dir(
+            &source_root,
+            Path::new("node_modules/@acme/ui"),
+            &dest,
+            &writer,
+            &|_| false,
+            true,
+        )
+        .unwrap();
+
+        assert!(dest.is_dir());
+        assert!(dest.join("package.json").is_file());
+        assert!(dest.join("src/index.ts").is_file());
+        assert!(dest.join("src/assets/icon.svg").is_file());
+        assert!(!dest.join("dist").exists());
+        assert!(!dest.join("node_modules").exists());
+        assert!(
+            !fs::symlink_metadata(&dest)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "copy-mode package staging must not require symlink privileges"
         );
     }
 

@@ -50,7 +50,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use zfb_build::{bundle, BundleMode, BundlerInput};
+use zfb_build::{bundle, bundle_with_session, BundleMode, BundlerInput, ShadowSession};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
 
@@ -66,7 +66,7 @@ fn scaffold_project_dirs(project: &Path) {
 fn write_workspace(tmp_root: &Path) -> (PathBuf, PathBuf) {
     fs::write(
         tmp_root.join("pnpm-workspace.yaml"),
-        "packages:\n  - 'sub-packages/*'\n",
+        "packages:\n  - 'sub-packages/*'\n  - 'packages/*'\n",
     )
     .unwrap();
     let project = tmp_root.join("sub-packages/host");
@@ -460,5 +460,116 @@ fn e_sibling_module_css_rewrite_reaches_bundle_under_unrelated_exclude() {
         "the sibling .module.css's rewritten scoped class name must reach \
          the bundle: {}",
         truncate(&body)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (f) package-name workspace sibling staging (#1901).
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn f_workspace_package_subpath_exports_resolve_only_from_real_staged_copies() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+    fs::write(
+        project.join("package.json"),
+        r#"{"name":"host","dependencies":{"@acme/ui":"workspace:*"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { marker } from "@acme/ui/button";
+            export default function Home() { return marker; }
+        "#,
+    )
+    .unwrap();
+
+    let ui = ws_root.join("packages/ui");
+    fs::create_dir_all(ui.join("src/assets")).unwrap();
+    fs::write(
+        ui.join("package.json"),
+        r#"{
+          "name":"@acme/ui",
+          "dependencies":{"toolkit":"workspace:*"},
+          "exports":{"./button":{"browser":"./src/browser.ts","default":"./src/button.ts"}}
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        ui.join("src/button.ts"),
+        "import label from './assets/label.json';\n\
+         import { suffix } from 'toolkit/feature';\n\
+         export const marker = 'PACKAGE_EXPORT_SELECTED_' + label.value + suffix;\n",
+    )
+    .unwrap();
+    fs::write(
+        ui.join("src/assets/label.json"),
+        r#"{"value":"RELATIVE_ASSET"}"#,
+    )
+    .unwrap();
+    fs::write(
+        ui.join("src/browser.ts"),
+        "export const marker = 'INACTIVE_BROWSER_CONDITION';\n",
+    )
+    .unwrap();
+    fs::create_dir_all(ui.join("dist")).unwrap();
+    fs::write(
+        ui.join("dist/decoy.js"),
+        "export default 'UNSELECTED_DECOY';\n",
+    )
+    .unwrap();
+
+    let toolkit = ws_root.join("packages/toolkit");
+    fs::create_dir_all(toolkit.join("src")).unwrap();
+    fs::write(
+        toolkit.join("package.json"),
+        r#"{"name":"toolkit","exports":{"./feature":"./src/feature.ts"}}"#,
+    )
+    .unwrap();
+    fs::write(
+        toolkit.join("src/feature.ts"),
+        "export const suffix = '_TRANSITIVE_WORKSPACE_DEP';\n",
+    )
+    .unwrap();
+
+    fs::create_dir_all(ws_root.join("node_modules/@acme")).unwrap();
+    std::os::unix::fs::symlink(&ui, ws_root.join("node_modules/@acme/ui")).unwrap();
+    std::os::unix::fs::symlink(&toolkit, ws_root.join("node_modules/toolkit")).unwrap();
+
+    let input = base_input(&project, esbuild, unrelated_exclude());
+    let mut session = ShadowSession::new(&project).unwrap();
+    let out = bundle_with_session(input, Some(&mut session))
+        .expect("a declared workspace package subpath export must resolve through its staged copy");
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(body.contains("PACKAGE_EXPORT_SELECTED_"), "{body}");
+    assert!(body.contains("RELATIVE_ASSET"), "{body}");
+    assert!(body.contains("TRANSITIVE_WORKSPACE_DEP"), "{body}");
+    assert!(!body.contains("INACTIVE_BROWSER_CONDITION"), "{body}");
+    assert!(!body.contains("UNSELECTED_DECOY"), "{body}");
+
+    let work = fs::canonicalize(session.shadow_root()).unwrap();
+    let staged = work.join("sub-packages/host/node_modules/@acme/ui");
+    assert!(staged.join("package.json").is_file());
+    assert!(staged.join("src/button.ts").is_file());
+    assert!(staged.join("src/assets/label.json").is_file());
+    assert!(
+        !staged.join("dist").exists(),
+        "workspace package infra is pruned"
+    );
+    assert!(
+        staged.join("node_modules/toolkit/package.json").is_file(),
+        "the staged package manifest must authorize and stage its transitive bare dependency"
+    );
+    assert!(
+        !fs::symlink_metadata(&staged)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false),
+        "the staged package must be a usable real directory, not a live workspace symlink"
     );
 }
