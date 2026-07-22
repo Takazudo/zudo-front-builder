@@ -198,8 +198,12 @@ export interface List {
   type: "list";
   position: AstPosition;
   ordered: boolean;
-  /** `null` for an unordered list. */
-  start: number | null;
+  /**
+   * Absent for an unordered list. Rust serializes `None` here by OMITTING
+   * the key (`#[serde(skip_serializing_if = "Option::is_none")]`), not as
+   * JSON `null` -- hence `?:`, not `| null`.
+   */
+  start?: number;
   spread: boolean;
   children: MdastNode[];
 }
@@ -207,8 +211,8 @@ export interface ListItem {
   type: "listItem";
   position: AstPosition;
   spread: boolean;
-  /** GFM task-list state; `null` for a plain (non-task) item. */
-  checked: boolean | null;
+  /** GFM task-list state; absent (not `null` -- see {@link List.start}) for a plain (non-task) item. */
+  checked?: boolean;
   children: MdastNode[];
 }
 export interface Html {
@@ -219,17 +223,21 @@ export interface Html {
 export interface Code {
   type: "code";
   position: AstPosition;
-  lang: string | null;
-  meta: string | null;
+  /** Absent when the fence has no language (see {@link List.start}). */
+  lang?: string;
+  /** Absent when the fence has no meta string (see {@link List.start}). */
+  meta?: string;
   value: string;
 }
 export interface Definition {
   type: "definition";
   position: AstPosition;
   url: string;
-  title: string | null;
+  /** Absent when there is no title (see {@link List.start}). */
+  title?: string;
   identifier: string;
-  label: string | null;
+  /** Absent when there is no label (see {@link List.start}). */
+  label?: string;
 }
 export interface Text {
   type: "text";
@@ -259,7 +267,8 @@ export interface Link {
   type: "link";
   position: AstPosition;
   url: string;
-  title: string | null;
+  /** Absent when there is no title (see {@link List.start}). */
+  title?: string;
   children: MdastNode[];
 }
 export interface Image {
@@ -267,14 +276,16 @@ export interface Image {
   position: AstPosition;
   alt: string;
   url: string;
-  title: string | null;
+  /** Absent when there is no title (see {@link List.start}). */
+  title?: string;
 }
 export interface LinkReference {
   type: "linkReference";
   position: AstPosition;
   referenceType: ReferenceKind;
   identifier: string;
-  label: string | null;
+  /** Absent when there is no label (see {@link List.start}). */
+  label?: string;
   children: MdastNode[];
 }
 export interface ImageReference {
@@ -283,14 +294,16 @@ export interface ImageReference {
   alt: string;
   referenceType: ReferenceKind;
   identifier: string;
-  label: string | null;
+  /** Absent when there is no label (see {@link List.start}). */
+  label?: string;
 }
 /** GFM footnote definition (`[^id]: ...`). */
 export interface FootnoteDefinition {
   type: "footnoteDefinition";
   position: AstPosition;
   identifier: string;
-  label: string | null;
+  /** Absent when there is no label (see {@link List.start}). */
+  label?: string;
   children: MdastNode[];
 }
 /** GFM footnote reference (`[^id]`). */
@@ -298,7 +311,8 @@ export interface FootnoteReference {
   type: "footnoteReference";
   position: AstPosition;
   identifier: string;
-  label: string | null;
+  /** Absent when there is no label (see {@link List.start}). */
+  label?: string;
 }
 /** GFM table. */
 export interface Table {
@@ -358,8 +372,8 @@ export interface MdxTextExpression {
 export interface MdxJsxFlowElement {
   type: "mdxJsxFlowElement";
   position: AstPosition;
-  /** `null` for a JSX fragment (`<>...</>`). */
-  name: string | null;
+  /** Absent for a JSX fragment (`<>...</>`) -- see {@link List.start}. */
+  name?: string;
   attributes: MdxJsxAttributeContent[];
   children: MdastNode[];
 }
@@ -367,7 +381,8 @@ export interface MdxJsxFlowElement {
 export interface MdxJsxTextElement {
   type: "mdxJsxTextElement";
   position: AstPosition;
-  name: string | null;
+  /** Absent for a JSX fragment (`<>...</>`) -- see {@link List.start}. */
+  name?: string;
   attributes: MdxJsxAttributeContent[];
   children: MdastNode[];
 }
@@ -391,8 +406,8 @@ export interface MdxJsxAttributeValueExpression {
 export interface MdxJsxAttribute {
   type: "mdxJsxAttribute";
   name: string;
-  /** `undefined`/absent for a bare boolean attribute (`<a b />`). */
-  value?: string | MdxJsxAttributeValueExpression | null;
+  /** Absent for a bare boolean attribute (`<a b />`) -- see {@link List.start}. */
+  value?: string | MdxJsxAttributeValueExpression;
 }
 /**
  * A JSX spread attribute (`{...expr}`). Divergence: carries no `position`,
