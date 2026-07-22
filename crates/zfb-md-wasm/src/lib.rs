@@ -12,7 +12,10 @@
 //! 3. [`highlight_code`] — arbitrary source → semantic class-highlighted HTML
 //!    (without a Markdown fence). Returns `{ html, diagnostics }`.
 //!
-//! Plus [`version`] for host-side compatibility checks.
+//! Plus [`version`] for host-side compatibility checks, and — PROTOTYPE
+//! only, zfb#1855/epic zfb#1854, not a documented API — [`parse_to_ast`]
+//! (`parseToAst`), a raw-mdast export spike feeding that epic's
+//! benchmark-first go/no-go decision.
 //!
 //! Tiers 1–2 above (`compile`/`render_html`, and everything only they use --
 //! `WasmOptions`, `Prepared`, `prepare`, `CompileResult`/`RenderHtmlResult`)
@@ -225,6 +228,24 @@ struct CompileResult {
 #[derive(Debug, Serialize)]
 struct RenderHtmlResult {
     html: Option<String>,
+    frontmatter: JsonValue,
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// Result document of [`parse_to_ast`].
+///
+/// PROTOTYPE (zfb#1855, epic zfb#1854 — `parseToAst` go/no-go spike; NOT a
+/// documented/supported API surface): `ast` is the RAW markdown-rs mdast
+/// tree serialized via markdown-rs's own `serde` feature (unist-shaped:
+/// `type` tag, camelCase, `position` omitted when absent), post-frontmatter-
+/// strip, PRE-zfb-visitors — with every `position` shifted back into
+/// original-source coordinates (lines by the frontmatter's line count,
+/// offsets by the body byte offset, columns unchanged). Pruned entirely on
+/// a Wave-2 no-go.
+#[cfg(feature = "pipeline")]
+#[derive(Debug, Serialize)]
+struct ParseToAstResult {
+    ast: Option<markdown::mdast::Node>,
     frontmatter: JsonValue,
     diagnostics: Vec<Diagnostic>,
 }
@@ -478,6 +499,151 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     }
 }
 
+/// Shift one mdast [`markdown::unist::Point`] from body-relative back into
+/// original-source coordinates: `line_delta` frontmatter lines onto `line`,
+/// `offset_delta` body-start bytes onto `offset`, `column` unchanged (the
+/// stripped frontmatter block is whole lines, so the body always starts at
+/// column 1 of a fresh line). Mirrors the diagnostics arithmetic in
+/// [`markdown_diagnostic`] / [`prepare`]'s `prefix_lines`.
+#[cfg(feature = "pipeline")]
+fn shift_point(point: &mut markdown::unist::Point, line_delta: usize, offset_delta: usize) {
+    point.line += line_delta;
+    point.offset += offset_delta;
+}
+
+/// Shift markdown-rs `Stop` pairs (`(index_in_value, absolute_source_offset)`
+/// — see `markdown::mdast::Stop`) by the body byte offset. The second tuple
+/// element is an absolute source offset (markdown-rs uses it in
+/// `Location::relative_to_point` for expression re-parsing), so it must move
+/// with `position.*.offset` or the serialized `_markdownRsStops` field would
+/// disagree with the shifted positions beside it.
+#[cfg(feature = "pipeline")]
+fn shift_stops(stops: &mut [markdown::mdast::Stop], offset_delta: usize) {
+    for stop in stops {
+        stop.1 += offset_delta;
+    }
+}
+
+#[cfg(feature = "pipeline")]
+fn shift_attribute_stops(
+    attributes: &mut [markdown::mdast::AttributeContent],
+    offset_delta: usize,
+) {
+    use markdown::mdast::{AttributeContent, AttributeValue};
+    for attribute in attributes {
+        match attribute {
+            AttributeContent::Expression(expression) => {
+                shift_stops(&mut expression.stops, offset_delta);
+            }
+            AttributeContent::Property(property) => {
+                if let Some(AttributeValue::Expression(expression)) = &mut property.value {
+                    shift_stops(&mut expression.stops, offset_delta);
+                }
+            }
+        }
+    }
+}
+
+/// PROTOTYPE (zfb#1855, epic zfb#1854): recursively shift every node's
+/// `position` (and every embedded stop list) from body-relative back into
+/// original-source coordinates. Recursion depth equals mdast nesting depth —
+/// the same bound `Pipeline`'s own visitors already accept for this input.
+#[cfg(feature = "pipeline")]
+fn shift_mdast_positions(node: &mut markdown::mdast::Node, line_delta: usize, offset_delta: usize) {
+    use markdown::mdast::Node;
+    if let Some(position) = node.position_mut() {
+        shift_point(&mut position.start, line_delta, offset_delta);
+        shift_point(&mut position.end, line_delta, offset_delta);
+    }
+    match node {
+        Node::MdxjsEsm(x) => shift_stops(&mut x.stops, offset_delta),
+        Node::MdxFlowExpression(x) => shift_stops(&mut x.stops, offset_delta),
+        Node::MdxTextExpression(x) => shift_stops(&mut x.stops, offset_delta),
+        Node::MdxJsxFlowElement(x) => shift_attribute_stops(&mut x.attributes, offset_delta),
+        Node::MdxJsxTextElement(x) => shift_attribute_stops(&mut x.attributes, offset_delta),
+        _ => {}
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            shift_mdast_positions(child, line_delta, offset_delta);
+        }
+    }
+}
+
+/// PROTOTYPE (zfb#1855, epic zfb#1854 — `parseToAst` go/no-go spike).
+///
+/// Deliberately duplicates [`prepare`]'s front half (options JSON →
+/// filename gate → frontmatter extraction) MINUS `facade::build_pipeline`:
+/// building the full pipeline loads the syntect theme set this raw-parse
+/// entry point never uses, which would both slow every call and distort the
+/// exact benchmark this prototype exists to feed. Keeping the duplication
+/// local also makes the whole prototype prunable without touching
+/// [`prepare`] on a Wave-2 no-go.
+#[cfg(feature = "pipeline")]
+fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
+    let fail = |frontmatter: JsonValue, diag: Diagnostic| ParseToAstResult {
+        ast: None,
+        frontmatter,
+        diagnostics: vec![diag],
+    };
+
+    let opts: WasmOptions = match serde_json::from_str(options_json) {
+        Ok(o) => o,
+        Err(e) => {
+            let diag = Diagnostic::error("options", format!("invalid options JSON: {e}"))
+                .at(Some(e.line() as u64), Some(e.column() as u64));
+            return fail(JsonValue::Null, diag);
+        }
+    };
+    let filename = opts
+        .filename
+        .unwrap_or_else(|| "<anonymous>.mdx".to_string());
+    let extension = std::path::Path::new(&filename)
+        .extension()
+        .and_then(|e| e.to_str());
+    if !matches!(extension, Some("md" | "mdx")) {
+        let diag = Diagnostic::error(
+            "options",
+            format!("filename `{filename}` must end in `.md` or `.mdx` for this entry point"),
+        );
+        return fail(JsonValue::Null, diag);
+    }
+
+    let extracted = match extract_from_filename(&filename, source) {
+        Ok(uf) => uf,
+        Err(e) => return fail(JsonValue::Null, frontmatter_diagnostic(&e)),
+    };
+    let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
+        // Unreachable after the extension gate above — kept as a diagnostic
+        // rather than a panic per the wasm trap contract (same as `prepare`).
+        let diag = Diagnostic::error(
+            "options",
+            format!("filename `{filename}` did not resolve to a markdown body"),
+        );
+        return fail(JsonValue::Null, diag);
+    };
+    let frontmatter = extracted.value;
+    let prefix_lines = source
+        .get(..body_offset)
+        .map(|prefix| prefix.matches('\n').count())
+        .unwrap_or(0);
+
+    let mut ast = match facade::parse_mdast(&opts.pipeline, &body) {
+        Ok(ast) => ast,
+        Err(e) => {
+            let diag = markdown_diagnostic(&e, &filename, prefix_lines as u64);
+            return fail(frontmatter, diag);
+        }
+    };
+    shift_mdast_positions(&mut ast, prefix_lines, body_offset);
+
+    ParseToAstResult {
+        ast: Some(ast),
+        frontmatter,
+        diagnostics: vec![],
+    }
+}
+
 fn highlight_code_impl(code: &str, options_json: &str) -> HighlightCodeResult {
     let options: HighlightCodeOptions = match serde_json::from_str(options_json) {
         Ok(options) => options,
@@ -583,6 +749,29 @@ pub fn compile(source: &str, options_json: &str) -> String {
 #[must_use]
 pub fn render_html(source: &str, options_json: &str) -> String {
     to_json(&render_html_impl(source, options_json))
+}
+
+/// PROTOTYPE (zfb#1855, epic zfb#1854 — go/no-go spike; NOT a documented or
+/// supported API surface): parse markdown/MDX source into a serialized RAW
+/// mdast tree. Exported to JS as `parseToAst`.
+///
+/// Returns a JSON string: `{ "ast": mdast|null, "frontmatter": json,
+/// "diagnostics": Diagnostic[] }`. The tree is the raw markdown-rs parser
+/// output (post-frontmatter-strip, PRE-zfb-visitors — the epic's locked
+/// contract), serialized in the unist shape via markdown-rs's `serde`
+/// feature, with every `position` shifted back into original-source
+/// coordinates (see [`shift_mdast_positions`]). Accepts the same options
+/// document as [`compile`]/[`render_html`]; only `filename` and
+/// `pipeline.gfm` participate, the rest is accepted and ignored (visitor/
+/// serializer knobs never run on this raw-parse tier).
+///
+/// This export exists to answer issue zfb#1828's benchmark-first question
+/// and is pruned on a Wave-2 no-go — do not build on it.
+#[cfg(feature = "pipeline")]
+#[wasm_bindgen(js_name = parseToAst)]
+#[must_use]
+pub fn parse_to_ast(source: &str, options_json: &str) -> String {
+    to_json(&parse_to_ast_impl(source, options_json))
 }
 
 /// Highlight arbitrary source into semantic class-mode HTML without requiring
