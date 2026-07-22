@@ -492,8 +492,9 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            default_fp, "87680d4705178c808751765ad1a8861b5ef0c004a3a185323af27ea506d8e6ca",
-            "default-spec fingerprint drifted from pre-#977 HEAD"
+            default_fp, "308ef87c7e9347256505931b376f4be7d2222428811761ff2a6ea3983be87294",
+            "default-spec fingerprint drifted from pre-#977 HEAD (re-captured for the \
+             issue #1848 FINGERPRINT_VERSION bump — see that const's doc comment)"
         );
 
         let feats: zfb_md_extras::MarkdownFeaturesConfig =
@@ -512,8 +513,9 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            armed_fp, "91afeca864efa22103b54bab3a0a28a7f90e3f5afa51bb48a198fc60222c821c",
-            "linkValidation-armed fingerprint drifted from pre-#977 HEAD"
+            armed_fp, "0f14d0a12712b6a0ee335b00fb644eb8753330f20fb8a891c0073b269ddce501",
+            "linkValidation-armed fingerprint drifted from pre-#977 HEAD (re-captured for the \
+             issue #1848 FINGERPRINT_VERSION bump — see that const's doc comment)"
         );
 
         // Draining the channels is part of the observational contract

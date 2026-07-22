@@ -38,6 +38,11 @@
       "slug": "incomplete-javascript",
       "code": "const answer =",
       "options": { "language": "javascript" }
+    },
+    {
+      "slug": "toml-semantic",
+      "code": "[package]\nname = \"zfb\"\nversion = 1\nenabled = true\n# a comment\n",
+      "options": { "language": "toml" }
     }
   ]
 }

@@ -10,6 +10,10 @@
 //! 1. [`PipelineOptions`] is a `serde`-`Deserialize` mirror of the knobs
 //!    [`Pipeline::with_defaults_and_full_config`] accepts, minus the
 //!    filesystem-only ones (`themes_dir`) — see [`build_pipeline_from_json`].
+//!    [`PipelineOptions::code_highlight`] additionally routes to
+//!    [`Pipeline::with_defaults_and_full_config_class`] when
+//!    `codeHighlight.mode` is `"class"` (Highlight Tokens epic zfb#1528,
+//!    wasm routing sub zfb#1852) — see [`build_pipeline`].
 //! 2. [`render_html`] promotes the `pipeline.run(input)` →
 //!    [`crate::serializer::serialize`] composition that today only exists
 //!    inlined in test helpers (e.g. `tests/integration_pipeline.rs`) into a
@@ -34,12 +38,15 @@
 //! loader path relies on (`crates/zfb-render/src/loader.rs`, around the
 //! `with_strip_md_ext_and_gfm_and_cjk_and_features` constructor).
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use zfb_md_extras::MarkdownFeaturesConfig;
 
 use crate::mdx_jsx_emit::{mdx_to_jsx_module_with_pipeline, MdxJsxOptions};
 use crate::pipeline::{Pipeline, PipelineError, ResolvedGfmConstructs};
 use crate::serializer;
+use crate::syntect_highlight::{validate_class_highlight_classes, DEFAULT_CLASS_HIGHLIGHT_PREFIX};
 
 /// Resolved GFM construct toggles, `Deserialize`-compatible mirror of
 /// [`ResolvedGfmConstructs`].
@@ -102,6 +109,88 @@ impl From<GfmOptions> for ResolvedGfmConstructs {
     }
 }
 
+/// `codeHighlight.mode` — mirrors the `"inline"` / `"class"` string-literal
+/// union accepted by native `zfb::config::CodeHighlightConfig::mode`
+/// (`crates/zfb/src/config.rs`).
+///
+/// A facade-local mirror rather than a reuse of
+/// [`crate::pipeline_spec::CodeHighlightMode`] (also re-exported at the
+/// crate root as `CodeHighlightMode`, so importing both under one name
+/// would collide): that type has no `Deserialize` impl and is constructed
+/// from already-resolved `zfb.config.ts` JSON through a completely
+/// different path (`pipeline_spec_from_config` in
+/// `crates/zfb/src/commands/bundler_input.rs`). Giving this wasm-facing
+/// `deny_unknown_fields` boundary its own tiny enum keeps it self-contained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum CodeHighlightMode {
+    /// Per-token inline colors (pre-epic behaviour). Default.
+    #[default]
+    Inline,
+    /// Per-token semantic role classes; colors resolved via CSS instead of
+    /// inline styles. Routes [`build_pipeline`] to
+    /// [`Pipeline::with_defaults_and_full_config_class`].
+    Class,
+}
+
+/// `codeHighlight` sub-object of [`PipelineOptions`] (Highlight Tokens epic
+/// zfb#1528, wasm routing sub zfb#1852).
+///
+/// Mirrors the subset of native `zfb::config::CodeHighlightConfig`
+/// (`crates/zfb/src/config.rs`) this facade exposes: `mode`, `classPrefix`,
+/// `roleClasses`. `theme` (native's `theme`/`themeLight`/`themeDark`/
+/// `themesDir` quartet, minus the filesystem-only `themesDir` this facade
+/// never exposes) stays at the TOP LEVEL of [`PipelineOptions`], outside
+/// this sub-object — a deliberate partial congruence with the native
+/// shape, not an oversight: nesting `theme` here too would be a breaking
+/// change to the pre-existing `PipelineOptions::theme` field, and this
+/// facade has no dual-theme knob to nest alongside it either.
+///
+/// `mode: "class"` combined with a top-level [`PipelineOptions::theme`] is
+/// rejected by [`build_pipeline`] — themes don't affect class emission, so
+/// silently ignoring the theme would surprise callers (same precedent as
+/// native config.rs's `codeHighlight.mode "class"` exclusion checks).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct CodeHighlightOptions {
+    /// Output mode for fenced-code highlighting. Default: `"inline"` —
+    /// reproduces the pre-existing per-token inline-color behaviour
+    /// byte-for-byte.
+    pub mode: CodeHighlightMode,
+    /// Class-name prefix for class-mode role classes (e.g. the default
+    /// `"hi-"` yields `hi-kw`, `hi-str`, ...). Only meaningful when
+    /// [`Self::mode`] is [`CodeHighlightMode::Class`].
+    ///
+    /// Defaults to [`DEFAULT_CLASS_HIGHLIGHT_PREFIX`] — shared with native
+    /// config and the direct arbitrary-code highlighter (see that
+    /// constant's docs) so wasm/native defaults cannot diverge.
+    #[serde(default = "default_class_highlight_prefix")]
+    pub class_prefix: String,
+    /// Per-role class overrides for class mode, e.g.
+    /// `{ "keyword": "text-violet-600 dark:text-violet-400" }`. Keys must
+    /// be one of the fixed role names in
+    /// [`crate::hi_roles::HiRole::FULL_NAMES`]; `None` (the default) uses
+    /// `{classPrefix}{role}` for every role. Only meaningful when
+    /// [`Self::mode`] is [`CodeHighlightMode::Class`]. Validated by
+    /// [`validate_class_highlight_classes`] in [`build_pipeline`] — the
+    /// same validator native config uses.
+    pub role_classes: Option<BTreeMap<String, String>>,
+}
+
+impl Default for CodeHighlightOptions {
+    fn default() -> Self {
+        Self {
+            mode: CodeHighlightMode::default(),
+            class_prefix: default_class_highlight_prefix(),
+            role_classes: None,
+        }
+    }
+}
+
+fn default_class_highlight_prefix() -> String {
+    DEFAULT_CLASS_HIGHLIGHT_PREFIX.to_string()
+}
+
 /// The wasm-safe pipeline knob set — the JSON shape a `zfb-md-wasm` host
 /// binds `compile(source, optionsJson)` / `renderHtml(source, optionsJson)`
 /// to.
@@ -131,6 +220,11 @@ impl From<GfmOptions> for ResolvedGfmConstructs {
 ///   },
 ///   "cjkFriendly": true,
 ///   "hardBreaks": false,
+///   "codeHighlight": {
+///     "mode": "class",
+///     "classPrefix": "hi-",
+///     "roleClasses": { "keyword": "text-violet-600 dark:text-violet-400" }
+///   },
 ///   "features": {
 ///     "githubAlerts": true,
 ///     "readingTime": { "wpm": 200 },
@@ -166,9 +260,21 @@ impl From<GfmOptions> for ResolvedGfmConstructs {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct PipelineOptions {
-    /// Syntect highlight theme name. `None` keeps the built-in default
-    /// (`base16-ocean.dark`). Mirrors
+    /// Syntect highlight theme name. Absent, or explicit JSON `null`, keep
+    /// the built-in default theme (`base16-ocean.dark`) — fenced code is
+    /// ALWAYS highlighted through this field; there is no "disable
+    /// highlighting" value (matches native `zfb::config::CodeHighlightConfig`
+    /// — `crates/zfb/src/config.rs` — where an absent `theme` carries the
+    /// identical "defaults to `base16-ocean.dark`" contract). An earlier
+    /// draft of the TS-side docs (`crates/zfb-md-wasm/npm/src/types.ts`)
+    /// claimed `null` meant "no syntax highlighting"; that was never true of
+    /// this deserializer and has been corrected there (zfb#1852) rather
+    /// than changed here, to keep this knob's semantics identical to
+    /// native config's `theme`. Mirrors
     /// [`Pipeline::with_defaults_and_full_config`]'s `theme` parameter.
+    ///
+    /// Mutually exclusive with [`Self::code_highlight`]'s `mode: "class"`
+    /// — see that field's docs.
     pub theme: Option<String>,
     /// Resolved GFM construct set. Default: conservative (strikethrough +
     /// table on).
@@ -179,6 +285,11 @@ pub struct PipelineOptions {
     /// Whether to run `HardBreaksPlugin` (single newlines become `<br>`).
     /// Default: `false`.
     pub hard_breaks: bool,
+    /// Output mode + class-mode knobs for fenced-code highlighting
+    /// (Highlight Tokens epic zfb#1528). Absent, `null`, or
+    /// `{ "mode": "inline" }` reproduce the pre-existing per-token
+    /// inline-color behaviour byte-for-byte — see [`CodeHighlightOptions`].
+    pub code_highlight: Option<CodeHighlightOptions>,
     /// Opt-in feature set. Default: every feature disabled (the post-epic
     /// opt-in default — see [`MarkdownFeaturesConfig`]'s own docs).
     pub features: MarkdownFeaturesConfig,
@@ -191,6 +302,7 @@ impl Default for PipelineOptions {
             gfm: GfmOptions::default(),
             cjk_friendly: true,
             hard_breaks: false,
+            code_highlight: None,
             features: MarkdownFeaturesConfig::default(),
         }
     }
@@ -215,6 +327,21 @@ pub enum FacadeError {
     /// silently rendering unhighlighted code blocks.
     #[error("invalid pipeline options: {0}")]
     Highlight(#[from] crate::syntect_highlight::HighlightError),
+    /// `options.code_highlight.mode` is `"class"` while `options.theme` is
+    /// also set. Themes don't affect class emission, so silently ignoring
+    /// the theme would surprise callers — mirrors native config.rs's
+    /// `codeHighlight.mode "class" is mutually exclusive with
+    /// codeHighlight.theme` precedent (`crates/zfb/src/config.rs:2194-2218`).
+    #[error(
+        "invalid pipeline options: codeHighlight.mode \"class\" is mutually exclusive with theme"
+    )]
+    ClassModeExcludesTheme,
+    /// `options.code_highlight.classPrefix` / `roleClasses` failed the
+    /// shared [`validate_class_highlight_classes`] check — the same
+    /// validator native config uses (prefixed with `codeHighlight.` there
+    /// too).
+    #[error("invalid pipeline options: codeHighlight.{0}")]
+    ClassHighlight(#[from] crate::syntect_highlight::ClassHighlightValidationError),
     /// The pipeline itself failed to run against the supplied source.
     #[error(transparent)]
     Pipeline(#[from] PipelineError),
@@ -238,6 +365,12 @@ pub fn parse_pipeline_options(config_json: &str) -> Result<PipelineOptions, Faca
 /// module docs for why that keeps `transclude` / `imageDimensions` /
 /// `linkValidation` inert.
 ///
+/// When [`PipelineOptions::code_highlight`]'s `mode` is
+/// [`CodeHighlightMode::Class`], routes to
+/// [`Pipeline::with_defaults_and_full_config_class`] instead (Highlight
+/// Tokens epic zfb#1528, wasm routing sub zfb#1852) — every other knob
+/// wires through identically.
+///
 /// # Errors
 /// Returns [`FacadeError::Highlight`] when `options.theme` names a theme
 /// that does not exist in the built-in syntect theme set —
@@ -246,16 +379,39 @@ pub fn parse_pipeline_options(config_json: &str) -> Result<PipelineOptions, Faca
 /// diagnostic, never a panic (zfb#1576): the theme name comes straight
 /// from user-supplied options JSON, and on `wasm32-unknown-unknown` a
 /// panic traps and poisons the instance.
+///
+/// Returns [`FacadeError::ClassModeExcludesTheme`] when `code_highlight.mode`
+/// is `"class"` and `theme` is also set, and
+/// [`FacadeError::ClassHighlight`] when `code_highlight.classPrefix` /
+/// `roleClasses` fails validation.
 pub fn build_pipeline(options: &PipelineOptions) -> Result<Pipeline, FacadeError> {
     let resolved_gfm: ResolvedGfmConstructs = options.gfm.into();
-    Ok(Pipeline::with_defaults_and_full_config(
-        options.theme.as_deref(),
-        resolved_gfm,
-        None,
-        options.cjk_friendly,
-        options.hard_breaks,
-        Some(&options.features),
-    )?)
+    match &options.code_highlight {
+        Some(ch) if ch.mode == CodeHighlightMode::Class => {
+            if options.theme.is_some() {
+                return Err(FacadeError::ClassModeExcludesTheme);
+            }
+            let role_classes = ch.role_classes.clone().unwrap_or_default();
+            validate_class_highlight_classes(&ch.class_prefix, &role_classes)?;
+            Ok(Pipeline::with_defaults_and_full_config_class(
+                resolved_gfm,
+                None,
+                options.cjk_friendly,
+                options.hard_breaks,
+                Some(&options.features),
+                &ch.class_prefix,
+                &role_classes,
+            )?)
+        }
+        _ => Ok(Pipeline::with_defaults_and_full_config(
+            options.theme.as_deref(),
+            resolved_gfm,
+            None,
+            options.cjk_friendly,
+            options.hard_breaks,
+            Some(&options.features),
+        )?),
+    }
 }
 
 /// Parse `config_json` and build a fully-wired [`Pipeline`] in one step.
@@ -317,6 +473,43 @@ pub fn render_mdx_jsx_module(
 ) -> Result<String, PipelineError> {
     let opts = MdxJsxOptions::default().with_filename(filename);
     mdx_to_jsx_module_with_pipeline(input, opts, pipeline)
+}
+
+/// Parse `input` into a RAW markdown-rs mdast tree — feeds `zfb-md-wasm`'s
+/// `parseToAst` export (zfb#1857, epic zfb#1854).
+///
+/// Contract locked at epic planning: the returned tree is the raw parser
+/// output — post-frontmatter-strip (the caller strips frontmatter before
+/// calling this; see `zfb-md-wasm`'s `parseToAst`), PRE-zfb-visitors — so
+/// every node carries real parser `position` info and no visitor-synthesized
+/// `position: None` nodes exist. Parse options mirror [`Pipeline::run`]'s
+/// exactly: [`crate::pipeline::constructs_for_pipeline`] over the resolved
+/// GFM set, on top of [`markdown::ParseOptions::mdx`] (math constructs stay
+/// off — same as the HTML-serializer path; the JSX-emit path's math-enabled
+/// constructs are deliberately NOT used here).
+///
+/// Only [`PipelineOptions::gfm`] participates — every other option drives
+/// visitor/serializer behavior this raw-parse entry point never runs. Takes
+/// the full options struct anyway so the wasm boundary passes one options
+/// document to every tier.
+///
+/// `zfb-md-wasm` converts this function's UTF-8-byte positions to the
+/// UTF-16 code-unit contract `parseToAst` actually returns — see that
+/// crate's `Utf16Positions` for the conversion. Positions returned directly
+/// from this function stay markdown-rs-native (UTF-8 bytes).
+///
+/// # Errors
+/// Returns [`PipelineError::Parse`] if markdown-rs rejects `input`.
+pub fn parse_mdast(
+    options: &PipelineOptions,
+    input: &str,
+) -> Result<markdown::mdast::Node, PipelineError> {
+    let resolved_gfm: ResolvedGfmConstructs = options.gfm.into();
+    let parse_options = markdown::ParseOptions {
+        constructs: crate::pipeline::constructs_for_pipeline(resolved_gfm),
+        ..markdown::ParseOptions::mdx()
+    };
+    markdown::to_mdast(input, &parse_options).map_err(|m| PipelineError::Parse(m.to_string()))
 }
 
 /// One-shot convenience: parse `config_json`, build a [`Pipeline`], and

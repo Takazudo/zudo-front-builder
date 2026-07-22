@@ -17,7 +17,15 @@
 //!   fs-bound plugins (`transclude`, `imageDimensions`, `linkValidation`)
 //!   are registered but produce no error, no diagnostics, and no output
 //!   mutation when pointed at nonexistent paths — proving they never
-//!   touch the filesystem through this facade.
+//!   touch the filesystem through this facade; (e) `codeHighlight` facade
+//!   ROUTING (knob → class output through `build_pipeline` — the engine
+//!   itself, prefix/roles/multiline/fingerprint, is already covered by
+//!   `tests/class_mode_pipeline.rs` and deliberately NOT re-tested here)
+//!   plus its validation (exclusion, `deny_unknown_fields`) and the
+//!   legacy-interaction matrix (absent / `null` / `mode:"inline"` with and
+//!   without `theme` / `mode:"class"` rejection); (f) `theme: null`
+//!   semantics (zfb#1852) — pinned to "built-in default theme, still
+//!   highlighted", NOT "no highlighting".
 //! - **Blind spots** (explicitly NOT covered here): wasm-target
 //!   compilation (crate still builds for the host triple only — that's
 //!   the sibling `zfb-md-wasm` crate's job in a later wave); performance
@@ -26,8 +34,8 @@
 
 use zfb_content::facade::{
     build_pipeline, build_pipeline_from_json, compile_mdx_jsx_from_config, parse_pipeline_options,
-    render_html, render_html_from_config, render_mdx_jsx_module, FacadeError, GfmOptions,
-    PipelineOptions,
+    render_html, render_html_from_config, render_mdx_jsx_module, CodeHighlightMode,
+    CodeHighlightOptions, FacadeError, GfmOptions, PipelineOptions,
 };
 use zfb_content::frontmatter::extract_from_filename;
 use zfb_content::pipeline::{Pipeline, ResolvedGfmConstructs};
@@ -442,4 +450,325 @@ fn compile_mdx_jsx_from_config_one_shot_matches_two_step() {
         render_mdx_jsx_module(&mut pipeline, input, "ruby.mdx").expect("two-step compiles");
 
     assert_eq!(one_shot, two_step);
+}
+
+// ── codeHighlight: facade routing (zfb#1852) ────────────────────────────────
+//
+// The class-emission ENGINE (prefix, roles, multiline state, fingerprint)
+// is already covered end-to-end by `tests/class_mode_pipeline.rs` and is
+// deliberately NOT re-tested here — these tests only prove the facade's
+// `codeHighlight` JSON knob reaches `Pipeline::with_defaults_and_full_config_class`
+// (and that the inline arm is unaffected).
+
+const RUST_FENCE: &str = "```rust\nfn main() {}\n```\n";
+
+#[test]
+fn code_highlight_class_mode_routes_to_class_arm() {
+    let html = render(r#"{"codeHighlight": {"mode": "class"}}"#, RUST_FENCE);
+    assert!(
+        html.contains("class=\"hi-root\""),
+        "pre must carry the default hi-root class: {html}"
+    );
+    assert!(
+        html.contains("class=\"hi-kw\""),
+        "token spans must carry role classes: {html}"
+    );
+    assert!(!html.contains("style=\"color:"), "got: {html}");
+    assert!(!html.contains("color:#"), "got: {html}");
+    assert!(!html.contains("class=\"syntect-"), "got: {html}");
+}
+
+#[test]
+fn code_highlight_class_mode_honours_custom_prefix_and_role_classes() {
+    let html = render(
+        r#"{"codeHighlight": {
+            "mode": "class",
+            "classPrefix": "token-",
+            "roleClasses": {"keyword": "text-violet-600 dark:text-violet-400"}
+        }}"#,
+        RUST_FENCE,
+    );
+    assert!(html.contains("class=\"token-root\""), "got: {html}");
+    assert!(
+        html.contains("class=\"text-violet-600 dark:text-violet-400\""),
+        "got: {html}"
+    );
+    assert!(
+        !html.contains("class=\"token-kw\""),
+        "override must replace the default class, not add to it: {html}"
+    );
+}
+
+/// `build_pipeline` (not just `Pipeline::with_defaults_and_full_config_class`
+/// directly) actually produces a distinct compile-cache fingerprint for
+/// class mode vs. the default inline pipeline — proving the facade's
+/// routing reaches the same fingerprint machinery `pipeline.rs:1874-1878`
+/// already wires into the class arm, not a fingerprint-losing bypass.
+#[test]
+fn code_highlight_class_mode_fingerprint_differs_from_inline_default() {
+    let inline = build_pipeline(&PipelineOptions::default()).expect("inline builds");
+    let class_options = PipelineOptions {
+        code_highlight: Some(CodeHighlightOptions {
+            mode: CodeHighlightMode::Class,
+            ..CodeHighlightOptions::default()
+        }),
+        ..PipelineOptions::default()
+    };
+    let class = build_pipeline(&class_options).expect("class builds");
+    assert_ne!(
+        inline.config_fingerprint(),
+        class.config_fingerprint(),
+        "class-mode and inline-mode configs must never alias one compile-cache fingerprint"
+    );
+}
+
+// ── codeHighlight: validation ───────────────────────────────────────────────
+
+#[test]
+fn code_highlight_class_mode_with_theme_is_rejected() {
+    let err = build_pipeline_from_json(
+        r#"{"theme": "InspiredGitHub", "codeHighlight": {"mode": "class"}}"#,
+    )
+    .map(|_| ())
+    .expect_err("mode class + theme must be rejected");
+    assert!(
+        matches!(err, FacadeError::ClassModeExcludesTheme),
+        "expected FacadeError::ClassModeExcludesTheme, got: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("codeHighlight.mode") && msg.contains("theme"),
+        "error must name both the mode and theme: {msg}"
+    );
+}
+
+#[test]
+fn code_highlight_invalid_class_prefix_is_rejected() {
+    let err =
+        build_pipeline_from_json(r#"{"codeHighlight": {"mode": "class", "classPrefix": "1hi-"}}"#)
+            .map(|_| ())
+            .expect_err("invalid classPrefix must be rejected");
+    assert!(
+        matches!(err, FacadeError::ClassHighlight(_)),
+        "expected FacadeError::ClassHighlight, got: {err:?}"
+    );
+    assert!(err.to_string().contains("codeHighlight."), "got: {err}");
+}
+
+#[test]
+fn code_highlight_unknown_role_key_is_rejected() {
+    let err = build_pipeline_from_json(
+        r#"{"codeHighlight": {"mode": "class", "roleClasses": {"kw": "text-blue-600"}}}"#,
+    )
+    .map(|_| ())
+    .expect_err("short role name must be rejected");
+    assert!(matches!(err, FacadeError::ClassHighlight(_)));
+}
+
+#[test]
+fn code_highlight_unknown_field_is_rejected() {
+    let err = parse_pipeline_options(r#"{"codeHighlight": {"bogus": true}}"#)
+        .expect_err("must reject unknown field inside codeHighlight");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("bogus") || msg.contains("unknown field"),
+        "error should name the unknown field, got: {msg}"
+    );
+}
+
+#[test]
+fn code_highlight_unknown_mode_value_is_rejected() {
+    let err = parse_pipeline_options(r#"{"codeHighlight": {"mode": "block"}}"#)
+        .expect_err("must reject unknown mode value");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("block") || msg.contains("unknown variant"),
+        "got: {msg}"
+    );
+}
+
+#[test]
+fn code_highlight_default_class_prefix_matches_shared_constant() {
+    let options = parse_pipeline_options(r#"{"codeHighlight": {"mode": "class"}}"#)
+        .expect("valid class-mode config");
+    let ch = options.code_highlight.expect("code_highlight present");
+    assert_eq!(ch.class_prefix, zfb_content::DEFAULT_CLASS_HIGHLIGHT_PREFIX);
+    assert!(ch.role_classes.is_none());
+}
+
+// ── codeHighlight: legacy-interaction matrix (zfb#1852) ─────────────────────
+//
+// Absent `codeHighlight`; `codeHighlight: null`; `mode: "inline"` with and
+// without `theme`; `mode: "class"` + `theme` rejection (covered above).
+// `theme` stays top-level while the class-mode knobs nest under
+// `codeHighlight` — a deliberate partial congruence with native
+// `zfb::config::CodeHighlightConfig` (which nests `theme` alongside `mode`);
+// nesting `theme` under `codeHighlight` here too would be a breaking change
+// to the pre-#1852 `PipelineOptions::theme` field, and this facade has no
+// dual-theme knob to nest beside it either.
+
+#[test]
+fn legacy_interaction_matrix_matches_pre_1852_inline_behavior() {
+    let baseline = {
+        let mut p = Pipeline::with_defaults_and_full_config(
+            None,
+            ResolvedGfmConstructs::CONSERVATIVE,
+            None,
+            true,
+            false,
+            None,
+        )
+        .expect("no themes_dir — cannot fail");
+        serialize(&p.run(RUST_FENCE).expect("baseline run"))
+    };
+
+    for config_json in [
+        "{}",
+        r#"{"codeHighlight": null}"#,
+        r#"{"codeHighlight": {"mode": "inline"}}"#,
+    ] {
+        let mut pipeline = build_pipeline_from_json(config_json).expect("valid config");
+        let html = render_html(&mut pipeline, RUST_FENCE).expect("render");
+        assert_eq!(
+            html, baseline,
+            "config {config_json:?} must reproduce the pre-#1852 inline pipeline byte-for-byte"
+        );
+    }
+
+    // mode:"inline" WITH a theme is the pre-existing themed-inline path,
+    // unaffected by the new class-mode routing — distinct from the
+    // untethed baseline above (proves the theme actually took effect).
+    let themed_html = render(
+        r#"{"theme": "InspiredGitHub", "codeHighlight": {"mode": "inline"}}"#,
+        RUST_FENCE,
+    );
+    assert_ne!(
+        themed_html, baseline,
+        "mode:\"inline\" + theme must still apply the theme"
+    );
+    assert!(
+        themed_html.contains("class=\"syntect-inspiredgithub\""),
+        "got: {themed_html}"
+    );
+}
+
+// ── theme: null semantics (zfb#1852 review finding) ─────────────────────────
+//
+// The TS-side docs (`crates/zfb-md-wasm/npm/src/types.ts`) used to claim
+// `theme: null` meant "no syntax highlighting". That was never what this
+// deserializer does: `Option<String>` maps JSON `null` to `None` exactly
+// like an absent key, and `None` selects the built-in default theme
+// (`base16-ocean.dark`) — fenced code is highlighted either way. This test
+// pins the ACTUAL resolved semantics; the docs were corrected to match
+// (not the other way around) so this facade's `theme` keeps the exact same
+// contract as native `zfb::config::CodeHighlightConfig::theme`.
+#[test]
+fn theme_null_uses_built_in_default_theme_not_no_highlighting() {
+    let explicit_null = render(r#"{"theme": null}"#, RUST_FENCE);
+    let absent = render("{}", RUST_FENCE);
+    assert_eq!(
+        explicit_null, absent,
+        "theme: null must be indistinguishable from theme being absent"
+    );
+    assert!(
+        explicit_null.contains("class=\"syntect-base16-ocean-dark\""),
+        "theme: null must still highlight with the built-in default theme, not skip highlighting: {explicit_null}"
+    );
+    assert!(
+        explicit_null.contains("style=\"color:"),
+        "theme: null must still emit inline per-token color — highlighting is NOT disabled: {explicit_null}"
+    );
+}
+
+// ── parse_mdast (PROTOTYPE — zfb#1855, epic zfb#1854) ───────────────────────
+//
+// Raw-parser mdast export spike. Level 1 (pure `&str` → tree logic). These
+// tests pin the LOCKED contract: raw markdown-rs output under the exact
+// `constructs_for_pipeline` construct set — no visitors, every node carrying
+// real parser positions. Pruned with the facade fn on a Wave-2 no-go.
+
+#[test]
+fn parse_mdast_returns_raw_tree_with_positions() {
+    use markdown::mdast::Node;
+    let options = PipelineOptions::default();
+    let ast = zfb_content::facade::parse_mdast(&options, "# Hi\n\nSome *em* text.\n")
+        .expect("valid markdown parses");
+    let Node::Root(root) = &ast else {
+        panic!("top node is a Root");
+    };
+    assert_eq!(root.children.len(), 2, "heading + paragraph");
+    assert!(
+        matches!(root.children[0], Node::Heading(_)),
+        "first child is the heading"
+    );
+    fn assert_positions(node: &Node) {
+        assert!(
+            node.position().is_some(),
+            "raw parser mdast node must carry a position: {node:?}"
+        );
+        if let Some(children) = node.children() {
+            for child in children {
+                assert_positions(child);
+            }
+        }
+    }
+    assert_positions(&ast);
+}
+
+#[test]
+fn parse_mdast_respects_resolved_gfm_construct_toggles() {
+    use markdown::mdast::Node;
+    let table_src = "| a | b |\n| - | - |\n| 1 | 2 |\n";
+    fn contains_table(node: &Node) -> bool {
+        matches!(node, Node::Table(_))
+            || node
+                .children()
+                .is_some_and(|c| c.iter().any(contains_table))
+    }
+
+    let default_on = zfb_content::facade::parse_mdast(&PipelineOptions::default(), table_src)
+        .expect("table source parses");
+    assert!(
+        contains_table(&default_on),
+        "conservative default has gfm_table ON"
+    );
+
+    let options = PipelineOptions {
+        gfm: GfmOptions {
+            table: false,
+            ..GfmOptions::default()
+        },
+        ..PipelineOptions::default()
+    };
+    let toggled_off =
+        zfb_content::facade::parse_mdast(&options, table_src).expect("still parses without table");
+    assert!(
+        !contains_table(&toggled_off),
+        "gfm.table=false must not produce a Table node"
+    );
+}
+
+#[test]
+fn parse_mdast_keeps_mdx_constructs_and_surfaces_parse_errors() {
+    use markdown::mdast::Node;
+    let options = PipelineOptions::default();
+    let ast = zfb_content::facade::parse_mdast(&options, "<Card label=\"x\" />\n")
+        .expect("MDX JSX parses under the mdx construct set");
+    fn contains_jsx(node: &Node) -> bool {
+        matches!(
+            node,
+            Node::MdxJsxFlowElement(_) | Node::MdxJsxTextElement(_)
+        ) || node.children().is_some_and(|c| c.iter().any(contains_jsx))
+    }
+    assert!(contains_jsx(&ast), "JSX element parses as an mdx node");
+
+    // An OPENED-but-never-closed element errors at EOF; a merely incomplete
+    // tag (`<Card` with no `>`) is NOT an error at the raw-mdast stage —
+    // markdown-rs degrades it to text.
+    let err = zfb_content::facade::parse_mdast(&options, "<Card>\n")
+        .expect_err("unclosed JSX element is a parse error");
+    assert!(
+        matches!(err, zfb_content::pipeline::PipelineError::Parse(_)),
+        "parse failures surface as PipelineError::Parse: {err:?}"
+    );
 }

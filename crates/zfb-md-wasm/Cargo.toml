@@ -19,19 +19,31 @@ description = "zfb md/mdx → JS / HTML conversion compiled to WebAssembly (wasm
 crate-type = ["rlib"]
 
 [features]
+# `pipeline` gates the compile/render-HTML half of this crate (the SwcPipeline
+# + facade/frontmatter machinery, see src/lib.rs) behind `dep:zfb-render` --
+# see the `zfb-render` dependency doc below. Default-on so the existing `.`
+# npm entry (compile + renderHtml + highlightCode) is unchanged for every
+# consumer that doesn't opt into the highlight-only artifact (zfb#1849, epic
+# zfb#1845): `npm/scripts/build.mjs`'s SECOND `--no-default-features` pass is
+# the only build that turns it off.
+default = ["pipeline"]
+pipeline = ["dep:zfb-render", "dep:markdown"]
 # Gates the `generate_parity_oracle` bin below out of every DEFAULT build of
 # this package -- including `cargo build --target wasm32-unknown-unknown
 # ... -p zfb-md-wasm` (the npm package's `pnpm build`, scripts/build.mjs),
 # which invokes cargo with no `--lib`/`--bin` filter and would otherwise
 # happily cross-compile this native-only, filesystem-touching bin for
 # wasm32-unknown-unknown too (wastefully, and pointlessly -- it would panic
-# at runtime with no filesystem to read). Empty on purpose: it turns on no
-# optional dependency, it only exists so `required-features` below can gate
-# the bin target.
-parity-oracle = []
+# at runtime with no filesystem to read). Pulls in `pipeline`: the bin
+# regenerates the compile/render parity corpus via `SwcPipeline`, so it must
+# work even under `--no-default-features --features parity-oracle`.
+parity-oracle = ["pipeline"]
 # Gates the focused arbitrary-code highlighting oracle generator out of the
 # wasm package build for the same reason as `parity-oracle` above: it is a
-# native filesystem tool, not a wasm entry point.
+# native filesystem tool, not a wasm entry point. Empty on purpose (unlike
+# `parity-oracle`): it only exercises the highlight surface, which is
+# unconditional (see `zfb-content` below), so it needs no optional
+# dependency of its own.
 highlight-parity-oracle = []
 
 [[bin]]
@@ -65,8 +77,20 @@ zfb-content = { path = "../zfb-content", default-features = false, features = ["
 # = false` keeps `embed_v8` (deno_core + tokio, native-only) out of the wasm
 # graph; `syntect-fancy` keeps this edge's zfb-content backend selection in
 # lock-step with the direct edge above (zfb#1576 added the forwarding
-# features to zfb-render).
-zfb-render = { path = "../zfb-render", default-features = false, features = ["syntect-fancy"] }
+# features to zfb-render). `optional = true`, gated behind the `pipeline`
+# feature above (zfb#1849, epic zfb#1845): the highlight-only artifact drops
+# this crate's whole compile/render-HTML half, which is the dominant share
+# of the shipped wasm bytes (Wave-1 measurement on epic #1845: 51.8% raw /
+# 44.5% gzip). `zfb-content` (below) stays unconditional -- highlighting and
+# its syntect-fancy backend selection are the point of that artifact.
+zfb-render = { path = "../zfb-render", optional = true, default-features = false, features = [
+  "syntect-fancy",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Direct markdown-rs dependency for the `parseToAst` raw-mdast export
+# (zfb#1857, epic zfb#1854). The workspace dep carries the `serde` feature
+# (unist-shaped serialization of the mdast tree). `optional`, gated behind
+# `pipeline` above, so the highlight-only artifact never pays for it.
+markdown = { workspace = true, optional = true }
 wasm-bindgen = "0.2"

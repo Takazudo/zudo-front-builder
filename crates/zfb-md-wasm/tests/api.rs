@@ -32,6 +32,12 @@ fn parse(result: String) -> Value {
     serde_json::from_str(&result).expect("API output is always a JSON document")
 }
 
+// `compile`/`render_html` and everything only they exercise (below) are
+// gated on `pipeline` (default-on, see crate docs) -- the highlight-only
+// artifact drops them (zfb#1849, epic zfb#1845). `cargo test -p
+// zfb-md-wasm --no-default-features` therefore runs only the
+// `highlight_code`/`version` tests further down.
+#[cfg(feature = "pipeline")]
 const MDX_FIXTURE: &str = "---\n\
 title: Hello WASM\n\
 tags:\n\
@@ -47,11 +53,13 @@ draft: false\n\
 \n\
 The answer is {6 * 7}.\n";
 
+#[cfg(feature = "pipeline")]
 const MDX_OPTIONS: &str =
     r#"{"filename":"post.mdx","pipeline":{"features":{"githubAlerts":true}}}"#;
 
 // ── compile tier ────────────────────────────────────────────────────────────
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn compile_full_fixture_emits_mdx_content_module() {
     let out = parse(zfb_md_wasm::compile(MDX_FIXTURE, MDX_OPTIONS));
@@ -98,6 +106,7 @@ fn compile_full_fixture_emits_mdx_content_module() {
     assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn compile_react_runtime_switches_import_source() {
     let out = parse(zfb_md_wasm::compile("hello\n", r#"{"jsxRuntime":"react"}"#));
@@ -109,6 +118,7 @@ fn compile_react_runtime_switches_import_source() {
     assert_eq!(out["frontmatter"], Value::Null, "no frontmatter → null");
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn compile_malformed_mdx_returns_structured_markdown_diagnostic() {
     // Frontmatter occupies file lines 1–3; the unclosed `<Card>` element
@@ -135,6 +145,7 @@ fn compile_malformed_mdx_returns_structured_markdown_diagnostic() {
     assert_eq!(diag["column"], 1);
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn compile_unclosed_expression_reports_shifted_position() {
     let src = "---\ntitle: x\n---\n\nvalue is {1 +\n";
@@ -148,6 +159,7 @@ fn compile_unclosed_expression_reports_shifted_position() {
 
 // ── renderHtml tier ─────────────────────────────────────────────────────────
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn render_html_full_fixture_with_frontmatter() {
     let src = "---\ntitle: Doc\ncount: 3\n---\n\n# Heading\n\nSome **bold** text.\n";
@@ -163,6 +175,7 @@ fn render_html_full_fixture_with_frontmatter() {
     assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn render_html_without_frontmatter_yields_null_frontmatter() {
     let out = parse(zfb_md_wasm::render_html("# Just a heading\n", "{}"));
@@ -170,6 +183,7 @@ fn render_html_without_frontmatter_yields_null_frontmatter() {
     assert_eq!(out["frontmatter"], Value::Null);
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn render_html_accepts_compile_tier_options_document() {
     // One options document must be shareable across both tiers:
@@ -184,6 +198,7 @@ fn render_html_accepts_compile_tier_options_document() {
 
 // ── options / frontmatter diagnostics ───────────────────────────────────────
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn non_json_options_return_options_diagnostic() {
     let out = parse(zfb_md_wasm::render_html("# hi\n", "not json"));
@@ -195,6 +210,7 @@ fn non_json_options_return_options_diagnostic() {
     assert_eq!(diag["line"], 1);
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn unknown_top_level_option_is_rejected() {
     let out = parse(zfb_md_wasm::compile("# hi\n", r#"{"bogus":1}"#));
@@ -209,6 +225,7 @@ fn unknown_top_level_option_is_rejected() {
     );
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn unknown_pipeline_option_is_rejected() {
     let out = parse(zfb_md_wasm::compile(
@@ -225,6 +242,7 @@ fn unknown_pipeline_option_is_rejected() {
     );
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn unknown_theme_name_is_a_diagnostic_not_a_panic() {
     // Theme names are validated at pipeline construction (zfb#1067 /
@@ -245,6 +263,7 @@ fn unknown_theme_name_is_a_diagnostic_not_a_panic() {
     );
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
     let out = parse(zfb_md_wasm::render_html(
@@ -267,6 +286,7 @@ fn invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
     assert_eq!(diag["column"], 1);
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn unterminated_frontmatter_returns_frontmatter_diagnostic() {
     let out = parse(zfb_md_wasm::render_html(
@@ -284,6 +304,7 @@ fn unterminated_frontmatter_returns_frontmatter_diagnostic() {
     );
 }
 
+#[cfg(feature = "pipeline")]
 #[test]
 fn non_markdown_filename_is_an_options_diagnostic() {
     let out = parse(zfb_md_wasm::compile("# hi\n", r#"{"filename":"page.tsx"}"#));
@@ -296,6 +317,112 @@ fn non_markdown_filename_is_an_options_diagnostic() {
             .is_some_and(|m| m.contains(".md") && m.contains("page.tsx")),
         "message must name the offending filename and the accepted extensions: {diag}"
     );
+}
+
+// ── parseToAst tier ─────────────────────────────────────────────────────────
+// The whole-tree position/UTF-16/custom-node proofs live in
+// tests/parse_to_ast.rs; these cases cover the same diagnostics paths,
+// shared-options-document, and non-markdown-filename gate the compile/
+// renderHtml tiers above are covered for, so parseToAst's cross-cutting
+// behavior isn't only proven by its own dedicated file.
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_malformed_mdx_returns_structured_markdown_diagnostic() {
+    // Same fixture/shift arithmetic as `compile_malformed_mdx_returns_structured_markdown_diagnostic`.
+    let src = "---\ntitle: x\n---\n<Card>\n\nsome text\n";
+    let out = parse(zfb_md_wasm::parse_to_ast(src, r#"{"filename":"bad.mdx"}"#));
+
+    assert_eq!(out["ast"], Value::Null);
+    assert_eq!(out["frontmatter"]["title"], "x");
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["severity"], "error");
+    assert_eq!(diag["source"], "markdown");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("closing tag")),
+        "message must describe the failure: {diag}"
+    );
+    assert_eq!(diag["line"], 7);
+    assert_eq!(diag["column"], 1);
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_non_json_options_return_options_diagnostic() {
+    let out = parse(zfb_md_wasm::parse_to_ast("# hi\n", "not json"));
+    assert_eq!(out["ast"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "options");
+    assert_eq!(diag["severity"], "error");
+    assert_eq!(diag["line"], 1);
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_unknown_top_level_option_is_rejected() {
+    let out = parse(zfb_md_wasm::parse_to_ast("# hi\n", r#"{"bogus":1}"#));
+    assert_eq!(out["ast"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "options");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("bogus")),
+        "message must name the unknown field: {diag}"
+    );
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        "---\ntitle: [oops\n---\nbody\n",
+        "{}",
+    ));
+    assert_eq!(out["ast"], Value::Null);
+    assert_eq!(out["frontmatter"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "frontmatter");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("invalid YAML")),
+        "message must describe the YAML failure: {diag}"
+    );
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_non_markdown_filename_is_an_options_diagnostic() {
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        "# hi\n",
+        r#"{"filename":"page.tsx"}"#,
+    ));
+    assert_eq!(out["ast"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "options");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(".md") && m.contains("page.tsx")),
+        "message must name the offending filename and the accepted extensions: {diag}"
+    );
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_accepts_the_shared_options_document() {
+    // One options document must be shareable across every tier: `jsxRuntime`/
+    // `development` are compile-tier-only knobs that parseToAst accepts and
+    // ignores, same contract as renderHtml.
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        "# hi\n",
+        r#"{"filename":"post.mdx","jsxRuntime":"react","development":true,"pipeline":{"gfm":{"table":true}}}"#,
+    ));
+    assert_eq!(out["ast"]["type"], "root");
+    assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
 }
 
 // ── direct highlightCode tier ──────────────────────────────────────────────

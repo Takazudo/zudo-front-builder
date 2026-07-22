@@ -100,12 +100,37 @@ pub struct Watcher {
     /// Recursive roots registered at boot. Dynamic file watches below can
     /// skip any parent already covered by one of these roots.
     watched_recursive_roots: BTreeSet<PathBuf>,
+    /// Registration-spelling bookkeeping for boot roots (issue #1843): the
+    /// exact as-given arg of each boot `notify.watch()` call, in
+    /// REGISTRATION ORDER, each with its alias spellings.
+    /// `watched_recursive_roots` (the flat alias set) answers COVERAGE
+    /// questions; the retirement collateral-repair scan drives its
+    /// re-registrations from this list so each boot directory is re-watched
+    /// at most once — a per-alias re-watch issued one `watch()` PER
+    /// SPELLING for a symlink-aliased root (routine in pnpm workspaces).
+    /// Order matters when one physical directory was boot-registered under
+    /// several spellings: on inotify the LAST registration controls the
+    /// delivered-path spelling, so the repair replays the last-registered
+    /// spelling per identity (codex review of #1843).
+    boot_root_registrations: Vec<(PathBuf, BTreeSet<PathBuf>)>,
     /// Exact directories registered non-recursively for live dependencies
     /// discovered after boot. Interior-locked and shared with the notify
     /// callback: the recursive-dir event filter exempts these dirs and their
     /// direct children from skip-dir suppression and must observe additions
     /// LIVE — see [`SharedPathSet`].
     watched_dependency_dirs: SharedPathSet,
+    /// Registration-spelling bookkeeping for dependency parents (issue
+    /// #1843): the exact as-given parent of each `watch_additional_files`
+    /// `notify.watch()` call (the `newly_watched` values), mapped to its
+    /// alias spellings. Recorded even when [`GuardedNotifyWatcher::watch`]
+    /// answers the call without touching the OS watch — that ownership is
+    /// still needed for repair after a covering synced root retires. Like
+    /// `boot_root_registrations`, this drives the retirement repair scan's
+    /// re-registrations; `watched_dependency_dirs` stays the coverage set.
+    /// A map (not an ordered list) is sufficient here: registration-time
+    /// alias dedupe guarantees one spelling per directory identity, so no
+    /// last-spelling-wins ordering question arises.
+    dependency_dir_registrations: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
     /// Delivery-time suppression state for the roots owned by
     /// [`Watcher::sync_recursive_dir_watches`], shared with the notify
     /// callback (which drops suppressed paths before the bridge channel).
@@ -121,6 +146,14 @@ pub struct Watcher {
 fn watch_aliases(path: &Path) -> impl Iterator<Item = PathBuf> {
     let canonical = path.canonicalize().ok();
     std::iter::once(path.to_path_buf()).chain(canonical)
+}
+
+/// One spelling-independent key per directory for the retirement repair
+/// scan's per-pass dedupe guard. Falls back to the as-given spelling when
+/// the path cannot be canonicalized (e.g. it was deleted mid-retirement —
+/// the follow-up `watch()` fails and is warned either way).
+fn canonical_identity(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn lock_ignoring_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -179,6 +212,17 @@ impl SharedPathSet {
 struct GuardedNotifyWatcher {
     inner: RecommendedWatcher,
     filter: Arc<Mutex<RecursiveDirFilterCore>>,
+    /// Test-only observability (issue #1843): when armed via
+    /// [`Watcher::enable_watch_call_log`], every `(path, recursive)` arg
+    /// pair actually forwarded to the OS-level `watch()` is recorded.
+    /// Needed because retirement-repair dedupe is not observable at
+    /// delivery level on FSEvents: notify's FSEvents backend keys
+    /// registrations by canonicalized path and delivers canonical
+    /// spellings, so per-alias duplicate watches coalesce invisibly there
+    /// (unlike inotify, where the duplicate flips the shared watch
+    /// descriptor's delivered-path spelling). `None` (production) records
+    /// nothing.
+    watch_call_log: Option<Vec<(PathBuf, bool)>>,
 }
 
 impl GuardedNotifyWatcher {
@@ -204,6 +248,9 @@ impl GuardedNotifyWatcher {
             if covered {
                 return Ok(());
             }
+        }
+        if let Some(log) = self.watch_call_log.as_mut() {
+            log.push((path.to_path_buf(), matches!(mode, RecursiveMode::Recursive)));
         }
         self.inner.watch(path, mode)
     }
@@ -394,6 +441,7 @@ impl Watcher {
             let _ = raw_tx.send(res);
         })?;
         let mut watched_recursive_roots = BTreeSet::new();
+        let mut boot_root_registrations: Vec<(PathBuf, BTreeSet<PathBuf>)> = Vec::new();
 
         for rel in relative_paths {
             let full = root.join(rel.as_ref());
@@ -404,7 +452,9 @@ impl Watcher {
             if let Err(e) = notify_watcher.watch(&full, RecursiveMode::Recursive) {
                 warn!(path = %full.display(), error = %e, "failed to watch path");
             } else {
-                watched_recursive_roots.extend(watch_aliases(&full));
+                let aliases: BTreeSet<PathBuf> = watch_aliases(&full).collect();
+                watched_recursive_roots.extend(aliases.iter().cloned());
+                boot_root_registrations.push((full.clone(), aliases));
                 debug!(path = %full.display(), "watching");
             }
         }
@@ -425,7 +475,9 @@ impl Watcher {
             if let Err(e) = notify_watcher.watch(extra, RecursiveMode::Recursive) {
                 warn!(path = %extra.display(), error = %e, "failed to watch extra path");
             } else {
-                watched_recursive_roots.extend(watch_aliases(extra));
+                let aliases: BTreeSet<PathBuf> = watch_aliases(extra).collect();
+                watched_recursive_roots.extend(aliases.iter().cloned());
+                boot_root_registrations.push((extra.to_path_buf(), aliases));
                 debug!(path = %extra.display(), "watching extra path");
             }
         }
@@ -449,11 +501,14 @@ impl Watcher {
                 _notify: GuardedNotifyWatcher {
                     inner: notify_watcher,
                     filter: Arc::clone(&recursive_dir_filter),
+                    watch_call_log: None,
                 },
                 shutdown: Some(shutdown_tx),
                 debouncer: Some(debouncer),
                 watched_recursive_roots,
+                boot_root_registrations,
                 watched_dependency_dirs,
+                dependency_dir_registrations: BTreeMap::new(),
                 recursive_dir_filter,
                 synced_recursive_dirs: BTreeMap::new(),
             },
@@ -515,6 +570,12 @@ impl Watcher {
             if let Err(error) = self._notify.watch(parent, RecursiveMode::NonRecursive) {
                 warn!(path = %parent.display(), %error, "failed to watch dynamic dependency parent");
             } else {
+                // Reached even when the guarded watcher answered without an
+                // OS-level watch (parent covered by an active synced root):
+                // the registration ownership recorded here is what the
+                // retirement repair scan later restores.
+                self.dependency_dir_registrations
+                    .insert(parent.to_path_buf(), aliases.iter().cloned().collect());
                 self.watched_dependency_dirs.extend(aliases);
                 debug!(path = %parent.display(), "watching dynamic dependency parent");
                 newly_watched.push(parent.to_path_buf());
@@ -577,7 +638,9 @@ impl Watcher {
     /// removes every watch entry underneath an unwatched recursive root,
     /// including entries owned by other registrations, so after each real
     /// unwatch any surviving synced root, boot root, or dependency parent
-    /// nested under the retired root is re-registered. (On FSEvents, where
+    /// nested under the retired root is re-registered — at most once per
+    /// directory, under its original registration spelling (issue #1843;
+    /// alias sets answer coverage questions only). (On FSEvents, where
     /// registrations are independent streams, the re-registration is a
     /// redundant stream rebuild — briefly re-entering that stream's startup
     /// dead window — which is the accepted cost of keeping Linux coverage
@@ -711,6 +774,16 @@ impl Watcher {
         // different root never has a watch gap.
         let previous = std::mem::take(&mut self.synced_recursive_dirs);
         let dependency_dirs = self.watched_dependency_dirs.snapshot();
+        // Belt-and-braces per-pass guard under the registration-spelling
+        // bookkeeping (issue #1843): at most one repair `watch()` per
+        // canonical directory identity per pass. Tracked MODE-AWARE — a
+        // NonRecursive identity seen first must never suppress a required
+        // Recursive registration, while a NonRecursive duplicate of an
+        // identity already re-watched recursively IS suppressed (notify
+        // replaces the mode for a re-watched path, so letting it through
+        // would downgrade the recursive watch).
+        let mut repaired_recursive: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut repaired_non_recursive: BTreeSet<PathBuf> = BTreeSet::new();
         for (root, aliases) in previous {
             if surviving.contains_key(&root) {
                 continue;
@@ -747,30 +820,54 @@ impl Watcher {
                         "failed to restore dependency-parent watch for retired recursive dir root"
                     );
                 }
+                // Feed the per-pass guard so the dependency repair loop
+                // below cannot re-watch this identity under another
+                // spelling in the same pass.
+                repaired_non_recursive.insert(canonical_identity(&root));
             }
             // Collateral repair (inotify): unwatching a recursive root
             // removes every notify watch entry beneath it, including entries
             // owned by OTHER registrations. Re-register any surviving synced
             // root, boot root, or dependency parent nested under the retired
-            // root. On FSEvents these are independent streams the unwatch
-            // never touched, so the re-watch is a redundant rebuild — the
-            // accepted cross-platform cost (see the method docs).
+            // root — driving each re-watch from its REGISTRATION spelling
+            // (the exact arg the original `notify.watch()` call used), never
+            // from the per-spelling alias sets, which serve coverage checks
+            // only (issue #1843): a per-alias re-watch issued one `watch()`
+            // PER SPELLING for a symlink-aliased directory (routine in pnpm
+            // workspaces) — on inotify both spellings share one watch
+            // descriptor and the last registration flips the delivered-path
+            // spelling to the alias; a duplicate registration also invites
+            // duplicate delivery under a non-project spelling. On FSEvents
+            // these are independent streams the unwatch never touched, so
+            // the re-watch is a redundant rebuild — the accepted
+            // cross-platform cost (see the method docs).
             let under_retired = |path: &Path| aliases.iter().any(|alias| path.starts_with(alias));
             for (kept_root, kept_aliases) in surviving.iter() {
-                if kept_aliases.iter().any(|kept| under_retired(kept)) {
-                    if let Err(error) = self._notify.watch(kept_root, RecursiveMode::Recursive) {
-                        warn!(
-                            path = %kept_root.display(), %error,
-                            "failed to re-register surviving recursive dir root after retirement"
-                        );
-                    }
+                if !kept_aliases.iter().any(|kept| under_retired(kept)) {
+                    continue;
+                }
+                if !repaired_recursive.insert(canonical_identity(kept_root)) {
+                    continue;
+                }
+                if let Err(error) = self._notify.watch(kept_root, RecursiveMode::Recursive) {
+                    warn!(
+                        path = %kept_root.display(), %error,
+                        "failed to re-register surviving recursive dir root after retirement"
+                    );
                 }
             }
-            for boot in self
-                .watched_recursive_roots
-                .iter()
-                .filter(|boot| under_retired(boot))
-            {
+            // Reverse registration order so that, when one physical boot
+            // directory was registered under several spellings, the LAST
+            // registration wins the single re-watch — matching the
+            // delivered-path spelling inotify was using before retirement
+            // (the backend's wd->path map keeps the most recent spelling).
+            for (boot, boot_aliases) in self.boot_root_registrations.iter().rev() {
+                if !boot_aliases.iter().any(|alias| under_retired(alias)) {
+                    continue;
+                }
+                if !repaired_recursive.insert(canonical_identity(boot)) {
+                    continue;
+                }
                 if let Err(error) = self._notify.watch(boot, RecursiveMode::Recursive) {
                     warn!(
                         path = %boot.display(), %error,
@@ -778,18 +875,24 @@ impl Watcher {
                     );
                 }
             }
-            // Compare against the retired root's ALIASES, not just its
-            // literal spelling (issue #1799 review): where `canonicalize()`
-            // differs from the as-given path, a `dep` equal to the root's
-            // other spelling slipped past a `dep != root` check and
-            // resurrected the just-retired root as a non-recursive watch.
-            let retired_aliases: Vec<PathBuf> = watch_aliases(root.as_path()).collect();
-            for dep in dependency_dirs.iter().filter(|dep| {
-                !retired_aliases
-                    .iter()
-                    .any(|alias| alias.as_path() == dep.as_path())
-                    && under_retired(dep)
-            }) {
+            // Exclude by ALIAS-SET intersection, not literal spelling
+            // (issue #1799 review): a dependency dir equal to the retired
+            // root under ANY spelling must not resurrect the just-retired
+            // root — its dependency coverage was already restored by the
+            // downgrade branch above.
+            for (dep, dep_aliases) in self.dependency_dir_registrations.iter() {
+                if dep_aliases.iter().any(|alias| aliases.contains(alias)) {
+                    continue;
+                }
+                if !dep_aliases.iter().any(|alias| under_retired(alias)) {
+                    continue;
+                }
+                let identity = canonical_identity(dep);
+                if repaired_recursive.contains(&identity)
+                    || !repaired_non_recursive.insert(identity)
+                {
+                    continue;
+                }
                 // The guarded watcher no-ops this when `dep` is itself a
                 // surviving synced root (already re-registered recursively
                 // above), so the repair cannot downgrade one.
@@ -804,6 +907,30 @@ impl Watcher {
         self.synced_recursive_dirs = surviving;
 
         newly_watched
+    }
+
+    /// Test-only observability (issue #1843): start recording the exact
+    /// `(path, recursive)` args forwarded to the OS-level `notify.watch()`.
+    /// The retirement-repair dedupe this crate's regression tests pin is
+    /// not observable at delivery level on FSEvents — notify's FSEvents
+    /// backend keys registrations by canonicalized path and delivers
+    /// canonical spellings, so per-alias duplicate watches coalesce
+    /// invisibly there — hence this call-level hook. Not part of the
+    /// public contract; may change without notice.
+    #[doc(hidden)]
+    pub fn enable_watch_call_log(&mut self) {
+        self._notify.watch_call_log = Some(Vec::new());
+    }
+
+    /// Test-only companion to [`Watcher::enable_watch_call_log`]: drain
+    /// and return the calls recorded since arming (or the previous drain).
+    #[doc(hidden)]
+    pub fn take_watch_call_log(&mut self) -> Vec<(PathBuf, bool)> {
+        self._notify
+            .watch_call_log
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 }
 

@@ -2583,6 +2583,63 @@ mod tests {
         assert!(plan.ssr_reload_needed);
     }
 
+    /// Condition-keyed replacement for a fixed `sleep(100ms)` + blind-drain
+    /// pre-wait (issue #1835): proves a dynamically-registered watch over
+    /// `sentinel_dir` is genuinely live by writing fresh-named sentinel
+    /// files into it until one is observed on `rx`, draining every change
+    /// seen along the way (including boot-time notify noise) so the
+    /// caller's subsequent doubted write lands on a settled channel.
+    ///
+    /// `signal_seen` only counts a change as proof-of-life when its path is
+    /// one of THIS call's own freshly-written sentinels (tracked in
+    /// `written`) — a `starts_with(sentinel_dir)` predicate could be
+    /// satisfied by unrelated queued traffic and would not be
+    /// condition-keyed to this specific attempt.
+    ///
+    /// Mirrors `zfb-watcher/tests/recursive_dirs.rs`'s `sentinel_round_trip`;
+    /// that helper can't be reused directly because `zfb-test-utils` (which
+    /// owns the underlying `watcher_live_handshake` primitive) must not
+    /// depend on `zfb-watcher` — see that crate's module docs — so this
+    /// crate keeps its own thin wrapper.
+    async fn settle_watch_with_sentinels(
+        rx: &mut tokio::sync::mpsc::Receiver<Change>,
+        sentinel_dir: &Path,
+        label: &str,
+    ) {
+        let written: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let written_writer = std::rc::Rc::clone(&written);
+        let dir = sentinel_dir.to_path_buf();
+        let lbl = label.to_string();
+
+        let res = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+            move |idx| {
+                let path = dir.join(format!("sentinel-{lbl}-{idx}.txt"));
+                std::fs::write(&path, b"sentinel").expect("write sentinel file");
+                written_writer.borrow_mut().push(path);
+            },
+            move || loop {
+                match rx.try_recv() {
+                    Ok(change) => {
+                        if written.borrow().contains(&change.path) {
+                            return true;
+                        }
+                    }
+                    Err(_) => return false,
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            res.live,
+            "sentinel handshake under {sentinel_dir:?} ({label}) never observed one of its \
+             own sentinels within {:?} ({} markers written) — the watch never came up live",
+            res.elapsed, res.markers_written,
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn client_worker_dependency_outside_boot_roots_is_watched() {
         use std::time::Duration;
@@ -2612,8 +2669,9 @@ mod tests {
 
         // `lib/` is deliberately absent from the recursive boot roots. The
         // client worker registry must add its parent as a dynamic watch.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        while rx.try_recv().is_ok() {}
+        // Prove that watch is genuinely live with a sentinel handshake
+        // instead of a fixed settle sleep (see `settle_watch_with_sentinels`).
+        settle_watch_with_sentinels(&mut rx, helper.parent().unwrap(), "client-worker").await;
         std::fs::write(&helper, "export const marker = 'two';\n").unwrap();
         let observed = tokio::time::timeout(Duration::from_secs(3), async {
             while let Some(change) = rx.recv().await {
@@ -2679,9 +2737,10 @@ mod tests {
 
         // `lib/` is deliberately absent from the recursive boot roots. The
         // client raw snapshot must register its parent dynamically and keep
-        // that parent alive while the terminal file is missing.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        while rx.try_recv().is_ok() {}
+        // that parent alive while the terminal file is missing. Prove that
+        // watch is genuinely live with a sentinel handshake instead of a
+        // fixed settle sleep (see `settle_watch_with_sentinels`).
+        settle_watch_with_sentinels(&mut rx, payload.parent().unwrap(), "client-raw").await;
 
         std::fs::write(&payload, "generation two\n").unwrap();
         assert!(
@@ -2750,14 +2809,18 @@ mod tests {
         );
 
         // Prove it's genuinely live, not just recorded in a registration set
-        // — settle any boot-time notify noise first, matching the sibling
-        // tests above.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        while rx.try_recv().is_ok() {}
-        std::fs::write(sibling.join("marker.txt"), b"one").unwrap();
+        // — a sentinel handshake instead of a fixed settle sleep (see
+        // `settle_watch_with_sentinels`).
+        settle_watch_with_sentinels(&mut rx, &sibling, "css-mirror-root").await;
+        let marker = sibling.join("marker.txt");
+        std::fs::write(&marker, b"one").unwrap();
         let observed = tokio::time::timeout(Duration::from_secs(3), async {
             while let Some(change) = rx.recv().await {
-                if change.path.starts_with(&sibling) {
+                // Exact-path filter: the sentinels above also live under
+                // `sibling/`, so a `starts_with(&sibling)` predicate could
+                // let a straggler sentinel satisfy this wait instead of the
+                // real marker write.
+                if change.path == marker {
                     return Some(change.kind);
                 }
             }

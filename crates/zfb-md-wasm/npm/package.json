@@ -32,6 +32,11 @@
       "types": "./src/index.ts",
       "browser": "./src/browser.ts",
       "default": "./src/index.ts"
+    },
+    "./highlight": {
+      "types": "./src/highlight.ts",
+      "browser": "./src/highlight-browser.ts",
+      "default": "./src/highlight.ts"
     }
   },
   "files": [
@@ -48,6 +53,11 @@
         "types": "./dist/index.d.ts",
         "browser": "./dist/browser.js",
         "default": "./dist/index.js"
+      },
+      "./highlight": {
+        "types": "./dist/highlight.d.ts",
+        "browser": "./dist/highlight-browser.js",
+        "default": "./dist/highlight.js"
       }
     }
   },
@@ -67,7 +77,11 @@
     "@types/node": "^22.0.0",
     "binaryen": "130.0.0",
     "esbuild": "0.27.7",
+    "remark-gfm": "^4.0.1",
+    "remark-mdx": "^3.1.1",
+    "remark-parse": "^11.0.0",
     "typescript": "^5.9.0",
+    "unified": "^11.0.5",
     "vitest": "^2.1.9"
   }
 }

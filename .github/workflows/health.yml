@@ -236,6 +236,20 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored
 
+      # Real-esbuild stage-escape-audit confirmation for the first-party
+      # dot-path staging allowlist (issue #1841, epic #1836): the
+      # `bundler_dot_path_staging.rs` mock suite (#1840) drives every fixture
+      # through `mock_subprocess_output`, so the stage-escape audit
+      # (`workspace_rel.is_some()`, #1706) never actually runs there —
+      # `metafile_path` stays `None` on the mock path. This step proves real
+      # esbuild resolves both allowlisted dot-path spellings (`.zudo-doc/
+      # routes-src/**`, `.zfb/*.json`) out of the shadow and that the audit
+      # passes them.
+      - name: Run zfb-build dot-path staging esbuild regression test
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored
+
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are
       # staged by the assert step above but, like the zfb-islands suite before
@@ -497,11 +511,12 @@ jobs:
     name: wasm-md
     runs-on: ubuntu-latest
     # Generous headroom over build-no-v8's 20 min: this job compiles the
-    # zfb-md-wasm dependency subgraph twice (once under `cargo check`/
-    # `clippy`'s dev profile, once under the size-optimized `wasm-release`
-    # profile via `pnpm build`) and additionally compiles wasm-bindgen-cli
-    # from source on a cold cache.
-    timeout-minutes: 30
+    # zfb-md-wasm dependency subgraph under `cargo check`/`clippy`'s dev
+    # profile in BOTH feature configs (default + `--no-default-features`,
+    # zfb#1849), plus BOTH configs again under the size-optimized
+    # `wasm-release` profile via `pnpm build`'s two-artifact pass, and
+    # additionally compiles wasm-bindgen-cli from source on a cold cache.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
@@ -534,6 +549,17 @@ jobs:
 
       - name: cargo clippy (zfb-md-wasm, wasm32-unknown-unknown)
         run: cargo clippy --target wasm32-unknown-unknown -p zfb-md-wasm -- -D warnings
+
+      # The highlight-only build knob (zfb#1849, epic zfb#1845): `pipeline`
+      # is the crate's default-on feature gating compile/renderHtml (see
+      # Cargo.toml) -- npm/scripts/build.mjs's SECOND artifact pass builds
+      # exactly this feature config, so it must stay check/clippy clean on
+      # its own, same as the default config above.
+      - name: cargo check (zfb-md-wasm, wasm32-unknown-unknown, --no-default-features)
+        run: cargo check --target wasm32-unknown-unknown -p zfb-md-wasm --no-default-features
+
+      - name: cargo clippy (zfb-md-wasm, wasm32-unknown-unknown, --no-default-features)
+        run: cargo clippy --target wasm32-unknown-unknown -p zfb-md-wasm --no-default-features -- -D warnings
 
       # Defense in depth over the two cargo steps above: onig_sys (C) and
       # deno_core (rusty_v8) already fail to compile for wasm32 so a
@@ -587,23 +613,31 @@ jobs:
       # build.mjs's log format changes.
       - name: Report gzip'd .wasm size (informational)
         run: |
-          WASM_FILE="crates/zfb-md-wasm/npm/dist/wasm/zfb_md_wasm_bg.wasm"
-          if [ ! -f "$WASM_FILE" ]; then
-            echo "::error::$WASM_FILE not found — the build step above did not produce it."
-            exit 1
-          fi
-          RAW_BYTES=$(stat -c%s "$WASM_FILE")
-          # Node's zlib (level 9), not the system `gzip` CLI: the two encoders
-          # are not byte-identical (different default strategy/window), and
-          # this must match build.mjs's own gzipSync(..., { level: 9 })
-          # figure exactly, since that is the number this line is meant to
-          # corroborate.
-          GZIP_BYTES=$(node -e "
-            const { readFileSync } = require('node:fs');
-            const { gzipSync } = require('node:zlib');
-            process.stdout.write(String(gzipSync(readFileSync(process.argv[1]), { level: 9 }).length));
-          " "$WASM_FILE")
-          echo "zfb-md-wasm .wasm size: raw=${RAW_BYTES} bytes, gzip-9=${GZIP_BYTES} bytes"
+          report_size() {
+            local label="$1" wasm_file="$2"
+            if [ ! -f "$wasm_file" ]; then
+              echo "::error::$wasm_file not found — the build step above did not produce it."
+              exit 1
+            fi
+            local raw_bytes
+            raw_bytes=$(stat -c%s "$wasm_file")
+            # Node's zlib (level 9), not the system `gzip` CLI: the two encoders
+            # are not byte-identical (different default strategy/window), and
+            # this must match build.mjs's own gzipSync(..., { level: 9 })
+            # figure exactly, since that is the number this line is meant to
+            # corroborate.
+            local gzip_bytes
+            gzip_bytes=$(node -e "
+              const { readFileSync } = require('node:fs');
+              const { gzipSync } = require('node:zlib');
+              process.stdout.write(String(gzipSync(readFileSync(process.argv[1]), { level: 9 }).length));
+            " "$wasm_file")
+            echo "zfb-md-wasm $label .wasm size: raw=${raw_bytes} bytes, gzip-9=${gzip_bytes} bytes"
+          }
+          report_size "default (\`.\` entry)" "crates/zfb-md-wasm/npm/dist/wasm/zfb_md_wasm_bg.wasm"
+          # Highlight-only artifact (zfb#1849, epic zfb#1845) -- the size
+          # knob this job's build step's SECOND artifact pass produces.
+          report_size "highlight-only (\`./highlight\` entry)" "crates/zfb-md-wasm/npm/dist/wasm-highlight/zfb_md_wasm_highlight_bg.wasm"
 
       - name: Upload asserted @takazudo/zfb-md-wasm tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

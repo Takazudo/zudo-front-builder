@@ -464,3 +464,60 @@ fn non_workspace_build_stages_no_sibling_region() {
         "a non-workspace build must stage no sibling region (byte-identical)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Dangling symlink under an extra top-level dir, copy_mode (issue #1838)
+// ---------------------------------------------------------------------------
+
+/// A dangling symlink (broken target) sitting under an extra top-level source
+/// dir must not abort the build. `preflight_raw_tree`'s `follow_links(true)`
+/// walk (armed here by forcing `copy_mode = true` — see
+/// `esbuild_will_preserve_symlinks` in `bundler.rs`: `node_modules_dir` some,
+/// `node_modules_preserve_symlinks` false, non-empty `tsconfig_paths`) used to
+/// propagate a bare `os error 2` on the first dangling link it hit; this pins
+/// the classify-and-skip fix at the `bundle()` level. Preflight runs before
+/// esbuild, so the usual `mock_subprocess_output` fixture is enough — no real
+/// esbuild binary needed.
+#[cfg(unix)]
+#[test]
+fn dangling_symlink_under_extra_dir_does_not_abort_copy_mode_build() {
+    let root = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(root.path());
+    let extra = project.join("e2e/fixtures");
+    fs::create_dir_all(&extra).unwrap();
+    write(&extra.join("present.ts"), "export const ok = true;\n");
+    std::os::unix::fs::symlink(extra.join("missing-target.ts"), extra.join("dangling.ts")).unwrap();
+
+    // Kept outside the project so it is never itself swept up as an "extra
+    // top-level dir" (its name isn't `node_modules`, which is the only
+    // literal name `enumerate_extra_top_level_dirs` skips).
+    let node_modules_dir = tempfile::tempdir().unwrap();
+    let tsconfig_paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![project.join("src/*").to_string_lossy().into_owned()],
+    )]);
+
+    let mut input = make_bundle_input(
+        &project,
+        "dist-dangling-symlink",
+        vec![],
+        tsconfig_paths,
+        vec![],
+    );
+    input.node_modules_dir = Some(node_modules_dir.path().to_path_buf());
+    input.node_modules_preserve_symlinks = false;
+
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session))
+        .expect("a dangling symlink under an extra dir must not abort a copy_mode build");
+
+    let staged_extra = work_mirror_root(&session).join("e2e/fixtures");
+    assert!(
+        staged_extra.join("present.ts").is_file(),
+        "a real sibling file under the same extra dir must still be staged"
+    );
+    assert!(
+        !staged_extra.join("dangling.ts").exists(),
+        "the dangling symlink itself must NOT be staged (it was skipped, not materialised)"
+    );
+}
