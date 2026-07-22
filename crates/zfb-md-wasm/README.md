@@ -80,8 +80,12 @@ _later_ stage fails. `diagnostics` is empty on success, otherwise:
 - `line`/`column` are 1-based. For `"markdown"`/`"frontmatter"` they point
   into the **original source** (positions markdown-rs reports against the
   frontmatter-stripped body are shifted back; YAML positions are shifted
-  past the opening `---`). For `"options"` they point into the **options
-  JSON document**. `null` when the underlying error carries no location.
+  past the opening `---`). Markdown diagnostic columns use JavaScript UTF-16
+  code units, including surrogate pairs, matching `parseToAst` positions and
+  `String.prototype.slice`; they are not UTF-8 bytes or grapheme clusters.
+  For `"options"` they point into the **options JSON document**. `null` when
+  the underlying error carries no location, or when an upstream location is
+  malformed or outside the parsed body.
 - Caveat: the human-readable `message` text may embed positions in the
   coordinate space the underlying library used (body-relative for
   markdown-rs, YAML-relative for serde_yaml). The **structured fields** are

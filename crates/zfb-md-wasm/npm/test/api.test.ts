@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, it, expect } from "vitest";
 
 // Tests run against the BUILT package (`dist/`), not `src/`: this is what
@@ -16,6 +20,31 @@ import {
   __forceTrapForTests,
   __getTrapRecoveryStateForTests,
 } from "../dist/index.js";
+
+interface DiagnosticFixture {
+  slug: string;
+  source: string;
+  options: { filename: string };
+  line: number;
+  column: number;
+}
+
+const diagnosticFixtures = (
+  JSON.parse(
+    readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "..",
+        "tests",
+        "fixtures",
+        "parse-to-ast",
+        "diagnostics.json",
+      ),
+      "utf8",
+    ),
+  ) as { fixtures: DiagnosticFixture[] }
+).fixtures;
 
 function nestedYamlFrontmatter(depth: number): string {
   let yaml = "root:\n";
@@ -322,6 +351,29 @@ describe("expected failures surface as structured diagnostics (never a throw)", 
     }
     expect(cursor.leaf).toBe("ok");
   });
+});
+
+describe("markdown diagnostics use original-source UTF-16 coordinates", () => {
+  for (const fixture of diagnosticFixtures) {
+    it(`${fixture.slug}: compile and renderHtml agree`, async () => {
+      const [compiled, rendered] = await Promise.all([
+        compile(fixture.source, fixture.options),
+        renderHtml(fixture.source, fixture.options),
+      ]);
+
+      for (const [entrypoint, out] of [
+        ["compile", compiled],
+        ["renderHtml", rendered],
+      ] as const) {
+        expect(out.diagnostics, `${entrypoint} must return one parse failure`).toHaveLength(1);
+        expect(out.diagnostics[0]).toMatchObject({
+          source: "markdown",
+          line: fixture.line,
+          column: fixture.column,
+        });
+      }
+    });
+  }
 });
 
 describe("version()", () => {

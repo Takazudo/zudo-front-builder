@@ -82,7 +82,9 @@
 //! *markdown source* for `"frontmatter"`/`"markdown"` (frontmatter lines
 //! included — positions reported against the stripped body are shifted
 //! back), and to the *options JSON document* for `"options"`. They are
-//! `null` when the underlying error carries no location.
+//! `null` when the underlying error carries no location. Markdown diagnostic
+//! columns use JavaScript UTF-16 code units, matching successful AST positions
+//! and `String.prototype.slice` (not UTF-8 bytes or grapheme clusters).
 //!
 //! ## Error / trap contract (correctness-critical — see README.md)
 //!
@@ -264,10 +266,10 @@ struct HighlightCodeResult {
 struct Prepared {
     frontmatter: JsonValue,
     body: String,
-    /// Number of source lines consumed before the body starts (the
-    /// frontmatter block) — added back onto body-relative parse
-    /// positions so diagnostics point into the original source.
-    prefix_lines: u64,
+    /// Byte offset of `body` in the original source. Diagnostics use this
+    /// together with the body text to reconstruct markdown-rs's byte-based
+    /// place before converting it to original-source UTF-16 coordinates.
+    body_offset: usize,
     pipeline: Pipeline,
     filename: String,
     jsx_runtime: JsxRuntime,
@@ -324,11 +326,6 @@ fn prepare(
         return Err(Box::new((JsonValue::Null, diag)));
     };
     let frontmatter = extracted.value;
-    let prefix_lines = source
-        .get(..body_offset)
-        .map(|prefix| prefix.matches('\n').count() as u64)
-        .unwrap_or(0);
-
     let pipeline = match facade::build_pipeline(&opts.pipeline) {
         Ok(p) => p,
         Err(e) => {
@@ -340,7 +337,7 @@ fn prepare(
     Ok(Prepared {
         frontmatter,
         body,
-        prefix_lines,
+        body_offset,
         pipeline,
         filename,
         jsx_runtime: opts.jsx_runtime.into(),
@@ -391,20 +388,136 @@ fn split_place(msg: &str) -> (Option<(u64, u64)>, &str) {
     }
 }
 
-/// Convert a [`PipelineError`] into a `"markdown"` diagnostic, shifting
-/// body-relative positions back into original-source coordinates.
+/// Resolve markdown-rs's 1-based body-relative line and byte-based column to
+/// a byte offset in `body`. Tabs follow markdown-rs's four-column tab stops.
+/// Locations in the middle of a UTF-8 scalar are rejected: they cannot be
+/// represented safely in the original Rust string or in JavaScript UTF-16.
+#[cfg(any(feature = "pipeline", test))]
+fn markdown_place_to_body_offset(body: &str, line: u64, column: u64) -> Option<usize> {
+    let target_line = usize::try_from(line).ok()?;
+    let target_column = usize::try_from(column).ok()?;
+    if target_line == 0 || target_column == 0 {
+        return None;
+    }
+
+    let bytes = body.as_bytes();
+    let mut line_start = 0usize;
+    let mut current_line = 1usize;
+    while current_line < target_line {
+        let byte = *bytes.get(line_start)?;
+        if byte == b'\r' {
+            line_start += usize::from(bytes.get(line_start + 1) == Some(&b'\n')) + 1;
+            current_line += 1;
+        } else if byte == b'\n' {
+            line_start += 1;
+            current_line += 1;
+        } else {
+            line_start += 1;
+        }
+    }
+
+    let mut offset = line_start;
+    let mut current_column = 1usize;
+    loop {
+        if current_column == target_column {
+            return body.is_char_boundary(offset).then_some(offset);
+        }
+        let byte = *bytes.get(offset)?;
+        if matches!(byte, b'\r' | b'\n') {
+            return None;
+        }
+        if byte == b'\t' {
+            let remainder = current_column % 4;
+            let virtual_spaces = if remainder == 0 { 0 } else { 4 - remainder };
+            let next_column = current_column.checked_add(1 + virtual_spaces)?;
+            if target_column < next_column {
+                return body.is_char_boundary(offset).then_some(offset);
+            }
+            current_column = next_column;
+        } else {
+            current_column = current_column.checked_add(1)?;
+        }
+        offset += 1;
+    }
+}
+
+/// Convert a validated byte offset in the original source to its 1-based line
+/// and UTF-16-code-unit column. CRLF is one line ending; lone CR and LF are
+/// also supported so malformed upstream places can never trigger subtraction
+/// or indexing panics.
+#[cfg(any(feature = "pipeline", test))]
+fn source_utf16_place(source: &str, offset: usize) -> Option<(u64, u64)> {
+    if offset > source.len() || !source.is_char_boundary(offset) {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let mut index = 0usize;
+    let mut line = 1u64;
+    let mut line_start = 0usize;
+    while index < offset {
+        if bytes[index] == b'\r' {
+            if index + 1 < offset && bytes.get(index + 1) == Some(&b'\n') {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            line = line.checked_add(1)?;
+            line_start = index;
+        } else if bytes[index] == b'\n' {
+            index += 1;
+            line = line.checked_add(1)?;
+            line_start = index;
+        } else {
+            index += 1;
+        }
+    }
+    let column = u64::try_from(source.get(line_start..offset)?.encode_utf16().count())
+        .ok()?
+        .checked_add(1)?;
+    Some((line, column))
+}
+
+/// Transform a markdown-rs body-relative place into the public diagnostic
+/// coordinate space: the full original source, in JavaScript UTF-16 units.
+/// Every relationship is validated so malformed/out-of-range upstream places
+/// degrade to a location-less diagnostic instead of trapping wasm.
+#[cfg(any(feature = "pipeline", test))]
+fn markdown_place_in_source(
+    source: &str,
+    body: &str,
+    body_offset: usize,
+    line: u64,
+    column: u64,
+) -> Option<(u64, u64)> {
+    if source.get(body_offset..)? != body {
+        return None;
+    }
+    let relative = markdown_place_to_body_offset(body, line, column)?;
+    let absolute = body_offset.checked_add(relative)?;
+    source_utf16_place(source, absolute)
+}
+
+/// Convert a [`PipelineError`] into a `"markdown"` diagnostic, mapping
+/// body-relative byte positions back into original-source UTF-16 coordinates.
 #[cfg(feature = "pipeline")]
-fn markdown_diagnostic(err: &PipelineError, filename: &str, prefix_lines: u64) -> Diagnostic {
+fn markdown_diagnostic(
+    err: &PipelineError,
+    filename: &str,
+    source: &str,
+    body: &str,
+    body_offset: usize,
+) -> Diagnostic {
     let PipelineError::Parse(raw) = err;
     // The MDX emit path prefixes the message with `{filename}: ` (see
     // zfb-content's mdx_jsx_emit); the HTML path does not.
     let prefix = format!("{filename}: ");
     let stripped = raw.strip_prefix(&prefix).unwrap_or(raw);
     let (place, rest) = split_place(stripped);
-    match place {
-        Some((line, column)) => {
-            Diagnostic::error("markdown", rest).at(Some(line + prefix_lines), Some(column))
-        }
+    match place.and_then(|(line, column)| {
+        markdown_place_in_source(source, body, body_offset, line, column)
+    }) {
+        Some((line, column)) => Diagnostic::error("markdown", rest).at(Some(line), Some(column)),
+        None if place.is_some() => Diagnostic::error("markdown", rest),
         None => Diagnostic::error("markdown", stripped),
     }
 }
@@ -425,7 +538,7 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
     let Prepared {
         frontmatter,
         body,
-        prefix_lines,
+        body_offset,
         mut pipeline,
         filename,
         jsx_runtime,
@@ -438,7 +551,13 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
             return CompileResult {
                 code: None,
                 frontmatter,
-                diagnostics: vec![markdown_diagnostic(&e, &filename, prefix_lines)],
+                diagnostics: vec![markdown_diagnostic(
+                    &e,
+                    &filename,
+                    source,
+                    &body,
+                    body_offset,
+                )],
             }
         }
     };
@@ -478,7 +597,7 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     let Prepared {
         frontmatter,
         body,
-        prefix_lines,
+        body_offset,
         mut pipeline,
         filename,
         ..
@@ -493,7 +612,13 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
         Err(e) => RenderHtmlResult {
             html: None,
             frontmatter,
-            diagnostics: vec![markdown_diagnostic(&e, &filename, prefix_lines)],
+            diagnostics: vec![markdown_diagnostic(
+                &e,
+                &filename,
+                source,
+                &body,
+                body_offset,
+            )],
         },
     }
 }
@@ -745,7 +870,7 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
     let mut ast = match facade::parse_mdast(&opts.pipeline, &body) {
         Ok(ast) => ast,
         Err(e) => {
-            let diag = markdown_diagnostic(&e, &filename, shift.line_delta as u64);
+            let diag = markdown_diagnostic(&e, &filename, source, &body, body_offset);
             return fail(frontmatter, diag);
         }
     };
@@ -958,7 +1083,11 @@ pub fn force_trap_for_tests() {
 
 #[cfg(test)]
 mod tests {
-    use super::split_place;
+    #[cfg(feature = "pipeline")]
+    use super::markdown_diagnostic;
+    use super::{markdown_place_in_source, markdown_place_to_body_offset, split_place};
+    #[cfg(feature = "pipeline")]
+    use zfb_content::pipeline::PipelineError;
 
     #[test]
     fn split_place_parses_point_form() {
@@ -988,5 +1117,56 @@ mod tests {
         let (place, rest) = split_place(msg);
         assert_eq!(place, None);
         assert_eq!(rest, msg);
+    }
+
+    #[test]
+    fn diagnostic_place_transform_handles_mid_line_body_starts_and_empty_body() {
+        assert_eq!(
+            markdown_place_in_source("", "", 0, 1, 1),
+            Some((1, 1)),
+            "an empty source still has a valid EOF location"
+        );
+
+        let source = "\u{FEFF}---\ntitle: x\n---";
+        let body_offset = source.len();
+        assert_eq!(
+            markdown_place_in_source(source, "", body_offset, 1, 1),
+            Some((3, 4)),
+            "the EOF body starts immediately after the closing `---`"
+        );
+    }
+
+    #[test]
+    fn diagnostic_place_transform_rejects_invalid_locations_without_panicking() {
+        for (line, column) in [(0, 1), (1, 0), (2, 1), (1, 99), (u64::MAX, u64::MAX)] {
+            assert_eq!(markdown_place_in_source("あ", "あ", 0, line, column), None);
+        }
+        assert_eq!(
+            markdown_place_in_source("prefixbody", "body", 0, 1, 1),
+            None,
+            "a mismatched source/body relationship must be rejected"
+        );
+        assert_eq!(
+            markdown_place_to_body_offset("あ", 1, 2),
+            None,
+            "a byte column inside a UTF-8 scalar is not safely representable"
+        );
+    }
+
+    #[test]
+    fn diagnostic_place_transform_accounts_for_markdown_tab_stops() {
+        assert_eq!(markdown_place_to_body_offset("\tX", 1, 1), Some(0));
+        assert_eq!(markdown_place_to_body_offset("\tX", 1, 4), Some(0));
+        assert_eq!(markdown_place_to_body_offset("\tX", 1, 5), Some(1));
+    }
+
+    #[test]
+    #[cfg(feature = "pipeline")]
+    fn invalid_upstream_place_becomes_a_locationless_diagnostic() {
+        let error = PipelineError::Parse("99:99: malformed location".to_string());
+        let diagnostic = markdown_diagnostic(&error, "bad.mdx", "あ", "あ", 0);
+        assert_eq!(diagnostic.message, "malformed location");
+        assert_eq!(diagnostic.line, None);
+        assert_eq!(diagnostic.column, None);
     }
 }
