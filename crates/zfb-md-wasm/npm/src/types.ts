@@ -20,13 +20,54 @@ export interface GfmOptions {
  */
 export type MarkdownFeaturesConfig = Record<string, unknown>;
 
+/**
+ * `zfb_content::facade::CodeHighlightOptions`'s `mode` field -- mirrors the
+ * `"inline"` / `"class"` string-literal union in native `zfb.config.ts`
+ * (`CodeHighlightConfig.mode`).
+ */
+export type CodeHighlightMode = "inline" | "class";
+
+/**
+ * `zfb_content::facade::CodeHighlightOptions`, verbatim (Highlight Tokens
+ * epic zfb#1528, wasm routing sub zfb#1852).
+ */
+export interface CodeHighlightOptions {
+  /** Output mode for fenced-code highlighting. Defaults to `"inline"` --
+   * reproduces the pre-existing per-token inline-color behaviour
+   * byte-for-byte. */
+  mode?: CodeHighlightMode;
+  /** Class-name prefix for class-mode role classes (e.g. the default
+   * `"hi-"` yields `hi-kw`, `hi-str`, ...). Only meaningful when `mode` is
+   * `"class"`. */
+  classPrefix?: string;
+  /** Per-role class overrides for class mode. `undefined`/absent uses
+   * `{classPrefix}{role}` for every role. Only meaningful when `mode` is
+   * `"class"`. */
+  roleClasses?: Partial<Record<HighlightRole, string>>;
+}
+
 /** `zfb_content::facade::PipelineOptions`, verbatim. */
 export interface PipelineOptions {
-  /** A syntect theme name, or `null` for no syntax highlighting. */
+  /**
+   * A syntect theme name. Absent, or explicit `null`, keeps the built-in
+   * default theme (`base16-ocean.dark`) -- fenced code is ALWAYS
+   * highlighted through this field; there is no "no syntax highlighting"
+   * value (this comment previously claimed `null` meant no highlighting,
+   * which was never true of the Rust deserializer -- corrected in
+   * zfb#1852). Mutually exclusive with `codeHighlight.mode: "class"`.
+   */
   theme?: string | null;
   gfm?: GfmOptions;
   cjkFriendly?: boolean;
   hardBreaks?: boolean;
+  /**
+   * Output mode + class-mode knobs for fenced-code highlighting
+   * (Highlight Tokens epic zfb#1528). Absent, `null`, or
+   * `{ mode: "inline" }` reproduce the pre-existing inline-color
+   * behaviour byte-for-byte. `{ mode: "class" }` is mutually exclusive
+   * with a top-level `theme`.
+   */
+  codeHighlight?: CodeHighlightOptions | null;
   features?: MarkdownFeaturesConfig;
 }
 
