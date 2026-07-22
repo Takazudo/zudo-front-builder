@@ -194,13 +194,18 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use syntect::easy::ScopeRegionIterator;
-    use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
+    use syntect::parsing::{ParseState, ScopeStack};
     use syntect::util::LinesWithEndings;
 
+    use crate::syntect_highlight::bundled_syntax_set_for_tests;
+
     /// Map a #1529 corpus language token to its bundled syntect syntax name.
-    /// TypeScript is NOT in syntect's bundled `SyntaxSet`, so `ts` (like `js`)
-    /// resolves to the JavaScript grammar — the same fallback the docs-site
-    /// highlighter uses (`syntect_highlight::resolve_alias`).
+    /// TypeScript is NOT in the custom bundled `SyntaxSet` yet (issue #1848 —
+    /// no redistributable `.sublime-syntax` source is loadable by syntect,
+    /// see `assets/syntaxes/README.md`), so `ts` (like `js`) still resolves
+    /// to the JavaScript grammar — the same fallback the docs-site
+    /// highlighter uses (`syntect_highlight::resolve_alias`). `toml` DOES
+    /// resolve to a real grammar now, via the custom dump.
     fn syntax_name_for(lang: &str) -> &'static str {
         match lang {
             "rust" => "Rust",
@@ -212,6 +217,7 @@ mod tests {
             "python" => "Python",
             "md" => "Markdown",
             "diff" => "Diff",
+            "toml" => "TOML",
             other => panic!("unmapped corpus language: {other}"),
         }
     }
@@ -220,8 +226,12 @@ mod tests {
     /// for every non-empty token. Both `ParseState` and `ScopeStack` persist
     /// across lines, so multi-line constructs (block comments, template/raw
     /// strings) carry their scope state into line 2+.
+    ///
+    /// Uses the SAME custom bundled `SyntaxSet` `Highlighter` loads (issue
+    /// #1848's dump), not syntect's raw `load_defaults_newlines()` — the
+    /// latter lacks the extra grammars (e.g. TOML) this crate adds.
     fn tokenize(lang: &str, code: &str) -> Vec<(String, Option<HiRole>)> {
-        let ss = SyntaxSet::load_defaults_newlines();
+        let ss = bundled_syntax_set_for_tests();
         let name = syntax_name_for(lang);
         let syntax = ss
             .find_syntax_by_name(name)
@@ -448,5 +458,25 @@ mod tests {
     #[test]
     fn empty_scope_stack_yields_no_role() {
         assert_eq!(classify(&[]), None);
+    }
+
+    /// TOML (issue #1848's custom-dump addition): unquoted keys and string
+    /// values both scope as `string.unquoted`/`string.quoted` in this
+    /// grammar → str; booleans scope `constant.language.boolean` → const;
+    /// the numeric value capture scopes `constant.numeric.value` → num; the
+    /// `#` comment marker is skipped (punctuation.definition) and falls to
+    /// the enclosing `comment.line` scope → com.
+    #[test]
+    fn toml_keys_strings_numbers_booleans_and_comments() {
+        let toks = tokenize(
+            "toml",
+            "name = \"zfb\"\nversion = 1\nenabled = true\n# note\n",
+        );
+        assert_eq!(role_of(&toks, "name"), Some(HiRole::String));
+        assert_eq!(role_of(&toks, "\""), Some(HiRole::String));
+        assert_eq!(role_of(&toks, "zfb"), Some(HiRole::String));
+        assert_eq!(role_of(&toks, "1"), Some(HiRole::Number));
+        assert_eq!(role_of(&toks, "true"), Some(HiRole::Constant));
+        assert_eq!(role_of(&toks, "#"), Some(HiRole::Comment));
     }
 }

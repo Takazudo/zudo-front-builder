@@ -147,7 +147,12 @@ pub fn constructs_for_jsx_emit(resolved: ResolvedGfmConstructs) -> markdown::Con
 /// older schema cannot collide with the new one (the compile cache is
 /// in-memory only, so this only matters for mixed-version paranoia,
 /// but it costs nothing).
-const FINGERPRINT_VERSION: &str = "zfb-pipeline-fp-v1";
+///
+/// Also bump on any change to the bundled syntect `SyntaxSet` (issue #1848):
+/// the fingerprint does not otherwise encode the syntax set, so swapping in
+/// a new grammar dump would silently leave stale compile-cache entries
+/// pointing at HTML highlighted under the old grammar set.
+const FINGERPRINT_VERSION: &str = "zfb-pipeline-fp-v2";
 
 /// Canonical descriptor segment for a [`ResolvedGfmConstructs`] set.
 fn gfm_fingerprint_segment(resolved: ResolvedGfmConstructs) -> String {

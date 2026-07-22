@@ -32,6 +32,11 @@
       "types": "./src/index.ts",
       "browser": "./src/browser.ts",
       "default": "./src/index.ts"
+    },
+    "./highlight": {
+      "types": "./src/highlight.ts",
+      "browser": "./src/highlight-browser.ts",
+      "default": "./src/highlight.ts"
     }
   },
   "files": [
@@ -48,6 +53,11 @@
         "types": "./dist/index.d.ts",
         "browser": "./dist/browser.js",
         "default": "./dist/index.js"
+      },
+      "./highlight": {
+        "types": "./dist/highlight.d.ts",
+        "browser": "./dist/highlight-browser.js",
+        "default": "./dist/highlight.js"
       }
     }
   },
