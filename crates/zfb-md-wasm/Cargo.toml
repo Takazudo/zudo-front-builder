@@ -27,7 +27,7 @@ crate-type = ["rlib"]
 # zfb#1845): `npm/scripts/build.mjs`'s SECOND `--no-default-features` pass is
 # the only build that turns it off.
 default = ["pipeline"]
-pipeline = ["dep:zfb-render"]
+pipeline = ["dep:zfb-render", "dep:markdown"]
 # Gates the `generate_parity_oracle` bin below out of every DEFAULT build of
 # this package -- including `cargo build --target wasm32-unknown-unknown
 # ... -p zfb-md-wasm` (the npm package's `pnpm build`, scripts/build.mjs),
@@ -88,4 +88,9 @@ zfb-render = { path = "../zfb-render", optional = true, default-features = false
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Direct markdown-rs dependency for the `parseToAst` raw-mdast export
+# (zfb#1857, epic zfb#1854). The workspace dep carries the `serde` feature
+# (unist-shaped serialization of the mdast tree). `optional`, gated behind
+# `pipeline` above, so the highlight-only artifact never pays for it.
+markdown = { workspace = true, optional = true }
 wasm-bindgen = "0.2"

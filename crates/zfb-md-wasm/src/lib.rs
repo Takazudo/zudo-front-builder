@@ -1,7 +1,7 @@
 //! `zfb-md-wasm` — zfb's md/mdx conversion pipeline as a WebAssembly module
 //! (epic zfb#1572, sub-issue zfb#1576).
 //!
-//! Three API tiers over one cdylib, all JSON-in/JSON-out strings so the
+//! Four API tiers over one cdylib, all JSON-in/JSON-out strings so the
 //! wasm boundary stays trivially serializable:
 //!
 //! 1. [`compile`] — full mdx → JSX → SWC → ES-module JS. Returns
@@ -11,6 +11,10 @@
 //!    diagnostics }`.
 //! 3. [`highlight_code`] — arbitrary source → semantic class-highlighted HTML
 //!    (without a Markdown fence). Returns `{ html, diagnostics }`.
+//! 4. [`parse_to_ast`] (`parseToAst`, zfb#1857, epic zfb#1854) — md/mdx →
+//!    raw markdown-rs mdast (pre-visitors), serialized as a unist tree with
+//!    `position.offset`/`position.column` in UTF-16 code units (the
+//!    remark/unist convention). Returns `{ ast, frontmatter, diagnostics }`.
 //!
 //! Plus [`version`] for host-side compatibility checks.
 //!
@@ -225,6 +229,22 @@ struct CompileResult {
 #[derive(Debug, Serialize)]
 struct RenderHtmlResult {
     html: Option<String>,
+    frontmatter: JsonValue,
+    diagnostics: Vec<Diagnostic>,
+}
+
+/// Result document of [`parse_to_ast`].
+///
+/// `ast` is the RAW markdown-rs mdast tree serialized via markdown-rs's own
+/// `serde` feature (unist-shaped: `type` tag, camelCase, `position` omitted
+/// when absent), post-frontmatter-strip, PRE-zfb-visitors — with every
+/// `position` shifted back into original-source coordinates (lines by the
+/// frontmatter's line count, offsets/columns in UTF-16 code units — see
+/// [`parse_to_ast`]'s docs for the full contract).
+#[cfg(feature = "pipeline")]
+#[derive(Debug, Serialize)]
+struct ParseToAstResult {
+    ast: Option<markdown::mdast::Node>,
     frontmatter: JsonValue,
     diagnostics: Vec<Diagnostic>,
 }
@@ -478,6 +498,270 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     }
 }
 
+/// The body-relative → original-source position transform: `line_delta`
+/// frontmatter lines onto `line`, `offset_delta` body-start bytes onto
+/// `offset`, and — ONLY for points on the body's first line —
+/// `first_line_column_delta` onto `column`.
+///
+/// The column delta is 0 in the ordinary case (the stripped frontmatter
+/// block is whole lines, so the body starts at column 1 of a fresh line)
+/// but non-zero when the closing `---` sits at EOF with no trailing
+/// newline: the (empty) body then starts right after the delimiter on the
+/// SAME line, and an unshifted column would disagree with the shifted
+/// offset beside it (self-review finding on zfb#1855). NOTE: all units here
+/// are UTF-8 BYTES, straight from markdown-rs — this is an intermediate
+/// step. [`Utf16Positions`] converts the result to the UTF-16 code-unit
+/// contract [`parse_to_ast`] actually returns.
+#[cfg(feature = "pipeline")]
+#[derive(Clone, Copy)]
+struct PositionShift {
+    line_delta: usize,
+    offset_delta: usize,
+    first_line_column_delta: usize,
+}
+
+#[cfg(feature = "pipeline")]
+impl PositionShift {
+    /// Derive the shift from the source prefix preceding the body (the
+    /// frontmatter block). Mirrors the `prefix_lines` arithmetic in
+    /// [`prepare`] / [`markdown_diagnostic`], plus the mid-line body-start
+    /// column correction those diagnostics paths do not model.
+    fn for_body_at(source: &str, body_offset: usize) -> Self {
+        let prefix = source.get(..body_offset).unwrap_or("");
+        let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        Self {
+            line_delta: prefix.matches('\n').count(),
+            offset_delta: body_offset,
+            first_line_column_delta: prefix.len() - line_start,
+        }
+    }
+
+    fn apply(&self, point: &mut markdown::unist::Point) {
+        if point.line == 1 {
+            point.column += self.first_line_column_delta;
+        }
+        point.line += self.line_delta;
+        point.offset += self.offset_delta;
+    }
+}
+
+/// Build a byte-offset → UTF-16-code-unit-offset prefix map over `source`:
+/// `prefix[i]` is the number of UTF-16 code units in `source[..i]`. Valid at
+/// every `i` markdown-rs positions can land on (UTF-8 char boundaries —
+/// markdown-rs only ever parses, and points into, valid UTF-8 text), plus
+/// `source.len()` itself for end-of-source points. One linear pass over
+/// `source`'s chars, `char::len_utf16()` per character (2 code units for a
+/// scalar value outside the Basic Multilingual Plane — e.g. most emoji —
+/// which needs a surrogate pair; 1 otherwise).
+#[cfg(feature = "pipeline")]
+fn build_utf16_prefix(source: &str) -> Vec<u32> {
+    let mut prefix = vec![0u32; source.len() + 1];
+    let mut utf16_units = 0u32;
+    let mut byte_index = 0usize;
+    for ch in source.chars() {
+        for _ in 0..ch.len_utf8() {
+            prefix[byte_index] = utf16_units;
+            byte_index += 1;
+        }
+        utf16_units += ch.len_utf16() as u32;
+    }
+    prefix[source.len()] = utf16_units;
+    prefix
+}
+
+/// Converts already-original-source-shifted BYTE positions (the output of
+/// [`PositionShift::apply`]) into UTF-16 code-unit positions — the
+/// production contract for `position.offset`/`position.column`
+/// (remark/unist convention: `line` is unit-agnostic and needs no
+/// conversion). See [`parse_to_ast`]'s docs for why UTF-16, not bytes.
+///
+/// `prefix` is `None` on the ASCII fast path (a cheap `str::is_ascii` scan):
+/// for a pure-ASCII source, byte offsets already equal UTF-16 offsets, so
+/// [`apply`](Self::apply) is a no-op and the prefix map is never built —
+/// this keeps ASCII-source call cost, and the ASCII benchmark numbers, the
+/// same as before this conversion existed.
+#[cfg(feature = "pipeline")]
+struct Utf16Positions {
+    prefix: Option<Vec<u32>>,
+}
+
+#[cfg(feature = "pipeline")]
+impl Utf16Positions {
+    fn for_source(source: &str) -> Self {
+        Self {
+            prefix: (!source.is_ascii()).then(|| build_utf16_prefix(source)),
+        }
+    }
+
+    /// Convert one already-shifted point in place. `column` is recomputed as
+    /// UTF-16 units from the point's own line start rather than tracking
+    /// line-start byte offsets separately: `point.column - 1` already counts
+    /// BYTES since that line start (that is what a byte-based column means),
+    /// so `point.offset - (point.column - 1)` recovers the line start's byte
+    /// offset directly.
+    fn apply(&self, point: &mut markdown::unist::Point) {
+        let Some(prefix) = &self.prefix else {
+            return;
+        };
+        let line_start_byte = point.offset - (point.column - 1);
+        let utf16_offset = prefix[point.offset];
+        let utf16_line_start = prefix[line_start_byte];
+        point.column = (utf16_offset - utf16_line_start) as usize + 1;
+        point.offset = utf16_offset as usize;
+    }
+}
+
+/// Shift markdown-rs `Stop` pairs (`(index_in_value, absolute_source_offset)`
+/// — see `markdown::mdast::Stop`) by the body byte offset. The second tuple
+/// element is an absolute source offset (markdown-rs uses it in
+/// `Location::relative_to_point` for expression re-parsing), so it must move
+/// with `position.*.offset` or the serialized `_markdownRsStops` field would
+/// disagree with the shifted positions beside it.
+///
+/// Deliberately NOT UTF-16-converted: `_markdownRsStops` is
+/// markdown-rs-internal re-parse bookkeeping (underscore-prefixed on
+/// purpose), documented as internal/unstable/BYTE-based in
+/// [`parse_to_ast`]'s docs and in the npm package's `types.ts` — never slice
+/// a string with it.
+#[cfg(feature = "pipeline")]
+fn shift_stops(stops: &mut [markdown::mdast::Stop], offset_delta: usize) {
+    for stop in stops {
+        stop.1 += offset_delta;
+    }
+}
+
+#[cfg(feature = "pipeline")]
+fn shift_attribute_stops(
+    attributes: &mut [markdown::mdast::AttributeContent],
+    offset_delta: usize,
+) {
+    use markdown::mdast::{AttributeContent, AttributeValue};
+    for attribute in attributes {
+        match attribute {
+            AttributeContent::Expression(expression) => {
+                shift_stops(&mut expression.stops, offset_delta);
+            }
+            AttributeContent::Property(property) => {
+                if let Some(AttributeValue::Expression(expression)) = &mut property.value {
+                    shift_stops(&mut expression.stops, offset_delta);
+                }
+            }
+        }
+    }
+}
+
+/// Recursively transform every node's `position` (and every embedded stop
+/// list) from body-relative markdown-rs output into the export's final
+/// contract: original-source coordinates (via `shift`), UTF-16 code-unit
+/// `offset`/`column` (via `utf16`, applied AFTER the shift so it converts
+/// against ORIGINAL-source coordinates — see [`Utf16Positions`]).
+/// `_markdownRsStops` is shifted but never UTF-16-converted (stays byte-based
+/// by design). Recursion depth equals mdast nesting depth — the same bound
+/// `Pipeline`'s own visitors already accept for this input.
+#[cfg(feature = "pipeline")]
+fn shift_mdast_positions(
+    node: &mut markdown::mdast::Node,
+    shift: PositionShift,
+    utf16: &Utf16Positions,
+) {
+    use markdown::mdast::Node;
+    if let Some(position) = node.position_mut() {
+        shift.apply(&mut position.start);
+        shift.apply(&mut position.end);
+        utf16.apply(&mut position.start);
+        utf16.apply(&mut position.end);
+    }
+    let offset_delta = shift.offset_delta;
+    match node {
+        Node::MdxjsEsm(x) => shift_stops(&mut x.stops, offset_delta),
+        Node::MdxFlowExpression(x) => shift_stops(&mut x.stops, offset_delta),
+        Node::MdxTextExpression(x) => shift_stops(&mut x.stops, offset_delta),
+        Node::MdxJsxFlowElement(x) => shift_attribute_stops(&mut x.attributes, offset_delta),
+        Node::MdxJsxTextElement(x) => shift_attribute_stops(&mut x.attributes, offset_delta),
+        _ => {}
+    }
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            shift_mdast_positions(child, shift, utf16);
+        }
+    }
+}
+
+/// Deliberately duplicates [`prepare`]'s front half (options JSON →
+/// filename gate → frontmatter extraction) MINUS `facade::build_pipeline`:
+/// building the full pipeline loads the syntect theme set this raw-parse
+/// entry point never uses, which would both slow every call and distort the
+/// benchmark numbers this export is held to (zfb#1828). Kept as a deliberate,
+/// permanent duplication rather than unified with `prepare` — merging them
+/// would force `prepare` to build (and pay for) a pipeline this tier never
+/// runs, or would need a new shared abstraction; the duplication is small
+/// and keeps each function's cost model obvious at a glance.
+#[cfg(feature = "pipeline")]
+fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
+    let fail = |frontmatter: JsonValue, diag: Diagnostic| ParseToAstResult {
+        ast: None,
+        frontmatter,
+        diagnostics: vec![diag],
+    };
+
+    let opts: WasmOptions = match serde_json::from_str(options_json) {
+        Ok(o) => o,
+        Err(e) => {
+            let diag = Diagnostic::error("options", format!("invalid options JSON: {e}"))
+                .at(Some(e.line() as u64), Some(e.column() as u64));
+            return fail(JsonValue::Null, diag);
+        }
+    };
+    let filename = opts
+        .filename
+        .unwrap_or_else(|| "<anonymous>.mdx".to_string());
+    let extension = std::path::Path::new(&filename)
+        .extension()
+        .and_then(|e| e.to_str());
+    if !matches!(extension, Some("md" | "mdx")) {
+        let diag = Diagnostic::error(
+            "options",
+            format!("filename `{filename}` must end in `.md` or `.mdx` for this entry point"),
+        );
+        return fail(JsonValue::Null, diag);
+    }
+
+    let extracted = match extract_from_filename(&filename, source) {
+        Ok(uf) => uf,
+        Err(e) => return fail(JsonValue::Null, frontmatter_diagnostic(&e)),
+    };
+    let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
+        // Unreachable after the extension gate above — kept as a diagnostic
+        // rather than a panic per the wasm trap contract (same as `prepare`).
+        let diag = Diagnostic::error(
+            "options",
+            format!("filename `{filename}` did not resolve to a markdown body"),
+        );
+        return fail(JsonValue::Null, diag);
+    };
+    let frontmatter = extracted.value;
+    let shift = PositionShift::for_body_at(source, body_offset);
+
+    let mut ast = match facade::parse_mdast(&opts.pipeline, &body) {
+        Ok(ast) => ast,
+        Err(e) => {
+            let diag = markdown_diagnostic(&e, &filename, shift.line_delta as u64);
+            return fail(frontmatter, diag);
+        }
+    };
+    // `utf16` is built against the FULL original source (not `body`): the
+    // shift above already moved every position into original-source byte
+    // coordinates, so the UTF-16 prefix map must be indexed the same way.
+    let utf16 = Utf16Positions::for_source(source);
+    shift_mdast_positions(&mut ast, shift, &utf16);
+
+    ParseToAstResult {
+        ast: Some(ast),
+        frontmatter,
+        diagnostics: vec![],
+    }
+}
+
 fn highlight_code_impl(code: &str, options_json: &str) -> HighlightCodeResult {
     let options: HighlightCodeOptions = match serde_json::from_str(options_json) {
         Ok(options) => options,
@@ -583,6 +867,55 @@ pub fn compile(source: &str, options_json: &str) -> String {
 #[must_use]
 pub fn render_html(source: &str, options_json: &str) -> String {
     to_json(&render_html_impl(source, options_json))
+}
+
+/// Parse markdown/MDX source into a serialized RAW mdast tree — a
+/// supported API tier (zfb#1857, decided GO by epic zfb#1854 / zfb#1828).
+/// Exported to JS as `parseToAst`.
+///
+/// Returns a JSON string: `{ "ast": mdast|null, "frontmatter": json,
+/// "diagnostics": Diagnostic[] }`. The tree is the raw markdown-rs parser
+/// output (post-frontmatter-strip, PRE-zfb-visitors — mdast, not hast, and
+/// unrecognized/custom constructs such as MDX JSX elements survive as typed
+/// nodes rather than being dropped), serialized in the unist shape via
+/// markdown-rs's `serde` feature, with every `position` shifted back into
+/// original-source coordinates (see [`shift_mdast_positions`]). Accepts the
+/// same options document as [`compile`]/[`render_html`]; only `filename`
+/// and `pipeline.gfm` participate, the rest is accepted and ignored
+/// (visitor/serializer knobs never run on this raw-parse tier).
+///
+/// ## Position contract: UTF-16 code units (decided zfb#1856)
+///
+/// `position.offset` and `position.column` are UTF-16 code-unit indices —
+/// remark/unist convention, and what `String.prototype.slice`,
+/// `mdast-util-to-hast`, and consumer mdast plugins already index by.
+/// `position.line` is unit-agnostic and needs no conversion. This matters on
+/// non-ASCII sources: a scalar value outside the Basic Multilingual Plane
+/// (most emoji) is 1 UTF-16 code unit different from its UTF-8 byte width
+/// (2 UTF-16 units vs. usually 4 bytes) — see [`Utf16Positions`] for the
+/// conversion and `tests/parse_to_ast.rs`'s
+/// `utf16_code_unit_semantics_are_pinned_on_non_ascii` for the pin. Pure-
+/// ASCII sources take a fast path that skips the conversion entirely (byte
+/// units already equal UTF-16 units there).
+///
+/// ## Documented divergences from remark-parse / remark-mdx
+///
+/// - `mdxJsxAttribute` records carry no `position` — markdown-rs does not
+///   model attribute positions.
+/// - Top-level `import`/`export` degrade to paragraphs (no `mdxjsEsm` nodes
+///   — markdown-rs's `mdx_esm_parse` needs a JS ESM parser the wasm boundary
+///   cannot host), and MDX expressions carry no estree data (the default
+///   aggressive mode validates braces only, unlike remark-mdx's acorn pass).
+///   Consumers needing remark-mdx-equivalent ESM/estree keep remark for
+///   those documents.
+/// - `_markdownRsStops` (on MDX expression/ESM nodes) is markdown-rs-
+///   internal re-parse bookkeeping: internal, unstable, and BYTE-based (NOT
+///   UTF-16 like `position`) — never slice a string with it.
+#[cfg(feature = "pipeline")]
+#[wasm_bindgen(js_name = parseToAst)]
+#[must_use]
+pub fn parse_to_ast(source: &str, options_json: &str) -> String {
+    to_json(&parse_to_ast_impl(source, options_json))
 }
 
 /// Highlight arbitrary source into semantic class-mode HTML without requiring

@@ -86,7 +86,7 @@ describe("packed browser conditional entry", () => {
     writeFileSync(
       entryPath,
       [
-        'export { __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init } from "@takazudo/zfb-md-wasm";',
+        'export { __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init, parseToAst } from "@takazudo/zfb-md-wasm";',
       ].join("\n"),
     );
 
@@ -184,6 +184,14 @@ describe("packed browser conditional entry", () => {
       const after = bundled.__getTrapRecoveryStateForTests();
 
       expect(highlighted.diagnostics).toEqual([]);
+
+      // parseToAst (zfb#1857) through the SAME bundled browser entry --
+      // proves the raw-mdast export survives the esbuild `file`-loader
+      // resource graph and glue wiring exercised above, not just the
+      // already-covered highlightCode path.
+      const parsed = await bundled.parseToAst("# hi\n", { filename: "post.mdx" });
+      expect(parsed.diagnostics).toEqual([]);
+      expect(parsed.ast).toMatchObject({ type: "root" });
       expect(after.currentGeneration).toBe(before.currentGeneration + 1);
       expect(after.trapRecoveriesStarted).toBe(before.trapRecoveriesStarted + 1);
       expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 3);

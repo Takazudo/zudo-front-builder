@@ -1,0 +1,24 @@
+{
+  "fixtures": [
+    {
+      "slug": "mdx-custom-component",
+      "source": "# Custom component\n\n<CustomComponent prop=\"x\" count={2 + 3}>\nNested content and *emphasis*.\n</CustomComponent>\n",
+      "options": { "filename": "custom.mdx" }
+    },
+    {
+      "slug": "directive-convention",
+      "source": ":::note\nThis is a directive body that stays raw pre-visitors.\n:::\n\nTrailing paragraph.\n",
+      "options": { "filename": "directive.mdx" }
+    },
+    {
+      "slug": "non-ascii-cjk-emoji",
+      "source": "# 日本語の見出し 😀\n\nこれは絵文字 🎉 と CJK テキストを含む段落です。*強調* も入っています。\n\n- 箇条書き 🚀\n- 二番目の項目\n",
+      "options": { "filename": "cjk.mdx" }
+    },
+    {
+      "slug": "frontmattered",
+      "source": "---\ntitle: Frontmatter position fixture\ncount: 4\n---\n\n# Heading after frontmatter\n\nBody paragraph with **strong** text.\n",
+      "options": { "filename": "frontmattered.mdx" }
+    }
+  ]
+}

@@ -2,6 +2,7 @@ import type {
   CompileResult,
   HighlightCodeOptions,
   HighlightCodeResult,
+  ParseToAstResult,
   RenderHtmlResult,
   ZfbMdWasmOptions,
 } from "./types.js";
@@ -22,6 +23,9 @@ interface WasmGlueModule {
   initSync(input?: { module: WebAssembly.Module }): unknown;
   compile?(source: string, optionsJson: string): string;
   renderHtml?(source: string, optionsJson: string): string;
+  // Raw-mdast export (zfb#1857, epic zfb#1854); pipeline-gated like
+  // compile/renderHtml -- the highlight-only artifact never generates it.
+  parseToAst?(source: string, optionsJson: string): string;
   highlightCode(code: string, optionsJson: string): string;
   version(): string;
   __forceTrapForTests(): void;
@@ -224,6 +228,24 @@ export function createWasmApi({
     return JSON.parse(json) as RenderHtmlResult;
   }
 
+  /**
+   * Parse markdown/MDX into a raw mdast tree (zfb#1857, epic zfb#1854).
+   * The `parseToAst + JSON.parse` round trip here IS the product cost the
+   * epic's benchmark measures against remark-parse. See `types.ts`'s
+   * `ParseToAstResult`/`MdastNode` docs for the result shape and the
+   * UTF-16 position contract.
+   */
+  async function parseToAst(
+    source: string,
+    options: ZfbMdWasmOptions = {},
+  ): Promise<ParseToAstResult> {
+    const optionsJson = JSON.stringify(options);
+    const json = await callWasm(({ glue }) =>
+      requirePipelineExport(glue.parseToAst, "parseToAst").call(glue, source, optionsJson),
+    );
+    return JSON.parse(json) as ParseToAstResult;
+  }
+
   async function highlightCode(
     code: string,
     options: HighlightCodeOptions,
@@ -267,6 +289,7 @@ export function createWasmApi({
     init,
     compile,
     renderHtml,
+    parseToAst,
     highlightCode,
     version,
     __forceTrapForTests,
