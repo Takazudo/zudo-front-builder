@@ -85,12 +85,21 @@ Markdown fence or run the MDX/SWC pipeline. It is intentionally closed to
 semantic class mode, so the returned HTML never carries inline colours or
 Shiki classes.
 
+If `highlightCode` is the only thing you use, import it from
+`@takazudo/zfb-md-wasm/highlight` instead of the package root — that entry
+ships a separate, much smaller wasm artifact with no `compile`/`renderHtml`
+(and no md/MDX/JSX pipeline behind them at all). Same function, same result
+shape, same `init()`/`version()`; see "Artifact size" below for the byte
+savings.
+
 ```ts
 import {
   highlightCode,
   type HighlightCodeOptions,
   type HighlightCodeResult,
 } from "@takazudo/zfb-md-wasm";
+// or, for the smaller highlight-only artifact:
+// } from "@takazudo/zfb-md-wasm/highlight";
 
 const output: HighlightCodeResult = await highlightCode("const answer = 42;", {
   language: "javascript", // required
@@ -195,6 +204,13 @@ with `application/wasm`. Consume the packed package/browser entry — do not
 replace the static imports with source paths or manually copied resource
 files, which breaks zfb's emitted URL graph.
 
+The `./highlight` subpath (see "Artifact size" above) has the identical
+`browser` export condition and resource-loading contract, pointed at its own
+separate resources: `zfb_md_wasm_highlight_glue.zfb-resource.mjs` and
+`zfb_md_wasm_highlight_bg.wasm`. Importing `@takazudo/zfb-md-wasm` and
+`@takazudo/zfb-md-wasm/highlight` in the same bundle loads BOTH wasm
+artifacts — pick one entry per bundle.
+
 ## Options shape
 
 ```ts
@@ -292,12 +308,14 @@ suite gates exact-match). Deliberate limitations of the browser build:
 - **No cross-file features.** Route-table link resolution and cross-file anchor
   resolution need the whole project graph, which a single-document browser call
   doesn't have.
-- **The single artifact carries SWC even for `renderHtml`-only use.** One
+- **The default artifact carries SWC even for `renderHtml`-only use.** One
   cdylib can't tree-shake SWC away when only `renderHtml` is called; a slim
-  `renderHtml`-only artifact is a documented possible follow-up.
-- **There is no slim `highlightCode`-only artifact.** Direct highlighting
-  currently uses the same packaged wasm payload as `compile` and
-  `renderHtml`; choosing it saves pipeline work, not download bytes.
+  `renderHtml`-only artifact is a documented possible follow-up. If you only
+  ever call `highlightCode`, use the `./highlight` entry instead (see
+  "Artifact size" below) — it drops `compile`/`renderHtml` and the whole
+  md/MDX/JSX pipeline entirely.
+- **Grammar subsetting is not built.** Both artifacts ship every bundled
+  syntect grammar; there is no per-language allowlist knob.
 - **Syntax highlighting uses syntect's `fancy-regex` backend** (native zfb uses
   `oniguruma`, which can't compile to wasm). The two are byte-identical on
   zfb's fixture corpus; any grammar-level divergences are tracked in the
@@ -305,12 +323,22 @@ suite gates exact-match). Deliberate limitations of the browser build:
 
 ## Artifact size
 
-Shipping SWC in the bytes makes this a large module. The build applies a
+Shipping SWC in the bytes makes the default module large. The build applies a
 size-optimized cargo profile (`opt-level = "z"`, LTO, one codegen unit,
-`panic = "abort"`) plus `wasm-opt`, which roughly halves the raw binary. The
-current build produces **~2.9 MB raw / ~1.3 MB gzipped** for the `.wasm`. The CI
-`wasm-md` job prints the authoritative gzipped size on every run — treat that
-as the source of truth rather than this figure, which can drift.
+`panic = "abort"`) plus `wasm-opt`, which roughly halves the raw binary either
+way. The package ships **two** wasm artifacts (zfb#1849, epic zfb#1845):
+
+| Entry | Import | What it has | Raw `.wasm` | Gzipped |
+| --- | --- | --- | --- | --- |
+| Default | `@takazudo/zfb-md-wasm` | `compile` + `renderHtml` + `highlightCode` | ~2.9 MB | ~1.3 MB |
+| Highlight-only | `@takazudo/zfb-md-wasm/highlight` | `highlightCode` only (no md/MDX/JSX pipeline, no SWC) | ~1.4 MB | ~0.7 MB |
+
+The highlight-only artifact drops the `pipeline` Cargo feature entirely (see
+`crates/zfb-md-wasm/Cargo.toml`) rather than subsetting syntect grammars —
+both artifacts bundle every grammar (see "Grammar subsetting is not built"
+above). The CI `wasm-md` job prints the authoritative gzipped size for BOTH
+artifacts on every run — treat that as the source of truth rather than this
+table, which can drift.
 
 ## Error / trap / re-init contract
 

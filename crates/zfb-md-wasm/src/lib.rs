@@ -14,6 +14,16 @@
 //!
 //! Plus [`version`] for host-side compatibility checks.
 //!
+//! Tiers 1–2 above (`compile`/`render_html`, and everything only they use --
+//! `WasmOptions`, `Prepared`, `prepare`, `CompileResult`/`RenderHtmlResult`)
+//! live behind the `pipeline` feature (default-on). `highlight_code` and
+//! `version` are unconditional. `npm/scripts/build.mjs` builds a SECOND,
+//! `--no-default-features` artifact under the package's `./highlight`
+//! export subpath (zfb#1849, epic zfb#1845) -- the md/MDX/JSX pipeline
+//! dominates the shipped wasm bytes (Wave-1 measurement: 51.8% raw / 44.5%
+//! gzip), so dropping it is the size knob for consumers that only need
+//! syntax highlighting.
+//!
 //! ## Options JSON (shared by both entry points)
 //!
 //! ```json
@@ -72,17 +82,22 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use wasm_bindgen::prelude::wasm_bindgen;
+#[cfg(feature = "pipeline")]
 use zfb_content::facade::{self, PipelineOptions};
+#[cfg(feature = "pipeline")]
 use zfb_content::frontmatter::{extract_from_filename, FrontmatterError};
+#[cfg(feature = "pipeline")]
 use zfb_content::pipeline::{Pipeline, PipelineError};
 use zfb_content::syntect_highlight::{
     ClassHighlightFallbackReason, ClassHighlightRenderError, Highlighter,
     DEFAULT_CLASS_HIGHLIGHT_PREFIX,
 };
+#[cfg(feature = "pipeline")]
 use zfb_render::swc_pipeline::{CompileOptions, JsxRuntime, SwcPipeline};
 
 /// `jsxRuntime` option values, mirroring
 /// [`zfb_render::swc_pipeline::JsxRuntime`].
+#[cfg(feature = "pipeline")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum JsxRuntimeOption {
@@ -91,6 +106,7 @@ enum JsxRuntimeOption {
     React,
 }
 
+#[cfg(feature = "pipeline")]
 impl From<JsxRuntimeOption> for JsxRuntime {
     fn from(o: JsxRuntimeOption) -> Self {
         match o {
@@ -103,6 +119,7 @@ impl From<JsxRuntimeOption> for JsxRuntime {
 /// The wasm-boundary options document — see the crate docs for the JSON
 /// shape. Wraps the facade's [`PipelineOptions`] under `pipeline` and
 /// adds the SWC-tier knobs the facade deliberately does not know about.
+#[cfg(feature = "pipeline")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 struct WasmOptions {
@@ -182,6 +199,7 @@ impl Diagnostic {
 }
 
 /// Result document of [`compile`].
+#[cfg(feature = "pipeline")]
 #[derive(Debug, Serialize)]
 struct CompileResult {
     code: Option<String>,
@@ -190,6 +208,7 @@ struct CompileResult {
 }
 
 /// Result document of [`render_html`].
+#[cfg(feature = "pipeline")]
 #[derive(Debug, Serialize)]
 struct RenderHtmlResult {
     html: Option<String>,
@@ -208,6 +227,7 @@ struct HighlightCodeResult {
 
 /// Everything the two tiers share once options + frontmatter + pipeline
 /// are resolved.
+#[cfg(feature = "pipeline")]
 struct Prepared {
     frontmatter: JsonValue,
     body: String,
@@ -228,6 +248,7 @@ struct Prepared {
 /// ~160 bytes on 64-bit hosts (`clippy::result_large_err` under the native
 /// `cargo clippy --workspace`), though it stays under the threshold on the
 /// shipped wasm32 target — boxing keeps it lint-clean on every target.
+#[cfg(feature = "pipeline")]
 fn prepare(
     source: &str,
     options_json: &str,
@@ -294,6 +315,7 @@ fn prepare(
     })
 }
 
+#[cfg(feature = "pipeline")]
 fn frontmatter_diagnostic(err: &FrontmatterError) -> Diagnostic {
     match err {
         FrontmatterError::Yaml(e) => {
@@ -317,6 +339,11 @@ fn frontmatter_diagnostic(err: &FrontmatterError) -> Diagnostic {
 /// `L1:C1-L2:C2: rest`) off an error message. Returns the parsed start
 /// position and the remainder, or `None` + the untouched message when no
 /// well-formed place prefix exists.
+///
+/// `cfg`'d on `test` too: the unit tests below exercise this directly, and
+/// without `pipeline` (its only production caller, via `markdown_diagnostic`)
+/// it would otherwise be dead code under `--no-default-features`.
+#[cfg(any(feature = "pipeline", test))]
 fn split_place(msg: &str) -> (Option<(u64, u64)>, &str) {
     let Some((head, rest)) = msg.split_once(": ") else {
         return (None, msg);
@@ -333,6 +360,7 @@ fn split_place(msg: &str) -> (Option<(u64, u64)>, &str) {
 
 /// Convert a [`PipelineError`] into a `"markdown"` diagnostic, shifting
 /// body-relative positions back into original-source coordinates.
+#[cfg(feature = "pipeline")]
 fn markdown_diagnostic(err: &PipelineError, filename: &str, prefix_lines: u64) -> Diagnostic {
     let PipelineError::Parse(raw) = err;
     // The MDX emit path prefixes the message with `{filename}: ` (see
@@ -348,6 +376,7 @@ fn markdown_diagnostic(err: &PipelineError, filename: &str, prefix_lines: u64) -
     }
 }
 
+#[cfg(feature = "pipeline")]
 fn compile_impl(source: &str, options_json: &str) -> CompileResult {
     let prepared = match prepare(source, options_json, "<anonymous>.mdx") {
         Ok(p) => p,
@@ -400,6 +429,7 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
     }
 }
 
+#[cfg(feature = "pipeline")]
 fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     let prepared = match prepare(source, options_json, "<anonymous>.md") {
         Ok(p) => p,
@@ -493,6 +523,7 @@ fn highlight_code_impl(code: &str, options_json: &str) -> HighlightCodeResult {
     }
 }
 
+#[cfg(feature = "pipeline")]
 fn to_json<T: Serialize>(value: &T) -> String {
     // Serialization of these result shapes cannot fail in practice, but a
     // panic here would trap the wasm instance — degrade to a hand-built
@@ -522,6 +553,7 @@ fn highlight_to_json(value: &HighlightCodeResult) -> String {
 /// Returns a JSON string: `{ "code": string|null, "frontmatter": json,
 /// "diagnostics": Diagnostic[] }` — see the crate docs for the options
 /// and diagnostics shapes.
+#[cfg(feature = "pipeline")]
 #[wasm_bindgen]
 #[must_use]
 pub fn compile(source: &str, options_json: &str) -> String {
@@ -533,6 +565,7 @@ pub fn compile(source: &str, options_json: &str) -> String {
 /// Returns a JSON string: `{ "html": string|null, "frontmatter": json,
 /// "diagnostics": Diagnostic[] }` — see the crate docs for the options
 /// and diagnostics shapes. Exported to JS as `renderHtml`.
+#[cfg(feature = "pipeline")]
 #[wasm_bindgen(js_name = renderHtml)]
 #[must_use]
 pub fn render_html(source: &str, options_json: &str) -> String {

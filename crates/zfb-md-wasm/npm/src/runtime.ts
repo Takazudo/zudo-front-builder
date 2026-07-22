@@ -12,9 +12,16 @@ interface WasmGlueModule {
   // resource*, while the direct entry imports it dynamically. Both paths
   // nevertheless use the same wasm-bindgen surface and recovery
   // implementation below.
+  //
+  // `compile`/`renderHtml` are optional: the highlight-only wasm artifact
+  // (`./highlight` entry, zfb#1849, epic zfb#1845) is compiled with the
+  // `pipeline` Cargo feature off (see crates/zfb-md-wasm/Cargo.toml), so its
+  // wasm-bindgen glue never generates these exports at all. `createWasmApi`
+  // below is shared by both entries; only `src/index.ts`/`src/browser.ts`
+  // re-export the functions that call them.
   initSync(input?: { module: WebAssembly.Module }): unknown;
-  compile(source: string, optionsJson: string): string;
-  renderHtml(source: string, optionsJson: string): string;
+  compile?(source: string, optionsJson: string): string;
+  renderHtml?(source: string, optionsJson: string): string;
   highlightCode(code: string, optionsJson: string): string;
   version(): string;
   __forceTrapForTests(): void;
@@ -183,9 +190,26 @@ export function createWasmApi({
     await getInstance();
   }
 
+  // Both throw helpers below fire only if `compile`/`renderHtml` were
+  // somehow invoked against the highlight-only glue -- unreachable through
+  // the public API surface, since `src/highlight.ts`/`src/highlight-browser.ts`
+  // never re-export these two functions. Kept as a clear runtime error
+  // rather than a silent `undefined()` crash.
+  function requirePipelineExport<T>(fn: T | undefined, name: string): T {
+    if (!fn) {
+      throw new Error(
+        `zfb-md-wasm: ${name}() is not available in the highlight-only wasm artifact ` +
+          `(built with the \`pipeline\` Cargo feature off) -- use the default \`.\` entry instead.`,
+      );
+    }
+    return fn;
+  }
+
   async function compile(source: string, options: ZfbMdWasmOptions = {}): Promise<CompileResult> {
     const optionsJson = JSON.stringify(options);
-    const json = await callWasm(({ glue }) => glue.compile(source, optionsJson));
+    const json = await callWasm(({ glue }) =>
+      requirePipelineExport(glue.compile, "compile").call(glue, source, optionsJson),
+    );
     return JSON.parse(json) as CompileResult;
   }
 
@@ -194,7 +218,9 @@ export function createWasmApi({
     options: ZfbMdWasmOptions = {},
   ): Promise<RenderHtmlResult> {
     const optionsJson = JSON.stringify(options);
-    const json = await callWasm(({ glue }) => glue.renderHtml(source, optionsJson));
+    const json = await callWasm(({ glue }) =>
+      requirePipelineExport(glue.renderHtml, "renderHtml").call(glue, source, optionsJson),
+    );
     return JSON.parse(json) as RenderHtmlResult;
   }
 

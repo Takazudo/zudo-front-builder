@@ -8,6 +8,12 @@
     "sourceMap": false,
     "inlineSources": false
   },
-  "include": ["consumer-compatibility.ts"],
-  "exclude": ["../dist", "../node_modules", "../src/wasm", "../src/**/*.test.ts"]
+  "include": ["consumer-compatibility.ts", "consumer-compatibility-highlight.ts"],
+  "exclude": [
+    "../dist",
+    "../node_modules",
+    "../src/wasm",
+    "../src/wasm-highlight",
+    "../src/**/*.test.ts"
+  ]
 }

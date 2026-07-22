@@ -433,11 +433,11 @@ jobs:
   build-wasm-md:
     name: Build @takazudo/zfb-md-wasm npm package
     runs-on: ubuntu-latest
-    # Same headroom rationale as health.yml's wasm-md job: two compiles
-    # (dev + wasm-release profiles are NOT both done here, but the
-    # wasm-release compile plus a from-source wasm-bindgen-cli install on a
-    # cold cache still costs more than a typical TS-only build leg).
-    timeout-minutes: 30
+    # Same headroom rationale as health.yml's wasm-md job (no dev-profile
+    # check/clippy here, but `pnpm build` now compiles TWO wasm-release
+    # artifacts -- default + highlight-only, zfb#1849 -- plus a
+    # from-source wasm-bindgen-cli install on a cold cache).
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
@@ -488,19 +488,33 @@ jobs:
         shell: bash
         run: |
           node --input-type=module <<'EOF'
-          import { init, version } from "./crates/zfb-md-wasm/npm/dist/index.js";
-
-          await init();
-          const actual = await version();
+          // Asserts BOTH artifacts (zfb#1849, epic zfb#1845): the default
+          // `.` entry and the highlight-only `./highlight` entry are two
+          // separately-compiled wasm cdylibs (see npm/scripts/build.mjs),
+          // each stamping ZFB_RELEASE_VERSION independently -- a drift
+          // between them would ship a highlight-only artifact reporting the
+          // wrong package version.
           const expected = process.env.ZFB_SEMVER;
-          console.log(`Expected: ${expected}`);
-          console.log(`Actual:   ${actual}`);
-          if (actual !== expected) {
-            console.error(
-              `::error::@takazudo/zfb-md-wasm version() mismatch: got '${actual}', want '${expected}'`,
-            );
-            process.exit(1);
+
+          async function assertVersion(label, modulePath) {
+            const { init, version } = await import(modulePath);
+            await init();
+            const actual = await version();
+            console.log(`${label} expected: ${expected}`);
+            console.log(`${label} actual:   ${actual}`);
+            if (actual !== expected) {
+              console.error(
+                `::error::@takazudo/zfb-md-wasm ${label} version() mismatch: got '${actual}', want '${expected}'`,
+              );
+              process.exit(1);
+            }
           }
+
+          await assertVersion("default (`.`) entry", "./crates/zfb-md-wasm/npm/dist/index.js");
+          await assertVersion(
+            "highlight-only (`./highlight`) entry",
+            "./crates/zfb-md-wasm/npm/dist/highlight.js",
+          );
           EOF
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
