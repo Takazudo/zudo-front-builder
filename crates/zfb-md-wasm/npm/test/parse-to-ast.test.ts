@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { unified } from "unified";
 import remarkGfm from "remark-gfm";
+import remarkDirective from "remark-directive";
 import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import { describe, it, expect } from "vitest";
@@ -215,6 +216,8 @@ describe("parseToAst dialect selection and closed options", () => {
       { filename: null },
       { dialect: null },
       { dialect: "commonmark" },
+      { directives: null },
+      { directives: "yes" },
       { filename: "post.MD" },
       { filename: "post.txt", dialect: "markdown" },
       { jsxRuntime: "react" },
@@ -315,6 +318,108 @@ describe("parseToAst custom/unrecognized node survival (zfb#1828 requirement 3)"
     expect(ast.children[0]!.type).toBe("paragraph");
     const text = ast.children[0]!.children as MdastNodeish[];
     expect(text[0]!.value).toContain(":::note");
+  });
+});
+
+describe("parseToAst generic directives", () => {
+  function collect(value: unknown, type: string, found: MdastNodeish[] = []): MdastNodeish[] {
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item, type, found);
+    } else if (value !== null && typeof value === "object") {
+      const node = value as MdastNodeish;
+      if (node.type === type) found.push(node);
+      for (const nested of Object.values(node)) collect(nested, type, found);
+    }
+    return found;
+  }
+
+  function assertSlices(node: MdastNodeish, source: string, parent?: MdastNodeish["position"]) {
+    expect(node.position, `${node.type} carries a position`).toBeDefined();
+    const position = node.position!;
+    if (parent) {
+      expect(position.start.offset).toBeGreaterThanOrEqual(parent.start.offset);
+      expect(position.end.offset).toBeLessThanOrEqual(parent.end.offset);
+    }
+    const slice = source.slice(position.start.offset, position.end.offset);
+    expect(slice.length, `${node.type} selects original source`).toBeGreaterThan(0);
+    if (node.type === "text") expect(slice).toBe(node.value);
+    for (const child of (node.children as MdastNodeish[] | undefined) ?? []) {
+      assertSlices(child, source, position);
+    }
+  }
+
+  for (const slug of ["directives-markdown-lf", "directives-mdx-crlf"] as const) {
+    it(`emits canonical nodes with independently sliceable UTF-16 positions: ${slug}`, async () => {
+      const { source, options } = fixture(slug);
+      const out = await parseToAst(source, options);
+      expect(out.diagnostics).toEqual([]);
+      const containers = collect(out.ast, "containerDirective");
+      const texts = collect(out.ast, "textDirective");
+      expect(containers.length).toBeGreaterThan(0);
+      expect(texts.length).toBeGreaterThan(0);
+      for (const directive of [...containers, ...collect(out.ast, "leafDirective"), ...texts]) {
+        expect(directive).toMatchObject({
+          name: expect.any(String),
+          attributes: expect.any(Object),
+          children: expect.any(Array),
+        });
+        assertSlices(directive, source);
+      }
+      const labels = collect(out.ast, "paragraph").filter(
+        (node) => (node.data as Record<string, unknown> | undefined)?.directiveLabel === true,
+      );
+      expect(labels.length).toBeGreaterThan(0);
+      if (slug === "directives-markdown-lf") {
+        expect(containers[0]).toMatchObject({
+          name: "outer",
+          attributes: {
+            id: "hero",
+            class: "wide",
+            disabled: "",
+            key: "a&b",
+          },
+        });
+        expect(collect(containers[0], "containerDirective")).toHaveLength(2);
+        expect(collect(containers[0], "leafDirective")).toHaveLength(1);
+        expect(collect(containers[0], "textDirective")).toHaveLength(1);
+      }
+    });
+  }
+
+  it("matches the unified/remark-directive 4 node-kind oracle under both dialects", async () => {
+    for (const slug of ["directives-markdown-lf", "directives-mdx-crlf"] as const) {
+      const { source, options } = fixture(slug);
+      const out = await parseToAst(source, options);
+      const bodyStart = source.indexOf(":::");
+      const body = source.slice(bodyStart);
+      const processor = unified().use(remarkParse).use(remarkGfm);
+      if (options.dialect === "mdx" || options.filename?.endsWith(".mdx")) {
+        processor.use(remarkMdx);
+      }
+      processor.use(remarkDirective);
+      const oracle = processor.parse(body);
+      for (const kind of ["containerDirective", "leafDirective", "textDirective"]) {
+        expect(collect(out.ast, kind).length, `${slug}: ${kind}`).toBe(
+          collect(oracle, kind).length,
+        );
+      }
+    }
+  });
+
+  it("keeps malformed candidates literal and default-off output unchanged", async () => {
+    const malformed = fixture("directives-malformed-literal");
+    const recovered = await parseToAst(malformed.source, malformed.options);
+    expect(recovered.diagnostics).toEqual([]);
+    expect(collect(recovered.ast, "containerDirective")).toHaveLength(0);
+    expect(JSON.stringify(recovered.ast)).toContain(":::bad trailing");
+
+    const valid = fixture("directives-markdown-lf");
+    const disabled = await parseToAst(valid.source, {
+      filename: valid.options.filename,
+      directives: false,
+    });
+    expect(collect(disabled.ast, "containerDirective")).toHaveLength(0);
+    expect(JSON.stringify(disabled.ast)).toContain(":::outer");
   });
 });
 

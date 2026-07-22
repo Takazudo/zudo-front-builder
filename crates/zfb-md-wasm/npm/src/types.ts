@@ -31,6 +31,8 @@ export interface ParsePipelineOptions {
 export interface ParseToAstOptions {
   filename?: string;
   dialect?: ParseDialect;
+  /** Parse generic remark-directive syntax. Default: `false`. */
+  directives?: boolean;
   pipeline?: ParsePipelineOptions;
 }
 
@@ -165,6 +167,11 @@ export interface AstPosition {
   end: AstPoint;
 }
 
+/** Optional unist data carried losslessly by known raw tree nodes. */
+export interface RawMdastData {
+  data?: Record<string, unknown>;
+}
+
 /**
  * Internal markdown-rs re-parse bookkeeping carried by MDX expression/ESM
  * nodes: `[indexInValue, absoluteSourceOffset]`. Internal, unstable, and
@@ -191,32 +198,32 @@ export type ReferenceKind = "shortcut" | "collapsed" | "full";
 // embedded in `MdxJsxFlowElement`/`MdxJsxTextElement.attributes`, not
 // standalone tree nodes.
 
-export interface Root {
+export interface Root extends RawMdastData {
   type: "root";
   position: AstPosition;
   children: MdastNode[];
 }
-export interface Paragraph {
+export interface Paragraph extends RawMdastData {
   type: "paragraph";
   position: AstPosition;
   children: MdastNode[];
 }
-export interface Heading {
+export interface Heading extends RawMdastData {
   type: "heading";
   position: AstPosition;
   depth: 1 | 2 | 3 | 4 | 5 | 6;
   children: MdastNode[];
 }
-export interface ThematicBreak {
+export interface ThematicBreak extends RawMdastData {
   type: "thematicBreak";
   position: AstPosition;
 }
-export interface Blockquote {
+export interface Blockquote extends RawMdastData {
   type: "blockquote";
   position: AstPosition;
   children: MdastNode[];
 }
-export interface List {
+export interface List extends RawMdastData {
   type: "list";
   position: AstPosition;
   ordered: boolean;
@@ -229,7 +236,7 @@ export interface List {
   spread: boolean;
   children: MdastNode[];
 }
-export interface ListItem {
+export interface ListItem extends RawMdastData {
   type: "listItem";
   position: AstPosition;
   spread: boolean;
@@ -237,12 +244,12 @@ export interface ListItem {
   checked?: boolean;
   children: MdastNode[];
 }
-export interface Html {
+export interface Html extends RawMdastData {
   type: "html";
   position: AstPosition;
   value: string;
 }
-export interface Code {
+export interface Code extends RawMdastData {
   type: "code";
   position: AstPosition;
   /** Absent when the fence has no language (see {@link List.start}). */
@@ -251,7 +258,7 @@ export interface Code {
   meta?: string;
   value: string;
 }
-export interface Definition {
+export interface Definition extends RawMdastData {
   type: "definition";
   position: AstPosition;
   url: string;
@@ -261,31 +268,49 @@ export interface Definition {
   /** Absent when there is no label (see {@link List.start}). */
   label?: string;
 }
-export interface Text {
+export interface Text extends RawMdastData {
   type: "text";
   position: AstPosition;
   value: string;
 }
-export interface Emphasis {
+
+/** Shared raw shape of the three generic remark-directive node kinds. */
+export interface DirectiveNodeBase extends RawMdastData {
+  position: AstPosition;
+  name: string;
+  /** Always present; boolean attributes are represented by an empty string. */
+  attributes: Record<string, string>;
+  children: MdastNode[];
+}
+export interface ContainerDirective extends DirectiveNodeBase {
+  type: "containerDirective";
+}
+export interface LeafDirective extends DirectiveNodeBase {
+  type: "leafDirective";
+}
+export interface TextDirective extends DirectiveNodeBase {
+  type: "textDirective";
+}
+export interface Emphasis extends RawMdastData {
   type: "emphasis";
   position: AstPosition;
   children: MdastNode[];
 }
-export interface Strong {
+export interface Strong extends RawMdastData {
   type: "strong";
   position: AstPosition;
   children: MdastNode[];
 }
-export interface InlineCode {
+export interface InlineCode extends RawMdastData {
   type: "inlineCode";
   position: AstPosition;
   value: string;
 }
-export interface Break {
+export interface Break extends RawMdastData {
   type: "break";
   position: AstPosition;
 }
-export interface Link {
+export interface Link extends RawMdastData {
   type: "link";
   position: AstPosition;
   url: string;
@@ -293,7 +318,7 @@ export interface Link {
   title?: string;
   children: MdastNode[];
 }
-export interface Image {
+export interface Image extends RawMdastData {
   type: "image";
   position: AstPosition;
   alt: string;
@@ -301,7 +326,7 @@ export interface Image {
   /** Absent when there is no title (see {@link List.start}). */
   title?: string;
 }
-export interface LinkReference {
+export interface LinkReference extends RawMdastData {
   type: "linkReference";
   position: AstPosition;
   referenceType: ReferenceKind;
@@ -310,7 +335,7 @@ export interface LinkReference {
   label?: string;
   children: MdastNode[];
 }
-export interface ImageReference {
+export interface ImageReference extends RawMdastData {
   type: "imageReference";
   position: AstPosition;
   alt: string;
@@ -320,7 +345,7 @@ export interface ImageReference {
   label?: string;
 }
 /** GFM footnote definition (`[^id]: ...`). */
-export interface FootnoteDefinition {
+export interface FootnoteDefinition extends RawMdastData {
   type: "footnoteDefinition";
   position: AstPosition;
   identifier: string;
@@ -329,7 +354,7 @@ export interface FootnoteDefinition {
   children: MdastNode[];
 }
 /** GFM footnote reference (`[^id]`). */
-export interface FootnoteReference {
+export interface FootnoteReference extends RawMdastData {
   type: "footnoteReference";
   position: AstPosition;
   identifier: string;
@@ -337,24 +362,24 @@ export interface FootnoteReference {
   label?: string;
 }
 /** GFM table. */
-export interface Table {
+export interface Table extends RawMdastData {
   type: "table";
   position: AstPosition;
   align: TableAlign[];
   children: MdastNode[];
 }
-export interface TableRow {
+export interface TableRow extends RawMdastData {
   type: "tableRow";
   position: AstPosition;
   children: MdastNode[];
 }
-export interface TableCell {
+export interface TableCell extends RawMdastData {
   type: "tableCell";
   position: AstPosition;
   children: MdastNode[];
 }
 /** GFM strikethrough (`~~text~~`). */
-export interface Delete {
+export interface Delete extends RawMdastData {
   type: "delete";
   position: AstPosition;
   children: MdastNode[];
@@ -367,7 +392,7 @@ export interface Delete {
  * Documented for completeness (it is part of the `Node` enum this export
  * serializes from) and so the catch-all member is never needed for it.
  */
-export interface Yaml {
+export interface Yaml extends RawMdastData {
   type: "yaml";
   position: AstPosition;
   value: string;
@@ -376,7 +401,7 @@ export interface Yaml {
 // ── MDX node set ─────────────────────────────────────────────────────────
 
 /** MDX flow expression (`{...}` on its own line). */
-export interface MdxFlowExpression {
+export interface MdxFlowExpression extends RawMdastData {
   type: "mdxFlowExpression";
   position: AstPosition;
   value: string;
@@ -384,14 +409,14 @@ export interface MdxFlowExpression {
   _markdownRsStops: MarkdownRsStop[];
 }
 /** MDX text expression (`{...}` inline in phrasing content). */
-export interface MdxTextExpression {
+export interface MdxTextExpression extends RawMdastData {
   type: "mdxTextExpression";
   position: AstPosition;
   value: string;
   _markdownRsStops: MarkdownRsStop[];
 }
 /** MDX JSX element as flow (block-level) content. */
-export interface MdxJsxFlowElement {
+export interface MdxJsxFlowElement extends RawMdastData {
   type: "mdxJsxFlowElement";
   position: AstPosition;
   /** Absent for a JSX fragment (`<>...</>`) -- see {@link List.start}. */
@@ -400,7 +425,7 @@ export interface MdxJsxFlowElement {
   children: MdastNode[];
 }
 /** MDX JSX element as phrasing (inline) content. */
-export interface MdxJsxTextElement {
+export interface MdxJsxTextElement extends RawMdastData {
   type: "mdxJsxTextElement";
   position: AstPosition;
   /** Absent for a JSX fragment (`<>...</>`) -- see {@link List.start}. */
@@ -498,6 +523,9 @@ export type MdastNode =
   | MdxTextExpression
   | MdxJsxFlowElement
   | MdxJsxTextElement
+  | ContainerDirective
+  | LeafDirective
+  | TextDirective
   | UnknownMdastNode;
 
 /** The tree root `parseToAst` returns -- always a `root` node when present. */
@@ -505,12 +533,12 @@ export type MdastRoot = Root;
 
 /**
  * Result document of `parseToAst` (zfb#1857, epic zfb#1854). `ast` is the
- * RAW markdown-rs mdast tree (unist-shaped: `type` tag, camelCase fields,
- * `position` on every real tree node -- see {@link MdastNode}), post-
- * frontmatter-strip, PRE-zfb-visitors: no zfb-synthesized node types, and
- * MDX JSX elements / directive-style text survive exactly as markdown-rs
- * parsed them. `position.offset`/`position.column` are UTF-16 code units
- * (see {@link AstPoint}); `position.line` is unit-agnostic.
+ * raw markdown-rs mdast converted through its serde shape into an open
+ * carrier (unist-shaped `type`, fields, and `position`), post-frontmatter-
+ * strip and PRE-zfb-visitors. When `directives` is true the carrier can also
+ * contain the three generic directive kinds; otherwise directive-looking
+ * text survives exactly as markdown-rs parsed it. `position.offset` and
+ * `position.column` are UTF-16 code units (see {@link AstPoint}).
  *
  * Markdown mode preserves CommonMark HTML/comments, angle autolinks,
  * indented code, and literal braces. MDX mode enables JSX/expressions and

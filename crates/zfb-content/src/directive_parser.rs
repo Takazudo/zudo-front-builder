@@ -807,16 +807,39 @@ fn shift_node(node: &mut DirectiveMdastNode, original: &str, absolute: usize) {
             shift_node(child, original, absolute);
         }
     }
-    if let Some(Value::Array(stops)) = node.fields.get_mut("_markdownRsStops") {
-        for stop in stops {
-            if let Value::Array(pair) = stop {
-                for coordinate in pair {
-                    if let Some(value) = coordinate.as_u64() {
-                        *coordinate = Value::from(value + absolute as u64);
+    shift_field_stops(&mut node.fields, absolute);
+}
+
+fn shift_field_stops(fields: &mut BTreeMap<String, Value>, absolute: usize) {
+    fn visit(value: &mut Value, key: Option<&str>, absolute: usize) {
+        match value {
+            Value::Array(items) if key == Some("_markdownRsStops") => {
+                for item in items {
+                    if let Some(pair) = item.as_array_mut() {
+                        if let Some(source_offset) = pair.get_mut(1) {
+                            if let Some(value) = source_offset.as_u64() {
+                                *source_offset = Value::from(value + absolute as u64);
+                            }
+                        }
                     }
                 }
             }
+            Value::Array(items) => {
+                for item in items {
+                    visit(item, None, absolute);
+                }
+            }
+            Value::Object(map) => {
+                for (nested_key, nested) in map {
+                    visit(nested, Some(nested_key), absolute);
+                }
+            }
+            _ => {}
         }
+    }
+
+    for (key, value) in fields {
+        visit(value, Some(key), absolute);
     }
 }
 

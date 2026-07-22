@@ -501,6 +501,14 @@ pub struct ParseMdastOptions {
     pub gfm: GfmOptions,
 }
 
+/// Recursive raw-mdast carrier used by interoperability boundaries which
+/// need to compose node kinds that markdown-rs's closed [`markdown::mdast::Node`]
+/// enum cannot represent (currently the three remark-directive node kinds).
+///
+/// This is an alias rather than a second structurally identical carrier so
+/// the directive parser remains the single owner of carrier validation.
+pub type InteropMdastNode = crate::directive_parser::DirectiveMdastNode;
+
 /// Parse `input` into a RAW markdown-rs mdast tree — feeds `zfb-md-wasm`'s
 /// `parseToAst` export (zfb#1857, epic zfb#1854).
 ///
@@ -538,6 +546,28 @@ pub fn parse_mdast(
     parse_options.constructs.gfm_footnote_definition = resolved_gfm.footnote_definition;
     parse_options.constructs.gfm_label_start_footnote = resolved_gfm.footnote_definition;
     markdown::to_mdast(input, &parse_options).map_err(|m| PipelineError::Parse(m.to_string()))
+}
+
+/// Parse into the open recursive interoperability carrier.
+///
+/// When `directives` is false this follows the ordinary markdown-rs path and
+/// converts markdown-rs's own serde output into the carrier. Crucially, it
+/// does not invoke the directive scanner. When true it composes the generic
+/// directive parser over the exact same selected dialect/GFM options.
+pub fn parse_interop_mdast(
+    options: ParseMdastOptions,
+    input: &str,
+    directives: bool,
+) -> Result<InteropMdastNode, PipelineError> {
+    if directives {
+        return crate::directive_parser::parse_directive_mdast(options, input);
+    }
+
+    let base = parse_mdast(options, input)?;
+    let serialized = serde_json::to_value(base)
+        .map_err(|error| PipelineError::Parse(format!("serialize mdast: {error}")))?;
+    serde_json::from_value(serialized)
+        .map_err(|error| PipelineError::Parse(format!("validate interop mdast: {error}")))
 }
 
 /// One-shot convenience: parse `config_json`, build a [`Pipeline`], and
