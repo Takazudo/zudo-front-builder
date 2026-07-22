@@ -66,7 +66,11 @@ const MIME = {
 };
 
 const server = createServer((req, res) => {
-  const path = join(outDir, req.url === "/" ? "index.html" : req.url.replace(/^\/+/, ""));
+  // Strip the query string before mapping to a filesystem path — the wasm glue
+  // is requested with a cache-busting `?zfbMdWasmGen=…` suffix, which would
+  // otherwise be joined onto the path and make existsSync fail.
+  const urlPath = (req.url ?? "/").split("?")[0];
+  const path = join(outDir, urlPath === "/" ? "index.html" : urlPath.replace(/^\/+/, ""));
   if (!path.startsWith(outDir) || !existsSync(path)) {
     res.writeHead(404).end("not found");
     return;
