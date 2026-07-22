@@ -85,7 +85,7 @@ fn parse_region(
     for claim in &claims {
         splice_claim(&mut root, claim, &overlay);
     }
-    normalize_parent_positions(&mut root);
+    normalize_parent_positions(&mut root, false);
     if let Some(last) = claims
         .iter()
         .filter(|claim| claim.block)
@@ -644,7 +644,7 @@ fn descend_for_claim(node: &mut DirectiveMdastNode, claim: &Claim, overlay: &str
     };
     for child in children.iter_mut() {
         let range = child.byte_range();
-        if range.start <= claim.start && range.end >= claim.end && child.children.is_some() {
+        if range.start <= claim.start && range.end > claim.start && child.children.is_some() {
             if descend_for_claim(child, claim, overlay) {
                 return true;
             }
@@ -761,13 +761,25 @@ fn carrier_from_value(value: Value) -> Result<DirectiveMdastNode, PipelineError>
     })
 }
 
-fn normalize_parent_positions(node: &mut DirectiveMdastNode) {
+fn normalize_parent_positions(node: &mut DirectiveMdastNode, inside_directive: bool) {
+    let inside_directive = inside_directive || node.kind.ends_with("Directive");
     if let Some(children) = node.children.as_mut() {
         for child in children.iter_mut() {
-            normalize_parent_positions(child);
+            normalize_parent_positions(child, inside_directive);
         }
         if !children.is_empty() {
-            if node.kind == "root" || children[0].position.start.offset < node.position.start.offset
+            let directive_label = node
+                .fields
+                .get("data")
+                .and_then(Value::as_object)
+                .and_then(|data| data.get("directiveLabel"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if inside_directive && node.kind == "paragraph" && !directive_label {
+                node.position.start = children[0].position.start.clone();
+                node.position.end = children[children.len() - 1].position.end.clone();
+            } else if node.kind == "root"
+                || children[0].position.start.offset < node.position.start.offset
             {
                 node.position.start = children[0].position.start.clone();
             }
@@ -775,6 +787,12 @@ fn normalize_parent_positions(node: &mut DirectiveMdastNode) {
                 || children[children.len() - 1].position.end.offset > node.position.end.offset
             {
                 node.position.end = children[children.len() - 1].position.end.clone();
+            }
+            if node.kind == "listItem"
+                && children.len() == 1
+                && children[0].kind.ends_with("Directive")
+            {
+                node.fields.insert("spread".to_string(), Value::Bool(false));
             }
         }
     }
@@ -967,6 +985,11 @@ fn text_previous_allows(source: &str, offset: usize) -> bool {
 
 fn protected_end(options: ParseMdastOptions, source: &str, start: usize) -> Option<usize> {
     let byte = source.as_bytes()[start];
+    if byte == b'[' {
+        if let Some(end) = definition_line_end(source, start) {
+            return Some(end);
+        }
+    }
     if byte == b'`' {
         let size = source[start..]
             .bytes()
@@ -995,6 +1018,18 @@ fn protected_end(options: ParseMdastOptions, source: &str, start: usize) -> Opti
     None
 }
 
+fn definition_line_end(source: &str, start: usize) -> Option<usize> {
+    let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
+    let prefix = &source[line_start..start];
+    if prefix.bytes().filter(|byte| *byte == b' ').count() > 3
+        || !prefix.bytes().all(|byte| byte == b' ')
+    {
+        return None;
+    }
+    let (line_end, next) = line_bounds(source, start);
+    source[start..line_end].find("]:").map(|_| next)
+}
+
 fn markdown_html_block_end(source: &str, start: usize) -> Option<usize> {
     let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
     if !source[line_start..start]
@@ -1002,6 +1037,31 @@ fn markdown_html_block_end(source: &str, start: usize) -> Option<usize> {
         .all(|byte| byte == b' ' || byte == b'\t')
     {
         return None;
+    }
+    let rest = &source[start..];
+    for (opening, closing) in [("<!--", "-->"), ("<?", "?>"), ("<![CDATA[", "]]>")] {
+        if rest.starts_with(opening) {
+            return rest
+                .find(closing)
+                .map(|relative| start + relative + closing.len())
+                .or(Some(source.len()));
+        }
+    }
+    let lower = rest.to_ascii_lowercase();
+    for tag in ["script", "style", "pre", "textarea"] {
+        let opening = format!("<{tag}");
+        if lower.starts_with(&opening)
+            && lower[opening.len()..]
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_whitespace() || ch == '>' || ch == '/')
+        {
+            let closing = format!("</{tag}>");
+            return lower
+                .find(&closing)
+                .map(|relative| start + relative + closing.len())
+                .or(Some(source.len()));
+        }
     }
     let name = source[start + 1..]
         .trim_start_matches('/')

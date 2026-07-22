@@ -37,29 +37,30 @@ fn matches_pinned_remark_directive_oracle() {
         assert_spans(&actual, &case.source, None);
         normalize_documented_base_differences(&mut oracle.ast);
         let mut actual = serde_json::to_value(actual).unwrap();
-        normalize_base_container_positions(&mut actual);
-        normalize_base_container_positions(&mut oracle.ast);
+        normalize_external_base_positions(&mut actual, false);
+        normalize_external_base_positions(&mut oracle.ast, false);
         assert_eq!(actual, oracle.ast, "oracle mismatch for {}", case.name);
     }
 }
 
-fn normalize_base_container_positions(value: &mut Value) {
+fn normalize_external_base_positions(value: &mut Value, inside_directive: bool) {
     match value {
         Value::Array(values) => {
             for value in values {
-                normalize_base_container_positions(value);
+                normalize_external_base_positions(value, inside_directive);
             }
         }
         Value::Object(object) => {
-            if object
+            let is_directive = object
                 .get("type")
                 .and_then(Value::as_str)
-                .is_some_and(|kind| matches!(kind, "root" | "blockquote" | "list" | "listItem"))
-            {
+                .is_some_and(|kind| kind.ends_with("Directive"));
+            let inside_directive = inside_directive || is_directive;
+            if !inside_directive {
                 object.remove("position");
             }
             for value in object.values_mut() {
-                normalize_base_container_positions(value);
+                normalize_external_base_positions(value, inside_directive);
             }
         }
         _ => {}

@@ -22,11 +22,16 @@
   {
     "name": "markdown-container-content-models",
     "dialect": "markdown",
-    "source": "> quoted :text[label]\n\n- item :text[x]\n\n- ::leaf[label]{flag}\n\n> :::note\n> body\n> :::\n\n<div>\n:no[html]\n</div>\n\n    :literal[x]\n\n```md\n:no[code]\n```"
+    "source": "> quoted :text[label]\n\n- item :text[x]\n\n- ::leaf[label]{flag}\n\n- :::item\n  nested :text[x]\n  :::\n\n> :::note\n> body\n> :::\n\n<div>\n:no[html]\n</div>\n\n<!--\n:no[comment]\n-->\n\n    :literal[x]\n\n```md\n:no[code]\n```"
   },
   {
     "name": "malformed-recovery",
     "dialect": "markdown",
     "source": ":::bad trailing\nbody\n:::\n\n::leaf[label] trailing\n\n:no[unterminated"
+  },
+  {
+    "name": "labels-entities-escapes-and-definitions",
+    "dialect": "markdown",
+    "source": ":empty[]\n\n:attrs{#one .a .b flag unquoted=value quoted=\"a &copy; &#x1F980;\"}\n\n:multi[first\nsecond]{title=\"line\nvalue\"}\n\n\\:escaped[label]\n\n[id]: https://example.test/:not-a-directive[label]"
   }
 ]
