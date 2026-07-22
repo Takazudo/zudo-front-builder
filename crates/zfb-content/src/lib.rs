@@ -4,6 +4,7 @@ pub mod collection;
 pub mod content_bridge;
 pub mod dep_manifest;
 pub mod diagnostics;
+pub mod directive_parser;
 pub mod facade;
 pub mod frontmatter;
 pub mod heading_registry;
