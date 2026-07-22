@@ -1,0 +1,32 @@
+[
+  {
+    "name": "nested-label-attributes-text",
+    "dialect": "markdown",
+    "source": ":::note[Hi *x*]{#a .b disabled key=one title=\"a &amp; b\"}\nBody :x[yo].\n:::"
+  },
+  {
+    "name": "nested-containers-leaf-and-siblings",
+    "dialect": "markdown",
+    "source": "::::outer\n:::inner[深]\nBody 🦀\n:::\n::::\n\n::leaf[label]{#id .a .b flag}\n\nleft :mark[one] right :mark[two]"
+  },
+  {
+    "name": "crlf-cjk-emoji-and-character-references",
+    "dialect": "mdx",
+    "source": "前 :印[絵文字 🦀]{題=\"値 &amp; 次\"} 後\r\n\r\n::葉[子]{真}\r\n"
+  },
+  {
+    "name": "mdx-and-markdown-protected-contexts",
+    "dialect": "mdx",
+    "source": "<Component prop=\":no[x]\" />\n\n`code :no[x]` and [link](https://example.test/:no[x])\n\n:yes[ok]{flag}"
+  },
+  {
+    "name": "markdown-container-content-models",
+    "dialect": "markdown",
+    "source": "> quoted :text[label]\n\n- item :text[x]\n\n- ::leaf[label]{flag}\n\n> :::note\n> body\n> :::\n\n<div>\n:no[html]\n</div>\n\n    :literal[x]\n\n```md\n:no[code]\n```"
+  },
+  {
+    "name": "malformed-recovery",
+    "dialect": "markdown",
+    "source": ":::bad trailing\nbody\n:::\n\n::leaf[label] trailing\n\n:no[unterminated"
+  }
+]
