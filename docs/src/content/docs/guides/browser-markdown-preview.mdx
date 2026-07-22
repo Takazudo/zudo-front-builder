@@ -286,13 +286,17 @@ limitations for the browser build:
 - **No cross-file features.** Route-table link resolution and cross-file
   anchor resolution need the whole project's route graph, which a
   single-document browser call never has.
-- **The one wasm artifact carries SWC even for `renderHtml`-only use.** A
+- **The default wasm artifact carries SWC even for `renderHtml`-only use.** A
   single cdylib can't tree-shake SWC out of the download just because a
   consumer only ever calls `renderHtml`. A slim `renderHtml`-only artifact
   is a documented possible follow-up, not implemented here.
-- **There is no slim `highlightCode`-only artifact.** Direct highlighting uses
-  the same current wasm download as `compile` and `renderHtml`; it avoids
-  pipeline work, not artifact bytes.
+- **A slim `highlightCode`-only artifact IS available** via the `./highlight`
+  export subpath. It drops the entire markdown/MDX/JSX pipeline (SWC) and
+  exports only `init`, `highlightCode`, and `version` — no `compile` or
+  `renderHtml`. It is roughly half the download of the default artifact
+  (~52% smaller raw, ~45% smaller gzipped) while keeping the full grammar set;
+  both artifacts highlight byte-identically against the shared oracle. Import
+  it as `@takazudo/zfb-md-wasm/highlight` when a consumer only highlights code.
 - **Syntax highlighting uses syntect's `fancy-regex` backend**, not native
   zfb's `oniguruma` backend (`oniguruma` can't compile to wasm). See
   [Syntax Highlighting](./syntax-highlighting.mdx) for the native-side
