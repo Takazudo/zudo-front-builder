@@ -171,6 +171,16 @@ jobs:
       # integration tests run below.
       - run: cargo build --workspace --all-targets
 
+      # Freshness gate (issue #1871): the custom SyntaxSet dump is a tracked
+      # generated artifact. Regenerate it from the checked-in grammar sources
+      # and fail on any source-versus-generated drift. The generator changes to
+      # its crate-root CWD and uses normalized relative paths, keeping the dump
+      # bytes independent of the checkout location that ran this step.
+      - name: Verify syntect syntax-set.packdump is fresh
+        run: |
+          cargo run -p zfb-content --bin generate_syntax_dump --features generate-syntax-dump
+          git diff --exit-code -- crates/zfb-content/assets/syntax-set.packdump
+
       # Lint gate (issue #646): runs after the warmed incremental compile so
       # no extra compile cost. Placed before cargo test so a lint failure
       # short-circuits the expensive test run. Note: -D warnings on the stable
