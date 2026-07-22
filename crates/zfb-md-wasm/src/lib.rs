@@ -1121,6 +1121,12 @@ mod tests {
 
     #[test]
     fn diagnostic_place_transform_handles_mid_line_body_starts_and_empty_body() {
+        assert_eq!(
+            markdown_place_in_source("", "", 0, 1, 1),
+            Some((1, 1)),
+            "an empty source still has a valid EOF location"
+        );
+
         let source = "\u{FEFF}---\ntitle: x\n---";
         let body_offset = source.len();
         assert_eq!(
