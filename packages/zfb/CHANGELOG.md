@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+### Build compatibility
+
+**Explicit workspace-root alias claims** (#1883):
+
+- A nested workspace host may import root-package source through a broad
+  TypeScript alias only when the workspace manifest explicitly claims `.`.
+- The broad alias stages concrete runtime-imported root-package claims; it
+  does not mirror the entire workspace root.
+- Parent-escaping relative value imports remain rejected, and the stage-escape
+  audit continues to reject genuine live-tree escapes.
+- The separately reported private consumer still requires adoption validation
+  against the next prerelease; this compatibility boundary does not claim that
+  consumer has been run.
+
 ### New features
 
 **`VNode`, `VNodeArray`, `VNodeObject` exported from `"@takazudo/zfb"`** (#972):
