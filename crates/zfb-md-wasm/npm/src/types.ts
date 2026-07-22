@@ -129,6 +129,11 @@ export interface CompileResult {
  * shifted back into original-source coordinates past the stripped
  * frontmatter). Typed `unknown` on purpose — full mdast typings are
  * deferred until the epic's Wave-2 decision locks (or prunes) this export.
+ *
+ * KNOWN CONTRACT GAP (decision-sub input, zfb#1856): `position` offsets and
+ * columns are UTF-8 BYTE units straight from markdown-rs, NOT the UTF-16
+ * code-unit indices remark/unist consumers expect — on non-ASCII sources,
+ * `String.prototype.slice` with these offsets selects the wrong text.
  */
 export interface ParseToAstResult {
   /** Serialized raw mdast root on success, `null` on failure. */

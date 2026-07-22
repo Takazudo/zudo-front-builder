@@ -499,16 +499,49 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     }
 }
 
-/// Shift one mdast [`markdown::unist::Point`] from body-relative back into
-/// original-source coordinates: `line_delta` frontmatter lines onto `line`,
-/// `offset_delta` body-start bytes onto `offset`, `column` unchanged (the
-/// stripped frontmatter block is whole lines, so the body always starts at
-/// column 1 of a fresh line). Mirrors the diagnostics arithmetic in
-/// [`markdown_diagnostic`] / [`prepare`]'s `prefix_lines`.
+/// The body-relative → original-source position transform: `line_delta`
+/// frontmatter lines onto `line`, `offset_delta` body-start bytes onto
+/// `offset`, and — ONLY for points on the body's first line —
+/// `first_line_column_delta` onto `column`.
+///
+/// The column delta is 0 in the ordinary case (the stripped frontmatter
+/// block is whole lines, so the body starts at column 1 of a fresh line)
+/// but non-zero when the closing `---` sits at EOF with no trailing
+/// newline: the (empty) body then starts right after the delimiter on the
+/// SAME line, and an unshifted column would disagree with the shifted
+/// offset beside it (self-review finding on zfb#1855). NOTE: all units are
+/// UTF-8 BYTES, straight from markdown-rs — see [`parse_to_ast`]'s docs.
 #[cfg(feature = "pipeline")]
-fn shift_point(point: &mut markdown::unist::Point, line_delta: usize, offset_delta: usize) {
-    point.line += line_delta;
-    point.offset += offset_delta;
+#[derive(Clone, Copy)]
+struct PositionShift {
+    line_delta: usize,
+    offset_delta: usize,
+    first_line_column_delta: usize,
+}
+
+#[cfg(feature = "pipeline")]
+impl PositionShift {
+    /// Derive the shift from the source prefix preceding the body (the
+    /// frontmatter block). Mirrors the `prefix_lines` arithmetic in
+    /// [`prepare`] / [`markdown_diagnostic`], plus the mid-line body-start
+    /// column correction those diagnostics paths do not model.
+    fn for_body_at(source: &str, body_offset: usize) -> Self {
+        let prefix = source.get(..body_offset).unwrap_or("");
+        let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        Self {
+            line_delta: prefix.matches('\n').count(),
+            offset_delta: body_offset,
+            first_line_column_delta: prefix.len() - line_start,
+        }
+    }
+
+    fn apply(&self, point: &mut markdown::unist::Point) {
+        if point.line == 1 {
+            point.column += self.first_line_column_delta;
+        }
+        point.line += self.line_delta;
+        point.offset += self.offset_delta;
+    }
 }
 
 /// Shift markdown-rs `Stop` pairs (`(index_in_value, absolute_source_offset)`
@@ -549,12 +582,13 @@ fn shift_attribute_stops(
 /// original-source coordinates. Recursion depth equals mdast nesting depth —
 /// the same bound `Pipeline`'s own visitors already accept for this input.
 #[cfg(feature = "pipeline")]
-fn shift_mdast_positions(node: &mut markdown::mdast::Node, line_delta: usize, offset_delta: usize) {
+fn shift_mdast_positions(node: &mut markdown::mdast::Node, shift: PositionShift) {
     use markdown::mdast::Node;
     if let Some(position) = node.position_mut() {
-        shift_point(&mut position.start, line_delta, offset_delta);
-        shift_point(&mut position.end, line_delta, offset_delta);
+        shift.apply(&mut position.start);
+        shift.apply(&mut position.end);
     }
+    let offset_delta = shift.offset_delta;
     match node {
         Node::MdxjsEsm(x) => shift_stops(&mut x.stops, offset_delta),
         Node::MdxFlowExpression(x) => shift_stops(&mut x.stops, offset_delta),
@@ -565,7 +599,7 @@ fn shift_mdast_positions(node: &mut markdown::mdast::Node, line_delta: usize, of
     }
     if let Some(children) = node.children_mut() {
         for child in children {
-            shift_mdast_positions(child, line_delta, offset_delta);
+            shift_mdast_positions(child, shift);
         }
     }
 }
@@ -623,19 +657,16 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
         return fail(JsonValue::Null, diag);
     };
     let frontmatter = extracted.value;
-    let prefix_lines = source
-        .get(..body_offset)
-        .map(|prefix| prefix.matches('\n').count())
-        .unwrap_or(0);
+    let shift = PositionShift::for_body_at(source, body_offset);
 
     let mut ast = match facade::parse_mdast(&opts.pipeline, &body) {
         Ok(ast) => ast,
         Err(e) => {
-            let diag = markdown_diagnostic(&e, &filename, prefix_lines as u64);
+            let diag = markdown_diagnostic(&e, &filename, shift.line_delta as u64);
             return fail(frontmatter, diag);
         }
     };
-    shift_mdast_positions(&mut ast, prefix_lines, body_offset);
+    shift_mdast_positions(&mut ast, shift);
 
     ParseToAstResult {
         ast: Some(ast),
@@ -764,6 +795,16 @@ pub fn render_html(source: &str, options_json: &str) -> String {
 /// document as [`compile`]/[`render_html`]; only `filename` and
 /// `pipeline.gfm` participate, the rest is accepted and ignored (visitor/
 /// serializer knobs never run on this raw-parse tier).
+///
+/// KNOWN CONTRACT GAP (deliberate for the prototype; decision-sub input,
+/// zfb#1856): `position` offsets/columns are markdown-rs's native UTF-8
+/// **byte** units, NOT the JS UTF-16 code-unit indices remark/unist
+/// consumers expect — on non-ASCII sources, `String.prototype.slice` with
+/// these offsets selects the wrong text. A full implementation must either
+/// convert every point to UTF-16 units (adding measurable per-call cost the
+/// benchmark would need to re-measure) or explicitly declare byte-offset
+/// semantics. Pinned by `byte_offset_semantics_are_pinned_on_non_ascii` in
+/// `tests/parse_to_ast.rs`.
 ///
 /// This export exists to answer issue zfb#1828's benchmark-first question
 /// and is pruned on a Wave-2 no-go — do not build on it.

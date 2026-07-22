@@ -433,3 +433,44 @@ fn options_document_is_shared_with_the_other_tiers() {
     assert_eq!(bad["ast"], Value::Null);
     assert_eq!(bad["diagnostics"][0]["source"], "options");
 }
+
+#[test]
+fn eof_terminated_frontmatter_shifts_first_line_columns_too() {
+    // Self-review finding (P3): with the closing `---` at EOF (no trailing
+    // newline) the extracted EMPTY body starts right after the delimiter on
+    // the SAME line — so first-body-line columns must shift by the
+    // body-start column, or the returned column disagrees with the offset
+    // beside it. `---\ntitle: x\n---` → body "" at offset 16 = line 3,
+    // column 4 (1-based, bytes).
+    let source = "---\ntitle: x\n---";
+    let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
+    assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
+    assert_eq!(out["frontmatter"]["title"], "x");
+    let root_pos = &out["ast"]["position"];
+    for point in ["start", "end"] {
+        assert_eq!(root_pos[point]["line"].as_u64(), Some(3), "{point}");
+        assert_eq!(root_pos[point]["column"].as_u64(), Some(4), "{point}");
+        assert_eq!(root_pos[point]["offset"].as_u64(), Some(16), "{point}");
+    }
+}
+
+#[test]
+fn byte_offset_semantics_are_pinned_on_non_ascii() {
+    // Self-review finding (P1), PINNED as a KNOWN CONTRACT GAP — decision-sub
+    // input (zfb#1856), not an endorsement: positions are markdown-rs's
+    // native UTF-8 BYTE units, so on non-ASCII sources the serialized
+    // offsets diverge from the UTF-16 code-unit indices remark/unist
+    // consumers expect. `日本語` is 9 bytes / 3 UTF-16 code units; a full
+    // implementation must convert (re-benchmarking the added cost) or
+    // explicitly declare byte semantics. This test exists so the gap is
+    // explicit, not silently shipped.
+    let source = "# 日本語\n\nnext\n";
+    let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
+    assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
+    let heading_end = &out["ast"]["children"][0]["position"]["end"];
+    // "# 日本語" = 2 + 9 BYTES (5 code points, 5 UTF-16 units). If this
+    // assertion ever starts failing with 7, the contract switched to
+    // UTF-16/code-point units — update the docs in lib.rs/types.ts with it.
+    assert_eq!(heading_end["offset"].as_u64(), Some(11));
+    assert_eq!(heading_end["column"].as_u64(), Some(12));
+}

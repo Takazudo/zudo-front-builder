@@ -10,18 +10,28 @@ export function stats(samples) {
   return { n: sorted.length, meanMs: mean, p95Ms: p95 };
 }
 
+const isThenable = (value) => value != null && typeof value.then === "function";
+
 /**
  * Warm up, then measure `fn` (sync or async) once per iteration.
  * Per-iteration timing (not batched) so p95 is a real tail statistic.
+ *
+ * Fairness (self-review finding P2): the timer only awaits when `fn`
+ * actually returns a thenable. An unconditional `await fn()` would suspend
+ * through a promise continuation even for remark's synchronous `parse()`,
+ * charging async scheduling overhead to the sync side; the wasm side's
+ * await stays — its async wrapper is the real shipped consumer cost.
  */
 export async function measure(fn, { iterations, warmup }) {
   for (let i = 0; i < warmup; i += 1) {
-    await fn();
+    const r = fn();
+    if (isThenable(r)) await r;
   }
   const samples = new Array(iterations);
   for (let i = 0; i < iterations; i += 1) {
     const t0 = performance.now();
-    await fn();
+    const r = fn();
+    if (isThenable(r)) await r;
     samples[i] = performance.now() - t0;
   }
   return stats(samples);
