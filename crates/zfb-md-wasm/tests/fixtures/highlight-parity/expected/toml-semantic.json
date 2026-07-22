@@ -1,0 +1,4 @@
+{
+  "html": "<pre class=\"hi-root\"><code><span class=\"line\">[package]\n</span><span class=\"line\"><span class=\"hi-str\">name</span> <span class=\"hi-punct\">=</span> <span class=\"hi-str\">&quot;zfb&quot;</span>\n</span><span class=\"line\"><span class=\"hi-str\">version</span> <span class=\"hi-punct\">=</span> <span class=\"hi-num\">1</span>\n</span><span class=\"line\"><span class=\"hi-str\">enabled</span> <span class=\"hi-punct\">=</span> <span class=\"hi-const\">true</span>\n</span><span class=\"line\"><span class=\"hi-com\"># a comment\n</span></span></code></pre>",
+  "diagnostics": []
+}

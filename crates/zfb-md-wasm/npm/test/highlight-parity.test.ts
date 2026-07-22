@@ -24,7 +24,7 @@ interface HighlightManifest {
 const manifest: HighlightManifest = JSON.parse(
   readFileSync(join(fixturesDir, "manifest.json"), "utf8"),
 );
-const FOCUSED_HIGHLIGHT_CORPUS_SIZE = 7;
+const FOCUSED_HIGHLIGHT_CORPUS_SIZE = 8;
 
 describe(`highlightCode wasm vs native oracle parity (${FOCUSED_HIGHLIGHT_CORPUS_SIZE}-fixture corpus)`, () => {
   it("manifest carries the intended focused corpus", () => {
