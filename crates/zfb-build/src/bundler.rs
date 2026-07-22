@@ -4428,7 +4428,7 @@ fn concrete_alias_targets(specifier: &str, paths: &BTreeMap<String, Vec<String>>
             }
         })
         .collect::<Vec<_>>();
-    matches.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    matches.sort_by_key(|candidate| std::cmp::Reverse((candidate.0, candidate.1)));
     let Some((_, _, capture, targets)) = matches.first() else {
         return Vec::new();
     };
