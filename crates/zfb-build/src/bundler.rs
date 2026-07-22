@@ -9043,14 +9043,24 @@ fn rebase_tsconfig_paths_to_shadow_with_exclusions(
                 // workspace-relative slot in the WORK mirror — work-first with
                 // the real-tree fallback under an empty exclude, staged-only
                 // under exclusions (the same uniform rule as the project tier).
-                let work_prefix = shadow_path_for_project_path(
-                    prefix_path,
-                    project_root,
-                    first_party_root,
-                    shadow,
-                    work_root,
-                    node_modules_isolation_root,
-                );
+                // `shadow_path_for_project_path` deliberately leaves the
+                // first-party root itself unchanged because its usual callers
+                // map concrete files, not a whole workspace. A broad root
+                // alias (`@/* -> <workspace>/*`) is the one exception: only
+                // its concrete runtime claims were staged into `work_root`, so
+                // the wildcard must resolve against that staged view first.
+                let work_prefix = if prefix_path == first_party_root {
+                    work_root.to_path_buf()
+                } else {
+                    shadow_path_for_project_path(
+                        prefix_path,
+                        project_root,
+                        first_party_root,
+                        shadow,
+                        work_root,
+                        node_modules_isolation_root,
+                    )
+                };
                 let mut work_target = preserve_trailing_path_separator(
                     work_prefix.to_string_lossy().into_owned(),
                     prefix,
@@ -11032,6 +11042,38 @@ mod tests {
             "under exclusions a workspace-sibling alias is work-mirror-only (no live-real fallback)"
         );
         assert_eq!(out["@ext/*"], vec!["/elsewhere/pkg/*".to_string()]);
+    }
+
+    #[test]
+    fn rebase_tsconfig_paths_workspace_root_target_maps_to_work_mirror() {
+        let project = Path::new("/ws/sub-packages/host");
+        let first_party = Path::new("/ws");
+        let shadow = Path::new("/work/sub-packages/host");
+        let work = Path::new("/work");
+        let paths = BTreeMap::from([("@/*".to_string(), vec!["/ws/*".to_string()])]);
+        let empty = BundleExcludeMatcher::new(&[]).unwrap();
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            project,
+            shadow,
+            first_party,
+            work,
+            Some(&empty),
+            None,
+        );
+        assert_eq!(out["@/*"], vec!["/work/*", "/ws/*"]);
+
+        let excluded = BundleExcludeMatcher::new(&["**/*.secret".to_string()]).unwrap();
+        let out = rebase_tsconfig_paths_to_shadow_with_exclusions(
+            &paths,
+            project,
+            shadow,
+            first_party,
+            work,
+            Some(&excluded),
+            None,
+        );
+        assert_eq!(out["@/*"], vec!["/work/*"]);
     }
 
     // ── friendly_esbuild_error + its parsing helpers (#1388) ────────────────

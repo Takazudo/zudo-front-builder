@@ -249,6 +249,198 @@ fn sibling_module_css_class_map_is_discovered_and_emitted_by_real_zfb_build() {
     }
 }
 
+/// Write the #1883 workspace-root alias fixture. The nested host can reach
+/// concrete root-package source only because the workspace claims `.`; the
+/// broad alias must not turn that claim into a wholesale root-tree mirror.
+///
+/// The workspace-root `node_modules` symlink deliberately gives the root
+/// source the same hoisted runtime-dependency topology as a pnpm workspace.
+/// Returning its tempdir handle keeps the embedded dependency tree alive for
+/// the spawned command.
+fn write_workspace_root_alias_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
+    fs::write(
+        ws_root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("package.json"),
+        r#"{ "name": "workspace-root", "private": true }"#,
+    )
+    .unwrap();
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, ws_root.join("node_modules"))
+        .expect("symlink workspace node_modules");
+
+    let project = ws_root.join("sub-packages/host");
+    fs::create_dir_all(project.join("pages")).unwrap();
+    fs::write(
+        project.join("package.json"),
+        r#"{ "name": "host", "private": true }"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{
+  "framework": "preact"
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("tsconfig.json"),
+        r#"{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["../../*"],
+      "@components/*": ["../../components/*"],
+      "@shared/*": ["../shared/*"]
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let components = ws_root.join("components");
+    fs::create_dir_all(&components).unwrap();
+    fs::write(
+        components.join("root-card.tsx"),
+        r#"import { rootSource } from "@/components/root-source";
+import styles from "./root-card.module.css";
+
+export function RootCard() {
+  return <section class={styles.rootAliasStyle}>ROOT_COMPONENT_MARKER:{rootSource}</section>;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        components.join("root-card.module.css"),
+        ".rootAliasStyle { color: #123abc; } /* ROOT_CSS_MARKER */\n",
+    )
+    .unwrap();
+
+    fs::write(
+        components.join("root-source.ts"),
+        r#"import rootData from "@/components/root-data.json";
+
+export const rootSource = `ROOT_SRC_MARKER:ROOT_LIB_MARKER:${rootData.rootData}`;
+"#,
+    )
+    .unwrap();
+    fs::write(
+        components.join("root-data.json"),
+        r#"{ "rootData": "ROOT_JSON_MARKER" }"#,
+    )
+    .unwrap();
+
+    let sibling = ws_root.join("sub-packages/shared");
+    fs::create_dir_all(&sibling).unwrap();
+    fs::write(
+        sibling.join("package.json"),
+        r#"{ "name": "shared", "private": true }"#,
+    )
+    .unwrap();
+    fs::write(
+        sibling.join("Badge.tsx"),
+        r#"export function Badge() {
+  return <aside>SIBLING_PACKAGE_MARKER</aside>;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"import { rootSource } from "@/components/root-source";
+import { RootCard } from "@components/root-card";
+import { Badge } from "@shared/Badge";
+
+export default function Home() {
+  return <main>ROOT_PAGE_MARKER:{rootSource}<RootCard /><Badge /></main>;
+}
+"#,
+    )
+    .unwrap();
+
+    (project, nm_handle)
+}
+
+/// Issue #1886 (epic #1883): the real command path must support a nested host
+/// reaching concrete root-package TS/TSX/CSS/JSON source through a broad root
+/// alias, alongside a narrower root component alias and a sibling package
+/// alias. This is deliberately in the existing serialized build-command
+/// binary: it spawns `zfb build`, boots V8, and verifies fresh `dist/` bytes
+/// rather than the lower-level bundler's prepared output.
+#[test]
+fn workspace_root_alias_graph_builds_through_real_zfb_command() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (project, _nm_handle) = write_workspace_root_alias_fixture(tmp.path());
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(&project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn `zfb build`");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected `zfb build` to succeed for the claimed workspace-root alias \
+         graph; got status={:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        output.status,
+    );
+
+    let dist = project.join("dist");
+    let html_paths = collect_files(&dist, "html");
+    assert!(
+        !html_paths.is_empty(),
+        "no fresh HTML files emitted under dist/; expected at least dist/index.html"
+    );
+    let html_blob = html_paths
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for marker in [
+        "ROOT_COMPONENT_MARKER",
+        "ROOT_SRC_MARKER",
+        "ROOT_LIB_MARKER",
+        "ROOT_JSON_MARKER",
+        "SIBLING_PACKAGE_MARKER",
+    ] {
+        assert!(
+            html_blob.contains(marker),
+            "fresh emitted HTML must contain {marker}; this proves the root and \
+             sibling source graph participated in the spawned command.\n--- html ---\n{}",
+            truncate(&html_blob, 2_000),
+        );
+    }
+
+    let css_blob = collect_files(&dist.join("assets"), "css")
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        css_blob.contains("123abc"),
+        "fresh emitted CSS must contain the root package stylesheet marker; \
+         root TSX participation alone would not prove root CSS was staged.\n--- css ---\n{}",
+        truncate(&css_blob, 2_000),
+    );
+}
+
 /// A pnpm workspace whose `sub-packages/vhost` member reaches a sibling
 /// component (`<ws_root>/lib/vshared/Panel.tsx`) ONLY through a registered
 /// plugin virtual module (`virtual:panel`, via `addVirtualModule` in
