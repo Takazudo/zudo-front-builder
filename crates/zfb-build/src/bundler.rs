@@ -145,6 +145,7 @@ use crate::adapter::run_capturing;
 use crate::glob_expand::expand_import_meta_glob_with_matches;
 use crate::module_worker::{
     collect_runtime_import_specifiers_from_file, discover_module_preprocessing_with_context,
+    discover_module_preprocessing_with_tsconfig_paths,
     discover_registered_virtual_preprocessing_with_context,
     remap_virtual_module_project_imports_to_shadow, rewrite_module_worker_urls_with_context,
     ModuleWorkerBuildContext, ModuleWorkerDependency,
@@ -2380,7 +2381,7 @@ pub fn bundle_with_session(
     // first-party graphs. This keeps the workspace root from becoming a
     // wholesale mirror while still giving the existing materialisation pass
     // every reached file (including CSS and JSON leaves).
-    let runtime_alias_claims = collect_runtime_alias_claim_graph(
+    let (runtime_alias_claims, runtime_alias_raw_import_edges) = collect_runtime_alias_claim_graph(
         &project_root,
         &first_party_root,
         &input.tsconfig_paths,
@@ -2388,6 +2389,10 @@ pub fn bundle_with_session(
         &effective_virtual_context,
     )?;
     plugin_preprocessing_files.extend(runtime_alias_claims);
+    mat_ctx
+        .raw_import_edges
+        .borrow_mut()
+        .extend(runtime_alias_raw_import_edges);
 
     // Issue #1692: the claim plan — computed ONCE here now that
     // `plugin_preprocessing_files` (claim sources a + c) is fully populated,
@@ -4403,10 +4408,7 @@ fn alias_target_claim_path(target: &str) -> PathBuf {
     normalize_path_lexical(Path::new(trimmed))
 }
 
-fn concrete_alias_targets<'a>(
-    specifier: &str,
-    paths: &'a BTreeMap<String, Vec<String>>,
-) -> Vec<PathBuf> {
+fn concrete_alias_targets(specifier: &str, paths: &BTreeMap<String, Vec<String>>) -> Vec<PathBuf> {
     let mut matches = paths
         .iter()
         .filter_map(|(pattern, targets)| {
@@ -4476,6 +4478,74 @@ fn workspace_root_tree(path: &Path, workspace_root: &Path) -> Option<PathBuf> {
     let relative = path.strip_prefix(workspace_root).ok()?;
     let first = relative.components().next()?;
     Some(workspace_root.join(first.as_os_str()))
+}
+
+fn runtime_alias_path_has_workspace_membership(
+    path: &Path,
+    workspace_root: &Path,
+    project_root: &Path,
+    root_package_claimed: bool,
+) -> bool {
+    let package_root = workspace_package_root_for(path, workspace_root);
+    if package_root == workspace_root {
+        root_package_claimed
+    } else {
+        zfb_types::first_party::workspace_claims_package(project_root, &package_root)
+    }
+}
+
+fn canonical_runtime_alias_path(
+    path: &Path,
+    canonical_workspace_root: &Path,
+    workspace_root: &Path,
+) -> Option<PathBuf> {
+    let canonical = path.canonicalize().ok()?;
+    let relative = canonical.strip_prefix(canonical_workspace_root).ok()?;
+    Some(normalize_path_lexical(&workspace_root.join(relative)))
+}
+
+fn runtime_alias_path_is_claimable(
+    path: &Path,
+    canonical_workspace_root: &Path,
+    workspace_root: &Path,
+    project_root: &Path,
+    root_package_claimed: bool,
+    bundle_exclude: &BundleExcludeMatcher,
+) -> Result<bool> {
+    if !path.starts_with(workspace_root)
+        || !runtime_alias_claim_is_allowed(path, workspace_root, project_root, bundle_exclude)?
+    {
+        return Ok(false);
+    }
+    let Some(canonical_logical) =
+        canonical_runtime_alias_path(path, canonical_workspace_root, workspace_root)
+    else {
+        return Ok(false);
+    };
+    if path_is_inside_node_modules(&canonical_logical)
+        || !runtime_alias_claim_is_allowed(
+            &canonical_logical,
+            workspace_root,
+            project_root,
+            bundle_exclude,
+        )?
+    {
+        return Ok(false);
+    }
+    if path.starts_with(project_root) {
+        return Ok(canonical_logical.starts_with(project_root));
+    }
+    Ok(runtime_alias_path_has_workspace_membership(
+        path,
+        workspace_root,
+        project_root,
+        root_package_claimed,
+    ) && runtime_alias_path_has_workspace_membership(
+        &canonical_logical,
+        workspace_root,
+        project_root,
+        root_package_claimed,
+    ))
 }
 
 fn runtime_alias_claim_is_allowed(
@@ -4573,12 +4643,18 @@ fn collect_runtime_alias_claim_graph(
     tsconfig_paths: &BTreeMap<String, Vec<String>>,
     bundle_exclude: &BundleExcludeMatcher,
     context: &ModuleWorkerBuildContext,
-) -> Result<BTreeSet<PathBuf>> {
+) -> Result<(BTreeSet<PathBuf>, BTreeSet<RawImportEdge>)> {
     if first_party_root == project_root || tsconfig_paths.is_empty() {
-        return Ok(BTreeSet::new());
+        return Ok((BTreeSet::new(), BTreeSet::new()));
     }
     let root_package_claimed =
         zfb_types::first_party::workspace_explicitly_claims_root_package(project_root);
+    let canonical_root = first_party_root.canonicalize().with_context(|| {
+        format!(
+            "bundler: canonicalize first-party root {}",
+            first_party_root.display()
+        )
+    })?;
     let mut concrete_entries = BTreeSet::new();
     for entry in WalkDir::new(project_root)
         .follow_links(true)
@@ -4614,62 +4690,33 @@ fn collect_runtime_alias_claim_graph(
                 {
                     continue;
                 }
-                if !runtime_alias_claim_is_allowed(
+                if !runtime_alias_path_is_claimable(
                     &file,
+                    &canonical_root,
                     first_party_root,
                     project_root,
+                    root_package_claimed,
                     bundle_exclude,
                 )? {
                     continue;
                 }
-                let package_root = workspace_package_root_for(&file, first_party_root);
-                if package_root == first_party_root && !root_package_claimed {
-                    continue;
-                }
-                if package_root != first_party_root
-                    && !zfb_types::first_party::workspace_claims_package(
-                        project_root,
-                        &package_root,
-                    )
-                {
-                    continue;
-                }
-                let canonical_root = first_party_root.canonicalize().with_context(|| {
-                    format!(
-                        "bundler: canonicalize first-party root {}",
-                        first_party_root.display()
-                    )
-                })?;
-                let canonical = file.canonicalize().with_context(|| {
-                    format!(
-                        "bundler: canonicalize runtime alias claim {}",
-                        file.display()
-                    )
-                })?;
-                if canonical.starts_with(&canonical_root)
-                    && !path_is_inside_node_modules(&canonical)
-                {
-                    concrete_entries.insert(file);
-                    break;
-                }
+                concrete_entries.insert(file);
+                break;
             }
         }
     }
 
-    let canonical_root = first_party_root.canonicalize().with_context(|| {
-        format!(
-            "bundler: canonicalize first-party root {}",
-            first_party_root.display()
-        )
-    })?;
     let mut claims = BTreeSet::new();
+    let mut raw_import_edges = BTreeSet::new();
     let mut pending = concrete_entries;
     while let Some(entry) = pending.pop_first() {
         if entry.starts_with(project_root)
-            || !runtime_alias_claim_is_allowed(
+            || !runtime_alias_path_is_claimable(
                 &entry,
+                &canonical_root,
                 first_party_root,
                 project_root,
+                root_package_claimed,
                 bundle_exclude,
             )?
         {
@@ -4683,20 +4730,83 @@ fn collect_runtime_alias_claim_graph(
                 .extension()
                 .is_some_and(|extension| extension == "css")
         {
-            let discovery =
-                discover_module_preprocessing_with_context(&entry, project_root, context)
-                    .with_context(|| {
-                        format!(
-                            "bundler: discover runtime alias claim graph from {}",
-                            entry.display()
-                        )
-                    })?;
-            pending.extend(
-                discovery
-                    .files
-                    .into_iter()
-                    .filter(|file| !claims.contains(file)),
-            );
+            let discovery = discover_module_preprocessing_with_tsconfig_paths(
+                &entry,
+                project_root,
+                context,
+                tsconfig_paths,
+            )
+            .with_context(|| {
+                format!(
+                    "bundler: discover runtime alias claim graph from {}",
+                    entry.display()
+                )
+            })?;
+            for file in discovery.files {
+                if !runtime_alias_path_is_claimable(
+                    &file,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    continue;
+                }
+                if !claims.contains(&file) {
+                    pending.insert(file);
+                }
+            }
+            for edge in discovery.worker_edges {
+                if !runtime_alias_path_is_claimable(
+                    &edge.importer,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? || !runtime_alias_path_is_claimable(
+                    &edge.source_path,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    bail!(
+                        "bundler: runtime alias module worker from {} reached unclaimed or excluded source {}",
+                        edge.importer.display(),
+                        edge.source_path.display()
+                    );
+                }
+            }
+            for edge in discovery.raw_import_edges {
+                if !runtime_alias_path_is_claimable(
+                    &edge.importer,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? || !runtime_alias_path_is_claimable(
+                    &edge.target,
+                    &canonical_root,
+                    first_party_root,
+                    project_root,
+                    root_package_claimed,
+                    bundle_exclude,
+                )? {
+                    bail!(
+                        "bundler: runtime alias raw import from {} reached unclaimed or excluded target {}",
+                        edge.importer.display(),
+                        edge.target.display()
+                    );
+                }
+                raw_import_edges.insert(RawImportEdge {
+                    importer: edge.importer,
+                    target: edge.target,
+                });
+            }
         }
         let Ok(specifiers) = collect_runtime_import_specifiers_from_file(&entry) else {
             continue;
@@ -4716,44 +4826,26 @@ fn collect_runtime_alias_claim_graph(
                 {
                     continue;
                 }
-                if !runtime_alias_claim_is_allowed(
+                if !runtime_alias_path_is_claimable(
                     &file,
+                    &canonical_root,
                     first_party_root,
                     project_root,
+                    root_package_claimed,
                     bundle_exclude,
                 )? {
                     continue;
                 }
-                let package_root = workspace_package_root_for(&file, first_party_root);
-                if package_root == first_party_root && !root_package_claimed {
+                if claims.contains(&file) {
                     continue;
                 }
-                if package_root != first_party_root
-                    && !zfb_types::first_party::workspace_claims_package(
-                        project_root,
-                        &package_root,
-                    )
-                {
-                    continue;
-                }
-                let canonical = file.canonicalize().with_context(|| {
-                    format!(
-                        "bundler: canonicalize runtime alias claim {}",
-                        file.display()
-                    )
-                })?;
-                if canonical.starts_with(&canonical_root)
-                    && !path_is_inside_node_modules(&canonical)
-                    && !claims.contains(&file)
-                {
-                    pending.insert(file);
-                    break;
-                }
+                pending.insert(file);
+                break;
             }
         }
     }
     reject_root_package_relative_tree_escapes(&claims, first_party_root)?;
-    Ok(claims)
+    Ok((claims, raw_import_edges))
 }
 
 /// Resolve a claim path to its **mirror root** per issue #1691's claim policy:

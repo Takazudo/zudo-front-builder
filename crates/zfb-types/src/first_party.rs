@@ -128,16 +128,32 @@ pub fn workspace_claims_package(project_root: &Path, candidate: &Path) -> bool {
 /// stripped. Unknown/exotic shapes yield an empty list, which fails closed
 /// (no widening).
 fn workspace_package_globs(yaml: &str) -> Vec<String> {
+    fn strip_unquoted_comment(raw: &str) -> &str {
+        let mut quote = None;
+        let mut escaped = false;
+        for (index, ch) in raw.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match quote {
+                Some('"') if ch == '\\' => escaped = true,
+                Some(active) if ch == active => quote = None,
+                Some(_) => {}
+                None if ch == '\'' || ch == '"' => quote = Some(ch),
+                None if ch == '#' => return &raw[..index],
+                None => {}
+            }
+        }
+        raw
+    }
+
     fn clean(raw: &str) -> Option<String> {
-        let mut value = raw.trim();
-        // A `#` comment only starts a comment when unquoted; strip the quoted
-        // form first, then cut any remaining comment tail.
+        let mut value = strip_unquoted_comment(raw).trim();
         if (value.starts_with('\'') && value.len() >= 2 && value.ends_with('\''))
             || (value.starts_with('"') && value.len() >= 2 && value.ends_with('"'))
         {
             value = &value[1..value.len() - 1];
-        } else if let Some(hash) = value.find('#') {
-            value = value[..hash].trim_end();
         }
         let value = value.trim();
         (!value.is_empty()).then(|| value.to_string())
@@ -148,7 +164,7 @@ fn workspace_package_globs(yaml: &str) -> Vec<String> {
     for line in yaml.lines() {
         let trimmed = line.trim_end();
         if let Some(rest) = trimmed.strip_prefix("packages:") {
-            let rest = rest.trim();
+            let rest = strip_unquoted_comment(rest).trim();
             if let Some(inline) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
                 globs.extend(inline.split(',').filter_map(clean));
                 return globs;
@@ -296,6 +312,20 @@ mod tests {
             normalize_path_lexical(&workspace)
         );
         assert!(!workspace_explicitly_claims_root_package(&project));
+
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.' # root package\n  - 'sub-packages/*' # hosts\n",
+        )
+        .unwrap();
+        assert!(workspace_explicitly_claims_root_package(&project));
+
+        std::fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages: ['.', 'sub-packages/*'] # inline comment\n",
+        )
+        .unwrap();
+        assert!(workspace_explicitly_claims_root_package(&project));
 
         std::fs::write(
             workspace.join("pnpm-workspace.yaml"),

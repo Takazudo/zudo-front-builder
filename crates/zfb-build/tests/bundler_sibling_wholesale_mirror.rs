@@ -418,6 +418,85 @@ fn broad_root_alias_stages_only_the_concrete_root_graph_and_reached_sibling() {
 }
 
 #[test]
+fn runtime_alias_discovery_uses_the_hosts_synthetic_tsconfig_map() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("pnpm-workspace.yaml"),
+        "packages: ['.', 'sub-packages/*', 'packages/worker-valid']\n",
+    );
+    write(
+        &ws_root.join("package.json"),
+        r#"{"name":"workspace-root"}"#,
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { view } from '@/components/view'; export default () => view;\n",
+    );
+    write(
+        &ws_root.join("components/view.ts"),
+        "import { helper } from '@internal/helper'; new Worker(new URL('../worker/entry.ts', import.meta.url), { type: 'module' }); export const view = helper;\n",
+    );
+    write(
+        &ws_root.join("src/helper.ts"),
+        "export const helper = 'HOST_MAP';\n",
+    );
+    write(
+        &ws_root.join("packages/unclaimed/package.json"),
+        r#"{"name":"unclaimed"}"#,
+    );
+    write(
+        &ws_root.join("packages/unclaimed/helper.ts"),
+        "export const helper = 'WRONG_ROOT_MAP';\n",
+    );
+    write(
+        &ws_root.join("packages/worker-valid/package.json"),
+        r#"{"name":"worker-valid"}"#,
+    );
+    write(
+        &ws_root.join("packages/worker-valid/helper.ts"),
+        "export const helper = 'WORKER_MAP';\n",
+    );
+    write(
+        &ws_root.join("worker/entry.ts"),
+        "import { helper } from '@internal/helper'; postMessage(helper);\n",
+    );
+    write(
+        &ws_root.join("worker/tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":"..","paths":{"@internal/*":["packages/worker-valid/*"]}}}"#,
+    );
+    write(
+        &ws_root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@internal/*":["packages/unclaimed/*"]}}}"#,
+    );
+    let paths = BTreeMap::from([
+        (
+            "@/*".to_string(),
+            vec![ws_root.join("*").to_string_lossy().into_owned()],
+        ),
+        (
+            "@internal/*".to_string(),
+            vec![ws_root.join("src/*").to_string_lossy().into_owned()],
+        ),
+    ]);
+
+    let input = make_bundle_input(&project, "dist-host-map", vec![], paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session))
+        .expect("discovery must follow the same host map as synthetic esbuild tsconfig");
+
+    let work = work_mirror_root(&session);
+    assert!(work.join("components/view.ts").is_file());
+    assert!(work.join("src/helper.ts").is_file());
+    assert!(work.join("worker/entry.ts").is_file());
+    assert!(work.join("packages/worker-valid/helper.ts").is_file());
+    assert!(
+        !work.join("packages/unclaimed").exists(),
+        "the reached root package's divergent local tsconfig must not influence staging"
+    );
+}
+
+#[test]
 fn broad_root_alias_requires_dot_workspace_membership() {
     let workspace = tempfile::tempdir().unwrap();
     let (ws_root, project) = write_bundle_workspace_project(workspace.path());
@@ -438,6 +517,237 @@ fn broad_root_alias_requires_dot_workspace_membership() {
     let mut session = ShadowSession::new(&input.project_root).unwrap();
     bundle_with_session(input, Some(&mut session)).expect("mock materialisation completes");
     assert!(!work_mirror_root(&session).join("src/helper.ts").exists());
+}
+
+#[test]
+fn relative_transitive_import_cannot_claim_an_unlisted_workspace_package() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("pnpm-workspace.yaml"),
+        "packages: ['.', 'sub-packages/*', 'packages/claimed']\n",
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { value } from '@claimed/index'; export default () => value;\n",
+    );
+    write(
+        &ws_root.join("packages/claimed/package.json"),
+        r#"{"name":"claimed"}"#,
+    );
+    write(
+        &ws_root.join("packages/claimed/index.ts"),
+        "import { secret } from '../unclaimed/index'; export const value = secret;\n",
+    );
+    write(
+        &ws_root.join("packages/unclaimed/package.json"),
+        r#"{"name":"unclaimed"}"#,
+    );
+    write(
+        &ws_root.join("packages/unclaimed/index.ts"),
+        "export const secret = 'MUST_NOT_STAGE';\n",
+    );
+    let paths = BTreeMap::from([(
+        "@claimed/*".to_string(),
+        vec![ws_root
+            .join("packages/claimed/*")
+            .to_string_lossy()
+            .into_owned()],
+    )]);
+
+    let input = make_bundle_input(&project, "dist-unclaimed-relative", vec![], paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("mock materialisation completes");
+
+    let work = work_mirror_root(&session);
+    assert!(work.join("packages/claimed/index.ts").is_file());
+    assert!(
+        !work.join("packages/unclaimed").exists(),
+        "a relative dependency must not turn an unlisted package into a staging claim"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_root_alias_cannot_claim_an_unlisted_workspace_package() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("pnpm-workspace.yaml"),
+        "packages: ['.', 'sub-packages/*']\n",
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { secret } from '@/components/linked'; export default () => secret;\n",
+    );
+    write(
+        &ws_root.join("packages/unclaimed/package.json"),
+        r#"{"name":"unclaimed"}"#,
+    );
+    write(
+        &ws_root.join("packages/unclaimed/index.ts"),
+        "export const secret = 'MUST_NOT_STAGE';\n",
+    );
+    fs::create_dir_all(ws_root.join("components")).unwrap();
+    std::os::unix::fs::symlink(
+        ws_root.join("packages/unclaimed/index.ts"),
+        ws_root.join("components/linked.ts"),
+    )
+    .unwrap();
+    let paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![ws_root.join("*").to_string_lossy().into_owned()],
+    )]);
+
+    let input = make_bundle_input(&project, "dist-unclaimed-symlink", vec![], paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("mock materialisation completes");
+
+    let work = work_mirror_root(&session);
+    assert!(!work.join("components/linked.ts").exists());
+    assert!(
+        !work.join("packages/unclaimed").exists(),
+        "canonical package ownership must prevent symlink-based staging claims"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_root_alias_cannot_hide_ignored_or_dotfile_targets() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &project.join("pages/index.tsx"),
+        "import { hidden } from '@/components/hidden'; import { ignored } from '@/components/ignored'; export default () => hidden + ignored;\n",
+    );
+    write(
+        &ws_root.join(".secrets/token.ts"),
+        "export const hidden = 1;\n",
+    );
+    write(
+        &ws_root.join("private/token.ts"),
+        "export const ignored = 1;\n",
+    );
+    write(&ws_root.join(".gitignore"), "private/\n");
+    fs::create_dir_all(ws_root.join("components")).unwrap();
+    std::os::unix::fs::symlink(
+        ws_root.join(".secrets/token.ts"),
+        ws_root.join("components/hidden.ts"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        ws_root.join("private/token.ts"),
+        ws_root.join("components/ignored.ts"),
+    )
+    .unwrap();
+    let paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![ws_root.join("*").to_string_lossy().into_owned()],
+    )]);
+
+    let input = make_bundle_input(&project, "dist-hidden-symlink", vec![], paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("mock materialisation completes");
+
+    let work = work_mirror_root(&session);
+    for path in [
+        "components/hidden.ts",
+        "components/ignored.ts",
+        ".secrets",
+        "private",
+    ] {
+        assert!(
+            !work.join(path).exists(),
+            "canonical hidden/ignored target must not stage through {path}"
+        );
+    }
+}
+
+#[test]
+fn raw_import_cannot_embed_an_unlisted_workspace_package() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("pnpm-workspace.yaml"),
+        "packages: ['.', 'sub-packages/*', 'packages/claimed']\n",
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { value } from '@claimed/index'; export default () => value;\n",
+    );
+    write(
+        &ws_root.join("packages/claimed/package.json"),
+        r#"{"name":"claimed"}"#,
+    );
+    write(
+        &ws_root.join("packages/claimed/index.ts"),
+        "import secret from '../unclaimed/secret.ts?raw'; export const value = secret;\n",
+    );
+    write(
+        &ws_root.join("packages/unclaimed/package.json"),
+        r#"{"name":"unclaimed"}"#,
+    );
+    write(
+        &ws_root.join("packages/unclaimed/secret.ts"),
+        "PRIVATE_RAW_BYTES\n",
+    );
+    let paths = BTreeMap::from([(
+        "@claimed/*".to_string(),
+        vec![ws_root
+            .join("packages/claimed/*")
+            .to_string_lossy()
+            .into_owned()],
+    )]);
+
+    let input = make_bundle_input(&project, "dist-unclaimed-raw", vec![], paths, vec![]);
+    let error = bundle_with_session(input, None).unwrap_err().to_string();
+    assert!(
+        error.contains("unclaimed or excluded") && error.contains("packages/unclaimed/secret.ts"),
+        "raw bytes from an unlisted package must be rejected before transform: {error}"
+    );
+}
+
+#[test]
+fn workspace_root_alias_raw_payload_is_preflighted_before_materialize() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("package.json"),
+        r#"{"name":"workspace-root"}"#,
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { value } from '@/z-importer'; export default () => value;\n",
+    );
+    write(
+        &ws_root.join("a-payload.ts"),
+        "export const modules = import.meta.glob('./a-data/*.ts', { eager: true });\n\
+         export const SENTINEL = 'RAW_WORKSPACE_PAYLOAD';\n",
+    );
+    write(&ws_root.join("a-data/one.ts"), "export const one = 1;\n");
+    write(
+        &ws_root.join("z-importer.ts"),
+        "import payload from './a-payload.ts?raw';\nexport const value = payload;\n",
+    );
+    let paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![ws_root.join("*").to_string_lossy().into_owned()],
+    )]);
+
+    let input = make_bundle_input(&project, "dist-root-raw", vec![], paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("workspace raw graph stages");
+
+    let staged = fs::read_to_string(work_mirror_root(&session).join("a-payload.ts")).unwrap();
+    assert!(staged.contains("RAW_WORKSPACE_PAYLOAD"));
+    assert!(
+        staged.contains("import.meta.glob"),
+        "the raw target sorts before its importer but must remain byte-preserved"
+    );
+    assert!(
+        !work_mirror_root(&session).join("a-data/one.ts").exists(),
+        "raw payload syntax must not execute glob discovery"
+    );
 }
 
 #[test]
