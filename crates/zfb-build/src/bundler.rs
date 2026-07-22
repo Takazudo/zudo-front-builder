@@ -2346,7 +2346,7 @@ pub fn bundle_with_session(
         let root_level_entry = root_level_staged_entry_file(&target, &project_root).is_some();
         let discovered_files = discovery.files;
         plugin_preprocessing_files.insert(target.clone());
-        if root_level_entry && !bundle_exclude.is_empty() {
+        if root_level_entry {
             root_entry_dependency_seed_files.insert(target.clone());
             root_entry_dependency_seed_files.extend(
                 discovered_files
@@ -2410,12 +2410,12 @@ pub fn bundle_with_session(
 
     // Seed the staged-dependency closure from the materialized project module
     // graph and the framework packages the generated entry/hydration shim
-    // import (issue #1645). Only meaningful with `bundle.exclude` active: with
-    // no exclusions the live `<shadow>/node_modules` symlink resolves every bare
-    // import, so seeding here would needlessly stage copies — gate it off to
-    // keep the empty-exclude path byte-for-byte identical.
+    // import (issue #1645). Source discovery also runs with an empty exclude so
+    // package-name workspace siblings can be detected and copied before the
+    // stage-escape audit. Ordinary dependencies remain live-link-resolved in
+    // that mode; the root-seed loop below only admits workspace sources.
     let mut synthetic_entry_import_specifiers = BTreeSet::new();
-    if !bundle_exclude.is_empty() {
+    {
         let mut source_graph_roots = vec![
             pages_dir.clone(),
             components_dir.clone(),
@@ -2466,9 +2466,11 @@ pub fn bundle_with_session(
         // covers the hydration shim's bare framework import) appear in NO
         // project source file, so the file-driven seed above can never discover
         // them.
-        synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
-        synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
-        synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
+        if !bundle_exclude.is_empty() {
+            synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
+            synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
+            synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
+        }
     }
 
     // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
@@ -2508,13 +2510,15 @@ pub fn bundle_with_session(
 
     // WHERE staged `node_modules` targets land depends on `bundle.exclude`:
     //
-    // - Empty exclude → the live `<shadow>/node_modules` symlink exists (2b), so
-    //   staged node_modules targets must be kept OUT of `<shadow>/node_modules`
-    //   (else a bare import could climb the live symlink and resurrect a
-    //   dependency). They go into a separate `zfb-exact-node-modules-*` tempdir
-    //   whose own `node_modules` component preserves esbuild's JS-before-TS
-    //   context without a project-live ancestor fallback. The tempdir is written
-    //   by a dedicated sessionless copy writer.
+    // - Empty exclude, ordinary deps only → the live `<shadow>/node_modules`
+    //   symlink exists (2b), so explicitly staged node_modules targets stay in a
+    //   separate `zfb-exact-node-modules-*` tempdir.
+    // - Any workspace-package source → use REAL copies at the natural shadow
+    //   node_modules position even with an empty exclude. Otherwise a bare
+    //   package import cannot see the isolated tempdir, climbs to the WORK
+    //   mirror's live workspace link, and correctly trips the stage-escape
+    //   audit. The staged dependency closure supplies the ordinary packages
+    //   those workspace packages need, so no live shadow link is necessary.
     //
     // - Exclusions active → the live symlink is NOT created (2b), so there is
     //   nothing to climb to. Staged deps are materialised as REAL copies at
@@ -2526,7 +2530,20 @@ pub fn bundle_with_session(
     //   node_modules paths to their in-place shadow location) with NO separate
     //   isolation writer, so the main session-aware `ShadowWriter` materialises
     //   them (and the prune pass keeps them correct across session ticks).
+    let workspace_package_staging_active = exact_target_staging_alias_dirs
+        .values()
+        .chain(
+            exact_target_staging_dirs
+                .iter()
+                .filter(|path| project_path_is_inside_node_modules(path, &project_root)),
+        )
+        .any(|source_root| {
+            source_root.canonicalize().is_ok_and(|canonical| {
+                canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
+            })
+        });
     let needs_tempdir_isolation = bundle_exclude.is_empty()
+        && !workspace_package_staging_active
         && exact_target_staging_files
             .iter()
             .chain(exact_target_staging_dirs.iter())
@@ -2544,11 +2561,12 @@ pub fn bundle_with_session(
     let tempdir_isolation_root = node_modules_isolation
         .as_ref()
         .map(|isolation| isolation.path());
-    let node_modules_isolation_root: Option<&Path> = if bundle_exclude.is_empty() {
-        tempdir_isolation_root
-    } else {
-        Some(shadow)
-    };
+    let node_modules_isolation_root: Option<&Path> =
+        if bundle_exclude.is_empty() && !workspace_package_staging_active {
+            tempdir_isolation_root
+        } else {
+            Some(shadow)
+        };
     if let Some(root) = node_modules_isolation_root {
         ensure_shadow_path_outside_project(
             &input.project_root,
@@ -3033,9 +3051,9 @@ pub fn bundle_with_session(
     //     `<shadow>/node_modules` to walk into instead of an empty tempdir
     //     ancestry. WHAT lives there depends on `bundle.exclude`:
     //
-    //     - Empty exclude → symlink `<shadow>/node_modules → <live node_modules>`
-    //       (the historical behaviour; byte-identical to a build without the knob).
-    //     - Exclusions active → the live symlink is a fallback that could
+    //     - Empty exclude with no staged workspace package → symlink
+    //       `<shadow>/node_modules → <live node_modules>` (historical behavior).
+    //     - Exclusions active OR a staged workspace package → the live symlink is a fallback that could
     //       resurrect an excluded dependency (esbuild climbing to the real tree),
     //       so it is NEVER created. Non-excluded dependencies are supplied as REAL
     //       staged copies materialised into the shadow at their logical paths
@@ -3054,7 +3072,7 @@ pub fn bundle_with_session(
     //     session later returns to an empty exclude the branch below re-creates it.
     if let Some(ref nm_dir) = input.node_modules_dir {
         let shadow_nm = shadow.join("node_modules");
-        if bundle_exclude.is_empty() {
+        if bundle_exclude.is_empty() && !workspace_package_staging_active {
             #[cfg(unix)]
             {
                 // Session mode (#993) reuses the persistent shadow across
@@ -3094,7 +3112,7 @@ pub fn bundle_with_session(
                 })?;
             }
         } else {
-            // Exclusions active: remove any stale live symlink from a previous
+            // Staged-only dependency view: remove any stale live symlink from a previous
             // empty-exclude tick of a persistent session. `remove_file` deletes
             // the symlink itself (not its target); a real staged `node_modules`
             // dir written by the staging loops below is left untouched because it
@@ -3401,13 +3419,16 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
+        let prune_workspace_infra = logical_root.canonicalize().is_ok_and(|canonical| {
+            canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
+        });
         materialise_isolated_exact_dir(
             logical_root,
             logical_root,
             &dest,
             target_writer,
             &is_plugin_preprocessing_excluded,
-            false,
+            prune_workspace_infra,
         )
         .with_context(|| {
             format!(
@@ -8812,6 +8833,13 @@ fn extend_node_modules_dependency_staging(
                 } else {
                     continue;
                 };
+            if bundle_exclude.is_empty()
+                && !source_dependency.canonicalize().is_ok_and(|canonical| {
+                    canonical_workspace_package_logical_path(&canonical, project_root).is_some()
+                })
+            {
+                continue;
+            }
             stage_dependency_candidate(
                 logical_importer,
                 logical_importer,

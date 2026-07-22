@@ -542,34 +542,52 @@ fn f_workspace_package_subpath_exports_resolve_only_from_real_staged_copies() {
     std::os::unix::fs::symlink(&ui, ws_root.join("node_modules/@acme/ui")).unwrap();
     std::os::unix::fs::symlink(&toolkit, ws_root.join("node_modules/toolkit")).unwrap();
 
-    let input = base_input(&project, esbuild, unrelated_exclude());
-    let mut session = ShadowSession::new(&project).unwrap();
-    let out = bundle_with_session(input, Some(&mut session))
-        .expect("a declared workspace package subpath export must resolve through its staged copy");
-    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
-    assert!(body.contains("PACKAGE_EXPORT_SELECTED_"), "{body}");
-    assert!(body.contains("RELATIVE_ASSET"), "{body}");
-    assert!(body.contains("TRANSITIVE_WORKSPACE_DEP"), "{body}");
-    assert!(!body.contains("INACTIVE_BROWSER_CONDITION"), "{body}");
-    assert!(!body.contains("UNSELECTED_DECOY"), "{body}");
+    for (case, exclude, project_local_link) in [
+        ("empty exclude with hoisted install", Vec::new(), false),
+        (
+            "active unrelated exclude with hoisted install",
+            unrelated_exclude(),
+            false,
+        ),
+        ("empty exclude with project-local link", Vec::new(), true),
+    ] {
+        if project_local_link {
+            fs::create_dir_all(project.join("node_modules/@acme")).unwrap();
+            std::os::unix::fs::symlink(&ui, project.join("node_modules/@acme/ui")).unwrap();
+        }
+        let input = base_input(&project, esbuild.clone(), exclude);
+        let mut session = ShadowSession::new(&project).unwrap();
+        let out = bundle_with_session(input, Some(&mut session)).unwrap_or_else(|error| {
+            panic!("{case}: declared workspace package subpath export must stage: {error:#}")
+        });
+        let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+        assert!(body.contains("PACKAGE_EXPORT_SELECTED_"), "{case}: {body}");
+        assert!(body.contains("RELATIVE_ASSET"), "{case}: {body}");
+        assert!(body.contains("TRANSITIVE_WORKSPACE_DEP"), "{case}: {body}");
+        assert!(
+            !body.contains("INACTIVE_BROWSER_CONDITION"),
+            "{case}: {body}"
+        );
+        assert!(!body.contains("UNSELECTED_DECOY"), "{case}: {body}");
 
-    let work = fs::canonicalize(session.shadow_root()).unwrap();
-    let staged = work.join("sub-packages/host/node_modules/@acme/ui");
-    assert!(staged.join("package.json").is_file());
-    assert!(staged.join("src/button.ts").is_file());
-    assert!(staged.join("src/assets/label.json").is_file());
-    assert!(
-        !staged.join("dist").exists(),
-        "workspace package infra is pruned"
-    );
-    assert!(
-        staged.join("node_modules/toolkit/package.json").is_file(),
-        "the staged package manifest must authorize and stage its transitive bare dependency"
-    );
-    assert!(
-        !fs::symlink_metadata(&staged)
-            .map(|metadata| metadata.file_type().is_symlink())
-            .unwrap_or(false),
-        "the staged package must be a usable real directory, not a live workspace symlink"
-    );
+        let work = fs::canonicalize(session.shadow_root()).unwrap();
+        let staged = work.join("sub-packages/host/node_modules/@acme/ui");
+        assert!(staged.join("package.json").is_file(), "{case}");
+        assert!(staged.join("src/button.ts").is_file(), "{case}");
+        assert!(staged.join("src/assets/label.json").is_file(), "{case}");
+        assert!(
+            !staged.join("dist").exists(),
+            "{case}: workspace package infra is pruned"
+        );
+        assert!(
+            staged.join("node_modules/toolkit/package.json").is_file(),
+            "{case}: the staged package manifest must authorize its transitive bare dependency"
+        );
+        assert!(
+            !fs::symlink_metadata(&staged)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false),
+            "{case}: staged package must be a usable real directory, not a live symlink"
+        );
+    }
 }
