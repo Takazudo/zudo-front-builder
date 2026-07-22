@@ -12,6 +12,28 @@ export interface GfmOptions {
   footnoteDefinition?: boolean;
 }
 
+/** Base syntax selected by `parseToAst`. */
+export type ParseDialect = "markdown" | "mdx";
+
+/** Raw-parser pipeline options. Visitor/serializer options are not accepted. */
+export interface ParsePipelineOptions {
+  gfm?: GfmOptions;
+}
+
+/**
+ * The distinct, closed options document consumed by `parseToAst`.
+ *
+ * `filename` must end in lowercase `.md` or `.mdx`. With no explicit
+ * `dialect`, `.md` selects CommonMark and `.mdx` selects MDX; omitting the
+ * filename uses `<anonymous>.mdx`, hence MDX. An explicit dialect overrides
+ * either valid extension but does not waive that extension gate.
+ */
+export interface ParseToAstOptions {
+  filename?: string;
+  dialect?: ParseDialect;
+  pipeline?: ParsePipelineOptions;
+}
+
 /**
  * `MarkdownFeaturesConfig` (see `crates/zfb-md-ast/src/features_config.rs`).
  * Left as an open record here -- the wasm boundary passes it through to the
@@ -490,7 +512,12 @@ export type MdastRoot = Root;
  * parsed them. `position.offset`/`position.column` are UTF-16 code units
  * (see {@link AstPoint}); `position.line` is unit-agnostic.
  *
- * Documented divergences from remark-parse / remark-mdx:
+ * Markdown mode preserves CommonMark HTML/comments, angle autolinks,
+ * indented code, and literal braces. MDX mode enables JSX/expressions and
+ * keeps markdown-rs's conflicting CommonMark constructs disabled. Both
+ * modes apply the same five independent {@link GfmOptions} switches.
+ *
+ * Documented divergences from remark-parse / remark-mdx in MDX mode:
  * - `mdxJsxAttribute` (and its value/expression-attribute siblings) carry no
  *   `position` -- markdown-rs does not model attribute positions.
  * - Top-level `import`/`export` degrade to paragraphs (no `mdxjsEsm` nodes),

@@ -19,6 +19,16 @@
       "slug": "frontmattered",
       "source": "---\ntitle: Frontmatter position fixture\ncount: 4\n---\n\n# Heading after frontmatter\n\nBody paragraph with **strong** text.\n",
       "options": { "filename": "frontmattered.mdx" }
+    },
+    {
+      "slug": "markdown-commonmark-dialect",
+      "source": "# Markdown dialect 😀\n\n<!-- marker -->\n\n<div>raw HTML</div>\n\n![alt](x.png){w=full}\n\n<https://example.com>\n\n    indented code\n\n~~strike~~\n",
+      "options": { "filename": "commonmark.md" }
+    },
+    {
+      "slug": "mdx-dialect",
+      "source": "# MDX dialect 😀\n\n<Card label=\"x\" count={2 + 3}>\nNested *content* and {6 * 7}.\n</Card>\n",
+      "options": { "filename": "component.mdx" }
     }
   ]
 }

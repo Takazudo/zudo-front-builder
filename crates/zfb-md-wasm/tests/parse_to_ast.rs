@@ -29,7 +29,10 @@
 //!   diagnostics with frontmatter-shifted lines, same arithmetic as
 //!   `renderHtml`; (f) the UTF-16 code-unit pin on a CJK+emoji source
 //!   (surrogate pairs discriminate UTF-16 units from code points from
-//!   bytes).
+//!   bytes); (g) filename inference/explicit dialect overrides, CommonMark
+//!   versus MDX construct behavior, the closed parse-only options boundary,
+//!   and all five independent GFM switches in both dialects; (h) shared
+//!   Markdown/MDX fixtures with supported structure and UTF-16 positions.
 //! - **Blind spots**: executing the compiled wasm artifact (npm package
 //!   scope); remark-parity (needs real JS remark — npm package scope);
 //!   benchmark characteristics (the bench harness under `npm/test/bench/`
@@ -318,7 +321,7 @@ fn whole_tree_positions_are_shifted_on_frontmatter_fixture() {
         .count() as u64;
     assert!(prefix_lines > 0, "fixture must actually have frontmatter");
     let raw =
-        zfb_content::facade::parse_mdast(&zfb_content::facade::PipelineOptions::default(), &body)
+        zfb_content::facade::parse_mdast(zfb_content::facade::ParseMdastOptions::default(), &body)
             .expect("body parses");
     let raw_json = serde_json::to_value(&raw).expect("mdast serializes");
 
@@ -365,7 +368,7 @@ fn no_frontmatter_source_is_returned_unshifted() {
     let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
     assert_eq!(out["frontmatter"], Value::Null);
     let raw =
-        zfb_content::facade::parse_mdast(&zfb_content::facade::PipelineOptions::default(), source)
+        zfb_content::facade::parse_mdast(zfb_content::facade::ParseMdastOptions::default(), source)
             .expect("source parses");
     let raw_json = serde_json::to_value(&raw).expect("mdast serializes");
     assert_eq!(
@@ -426,15 +429,135 @@ fn contract_shape_directive_and_alert_text_stays_raw() {
 }
 
 #[test]
-fn gfm_toggles_flow_through_options() {
-    let source = "a ~~strike~~ b\n";
-    let on = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
-    assert!(count_nodes_of_type(&on["ast"], "delete") > 0);
-    let off = parse(zfb_md_wasm::parse_to_ast(
-        source,
-        r#"{"filename":"post.mdx","pipeline":{"gfm":{"strikethrough":false}}}"#,
-    ));
-    assert_eq!(count_nodes_of_type(&off["ast"], "delete"), 0);
+fn filename_inference_and_explicit_dialect_override_are_authoritative() {
+    let commonmark = "<!-- marker -->\n\n<div>raw</div>\n\n![alt](x.png){w=full}\n\n<https://example.com>\n\n    indented\n";
+    for options in [
+        serde_json::json!({ "filename": "post.md" }),
+        serde_json::json!({ "filename": "post.mdx", "dialect": "markdown" }),
+    ] {
+        let out = parse(zfb_md_wasm::parse_to_ast(
+            commonmark,
+            &serde_json::to_string(&options).unwrap(),
+        ));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{options}");
+        assert_eq!(count_nodes_of_type(&out["ast"], "html"), 2, "{options}");
+        assert_eq!(count_nodes_of_type(&out["ast"], "link"), 1, "{options}");
+        assert_eq!(count_nodes_of_type(&out["ast"], "code"), 1, "{options}");
+        assert!(out["ast"].to_string().contains("{w=full}"), "{options}");
+    }
+
+    let mdx = "<Card label=\"x\" />\n\n{1 + 2}\n";
+    for options in [
+        serde_json::json!({}),
+        serde_json::json!({ "filename": "post.mdx" }),
+        serde_json::json!({ "filename": "post.md", "dialect": "mdx" }),
+    ] {
+        let out = parse(zfb_md_wasm::parse_to_ast(
+            mdx,
+            &serde_json::to_string(&options).unwrap(),
+        ));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{options}");
+        assert_eq!(
+            count_nodes_of_type(&out["ast"], "mdxJsxFlowElement"),
+            1,
+            "{options}"
+        );
+        assert_eq!(
+            count_nodes_of_type(&out["ast"], "mdxFlowExpression"),
+            1,
+            "{options}"
+        );
+    }
+}
+
+#[test]
+fn every_gfm_toggle_flows_independently_through_both_dialects() {
+    struct Case {
+        option: &'static str,
+        source: &'static str,
+        required_types: &'static [&'static str],
+        checked_marker: bool,
+    }
+    let cases = [
+        Case {
+            option: "strikethrough",
+            source: "a ~~strike~~ b\n",
+            required_types: &["delete"],
+            checked_marker: false,
+        },
+        Case {
+            option: "table",
+            source: "| a | b |\n| - | - |\n| 1 | 2 |\n",
+            required_types: &["table"],
+            checked_marker: false,
+        },
+        Case {
+            option: "autolinkLiteral",
+            source: "Visit www.example.com.\n",
+            required_types: &["link"],
+            checked_marker: false,
+        },
+        Case {
+            option: "taskListItem",
+            source: "- [x] done\n",
+            required_types: &[],
+            checked_marker: true,
+        },
+        Case {
+            option: "footnoteDefinition",
+            source: "[^note]: detail\n\nSee [^note].\n",
+            required_types: &["footnoteDefinition", "footnoteReference"],
+            checked_marker: false,
+        },
+    ];
+
+    for dialect in ["markdown", "mdx"] {
+        for case in &cases {
+            let mut all_off = serde_json::json!({
+                "strikethrough": false,
+                "table": false,
+                "autolinkLiteral": false,
+                "taskListItem": false,
+                "footnoteDefinition": false
+            });
+            let off_options = serde_json::json!({
+                "filename": "post.mdx",
+                "dialect": dialect,
+                "pipeline": { "gfm": all_off.clone() }
+            });
+            all_off[case.option] = Value::Bool(true);
+            let on_options = serde_json::json!({
+                "filename": "post.mdx",
+                "dialect": dialect,
+                "pipeline": { "gfm": all_off }
+            });
+            let off = parse(zfb_md_wasm::parse_to_ast(
+                case.source,
+                &serde_json::to_string(&off_options).unwrap(),
+            ));
+            let on = parse(zfb_md_wasm::parse_to_ast(
+                case.source,
+                &serde_json::to_string(&on_options).unwrap(),
+            ));
+            assert_eq!(off["diagnostics"], serde_json::json!([]), "{off_options}");
+            assert_eq!(on["diagnostics"], serde_json::json!([]), "{on_options}");
+            for node_type in case.required_types {
+                assert_eq!(
+                    count_nodes_of_type(&off["ast"], node_type),
+                    0,
+                    "{off_options}"
+                );
+                assert!(
+                    count_nodes_of_type(&on["ast"], node_type) > 0,
+                    "{on_options}"
+                );
+            }
+            if case.checked_marker {
+                assert!(!off["ast"].to_string().contains("\"checked\":true"));
+                assert!(on["ast"].to_string().contains("\"checked\":true"));
+            }
+        }
+    }
 }
 
 #[test]
@@ -464,18 +587,41 @@ fn parse_error_diagnostic_line_is_frontmatter_shifted() {
 }
 
 #[test]
-fn options_document_is_shared_with_the_other_tiers() {
-    // jsxRuntime/development are compile-tier knobs; parseToAst accepts and
-    // ignores them so one options document serves every tier (same contract
-    // as renderHtml). Unknown fields still fail fast.
-    let out = parse(zfb_md_wasm::parse_to_ast(
-        "# ok\n",
-        r#"{"filename":"a.mdx","jsxRuntime":"react","development":true}"#,
-    ));
-    assert_eq!(out["ast"]["type"], "root");
-    let bad = parse(zfb_md_wasm::parse_to_ast("# ok\n", r#"{"nope":1}"#));
-    assert_eq!(bad["ast"], Value::Null);
-    assert_eq!(bad["diagnostics"][0]["source"], "options");
+fn parse_options_are_closed_non_null_and_fail_before_source_processing() {
+    for options in [
+        r#"{"filename":null}"#,
+        r#"{"dialect":null}"#,
+        r#"{"dialect":"commonmark"}"#,
+        r#"{"filename":"post.MD"}"#,
+        r#"{"filename":"post.txt","dialect":"markdown"}"#,
+        r#"{"jsxRuntime":"react"}"#,
+        r#"{"development":true}"#,
+        r#"{"pipeline":{"theme":"InspiredGitHub"}}"#,
+        r#"{"nope":1}"#,
+    ] {
+        let out = parse(zfb_md_wasm::parse_to_ast("---\nbroken: [\n---\n", options));
+        assert_eq!(out["ast"], Value::Null, "{options}");
+        assert_eq!(out["frontmatter"], Value::Null, "{options}");
+        assert_eq!(out["diagnostics"].as_array().unwrap().len(), 1, "{options}");
+        assert_eq!(out["diagnostics"][0]["source"], "options", "{options}");
+    }
+}
+
+#[test]
+fn compile_and_render_html_reject_parse_only_dialect_key() {
+    for result in [
+        parse(zfb_md_wasm::compile(
+            "# ok\n",
+            r#"{"filename":"post.mdx","dialect":"mdx"}"#,
+        )),
+        parse(zfb_md_wasm::render_html(
+            "# ok\n",
+            r#"{"filename":"post.md","dialect":"markdown"}"#,
+        )),
+    ] {
+        assert_eq!(result["diagnostics"].as_array().unwrap().len(), 1);
+        assert_eq!(result["diagnostics"][0]["source"], "options");
+    }
 }
 
 #[test]
@@ -554,7 +700,7 @@ fn utf16_positions_are_shifted_on_non_ascii_fixture() {
     );
 
     let raw = zfb_content::facade::parse_mdast(
-        &zfb_content::facade::PipelineOptions::default(),
+        zfb_content::facade::ParseMdastOptions::default(),
         &fixture.source,
     )
     .expect("fixture body parses");
@@ -569,6 +715,55 @@ fn utf16_positions_are_shifted_on_non_ascii_fixture() {
 
     assert_every_node_has_position(&out["ast"], "ast");
     assert_utf16_shifted_tree(&out["ast"], &raw_json, &fixture.source, "ast");
+}
+
+#[test]
+fn shared_dialect_fixtures_pin_supported_structure_and_utf16_positions() {
+    use zfb_content::facade::{ParseDialect, ParseMdastOptions};
+
+    for (slug, dialect, required, forbidden) in [
+        (
+            "markdown-commonmark-dialect",
+            ParseDialect::Markdown,
+            &["html", "image", "link", "code", "delete"][..],
+            &["mdxFlowExpression", "mdxJsxFlowElement"][..],
+        ),
+        (
+            "mdx-dialect",
+            ParseDialect::Mdx,
+            &["mdxJsxFlowElement", "mdxTextExpression", "emphasis"][..],
+            &["html"][..],
+        ),
+    ] {
+        let fixture = load_fixture(slug);
+        let options_json = serde_json::to_string(&fixture.options).unwrap();
+        let out = parse(zfb_md_wasm::parse_to_ast(&fixture.source, &options_json));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{slug}");
+        for node_type in required {
+            assert!(
+                count_nodes_of_type(&out["ast"], node_type) > 0,
+                "{slug} contains `{node_type}`"
+            );
+        }
+        for node_type in forbidden {
+            assert_eq!(
+                count_nodes_of_type(&out["ast"], node_type),
+                0,
+                "{slug} excludes `{node_type}`"
+            );
+        }
+
+        let raw = zfb_content::facade::parse_mdast(
+            ParseMdastOptions {
+                dialect,
+                ..ParseMdastOptions::default()
+            },
+            &fixture.source,
+        )
+        .expect("shared dialect fixture parses natively");
+        let raw_json = serde_json::to_value(raw).expect("raw mdast serializes");
+        assert_utf16_shifted_tree(&out["ast"], &raw_json, &fixture.source, "ast");
+    }
 }
 
 /// Independent UTF-16 point oracle (test-only, deliberately NOT the

@@ -197,6 +197,39 @@ const { ast, frontmatter, diagnostics }: ParseToAstResult = await parseToAst(
 // diagnostics -> []
 ```
 
+`parseToAst` has its own closed options document:
+
+```ts
+interface ParseToAstOptions {
+  filename?: string; // lowercase .md/.mdx only; default <anonymous>.mdx
+  dialect?: "markdown" | "mdx";
+  pipeline?: {
+    gfm?: {
+      strikethrough?: boolean; // default true
+      table?: boolean; // default true
+      autolinkLiteral?: boolean; // default false
+      taskListItem?: boolean; // default false
+      footnoteDefinition?: boolean; // default false; controls definitions + references
+    };
+  };
+}
+```
+
+Without `dialect`, a `.md` filename selects Markdown/CommonMark and `.mdx`
+selects MDX. Omitting `filename` uses `<anonymous>.mdx`, so the default is
+MDX. An explicit dialect is authoritative for either valid extension (for
+example `{ filename: "preview.mdx", dialect: "markdown" }`), but it does not
+allow any other extension. `filename: null`, `dialect: null`, invalid enum
+strings/types, compile-only keys (`jsxRuntime`, `development`), other pipeline
+keys, and unknown keys return one `options` diagnostic with `ast` and
+`frontmatter` both `null`; they never trap.
+
+Markdown mode keeps CommonMark HTML/comments, angle autolinks, indented code,
+and literal braces (`![alt](x.png){w=full}` leaves `{w=full}` as text). MDX
+mode keeps JSX and expression parsing and its conflicting HTML/autolink/
+indented-code exclusions. The five GFM switches above are independent of the
+dialect and have the same defaults in both modes. Math remains disabled.
+
 `ast` is `MdastRoot | null` — a real TypeScript union over the mdast node
 set markdown-rs emits (`Root`, `Paragraph`, `Heading`, `Text`, `List`,
 `Link`, `MdxJsxFlowElement`, …; see `types.ts`'s `MdastNode`), plus a
@@ -360,11 +393,9 @@ derives from `zfb.config.ts` at build time. See "Limitations" for why it's
 resolved JSON rather than a config file. Unknown fields are rejected at both
 nesting levels (an `options`-source diagnostic).
 
-`parseToAst` accepts this same options document (so one options object can
-serve every tier), but only `filename` and `pipeline.gfm` participate —
-`theme`/`codeHighlight`/`jsxRuntime`/`development` are visitor/serializer
-knobs this raw-parse tier never runs, so it accepts and silently ignores
-them.
+This options document is for `compile` and `renderHtml`. `parseToAst` uses the
+distinct closed `ParseToAstOptions` shown in its section above; it rejects
+visitor/serializer and compile-only knobs rather than silently ignoring them.
 
 ### `codeHighlight`: inline vs. class mode for `compile`/`renderHtml`
 

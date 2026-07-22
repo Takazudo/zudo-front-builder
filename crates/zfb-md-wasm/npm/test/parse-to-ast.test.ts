@@ -11,8 +11,10 @@
 //   (slice-equality against the original source — an independent anchor,
 //   not a re-derivation of the Rust arithmetic) and adds the ONE proof that
 //   genuinely needs a JS runtime: node-by-node UTF-16 position parity
-//   against real `remark-parse`, the actual remark/unist reference
-//   implementation this export claims compatibility with.
+//   against real `remark-parse`/`remark-mdx`, the actual remark/unist
+//   reference implementations this export claims compatibility with. It
+//   also drives filename inference/overrides, the closed options boundary,
+//   and all five independent GFM switches in both dialects.
 // - Blind spots: browser execution (the committed browser bench harness,
 //   `package-browser.test.ts`'s bundled-entry check below, and the
 //   md-wasm-browser-smoke Chromium lane cover that surface).
@@ -21,10 +23,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { unified } from "unified";
+import remarkGfm from "remark-gfm";
+import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
 import { describe, it, expect } from "vitest";
 
-import { parseToAst, type Diagnostic } from "../dist/index.js";
+import { parseToAst, type Diagnostic, type ParseToAstOptions } from "../dist/index.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(testDir, "..", "..", "tests", "fixtures", "parse-to-ast");
@@ -32,7 +36,7 @@ const fixturesDir = join(testDir, "..", "..", "tests", "fixtures", "parse-to-ast
 interface ParseToAstFixture {
   slug: string;
   source: string;
-  options: Record<string, unknown>;
+  options: ParseToAstOptions;
 }
 interface ParseToAstManifest {
   fixtures: ParseToAstFixture[];
@@ -173,6 +177,107 @@ describe("parseToAst (raw mdast export)", () => {
   });
 });
 
+describe("parseToAst dialect selection and closed options", () => {
+  it("infers from .md/.mdx and lets an explicit dialect override either valid extension", async () => {
+    const markdown =
+      "<!-- marker -->\n\n<div>raw</div>\n\n![alt](x.png){w=full}\n\n<https://example.com>\n\n    code\n";
+    for (const options of [
+      { filename: "post.md" },
+      { filename: "post.mdx", dialect: "markdown" as const },
+    ]) {
+      const out = await parseToAst(markdown, options);
+      expect(out.diagnostics).toHaveLength(0);
+      const types = new Set<string>();
+      walk(out.ast, (node) => types.add(node.type as string));
+      for (const required of ["html", "image", "link", "code"]) {
+        expect(types).toContain(required);
+      }
+      expect(JSON.stringify(out.ast)).toContain("{w=full}");
+    }
+
+    const mdx = '<Card label="x" />\n\n{1 + 2}\n';
+    for (const options of [
+      {},
+      { filename: "post.mdx" },
+      { filename: "post.md", dialect: "mdx" as const },
+    ]) {
+      const out = await parseToAst(mdx, options);
+      expect(out.diagnostics).toHaveLength(0);
+      const types = new Set<string>();
+      walk(out.ast, (node) => types.add(node.type as string));
+      expect(types).toContain("mdxJsxFlowElement");
+      expect(types).toContain("mdxFlowExpression");
+    }
+  });
+
+  it("returns one options diagnostic for invalid parse-only documents without trapping", async () => {
+    const invalid = [
+      { filename: null },
+      { dialect: null },
+      { dialect: "commonmark" },
+      { filename: "post.MD" },
+      { filename: "post.txt", dialect: "markdown" },
+      { jsxRuntime: "react" },
+      { development: true },
+      { pipeline: { theme: "InspiredGitHub" } },
+      { nope: true },
+    ];
+    for (const options of invalid) {
+      // Deliberately bypass the TypeScript contract to verify the runtime
+      // boundary rejects malformed JS input as structured data.
+      const out = await parseToAst("---\nbroken: [\n---\n", options as never);
+      expect(out.ast, JSON.stringify(options)).toBeNull();
+      expect(out.frontmatter, JSON.stringify(options)).toBeNull();
+      expect(out.diagnostics, JSON.stringify(options)).toHaveLength(1);
+      expect(out.diagnostics[0]!.source, JSON.stringify(options)).toBe("options");
+    }
+  });
+
+  it("keeps all five GFM flags orthogonal in both dialects", async () => {
+    const cases = [
+      ["strikethrough", "a ~~gone~~ b\n", "delete"],
+      ["table", "| a | b |\n| - | - |\n| 1 | 2 |\n", "table"],
+      ["autolinkLiteral", "Visit www.example.com.\n", "link"],
+      ["taskListItem", "- [x] done\n", "checked"],
+      ["footnoteDefinition", "[^note]: detail\n\nSee [^note].\n", "footnoteDefinition"],
+    ] as const;
+    for (const dialect of ["markdown", "mdx"] as const) {
+      for (const [flag, source, marker] of cases) {
+        const base = {
+          strikethrough: false,
+          table: false,
+          autolinkLiteral: false,
+          taskListItem: false,
+          footnoteDefinition: false,
+        };
+        const off = await parseToAst(source, {
+          filename: "post.mdx",
+          dialect,
+          pipeline: { gfm: base },
+        });
+        const on = await parseToAst(source, {
+          filename: "post.mdx",
+          dialect,
+          pipeline: { gfm: { ...base, [flag]: true } },
+        });
+        expect(off.diagnostics).toHaveLength(0);
+        expect(on.diagnostics).toHaveLength(0);
+        if (marker === "checked") {
+          expect(JSON.stringify(off.ast)).not.toContain('"checked":true');
+          expect(JSON.stringify(on.ast)).toContain('"checked":true');
+        } else {
+          const offTypes = new Set<string>();
+          const onTypes = new Set<string>();
+          walk(off.ast, (node) => offTypes.add(node.type as string));
+          walk(on.ast, (node) => onTypes.add(node.type as string));
+          expect(offTypes).not.toContain(marker);
+          expect(onTypes).toContain(marker);
+        }
+      }
+    }
+  });
+});
+
 describe("parseToAst custom/unrecognized node survival (zfb#1828 requirement 3)", () => {
   it("round-trips an MDX-JSX custom component with type/name/attributes intact", async () => {
     const { source, options } = fixture("mdx-custom-component");
@@ -282,4 +387,28 @@ describe("parseToAst UTF-16 position parity with remark-parse (zfb#1856)", () =>
       expect(zfbNode.end, `${zfbNode.type}[${i}] end (UTF-16 units)`).toEqual(remarkNode.end);
     }
   });
+
+  for (const [slug, oracle] of [
+    ["markdown-commonmark-dialect", "markdown"],
+    ["mdx-dialect", "mdx"],
+  ] as const) {
+    it(`matches ${oracle === "mdx" ? "remark-mdx" : "remark-parse"} supported structure and positions for ${slug}`, async () => {
+      const { source, options } = fixture(slug);
+      const zfbOut = await parseToAst(source, options);
+      expect(zfbOut.diagnostics).toHaveLength(0);
+      const processor =
+        oracle === "mdx"
+          ? unified().use(remarkParse).use(remarkMdx).use(remarkGfm)
+          : unified().use(remarkParse).use(remarkGfm);
+      const remarkTree = processor.parse(source);
+      // markdown-rs does not model JSX attribute positions; that locked,
+      // documented divergence is the only positioned remark record omitted
+      // from this supported-structure comparison.
+      const supported = (nodes: FlatNode[]) =>
+        nodes.filter((node) => !POSITIONLESS_TYPES.has(node.type));
+      expect(supported(flattenPositions(zfbOut.ast))).toEqual(
+        supported(flattenPositions(remarkTree)),
+      );
+    });
+  }
 });
