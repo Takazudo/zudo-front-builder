@@ -40,10 +40,10 @@ export interface CodeHighlightOptions {
    * `"hi-"` yields `hi-kw`, `hi-str`, ...). Only meaningful when `mode` is
    * `"class"`. */
   classPrefix?: string;
-  /** Per-role class overrides for class mode. `undefined`/absent uses
+  /** Per-role class overrides for class mode. Absent or `null` uses
    * `{classPrefix}{role}` for every role. Only meaningful when `mode` is
    * `"class"`. */
-  roleClasses?: Partial<Record<HighlightRole, string>>;
+  roleClasses?: Partial<Record<HighlightRole, string>> | null;
 }
 
 /** `zfb_content::facade::PipelineOptions`, verbatim. */
