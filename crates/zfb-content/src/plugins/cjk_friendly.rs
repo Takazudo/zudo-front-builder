@@ -308,8 +308,10 @@ fn push_text_slice(out: &mut Vec<MdastNode>, text: &Text, range: Range<usize>) {
 fn point_after(start: &Point, prefix: &str) -> Point {
     let mut line = start.line;
     let mut column = start.column;
-    for byte in prefix.bytes() {
+    let bytes = prefix.as_bytes();
+    for (index, byte) in bytes.iter().copied().enumerate() {
         match byte {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {}
             b'\n' | b'\r' => {
                 line += 1;
                 column = 1;
@@ -1528,6 +1530,10 @@ mod tests {
         assert_eq!(
             point_after(&Point::new(1, 2, 10), "\tX"),
             Point::new(1, 6, 12)
+        );
+        assert_eq!(
+            point_after(&Point::new(1, 1, 0), "A\r\nB\rC"),
+            Point::new(3, 2, 6)
         );
     }
 
