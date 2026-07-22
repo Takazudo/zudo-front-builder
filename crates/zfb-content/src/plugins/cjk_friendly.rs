@@ -649,37 +649,362 @@ pub fn is_cjk(c: char) -> bool {
     )
 }
 
-/// Approximate the CommonMark "Unicode punctuation" predicate.
-///
-/// CommonMark defines Unicode punctuation as Unicode classes
-/// `Pc`/`Pd`/`Pe`/`Pf`/`Pi`/`Po`/`Ps`/`Sc`/`Sk`/`Sm`/`So`. Pulling in
-/// `unicode_categories` for the full table would add a dependency for
-/// one predicate; we instead approximate with ASCII-punctuation +
-/// the CJK punctuation ranges we already classify above. That is
-/// sufficient for the CJK-friendly amendment because the only branch
-/// of `is_cjk_friendly_close` that consults this function is gated on
-/// `outer_is_cjk` — so we just need to recognise the classic problem
-/// punctuation (`。`, `、`, `：`, `；`, `！`, `？`, ASCII `. , : ; ! ?` ,
-/// fullwidth brackets, etc.), all of which are covered by ASCII
-/// punctuation OR our CJK ranges.
+/// CommonMark Unicode punctuation, including symbol categories, generated from
+/// the punctuation table shipped by the pinned markdown-rs parser. Keeping the
+/// classifications identical is important when deciding whether a delimiter is
+/// amendment-specific.
 fn is_unicode_punctuation(c: char) -> bool {
-    if c.is_ascii_punctuation() {
-        return true;
-    }
-    // CJK punctuation block (U+3000..U+303F) is partly inside our CJK
-    // ranges. Anything in the CJK range that is also a typical
-    // punctuation mark we treat as Unicode punctuation. Restrict the
-    // check to the well-known fullwidth-and-CJK punctuation blocks so
-    // we don't mis-classify ideographs.
     matches!(
         c as u32,
-        0x3000..=0x303F     // CJK Symbols and Punctuation
-            | 0xFF01..=0xFF0F  // Fullwidth ASCII punctuation (! .. /)
-            | 0xFF1A..=0xFF20  // (: .. @)
-            | 0xFF3B..=0xFF40  // ([ .. `)
-            | 0xFF5B..=0xFF65  // ({ .. ･)
-            | 0xFE30..=0xFE4F  // CJK Compatibility Forms
-            | 0xFE50..=0xFE6F  // Small Form Variants + half/full punctuation
+        0x21..=0x2F
+            | 0x3A..=0x40
+            | 0x5B..=0x60
+            | 0x7B..=0x7E
+            | 0xA1..=0xA9
+            | 0xAB..=0xAC
+            | 0xAE..=0xB1
+            | 0xB4
+            | 0xB6..=0xB8
+            | 0xBB
+            | 0xBF
+            | 0xD7
+            | 0xF7
+            | 0x2C2..=0x2C5
+            | 0x2D2..=0x2DF
+            | 0x2E5..=0x2EB
+            | 0x2ED
+            | 0x2EF..=0x2FF
+            | 0x375
+            | 0x37E
+            | 0x384..=0x385
+            | 0x387
+            | 0x3F6
+            | 0x482
+            | 0x55A..=0x55F
+            | 0x589..=0x58A
+            | 0x58D..=0x58F
+            | 0x5BE
+            | 0x5C0
+            | 0x5C3
+            | 0x5C6
+            | 0x5F3..=0x5F4
+            | 0x606..=0x60F
+            | 0x61B
+            | 0x61D..=0x61F
+            | 0x66A..=0x66D
+            | 0x6D4
+            | 0x6DE
+            | 0x6E9
+            | 0x6FD..=0x6FE
+            | 0x700..=0x70D
+            | 0x7F6..=0x7F9
+            | 0x7FE..=0x7FF
+            | 0x830..=0x83E
+            | 0x85E
+            | 0x888
+            | 0x964..=0x965
+            | 0x970
+            | 0x9F2..=0x9F3
+            | 0x9FA..=0x9FB
+            | 0x9FD
+            | 0xA76
+            | 0xAF0..=0xAF1
+            | 0xB70
+            | 0xBF3..=0xBFA
+            | 0xC77
+            | 0xC7F
+            | 0xC84
+            | 0xD4F
+            | 0xD79
+            | 0xDF4
+            | 0xE3F
+            | 0xE4F
+            | 0xE5A..=0xE5B
+            | 0xF01..=0xF17
+            | 0xF1A..=0xF1F
+            | 0xF34
+            | 0xF36
+            | 0xF38
+            | 0xF3A..=0xF3D
+            | 0xF85
+            | 0xFBE..=0xFC5
+            | 0xFC7..=0xFCC
+            | 0xFCE..=0xFDA
+            | 0x104A..=0x104F
+            | 0x109E..=0x109F
+            | 0x10FB
+            | 0x1360..=0x1368
+            | 0x1390..=0x1399
+            | 0x1400
+            | 0x166D..=0x166E
+            | 0x169B..=0x169C
+            | 0x16EB..=0x16ED
+            | 0x1735..=0x1736
+            | 0x17D4..=0x17D6
+            | 0x17D8..=0x17DB
+            | 0x1800..=0x180A
+            | 0x1940
+            | 0x1944..=0x1945
+            | 0x19DE..=0x19FF
+            | 0x1A1E..=0x1A1F
+            | 0x1AA0..=0x1AA6
+            | 0x1AA8..=0x1AAD
+            | 0x1B4E..=0x1B4F
+            | 0x1B5A..=0x1B6A
+            | 0x1B74..=0x1B7F
+            | 0x1BFC..=0x1BFF
+            | 0x1C3B..=0x1C3F
+            | 0x1C7E..=0x1C7F
+            | 0x1CC0..=0x1CC7
+            | 0x1CD3
+            | 0x1FBD
+            | 0x1FBF..=0x1FC1
+            | 0x1FCD..=0x1FCF
+            | 0x1FDD..=0x1FDF
+            | 0x1FED..=0x1FEF
+            | 0x1FFD..=0x1FFE
+            | 0x2010..=0x2027
+            | 0x2030..=0x205E
+            | 0x207A..=0x207E
+            | 0x208A..=0x208E
+            | 0x20A0..=0x20C0
+            | 0x2100..=0x2101
+            | 0x2103..=0x2106
+            | 0x2108..=0x2109
+            | 0x2114
+            | 0x2116..=0x2118
+            | 0x211E..=0x2123
+            | 0x2125
+            | 0x2127
+            | 0x2129
+            | 0x212E
+            | 0x213A..=0x213B
+            | 0x2140..=0x2144
+            | 0x214A..=0x214D
+            | 0x214F
+            | 0x218A..=0x218B
+            | 0x2190..=0x2429
+            | 0x2440..=0x244A
+            | 0x249C..=0x24E9
+            | 0x2500..=0x2775
+            | 0x2794..=0x2B73
+            | 0x2B76..=0x2B95
+            | 0x2B97..=0x2BFF
+            | 0x2CE5..=0x2CEA
+            | 0x2CF9..=0x2CFC
+            | 0x2CFE..=0x2CFF
+            | 0x2D70
+            | 0x2E00..=0x2E2E
+            | 0x2E30..=0x2E5D
+            | 0x2E80..=0x2E99
+            | 0x2E9B..=0x2EF3
+            | 0x2F00..=0x2FD5
+            | 0x2FF0..=0x2FFF
+            | 0x3001..=0x3004
+            | 0x3008..=0x3020
+            | 0x3030
+            | 0x3036..=0x3037
+            | 0x303D..=0x303F
+            | 0x309B..=0x309C
+            | 0x30A0
+            | 0x30FB
+            | 0x3190..=0x3191
+            | 0x3196..=0x319F
+            | 0x31C0..=0x31E5
+            | 0x31EF
+            | 0x3200..=0x321E
+            | 0x322A..=0x3247
+            | 0x3250
+            | 0x3260..=0x327F
+            | 0x328A..=0x32B0
+            | 0x32C0..=0x33FF
+            | 0x4DC0..=0x4DFF
+            | 0xA490..=0xA4C6
+            | 0xA4FE..=0xA4FF
+            | 0xA60D..=0xA60F
+            | 0xA673
+            | 0xA67E
+            | 0xA6F2..=0xA6F7
+            | 0xA700..=0xA716
+            | 0xA720..=0xA721
+            | 0xA789..=0xA78A
+            | 0xA828..=0xA82B
+            | 0xA836..=0xA839
+            | 0xA874..=0xA877
+            | 0xA8CE..=0xA8CF
+            | 0xA8F8..=0xA8FA
+            | 0xA8FC
+            | 0xA92E..=0xA92F
+            | 0xA95F
+            | 0xA9C1..=0xA9CD
+            | 0xA9DE..=0xA9DF
+            | 0xAA5C..=0xAA5F
+            | 0xAA77..=0xAA79
+            | 0xAADE..=0xAADF
+            | 0xAAF0..=0xAAF1
+            | 0xAB5B
+            | 0xAB6A..=0xAB6B
+            | 0xABEB
+            | 0xFB29
+            | 0xFBB2..=0xFBC2
+            | 0xFD3E..=0xFD4F
+            | 0xFDCF
+            | 0xFDFC..=0xFDFF
+            | 0xFE10..=0xFE19
+            | 0xFE30..=0xFE52
+            | 0xFE54..=0xFE66
+            | 0xFE68..=0xFE6B
+            | 0xFF01..=0xFF0F
+            | 0xFF1A..=0xFF20
+            | 0xFF3B..=0xFF40
+            | 0xFF5B..=0xFF65
+            | 0xFFE0..=0xFFE6
+            | 0xFFE8..=0xFFEE
+            | 0xFFFC..=0xFFFD
+            | 0x10100..=0x10102
+            | 0x10137..=0x1013F
+            | 0x10179..=0x10189
+            | 0x1018C..=0x1018E
+            | 0x10190..=0x1019C
+            | 0x101A0
+            | 0x101D0..=0x101FC
+            | 0x1039F
+            | 0x103D0
+            | 0x1056F
+            | 0x10857
+            | 0x10877..=0x10878
+            | 0x1091F
+            | 0x1093F
+            | 0x10A50..=0x10A58
+            | 0x10A7F
+            | 0x10AC8
+            | 0x10AF0..=0x10AF6
+            | 0x10B39..=0x10B3F
+            | 0x10B99..=0x10B9C
+            | 0x10D6E
+            | 0x10D8E..=0x10D8F
+            | 0x10EAD
+            | 0x10F55..=0x10F59
+            | 0x10F86..=0x10F89
+            | 0x11047..=0x1104D
+            | 0x110BB..=0x110BC
+            | 0x110BE..=0x110C1
+            | 0x11140..=0x11143
+            | 0x11174..=0x11175
+            | 0x111C5..=0x111C8
+            | 0x111CD
+            | 0x111DB
+            | 0x111DD..=0x111DF
+            | 0x11238..=0x1123D
+            | 0x112A9
+            | 0x113D4..=0x113D5
+            | 0x113D7..=0x113D8
+            | 0x1144B..=0x1144F
+            | 0x1145A..=0x1145B
+            | 0x1145D
+            | 0x114C6
+            | 0x115C1..=0x115D7
+            | 0x11641..=0x11643
+            | 0x11660..=0x1166C
+            | 0x116B9
+            | 0x1173C..=0x1173F
+            | 0x1183B
+            | 0x11944..=0x11946
+            | 0x119E2
+            | 0x11A3F..=0x11A46
+            | 0x11A9A..=0x11A9C
+            | 0x11A9E..=0x11AA2
+            | 0x11B00..=0x11B09
+            | 0x11BE1
+            | 0x11C41..=0x11C45
+            | 0x11C70..=0x11C71
+            | 0x11EF7..=0x11EF8
+            | 0x11F43..=0x11F4F
+            | 0x11FD5..=0x11FF1
+            | 0x11FFF
+            | 0x12470..=0x12474
+            | 0x12FF1..=0x12FF2
+            | 0x16A6E..=0x16A6F
+            | 0x16AF5
+            | 0x16B37..=0x16B3F
+            | 0x16B44..=0x16B45
+            | 0x16D6D..=0x16D6F
+            | 0x16E97..=0x16E9A
+            | 0x16FE2
+            | 0x1BC9C
+            | 0x1BC9F
+            | 0x1CC00..=0x1CCEF
+            | 0x1CD00..=0x1CEB3
+            | 0x1CF50..=0x1CFC3
+            | 0x1D000..=0x1D0F5
+            | 0x1D100..=0x1D126
+            | 0x1D129..=0x1D164
+            | 0x1D16A..=0x1D16C
+            | 0x1D183..=0x1D184
+            | 0x1D18C..=0x1D1A9
+            | 0x1D1AE..=0x1D1EA
+            | 0x1D200..=0x1D241
+            | 0x1D245
+            | 0x1D300..=0x1D356
+            | 0x1D6C1
+            | 0x1D6DB
+            | 0x1D6FB
+            | 0x1D715
+            | 0x1D735
+            | 0x1D74F
+            | 0x1D76F
+            | 0x1D789
+            | 0x1D7A9
+            | 0x1D7C3
+            | 0x1D800..=0x1D9FF
+            | 0x1DA37..=0x1DA3A
+            | 0x1DA6D..=0x1DA74
+            | 0x1DA76..=0x1DA83
+            | 0x1DA85..=0x1DA8B
+            | 0x1E14F
+            | 0x1E2FF
+            | 0x1E5FF
+            | 0x1E95E..=0x1E95F
+            | 0x1ECAC
+            | 0x1ECB0
+            | 0x1ED2E
+            | 0x1EEF0..=0x1EEF1
+            | 0x1F000..=0x1F02B
+            | 0x1F030..=0x1F093
+            | 0x1F0A0..=0x1F0AE
+            | 0x1F0B1..=0x1F0BF
+            | 0x1F0C1..=0x1F0CF
+            | 0x1F0D1..=0x1F0F5
+            | 0x1F10D..=0x1F1AD
+            | 0x1F1E6..=0x1F202
+            | 0x1F210..=0x1F23B
+            | 0x1F240..=0x1F248
+            | 0x1F250..=0x1F251
+            | 0x1F260..=0x1F265
+            | 0x1F300..=0x1F6D7
+            | 0x1F6DC..=0x1F6EC
+            | 0x1F6F0..=0x1F6FC
+            | 0x1F700..=0x1F776
+            | 0x1F77B..=0x1F7D9
+            | 0x1F7E0..=0x1F7EB
+            | 0x1F7F0
+            | 0x1F800..=0x1F80B
+            | 0x1F810..=0x1F847
+            | 0x1F850..=0x1F859
+            | 0x1F860..=0x1F887
+            | 0x1F890..=0x1F8AD
+            | 0x1F8B0..=0x1F8BB
+            | 0x1F8C0..=0x1F8C1
+            | 0x1F900..=0x1FA53
+            | 0x1FA60..=0x1FA6D
+            | 0x1FA70..=0x1FA7C
+            | 0x1FA80..=0x1FA89
+            | 0x1FA8F..=0x1FAC6
+            | 0x1FACE..=0x1FADC
+            | 0x1FADF..=0x1FAE9
+            | 0x1FAF0..=0x1FAF8
+            | 0x1FB00..=0x1FB92
+            | 0x1FB94..=0x1FBEF
     )
 }
 
@@ -881,7 +1206,7 @@ mod tests {
 
     #[test]
     fn multiple_movable_sibling_kinds_remain_nested_and_ordered() {
-        let input = "漢**[a](/a)![b](/b)[c][id]*d*~~e~~語** end\n\n[id]: /c\n";
+        let input = "漢**[a](/a)![b](/b)[c][id]![q][id]*d*~~e~~語** end\n\n[id]: /c\n";
         let mut mdast = markdown::to_mdast(input, &markdown::ParseOptions::gfm()).unwrap();
         CjkFriendlyPlugin::new().visit(&mut mdast);
         let children = first_paragraph_children(&mdast);
@@ -891,9 +1216,41 @@ mod tests {
         assert!(matches!(&repaired.children[0], MdastNode::Link(_)));
         assert!(matches!(&repaired.children[1], MdastNode::Image(_)));
         assert!(matches!(&repaired.children[2], MdastNode::LinkReference(_)));
-        assert!(matches!(&repaired.children[3], MdastNode::Emphasis(_)));
-        assert!(matches!(&repaired.children[4], MdastNode::Delete(_)));
-        assert!(matches!(&repaired.children[5], MdastNode::Text(t) if t.value == "語"));
+        assert!(matches!(
+            &repaired.children[3],
+            MdastNode::ImageReference(_)
+        ));
+        assert!(matches!(&repaired.children[4], MdastNode::Emphasis(_)));
+        assert!(matches!(&repaired.children[5], MdastNode::Delete(_)));
+        assert!(matches!(&repaired.children[6], MdastNode::Text(t) if t.value == "語"));
+    }
+
+    #[test]
+    fn existing_strong_moves_intact_under_repaired_wrapper() {
+        let input = "漢**[x](/x) **nested** 語.**漢";
+        let parsed = markdown::to_mdast(input, &markdown::ParseOptions::mdx()).unwrap();
+        let original = first_paragraph_children(&parsed)
+            .iter()
+            .find(|node| matches!(node, MdastNode::Strong(_)))
+            .expect("markdown-rs should parse the nested strong")
+            .clone();
+
+        let transformed = run(input);
+        let repaired = first_paragraph_children(&transformed)
+            .iter()
+            .find_map(|node| match node {
+                MdastNode::Strong(strong)
+                    if strong
+                        .children
+                        .iter()
+                        .any(|child| matches!(child, MdastNode::Link(_))) =>
+                {
+                    Some(strong)
+                }
+                _ => None,
+            })
+            .expect("expected repaired outer strong");
+        assert!(repaired.children.iter().any(|node| node == &original));
     }
 
     #[test]
@@ -996,6 +1353,33 @@ mod tests {
     }
 
     #[test]
+    fn parsed_movable_nodes_use_source_punctuation_not_visible_text() {
+        let parsed = markdown::to_mdast(
+            "[link](/u) ![image](/u) [reference][id] ![image-ref][id] *em* **strong** ~~delete~~\n\n[id]: /u",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        let punctuation = Some((Boundary::NonCjkPunctuation, Boundary::NonCjkPunctuation));
+        let mut seen = [false; 7];
+        for child in first_paragraph_children(&parsed) {
+            let index = match child {
+                MdastNode::Link(_) => 0,
+                MdastNode::Image(_) => 1,
+                MdastNode::LinkReference(_) => 2,
+                MdastNode::ImageReference(_) => 3,
+                MdastNode::Emphasis(_) => 4,
+                MdastNode::Strong(_) => 5,
+                MdastNode::Delete(_) => 6,
+                _ => continue,
+            };
+            seen[index] = true;
+            assert_eq!(source_boundaries(child), punctuation, "{child:#?}");
+            assert!(is_movable(child));
+        }
+        assert_eq!(seen, [true; 7]);
+    }
+
+    #[test]
     fn source_punctuation_not_visible_link_text_drives_opener() {
         let bracket = run("漢**[ascii](/x)語** end");
         assert!(matches!(
@@ -1045,6 +1429,12 @@ mod tests {
     fn amended_opener_in_one_text_node_is_preserved() {
         let h = run("これは**「重要」** end");
         assert_eq!(dump(&h), "これは[STRONG:「重要」] end");
+    }
+
+    #[test]
+    fn amendment_uses_full_commonmark_unicode_punctuation() {
+        let h = run("漢**©thing** end");
+        assert_eq!(dump(&h), "漢[STRONG:©thing] end");
     }
 
     #[test]
