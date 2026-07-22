@@ -401,9 +401,8 @@ fn contract_shape_mdx_nodes_and_stops_are_shifted() {
 
 #[test]
 fn contract_shape_directive_and_alert_text_stays_raw() {
-    // `:::note` directives and `> [!NOTE]` alerts are zfb VISITOR features.
-    // The locked contract is RAW parser mdast (pre-visitors), so both must
-    // come back as plain markdown shapes — no custom/synthesized nodes.
+    // Directives are opt-in on the raw tier. With `directives` absent (the
+    // default), directive-looking input and alerts remain plain markdown.
     let source = ":::note\ndirective body\n:::\n\n> [!NOTE]\n> alert body\n";
     let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
     assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
@@ -425,6 +424,163 @@ fn contract_shape_directive_and_alert_text_stays_raw() {
             .unwrap()
             .starts_with("[!NOTE]"),
         "alert marker text survives verbatim: {quoted_text:?}"
+    );
+}
+
+fn utf16_slice(source: &str, start: usize, end: usize) -> String {
+    String::from_utf16(&source.encode_utf16().collect::<Vec<_>>()[start..end])
+        .expect("node positions never split a UTF-16 surrogate pair")
+}
+
+fn assert_directive_subtree_slices(node: &Value, source: &str, parent: Option<(usize, usize)>) {
+    let start = node["position"]["start"]["offset"].as_u64().unwrap() as usize;
+    let end = node["position"]["end"]["offset"].as_u64().unwrap() as usize;
+    assert!(start <= end, "ordered span for {}", node["type"]);
+    if let Some((parent_start, parent_end)) = parent {
+        assert!(
+            parent_start <= start && end <= parent_end,
+            "{} span is contained by its directive parent",
+            node["type"]
+        );
+    }
+    let slice = utf16_slice(source, start, end);
+    if node["type"] == "text" {
+        assert_eq!(slice, node["value"], "text span slices original source");
+    } else {
+        assert!(
+            !slice.is_empty(),
+            "{} has a concrete source slice",
+            node["type"]
+        );
+    }
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            assert_directive_subtree_slices(child, source, Some((start, end)));
+        }
+    }
+}
+
+fn collect_nodes_of_type<'a>(value: &'a Value, node_type: &str, found: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some(node_type) {
+                found.push(value);
+            }
+            for nested in map.values() {
+                collect_nodes_of_type(nested, node_type, found);
+            }
+        }
+        Value::Array(items) => {
+            for nested in items {
+                collect_nodes_of_type(nested, node_type, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn directives_are_opt_in_and_emit_generic_nodes_in_both_dialects() {
+    for slug in ["directives-markdown-lf", "directives-mdx-crlf"] {
+        let fixture = load_fixture(slug);
+        let enabled_options = serde_json::to_string(&fixture.options).unwrap();
+        let enabled = parse(zfb_md_wasm::parse_to_ast(&fixture.source, &enabled_options));
+        assert_eq!(enabled["diagnostics"], serde_json::json!([]), "{slug}");
+        assert!(count_nodes_of_type(&enabled["ast"], "containerDirective") > 0);
+        assert!(count_nodes_of_type(&enabled["ast"], "textDirective") > 0);
+
+        let mut directives = Vec::new();
+        for kind in ["containerDirective", "leafDirective", "textDirective"] {
+            collect_nodes_of_type(&enabled["ast"], kind, &mut directives);
+        }
+        for directive in directives {
+            assert!(directive["name"].is_string());
+            assert!(directive["attributes"].is_object());
+            assert!(directive["children"].is_array());
+            assert_directive_subtree_slices(directive, &fixture.source, None);
+        }
+
+        let disabled_options = serde_json::json!({
+            "filename": fixture.options["filename"],
+            "directives": false
+        });
+        let disabled = parse(zfb_md_wasm::parse_to_ast(
+            &fixture.source,
+            &serde_json::to_string(&disabled_options).unwrap(),
+        ));
+        for kind in ["containerDirective", "leafDirective", "textDirective"] {
+            assert_eq!(
+                count_nodes_of_type(&disabled["ast"], kind),
+                0,
+                "{slug}: {kind}"
+            );
+        }
+    }
+}
+
+#[test]
+fn directive_labels_attributes_nesting_and_malformed_recovery_are_pinned() {
+    let fixture = load_fixture("directives-markdown-lf");
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        &fixture.source,
+        &serde_json::to_string(&fixture.options).unwrap(),
+    ));
+    let outer = &out["ast"]["children"][0];
+    assert_eq!(outer["type"], "containerDirective");
+    assert_eq!(outer["name"], "outer");
+    assert_eq!(outer["attributes"]["id"], "hero");
+    assert_eq!(outer["attributes"]["class"], "wide");
+    assert_eq!(outer["attributes"]["disabled"], "");
+    assert_eq!(outer["attributes"]["key"], "a&b");
+    assert_eq!(outer["children"][0]["data"]["directiveLabel"], true);
+    assert_eq!(count_nodes_of_type(outer, "containerDirective"), 2);
+    assert_eq!(count_nodes_of_type(outer, "leafDirective"), 1);
+    assert_eq!(count_nodes_of_type(outer, "textDirective"), 1);
+
+    let malformed = load_fixture("directives-malformed-literal");
+    let recovered = parse(zfb_md_wasm::parse_to_ast(
+        &malformed.source,
+        &serde_json::to_string(&malformed.options).unwrap(),
+    ));
+    assert_eq!(recovered["diagnostics"], serde_json::json!([]));
+    for kind in ["containerDirective", "leafDirective", "textDirective"] {
+        assert_eq!(count_nodes_of_type(&recovered["ast"], kind), 0);
+    }
+    assert!(serde_json::to_string(&recovered["ast"])
+        .unwrap()
+        .contains(":::bad trailing"));
+}
+
+#[test]
+fn mdx_expression_stops_inside_directives_preserve_relative_and_absolute_coordinates() {
+    let source = "---\ntitle: Stops\n---\n:::note\n{40 + 2}\n\n<Card count={2 + 3} />\n:::\n";
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        source,
+        r#"{"filename":"stops.mdx","directives":true}"#,
+    ));
+    assert_eq!(out["diagnostics"], serde_json::json!([]));
+    let mut expressions = Vec::new();
+    collect_nodes_of_type(&out["ast"], "mdxFlowExpression", &mut expressions);
+    assert_eq!(expressions.len(), 1);
+    let stops = expressions[0]["_markdownRsStops"].as_array().unwrap();
+    assert_eq!(stops[0][0], 0, "index remains relative to expression value");
+    assert_eq!(
+        stops[0][1].as_u64(),
+        Some(source.find("40 + 2").unwrap() as u64),
+        "absolute byte offset indexes the full original source"
+    );
+
+    let mut elements = Vec::new();
+    collect_nodes_of_type(&out["ast"], "mdxJsxFlowElement", &mut elements);
+    assert_eq!(elements.len(), 1);
+    let attribute_stops = elements[0]["attributes"][0]["value"]["_markdownRsStops"]
+        .as_array()
+        .unwrap();
+    assert_eq!(attribute_stops[0][0], 0);
+    assert_eq!(
+        attribute_stops[0][1].as_u64(),
+        Some(source.find("2 + 3").unwrap() as u64),
+        "nested JSX attribute stop indexes the full original source"
     );
 }
 
@@ -592,6 +748,8 @@ fn parse_options_are_closed_non_null_and_fail_before_source_processing() {
         r#"{"filename":null}"#,
         r#"{"dialect":null}"#,
         r#"{"dialect":"commonmark"}"#,
+        r#"{"directives":null}"#,
+        r#"{"directives":"yes"}"#,
         r#"{"filename":"post.MD"}"#,
         r#"{"filename":"post.txt","dialect":"markdown"}"#,
         r#"{"jsxRuntime":"react"}"#,
@@ -608,19 +766,25 @@ fn parse_options_are_closed_non_null_and_fail_before_source_processing() {
 }
 
 #[test]
-fn compile_and_render_html_reject_parse_only_dialect_key() {
-    for result in [
-        parse(zfb_md_wasm::compile(
-            "# ok\n",
-            r#"{"filename":"post.mdx","dialect":"mdx"}"#,
-        )),
-        parse(zfb_md_wasm::render_html(
-            "# ok\n",
-            r#"{"filename":"post.md","dialect":"markdown"}"#,
-        )),
+fn compile_and_render_html_reject_parse_only_keys() {
+    for key in [
+        r#""dialect":"mdx""#,
+        r#""directives":true"#,
+        r#""frontmatter":"extract""#,
     ] {
-        assert_eq!(result["diagnostics"].as_array().unwrap().len(), 1);
-        assert_eq!(result["diagnostics"][0]["source"], "options");
+        for result in [
+            parse(zfb_md_wasm::compile(
+                "# ok\n",
+                &format!(r#"{{"filename":"post.mdx",{key}}}"#),
+            )),
+            parse(zfb_md_wasm::render_html(
+                "# ok\n",
+                &format!(r#"{{"filename":"post.md",{key}}}"#),
+            )),
+        ] {
+            assert_eq!(result["diagnostics"].as_array().unwrap().len(), 1, "{key}");
+            assert_eq!(result["diagnostics"][0]["source"], "options", "{key}");
+        }
     }
 }
 

@@ -178,9 +178,10 @@ and can produce normal class markup without a diagnostic.
 
 ## `parseToAst(source, options?)` — markdown/MDX → raw mdast
 
-`parseToAst()` parses markdown/MDX source into a serialized **mdast**
-tree — the raw markdown-rs parser output, before any of zfb's own visitors
-run. Use it when a consumer needs the *tree*, not rendered output: a live
+`parseToAst()` parses markdown/MDX source into a serialized **mdast** tree —
+raw markdown-rs output converted into an open carrier that can optionally
+hold generic directive nodes, before any zfb visitor runs. Use it when a
+consumer needs the *tree*, not rendered output: a live
 preview that wants remark/unist-ecosystem tooling (`mdast-util-to-hast`, a
 custom mdast transform, editor↔preview scroll sync keyed on source
 positions) instead of zfb's own HTML/JS rendering.
@@ -203,6 +204,7 @@ const { ast, frontmatter, diagnostics }: ParseToAstResult = await parseToAst(
 interface ParseToAstOptions {
   filename?: string; // lowercase .md/.mdx only; default <anonymous>.mdx
   dialect?: "markdown" | "mdx";
+  directives?: boolean; // default false
   pipeline?: {
     gfm?: {
       strikethrough?: boolean; // default true
@@ -214,6 +216,16 @@ interface ParseToAstOptions {
   };
 }
 ```
+
+With `directives: true`, generic remark-directive syntax is parsed before any
+zfb visitor can run. The raw tree can contain `containerDirective`,
+`leafDirective`, and `textDirective` nodes with `name`, always-present
+`attributes`, `children`, and `position`. Container labels are paragraph
+children carrying `data: { directiveLabel: true }`. Boolean attributes use
+the empty string. No directive registry, component mapping, or expansion is
+applied. With the option absent or false, directive-looking source remains
+the same literal paragraph/MDX-expression output as before and incurs no
+directive parse pass.
 
 Without `dialect`, a `.md` filename selects Markdown/CommonMark and `.mdx`
 selects MDX. Omitting `filename` uses `<anonymous>.mdx`, so the default is

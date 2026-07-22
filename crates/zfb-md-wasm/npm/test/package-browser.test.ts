@@ -189,9 +189,15 @@ describe("packed browser conditional entry", () => {
       // proves the raw-mdast export survives the esbuild `file`-loader
       // resource graph and glue wiring exercised above, not just the
       // already-covered highlightCode path.
-      const parsed = await bundled.parseToAst("# hi\n", { filename: "post.mdx" });
+      const parsed = await bundled.parseToAst(":::note[Hi]\nBody :mark[here].\n:::\n", {
+        filename: "post.mdx",
+        directives: true,
+      });
       expect(parsed.diagnostics).toEqual([]);
-      expect(parsed.ast).toMatchObject({ type: "root" });
+      expect(parsed.ast).toMatchObject({
+        type: "root",
+        children: [{ type: "containerDirective", name: "note" }],
+      });
       expect(after.currentGeneration).toBe(before.currentGeneration + 1);
       expect(after.trapRecoveriesStarted).toBe(before.trapRecoveriesStarted + 1);
       expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 3);

@@ -63,7 +63,8 @@
 //! verbatim — see that type's rustdoc for the authoritative shape.
 //! Unknown fields are rejected at both levels (`deny_unknown_fields`).
 //! [`parse_to_ast`] instead accepts a distinct closed document containing
-//! `filename`, `dialect` (`"markdown"` or `"mdx"`), and `pipeline.gfm`.
+//! `filename`, `dialect` (`"markdown"` or `"mdx"`), `directives`, and
+//! `pipeline.gfm`.
 //! Its absent filename defaults to `<anonymous>.mdx`; absent dialect is
 //! inferred as Markdown for `.md` and MDX for `.mdx`, while an explicit
 //! dialect overrides either valid extension.
@@ -107,7 +108,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 #[cfg(feature = "pipeline")]
-use zfb_content::facade::{self, GfmOptions, ParseDialect, ParseMdastOptions, PipelineOptions};
+use zfb_content::facade::{
+    self, GfmOptions, InteropMdastNode, ParseDialect, ParseMdastOptions, PipelineOptions,
+};
 #[cfg(feature = "pipeline")]
 use zfb_content::frontmatter::{extract_from_filename, FrontmatterError};
 #[cfg(feature = "pipeline")]
@@ -176,6 +179,7 @@ struct ParseToAstOptions {
     filename: Option<String>,
     #[serde(default, deserialize_with = "deserialize_present_non_null")]
     dialect: Option<ParseDialect>,
+    directives: bool,
     pipeline: ParsePipelineOptions,
 }
 
@@ -280,18 +284,54 @@ struct RenderHtmlResult {
 
 /// Result document of [`parse_to_ast`].
 ///
-/// `ast` is the RAW markdown-rs mdast tree serialized via markdown-rs's own
-/// `serde` feature (unist-shaped: `type` tag, camelCase, `position` omitted
-/// when absent), post-frontmatter-strip, PRE-zfb-visitors — with every
-/// `position` shifted back into original-source coordinates (lines by the
-/// frontmatter's line count, offsets/columns in UTF-16 code units — see
-/// [`parse_to_ast`]'s docs for the full contract).
+/// `ast` is the RAW mdast tree: markdown-rs nodes converted through its own
+/// serde output into an open recursive carrier, optionally composed with the
+/// three generic directive node kinds, post-frontmatter-strip and
+/// PRE-zfb-visitors. Every `position` is shifted back into original-source
+/// coordinates (lines plus UTF-16 offsets/columns — see [`parse_to_ast`]).
 #[cfg(feature = "pipeline")]
 #[derive(Debug, Serialize)]
 struct ParseToAstResult {
-    ast: Option<markdown::mdast::Node>,
+    ast: Option<InteropMdastNode>,
     frontmatter: JsonValue,
     diagnostics: Vec<Diagnostic>,
+}
+
+/// Source view selected for the raw parser plus the one coordinate anchor
+/// needed to map its byte positions back to the complete original source.
+///
+/// This issue exposes only extraction mode, but keeping selection and
+/// position anchoring behind this carrier leaves the `node`/`none` policies
+/// owned by the next frontmatter wave without baking stripped-body
+/// assumptions into directive serialization.
+#[cfg(feature = "pipeline")]
+struct SelectedParseSource {
+    frontmatter: JsonValue,
+    body: String,
+    body_offset: usize,
+}
+
+#[cfg(feature = "pipeline")]
+fn select_parse_source(
+    filename: &str,
+    source: &str,
+) -> Result<SelectedParseSource, (JsonValue, Diagnostic)> {
+    let extracted = extract_from_filename(filename, source)
+        .map_err(|error| (JsonValue::Null, frontmatter_diagnostic(&error)))?;
+    let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
+        return Err((
+            JsonValue::Null,
+            Diagnostic::error(
+                "options",
+                format!("filename `{filename}` did not resolve to a markdown body"),
+            ),
+        ));
+    };
+    Ok(SelectedParseSource {
+        frontmatter: extracted.value,
+        body,
+        body_offset,
+    })
 }
 
 /// Result document of [`highlight_code`]. Unlike the Markdown APIs, direct
@@ -779,45 +819,6 @@ impl Utf16Positions {
     }
 }
 
-/// Shift markdown-rs `Stop` pairs (`(index_in_value, absolute_source_offset)`
-/// — see `markdown::mdast::Stop`) by the body byte offset. The second tuple
-/// element is an absolute source offset (markdown-rs uses it in
-/// `Location::relative_to_point` for expression re-parsing), so it must move
-/// with `position.*.offset` or the serialized `_markdownRsStops` field would
-/// disagree with the shifted positions beside it.
-///
-/// Deliberately NOT UTF-16-converted: `_markdownRsStops` is
-/// markdown-rs-internal re-parse bookkeeping (underscore-prefixed on
-/// purpose), documented as internal/unstable/BYTE-based in
-/// [`parse_to_ast`]'s docs and in the npm package's `types.ts` — never slice
-/// a string with it.
-#[cfg(feature = "pipeline")]
-fn shift_stops(stops: &mut [markdown::mdast::Stop], offset_delta: usize) {
-    for stop in stops {
-        stop.1 += offset_delta;
-    }
-}
-
-#[cfg(feature = "pipeline")]
-fn shift_attribute_stops(
-    attributes: &mut [markdown::mdast::AttributeContent],
-    offset_delta: usize,
-) {
-    use markdown::mdast::{AttributeContent, AttributeValue};
-    for attribute in attributes {
-        match attribute {
-            AttributeContent::Expression(expression) => {
-                shift_stops(&mut expression.stops, offset_delta);
-            }
-            AttributeContent::Property(property) => {
-                if let Some(AttributeValue::Expression(expression)) = &mut property.value {
-                    shift_stops(&mut expression.stops, offset_delta);
-                }
-            }
-        }
-    }
-}
-
 /// Recursively transform every node's `position` (and every embedded stop
 /// list) from body-relative markdown-rs output into the export's final
 /// contract: original-source coordinates (via `shift`), UTF-16 code-unit
@@ -827,31 +828,56 @@ fn shift_attribute_stops(
 /// by design). Recursion depth equals mdast nesting depth — the same bound
 /// `Pipeline`'s own visitors already accept for this input.
 #[cfg(feature = "pipeline")]
-fn shift_mdast_positions(
-    node: &mut markdown::mdast::Node,
+fn shift_interop_positions(
+    node: &mut InteropMdastNode,
     shift: PositionShift,
     utf16: &Utf16Positions,
 ) {
-    use markdown::mdast::Node;
-    if let Some(position) = node.position_mut() {
-        shift.apply(&mut position.start);
-        shift.apply(&mut position.end);
-        utf16.apply(&mut position.start);
-        utf16.apply(&mut position.end);
-    }
-    let offset_delta = shift.offset_delta;
-    match node {
-        Node::MdxjsEsm(x) => shift_stops(&mut x.stops, offset_delta),
-        Node::MdxFlowExpression(x) => shift_stops(&mut x.stops, offset_delta),
-        Node::MdxTextExpression(x) => shift_stops(&mut x.stops, offset_delta),
-        Node::MdxJsxFlowElement(x) => shift_attribute_stops(&mut x.attributes, offset_delta),
-        Node::MdxJsxTextElement(x) => shift_attribute_stops(&mut x.attributes, offset_delta),
-        _ => {}
-    }
-    if let Some(children) = node.children_mut() {
+    shift.apply(&mut node.position.start);
+    shift.apply(&mut node.position.end);
+    utf16.apply(&mut node.position.start);
+    utf16.apply(&mut node.position.end);
+    shift_json_stops(&mut node.fields, shift.offset_delta);
+    if let Some(children) = node.children.as_mut() {
         for child in children {
-            shift_mdast_positions(child, shift, utf16);
+            shift_interop_positions(child, shift, utf16);
         }
+    }
+}
+
+/// Shift markdown-rs stop lists wherever the closed-node serde output placed
+/// them (node fields or nested MDX JSX attribute records). The first tuple
+/// member indexes the expression value and stays relative; only the absolute
+/// source-byte offset moves. Stops deliberately remain UTF-8 byte based.
+#[cfg(feature = "pipeline")]
+fn shift_json_stops(fields: &mut BTreeMap<String, JsonValue>, offset_delta: usize) {
+    fn visit(value: &mut JsonValue, key: Option<&str>, offset_delta: usize) {
+        match value {
+            JsonValue::Array(items) if key == Some("_markdownRsStops") => {
+                for item in items {
+                    if let Some(pair) = item.as_array_mut() {
+                        if let Some(absolute) = pair.get(1).and_then(JsonValue::as_u64) {
+                            pair[1] = JsonValue::from(absolute + offset_delta as u64);
+                        }
+                    }
+                }
+            }
+            JsonValue::Array(items) => {
+                for item in items {
+                    visit(item, None, offset_delta);
+                }
+            }
+            JsonValue::Object(map) => {
+                for (nested_key, nested) in map {
+                    visit(nested, Some(nested_key), offset_delta);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for (key, value) in fields {
+        visit(value, Some(key), offset_delta);
     }
 }
 
@@ -909,28 +935,23 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
     };
     let dialect = opts.dialect.unwrap_or(inferred_dialect);
 
-    let extracted = match extract_from_filename(&filename, source) {
-        Ok(uf) => uf,
-        Err(e) => return fail(JsonValue::Null, frontmatter_diagnostic(&e)),
+    let SelectedParseSource {
+        frontmatter,
+        body,
+        body_offset,
+    } = match select_parse_source(&filename, source) {
+        Ok(selected) => selected,
+        Err((frontmatter, diagnostic)) => return fail(frontmatter, diagnostic),
     };
-    let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
-        // Unreachable after the extension gate above — kept as a diagnostic
-        // rather than a panic per the wasm trap contract (same as `prepare`).
-        let diag = Diagnostic::error(
-            "options",
-            format!("filename `{filename}` did not resolve to a markdown body"),
-        );
-        return fail(JsonValue::Null, diag);
-    };
-    let frontmatter = extracted.value;
     let shift = PositionShift::for_body_at(source, body_offset);
 
-    let mut ast = match facade::parse_mdast(
+    let mut ast = match facade::parse_interop_mdast(
         ParseMdastOptions {
             dialect,
             gfm: opts.pipeline.gfm,
         },
         &body,
+        opts.directives,
     ) {
         Ok(ast) => ast,
         Err(e) => {
@@ -942,7 +963,7 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
     // shift above already moved every position into original-source byte
     // coordinates, so the UTF-16 prefix map must be indexed the same way.
     let utf16 = Utf16Positions::for_source(source);
-    shift_mdast_positions(&mut ast, shift, &utf16);
+    shift_interop_positions(&mut ast, shift, &utf16);
 
     ParseToAstResult {
         ast: Some(ast),
@@ -1063,15 +1084,18 @@ pub fn render_html(source: &str, options_json: &str) -> String {
 /// Exported to JS as `parseToAst`.
 ///
 /// Returns a JSON string: `{ "ast": mdast|null, "frontmatter": json,
-/// "diagnostics": Diagnostic[] }`. The tree is the raw markdown-rs parser
-/// output (post-frontmatter-strip, PRE-zfb-visitors — mdast, not hast, and
+/// "diagnostics": Diagnostic[] }`. The tree is raw markdown-rs parser output
+/// converted through its serde shape into an open carrier, optionally
+/// composed with generic directives (post-frontmatter-strip,
+/// PRE-zfb-visitors — mdast, not hast, and
 /// unrecognized/custom constructs such as MDX JSX elements survive as typed
 /// nodes rather than being dropped), serialized in the unist shape via
 /// markdown-rs's `serde` feature, with every `position` shifted back into
-/// original-source coordinates (see [`shift_mdast_positions`]). Its distinct
-/// closed options document accepts only `filename`, `dialect`, and
-/// `pipeline.gfm`; compile/visitor/serializer knobs are rejected rather than
-/// silently ignored. A missing filename defaults to `<anonymous>.mdx`.
+/// original-source coordinates (see [`shift_interop_positions`]). Its
+/// distinct closed options document accepts only `filename`, `dialect`,
+/// `directives`, and `pipeline.gfm`; compile/visitor/serializer knobs are
+/// rejected rather than silently ignored. A missing filename defaults to
+/// `<anonymous>.mdx`.
 /// Otherwise `.md` infers Markdown and `.mdx` infers MDX; an explicit dialect
 /// overrides either valid extension without waiving the extension gate.
 ///

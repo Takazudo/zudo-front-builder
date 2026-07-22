@@ -29,6 +29,21 @@
       "slug": "mdx-dialect",
       "source": "# MDX dialect 😀\n\n<Card label=\"x\" count={2 + 3}>\nNested *content* and {6 * 7}.\n</Card>\n",
       "options": { "filename": "component.mdx" }
+    },
+    {
+      "slug": "directives-markdown-lf",
+      "source": "---\ntitle: Directive positions\n---\n:::outer[ラベル 😀]{#hero .wide disabled key=\"a&amp;b\"}\nBefore :badge[内側 🎉]{tone=warm compact}.\n\n::leaf[葉]{flag}\n\n:::inner\nNested **content**.\n:::\n:::\n",
+      "options": { "filename": "directives.md", "directives": true }
+    },
+    {
+      "slug": "directives-mdx-crlf",
+      "source": "---\r\ntitle: CRLF directive\r\n---\r\n:::note[見出し 🚀]{kind=info}\r\nMDX body with :mark[印 😀]{active}.\r\n:::\r\n",
+      "options": { "filename": "directives.mdx", "directives": true }
+    },
+    {
+      "slug": "directives-malformed-literal",
+      "source": "Before\n\n:::bad trailing\nbody\n:::\n\n::a[x] nope\n",
+      "options": { "filename": "malformed.md", "directives": true }
     }
   ]
 }
