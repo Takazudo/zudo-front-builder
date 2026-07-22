@@ -714,3 +714,168 @@ export default function GeneratedNestedRoute() {
     )
     .expect("write home page");
 }
+
+/// Issue #1905's command-layer counterpart to the real-esbuild/metafile
+/// confirmation: keep the package-owned route overlay, workspace-root alias,
+/// and public package-name sibling import in one serialized `zfb build`.
+/// The lower-level test owns the full 17-input metafile shape; this fixture
+/// proves the same three classes reach fresh rendered output through V8.
+fn write_combined_stage_escape_consumer_fixture(workspace: &Path) -> PathBuf {
+    fs::write(
+        workspace.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+    )
+    .expect("write workspace manifest");
+    fs::write(
+        workspace.join("package.json"),
+        r#"{ "name": "combined-workspace-root", "private": true }"#,
+    )
+    .expect("write workspace package manifest");
+    materialize_embedded_node_modules(workspace);
+
+    let root = workspace.join("sub-packages/host");
+    fs::create_dir_all(&root).expect("create nested host");
+    write_project_local_generated_routes_fixture(&root);
+    fs::write(
+        root.join("package.json"),
+        r#"{
+  "name": "combined-host",
+  "private": true,
+  "dependencies": { "@acme/ui-preact": "workspace:*" }
+}"#,
+    )
+    .expect("write host package manifest");
+    fs::write(
+        root.join("tsconfig.json"),
+        r#"{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["../../*"],
+      "@components/*": ["../../components/*"]
+    }
+  }
+}"#,
+    )
+    .expect("write host aliases");
+    fs::write(
+        root.join(".gitignore"),
+        ".zudo-doc/\ncomponents/generated/\n",
+    )
+    .expect("write combined ignore rules");
+
+    let components = workspace.join("components");
+    fs::create_dir_all(components.join("generated")).expect("create root generated directory");
+    fs::write(
+        components.join("generated/root-data.json"),
+        r#"{ "value": "COMMAND_ROOT_JSON_MARKER" }"#,
+    )
+    .expect("write root JSON");
+    fs::write(
+        components.join("generated/root-card.module.css"),
+        ".root { color: #123abc; } /* COMMAND_ROOT_CSS_MARKER */\n",
+    )
+    .expect("write root CSS module");
+    fs::write(
+        components.join("root-card.tsx"),
+        r#"import data from "@/components/generated/root-data.json";
+import styles from "./generated/root-card.module.css";
+
+export function RootCard() {
+  return <section class={styles.root}>COMMAND_ROOT_ALIAS_MARKER:{data.value}</section>;
+}
+"#,
+    )
+    .expect("write root alias component");
+
+    let ui = workspace.join("sub-packages/ui-preact");
+    fs::create_dir_all(ui.join("src/code")).expect("create package source directory");
+    fs::write(
+        ui.join("package.json"),
+        r#"{
+  "name": "@acme/ui-preact",
+  "exports": { "./code": "./src/code/code.tsx" }
+}"#,
+    )
+    .expect("write sibling package manifest");
+    fs::write(
+        ui.join("src/code/code.tsx"),
+        r#"export const packageMarker = "COMMAND_PACKAGE_SOURCE_MARKER";
+"#,
+    )
+    .expect("write sibling package source");
+    fs::create_dir_all(workspace.join("node_modules/@acme"))
+        .expect("create scoped hoisted node_modules directory");
+    std::os::unix::fs::symlink(&ui, workspace.join("node_modules/@acme/ui-preact"))
+        .expect("link declared workspace package into hoisted install");
+
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"import { RootCard } from "@components/root-card";
+import { packageMarker } from "@acme/ui-preact/code";
+
+export default function Home() {
+  return <main><RootCard />:{packageMarker}</main>;
+}
+"#,
+    )
+    .expect("write combined host page");
+    root
+}
+
+#[test]
+fn combined_stage_escape_consumer_build_renders_routes_root_alias_and_package_source() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[combined_stage_escape_consumer] no esbuild; skipping.");
+        return;
+    };
+    if !node_available() {
+        eprintln!("[combined_stage_escape_consumer] node not on PATH; skipping.");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = write_combined_stage_escape_consumer_fixture(tmp.path());
+    let Some(dist) = build_and_collect(&root, &esbuild, "combined_stage_escape_consumer") else {
+        return;
+    };
+
+    let home = fs::read_to_string(root.join("dist/index.html")).expect("read rendered home page");
+    for marker in [
+        "COMMAND_ROOT_ALIAS_MARKER",
+        "COMMAND_ROOT_JSON_MARKER",
+        "COMMAND_PACKAGE_SOURCE_MARKER",
+    ] {
+        assert!(
+            home.contains(marker),
+            "the serialized command build must render {marker}; got: {home}"
+        );
+    }
+    for route in [
+        "robots",
+        "not-found",
+        "chrome",
+        "context",
+        "sitemap",
+        "nested/reference",
+    ] {
+        let page = root.join("dist/generated").join(route).join("index.html");
+        let body = fs::read_to_string(&page).expect("read rendered generated route");
+        assert!(
+            body.contains(&format!("PROJECT_LOCAL_ROUTE_{route}_PROJECT_LOCAL_SHARED_MARKER_FRESH")),
+            "the serialized command build must render generated route `{route}` from staged source; dist: {dist:#?}"
+        );
+    }
+    let dynamic = fs::read_to_string(root.join("dist/generated/docs/from-stage/index.html"))
+        .expect("read rendered generated dynamic route");
+    assert!(
+        dynamic.contains("PROJECT_LOCAL_ROUTE_docs-from-stage_PROJECT_LOCAL_SHARED_MARKER_FRESH"),
+        "the serialized command build must render the staged dynamic generated route"
+    );
+
+    let styles = collect_all_files(&root.join("dist/assets"));
+    assert!(
+        styles.values().any(|bytes| String::from_utf8_lossy(bytes).contains("123abc")),
+        "the established emitted CSS artifact must contain the root-alias CSS marker; assets: {styles:#?}"
+    );
+}
