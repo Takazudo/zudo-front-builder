@@ -4535,6 +4535,22 @@ fn canonical_runtime_alias_path(
     Some(normalize_path_lexical(&workspace_root.join(relative)))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeAliasClaimMode {
+    Standard,
+    ExactNonSourceLeaf,
+}
+
+impl RuntimeAliasClaimMode {
+    fn for_runtime_target(path: &Path) -> Self {
+        if raw_source_extension(path) {
+            Self::Standard
+        } else {
+            Self::ExactNonSourceLeaf
+        }
+    }
+}
+
 fn runtime_alias_path_is_claimable(
     path: &Path,
     canonical_workspace_root: &Path,
@@ -4542,7 +4558,7 @@ fn runtime_alias_path_is_claimable(
     project_root: &Path,
     root_package_claimed: bool,
     bundle_exclude: &BundleExcludeMatcher,
-    exact_runtime_leaf: bool,
+    claim_mode: RuntimeAliasClaimMode,
 ) -> Result<bool> {
     if !path.starts_with(workspace_root)
         || !runtime_alias_claim_is_allowed(
@@ -4550,7 +4566,7 @@ fn runtime_alias_path_is_claimable(
             workspace_root,
             project_root,
             bundle_exclude,
-            exact_runtime_leaf,
+            claim_mode,
         )?
     {
         return Ok(false);
@@ -4566,7 +4582,7 @@ fn runtime_alias_path_is_claimable(
             workspace_root,
             project_root,
             bundle_exclude,
-            exact_runtime_leaf,
+            claim_mode,
         )?
     {
         return Ok(false);
@@ -4592,7 +4608,7 @@ fn runtime_alias_claim_is_allowed(
     workspace_root: &Path,
     project_root: &Path,
     bundle_exclude: &BundleExcludeMatcher,
-    exact_runtime_leaf: bool,
+    claim_mode: RuntimeAliasClaimMode,
 ) -> Result<bool> {
     let Ok(relative) = path.strip_prefix(workspace_root) else {
         return Ok(false);
@@ -4645,7 +4661,10 @@ fn runtime_alias_claim_is_allowed(
     // to the wholesale mirror's gitignore posture, while the hidden/infra,
     // reserved-name, bundle.exclude, containment, canonical-path, and
     // workspace-membership checks above/below remain fail-closed.
-    Ok(!gitignored || (exact_runtime_leaf && path.is_file() && !raw_source_extension(path)))
+    Ok(!gitignored
+        || (claim_mode == RuntimeAliasClaimMode::ExactNonSourceLeaf
+            && path.is_file()
+            && !raw_source_extension(path)))
 }
 
 fn reject_root_package_relative_tree_escapes(
@@ -4748,7 +4767,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
-                    !raw_source_extension(&file),
+                    RuntimeAliasClaimMode::for_runtime_target(&file),
                 )? {
                     continue;
                 }
@@ -4771,7 +4790,7 @@ fn collect_runtime_alias_claim_graph(
                 project_root,
                 root_package_claimed,
                 bundle_exclude,
-                !raw_source_extension(&entry),
+                RuntimeAliasClaimMode::for_runtime_target(&entry),
             )?
         {
             continue;
@@ -4787,7 +4806,7 @@ fn collect_runtime_alias_claim_graph(
                 project_root,
                 root_package_claimed,
                 bundle_exclude,
-                false,
+                RuntimeAliasClaimMode::Standard,
             )?
         {
             // This path was admitted only by the exact non-source-leaf
@@ -4820,7 +4839,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
-                    !raw_source_extension(&file),
+                    RuntimeAliasClaimMode::for_runtime_target(&file),
                 )? {
                     continue;
                 }
@@ -4836,7 +4855,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
-                    false,
+                    RuntimeAliasClaimMode::Standard,
                 )? || !runtime_alias_path_is_claimable(
                     &edge.source_path,
                     &canonical_root,
@@ -4844,7 +4863,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
-                    false,
+                    RuntimeAliasClaimMode::Standard,
                 )? {
                     bail!(
                         "bundler: runtime alias module worker from {} reached unclaimed or excluded source {}",
@@ -4861,7 +4880,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
-                    false,
+                    RuntimeAliasClaimMode::Standard,
                 )? || !runtime_alias_path_is_claimable(
                     &edge.target,
                     &canonical_root,
@@ -4869,7 +4888,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
-                    !raw_source_extension(&edge.target),
+                    RuntimeAliasClaimMode::for_runtime_target(&edge.target),
                 )? {
                     bail!(
                         "bundler: runtime alias raw import from {} reached unclaimed or excluded target {}",
@@ -4908,7 +4927,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
-                    !raw_source_extension(&file),
+                    RuntimeAliasClaimMode::for_runtime_target(&file),
                 )? {
                     continue;
                 }
