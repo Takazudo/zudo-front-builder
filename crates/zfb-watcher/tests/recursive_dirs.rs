@@ -823,6 +823,71 @@ async fn retired_root_repair_rewatches_symlink_aliased_boot_root_once() {
     watcher.shutdown().await;
 }
 
+/// Issue #1843, codex-review finding: when ONE physical boot directory was
+/// boot-registered under SEVERAL spellings, the repair's single re-watch
+/// must replay the LAST-registered spelling — on inotify the most recent
+/// registration controls the shared watch descriptor's delivered-path
+/// spelling, so re-watching an earlier (or lexicographically first)
+/// spelling would silently flip delivery after a covering root retires.
+/// The extras below register `aa/pages` THEN `zz/pages`: the last
+/// registration (`zz/pages`) must win, while `aa/pages` sorts first both
+/// lexicographically and in registration order — discriminating against
+/// map-ordered and first-registered-wins implementations alike.
+///
+/// Red-first (recorded 2026-07-22, macOS/FSEvents): with the repair's
+/// boot loop iterating in forward registration order (drop the `.rev()` in
+/// `sync_recursive_dir_watches`), this test failed with `the re-watch must
+/// replay the LAST-registered boot spelling, got ("…/aa/pages", true)`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_spelling_boot_roots_repair_to_the_last_registered_spelling() {
+    let (_tmp, ws, project) = workspace();
+    let zz = ws.join("zz");
+    std::fs::create_dir_all(zz.join("pages")).expect("physical dirs");
+    let aa = ws.join("aa");
+    std::os::unix::fs::symlink(&zz, &aa).expect("symlink alias");
+
+    let (mut watcher, mut rx) = Watcher::start_with_extras(
+        &project,
+        std::iter::once("pages"),
+        [aa.join("pages"), zz.join("pages")],
+        DEBOUNCE,
+    )
+    .expect("watcher start");
+
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&aa], SKIPS),
+        vec![aa.clone()]
+    );
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "synced-live").await;
+    drain_batch_tail(&mut rx).await;
+
+    watcher.enable_watch_call_log();
+    assert!(watcher
+        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+        .is_empty());
+    let repair_calls = watcher.take_watch_call_log();
+    let boot_rewatches: Vec<_> = repair_calls
+        .iter()
+        .filter(|(path, _)| path.canonicalize().ok() == Some(zz.join("pages")))
+        .collect();
+    assert_eq!(
+        boot_rewatches.len(),
+        1,
+        "the duplicate-spelling boot dir must be re-watched exactly once, got {repair_calls:#?}",
+    );
+    assert_eq!(
+        boot_rewatches[0],
+        &(zz.join("pages"), true),
+        "the re-watch must replay the LAST-registered boot spelling",
+    );
+
+    // Boot coverage stays live after the retirement.
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "after-retire").await;
+
+    watcher.shutdown().await;
+}
+
 /// Alias-boundary pin for the second issue #1799 fix (previously unpinned;
 /// issue #1843 verification note): a dependency dir that IS the retired
 /// root under a DIFFERENT spelling must not resurrect the just-retired

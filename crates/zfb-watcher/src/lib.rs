@@ -101,14 +101,18 @@ pub struct Watcher {
     /// skip any parent already covered by one of these roots.
     watched_recursive_roots: BTreeSet<PathBuf>,
     /// Registration-spelling bookkeeping for boot roots (issue #1843): the
-    /// exact as-given arg of each boot `notify.watch()` call, mapped to its
-    /// alias spellings. `watched_recursive_roots` (the flat alias set)
-    /// answers COVERAGE questions; the retirement collateral-repair scan
-    /// drives its re-registrations from this map so each boot root is
-    /// re-watched at most once, under its original spelling — a per-alias
-    /// re-watch issued one `watch()` PER SPELLING for a symlink-aliased
-    /// root (routine in pnpm workspaces).
-    boot_root_registrations: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    /// exact as-given arg of each boot `notify.watch()` call, in
+    /// REGISTRATION ORDER, each with its alias spellings.
+    /// `watched_recursive_roots` (the flat alias set) answers COVERAGE
+    /// questions; the retirement collateral-repair scan drives its
+    /// re-registrations from this list so each boot directory is re-watched
+    /// at most once — a per-alias re-watch issued one `watch()` PER
+    /// SPELLING for a symlink-aliased root (routine in pnpm workspaces).
+    /// Order matters when one physical directory was boot-registered under
+    /// several spellings: on inotify the LAST registration controls the
+    /// delivered-path spelling, so the repair replays the last-registered
+    /// spelling per identity (codex review of #1843).
+    boot_root_registrations: Vec<(PathBuf, BTreeSet<PathBuf>)>,
     /// Exact directories registered non-recursively for live dependencies
     /// discovered after boot. Interior-locked and shared with the notify
     /// callback: the recursive-dir event filter exempts these dirs and their
@@ -123,6 +127,9 @@ pub struct Watcher {
     /// still needed for repair after a covering synced root retires. Like
     /// `boot_root_registrations`, this drives the retirement repair scan's
     /// re-registrations; `watched_dependency_dirs` stays the coverage set.
+    /// A map (not an ordered list) is sufficient here: registration-time
+    /// alias dedupe guarantees one spelling per directory identity, so no
+    /// last-spelling-wins ordering question arises.
     dependency_dir_registrations: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
     /// Delivery-time suppression state for the roots owned by
     /// [`Watcher::sync_recursive_dir_watches`], shared with the notify
@@ -434,7 +441,7 @@ impl Watcher {
             let _ = raw_tx.send(res);
         })?;
         let mut watched_recursive_roots = BTreeSet::new();
-        let mut boot_root_registrations: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
+        let mut boot_root_registrations: Vec<(PathBuf, BTreeSet<PathBuf>)> = Vec::new();
 
         for rel in relative_paths {
             let full = root.join(rel.as_ref());
@@ -447,7 +454,7 @@ impl Watcher {
             } else {
                 let aliases: BTreeSet<PathBuf> = watch_aliases(&full).collect();
                 watched_recursive_roots.extend(aliases.iter().cloned());
-                boot_root_registrations.insert(full.clone(), aliases);
+                boot_root_registrations.push((full.clone(), aliases));
                 debug!(path = %full.display(), "watching");
             }
         }
@@ -470,7 +477,7 @@ impl Watcher {
             } else {
                 let aliases: BTreeSet<PathBuf> = watch_aliases(extra).collect();
                 watched_recursive_roots.extend(aliases.iter().cloned());
-                boot_root_registrations.insert(extra.to_path_buf(), aliases);
+                boot_root_registrations.push((extra.to_path_buf(), aliases));
                 debug!(path = %extra.display(), "watching extra path");
             }
         }
@@ -849,7 +856,12 @@ impl Watcher {
                     );
                 }
             }
-            for (boot, boot_aliases) in self.boot_root_registrations.iter() {
+            // Reverse registration order so that, when one physical boot
+            // directory was registered under several spellings, the LAST
+            // registration wins the single re-watch — matching the
+            // delivered-path spelling inotify was using before retirement
+            // (the backend's wd->path map keeps the most recent spelling).
+            for (boot, boot_aliases) in self.boot_root_registrations.iter().rev() {
                 if !boot_aliases.iter().any(|alias| under_retired(alias)) {
                     continue;
                 }
