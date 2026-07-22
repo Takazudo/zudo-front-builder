@@ -260,6 +260,20 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored
 
+      # Workspace-root alias regression (issue #1885, epic #1883): this is a
+      # separate real-esbuild binary because its positive fixture proves the
+      # #1884 staging claim composes with root-package TS/TSX/CSS/JSON, a
+      # claimed sibling package, and #1840's dot-path allowlist. Its two
+      # negative tests separately retain parent-relative rejection and guard
+      # (b)'s fail-closed metafile audit. The provisioning assertion above is
+      # deliberately shared, but this named target is not: `--ignored` is the
+      # only way these env-gated tests execute, so an explicit step prevents a
+      # future edit from silently dropping the binary from CI.
+      - name: Run zfb-build workspace-root alias esbuild regression test
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored
+
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are
       # staged by the assert step above but, like the zfb-islands suite before
