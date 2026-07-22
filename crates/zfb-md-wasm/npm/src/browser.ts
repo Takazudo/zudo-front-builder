@@ -46,6 +46,8 @@ export type {
   ZfbMdWasmOptions,
   PipelineOptions,
   GfmOptions,
+  CodeHighlightMode,
+  CodeHighlightOptions,
   MarkdownFeaturesConfig,
   JsxRuntime,
   HighlightRole,

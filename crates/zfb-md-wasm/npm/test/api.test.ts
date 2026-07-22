@@ -87,6 +87,134 @@ describe("compile (mdx -> ES-module JS via SWC)", () => {
   });
 });
 
+// pipeline.codeHighlight (Highlight Tokens epic zfb#1528, wasm routing sub
+// zfb#1852, npm proof sub zfb#1853). The class-emission engine itself
+// (prefix, roles, multiline state, fingerprint) is proven by the Rust
+// crate's own suites (zfb-content's `class_mode_pipeline.rs` /
+// `tests/facade.rs`) -- this describe block's job is narrower: prove the
+// `codeHighlight` JSON knob reaches the class arm through the ACTUAL BUILT
+// wasm boundary (`dist/index.js`) for both `renderHtml` and `compile`, and
+// that the pre-existing inline behaviour is unaffected. Level 3 (build
+// output) per project testing discipline -- same rationale as the rest of
+// this file.
+const CLASS_MODE_FENCE = "```rust\nfn main() {}\n```\n";
+
+describe("pipeline.codeHighlight (class-mode routing through the built wasm)", () => {
+  it("renderHtml: mode 'class' emits hi-* role spans with zero inline styles", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {
+      pipeline: { codeHighlight: { mode: "class" } },
+    });
+    expect(out.html).toContain('class="hi-root"');
+    expect(out.html).toContain('class="hi-kw"');
+    expect(out.html).toContain('class="hi-fn"');
+    expect(out.html).not.toContain("style=");
+    expect(out.html).not.toContain("syntect-");
+    expect(out.diagnostics).toHaveLength(0);
+  });
+
+  it("renderHtml: mode 'class' honors a custom classPrefix and roleClasses override", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {
+      pipeline: {
+        codeHighlight: {
+          mode: "class",
+          classPrefix: "token-",
+          roleClasses: { keyword: "text-violet-600 dark:text-violet-400" },
+        },
+      },
+    });
+    expect(out.html).toContain('class="token-root"');
+    expect(out.html).toContain('class="text-violet-600 dark:text-violet-400"');
+    expect(out.html).not.toContain('class="token-kw"');
+    expect(out.html).not.toContain("style=");
+    expect(out.diagnostics).toHaveLength(0);
+  });
+
+  it("compile: mode 'class' emits hi-* classes in the MDXContent module, zero inline styles", async () => {
+    const out = await compile(CLASS_MODE_FENCE, {
+      filename: "p.mdx",
+      pipeline: { codeHighlight: { mode: "class" } },
+    });
+    const code = out.code ?? "";
+    // The pre element itself carries the hi-root class as a real JSX prop
+    // (not baked into the dangerouslySetInnerHTML string).
+    expect(code).toContain('class: "hi-root"');
+    // Token spans stay inside the raw-HTML span (same shape as inline
+    // mode's syntect markup) but carry hi-* classes, not inline styles.
+    expect(code).toContain('class=\\"hi-kw\\"');
+    expect(code).toContain('class=\\"hi-fn\\"');
+    expect(code).not.toContain("style=");
+    expect(code).not.toContain("syntect-");
+    expect(out.diagnostics).toHaveLength(0);
+  });
+
+  it("mode 'class' combined with a non-null top-level theme is a structured options diagnostic, not a throw", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {
+      pipeline: { theme: "InspiredGitHub", codeHighlight: { mode: "class" } },
+    });
+    expect(out.html).toBeNull();
+    expect(out.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: "error",
+        source: "options",
+        message: expect.stringContaining(
+          'codeHighlight.mode "class" is mutually exclusive with theme',
+        ),
+      }),
+    ]);
+  });
+
+  it("mode 'class' combined with an explicit theme: null is NOT a conflict (null == absent)", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {
+      pipeline: { theme: null, codeHighlight: { mode: "class" } },
+    });
+    expect(out.html).toContain('class="hi-root"');
+    expect(out.html).toContain('class="hi-kw"');
+    expect(out.diagnostics).toHaveLength(0);
+  });
+
+  // Legacy-matrix: every non-class shape must reproduce the pre-#1852
+  // inline byte-for-byte, both to prove nothing regressed and to pin the
+  // default so a future change to the knob's default is a conscious edit.
+  // `toBe`d against a pinned exact string (not `stringContaining`) so a
+  // regression in token grouping, colors, or wrapper markup that still
+  // happens to keep the syntect class name and *a* color style would fail
+  // here rather than passing (codex review finding, zfb#1853).
+  const EXACT_INLINE_HTML =
+    '<pre class="syntect-base16-ocean-dark"><code><span class="line">' +
+    '<span style="color:#b48ead;">fn </span>' +
+    '<span style="color:#8fa1b3;">main</span>' +
+    '<span style="color:#c0c5ce;">() {}</span>' +
+    "</span></code></pre>";
+
+  it("legacy matrix: absent codeHighlight defaults to inline", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {});
+    expect(out.html).toBe(EXACT_INLINE_HTML);
+  });
+
+  it("legacy matrix: explicit null codeHighlight defaults to inline", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {
+      pipeline: { codeHighlight: null },
+    });
+    expect(out.html).toBe(EXACT_INLINE_HTML);
+  });
+
+  it("legacy matrix: explicit mode 'inline' reproduces the same shape", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {
+      pipeline: { codeHighlight: { mode: "inline" } },
+    });
+    expect(out.html).toBe(EXACT_INLINE_HTML);
+  });
+
+  it("legacy matrix: inline mode still honors a top-level theme (no conflict)", async () => {
+    const out = await renderHtml(CLASS_MODE_FENCE, {
+      pipeline: { theme: "InspiredGitHub" },
+    });
+    expect(out.html).toContain('class="syntect-inspiredgithub"');
+    expect(out.html).toContain("style=");
+    expect(out.diagnostics).toHaveLength(0);
+  });
+});
+
 describe("highlightCode (arbitrary source -> semantic class markup)", () => {
   it("renders HTML, CSS, and JavaScript without Markdown fencing", async () => {
     for (const [language, code] of [

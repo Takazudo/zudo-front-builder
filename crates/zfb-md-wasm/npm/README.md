@@ -219,7 +219,11 @@ interface ZfbMdWasmOptions {
   jsxRuntime?: "preact" | "react"; // compile only; default "preact"
   development?: boolean; // compile only; default false
   pipeline?: {
-    theme?: string | null; // a syntect theme name, or null for no highlighting
+    // A syntect theme name. Absent, or explicit `null`, keeps the built-in
+    // default theme (`base16-ocean.dark`) -- fenced code is ALWAYS
+    // highlighted through this field; there is no "no syntax highlighting"
+    // value. Mutually exclusive with `codeHighlight.mode: "class"`.
+    theme?: string | null;
     gfm?: {
       strikethrough?: boolean;
       table?: boolean;
@@ -229,6 +233,13 @@ interface ZfbMdWasmOptions {
     };
     cjkFriendly?: boolean;
     hardBreaks?: boolean;
+    // Output mode + class-mode knobs for fenced-code highlighting -- see
+    // "codeHighlight: inline vs. class mode for compile/renderHtml" below.
+    codeHighlight?: {
+      mode?: "inline" | "class"; // default "inline"
+      classPrefix?: string; // default "hi-"; class mode only
+      roleClasses?: Partial<Record<HighlightRole, string>> | null; // class mode only
+    } | null;
     features?: Record<string, unknown>; // zfb's MarkdownFeaturesConfig, verbatim
   };
 }
@@ -238,6 +249,47 @@ interface ZfbMdWasmOptions {
 derives from `zfb.config.ts` at build time. See "Limitations" for why it's
 resolved JSON rather than a config file. Unknown fields are rejected at both
 nesting levels (an `options`-source diagnostic).
+
+### `codeHighlight`: inline vs. class mode for `compile`/`renderHtml`
+
+`pipeline.codeHighlight` controls how `compile()` and `renderHtml()` highlight
+**fenced code blocks** in markdown/MDX source — a separate knob from the
+direct `highlightCode()` function above, but they share the same class-mode
+output contract: the same `hi-` prefix, the same 18-role `HighlightRole`
+taxonomy, the same `classPrefix`/`roleClasses` shape, so **one stylesheet
+covers both APIs** when both run in class mode.
+
+- **Absent, `null`, or `{ mode: "inline" }`** (the default) reproduces the
+  pre-existing per-token inline-color behaviour byte-for-byte: `<pre
+  class="syntect-{theme-slug}">` with `<span style="color:#…;">` tokens. This
+  mode is where `pipeline.theme` applies.
+- **`{ mode: "class" }`** switches fenced code to the same `hi-root` /
+  `hi-{role}` semantic class markup `highlightCode()` produces — no inline
+  colours, so **who owns color is the host page's stylesheet**, not the wasm
+  output. `classPrefix`/`roleClasses` behave exactly like `highlightCode()`'s
+  options (see above for the full role → default-class table).
+- **`mode: "class"` is mutually exclusive with a *non-null* top-level
+  `theme`** — themes don't affect class emission, so naming one alongside
+  `mode: "class"` returns an `options`-source diagnostic
+  (`codeHighlight.mode "class" is mutually exclusive with theme`) rather than
+  silently ignoring it. `theme: null` (or omitting `theme` entirely) is not a
+  conflict — `null` deserializes to "absent", the same as leaving the field
+  out — so `{ theme: null, codeHighlight: { mode: "class" } }` is accepted.
+- In `compile()`'s output, class mode changes only the emitted class names —
+  the surrounding shape (a `<pre>`/`<code>`/per-line `<span>` JSX tree with
+  the token markup wrapped in `dangerouslySetInnerHTML`) is unchanged from
+  inline mode.
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm";
+
+const { html } = await renderHtml("```js\nconst x = 1;\n```\n", {
+  pipeline: { codeHighlight: { mode: "class" } },
+});
+// html -> `<pre class="hi-root"><code><span class="line">
+//           <span class="hi-kw">const</span> x = <span class="hi-num">1</span>;
+//         </span></code></pre>` (whitespace added for readability)
+```
 
 ## Evaluating compiled modules in a browser
 

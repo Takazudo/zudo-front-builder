@@ -32,9 +32,22 @@
 //!   "jsxRuntime": "preact",
 //!   "development": false,
 //!   "pipeline": { "theme": null, "gfm": {}, "cjkFriendly": true,
-//!                 "hardBreaks": false, "features": {} }
+//!                 "hardBreaks": false,
+//!                 "codeHighlight": { "mode": "class", "classPrefix": "hi-",
+//!                                     "roleClasses": {} },
+//!                 "features": {} }
 //! }
 //! ```
+//!
+//! `pipeline.theme`, absent or explicit `null`, keeps the built-in default
+//! theme (`base16-ocean.dark`) — fenced code is always highlighted through
+//! this field, there is no "disable highlighting" value. `pipeline.codeHighlight`
+//! (Highlight Tokens epic zfb#1528, wasm routing sub zfb#1852), when
+//! present, switches `mode` between `"inline"` (default, per-token
+//! `style="color:#…"`, the pre-#1852 behaviour) and `"class"` (per-token
+//! semantic role classes, no inline color); `classPrefix`/`roleClasses`
+//! are only meaningful in `"class"` mode. `mode: "class"` combined with a
+//! top-level `theme` is rejected — themes don't affect class emission.
 //!
 //! Every field is optional (`{}` selects all defaults). `filename` drives
 //! frontmatter dispatch (`.md`/`.mdx`) and diagnostics; it defaults to
