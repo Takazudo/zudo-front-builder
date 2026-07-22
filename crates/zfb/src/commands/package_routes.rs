@@ -616,25 +616,51 @@ fn resolve_pages_root(
     })
 }
 
-/// Resolve a package-route entrypoint through the consumer's logical installed
-/// package when that relationship can be proven. The synthesized route module
-/// is copied from `<overlay>/pages/<route>` to `<shadow>/pages/<route>`, so a
-/// relative import of `../node_modules/<package>/<entry>` resolves inside the
-/// staged dependency view in both locations without embedding the ephemeral
-/// shadow path.
+/// Resolve a package-route entrypoint through its logical staged location.
+/// The synthesized route module is copied from `<overlay>/pages/<route>` to
+/// `<shadow>/pages/<route>`, so a project-relative import resolves inside the
+/// staged project in both locations without embedding an ephemeral overlay or
+/// live-tree path.
 ///
-/// This is deliberately fail-open to the historical absolute entrypoint: local
-/// plugin routes, unlinked packages, malformed manifests, and links whose
-/// canonical target does not own the entrypoint keep their existing behavior.
-/// Only a package whose `node_modules/<name>` link canonicalizes to the nearest
-/// named package containing the entrypoint is rewritten.
+/// Installed packages use their logical `node_modules/<package>/<entry>` path
+/// when that relationship can be proven. That check comes first because an
+/// installed entrypoint is physically below the project-local `node_modules/`
+/// directory. Other project-local generated routes (for example
+/// `.zudo-doc/routes-src/*`) are already allowlisted into the shadow and use a
+/// lexical path from the logical `pages/<route>` importer. This deliberately
+/// otherwise fails open to the historical absolute entrypoint: external
+/// local-plugin routes, unlinked packages, malformed manifests, and links
+/// whose canonical target does not own the entrypoint keep their existing
+/// behavior.
 fn package_route_entrypoint_import_specifier(
     real_pages_dir: &Path,
     pages_rel: &Path,
     entrypoint: &Path,
 ) -> String {
     staged_package_route_entrypoint_import_specifier(real_pages_dir, pages_rel, entrypoint)
+        .or_else(|| {
+            project_local_package_route_entrypoint_import_specifier(
+                real_pages_dir,
+                pages_rel,
+                entrypoint,
+            )
+        })
         .unwrap_or_else(|| entrypoint.to_string_lossy().into_owned())
+}
+
+/// Return the lexical spelling for an entrypoint already under the consumer
+/// project. The bundler stages allowlisted project files at their original
+/// project-relative locations, so the target is deliberately *not*
+/// canonicalized: canonicalization would turn a staged spelling back into a
+/// live filesystem path.
+fn project_local_package_route_entrypoint_import_specifier(
+    real_pages_dir: &Path,
+    pages_rel: &Path,
+    entrypoint: &Path,
+) -> Option<String> {
+    let project_root = real_pages_dir.parent()?;
+    let logical_entrypoint = entrypoint.strip_prefix(project_root).ok()?;
+    relative_import_specifier(pages_rel, logical_entrypoint)
 }
 
 fn staged_package_route_entrypoint_import_specifier(
@@ -669,9 +695,16 @@ fn staged_package_route_entrypoint_import_specifier(
     let logical_entrypoint = Path::new("node_modules")
         .join(&package_name)
         .join(entrypoint_rel);
+    relative_import_specifier(pages_rel, &logical_entrypoint)
+}
+
+/// Spell `logical_entrypoint` relative to the synthesized module at
+/// `pages/<pages_rel>`. The conversion to forward slashes keeps the emitted
+/// JavaScript module specifier portable when the project is built on Windows.
+fn relative_import_specifier(pages_rel: &Path, logical_entrypoint: &Path) -> Option<String> {
     let logical_importer = Path::new("pages").join(pages_rel);
     let importer_dir = logical_importer.parent()?;
-    let relative = lexical_relative_path(importer_dir, &logical_entrypoint)?;
+    let relative = lexical_relative_path(importer_dir, logical_entrypoint)?;
     let mut specifier = relative.to_string_lossy().replace('\\', "/");
     if !specifier.starts_with('.') {
         specifier.insert_str(0, "./");
@@ -1213,6 +1246,61 @@ mod tests {
             &entrypoint,
         );
         assert_eq!(specifier, "../../node_modules/@fixture/routes/src/page.tsx");
+    }
+
+    #[test]
+    fn project_local_generated_entrypoints_use_logical_staged_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path().join("apps/site");
+        let pages = project_root.join("pages");
+
+        for (pages_rel, generated_rel, expected) in [
+            (
+                "robots.txt.tsx",
+                ".zudo-doc/routes-src/robots.txt.tsx",
+                "../.zudo-doc/routes-src/robots.txt.tsx",
+            ),
+            (
+                "404.tsx",
+                ".zudo-doc/routes-src/404.tsx",
+                "../.zudo-doc/routes-src/404.tsx",
+            ),
+            (
+                "_chrome.tsx",
+                ".zudo-doc/routes-src/_chrome.tsx",
+                "../.zudo-doc/routes-src/_chrome.tsx",
+            ),
+            (
+                "_context.ts",
+                ".zudo-doc/routes-src/_context.ts",
+                "../.zudo-doc/routes-src/_context.ts",
+            ),
+            (
+                "docs/[slug].tsx",
+                ".zudo-doc/routes-src/docs-slug.tsx",
+                "../../.zudo-doc/routes-src/docs-slug.tsx",
+            ),
+            (
+                "sitemap.xml.tsx",
+                ".zudo-doc/routes-src/sitemap.xml.tsx",
+                "../.zudo-doc/routes-src/sitemap.xml.tsx",
+            ),
+            (
+                "nested/reference/route.tsx",
+                ".zudo-doc/routes-src/nested/route.tsx",
+                "../../../.zudo-doc/routes-src/nested/route.tsx",
+            ),
+        ] {
+            assert_eq!(
+                package_route_entrypoint_import_specifier(
+                    &pages,
+                    Path::new(pages_rel),
+                    &project_root.join(generated_rel),
+                ),
+                expected,
+                "generated route `{generated_rel}` must resolve from the logical pages importer `{pages_rel}`"
+            );
+        }
     }
 
     #[test]
