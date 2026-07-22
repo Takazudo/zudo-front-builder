@@ -22,40 +22,41 @@ set -uo pipefail
 #   5. pnpm typecheck (TS, --if-present, excluding examples) — fast
 #   6. pnpm -r test (vitest)                      — fast
 #   7. cargo clippy -D warnings                   — fast on a WARM tree
-#   8. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
-#   9. cargo test --workspace --doc (nextest branch only)  — opt-in (B4PUSH_FULL=1)
-#  10. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  11. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  12. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
-#  13. cargo test -p zfb-islands --tests -- --ignored (esbuild env-gate)  — opt-in (B4PUSH_FULL=1)
-#  14. cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored (esbuild env-gate) — opt-in (B4PUSH_FULL=1)
-#  15. cargo test -p zfb-css --test integration -- --ignored (tailwindcss env-gate)     — opt-in (B4PUSH_FULL=1)
-#  16. cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored (tailwindcss env-gate) — opt-in (B4PUSH_FULL=1)
-#  17. cargo test -p zfb --lib commands::build:: -- --ignored (command-layer env-gates) — opt-in (B4PUSH_FULL=1)
+#   8. Regenerate + diff syntect syntax-set.packdump       — opt-in (B4PUSH_FULL=1)
+#   9. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
+#  10. cargo test --workspace --doc (nextest branch only)  — opt-in (B4PUSH_FULL=1)
+#  11. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  12. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  13. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
+#  14. cargo test -p zfb-islands --tests -- --ignored (esbuild env-gate)  — opt-in (B4PUSH_FULL=1)
+#  15. cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored (esbuild env-gate) — opt-in (B4PUSH_FULL=1)
+#  16. cargo test -p zfb-css --test integration -- --ignored (tailwindcss env-gate)     — opt-in (B4PUSH_FULL=1)
+#  17. cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored (tailwindcss env-gate) — opt-in (B4PUSH_FULL=1)
+#  18. cargo test -p zfb --lib commands::build:: -- --ignored (command-layer env-gates) — opt-in (B4PUSH_FULL=1)
 #
-# Steps 8 and 10 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
+# Steps 9 and 11 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
 # it is installed, matching CI's runner; they fall back to plain `cargo test`
-# when nextest is absent (issue #1340). Step 9 exists ONLY in the nextest branch:
+# when nextest is absent (issue #1340). Step 10 exists ONLY in the nextest branch:
 # nextest does NOT run doctests, so — mirroring health.yml's separate doc step —
 # a `cargo test --workspace --doc` follows the nextest workspace run to keep
 # doctest coverage. The plain-`cargo test --workspace` fallback already runs
 # doctests as part of that same command, so it needs no separate step.
 #
-# Steps 10-12 mirror the health.yml lanes that steps 1-8 alone cannot reproduce
+# Steps 11-13 mirror the health.yml lanes that steps 1-9 alone cannot reproduce
 # (issue #1332): the zfb-md-extras `test-utils`-gated suite + its scoped clippy
 # (health.yml:165,169), and the V8-off `build-no-v8` job's cargo check
 # (health.yml:219). Without them, "B4PUSH_FULL=1 pnpm b4push passed" did not
 # imply "health.yml will pass."
 #
-# Steps 13-17 maintain parity with health.yml's dedicated env-gated lanes. The
+# Steps 14-18 maintain parity with health.yml's dedicated env-gated lanes. The
 # zfb-islands esbuild-gated lane (added by #1337) had no B4PUSH_FULL
 # counterpart, so a green B4PUSH_FULL=1 run did not imply that lane would pass
 # in CI — the exact
 # gap #1332 closed for the md-extras/no-v8 lanes, reopened when #1337 added the
-# islands step to health.yml without updating b4push. Step 13 restores it;
-# step 14 mirrors #1504's real-zfb cross-pipeline acceptance lane.
-# Steps 15-17 cover the 3 tailwindcss-v4 env-gate locations that #1393 wired
-# into health.yml for the first time; step 17 also co-runs the two esbuild
+# islands step to health.yml without updating b4push. Step 14 restores it;
+# step 15 mirrors #1504's real-zfb cross-pipeline acceptance lane.
+# Steps 16-18 cover the 3 tailwindcss-v4 env-gate locations that #1393 wired
+# into health.yml for the first time; step 18 also co-runs the two esbuild
 # command-layer env-gates, so it pins both binary slots. All 5 steps are
 # guarded on their staged binary existing (a tree built with
 # B4PUSH_SKIP_CLIPPY=1, or one that has never run
@@ -69,7 +70,8 @@ set -uo pipefail
 # Env overrides:
 #   B4PUSH_SKIP_CLIPPY=1   — skip clippy (step 7); use on a cold tree to stay bounded
 #   B4PUSH_SKIP_JS_TEST=1  — skip the vitest suites (step 6)
-#   B4PUSH_FULL=1          — additionally run steps 8-17 (full workspace test,
+#   B4PUSH_FULL=1          — additionally run steps 8-18 (syntect packdump
+#                            freshness gate, full workspace test,
 #                            zfb-md-extras test-utils lane, no-V8 cargo check,
 #                            esbuild + tailwindcss env-gate suites)
 
@@ -202,6 +204,22 @@ else
   else
     fail "clippy"
   fi
+fi
+
+# ── Syntect syntax-set.packdump freshness gate (opt-in) ──
+# Mirrors health.yml's source-versus-generated drift gate (issue #1871). The
+# generator changes to its crate root and serializes normalized relative paths,
+# so the tracked dump stays byte-identical across checkout locations.
+step "Syntect syntax-set.packdump freshness gate"
+if [ "${B4PUSH_FULL:-}" = "1" ]; then
+  if cargo run -p zfb-content --bin generate_syntax_dump --features generate-syntax-dump && \
+    git diff --exit-code -- crates/zfb-content/assets/syntax-set.packdump; then
+    pass "Syntect syntax-set.packdump freshness gate"
+  else
+    fail "Syntect syntax-set.packdump freshness gate"
+  fi
+else
+  skip "Syntect syntax-set.packdump freshness gate (set B4PUSH_FULL=1 to run; CI runs it on every PR)"
 fi
 
 # ── Full Rust test suite (opt-in) ──────────────────────
