@@ -49,9 +49,20 @@ export default defineConfig({
 
 This option handles:
 
-- `**bold**` and `_italic_` adjacent to CJK characters.
+- `**bold**` and `*italic*` adjacent to CJK characters.
 - GFM bare URL autolink boundaries adjacent to CJK characters, when
   `gfm.autolinkLiteral` is enabled.
+
+Literal `*` and `**` repair can span supported parsed-inline siblings while
+preserving those nodes intact. For example:
+
+```md
+知られる**[LA-2A](https://example.com)光学式コンプレッサー**と、**Neve 1073 EQ**という
+```
+
+The first strong span contains the preserved `LA-2A` link and
+`光学式コンプレッサー`; the existing following strong span contains
+`Neve 1073 EQ`. Unsupported or opaque inline content remains a boundary.
 
 GFM strikethrough (`~~foo~~`) does not need the toggle — markdown-rs's GFM
 tokeniser handles `~~` delimiter runs independently, so strikethrough works

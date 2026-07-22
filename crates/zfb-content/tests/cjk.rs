@@ -274,6 +274,60 @@ fn bold_at_cjk_boundary_default() {
     assert_contains(&html, "<strong>強調</strong>するテキスト", input);
 }
 
+// --- Cross-inline CJK emphasis (issue #1874). ---
+
+/// A CJK-invalid opening delimiter can flank a parsed inline link. The
+/// sibling-aware repair must move the link and following CJK text into the
+/// first strong span while leaving the already-valid ASCII span unchanged.
+#[test]
+fn cross_inline_link_cjk_boundary_default() {
+    let input =
+        "知られる**[LA-2A](https://example.com)光学式コンプレッサー**と、**Neve 1073 EQ**という\n";
+    let html = render(input);
+    let expected = "<p>知られる<strong><a href=\"https://example.com\">LA-2A</a>光学式コンプレッサー</strong>と、<strong>Neve 1073 EQ</strong>という</p>";
+
+    assert_eq!(html, expected, "unexpected output for {input:?}");
+    assert_contains(
+        &html,
+        "<strong><a href=\"https://example.com\">LA-2A</a>光学式コンプレッサー</strong>",
+        input,
+    );
+    assert_contains(&html, "<strong>Neve 1073 EQ</strong>", input);
+    assert_lacks(&html, "**", input);
+}
+
+/// The strict CommonMark escape hatch preserves the first literal delimiter
+/// pair, while retaining independently valid emphasis.
+#[test]
+fn cross_inline_link_cjk_boundary_strict() {
+    let input =
+        "知られる**[LA-2A](https://example.com)光学式コンプレッサー**と、**Neve 1073 EQ**という\n";
+    let html = render_no_cjk(input);
+    let expected = "<p>知られる**<a href=\"https://example.com\">LA-2A</a>光学式コンプレッサー**と、<strong>Neve 1073 EQ</strong>という</p>";
+
+    assert_eq!(html, expected, "unexpected strict output for {input:?}");
+}
+
+/// Representative movable inline siblings retain their serialized shape and
+/// order when the CJK repair wraps them in the recovered strong span.
+#[test]
+fn cross_inline_movable_siblings_serialize_correctly() {
+    let cases = [
+        (
+            "知られる**![図](image.png \"説明\")光学式**という\n",
+            "<p>知られる<strong><img src=\"image.png\" alt=\"図\" title=\"説明\"/>光学式</strong>という</p>",
+        ),
+        (
+            "**前 *内側* と ~~削除~~ 後。**という\n",
+            "<p><strong>前 <em>内側</em> と <del>削除</del> 後。</strong>という</p>",
+        ),
+    ];
+
+    for (input, expected) in cases {
+        assert_eq!(render(input), expected, "unexpected output for {input:?}");
+    }
+}
+
 // --- GFM autolink-literal CJK boundary fix (issue #1105). ---
 
 /// Render with GFM autolink-literal ENABLED (the surface where bare URLs
