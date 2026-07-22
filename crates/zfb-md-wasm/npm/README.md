@@ -201,16 +201,29 @@ const { ast, frontmatter, diagnostics }: ParseToAstResult = await parseToAst(
 set markdown-rs emits (`Root`, `Paragraph`, `Heading`, `Text`, `List`,
 `Link`, `MdxJsxFlowElement`, …; see `types.ts`'s `MdastNode`), plus a
 `{ type: string; position: AstPosition; [key: string]: unknown }` catch-all
-so an unrecognized/future node type stays TYPED instead of collapsing to
-`unknown`. Narrow on `type` the way any discriminated union works:
+so an unrecognized/future node type stays TYPED (never collapses to a bare
+`unknown`) rather than being dropped from the union. Narrow on `type` to
+select a node kind:
 
 ```ts
 for (const child of ast?.children ?? []) {
   if (child.type === "heading") {
-    console.log(child.depth, child.position.start.line);
+    // `child.position` is fully typed. Because the union includes the
+    // open `{ type: string; … }` catch-all (its `type` overlaps every
+    // literal), a `type` narrow can't *exclude* it, so kind-specific
+    // fields like `depth` resolve through the catch-all's index
+    // signature as `unknown` — assert the node kind to read them:
+    const heading = child as Heading;
+    console.log(heading.depth, heading.position.start.line);
   }
 }
 ```
+
+The catch-all is a deliberate tradeoff: it keeps forward-compatibility
+(new markdown-rs node types stay typed) at the cost of the clean
+discriminated-union narrowing you'd get from a closed union. `position`
+and `type` are always available without a cast; kind-specific fields
+need the assertion above.
 
 The tree is **mdast, not hast**: block/inline structure (`heading`,
 `paragraph`, `emphasis`, `list`, …), not an HTML-shaped tree. It is the
