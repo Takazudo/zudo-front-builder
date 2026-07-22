@@ -143,7 +143,7 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
         &workspace.join("components/root-card.tsx"),
         r#"
             import { rootSource } from "@/src/root-source";
-            import "./root-card.css";
+            import "./generated/root-card.css";
             import { rootCompatibleDep } from "root-compatible-dep";
             export function RootCard() {
               return "ROOT_COMPONENT_MARKER:" + rootSource + ":" + rootCompatibleDep;
@@ -151,20 +151,28 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
         "#,
     );
     write(
-        &workspace.join("components/root-card.css"),
+        &workspace.join("components/generated/root-card.css"),
         "/* ROOT_CSS_MARKER: resolution-only; SSR uses the empty CSS loader. */\n",
     );
     write(
         &workspace.join("src/root-source.tsx"),
         r#"
-            import rootData from "@/src/root-data.json";
+            import rootData from "@/src/data/generated/root-data.json";
             import { rootLib } from "@/lib/root-lib";
             export const rootSource = "ROOT_SRC_MARKER:" + rootLib + ":" + rootData.rootData;
         "#,
     );
     write(
-        &workspace.join("src/root-data.json"),
+        &workspace.join("src/data/generated/root-data.json"),
         r#"{ "rootData": "ROOT_JSON_MARKER" }"#,
+    );
+    write(
+        &workspace.join("src/data/generated/unreached.json"),
+        r#"{ "rootData": "UNREACHED_MUST_NOT_STAGE" }"#,
+    );
+    write(
+        &workspace.join(".gitignore"),
+        "components/generated/\nsrc/data/generated/\n",
     );
     write(
         &workspace.join("lib/root-lib.ts"),
@@ -237,9 +245,9 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
     for staged_key in [
         "pages/index.tsx",
         "../../components/root-card.tsx",
-        "../../components/root-card.css",
+        "../../components/generated/root-card.css",
         "../../src/root-source.tsx",
-        "../../src/root-data.json",
+        "../../src/data/generated/root-data.json",
         "../../lib/root-lib.ts",
         "../shared/Badge.tsx",
         ".zudo-doc/routes-src/generated-route.tsx",
@@ -250,6 +258,13 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
             "metafile must contain exact staged spelling {staged_key}; got {keys:?}"
         );
     }
+    assert!(
+        !session
+            .shadow_root()
+            .join("src/data/generated/unreached.json")
+            .exists(),
+        "an unreached sibling of an exact ignored leaf must stay absent"
+    );
 }
 
 #[test]

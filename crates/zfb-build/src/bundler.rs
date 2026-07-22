@@ -2381,13 +2381,14 @@ pub fn bundle_with_session(
     // first-party graphs. This keeps the workspace root from becoming a
     // wholesale mirror while still giving the existing materialisation pass
     // every reached file (including CSS and JSON leaves).
-    let (runtime_alias_claims, runtime_alias_raw_import_edges) = collect_runtime_alias_claim_graph(
-        &project_root,
-        &first_party_root,
-        &input.tsconfig_paths,
-        &bundle_exclude,
-        &effective_virtual_context,
-    )?;
+    let (runtime_alias_claims, runtime_alias_raw_import_edges, exact_gitignored_runtime_leaves) =
+        collect_runtime_alias_claim_graph(
+            &project_root,
+            &first_party_root,
+            &input.tsconfig_paths,
+            &bundle_exclude,
+            &effective_virtual_context,
+        )?;
     plugin_preprocessing_files.extend(runtime_alias_claims);
     mat_ctx
         .raw_import_edges
@@ -2400,10 +2401,14 @@ pub fn bundle_with_session(
     // the wholesale sibling mirror below and is the single source of truth the
     // Wave 2/3 CSS-discovery / audit sub-issues consume. Empty (and inert) for
     // a standalone project, so a non-workspace build stays byte-identical.
+    let sibling_mirror_claim_files = plugin_preprocessing_files
+        .difference(&exact_gitignored_runtime_leaves)
+        .cloned()
+        .collect();
     let sibling_mirror_plan = SiblingMirrorPlan::compute(
         &project_root,
         &first_party_root,
-        &plugin_preprocessing_files,
+        &sibling_mirror_claim_files,
         &input.tsconfig_paths,
         &input.plugin_alias_entries,
     );
@@ -4537,9 +4542,16 @@ fn runtime_alias_path_is_claimable(
     project_root: &Path,
     root_package_claimed: bool,
     bundle_exclude: &BundleExcludeMatcher,
+    exact_runtime_leaf: bool,
 ) -> Result<bool> {
     if !path.starts_with(workspace_root)
-        || !runtime_alias_claim_is_allowed(path, workspace_root, project_root, bundle_exclude)?
+        || !runtime_alias_claim_is_allowed(
+            path,
+            workspace_root,
+            project_root,
+            bundle_exclude,
+            exact_runtime_leaf,
+        )?
     {
         return Ok(false);
     }
@@ -4554,6 +4566,7 @@ fn runtime_alias_path_is_claimable(
             workspace_root,
             project_root,
             bundle_exclude,
+            exact_runtime_leaf,
         )?
     {
         return Ok(false);
@@ -4579,6 +4592,7 @@ fn runtime_alias_claim_is_allowed(
     workspace_root: &Path,
     project_root: &Path,
     bundle_exclude: &BundleExcludeMatcher,
+    exact_runtime_leaf: bool,
 ) -> Result<bool> {
     let Ok(relative) = path.strip_prefix(workspace_root) else {
         return Ok(false);
@@ -4624,7 +4638,14 @@ fn runtime_alias_claim_is_allowed(
     let matcher = builder
         .build()
         .context("bundler: build first-party .gitignore matcher")?;
-    Ok(!matcher.matched_path_or_any_parents(path, false).is_ignore())
+    let gitignored = matcher.matched_path_or_any_parents(path, false).is_ignore();
+    // Issue #1903: a runtime resolver edge identifies one concrete leaf; it
+    // does not claim the ignored directory around it. Permit that exact leaf
+    // only when it is a regular non-JS/TS file. Source modules remain subject
+    // to the wholesale mirror's gitignore posture, while the hidden/infra,
+    // reserved-name, bundle.exclude, containment, canonical-path, and
+    // workspace-membership checks above/below remain fail-closed.
+    Ok(!gitignored || (exact_runtime_leaf && path.is_file() && !raw_source_extension(path)))
 }
 
 fn reject_root_package_relative_tree_escapes(
@@ -4669,9 +4690,13 @@ fn collect_runtime_alias_claim_graph(
     tsconfig_paths: &BTreeMap<String, Vec<String>>,
     bundle_exclude: &BundleExcludeMatcher,
     context: &ModuleWorkerBuildContext,
-) -> Result<(BTreeSet<PathBuf>, BTreeSet<RawImportEdge>)> {
+) -> Result<(
+    BTreeSet<PathBuf>,
+    BTreeSet<RawImportEdge>,
+    BTreeSet<PathBuf>,
+)> {
     if first_party_root == project_root || tsconfig_paths.is_empty() {
-        return Ok((BTreeSet::new(), BTreeSet::new()));
+        return Ok((BTreeSet::new(), BTreeSet::new(), BTreeSet::new()));
     }
     let root_package_claimed =
         zfb_types::first_party::workspace_explicitly_claims_root_package(project_root);
@@ -4723,6 +4748,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    !raw_source_extension(&file),
                 )? {
                     continue;
                 }
@@ -4734,6 +4760,7 @@ fn collect_runtime_alias_claim_graph(
 
     let mut claims = BTreeSet::new();
     let mut raw_import_edges = BTreeSet::new();
+    let mut exact_gitignored_leaves = BTreeSet::new();
     let mut pending = concrete_entries;
     while let Some(entry) = pending.pop_first() {
         if entry.starts_with(project_root)
@@ -4744,12 +4771,29 @@ fn collect_runtime_alias_claim_graph(
                 project_root,
                 root_package_claimed,
                 bundle_exclude,
+                !raw_source_extension(&entry),
             )?
         {
             continue;
         }
         if !claims.insert(entry.clone()) {
             continue;
+        }
+        if !raw_source_extension(&entry)
+            && !runtime_alias_path_is_claimable(
+                &entry,
+                &canonical_root,
+                first_party_root,
+                project_root,
+                root_package_claimed,
+                bundle_exclude,
+                false,
+            )?
+        {
+            // This path was admitted only by the exact non-source-leaf
+            // exception. Materialise it file-by-file, but never let it become
+            // a directory-level SiblingMirrorPlan claim.
+            exact_gitignored_leaves.insert(entry.clone());
         }
         if raw_source_extension(&entry)
             || entry
@@ -4776,6 +4820,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    !raw_source_extension(&file),
                 )? {
                     continue;
                 }
@@ -4791,6 +4836,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    false,
                 )? || !runtime_alias_path_is_claimable(
                     &edge.source_path,
                     &canonical_root,
@@ -4798,6 +4844,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    false,
                 )? {
                     bail!(
                         "bundler: runtime alias module worker from {} reached unclaimed or excluded source {}",
@@ -4814,6 +4861,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    false,
                 )? || !runtime_alias_path_is_claimable(
                     &edge.target,
                     &canonical_root,
@@ -4821,6 +4869,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    !raw_source_extension(&edge.target),
                 )? {
                     bail!(
                         "bundler: runtime alias raw import from {} reached unclaimed or excluded target {}",
@@ -4859,6 +4908,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    !raw_source_extension(&file),
                 )? {
                     continue;
                 }
@@ -4871,7 +4921,7 @@ fn collect_runtime_alias_claim_graph(
         }
     }
     reject_root_package_relative_tree_escapes(&claims, first_party_root)?;
-    Ok((claims, raw_import_edges))
+    Ok((claims, raw_import_edges, exact_gitignored_leaves))
 }
 
 /// Resolve a claim path to its **mirror root** per issue #1691's claim policy:

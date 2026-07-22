@@ -417,6 +417,110 @@ fn broad_root_alias_stages_only_the_concrete_root_graph_and_reached_sibling() {
     }
 }
 
+/// Issue #1903 red discriminator: the reported consumer shape differs from
+/// the already-green root-alias graph only in that generated runtime data is
+/// ignored. Reached non-source leaves must be staged exactly; the containing
+/// generated directory must not become a wholesale mirror claim.
+#[test]
+fn broad_root_alias_stages_exact_gitignored_runtime_leaves_only() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("package.json"),
+        r#"{"name":"workspace-root"}"#,
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { view } from '@/components/view'; export default () => view;\n",
+    );
+    write(
+        &ws_root.join("components/view.ts"),
+        "import direct from './generated/direct.json'; import payload from './generated/payload.txt?raw'; import './generated/rejected.ts'; import excluded from './generated/excluded.json'; import { nested } from './nested'; import './generated/reached.css'; new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }); export const view = direct.marker + nested + payload + excluded.marker;\n",
+    );
+    write(
+        &ws_root.join("components/nested.ts"),
+        "import transitive from '@/components/generated/transitive.json'; export const nested = transitive.marker;\n",
+    );
+    write(
+        &ws_root.join("components/generated/direct.json"),
+        r#"{"marker":"DIRECT_IGNORED_JSON"}"#,
+    );
+    write(
+        &ws_root.join("components/generated/transitive.json"),
+        r#"{"marker":"TRANSITIVE_IGNORED_JSON"}"#,
+    );
+    write(
+        &ws_root.join("components/generated/reached.css"),
+        ".reached { color: rebeccapurple; }\n",
+    );
+    write(
+        &ws_root.join("components/generated/payload.txt"),
+        "RAW_IGNORED_PAYLOAD\n",
+    );
+    write(
+        &ws_root.join("components/worker.ts"),
+        "import workerData from './generated/worker-data.json'; postMessage(workerData.marker);\n",
+    );
+    write(
+        &ws_root.join("components/generated/worker-data.json"),
+        r#"{"marker":"WORKER_IGNORED_JSON"}"#,
+    );
+    write(
+        &ws_root.join("components/generated/unreached.json"),
+        r#"{"marker":"MUST_NOT_STAGE"}"#,
+    );
+    write(
+        &ws_root.join("components/generated/rejected.ts"),
+        "export const rejected = 'IGNORED_SOURCE_MUST_NOT_STAGE';\n",
+    );
+    write(
+        &ws_root.join("components/generated/excluded.json"),
+        r#"{"marker":"EXCLUDED_MUST_NOT_STAGE"}"#,
+    );
+    write(&ws_root.join(".gitignore"), "components/generated/\n");
+
+    let paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![ws_root.join("*").to_string_lossy().into_owned()],
+    )]);
+    let input = make_bundle_input(
+        &project,
+        "dist-exact-ignored-leaves",
+        vec![],
+        paths,
+        vec!["components/generated/excluded.json".to_string()],
+    );
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("mock materialisation completes");
+
+    let work = work_mirror_root(&session);
+    for path in [
+        "components/generated/direct.json",
+        "components/generated/transitive.json",
+        "components/generated/reached.css",
+        "components/generated/payload.txt",
+        "components/generated/worker-data.json",
+    ] {
+        assert!(
+            work.join(path).is_file(),
+            "expected exact staged leaf {path}"
+        );
+    }
+    assert!(
+        !work.join("components/generated/unreached.json").exists(),
+        "an ignored generated directory must never be mirrored wholesale"
+    );
+    for path in [
+        "components/generated/rejected.ts",
+        "components/generated/excluded.json",
+    ] {
+        assert!(
+            !work.join(path).exists(),
+            "ignored source and bundle.exclude controls must remain rejected: {path}"
+        );
+    }
+}
+
 #[test]
 fn runtime_alias_discovery_uses_the_hosts_synthetic_tsconfig_map() {
     let workspace = tempfile::tempdir().unwrap();
