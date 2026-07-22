@@ -165,16 +165,14 @@ fn find_sibling_match(children: &[MdastNode]) -> Option<(Delimiter, Delimiter)> 
                     end: run_start + marker_len,
                     marker_len,
                 };
-                let Some(before) = boundary_before(children, open.node, open.start) else {
-                    continue;
-                };
-                let Some(after) = boundary_after(children, open.node, open.end) else {
-                    continue;
-                };
-                if after == Boundary::Star || !is_left_flanking(before, after, true) {
+                let before = boundary_before(children, open.node, open.start);
+                let after = boundary_after(children, open.node, open.end);
+                if after == Some(Boundary::Star)
+                    || prove_left_flanking(before, after, true) != Some(true)
+                {
                     continue;
                 }
-                let opener_is_amendment = !is_left_flanking(before, after, false);
+                let opener_is_amendment = prove_left_flanking(before, after, false) == Some(false);
                 if let Some(close) = find_close(children, open, opener_is_amendment) {
                     return Some((open, close));
                 }
@@ -221,16 +219,14 @@ fn find_close(
             if close.node == open.node && close.start <= open.end {
                 continue;
             }
-            let Some(before) = boundary_before(children, close.node, close.start) else {
-                continue;
-            };
-            let Some(after) = boundary_after(children, close.node, close.end) else {
-                continue;
-            };
-            if before == Boundary::Star || !is_right_flanking(before, after, true) {
+            let before = boundary_before(children, close.node, close.start);
+            let after = boundary_after(children, close.node, close.end);
+            if before == Some(Boundary::Star)
+                || prove_right_flanking(before, after, true) != Some(true)
+            {
                 continue;
             }
-            let closer_is_amendment = !is_right_flanking(before, after, false);
+            let closer_is_amendment = prove_right_flanking(before, after, false) == Some(false);
             if opener_is_amendment || closer_is_amendment {
                 return Some(close);
             }
@@ -312,12 +308,19 @@ fn push_text_slice(out: &mut Vec<MdastNode>, text: &Text, range: Range<usize>) {
 fn point_after(start: &Point, prefix: &str) -> Point {
     let mut line = start.line;
     let mut column = start.column;
-    for character in prefix.chars() {
-        if character == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
+    let bytes = prefix.as_bytes();
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        match byte {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => {}
+            b'\n' | b'\r' => {
+                line += 1;
+                column = 1;
+            }
+            b'\t' => {
+                let remainder = column % 4;
+                column += 1 + if remainder == 0 { 0 } else { 4 - remainder };
+            }
+            _ => column += 1,
         }
     }
     Point::new(line, column, start.offset + prefix.len())
@@ -348,6 +351,7 @@ enum Boundary {
     CjkPunctuation,
     NonCjkPunctuation,
     Star,
+    IdeographicVariationSelector,
     Other,
 }
 
@@ -355,6 +359,8 @@ impl Boundary {
     fn from_char(character: char) -> Self {
         if character == '*' {
             Self::Star
+        } else if is_ideographic_variation_selector(character) {
+            Self::IdeographicVariationSelector
         } else if character.is_whitespace() {
             Self::Whitespace
         } else if is_cjk(character) {
@@ -377,6 +383,40 @@ impl Boundary {
     fn is_cjk(self) -> bool {
         matches!(self, Self::Cjk | Self::CjkPunctuation)
     }
+
+    fn is_amended_left_context(self) -> bool {
+        self == Self::Whitespace
+            || self == Self::NonCjkPunctuation
+            || self.is_cjk()
+            || self == Self::IdeographicVariationSelector
+    }
+}
+
+fn boundary_from_start(value: &str) -> Option<Boundary> {
+    value.chars().next().map(Boundary::from_char)
+}
+
+fn boundary_from_end(value: &str) -> Option<Boundary> {
+    let mut characters = value.chars().rev();
+    let last = characters.next()?;
+    if is_ideographic_variation_selector(last) {
+        return Some(Boundary::IdeographicVariationSelector);
+    }
+    if is_non_emoji_general_use_variation_selector(last) {
+        return Some(match characters.next() {
+            Some(base) if is_cjk(base) || is_unicode_punctuation(base) => Boundary::from_char(base),
+            _ => Boundary::Other,
+        });
+    }
+    Some(Boundary::from_char(last))
+}
+
+fn is_non_emoji_general_use_variation_selector(character: char) -> bool {
+    matches!(character as u32, 0xFE00..=0xFE0E)
+}
+
+fn is_ideographic_variation_selector(character: char) -> bool {
+    matches!(character as u32, 0xE0100..=0xE01EF)
 }
 
 fn is_left_flanking(before: Boundary, after: Boundary, amended: bool) -> bool {
@@ -384,13 +424,68 @@ fn is_left_flanking(before: Boundary, after: Boundary, amended: bool) -> bool {
         return false;
     }
     if amended {
-        after != Boundary::NonCjkPunctuation
-            || before == Boundary::Whitespace
-            || before == Boundary::NonCjkPunctuation
-            || before.is_cjk()
+        after != Boundary::NonCjkPunctuation || before.is_amended_left_context()
     } else {
         !after.is_any_punctuation() || before == Boundary::Whitespace || before.is_any_punctuation()
     }
+}
+
+const ALL_BOUNDARIES: [Boundary; 7] = [
+    Boundary::Whitespace,
+    Boundary::Cjk,
+    Boundary::CjkPunctuation,
+    Boundary::NonCjkPunctuation,
+    Boundary::Star,
+    Boundary::IdeographicVariationSelector,
+    Boundary::Other,
+];
+
+/// Return a flanking result only when every possible value of an unknown
+/// boundary yields the same answer. Unknown is never guessed as whitespace.
+fn prove_flanking(
+    before: Option<Boundary>,
+    after: Option<Boundary>,
+    predicate: impl Fn(Boundary, Boundary) -> bool,
+) -> Option<bool> {
+    let mut result = None;
+    for candidate_before in ALL_BOUNDARIES
+        .iter()
+        .copied()
+        .filter(|candidate| before.is_none_or(|known| known == *candidate))
+    {
+        for candidate_after in ALL_BOUNDARIES
+            .iter()
+            .copied()
+            .filter(|candidate| after.is_none_or(|known| known == *candidate))
+        {
+            let candidate = predicate(candidate_before, candidate_after);
+            if result.is_some_and(|known| known != candidate) {
+                return None;
+            }
+            result = Some(candidate);
+        }
+    }
+    result
+}
+
+fn prove_left_flanking(
+    before: Option<Boundary>,
+    after: Option<Boundary>,
+    amended: bool,
+) -> Option<bool> {
+    prove_flanking(before, after, |before, after| {
+        is_left_flanking(before, after, amended)
+    })
+}
+
+fn prove_right_flanking(
+    before: Option<Boundary>,
+    after: Option<Boundary>,
+    amended: bool,
+) -> Option<bool> {
+    prove_flanking(before, after, |before, after| {
+        is_right_flanking(before, after, amended)
+    })
 }
 
 fn is_right_flanking(before: Boundary, after: Boundary, amended: bool) -> bool {
@@ -412,10 +507,7 @@ fn boundary_before(children: &[MdastNode], node: usize, byte: usize) -> Option<B
         return None;
     };
     if byte > 0 {
-        return text.value[..byte]
-            .chars()
-            .next_back()
-            .map(Boundary::from_char);
+        return boundary_from_end(&text.value[..byte]);
     }
     if node == 0 {
         return Some(Boundary::Whitespace);
@@ -431,7 +523,7 @@ fn boundary_after(children: &[MdastNode], node: usize, byte: usize) -> Option<Bo
         return None;
     };
     if byte < text.value.len() {
-        return text.value[byte..].chars().next().map(Boundary::from_char);
+        return boundary_from_start(&text.value[byte..]);
     }
     if node + 1 == children.len() {
         return Some(Boundary::Whitespace);
@@ -475,8 +567,8 @@ fn source_boundaries(node: &MdastNode) -> Option<(Boundary, Boundary)> {
     let punctuation = (Boundary::NonCjkPunctuation, Boundary::NonCjkPunctuation);
     match node {
         MdastNode::Text(text) if text_source_is_literal(text) => Some((
-            Boundary::from_char(text.value.chars().next()?),
-            Boundary::from_char(text.value.chars().next_back()?),
+            boundary_from_start(&text.value)?,
+            boundary_from_end(&text.value)?,
         )),
         MdastNode::Link(link) => link_source_boundaries(link),
         MdastNode::LinkReference(link) => {
@@ -552,8 +644,8 @@ fn link_source_boundaries(link: &Link) -> Option<(Boundary, Boundary)> {
             || link.url == format!("http://{}", label.value))
     {
         return Some((
-            Boundary::from_char(label.value.chars().next()?),
-            Boundary::from_char(label.value.chars().next_back()?),
+            boundary_from_start(&label.value)?,
+            boundary_from_end(&label.value)?,
         ));
     }
     None
@@ -1149,24 +1241,22 @@ mod tests {
         let transformed = run(input);
         let children = first_paragraph_children(&transformed);
         assert_eq!(children.len(), 5, "{children:#?}");
-        assert!(matches!(&children[0], MdastNode::Text(t) if t.value == "知られる"));
+        assert!(matches!(&children[0], MdastNode::Text(t)
+            if t.value == "知られる"
+                && t.position == Some(Position::new(1, 1, 0, 1, 13, 12))));
         let MdastNode::Strong(repaired) = &children[1] else {
             unreachable!("expected repaired Strong, got {:?}", children[1])
         };
         assert_eq!(repaired.children.len(), 2);
         assert_eq!(repaired.children[0], original);
         assert_eq!(repaired.children[0].position(), original_position.as_ref());
-        assert!(
-            matches!(&repaired.children[1], MdastNode::Text(t) if t.value == "光学式コンプレッサー")
-        );
-        assert_eq!(
-            repaired
-                .position
-                .as_ref()
-                .map(|p| (p.start.offset, p.end.offset)),
-            Some((12, 74))
-        );
-        assert!(matches!(&children[2], MdastNode::Text(t) if t.value == "と、"));
+        assert!(matches!(&repaired.children[1], MdastNode::Text(t)
+            if t.value == "光学式コンプレッサー"
+                && t.position == Some(Position::new(1, 43, 42, 1, 73, 72))));
+        assert_eq!(repaired.position, Some(Position::new(1, 13, 12, 1, 75, 74)));
+        assert!(matches!(&children[2], MdastNode::Text(t)
+            if t.value == "と、"
+                && t.position == Some(Position::new(1, 75, 74, 1, 81, 80))));
         assert!(
             matches!(&children[3], MdastNode::Strong(s) if matches!(&s.children[0], MdastNode::Text(t) if t.value == "Neve 1073 EQ"))
         );
@@ -1271,6 +1361,10 @@ mod tests {
         };
         let barriers = [
             first_child("`code`", markdown::ParseOptions::mdx()),
+            MdastNode::InlineMath(markdown::mdast::InlineMath {
+                value: "math".into(),
+                position: None,
+            }),
             first_child("<i>", markdown::ParseOptions::default()),
             first_child("{value}", markdown::ParseOptions::mdx()),
             first_child("<X />", markdown::ParseOptions::mdx()),
@@ -1389,8 +1483,148 @@ mod tests {
     }
 
     #[test]
+    fn unknown_outer_boundary_is_used_only_when_flanking_is_invariant() {
+        fn positionless_link() -> MdastNode {
+            MdastNode::Link(Link {
+                children: vec![MdastNode::Text(Text {
+                    value: "https://example.com".into(),
+                    position: None,
+                })],
+                position: None,
+                url: "https://example.com".into(),
+                title: None,
+            })
+        }
+
+        let repaired = retokenise_children(vec![
+            positionless_link(),
+            MdastNode::Text(Text {
+                value: "**重要。**テスト".into(),
+                position: None,
+            }),
+        ]);
+        assert!(
+            matches!(&repaired[1], MdastNode::Strong(_)),
+            "{repaired:#?}"
+        );
+
+        let material_unknown = vec![
+            positionless_link(),
+            MdastNode::Text(Text {
+                value: "**[重要]**テスト".into(),
+                position: None,
+            }),
+        ];
+        assert_eq!(
+            retokenise_children(material_unknown.clone()),
+            material_unknown
+        );
+    }
+
+    #[test]
+    fn point_reconstruction_uses_source_bytes_and_tab_stops() {
+        assert_eq!(
+            point_after(&Point::new(1, 1, 0), "漢\tA\n字"),
+            Point::new(2, 4, 9)
+        );
+        assert_eq!(
+            point_after(&Point::new(1, 2, 10), "\tX"),
+            Point::new(1, 6, 12)
+        );
+        assert_eq!(
+            point_after(&Point::new(1, 1, 0), "A\r\nB\rC"),
+            Point::new(3, 2, 6)
+        );
+    }
+
+    #[test]
+    fn cjk_variation_sequences_and_ideographic_selectors_flank_openers() {
+        for input in [
+            "漢\u{FE0E}**[x](/x)語** end",
+            "漢\u{E0100}**[x](/x)語** end",
+        ] {
+            let transformed = run(input);
+            assert!(
+                first_paragraph_children(&transformed)
+                    .iter()
+                    .any(|node| matches!(node, MdastNode::Strong(_))),
+                "{transformed:#?}"
+            );
+        }
+
+        let emoji_selector = run("漢\u{FE0F}**[x](/x)語** end");
+        assert!(
+            !first_paragraph_children(&emoji_selector)
+                .iter()
+                .any(|node| matches!(node, MdastNode::Strong(_))),
+            "{emoji_selector:#?}"
+        );
+    }
+
+    #[test]
+    fn angle_and_bare_autolinks_use_their_actual_source_boundaries() {
+        let mut angle = markdown::to_mdast(
+            "漢**<https://example.com>語** end",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        CjkFriendlyPlugin::new().visit(&mut angle);
+        assert!(
+            first_paragraph_children(&angle)
+                .iter()
+                .any(|node| matches!(node, MdastNode::Strong(strong) if strong.children.iter().any(|child| matches!(child, MdastNode::Link(_))))),
+            "{angle:#?}"
+        );
+
+        let mut blocked_angle = markdown::to_mdast(
+            "A**<https://example.com>語.**漢",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        CjkFriendlyPlugin::new().visit(&mut blocked_angle);
+        assert!(
+            !first_paragraph_children(&blocked_angle)
+                .iter()
+                .any(|node| matches!(node, MdastNode::Strong(_))),
+            "{blocked_angle:#?}"
+        );
+
+        let mut bare = markdown::to_mdast(
+            "A**https://example.com 語.**漢",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        CjkFriendlyPlugin::new().visit(&mut bare);
+        assert!(
+            first_paragraph_children(&bare)
+                .iter()
+                .any(|node| matches!(node, MdastNode::Strong(strong) if strong.children.iter().any(|child| matches!(child, MdastNode::Link(_))))),
+            "{bare:#?}"
+        );
+
+        let mut blocked_bare = markdown::to_mdast(
+            "A**https://example.com word.**B",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        CjkFriendlyPlugin::new().visit(&mut blocked_bare);
+        let children = first_paragraph_children(&blocked_bare);
+        assert!(children
+            .iter()
+            .any(|node| matches!(node, MdastNode::Link(_))));
+        assert!(!children
+            .iter()
+            .any(|node| matches!(node, MdastNode::Strong(_))));
+    }
+
+    #[test]
     fn escaped_unmatched_and_unprovable_text_remain_literal() {
-        for input in ["漢\\**[x](/x)語** end", "漢**[x](/x)語 end"] {
+        for input in [
+            "漢\\**[x](/x)語** end",
+            "漢**[x](/x)語\\** end",
+            "漢**[x](/x)語 end",
+            "&amp;漢**[x](/x)語** end",
+        ] {
             let h = run(input);
             assert!(!first_paragraph_children(&h)
                 .iter()
