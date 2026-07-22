@@ -319,6 +319,112 @@ fn non_markdown_filename_is_an_options_diagnostic() {
     );
 }
 
+// ── parseToAst tier ─────────────────────────────────────────────────────────
+// The whole-tree position/UTF-16/custom-node proofs live in
+// tests/parse_to_ast.rs; these cases cover the same diagnostics paths,
+// shared-options-document, and non-markdown-filename gate the compile/
+// renderHtml tiers above are covered for, so parseToAst's cross-cutting
+// behavior isn't only proven by its own dedicated file.
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_malformed_mdx_returns_structured_markdown_diagnostic() {
+    // Same fixture/shift arithmetic as `compile_malformed_mdx_returns_structured_markdown_diagnostic`.
+    let src = "---\ntitle: x\n---\n<Card>\n\nsome text\n";
+    let out = parse(zfb_md_wasm::parse_to_ast(src, r#"{"filename":"bad.mdx"}"#));
+
+    assert_eq!(out["ast"], Value::Null);
+    assert_eq!(out["frontmatter"]["title"], "x");
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["severity"], "error");
+    assert_eq!(diag["source"], "markdown");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("closing tag")),
+        "message must describe the failure: {diag}"
+    );
+    assert_eq!(diag["line"], 7);
+    assert_eq!(diag["column"], 1);
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_non_json_options_return_options_diagnostic() {
+    let out = parse(zfb_md_wasm::parse_to_ast("# hi\n", "not json"));
+    assert_eq!(out["ast"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "options");
+    assert_eq!(diag["severity"], "error");
+    assert_eq!(diag["line"], 1);
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_unknown_top_level_option_is_rejected() {
+    let out = parse(zfb_md_wasm::parse_to_ast("# hi\n", r#"{"bogus":1}"#));
+    assert_eq!(out["ast"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "options");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("bogus")),
+        "message must name the unknown field: {diag}"
+    );
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        "---\ntitle: [oops\n---\nbody\n",
+        "{}",
+    ));
+    assert_eq!(out["ast"], Value::Null);
+    assert_eq!(out["frontmatter"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "frontmatter");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("invalid YAML")),
+        "message must describe the YAML failure: {diag}"
+    );
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_non_markdown_filename_is_an_options_diagnostic() {
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        "# hi\n",
+        r#"{"filename":"page.tsx"}"#,
+    ));
+    assert_eq!(out["ast"], Value::Null);
+    let diag = &out["diagnostics"][0];
+    assert_eq!(diag["source"], "options");
+    assert!(
+        diag["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(".md") && m.contains("page.tsx")),
+        "message must name the offending filename and the accepted extensions: {diag}"
+    );
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn parse_to_ast_accepts_the_shared_options_document() {
+    // One options document must be shareable across every tier: `jsxRuntime`/
+    // `development` are compile-tier-only knobs that parseToAst accepts and
+    // ignores, same contract as renderHtml.
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        "# hi\n",
+        r#"{"filename":"post.mdx","jsxRuntime":"react","development":true,"pipeline":{"gfm":{"table":true}}}"#,
+    ));
+    assert_eq!(out["ast"]["type"], "root");
+    assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
+}
+
 // ── direct highlightCode tier ──────────────────────────────────────────────
 
 #[test]

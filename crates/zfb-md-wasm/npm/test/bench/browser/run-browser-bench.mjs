@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PROTOTYPE browser benchmark runner (zfb#1855, epic zfb#1854): the same
+// Browser benchmark runner (parseToAst, zfb#1857, epic zfb#1854): the same
 // capability-matched parseToAst-vs-remark grid as the Node runner, executed
 // in REAL Chromium (the consumer context is a browser live preview). One
 // command, from the repo root, after the package is built:

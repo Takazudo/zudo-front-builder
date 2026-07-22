@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PROTOTYPE Node benchmark (zfb#1855, epic zfb#1854): `parseToAst` +
+// Node benchmark for `parseToAst` (zfb#1857, epic zfb#1854): `parseToAst` +
 // `JSON.parse` (through the REAL built package — the round trip IS the
 // product cost) vs `remark-parse` under capability-matched configs.
 // NOT wired into `pnpm test`; run explicitly:
@@ -30,6 +30,13 @@
 // - Warmup before every measured window; per-iteration samples; mean +
 //   p95 reported; one-off init (wasm fetch/compile/instantiate) reported
 //   separately, never mixed into steady-state numbers.
+// - UTF-16 CONVERSION COST (zfb#1856): every other fixture is pure ASCII
+//   and takes the Rust-side conversion's fast path (byte offsets already
+//   equal UTF-16 offsets there), so it never measures the conversion's
+//   actual cost. `cjk-heavy` (Japanese prose + emoji) is the one fixture
+//   that does -- expect a visibly smaller win there than on the ASCII
+//   docs; this is the honest signal the conversion has a real per-call
+//   cost on non-ASCII-heavy input, not a regression to hide.
 
 import { readFileSync } from "node:fs";
 

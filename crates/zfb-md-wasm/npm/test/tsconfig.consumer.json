@@ -8,7 +8,11 @@
     "sourceMap": false,
     "inlineSources": false
   },
-  "include": ["consumer-compatibility.ts", "consumer-compatibility-highlight.ts"],
+  "include": [
+    "consumer-compatibility.ts",
+    "consumer-compatibility-highlight.ts",
+    "consumer-compatibility-parse-to-ast.ts"
+  ],
   "exclude": [
     "../dist",
     "../node_modules",

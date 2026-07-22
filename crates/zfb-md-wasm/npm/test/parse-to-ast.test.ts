@@ -1,23 +1,54 @@
-// PROTOTYPE coverage (zfb#1855, epic zfb#1854 — parseToAst go/no-go spike;
-// pruned on a Wave-2 no-go).
+// Coverage for the `parseToAst` export (zfb#1857, epic zfb#1854).
 //
 // Test plan (declared per project testing discipline):
 // - Level: 3 (build output that RUNS) — like the sibling test files, this
 //   imports the BUILT package (`dist/`) and drives the real wasm artifact
 //   through Node, proving the export survives the wasm-bindgen boundary,
 //   the glue wiring, and JSON round-trip. The exhaustive position-shift
-//   proof lives at level 1 in `crates/zfb-md-wasm/tests/parse_to_ast.rs`;
-//   this file re-proves the recursive whole-tree position contract through
-//   the REAL artifact (slice-equality against the original source — an
-//   independent anchor, not a re-derivation of the Rust arithmetic).
-// - Blind spots: browser execution (the committed browser bench harness +
-//   the md-wasm-browser-smoke Chromium lane cover that surface).
+//   proof (including the UTF-16 conversion itself) lives at level 1 in
+//   `crates/zfb-md-wasm/tests/parse_to_ast.rs`; this file re-proves the
+//   recursive whole-tree position contract through the REAL artifact
+//   (slice-equality against the original source — an independent anchor,
+//   not a re-derivation of the Rust arithmetic) and adds the ONE proof that
+//   genuinely needs a JS runtime: node-by-node UTF-16 position parity
+//   against real `remark-parse`, the actual remark/unist reference
+//   implementation this export claims compatibility with.
+// - Blind spots: browser execution (the committed browser bench harness,
+//   `package-browser.test.ts`'s bundled-entry check below, and the
+//   md-wasm-browser-smoke Chromium lane cover that surface).
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { unified } from "unified";
+import remarkParse from "remark-parse";
 import { describe, it, expect } from "vitest";
 
 import { parseToAst, type Diagnostic } from "../dist/index.js";
 
-// Minimal structural view of a serialized mdast node — the public type is
-// deliberately `unknown` (prototype), so the test narrows locally.
+const testDir = dirname(fileURLToPath(import.meta.url));
+const fixturesDir = join(testDir, "..", "..", "tests", "fixtures", "parse-to-ast");
+
+interface ParseToAstFixture {
+  slug: string;
+  source: string;
+  options: Record<string, unknown>;
+}
+interface ParseToAstManifest {
+  fixtures: ParseToAstFixture[];
+}
+const manifest: ParseToAstManifest = JSON.parse(
+  readFileSync(join(fixturesDir, "manifest.json"), "utf8"),
+);
+function fixture(slug: string): ParseToAstFixture {
+  const found = manifest.fixtures.find((f) => f.slug === slug);
+  if (!found) throw new Error(`no fixture named \`${slug}\` in the parse-to-ast manifest`);
+  return found;
+}
+
+// Minimal structural view of a serialized mdast node — a superset-safe local
+// narrowing over the real `MdastNode` union, matching what this file's
+// generic recursive walkers need.
 interface MdastNodeish {
   type?: string;
   position?: {
@@ -65,12 +96,12 @@ function walk(value: unknown, visit: (node: MdastNodeish, path: string) => void,
   }
 }
 
-describe("parseToAst (PROTOTYPE, raw mdast export)", () => {
+describe("parseToAst (raw mdast export)", () => {
   it("returns the raw tree, frontmatter values, and zero diagnostics", async () => {
     const out = await parseToAst(FRONTMATTER_FIXTURE, { filename: "post.mdx" });
     expect(out.diagnostics).toHaveLength(0);
     expect(out.frontmatter).toEqual({ title: "Browser boundary proof", n: 42 });
-    const ast = out.ast as MdastNodeish;
+    const ast = out.ast as unknown as MdastNodeish;
     expect(ast.type).toBe("root");
     const types = new Set<string>();
     walk(out.ast, (node) => types.add(node.type as string));
@@ -127,5 +158,101 @@ describe("parseToAst (PROTOTYPE, raw mdast export)", () => {
     expect(diag.source).toBe("markdown");
     expect(diag.message).toContain("closing tag");
     expect(diag.line).toBe(5);
+  });
+});
+
+describe("parseToAst custom/unrecognized node survival (zfb#1828 requirement 3)", () => {
+  it("round-trips an MDX-JSX custom component with type/name/attributes intact", async () => {
+    const { source, options } = fixture("mdx-custom-component");
+    const out = await parseToAst(source, options);
+    expect(out.diagnostics).toHaveLength(0);
+    const ast = out.ast as unknown as MdastNodeish & { children: MdastNodeish[] };
+    const element = ast.children.find((n) => n.type === "mdxJsxFlowElement");
+    expect(element, "fixture contains an mdxJsxFlowElement").toBeDefined();
+    expect(element!.name).toBe("CustomComponent");
+    expect(element!.position).toBeDefined();
+
+    const attributes = element!.attributes as Array<Record<string, unknown>>;
+    const prop = attributes.find((a) => a.name === "prop");
+    expect(prop).toMatchObject({ type: "mdxJsxAttribute", name: "prop", value: "x" });
+
+    const count = attributes.find((a) => a.name === "count");
+    expect(count).toMatchObject({
+      type: "mdxJsxAttribute",
+      name: "count",
+      value: { type: "mdxJsxAttributeValueExpression", value: "2 + 3" },
+    });
+
+    const paragraph = (element!.children as MdastNodeish[]).find((c) => c.type === "paragraph");
+    expect(paragraph, "nested content forms a paragraph child").toBeDefined();
+    const inline = paragraph!.children as MdastNodeish[];
+    expect(inline.some((c) => c.type === "text")).toBe(true);
+    expect(inline.some((c) => c.type === "emphasis")).toBe(true);
+  });
+
+  it("keeps `:::note` directive-convention text raw (pre-visitors, from the shared fixture)", async () => {
+    const { source, options } = fixture("directive-convention");
+    const out = await parseToAst(source, options);
+    expect(out.diagnostics).toHaveLength(0);
+    const ast = out.ast as unknown as MdastNodeish & { children: MdastNodeish[] };
+    expect(ast.children[0]!.type).toBe("paragraph");
+    const text = ast.children[0]!.children as MdastNodeish[];
+    expect(text[0]!.value).toContain(":::note");
+  });
+});
+
+describe("parseToAst UTF-16 position parity with remark-parse (zfb#1856)", () => {
+  interface FlatNode {
+    type: string;
+    start: { line: number; column: number; offset: number };
+    end: { line: number; column: number; offset: number };
+  }
+
+  // Flattens a tree into pre-order (type, position) pairs -- deliberately a
+  // DIFFERENT walking strategy than `walk()` above (that one visits every
+  // object with a `type`; this one only records nodes carrying `position`,
+  // matching what both mdast implementations actually attach it to).
+  function flattenPositions(value: unknown, out: FlatNode[] = []): FlatNode[] {
+    if (Array.isArray(value)) {
+      for (const item of value) flattenPositions(item, out);
+      return out;
+    }
+    if (value !== null && typeof value === "object") {
+      const node = value as Record<string, unknown>;
+      if (typeof node.type === "string" && node.position && typeof node.position === "object") {
+        const position = node.position as { start: FlatNode["start"]; end: FlatNode["end"] };
+        out.push({ type: node.type, start: position.start, end: position.end });
+      }
+      for (const nested of Object.values(node)) flattenPositions(nested, out);
+    }
+    return out;
+  }
+
+  it("matches remark-parse node-by-node on a CJK + emoji fixture (surrogate pairs included)", async () => {
+    // The fixture is shared with the Rust-side
+    // `utf16_positions_are_shifted_on_non_ascii_fixture` test; this is the
+    // ONE proof that genuinely needs a JS runtime -- comparing against the
+    // real remark/unist reference implementation, not a re-derivation of
+    // the Rust conversion arithmetic.
+    const { source } = fixture("non-ascii-cjk-emoji");
+    const zfbOut = await parseToAst(source, { filename: "cjk.mdx" });
+    expect(zfbOut.diagnostics).toHaveLength(0);
+
+    const remarkTree = unified().use(remarkParse).parse(source);
+
+    const zfbFlat = flattenPositions(zfbOut.ast);
+    const remarkFlat = flattenPositions(remarkTree);
+
+    // Structural parity first: if the node sequences themselves diverge,
+    // the position-by-position comparison below would silently compare the
+    // wrong pairs.
+    expect(zfbFlat.map((n) => n.type)).toEqual(remarkFlat.map((n) => n.type));
+    expect(zfbFlat.length).toBeGreaterThan(5);
+
+    for (const [i, zfbNode] of zfbFlat.entries()) {
+      const remarkNode = remarkFlat[i]!;
+      expect(zfbNode.start, `${zfbNode.type}[${i}] start (UTF-16 units)`).toEqual(remarkNode.start);
+      expect(zfbNode.end, `${zfbNode.type}[${i}] end (UTF-16 units)`).toEqual(remarkNode.end);
+    }
   });
 });

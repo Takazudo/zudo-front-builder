@@ -1,4 +1,4 @@
-// PROTOTYPE benchmark core (zfb#1855, epic zfb#1854). Environment-agnostic
+// parseToAst benchmark core (zfb#1857, epic zfb#1854). Environment-agnostic
 // measurement helpers shared by the Node runner and the browser harness —
 // no Node imports here; `performance.now()` exists in both environments.
 
