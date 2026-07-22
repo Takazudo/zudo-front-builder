@@ -593,6 +593,372 @@ async fn dependency_registration_after_sync_does_not_downgrade_recursion() {
     watcher.shutdown().await;
 }
 
+/// Like [`sentinel_round_trip`], but matches the sentinel by FILE NAME
+/// instead of directory prefix. Needed by the symlink-alias repair tests
+/// below: delivery SPELLING for a symlink-registered watch differs by
+/// backend — notify's inotify backend joins the as-given watch spelling,
+/// while its FSEvents backend delivers canonicalized paths — so pinning
+/// either spelling here would deadlock the round trip on the other
+/// platform. `sentinel_write_dir` may be any spelling of the watched dir
+/// (same inode either way).
+async fn sentinel_round_trip_any_spelling(
+    rx: &mut mpsc::Receiver<Change>,
+    sentinel_write_dir: &Path,
+    label: &str,
+) -> Vec<Change> {
+    let mut seen = Vec::new();
+    let marker = format!("sentinel-{label}-");
+    let res = watcher_live_handshake(
+        HandshakeOpts::new(ROUND_TRIP_DEADLINE),
+        |idx| {
+            std::fs::write(
+                sentinel_write_dir.join(format!("sentinel-{label}-{idx}.txt")),
+                b"sentinel",
+            )
+            .expect("write sentinel file");
+        },
+        || loop {
+            match rx.try_recv() {
+                Ok(change) => {
+                    let hit = change
+                        .path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(&marker));
+                    seen.push(change);
+                    if hit {
+                        break true;
+                    }
+                }
+                Err(_) => break false,
+            }
+        },
+    )
+    .await;
+    assert!(
+        res.live,
+        "sentinel written into {sentinel_write_dir:?} never delivered ({label}); \
+         collected so far: {seen:#?}",
+    );
+    seen
+}
+
+/// Issue #1843 site (c): a dependency parent registered through a
+/// symlink-aliased spelling is re-registered at most ONCE — under its
+/// registration spelling — when a covering synced root retires.
+///
+/// What each platform can observe (probed against notify 8.2.0):
+///
+/// - The `watch()` CALL LOG is the cross-platform pin: the pre-fix
+///   per-alias repair issued one call per spelling of the same directory.
+/// - inotify additionally FLIPS the delivered-path spelling: both
+///   spellings resolve to one inode and share a watch descriptor, and the
+///   last `watch()` wins the backend's wd→path map. The spelling
+///   assertions below pin that half, gated to Linux — on FSEvents
+///   delivery is always canonical-spelled and per-alias duplicate
+///   registrations coalesce invisibly (the backend keys `recursive_info`
+///   by canonicalized path and delivers each raw event at most once), so
+///   no delivery-level assertion can catch the duplicate there.
+///
+/// Red-first (recorded 2026-07-22, macOS/FSEvents): with the repair loops
+/// temporarily reverted to iterate the alias sets — swap the dependency
+/// loop back to the `watched_dependency_dirs` snapshot and the boot loop
+/// back to `watched_recursive_roots`, the pre-#1843 shape (see this
+/// commit's diff of `sync_recursive_dir_watches`) — this test failed with:
+/// `dependency parent must be re-watched exactly once, got [(".../aa/lib",
+/// false), (".../zz/lib", false)]`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retired_root_repair_rewatches_symlink_aliased_dependency_parent_once() {
+    let (_tmp, ws, project) = workspace();
+    let zz = ws.join("zz");
+    std::fs::create_dir_all(zz.join("lib")).expect("physical dirs");
+    let aa = ws.join("aa");
+    std::os::unix::fs::symlink(&zz, &aa).expect("symlink alias");
+    // Claimed through the symlink spelling: the alias set has two members
+    // (`aa/lib` as-given + `zz/lib` canonical) while exactly one
+    // `notify.watch()` was issued.
+    let dep_parent = aa.join("lib");
+    let dependency = dep_parent.join("helper.ts");
+    std::fs::write(&dependency, "export const marker = 'one';\n").expect("seed dep");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.watch_additional_files([&dependency]),
+        vec![dep_parent.clone()]
+    );
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&aa], SKIPS),
+        vec![aa.clone()]
+    );
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("lib"), "synced-live").await;
+    drain_batch_tail(&mut rx).await;
+
+    // Retire the covering root with the call log armed: the collateral
+    // repair scan re-registers the nested dependency parent.
+    watcher.enable_watch_call_log();
+    assert!(watcher
+        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+        .is_empty());
+    let repair_calls = watcher.take_watch_call_log();
+    let dep_rewatches: Vec<_> = repair_calls
+        .iter()
+        .filter(|(path, _)| path.canonicalize().ok() == Some(zz.join("lib")))
+        .collect();
+    assert_eq!(
+        dep_rewatches.len(),
+        1,
+        "dependency parent must be re-watched exactly once, got {repair_calls:#?}",
+    );
+    assert_eq!(
+        dep_rewatches[0],
+        &(dep_parent.clone(), false),
+        "the re-watch must reuse the registration spelling, non-recursively",
+    );
+
+    // Delivery window: doubted write → sentinel round trip → batch tail.
+    std::fs::write(zz.join("lib/edited.ts"), b"post-retire edit").expect("write post-retire");
+    let mut seen = sentinel_round_trip_any_spelling(&mut rx, &zz.join("lib"), "after-retire").await;
+    seen.extend(drain_batch_tail(&mut rx).await);
+
+    // The edit is delivered on the repaired dependency-parent watch.
+    assert!(
+        seen.iter()
+            .any(|c| c.path.file_name().is_some_and(|n| n == "edited.ts")),
+        "post-retire edit must be delivered, got {seen:#?}",
+    );
+    // inotify only (see the header comment): delivery keeps the
+    // registration (project) spelling — the pre-fix per-alias repair
+    // flipped the shared watch descriptor's spelling to the physical
+    // alias. On FSEvents delivery is canonical-spelled even when correct,
+    // so these would be false failures there.
+    #[cfg(target_os = "linux")]
+    {
+        assert_none_under(&seen, &zz, "symlink-aliased dependency parent repair");
+        assert!(
+            seen.iter().any(|c| c.path == dep_parent.join("edited.ts")),
+            "the edit must be delivered under the registration spelling, got {seen:#?}",
+        );
+    }
+
+    watcher.shutdown().await;
+}
+
+/// Issue #1843 site (b): a BOOT root nested under a retired synced root is
+/// re-registered at most ONCE — under its boot registration spelling — by
+/// the collateral repair scan (which previously had no coverage at all).
+/// Platform observability and the Linux gating rationale are identical to
+/// [`retired_root_repair_rewatches_symlink_aliased_dependency_parent_once`].
+///
+/// Red-first (recorded 2026-07-22, macOS/FSEvents): with the repair loops
+/// temporarily reverted to the pre-#1843 per-alias shape (same revert
+/// procedure as the dependency-parent test above), this test failed with:
+/// `boot root must be re-watched exactly once, got [(".../aa/pages",
+/// true), (".../zz/pages", true)]`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retired_root_repair_rewatches_symlink_aliased_boot_root_once() {
+    let (_tmp, ws, project) = workspace();
+    let zz = ws.join("zz");
+    std::fs::create_dir_all(zz.join("pages")).expect("physical dirs");
+    let aa = ws.join("aa");
+    std::os::unix::fs::symlink(&zz, &aa).expect("symlink alias");
+    // Boot-registered through the symlink spelling via the extras path.
+    let boot_extra = aa.join("pages");
+
+    let (mut watcher, mut rx) = Watcher::start_with_extras(
+        &project,
+        std::iter::once("pages"),
+        [boot_extra.clone()],
+        DEBOUNCE,
+    )
+    .expect("watcher start");
+
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&aa], SKIPS),
+        vec![aa.clone()]
+    );
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "synced-live").await;
+    drain_batch_tail(&mut rx).await;
+
+    watcher.enable_watch_call_log();
+    assert!(watcher
+        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+        .is_empty());
+    let repair_calls = watcher.take_watch_call_log();
+    let boot_rewatches: Vec<_> = repair_calls
+        .iter()
+        .filter(|(path, _)| path.canonicalize().ok() == Some(zz.join("pages")))
+        .collect();
+    assert_eq!(
+        boot_rewatches.len(),
+        1,
+        "boot root must be re-watched exactly once, got {repair_calls:#?}",
+    );
+    assert_eq!(
+        boot_rewatches[0],
+        &(boot_extra.clone(), true),
+        "the re-watch must reuse the boot registration spelling, recursively",
+    );
+
+    // Delivery window: boot coverage must survive the retirement.
+    std::fs::write(zz.join("pages/edited.md"), b"post-retire edit").expect("write post-retire");
+    let mut seen =
+        sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "after-retire").await;
+    seen.extend(drain_batch_tail(&mut rx).await);
+    assert!(
+        seen.iter()
+            .any(|c| c.path.file_name().is_some_and(|n| n == "edited.md")),
+        "post-retire boot-root edit must be delivered, got {seen:#?}",
+    );
+    #[cfg(target_os = "linux")]
+    {
+        assert_none_under(&seen, &zz, "symlink-aliased boot root repair");
+        assert!(
+            seen.iter().any(|c| c.path == boot_extra.join("edited.md")),
+            "the edit must be delivered under the boot registration spelling, got {seen:#?}",
+        );
+    }
+
+    watcher.shutdown().await;
+}
+
+/// Issue #1843, codex-review finding: when ONE physical boot directory was
+/// boot-registered under SEVERAL spellings, the repair's single re-watch
+/// must replay the LAST-registered spelling — on inotify the most recent
+/// registration controls the shared watch descriptor's delivered-path
+/// spelling, so re-watching an earlier (or lexicographically first)
+/// spelling would silently flip delivery after a covering root retires.
+/// The extras below register `aa/pages` THEN `zz/pages`: the last
+/// registration (`zz/pages`) must win, while `aa/pages` sorts first both
+/// lexicographically and in registration order — discriminating against
+/// map-ordered and first-registered-wins implementations alike.
+///
+/// Red-first (recorded 2026-07-22, macOS/FSEvents): with the repair's
+/// boot loop iterating in forward registration order (drop the `.rev()` in
+/// `sync_recursive_dir_watches`), this test failed with `the re-watch must
+/// replay the LAST-registered boot spelling, got ("…/aa/pages", true)`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn duplicate_spelling_boot_roots_repair_to_the_last_registered_spelling() {
+    let (_tmp, ws, project) = workspace();
+    let zz = ws.join("zz");
+    std::fs::create_dir_all(zz.join("pages")).expect("physical dirs");
+    let aa = ws.join("aa");
+    std::os::unix::fs::symlink(&zz, &aa).expect("symlink alias");
+
+    let (mut watcher, mut rx) = Watcher::start_with_extras(
+        &project,
+        std::iter::once("pages"),
+        [aa.join("pages"), zz.join("pages")],
+        DEBOUNCE,
+    )
+    .expect("watcher start");
+
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([&aa], SKIPS),
+        vec![aa.clone()]
+    );
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "synced-live").await;
+    drain_batch_tail(&mut rx).await;
+
+    watcher.enable_watch_call_log();
+    assert!(watcher
+        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+        .is_empty());
+    let repair_calls = watcher.take_watch_call_log();
+    let boot_rewatches: Vec<_> = repair_calls
+        .iter()
+        .filter(|(path, _)| path.canonicalize().ok() == Some(zz.join("pages")))
+        .collect();
+    assert_eq!(
+        boot_rewatches.len(),
+        1,
+        "the duplicate-spelling boot dir must be re-watched exactly once, got {repair_calls:#?}",
+    );
+    assert_eq!(
+        boot_rewatches[0],
+        &(zz.join("pages"), true),
+        "the re-watch must replay the LAST-registered boot spelling",
+    );
+
+    // Boot coverage stays live after the retirement.
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("pages"), "after-retire").await;
+
+    watcher.shutdown().await;
+}
+
+/// Alias-boundary pin for the second issue #1799 fix (previously unpinned;
+/// issue #1843 verification note): a dependency dir that IS the retired
+/// root under a DIFFERENT spelling must not resurrect the just-retired
+/// root from the dependency repair loop. Its dependency coverage is
+/// restored by the downgrade branch alone — exactly one non-recursive
+/// `watch()` reaches the retired directory's identity — so direct
+/// children keep delivering while recursion stays gone.
+///
+/// Red-first (recorded 2026-07-22, macOS/FSEvents): with the dependency
+/// repair loop's exclusion reverted to LITERAL-SPELLING comparison against
+/// the retired root only (the pre-#1799-review `dep != root` shape), the
+/// call-log assertion failed with `only the downgrade restore may
+/// re-watch, got [(".../aa/lib", false), (".../zz/lib", false)]` — the
+/// physical spelling resurrected the root beside the restore.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dependency_dir_spelled_as_retired_root_alias_does_not_resurrect_it() {
+    let (_tmp, ws, project) = workspace();
+    let zz = ws.join("zz");
+    std::fs::create_dir_all(zz.join("lib/deep")).expect("physical dirs");
+    let aa = ws.join("aa");
+    std::os::unix::fs::symlink(&zz, &aa).expect("symlink alias");
+    // The dependency is claimed under the PHYSICAL spelling...
+    let dependency = zz.join("lib/helper.ts");
+    std::fs::write(&dependency, "export const marker = 'one';\n").expect("seed dep");
+
+    let (mut watcher, mut rx) = start_watcher(&project);
+    assert_eq!(
+        watcher.watch_additional_files([&dependency]),
+        vec![zz.join("lib")]
+    );
+    // ...while the synced root covers the SAME dir through the symlink
+    // spelling.
+    assert_eq!(
+        watcher.sync_recursive_dir_watches([aa.join("lib")], SKIPS),
+        vec![aa.join("lib")]
+    );
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("lib/deep"), "synced-live").await;
+    drain_batch_tail(&mut rx).await;
+
+    watcher.enable_watch_call_log();
+    assert!(watcher
+        .sync_recursive_dir_watches(std::iter::empty::<&Path>(), SKIPS)
+        .is_empty());
+    let repair_calls = watcher.take_watch_call_log();
+    assert_eq!(
+        repair_calls.len(),
+        1,
+        "only the downgrade restore may re-watch, got {repair_calls:#?}",
+    );
+    assert!(
+        !repair_calls[0].1,
+        "the restore must be non-recursive, got {repair_calls:#?}",
+    );
+
+    // Direct children keep delivering (the dependency consumer's coverage)...
+    sentinel_round_trip_any_spelling(&mut rx, &zz.join("lib"), "post-retire-live").await;
+    // ...and recursion is gone.
+    std::fs::write(zz.join("lib/deep/gone.ts"), b"deep").expect("write deep post-retire");
+    let mut seen = sentinel_round_trip_any_spelling(&mut rx, &zz.join("lib"), "after-doubt").await;
+    seen.extend(drain_batch_tail(&mut rx).await);
+    assert!(
+        !seen
+            .iter()
+            .any(|c| c.path.file_name().is_some_and(|n| n == "gone.ts")),
+        "retired recursion must not deliver, got {seen:#?}",
+    );
+
+    watcher.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn symlinked_descendant_and_physical_ancestor_collapse_to_one() {
     // Order-independence of the overlap reduction: a symlink-spelled
