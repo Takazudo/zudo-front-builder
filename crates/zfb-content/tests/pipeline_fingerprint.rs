@@ -659,11 +659,11 @@ fn single_and_default_fingerprints_unchanged_by_dual_wiring() {
         .expect("builds")
         .config_fingerprint()
         .expect("fingerprintable");
-    // This literal is the pre-#1067 fingerprint captured via the
-    // `side_channels_keep_fingerprint_byte_identical_to_pre_977` test in
-    // pipeline_spec.rs — unchanged by this PR.
+    // This literal mirrors the `side_channels_keep_fingerprint_byte_identical_to_pre_977`
+    // test in pipeline_spec.rs — re-captured there (and here) for the issue
+    // #1848 FINGERPRINT_VERSION bump; unchanged by THIS test's dual-mode wiring.
     assert_eq!(
-        default_fp, "87680d4705178c808751765ad1a8861b5ef0c004a3a185323af27ea506d8e6ca",
+        default_fp, "308ef87c7e9347256505931b376f4be7d2222428811761ff2a6ea3983be87294",
         "default-spec fingerprint must be unchanged by dual-mode wiring"
     );
 

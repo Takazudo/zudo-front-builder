@@ -26,6 +26,25 @@ default = ["syntect-onig"]
 # into this otherwise lightweight test graph.
 syntect-onig = ["syntect/regex-onig"]
 syntect-fancy = ["syntect/regex-fancy"]
+# Generator-only feature enabling syntect's `.sublime-syntax` YAML loader
+# (`SyntaxSetBuilder::add_from_folder`, epic #1845 sub #1848). Kept OFF by
+# default and OFF the unconditional workspace syntect dep (root
+# Cargo.toml:17) — `yaml-load` pulls in a YAML parser that no runtime
+# consumer needs; only the `generate_syntax_dump` bin below does, to build the
+# custom SyntaxSet dump ahead of time and commit it.
+generate-syntax-dump = ["syntect/yaml-load"]
+
+[[bin]]
+# Regenerates the custom SyntaxSet dump (issue #1848) that adds
+# TypeScript/TSX + TOML grammars on top of syntect's bundled defaults, loaded
+# at `src/syntect_highlight.rs` via `include_bytes!` +
+# `from_uncompressed_data`. `required-features` keeps this native
+# filesystem tool out of every default build, mirroring
+# `zfb-md-wasm`'s `generate_parity_oracle` bin (see its Cargo.toml). Run:
+# `cargo run -p zfb-content --bin generate_syntax_dump --features generate-syntax-dump`
+name = "generate_syntax_dump"
+path = "tests/bin/generate_syntax_dump.rs"
+required-features = ["generate-syntax-dump"]
 
 [dependencies]
 zfb-md-ast = { path = "../zfb-md-ast" }
