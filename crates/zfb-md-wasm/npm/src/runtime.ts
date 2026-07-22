@@ -23,8 +23,8 @@ interface WasmGlueModule {
   initSync(input?: { module: WebAssembly.Module }): unknown;
   compile?(source: string, optionsJson: string): string;
   renderHtml?(source: string, optionsJson: string): string;
-  // PROTOTYPE (zfb#1855, epic zfb#1854): raw-mdast export spike; pipeline-
-  // gated like compile/renderHtml, pruned on a Wave-2 no-go.
+  // Raw-mdast export (zfb#1857, epic zfb#1854); pipeline-gated like
+  // compile/renderHtml -- the highlight-only artifact never generates it.
   parseToAst?(source: string, optionsJson: string): string;
   highlightCode(code: string, optionsJson: string): string;
   version(): string;
@@ -229,10 +229,11 @@ export function createWasmApi({
   }
 
   /**
-   * PROTOTYPE (zfb#1855, epic zfb#1854 — go/no-go spike; NOT a documented
-   * or supported API surface): parse markdown/MDX into a raw mdast tree.
+   * Parse markdown/MDX into a raw mdast tree (zfb#1857, epic zfb#1854).
    * The `parseToAst + JSON.parse` round trip here IS the product cost the
-   * epic's benchmark measures. Pruned on a Wave-2 no-go.
+   * epic's benchmark measures against remark-parse. See `types.ts`'s
+   * `ParseToAstResult`/`MdastNode` docs for the result shape and the
+   * UTF-16 position contract.
    */
   async function parseToAst(
     source: string,

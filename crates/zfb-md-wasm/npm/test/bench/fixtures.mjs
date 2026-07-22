@@ -1,8 +1,8 @@
-// PROTOTYPE benchmark fixtures (zfb#1855, epic zfb#1854 — parseToAst
-// go/no-go spike). Deterministic in-memory document builders shared by the
-// Node runner (`bench-parse-ast.mjs`) and the browser harness
-// (`browser/`). Built in-memory (no committed 200 KB blobs) from fixed
-// string pools — every call returns byte-identical documents.
+// parseToAst benchmark fixtures (zfb#1857, epic zfb#1854). Deterministic
+// in-memory document builders shared by the Node runner
+// (`bench-parse-ast.mjs`) and the browser harness (`browser/`). Built
+// in-memory (no committed 200 KB blobs) from fixed string pools — every
+// call returns byte-identical documents.
 //
 // Capability-parity constraints baked into the corpus (see the runner's
 // methodology header): both sides parse as MDX + full GFM, so
@@ -237,6 +237,71 @@ export function frontmatteredDoc() {
   return `---\ntitle: Bench fixture\nrevision: 7\n---\n\n${smallDoc()}`;
 }
 
+// CJK (Japanese) prose pool + emoji, for `cjkHeavyDoc()` (zfb#1857): every
+// fixture above is pure ASCII, so it takes the UTF-16 conversion's ASCII
+// fast path and never measures the conversion itself (see `lib.rs`'s
+// `Utf16Positions`). This fixture puts the conversion cost inside the
+// measured window -- emoji specifically, not just CJK, since a scalar value
+// outside the Basic Multilingual Plane needs a UTF-16 surrogate pair (the
+// same reason the correctness fixtures use emoji, not CJK alone).
+const CJK_PROSE = [
+  "ビルドパイプラインは依存関係の順序ですべてのエントリを処理し、観測したハッシュを記録することで、変更されていないファイルを再読み込みせずにスキップできるようにする。",
+  "コールドパスが終わるまでは定常状態の性能は問題にならないため、ローダーはウォームアップ処理を計測対象の区間から切り離している。",
+  "本文から取り除いた位置情報を報告するパーサーは、下流のすべてのエディタ連携を混乱させてしまうため、境界を出る前にオフセットを元に戻している。",
+  "コンテンツコレクションはまずフロントマターを解決し、残った本文を同じパイプラインへ渡すことで、開発時とビルド時の出力をバイト単位で一致させる。",
+  "ほとんどのドキュメントは短いが、たまにインポートされる変更履歴が数百キロバイトに達することもあり、パーサーはその全域で予測可能な挙動を保つ必要がある。",
+  "巨大な木構造を wasm 境界越しにやり取りするときのシリアライズコストこそが古典的な懸念であり、このコーパスはまさにその問いに答えるために存在する。",
+  "エディタは保存のたびに同じファイルを何度も書き込みがちなので、ウォッチャーは無効化する前に数ミリ秒だけイベントをまとめてから処理する。",
+  "各診断情報はフロントマターを含む元のソースを指す 1 始まりの行と列を持つため、エラー表示は正しい範囲を強調できる。",
+];
+
+const CJK_INLINE_DECORATIONS = [
+  (s) => `*${s}*`,
+  (s) => `**${s}**`,
+  (s) => `\`${s}\``,
+  (s) => `~~${s}~~`,
+];
+
+const CJK_EMOJI = ["🚀", "✨", "📄", "🎉", "🧭", "🔥"];
+
+function cjkSentence(i) {
+  return CJK_PROSE[i % CJK_PROSE.length];
+}
+
+function cjkSection(index) {
+  const emoji = CJK_EMOJI[index % CJK_EMOJI.length];
+  const decorated = CJK_INLINE_DECORATIONS[index % CJK_INLINE_DECORATIONS.length](
+    cjkSentence(index + 1).slice(0, 8),
+  );
+  const parts = [
+    `## セクション ${index + 1}`,
+    "",
+    `${cjkSentence(index)} ${emoji} ${decorated} を含む一文。`,
+    "",
+  ];
+  if (index % 3 === 0) {
+    parts.push(`- 箇条書きその一 ${emoji}`, "- **強調** と `コード` を含む箇条書きその二", "");
+  }
+  if (index % 4 === 1) {
+    parts.push(`> ${cjkSentence(index + 2)}`, "");
+  }
+  return parts.join("\n");
+}
+
+/**
+ * ~20 KB: Japanese prose sections with sprinkled emoji, no MDX/GFM
+ * constructs (parity with the plain-markdown non-ASCII fixture the
+ * correctness suite shares with the Rust side). Measures the UTF-16
+ * position-conversion cost the ASCII fixtures above cannot.
+ */
+export function cjkHeavyDoc() {
+  const parts = ["# CJK ドキュメント", ""];
+  for (let i = 0; i < 24; i += 1) {
+    parts.push(cjkSection(i));
+  }
+  return parts.join("\n");
+}
+
 /** The benchmark corpus, in presentation order. */
 export function benchCorpus() {
   return [
@@ -245,5 +310,6 @@ export function benchCorpus() {
     { name: "large", doc: largeDoc(), iterations: 30, warmup: 5 },
     { name: "code-heavy", doc: codeHeavyDoc(), iterations: 100, warmup: 25 },
     { name: "mdx-heavy", doc: mdxHeavyDoc(), iterations: 100, warmup: 25 },
+    { name: "cjk-heavy", doc: cjkHeavyDoc(), iterations: 100, warmup: 25 },
   ];
 }

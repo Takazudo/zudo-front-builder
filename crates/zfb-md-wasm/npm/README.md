@@ -176,6 +176,103 @@ This lets an editor show literal `<tag>&` safely while retaining a useful
 warning. Empty and incomplete HTML/CSS/JavaScript editor input are accepted
 and can produce normal class markup without a diagnostic.
 
+## `parseToAst(source, options?)` — markdown/MDX → raw mdast
+
+`parseToAst()` parses markdown/MDX source into a serialized **mdast**
+tree — the raw markdown-rs parser output, before any of zfb's own visitors
+run. Use it when a consumer needs the *tree*, not rendered output: a live
+preview that wants remark/unist-ecosystem tooling (`mdast-util-to-hast`, a
+custom mdast transform, editor↔preview scroll sync keyed on source
+positions) instead of zfb's own HTML/JS rendering.
+
+```ts
+import { parseToAst, type ParseToAstResult } from "@takazudo/zfb-md-wasm";
+
+const { ast, frontmatter, diagnostics }: ParseToAstResult = await parseToAst(
+  "---\ntitle: Hello\n---\n\n# Welcome\n\nSome *emphasis*.\n",
+  { filename: "post.mdx" },
+);
+// ast         -> the mdast root, or null on failure
+// frontmatter -> { title: "Hello" }
+// diagnostics -> []
+```
+
+`ast` is `MdastRoot | null` — a real TypeScript union over the mdast node
+set markdown-rs emits (`Root`, `Paragraph`, `Heading`, `Text`, `List`,
+`Link`, `MdxJsxFlowElement`, …; see `types.ts`'s `MdastNode`), plus a
+`{ type: string; position: AstPosition; [key: string]: unknown }` catch-all
+so an unrecognized/future node type stays TYPED instead of collapsing to
+`unknown`. Narrow on `type` the way any discriminated union works:
+
+```ts
+for (const child of ast?.children ?? []) {
+  if (child.type === "heading") {
+    console.log(child.depth, child.position.start.line);
+  }
+}
+```
+
+The tree is **mdast, not hast**: block/inline structure (`heading`,
+`paragraph`, `emphasis`, `list`, …), not an HTML-shaped tree. It is the
+**raw parser output** — post-frontmatter-strip (frontmatter comes back
+separately via `frontmatter`, same as `compile`/`renderHtml`), but
+**pre-visitor**: no `githubAlerts`/directive rewriting, no zfb-synthesized
+node types. MDX JSX elements and expressions survive exactly as
+markdown-rs parsed them (`mdxJsxFlowElement`/`mdxJsxTextElement` carry
+`name`/`attributes`/`children`; `:::note`-style directive text and
+GitHub-style `> [!NOTE]` alerts stay plain paragraph/blockquote text,
+because rewriting them is a visitor's job this tier deliberately skips).
+
+### Position contract: UTF-16 code units
+
+Every real tree node carries `position: { start, end }`, each an
+`{ line, column, offset }` point. `line` is 1-based and unit-agnostic;
+`column` (1-based) and `offset` (0-based) are **UTF-16 code units** — the
+same indexing `String.prototype.slice`, `mdast-util-to-hast`, and
+remark/unist tooling already use, so positions from `parseToAst` slot
+directly into that ecosystem without a conversion step of your own. This
+matters once source is non-ASCII: a scalar value outside the Basic
+Multilingual Plane (most emoji) needs a UTF-16 surrogate pair, so it
+advances `offset`/`column` by 2 units, not 1 (and not the 4 UTF-8 bytes it
+takes on disk). Frontmatter lines are included in `line`/`offset`, same as
+`compile`/`renderHtml`'s diagnostics.
+
+### Documented divergences from remark-parse / remark-mdx
+
+- `mdxJsxAttribute` records (a JSX element's individual attributes) carry
+  no `position` — markdown-rs does not model attribute positions.
+- Top-level `import`/`export` degrade to plain paragraphs (no `mdxjsEsm`
+  nodes), and MDX expressions carry no estree data — the wasm boundary
+  cannot host a JS ESM/acorn parser. Keep using remark directly for
+  documents that need remark-mdx-equivalent ESM/estree.
+- A `_markdownRsStops` field on MDX expression/ESM nodes is
+  markdown-rs-internal re-parse bookkeeping: internal, unstable, and
+  **byte**-based (unlike `position`) — never slice a string with it.
+
+### Why (and when) to reach for it
+
+`parseToAst` exists for the same reason `compile`/`renderHtml` do: parity
+with zfb's own pipeline, in the browser, on every keystroke. A Node
+benchmark (`parseToAst` + `JSON.parse`, through the real built package,
+against `remark-parse` under a capability-matched config — full method in
+`test/bench/bench-parse-ast.mjs`) shows a consistent win at the document
+sizes a live preview actually parses:
+
+| doc | bytes | remark-parse mean | parseToAst+JSON.parse mean | mean win |
+| --- | --- | --- | --- | --- |
+| small (~1.4 KB) | 1,361 | 0.70 ms | 0.29 ms | ~2.4x |
+| medium (~21 KB) | 21,846 | 12.06 ms | 6.24 ms | ~1.9x |
+
+(One-off wasm init — fetch/compile/instantiate, paid once — was 16.1 ms in
+that run; steady-state numbers above never include it.) On a CJK-heavy
+(Japanese prose + emoji) document the win narrows to roughly parity
+(~1.0–1.3x across repeated runs) — the UTF-16 position conversion has a
+real, measurable cost on non-ASCII-heavy input, unlike pure-ASCII sources,
+which take a fast path that skips the conversion (and the corresponding
+Rust benchmark for that fixture) entirely. Numbers vary by machine/Node
+version; re-run `node test/bench/bench-parse-ast.mjs` (after `pnpm build`)
+for your own environment.
+
 ## Browser loading and emitted resources
 
 The package root has a `browser` export condition. A browser-aware bundler
@@ -249,6 +346,12 @@ interface ZfbMdWasmOptions {
 derives from `zfb.config.ts` at build time. See "Limitations" for why it's
 resolved JSON rather than a config file. Unknown fields are rejected at both
 nesting levels (an `options`-source diagnostic).
+
+`parseToAst` accepts this same options document (so one options object can
+serve every tier), but only `filename` and `pipeline.gfm` participate —
+`theme`/`codeHighlight`/`jsxRuntime`/`development` are visitor/serializer
+knobs this raw-parse tier never runs, so it accepts and silently ignores
+them.
 
 ### `codeHighlight`: inline vs. class mode for `compile`/`renderHtml`
 
@@ -342,8 +445,9 @@ alias.
 ## Node usage
 
 For tests and tooling, the package loads and runs under Node ≥ 20 with no extra
-setup — the same `compile` / `renderHtml` / `version` API. This is exactly how
-this package's own vitest suite exercises the wasm.
+setup — the same `compile` / `renderHtml` / `parseToAst` / `version` API. This
+is exactly how this package's own vitest suite (and `parseToAst`'s Node
+benchmark against `remark-parse`) exercises the wasm.
 
 ## Parity guarantee & limitations
 

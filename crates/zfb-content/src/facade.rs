@@ -475,8 +475,8 @@ pub fn render_mdx_jsx_module(
     mdx_to_jsx_module_with_pipeline(input, opts, pipeline)
 }
 
-/// PROTOTYPE (zfb#1855, epic zfb#1854 — `parseToAst` go/no-go spike): parse
-/// `input` into a RAW markdown-rs mdast tree.
+/// Parse `input` into a RAW markdown-rs mdast tree — feeds `zfb-md-wasm`'s
+/// `parseToAst` export (zfb#1857, epic zfb#1854).
 ///
 /// Contract locked at epic planning: the returned tree is the raw parser
 /// output — post-frontmatter-strip (the caller strips frontmatter before
@@ -493,8 +493,10 @@ pub fn render_mdx_jsx_module(
 /// the full options struct anyway so the wasm boundary passes one options
 /// document to every tier.
 ///
-/// If the epic's Wave-2 decision is no-go, this function (and its callers in
-/// `zfb-md-wasm`) are pruned; nothing else in this module depends on it.
+/// `zfb-md-wasm` converts this function's UTF-8-byte positions to the
+/// UTF-16 code-unit contract `parseToAst` actually returns — see that
+/// crate's `Utf16Positions` for the conversion. Positions returned directly
+/// from this function stay markdown-rs-native (UTF-8 bytes).
 ///
 /// # Errors
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects `input`.

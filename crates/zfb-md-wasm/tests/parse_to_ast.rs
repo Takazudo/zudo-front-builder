@@ -1,37 +1,81 @@
-//! Native (rlib) integration tests for the PROTOTYPE `parseToAst` export
-//! (zfb#1855, epic zfb#1854 — go/no-go spike; pruned on a Wave-2 no-go).
+//! Native (rlib) integration tests for the `parseToAst` export (zfb#1857,
+//! epic zfb#1854).
 //!
 //! Test plan (declared per project testing discipline):
 //! - **Level**: 1 (unit/logic). `parse_to_ast` is a pure `&str → String`
 //!   transform; every assertion is a JSON comparison against in-memory
 //!   output on the host triple — same rationale as `tests/api.rs`.
-//! - **Why level 1**: the position-shift arithmetic and the raw-mdast
-//!   contract shape are pure logic. The wasm boundary itself is exercised
-//!   at level 3 by the npm package's `test/parse-to-ast.test.ts` against
-//!   the built `dist/` artifact.
+//! - **Why level 1**: the position-shift/UTF-16-conversion arithmetic and
+//!   the raw-mdast contract shape are pure logic. The wasm boundary itself
+//!   is exercised at level 3 by the npm package's `test/parse-to-ast.test.ts`
+//!   against the built `dist/` artifact (including the remark-parity proof,
+//!   which needs a real JS remark to run against).
 //! - **What's covered**: (a) the review-mandated RECURSIVE WHOLE-TREE
 //!   position proof — every node in the returned AST carries `position`,
-//!   with lines shifted by the frontmatter line count AND offsets shifted
-//!   by the body byte offset (columns unchanged), verified node-by-node
-//!   against an independently parsed unshifted body tree AND by
-//!   slice-equality against the original source bytes; (b) contract-shape
+//!   with lines shifted by the frontmatter line count and offsets/columns
+//!   in the export's real units (ASCII fixture: UTF-16 == bytes, so the
+//!   byte-arithmetic proof below doubles as a UTF-16 proof; the dedicated
+//!   non-ASCII fixture below proves the UTF-16 conversion itself), verified
+//!   node-by-node against an independently parsed unshifted body tree AND
+//!   by slice-equality against the original source bytes; (b) contract-shape
 //!   fixtures: MDX (JSX elements + expressions + ESM), directive-style
 //!   `:::note` text (stays RAW — no zfb visitor runs), custom-node-ish
 //!   GitHub-alert blockquote (stays a plain blockquote — pre-visitor
-//!   contract); (c) `_markdownRsStops` absolute offsets shifted in
-//!   lock-step with positions; (d) no-frontmatter passthrough (zero
-//!   shift); (e) parse errors surface as `"markdown"` diagnostics with
-//!   frontmatter-shifted lines, same arithmetic as `renderHtml`.
+//!   contract), a `<CustomComponent>` MDX-JSX element surviving with
+//!   type/name/attributes intact (requirement 3 of zfb#1828); (c)
+//!   `_markdownRsStops` absolute BYTE offsets shifted in lock-step with
+//!   positions (never UTF-16-converted, by design); (d) no-frontmatter
+//!   passthrough (zero shift); (e) parse errors surface as `"markdown"`
+//!   diagnostics with frontmatter-shifted lines, same arithmetic as
+//!   `renderHtml`; (f) the UTF-16 code-unit pin on a CJK+emoji source
+//!   (surrogate pairs discriminate UTF-16 units from code points from
+//!   bytes).
 //! - **Blind spots**: executing the compiled wasm artifact (npm package
-//!   scope); benchmark characteristics (the bench harness under
-//!   `npm/test/bench/` measures, it does not assert).
+//!   scope); remark-parity (needs real JS remark — npm package scope);
+//!   benchmark characteristics (the bench harness under `npm/test/bench/`
+//!   measures, it does not assert).
 
 #![cfg(feature = "pipeline")]
 
+use std::fs;
+use std::path::PathBuf;
+
+use serde::Deserialize;
 use serde_json::Value;
 
 fn parse(result: String) -> Value {
     serde_json::from_str(&result).expect("API output is always a JSON document")
+}
+
+/// The non-frozen fixture corpus shared with the npm package's
+/// `test/parse-to-ast.test.ts` (`highlight-parity/`'s manifest pattern —
+/// unlike the frozen `tests/fixtures/parity/` corpus, this one has no
+/// committed "expected" oracle: each fixture is asserted structurally, not
+/// byte-compared against another renderer).
+#[derive(Debug, Deserialize)]
+struct FixtureManifest {
+    fixtures: Vec<FixtureEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FixtureEntry {
+    slug: String,
+    source: String,
+    options: Value,
+}
+
+fn load_fixture(slug: &str) -> FixtureEntry {
+    let manifest_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parse-to-ast/manifest.json");
+    let text = fs::read_to_string(&manifest_path)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", manifest_path.display()));
+    let manifest: FixtureManifest = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("parsing {}: {e}", manifest_path.display()));
+    manifest
+        .fixtures
+        .into_iter()
+        .find(|f| f.slug == slug)
+        .unwrap_or_else(|| panic!("no fixture named `{slug}` in {}", manifest_path.display()))
 }
 
 /// Frontmatter'd fixture exercising a wide construct spread: headings,
@@ -455,22 +499,214 @@ fn eof_terminated_frontmatter_shifts_first_line_columns_too() {
 }
 
 #[test]
-fn byte_offset_semantics_are_pinned_on_non_ascii() {
-    // Self-review finding (P1), PINNED as a KNOWN CONTRACT GAP — decision-sub
-    // input (zfb#1856), not an endorsement: positions are markdown-rs's
-    // native UTF-8 BYTE units, so on non-ASCII sources the serialized
-    // offsets diverge from the UTF-16 code-unit indices remark/unist
-    // consumers expect. `日本語` is 9 bytes / 3 UTF-16 code units; a full
-    // implementation must convert (re-benchmarking the added cost) or
-    // explicitly declare byte semantics. This test exists so the gap is
-    // explicit, not silently shipped.
-    let source = "# 日本語\n\nnext\n";
+fn utf16_code_unit_semantics_are_pinned_on_non_ascii() {
+    // Replaces the Wave-1 byte-offset pin (decision-sub zfb#1856 LOCKED this
+    // as the production contract): `position.offset`/`position.column` are
+    // UTF-16 code units, matching remark/unist and JS `String` indexing.
+    // `日本語` alone (3 chars, all in the Basic Multilingual Plane, 1 UTF-16
+    // unit each) would NOT discriminate UTF-16 units from Unicode scalar
+    // values/code points — `😀` (U+1F600) is required: it needs a SURROGATE
+    // PAIR (2 UTF-16 units, 1 scalar value, 4 UTF-8 bytes), so only a UTF-16
+    // implementation reports the numbers pinned below.
+    let source = "# 日本語 😀\n\nnext\n";
     let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
     assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
     let heading_end = &out["ast"]["children"][0]["position"]["end"];
-    // "# 日本語" = 2 + 9 BYTES (5 code points, 5 UTF-16 units). If this
-    // assertion ever starts failing with 7, the contract switched to
-    // UTF-16/code-point units — update the docs in lib.rs/types.ts with it.
-    assert_eq!(heading_end["offset"].as_u64(), Some(11));
-    assert_eq!(heading_end["column"].as_u64(), Some(12));
+    // Independent oracle: std's `encode_utf16` on the heading's own source
+    // line, not the production `char::len_utf16`-based prefix map.
+    let heading_line = source.split('\n').next().unwrap();
+    let expected_utf16_units = heading_line.encode_utf16().count() as u64;
+    // "# 日本語 😀" = 2 + 3 + 1 + 2 = 8 UTF-16 units (2 for "# ", 3 for
+    // "日本語", 1 for the space, 2 for the surrogate-pair emoji). If this
+    // ever starts asserting 16 (bytes) or 7 (code points), the contract
+    // regressed — update lib.rs/types.ts's docs before touching this pin.
+    assert_eq!(expected_utf16_units, 8);
+    assert_eq!(heading_end["offset"].as_u64(), Some(expected_utf16_units));
+    assert_eq!(
+        heading_end["column"].as_u64(),
+        Some(expected_utf16_units + 1)
+    );
+}
+
+#[test]
+fn utf16_positions_are_shifted_on_non_ascii_fixture() {
+    // The recursive whole-tree proof above uses an ASCII fixture, where
+    // UTF-16 units == bytes (the fast path never even builds the prefix
+    // map) — it cannot, by itself, prove the UTF-16 conversion runs
+    // correctly. This test re-proves the same whole-tree contract on the
+    // shared CJK+emoji fixture, computing the expected UTF-16 line/column/
+    // offset independently (via `str::encode_utf16`, not the production
+    // `char::len_utf16`-based prefix map) rather than re-deriving the
+    // production arithmetic.
+    let fixture = load_fixture("non-ascii-cjk-emoji");
+    let options_json = serde_json::to_string(&fixture.options).unwrap();
+    let out = parse(zfb_md_wasm::parse_to_ast(&fixture.source, &options_json));
+    assert_eq!(
+        out["diagnostics"].as_array().unwrap().len(),
+        0,
+        "fixture parses clean: {:?}",
+        out["diagnostics"]
+    );
+    assert_eq!(
+        out["frontmatter"],
+        Value::Null,
+        "fixture has no frontmatter"
+    );
+
+    let raw = zfb_content::facade::parse_mdast(
+        &zfb_content::facade::PipelineOptions::default(),
+        &fixture.source,
+    )
+    .expect("fixture body parses");
+    let raw_json = serde_json::to_value(&raw).expect("mdast serializes");
+
+    for required in ["heading", "text", "emphasis", "list", "listItem"] {
+        assert!(
+            count_nodes_of_type(&out["ast"], required) > 0,
+            "non-ASCII fixture must contain a `{required}` node"
+        );
+    }
+
+    assert_every_node_has_position(&out["ast"], "ast");
+    assert_utf16_shifted_tree(&out["ast"], &raw_json, &fixture.source, "ast");
+}
+
+/// Independent UTF-16 point oracle (test-only, deliberately NOT the
+/// production `char::len_utf16`-based prefix map): same algorithm class as
+/// markdown-rs's own `Location::to_point`, but counting UTF-16 code units
+/// via `str::encode_utf16` instead of bytes. `byte_offset` is a byte offset
+/// into `source` (no frontmatter shift needed here — the fixture this
+/// backs has none, so raw markdown-rs offsets already index `source`
+/// directly).
+fn independent_utf16_point(source: &str, byte_offset: usize) -> (u64, u64, u64) {
+    let prefix = &source[..byte_offset];
+    let line = prefix.matches('\n').count() as u64 + 1;
+    let line_start_byte = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let column = source[line_start_byte..byte_offset].encode_utf16().count() as u64 + 1;
+    let offset = source[..byte_offset].encode_utf16().count() as u64;
+    (line, column, offset)
+}
+
+/// Recursive whole-tree UTF-16 proof, mirroring `assert_shifted_tree`'s
+/// byte-based sibling above but for the frontmatter-free non-ASCII fixture
+/// (no body-offset/prefix-lines shift needed — `raw` already parses the
+/// exact same `source`), and asserting UTF-16 units via the independent
+/// oracle above instead of raw-plus-delta arithmetic.
+fn assert_utf16_shifted_tree(shifted: &Value, raw: &Value, source: &str, path: &str) {
+    match (shifted, raw) {
+        (Value::Object(s), Value::Object(r)) => {
+            let s_keys: Vec<_> = s.keys().collect();
+            let r_keys: Vec<_> = r.keys().collect();
+            assert_eq!(s_keys, r_keys, "key sets diverge at {path}");
+            for (key, s_val) in s {
+                let r_val = &r[key];
+                match key.as_str() {
+                    "position" => {
+                        for point in ["start", "end"] {
+                            let raw_byte_offset = r_val[point]["offset"].as_u64().unwrap() as usize;
+                            let (exp_line, exp_column, exp_offset) =
+                                independent_utf16_point(source, raw_byte_offset);
+                            assert_eq!(
+                                s_val[point]["line"].as_u64(),
+                                Some(exp_line),
+                                "{path}.position.{point}.line"
+                            );
+                            assert_eq!(
+                                s_val[point]["column"].as_u64(),
+                                Some(exp_column),
+                                "{path}.position.{point}.column (UTF-16 units)"
+                            );
+                            assert_eq!(
+                                s_val[point]["offset"].as_u64(),
+                                Some(exp_offset),
+                                "{path}.position.{point}.offset (UTF-16 units)"
+                            );
+                        }
+                    }
+                    "_markdownRsStops" => {
+                        // No frontmatter on this fixture, so stops are
+                        // unshifted AND (by contract) never UTF-16-converted.
+                        assert_eq!(
+                            s_val, r_val,
+                            "_markdownRsStops stay byte-based and unshifted at {path}"
+                        );
+                    }
+                    _ => assert_utf16_shifted_tree(s_val, r_val, source, &format!("{path}.{key}")),
+                }
+            }
+        }
+        (Value::Array(s), Value::Array(r)) => {
+            assert_eq!(s.len(), r.len(), "array lengths diverge at {path}");
+            for (i, (s_val, r_val)) in s.iter().zip(r).enumerate() {
+                assert_utf16_shifted_tree(s_val, r_val, source, &format!("{path}[{i}]"));
+            }
+        }
+        _ => assert_eq!(shifted, raw, "non-position values diverge at {path}"),
+    }
+}
+
+#[test]
+fn mdx_custom_component_survives_as_typed_node_with_attributes() {
+    // Requirement 3 of zfb#1828: unrecognized/custom constructs (MDX JSX
+    // elements) survive serialization as TYPED nodes, not dropped or
+    // collapsed to plain text -- proven here on the shared fixture corpus's
+    // `<CustomComponent>` element (name + a literal attribute + an
+    // expression attribute + nested phrasing content).
+    let fixture = load_fixture("mdx-custom-component");
+    let options_json = serde_json::to_string(&fixture.options).unwrap();
+    let out = parse(zfb_md_wasm::parse_to_ast(&fixture.source, &options_json));
+    assert_eq!(
+        out["diagnostics"].as_array().unwrap().len(),
+        0,
+        "fixture parses clean: {:?}",
+        out["diagnostics"]
+    );
+    let ast = &out["ast"];
+    let element = ast["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["type"] == "mdxJsxFlowElement")
+        .expect("fixture contains an mdxJsxFlowElement");
+
+    assert_eq!(element["name"], "CustomComponent");
+    assert!(
+        element["position"].is_object(),
+        "the element itself carries a position"
+    );
+
+    let attributes = element["attributes"].as_array().unwrap();
+    let prop = attributes
+        .iter()
+        .find(|a| a["name"] == "prop")
+        .expect("literal `prop` attribute survives");
+    assert_eq!(prop["type"], "mdxJsxAttribute");
+    assert_eq!(prop["value"], "x");
+
+    let count = attributes
+        .iter()
+        .find(|a| a["name"] == "count")
+        .expect("expression `count` attribute survives");
+    assert_eq!(count["type"], "mdxJsxAttribute");
+    assert_eq!(count["value"]["type"], "mdxJsxAttributeValueExpression");
+    assert_eq!(count["value"]["value"], "2 + 3");
+
+    // Nested content: the element's paragraph child carries a text node and
+    // an emphasis node, exactly as markdown-rs parsed them -- no zfb
+    // visitor rewrote or dropped anything.
+    let paragraph = element["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "paragraph")
+        .expect("nested content forms a paragraph child");
+    let inline = paragraph["children"].as_array().unwrap();
+    assert!(
+        inline.iter().any(|c| c["type"] == "text"),
+        "nested plain text survives: {inline:?}"
+    );
+    assert!(
+        inline.iter().any(|c| c["type"] == "emphasis"),
+        "nested emphasis survives: {inline:?}"
+    );
 }
