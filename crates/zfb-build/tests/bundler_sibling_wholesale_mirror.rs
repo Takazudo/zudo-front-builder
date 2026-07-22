@@ -290,14 +290,20 @@ fn skip_list_dirs_and_gitignored_files_are_not_mirrored() {
     );
 }
 
-/// A wildcard-alias-only claim (`@shared/* -> <ws>/lib/shared/*`) with NO
-/// discovered sibling file still mirrors its target directory wholesale.
+/// A wildcard alias is a claim only when a runtime import concretely matches
+/// it; the reached sibling directory remains wholesale mirrored.
 #[test]
-fn wildcard_alias_only_claim_mirrors_target_dir() {
+fn runtime_wildcard_alias_claim_mirrors_reached_target_dir() {
     let workspace = tempfile::tempdir().unwrap();
     let (ws_root, project) = write_bundle_workspace_project(workspace.path());
-    // NO project entry imports the sibling — the ONLY claim is the wildcard
-    // alias target directory.
+    write(
+        &project.join("pages/index.tsx"),
+        "import { help } from '@shared/helper'; export default () => help;\n",
+    );
+    write(
+        &project.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
+    );
     write(
         &ws_root.join("lib/shared/helper.ts"),
         "export const help = 'HELP';\n",
@@ -315,6 +321,155 @@ fn wildcard_alias_only_claim_mirrors_target_dir() {
     assert!(
         shared.join("helper.ts").is_file(),
         "a wildcard-alias-only claim must still wholesale-mirror its target dir"
+    );
+}
+
+#[test]
+fn broad_root_alias_stages_only_the_concrete_root_graph_and_reached_sibling() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("package.json"),
+        r#"{"name":"workspace-root"}"#,
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { view } from '@/components/card/view'; export default () => view;\n",
+    );
+    write(
+        &project.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["../../*"],"@ui/*":["../../packages/ui/*"]}}}"#,
+    );
+    write(
+        &ws_root.join("components/card/view.ts"),
+        "import './style.css'; import '@/ignored/secret'; import '@/dist/generated'; import { helper } from '@/src/helper'; import data from '@/lib/data.json'; import { ui } from '@ui/index'; export const view = helper + data.value + ui;\n",
+    );
+    write(
+        &ws_root.join("components/card/style.css"),
+        ".card { color: red; }\n",
+    );
+    write(
+        &ws_root.join("src/helper.ts"),
+        "export const helper = 'HELP';\n",
+    );
+    write(&ws_root.join("lib/data.json"), r#"{"value":"DATA"}"#);
+    write(
+        &ws_root.join("unimported/secret.ts"),
+        "export const secret = 1;\n",
+    );
+    write(&ws_root.join(".gitignore"), "ignored/\n");
+    write(
+        &ws_root.join("ignored/secret.ts"),
+        "export const ignored = true;\n",
+    );
+    write(
+        &ws_root.join("dist/generated.ts"),
+        "export const generated = 1;\n",
+    );
+    write(
+        &ws_root.join("packages/ui/package.json"),
+        r#"{"name":"ui"}"#,
+    );
+    write(
+        &ws_root.join("packages/ui/index.ts"),
+        "export const ui = 'UI';\n",
+    );
+    write(
+        &ws_root.join("packages/ui/unreferenced.ts"),
+        "export const retained = true;\n",
+    );
+    write(
+        &ws_root.join("packages/other/package.json"),
+        r#"{"name":"other"}"#,
+    );
+    write(
+        &ws_root.join("packages/other/index.ts"),
+        "export const other = true;\n",
+    );
+
+    let tsconfig_paths = BTreeMap::from([
+        (
+            "@/*".to_string(),
+            vec![ws_root.join("*").to_string_lossy().into_owned()],
+        ),
+        (
+            "@ui/*".to_string(),
+            vec![ws_root.join("packages/ui/*").to_string_lossy().into_owned()],
+        ),
+    ]);
+    let input = make_bundle_input(&project, "dist-root-graph", vec![], tsconfig_paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("concrete root alias graph stages");
+
+    let work = work_mirror_root(&session);
+    for path in [
+        "components/card/view.ts",
+        "components/card/style.css",
+        "src/helper.ts",
+        "lib/data.json",
+        "packages/ui/index.ts",
+        "packages/ui/unreferenced.ts",
+    ] {
+        assert!(work.join(path).is_file(), "expected staged {path}");
+    }
+    for path in ["unimported", "ignored", "dist", "packages/other"] {
+        assert!(!work.join(path).exists(), "must not over-stage {path}");
+    }
+}
+
+#[test]
+fn broad_root_alias_requires_dot_workspace_membership() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("pnpm-workspace.yaml"),
+        "packages: ['sub-packages/*']\n",
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { helper } from '@/src/helper'; export default () => helper;\n",
+    );
+    write(&ws_root.join("src/helper.ts"), "export const helper = 1;\n");
+    let paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![ws_root.join("*").to_string_lossy().into_owned()],
+    )]);
+    let input = make_bundle_input(&project, "dist-no-dot", vec![], paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("mock materialisation completes");
+    assert!(!work_mirror_root(&session).join("src/helper.ts").exists());
+}
+
+#[test]
+fn root_alias_graph_rejects_parent_relative_cross_tree_value_import() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (ws_root, project) = write_bundle_workspace_project(workspace.path());
+    write(
+        &ws_root.join("package.json"),
+        r#"{"name":"workspace-root"}"#,
+    );
+    write(
+        &project.join("pages/index.tsx"),
+        "import { view } from '@/components/a/b/view'; export default () => view;\n",
+    );
+    write(
+        &project.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["../../*"]}}}"#,
+    );
+    write(
+        &ws_root.join("components/a/b/view.ts"),
+        "import { helper } from '../../../src/helper'; export const view = helper;\n",
+    );
+    write(&ws_root.join("src/helper.ts"), "export const helper = 1;\n");
+    let paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![ws_root.join("*").to_string_lossy().into_owned()],
+    )]);
+    let input = make_bundle_input(&project, "dist-relative-reject", vec![], paths, vec![]);
+    let error = bundle_with_session(input, None).unwrap_err().to_string();
+    assert!(
+        error.contains("parent-escaping relative value import"),
+        "{error}"
     );
 }
 
