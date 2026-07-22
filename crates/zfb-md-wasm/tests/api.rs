@@ -26,6 +26,33 @@
 use std::collections::BTreeMap;
 
 use serde_json::Value;
+
+#[cfg(feature = "pipeline")]
+#[derive(Debug, serde::Deserialize)]
+struct DiagnosticFixtureManifest {
+    fixtures: Vec<DiagnosticFixture>,
+}
+
+#[cfg(feature = "pipeline")]
+#[derive(Debug, serde::Deserialize)]
+struct DiagnosticFixture {
+    slug: String,
+    source: String,
+    options: Value,
+    line: u64,
+    column: u64,
+}
+
+#[cfg(feature = "pipeline")]
+fn diagnostic_fixtures() -> Vec<DiagnosticFixture> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/parse-to-ast/diagnostics.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    serde_json::from_str::<DiagnosticFixtureManifest>(&text)
+        .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()))
+        .fixtures
+}
 use zfb_content::syntect_highlight::Highlighter;
 
 fn parse(result: String) -> Value {
@@ -155,6 +182,46 @@ fn compile_unclosed_expression_reports_shifted_position() {
     // Body line 2 + 3 frontmatter lines = file line 5.
     assert_eq!(diag["line"], 5);
     assert_eq!(diag["column"], 14);
+}
+
+#[cfg(feature = "pipeline")]
+#[test]
+fn markdown_diagnostics_use_original_source_utf16_coordinates_for_every_entrypoint() {
+    for fixture in diagnostic_fixtures() {
+        let options = serde_json::to_string(&fixture.options).expect("fixture options serialize");
+        let outputs = [
+            (
+                "compile",
+                parse(zfb_md_wasm::compile(&fixture.source, &options)),
+            ),
+            (
+                "renderHtml",
+                parse(zfb_md_wasm::render_html(&fixture.source, &options)),
+            ),
+            (
+                "parseToAst",
+                parse(zfb_md_wasm::parse_to_ast(&fixture.source, &options)),
+            ),
+        ];
+        for (entrypoint, out) in outputs {
+            let diag = &out["diagnostics"][0];
+            assert_eq!(
+                diag["source"], "markdown",
+                "{} through {entrypoint}: {out}",
+                fixture.slug
+            );
+            assert_eq!(
+                diag["line"], fixture.line,
+                "{} through {entrypoint}: {diag}",
+                fixture.slug
+            );
+            assert_eq!(
+                diag["column"], fixture.column,
+                "{} through {entrypoint}: {diag}",
+                fixture.slug
+            );
+        }
+    }
 }
 
 // ── renderHtml tier ─────────────────────────────────────────────────────────

@@ -37,9 +37,21 @@ interface ParseToAstFixture {
 interface ParseToAstManifest {
   fixtures: ParseToAstFixture[];
 }
+interface DiagnosticFixture {
+  slug: string;
+  source: string;
+  options: { filename: string };
+  line: number;
+  column: number;
+}
 const manifest: ParseToAstManifest = JSON.parse(
   readFileSync(join(fixturesDir, "manifest.json"), "utf8"),
 );
+const diagnosticFixtures = (
+  JSON.parse(readFileSync(join(fixturesDir, "diagnostics.json"), "utf8")) as {
+    fixtures: DiagnosticFixture[];
+  }
+).fixtures;
 function fixture(slug: string): ParseToAstFixture {
   const found = manifest.fixtures.find((f) => f.slug === slug);
   if (!found) throw new Error(`no fixture named \`${slug}\` in the parse-to-ast manifest`);
@@ -199,6 +211,21 @@ describe("parseToAst custom/unrecognized node survival (zfb#1828 requirement 3)"
     const text = ast.children[0]!.children as MdastNodeish[];
     expect(text[0]!.value).toContain(":::note");
   });
+});
+
+describe("parseToAst markdown diagnostics use original-source UTF-16 coordinates", () => {
+  for (const fixture of diagnosticFixtures) {
+    it(fixture.slug, async () => {
+      const out = await parseToAst(fixture.source, fixture.options);
+      expect(out.ast).toBeNull();
+      expect(out.diagnostics).toHaveLength(1);
+      expect(out.diagnostics[0]).toMatchObject({
+        source: "markdown",
+        line: fixture.line,
+        column: fixture.column,
+      });
+    });
+  }
 });
 
 describe("parseToAst UTF-16 position parity with remark-parse (zfb#1856)", () => {

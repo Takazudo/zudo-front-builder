@@ -1,0 +1,67 @@
+{
+  "fixtures": [
+    {
+      "slug": "ascii",
+      "source": "a<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 1,
+      "column": 3
+    },
+    {
+      "slug": "cjk-bmp",
+      "source": "あ<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 1,
+      "column": 3
+    },
+    {
+      "slug": "emoji-surrogate-pair",
+      "source": "😀<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 1,
+      "column": 4
+    },
+    {
+      "slug": "combining-sequence",
+      "source": "é<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 1,
+      "column": 4
+    },
+    {
+      "slug": "later-line-lf",
+      "source": "first\nあ<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 2,
+      "column": 3
+    },
+    {
+      "slug": "later-line-crlf",
+      "source": "first\r\n😀<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 2,
+      "column": 4
+    },
+    {
+      "slug": "bom",
+      "source": "﻿あ<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 1,
+      "column": 4
+    },
+    {
+      "slug": "frontmatter-lf",
+      "source": "---\ntitle: LF\n---\nあ<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 4,
+      "column": 3
+    },
+    {
+      "slug": "frontmatter-crlf",
+      "source": "---\r\ntitle: CRLF\r\n---\r\n😀<!-- marker -->",
+      "options": { "filename": "diagnostic.mdx" },
+      "line": 4,
+      "column": 4
+    }
+  ]
+}
