@@ -10,13 +10,19 @@ import {
   parseToAst,
   init,
   version,
+  type ParseToAstOptions,
   type ParseToAstResult,
   type MdastNode,
   type Heading,
 } from "../dist/index.js";
 
 async function consumeParseToAstApi(): Promise<void> {
-  const result: ParseToAstResult = await parseToAst("# hi\n", { filename: "post.mdx" });
+  const options: ParseToAstOptions = {
+    filename: "post.md",
+    dialect: "markdown",
+    pipeline: { gfm: { table: true } },
+  };
+  const result: ParseToAstResult = await parseToAst("# hi\n", options);
   const first: MdastNode | undefined = result.ast?.children[0];
 
   if (first?.type === "heading") {

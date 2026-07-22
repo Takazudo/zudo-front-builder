@@ -28,7 +28,7 @@
 //! gzip), so dropping it is the size knob for consumers that only need
 //! syntax highlighting.
 //!
-//! ## Options JSON (shared by both entry points)
+//! ## Compile/render options JSON
 //!
 //! ```json
 //! {
@@ -62,6 +62,11 @@
 //! tiers. `pipeline` is [`zfb_content::facade::PipelineOptions`]
 //! verbatim — see that type's rustdoc for the authoritative shape.
 //! Unknown fields are rejected at both levels (`deny_unknown_fields`).
+//! [`parse_to_ast`] instead accepts a distinct closed document containing
+//! `filename`, `dialect` (`"markdown"` or `"mdx"`), and `pipeline.gfm`.
+//! Its absent filename defaults to `<anonymous>.mdx`; absent dialect is
+//! inferred as Markdown for `.md` and MDX for `.mdx`, while an explicit
+//! dialect overrides either valid extension.
 //!
 //! ## Result JSON
 //!
@@ -102,7 +107,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 #[cfg(feature = "pipeline")]
-use zfb_content::facade::{self, PipelineOptions};
+use zfb_content::facade::{self, GfmOptions, ParseDialect, ParseMdastOptions, PipelineOptions};
 #[cfg(feature = "pipeline")]
 use zfb_content::frontmatter::{extract_from_filename, FrontmatterError};
 #[cfg(feature = "pipeline")]
@@ -146,6 +151,44 @@ struct WasmOptions {
     jsx_runtime: JsxRuntimeOption,
     development: bool,
     pipeline: PipelineOptions,
+}
+
+/// Raw-parser-only pipeline options. Keeping this closed and limited to GFM
+/// prevents visitor/serializer knobs from being silently accepted by
+/// `parseToAst` even though that entry point cannot apply them.
+#[cfg(feature = "pipeline")]
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+struct ParsePipelineOptions {
+    gfm: GfmOptions,
+}
+
+/// The distinct, closed options document consumed only by [`parse_to_ast`].
+///
+/// Directive and frontmatter-policy keys intentionally remain unknown until
+/// their owning implementations can honor them; accepting either as a no-op
+/// would make this boundary behaviorally incoherent.
+#[cfg(feature = "pipeline")]
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+struct ParseToAstOptions {
+    #[serde(default, deserialize_with = "deserialize_present_non_null")]
+    filename: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_non_null")]
+    dialect: Option<ParseDialect>,
+    pipeline: ParsePipelineOptions,
+}
+
+/// Deserialize an optional field while rejecting an explicitly present
+/// `null`. Serde calls this only when the key exists; omission still uses the
+/// field default (`None`).
+#[cfg(feature = "pipeline")]
+fn deserialize_present_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// The only direct-code output mode currently supported by the public API.
@@ -829,11 +872,12 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
         diagnostics: vec![diag],
     };
 
-    let opts: WasmOptions = match serde_json::from_str(options_json) {
+    let opts: ParseToAstOptions = match serde_json::from_str(options_json) {
         Ok(o) => o,
         Err(e) => {
-            let diag = Diagnostic::error("options", format!("invalid options JSON: {e}"))
-                .at(Some(e.line() as u64), Some(e.column() as u64));
+            let diag =
+                Diagnostic::error("options", format!("invalid parseToAst options JSON: {e}"))
+                    .at(Some(e.line() as u64), Some(e.column() as u64));
             return fail(JsonValue::Null, diag);
         }
     };
@@ -850,6 +894,20 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
         );
         return fail(JsonValue::Null, diag);
     }
+    let inferred_dialect = match extension {
+        Some("md") => ParseDialect::Markdown,
+        Some("mdx") => ParseDialect::Mdx,
+        // Defensive duplicate of the gate above: options failures must stay
+        // structured even if this resolution logic is changed later.
+        _ => {
+            let diag = Diagnostic::error(
+                "options",
+                format!("filename `{filename}` must end in `.md` or `.mdx` for this entry point"),
+            );
+            return fail(JsonValue::Null, diag);
+        }
+    };
+    let dialect = opts.dialect.unwrap_or(inferred_dialect);
 
     let extracted = match extract_from_filename(&filename, source) {
         Ok(uf) => uf,
@@ -867,7 +925,13 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
     let frontmatter = extracted.value;
     let shift = PositionShift::for_body_at(source, body_offset);
 
-    let mut ast = match facade::parse_mdast(&opts.pipeline, &body) {
+    let mut ast = match facade::parse_mdast(
+        ParseMdastOptions {
+            dialect,
+            gfm: opts.pipeline.gfm,
+        },
+        &body,
+    ) {
         Ok(ast) => ast,
         Err(e) => {
             let diag = markdown_diagnostic(&e, &filename, source, &body, body_offset);
@@ -1004,10 +1068,12 @@ pub fn render_html(source: &str, options_json: &str) -> String {
 /// unrecognized/custom constructs such as MDX JSX elements survive as typed
 /// nodes rather than being dropped), serialized in the unist shape via
 /// markdown-rs's `serde` feature, with every `position` shifted back into
-/// original-source coordinates (see [`shift_mdast_positions`]). Accepts the
-/// same options document as [`compile`]/[`render_html`]; only `filename`
-/// and `pipeline.gfm` participate, the rest is accepted and ignored
-/// (visitor/serializer knobs never run on this raw-parse tier).
+/// original-source coordinates (see [`shift_mdast_positions`]). Its distinct
+/// closed options document accepts only `filename`, `dialect`, and
+/// `pipeline.gfm`; compile/visitor/serializer knobs are rejected rather than
+/// silently ignored. A missing filename defaults to `<anonymous>.mdx`.
+/// Otherwise `.md` infers Markdown and `.mdx` infers MDX; an explicit dialect
+/// overrides either valid extension without waiving the extension gate.
 ///
 /// ## Position contract: UTF-16 code units (decided zfb#1856)
 ///

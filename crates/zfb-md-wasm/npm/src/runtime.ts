@@ -2,6 +2,7 @@ import type {
   CompileResult,
   HighlightCodeOptions,
   HighlightCodeResult,
+  ParseToAstOptions,
   ParseToAstResult,
   RenderHtmlResult,
   ZfbMdWasmOptions,
@@ -237,7 +238,7 @@ export function createWasmApi({
    */
   async function parseToAst(
     source: string,
-    options: ZfbMdWasmOptions = {},
+    options: ParseToAstOptions = {},
   ): Promise<ParseToAstResult> {
     const optionsJson = JSON.stringify(options);
     const json = await callWasm(({ glue }) =>
