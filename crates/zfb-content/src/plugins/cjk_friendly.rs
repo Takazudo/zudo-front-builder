@@ -20,9 +20,11 @@
 //! the mdast, find `Text` nodes that still contain literal `*`/`**`
 //! runs (because micromark rejected them under standard CommonMark
 //! rules), and re-tokenise them under the CJK-friendly amendment. The
-//! visitor recurses into inline-bearing containers (`Paragraph`,
-//! `Heading`, `Strong`, `Emphasis`, `Delete`, `Blockquote`, `Link`,
-//! `LinkReference`, `ListItem`, `List`, `Root`) but does NOT enter:
+//! visitor rewrites only true phrasing-parent child lists (`Paragraph`,
+//! `Heading`, `Strong`, `Emphasis`, `Delete`, `Link`, `LinkReference`, and
+//! `TableCell`). It still traverses block containers so each nested phrasing
+//! parent is handled independently, but it never matches their direct children.
+//! It does NOT enter:
 //!
 //! - `Code` and `InlineCode` — verbatim content per CommonMark.
 //! - `Html` — raw HTML passthrough.
@@ -40,7 +42,12 @@
 //! [spec]: https://github.com/tats-u/markdown-cjk-friendly/blob/main/specification.md
 //! [`Pipeline::with_defaults`]: crate::pipeline::Pipeline::with_defaults
 
-use markdown::mdast::{Emphasis, Node as MdastNode, Strong, Text};
+use std::ops::Range;
+
+use markdown::{
+    mdast::{Emphasis, Link, Node as MdastNode, Strong, Text},
+    unist::{Point, Position},
+};
 
 use crate::pipeline::MdastVisitor;
 
@@ -75,7 +82,7 @@ fn rewrite_inline_children(node: &mut MdastNode) {
     // `*`/`**` runs inside Text nodes become Emphasis/Strong. This must
     // happen before recursing, because newly-created Emphasis/Strong
     // children themselves need to be walked (CJK markers can nest).
-    if has_inline_children(node) {
+    if is_phrasing_parent(node) {
         if let Some(children) = node.children_mut() {
             let new_children = retokenise_children(std::mem::take(children));
             *children = new_children;
@@ -97,6 +104,7 @@ fn is_no_recurse(node: &MdastNode) -> bool {
         node,
         MdastNode::Code(_)
             | MdastNode::InlineCode(_)
+            | MdastNode::InlineMath(_)
             | MdastNode::Html(_)
             | MdastNode::MdxJsxFlowElement(_)
             | MdastNode::MdxJsxTextElement(_)
@@ -105,275 +113,461 @@ fn is_no_recurse(node: &MdastNode) -> bool {
     )
 }
 
-/// True if `node` is a container whose children form an inline run.
-///
-/// Block containers (Root, ListItem, etc.) also flow through here —
-/// their non-text children are recursed into separately. The
-/// re-tokenisation pass is a no-op when no child is a Text containing
-/// `*`, so over-inclusion is harmless.
-fn has_inline_children(node: &MdastNode) -> bool {
+/// True only for parents whose direct children are one phrasing run.
+fn is_phrasing_parent(node: &MdastNode) -> bool {
     matches!(
         node,
-        MdastNode::Root(_)
-            | MdastNode::Paragraph(_)
+        MdastNode::Paragraph(_)
             | MdastNode::Heading(_)
             | MdastNode::Strong(_)
             | MdastNode::Emphasis(_)
             | MdastNode::Delete(_)
-            | MdastNode::Blockquote(_)
             | MdastNode::Link(_)
             | MdastNode::LinkReference(_)
-            | MdastNode::ListItem(_)
-            | MdastNode::List(_)
-            | MdastNode::FootnoteDefinition(_)
-            | MdastNode::TableRow(_)
             | MdastNode::TableCell(_)
-            | MdastNode::Table(_)
     )
 }
 
-/// Re-tokenise each Text child for CJK-flanked emphasis markers. Other
-/// children pass through unchanged.
-fn retokenise_children(children: Vec<MdastNode>) -> Vec<MdastNode> {
-    let mut out = Vec::with_capacity(children.len());
-    for child in children {
-        match child {
-            MdastNode::Text(t) if t.value.contains('*') => {
-                out.extend(retokenise_text(&t.value));
-            }
-            other => out.push(other),
-        }
-    }
-    out
+#[derive(Clone, Copy, Debug)]
+struct Delimiter {
+    node: usize,
+    start: usize,
+    end: usize,
+    marker_len: usize,
 }
 
-/// Re-tokenise a single Text value's `*`/`**` markers using
-/// CJK-friendly flanking rules. Returns a vec of mdast nodes
-/// (Text/Emphasis/Strong) covering the whole input string.
-///
-/// markdown-rs has already handled all standard-CommonMark cases —
-/// anything left here is text that micromark refused to tokenise. We
-/// scan left-to-right and greedily match the first valid CJK-friendly
-/// emphasis run, recursing into its inner content and emitting plain
-/// Text for everything else.
-fn retokenise_text(value: &str) -> Vec<MdastNode> {
-    let chars: Vec<char> = value.chars().collect();
-    let mut out: Vec<MdastNode> = Vec::new();
-    let mut buf = String::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '*' {
-            let run_len = count_run(&chars, i, '*');
-            // We only handle `*` (em) and `**` (strong) markers. `***`
-            // and longer runs are split by the inner search itself —
-            // try to open with the longest viable marker.
-            if let Some((marker_len, end_open, close_start, close_end)) =
-                find_match(&chars, i, run_len)
-            {
-                if !buf.is_empty() {
-                    out.push(text_node(std::mem::take(&mut buf)));
+/// Re-tokenise literal asterisk delimiters across contiguous, source-provable
+/// phrasing siblings. Every opaque or unprovable child partitions the list.
+fn retokenise_children(mut children: Vec<MdastNode>) -> Vec<MdastNode> {
+    while let Some((open, close)) = find_sibling_match(&children) {
+        children = splice_match(children, open, close);
+    }
+    children
+}
+
+fn find_sibling_match(children: &[MdastNode]) -> Option<(Delimiter, Delimiter)> {
+    for (node_index, node) in children.iter().enumerate() {
+        let MdastNode::Text(text) = node else {
+            continue;
+        };
+        if !text_source_is_literal(text) {
+            continue;
+        }
+        for (run_start, run_len) in star_runs(&text.value) {
+            // Keep markdown-rs's strong-before-emphasis greediness.
+            for marker_len in [2, 1] {
+                if run_len < marker_len {
+                    continue;
                 }
-                let inner: String = chars[end_open..close_start].iter().collect();
-                let inner_children = retokenise_text(&inner);
-                let wrapped = wrap(marker_len, inner_children);
-                out.push(wrapped);
-                i = close_end;
-                continue;
+                let open = Delimiter {
+                    node: node_index,
+                    start: run_start,
+                    end: run_start + marker_len,
+                    marker_len,
+                };
+                let Some(before) = boundary_before(children, open.node, open.start) else {
+                    continue;
+                };
+                let Some(after) = boundary_after(children, open.node, open.end) else {
+                    continue;
+                };
+                if after == Boundary::Star || !is_left_flanking(before, after, true) {
+                    continue;
+                }
+                let opener_is_amendment = !is_left_flanking(before, after, false);
+                if let Some(close) = find_close(children, open, opener_is_amendment) {
+                    return Some((open, close));
+                }
             }
-            // No CJK-friendly match — emit the marker run as literal
-            // text. Consume the WHOLE run so we don't loop.
-            buf.extend(chars.iter().skip(i).take(run_len));
-            i += run_len;
-            continue;
-        }
-        buf.push(chars[i]);
-        i += 1;
-    }
-    if !buf.is_empty() {
-        out.push(text_node(buf));
-    }
-    out
-}
-
-/// Count the length of a run of identical characters starting at `i`.
-fn count_run(chars: &[char], i: usize, c: char) -> usize {
-    let mut n = 0;
-    while i + n < chars.len() && chars[i + n] == c {
-        n += 1;
-    }
-    n
-}
-
-/// Find the matching close for an opening `*` run starting at `open_i`
-/// with run length `open_run`. Tries `**` first (when at least 2 stars
-/// are available), then `*`. Returns `(marker_len, inner_start,
-/// close_start, close_end)` on success.
-fn find_match(
-    chars: &[char],
-    open_i: usize,
-    open_run: usize,
-) -> Option<(usize, usize, usize, usize)> {
-    // Try strong (`**`) before em (`*`) — matches markdown-rs's
-    // greedy-strong preference.
-    for marker_len in [2usize, 1usize] {
-        if open_run < marker_len {
-            continue;
-        }
-        let inner_start = open_i + marker_len;
-        // Opening marker must be followed by a non-whitespace,
-        // non-marker character (CommonMark + CJK-friendly: 2bγ).
-        let inner_first = chars.get(inner_start).copied();
-        if !inner_first.is_some_and(is_valid_inner_char) {
-            continue;
-        }
-        // Outer character on the left of the open marker.
-        let left_outer = chars.get(open_i.wrapping_sub(1)).copied();
-        if !is_left_flank_outer_ok(left_outer) {
-            continue;
-        }
-
-        // Search for the matching close marker. Skip any opening
-        // markers we encounter — micromark would have nested them, but
-        // we are post-processing what micromark already left as text.
-        let mut j = inner_start;
-        while j < chars.len() {
-            if chars[j] != '*' {
-                j += 1;
-                continue;
-            }
-            let run = count_run(chars, j, '*');
-            if run < marker_len {
-                j += run;
-                continue;
-            }
-            // Candidate close marker is the LAST `marker_len` chars of
-            // the run (so triple `***` after `**X` could close `**`).
-            let close_start = j + run - marker_len;
-            let close_end = j + run;
-            // Must not be empty content.
-            if close_start <= inner_start {
-                j += run;
-                continue;
-            }
-            let inner_last = chars.get(close_start - 1).copied();
-            let right_outer = chars.get(close_end).copied();
-            if is_valid_inner_char(inner_last.unwrap_or(' '))
-                && is_right_flank_outer_ok(right_outer)
-                && is_cjk_friendly_close(inner_last, right_outer)
-            {
-                return Some((marker_len, inner_start, close_start, close_end));
-            }
-            j += run;
         }
     }
     None
 }
 
-/// The character right after an opening `*`/`**` (or right before a
-/// closing one) must not be whitespace and must not itself be a `*`
-/// (otherwise it's part of a longer marker run).
-fn is_valid_inner_char(c: char) -> bool {
-    !c.is_whitespace() && c != '*'
-}
-
-/// Outer-left of an opening marker: standard CommonMark left-flanking
-/// requires the left-outer to be (start-of-line | whitespace | Unicode
-/// punctuation). The CJK-friendly amendment additionally permits CJK
-/// characters. We accept any char that isn't `*` or NUL — the close
-/// match also enforces that ONE side is CJK-flanked, which is what
-/// distinguishes our amendment from base CommonMark.
-fn is_left_flank_outer_ok(left: Option<char>) -> bool {
-    match left {
-        None => true,
-        Some('*') => false,
-        Some(_) => true,
+fn find_close(
+    children: &[MdastNode],
+    open: Delimiter,
+    opener_is_amendment: bool,
+) -> Option<Delimiter> {
+    let mut node_index = open.node;
+    while node_index < children.len() {
+        if node_index > open.node
+            && (!is_movable(&children[node_index])
+                || !source_edge_is_contiguous(&children[node_index - 1], &children[node_index]))
+        {
+            break;
+        }
+        let MdastNode::Text(text) = &children[node_index] else {
+            node_index += 1;
+            continue;
+        };
+        if !text_source_is_literal(text) {
+            break;
+        }
+        for (run_start, run_len) in star_runs(&text.value) {
+            if node_index == open.node && run_start < open.end {
+                continue;
+            }
+            if run_len < open.marker_len {
+                continue;
+            }
+            // A close consumes the final marker-width characters of its run.
+            let close = Delimiter {
+                node: node_index,
+                start: run_start + run_len - open.marker_len,
+                end: run_start + run_len,
+                marker_len: open.marker_len,
+            };
+            if close.node == open.node && close.start <= open.end {
+                continue;
+            }
+            let Some(before) = boundary_before(children, close.node, close.start) else {
+                continue;
+            };
+            let Some(after) = boundary_after(children, close.node, close.end) else {
+                continue;
+            };
+            if before == Boundary::Star || !is_right_flanking(before, after, true) {
+                continue;
+            }
+            let closer_is_amendment = !is_right_flanking(before, after, false);
+            if opener_is_amendment || closer_is_amendment {
+                return Some(close);
+            }
+        }
+        node_index += 1;
     }
+    None
 }
 
-/// Outer-right of a closing marker: standard CommonMark right-flanking
-/// rule. We accept the same set as `is_left_flank_outer_ok`; the
-/// CJK-friendly check below enforces the actual flanking semantics.
-fn is_right_flank_outer_ok(right: Option<char>) -> bool {
-    match right {
-        None => true,
-        Some('*') => false,
-        Some(_) => true,
+fn splice_match(children: Vec<MdastNode>, open: Delimiter, close: Delimiter) -> Vec<MdastNode> {
+    let wrapper_position = delimiter_span(&children, open, close);
+    let mut before = Vec::with_capacity(children.len());
+    let mut inner = Vec::new();
+    let mut after = Vec::new();
+
+    for (index, node) in children.into_iter().enumerate() {
+        if index < open.node {
+            before.push(node);
+        } else if index > close.node {
+            after.push(node);
+        } else if open.node == close.node {
+            let MdastNode::Text(text) = node else {
+                unreachable!()
+            };
+            push_text_slice(&mut before, &text, 0..open.start);
+            push_text_slice(&mut inner, &text, open.end..close.start);
+            push_text_slice(&mut after, &text, close.end..text.value.len());
+        } else if index == open.node {
+            let MdastNode::Text(text) = node else {
+                unreachable!()
+            };
+            push_text_slice(&mut before, &text, 0..open.start);
+            push_text_slice(&mut inner, &text, open.end..text.value.len());
+        } else if index == close.node {
+            let MdastNode::Text(text) = node else {
+                unreachable!()
+            };
+            push_text_slice(&mut inner, &text, 0..close.start);
+            push_text_slice(&mut after, &text, close.end..text.value.len());
+        } else {
+            // Ownership is transferred: opaque nodes and all their metadata are
+            // neither flattened nor rebuilt.
+            inner.push(node);
+        }
     }
+
+    before.push(wrap_sibling(open.marker_len, inner, wrapper_position));
+    before.extend(after);
+    before
 }
 
-/// CJK-friendly closing predicate.
-///
-/// markdown-rs has already consumed every match that passes standard
-/// CommonMark flanking; whatever is left in a Text node containing `*`
-/// failed CommonMark's rules. The amendment we implement says: a `**`
-/// closes emphasis when the character JUST INSIDE the close (immediately
-/// before the markers) is a CJK punctuation character AND the character
-/// JUST OUTSIDE (immediately after the markers) is a CJK character — or
-/// vice versa around the open marker.
-///
-/// In practice the visible failure mode is the inner-side CJK
-/// punctuation case (`**X。**Y`). To stay narrow and avoid double-
-/// tokenising anything CommonMark already accepted, we require AT LEAST
-/// ONE side of the close to be CJK-flank-eligible. Concretely: the
-/// closing marker counts as CJK-friendly right-flanking iff
-/// `inner_last` is a CJK punctuation AND `right_outer` is a CJK char,
-/// OR `right_outer` is a CJK char and `inner_last` is anything
-/// non-whitespace.
-///
-/// The asymmetric "either side is CJK" check is the same condition the
-/// `markdown-cjk-friendly` reference uses: 2bγ ("followed by a CJK
-/// character") on the right, 2bγ ("preceded by a CJK sequence") on the
-/// left.
-fn is_cjk_friendly_close(inner_last: Option<char>, right_outer: Option<char>) -> bool {
-    let inner = match inner_last {
-        Some(c) => c,
-        None => return false,
+fn delimiter_span(children: &[MdastNode], open: Delimiter, close: Delimiter) -> Option<Position> {
+    let MdastNode::Text(open_text) = &children[open.node] else {
+        return None;
     };
-    // If neither side touches a CJK character, the standard CommonMark
-    // tokeniser would have already accepted (or rejected) this — we
-    // shouldn't second-guess it. Require at least one CJK-flank.
-    let inner_is_cjk = is_cjk(inner);
-    let inner_is_cjk_punct = inner_is_cjk && is_unicode_punctuation(inner);
-    let outer_is_cjk = right_outer.is_some_and(is_cjk);
-
-    // Case A (canonical remark-cjk-friendly fix): inner is CJK
-    // punctuation, outer is a CJK character. Standard CommonMark
-    // refused because `inner_last` is Unicode punctuation and outer is
-    // not Unicode punctuation/whitespace; CJK-friendly accepts because
-    // outer is a CJK character (rule 2bγ).
-    if inner_is_cjk_punct && outer_is_cjk {
-        return true;
-    }
-    // Case B: inner is a non-CJK char that happens to be Unicode
-    // punctuation (e.g. `.`), outer is CJK. This is the ASCII-period-
-    // before-close case (`**X.**Y` with Y being CJK). The reference
-    // implementation also accepts this.
-    if outer_is_cjk && is_unicode_punctuation(inner) {
-        return true;
-    }
-    false
-}
-
-/// Build a Text node.
-fn text_node(value: String) -> MdastNode {
-    MdastNode::Text(Text {
-        value,
-        position: None,
+    let MdastNode::Text(close_text) = &children[close.node] else {
+        return None;
+    };
+    let open_position = open_text.position.as_ref()?;
+    let close_position = close_text.position.as_ref()?;
+    Some(Position {
+        start: point_after(&open_position.start, &open_text.value[..open.start]),
+        end: point_after(&close_position.start, &close_text.value[..close.end]),
     })
 }
 
-/// Wrap children in `Strong` (marker_len == 2) or `Emphasis` (== 1).
-fn wrap(marker_len: usize, children: Vec<MdastNode>) -> MdastNode {
-    if marker_len == 2 {
-        MdastNode::Strong(Strong {
-            children,
-            position: None,
-        })
+fn push_text_slice(out: &mut Vec<MdastNode>, text: &Text, range: Range<usize>) {
+    if range.is_empty() {
+        return;
+    }
+    let value = text.value[range.clone()].to_owned();
+    let position = text.position.as_ref().map(|position| Position {
+        start: point_after(&position.start, &text.value[..range.start]),
+        end: point_after(&position.start, &text.value[..range.end]),
+    });
+    out.push(MdastNode::Text(Text { value, position }));
+}
+
+fn point_after(start: &Point, prefix: &str) -> Point {
+    let mut line = start.line;
+    let mut column = start.column;
+    for character in prefix.chars() {
+        if character == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    Point::new(line, column, start.offset + prefix.len())
+}
+
+fn star_runs(value: &str) -> Vec<(usize, usize)> {
+    let bytes = value.as_bytes();
+    let mut runs = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'*' {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index] == b'*' {
+            index += 1;
+        }
+        runs.push((start, index - start));
+    }
+    runs
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Boundary {
+    Whitespace,
+    Cjk,
+    CjkPunctuation,
+    NonCjkPunctuation,
+    Star,
+    Other,
+}
+
+impl Boundary {
+    fn from_char(character: char) -> Self {
+        if character == '*' {
+            Self::Star
+        } else if character.is_whitespace() {
+            Self::Whitespace
+        } else if is_cjk(character) {
+            if is_unicode_punctuation(character) {
+                Self::CjkPunctuation
+            } else {
+                Self::Cjk
+            }
+        } else if is_unicode_punctuation(character) {
+            Self::NonCjkPunctuation
+        } else {
+            Self::Other
+        }
+    }
+
+    fn is_any_punctuation(self) -> bool {
+        matches!(self, Self::CjkPunctuation | Self::NonCjkPunctuation)
+    }
+
+    fn is_cjk(self) -> bool {
+        matches!(self, Self::Cjk | Self::CjkPunctuation)
+    }
+}
+
+fn is_left_flanking(before: Boundary, after: Boundary, amended: bool) -> bool {
+    if after == Boundary::Whitespace {
+        return false;
+    }
+    if amended {
+        after != Boundary::NonCjkPunctuation
+            || before == Boundary::Whitespace
+            || before == Boundary::NonCjkPunctuation
+            || before.is_cjk()
     } else {
-        MdastNode::Emphasis(Emphasis {
-            children,
-            position: None,
-        })
+        !after.is_any_punctuation() || before == Boundary::Whitespace || before.is_any_punctuation()
+    }
+}
+
+fn is_right_flanking(before: Boundary, after: Boundary, amended: bool) -> bool {
+    if before == Boundary::Whitespace {
+        return false;
+    }
+    if amended {
+        before != Boundary::NonCjkPunctuation
+            || after == Boundary::Whitespace
+            || after == Boundary::NonCjkPunctuation
+            || after.is_cjk()
+    } else {
+        !before.is_any_punctuation() || after == Boundary::Whitespace || after.is_any_punctuation()
+    }
+}
+
+fn boundary_before(children: &[MdastNode], node: usize, byte: usize) -> Option<Boundary> {
+    let MdastNode::Text(text) = &children[node] else {
+        return None;
+    };
+    if byte > 0 {
+        return text.value[..byte]
+            .chars()
+            .next_back()
+            .map(Boundary::from_char);
+    }
+    if node == 0 {
+        return Some(Boundary::Whitespace);
+    }
+    if !source_edge_is_contiguous(&children[node - 1], &children[node]) {
+        return None;
+    }
+    source_boundaries(&children[node - 1]).map(|(_, right)| right)
+}
+
+fn boundary_after(children: &[MdastNode], node: usize, byte: usize) -> Option<Boundary> {
+    let MdastNode::Text(text) = &children[node] else {
+        return None;
+    };
+    if byte < text.value.len() {
+        return text.value[byte..].chars().next().map(Boundary::from_char);
+    }
+    if node + 1 == children.len() {
+        return Some(Boundary::Whitespace);
+    }
+    if !source_edge_is_contiguous(&children[node], &children[node + 1]) {
+        return None;
+    }
+    source_boundaries(&children[node + 1]).map(|(left, _)| left)
+}
+
+fn text_source_is_literal(text: &Text) -> bool {
+    text.position.as_ref().is_none_or(|position| {
+        position.end.offset.saturating_sub(position.start.offset) == text.value.len()
+    })
+}
+
+fn source_edge_is_contiguous(left: &MdastNode, right: &MdastNode) -> bool {
+    match (left.position(), right.position()) {
+        (Some(left), Some(right)) => left.end.offset == right.start.offset,
+        // Positionless text still supports same-node behavior. It cannot prove
+        // a source boundary across two siblings.
+        _ => false,
+    }
+}
+
+fn is_movable(node: &MdastNode) -> bool {
+    matches!(
+        node,
+        MdastNode::Text(_)
+            | MdastNode::Link(_)
+            | MdastNode::LinkReference(_)
+            | MdastNode::Image(_)
+            | MdastNode::ImageReference(_)
+            | MdastNode::Emphasis(_)
+            | MdastNode::Strong(_)
+            | MdastNode::Delete(_)
+    ) && source_boundaries(node).is_some()
+}
+
+fn source_boundaries(node: &MdastNode) -> Option<(Boundary, Boundary)> {
+    let punctuation = (Boundary::NonCjkPunctuation, Boundary::NonCjkPunctuation);
+    match node {
+        MdastNode::Text(text) if text_source_is_literal(text) => Some((
+            Boundary::from_char(text.value.chars().next()?),
+            Boundary::from_char(text.value.chars().next_back()?),
+        )),
+        MdastNode::Link(link) => link_source_boundaries(link),
+        MdastNode::LinkReference(link) => {
+            let position = link.position.as_ref()?;
+            let first = link.children.first()?.position()?;
+            let last = link.children.last()?.position()?;
+            (first.start.offset == position.start.offset + 1
+                && last.end.offset < position.end.offset)
+                .then_some(punctuation)
+        }
+        MdastNode::Image(image) if image.position.is_some() => Some(punctuation),
+        MdastNode::ImageReference(image) if image.position.is_some() => Some(punctuation),
+        MdastNode::Emphasis(emphasis) => {
+            delimited_parent_boundaries(emphasis.position.as_ref(), &emphasis.children)
+        }
+        MdastNode::Strong(strong) => {
+            delimited_parent_boundaries(strong.position.as_ref(), &strong.children)
+        }
+        MdastNode::Delete(delete) => {
+            delimited_parent_boundaries(delete.position.as_ref(), &delete.children)
+        }
+        _ => None,
+    }
+}
+
+fn delimited_parent_boundaries(
+    position: Option<&Position>,
+    children: &[MdastNode],
+) -> Option<(Boundary, Boundary)> {
+    let position = position?;
+    let first = children.first()?.position()?;
+    let last = children.last()?.position()?;
+    (first.start.offset > position.start.offset && last.end.offset < position.end.offset)
+        .then_some((Boundary::NonCjkPunctuation, Boundary::NonCjkPunctuation))
+}
+
+fn link_source_boundaries(link: &Link) -> Option<(Boundary, Boundary)> {
+    let position = link.position.as_ref()?;
+    let punctuation = (Boundary::NonCjkPunctuation, Boundary::NonCjkPunctuation);
+    if link.children.len() != 1 {
+        let first = link.children.first()?.position()?;
+        let last = link.children.last()?.position()?;
+        return (first.start.offset == position.start.offset + 1
+            && last.end.offset < position.end.offset)
+            .then_some(punctuation);
+    }
+    let MdastNode::Text(label) = &link.children[0] else {
+        let child = link.children[0].position()?;
+        return (child.start.offset == position.start.offset + 1
+            && child.end.offset < position.end.offset)
+            .then_some(punctuation);
+    };
+    let label_position = label.position.as_ref()?;
+
+    // Bracket resource link: `[label](destination)`.
+    if label_position.start.offset == position.start.offset + 1
+        && label_position.end.offset + 1 < position.end.offset
+    {
+        return Some(punctuation);
+    }
+    // Angle autolink: `<destination>`.
+    if label_position.start.offset == position.start.offset + 1
+        && label_position.end.offset + 1 == position.end.offset
+        && (link.url == label.value || link.url == format!("mailto:{}", label.value))
+    {
+        return Some(punctuation);
+    }
+    // GFM bare URL/email. The source boundaries are visible characters.
+    if label_position == position
+        && text_source_is_literal(label)
+        && (link.url == label.value
+            || link.url == format!("mailto:{}", label.value)
+            || link.url == format!("http://{}", label.value))
+    {
+        return Some((
+            Boundary::from_char(label.value.chars().next()?),
+            Boundary::from_char(label.value.chars().next_back()?),
+        ));
+    }
+    None
+}
+
+fn wrap_sibling(
+    marker_len: usize,
+    children: Vec<MdastNode>,
+    position: Option<Position>,
+) -> MdastNode {
+    if marker_len == 2 {
+        MdastNode::Strong(Strong { children, position })
+    } else {
+        MdastNode::Emphasis(Emphasis { children, position })
     }
 }
 
@@ -621,6 +815,214 @@ mod tests {
     // --- Cases the visitor must FIX. ---
 
     #[test]
+    fn exact_bracket_link_fixture_moves_original_node_and_metadata() {
+        let input = "知られる**[LA-2A](https://example.com)光学式コンプレッサー**と、**Neve 1073 EQ**という";
+        let parsed = markdown::to_mdast(input, &markdown::ParseOptions::mdx()).unwrap();
+        let original = first_paragraph_children(&parsed)[1].clone();
+        let original_position = original.position().cloned();
+
+        let transformed = run(input);
+        let children = first_paragraph_children(&transformed);
+        assert_eq!(children.len(), 5, "{children:#?}");
+        assert!(matches!(&children[0], MdastNode::Text(t) if t.value == "知られる"));
+        let MdastNode::Strong(repaired) = &children[1] else {
+            unreachable!("expected repaired Strong, got {:?}", children[1])
+        };
+        assert_eq!(repaired.children.len(), 2);
+        assert_eq!(repaired.children[0], original);
+        assert_eq!(repaired.children[0].position(), original_position.as_ref());
+        assert!(
+            matches!(&repaired.children[1], MdastNode::Text(t) if t.value == "光学式コンプレッサー")
+        );
+        assert_eq!(
+            repaired
+                .position
+                .as_ref()
+                .map(|p| (p.start.offset, p.end.offset)),
+            Some((12, 74))
+        );
+        assert!(matches!(&children[2], MdastNode::Text(t) if t.value == "と、"));
+        assert!(
+            matches!(&children[3], MdastNode::Strong(s) if matches!(&s.children[0], MdastNode::Text(t) if t.value == "Neve 1073 EQ"))
+        );
+        assert!(matches!(&children[4], MdastNode::Text(t) if t.value == "という"));
+    }
+
+    #[test]
+    fn opener_closer_and_both_can_be_separated_by_links() {
+        let opener = run("漢**[x](https://x.example)語** end");
+        let children = first_paragraph_children(&opener);
+        assert!(
+            matches!(&children[1], MdastNode::Strong(s) if matches!(&s.children[0], MdastNode::Link(_)))
+        );
+
+        let closer = run("**語[x](https://x.example).**漢");
+        let children = first_paragraph_children(&closer);
+        assert!(
+            matches!(&children[0], MdastNode::Strong(s) if s.children.iter().any(|n| matches!(n, MdastNode::Link(_))))
+        );
+
+        let both = run("漢*[x](https://x.example)* end");
+        let children = first_paragraph_children(&both);
+        assert!(
+            matches!(&children[1], MdastNode::Emphasis(e) if matches!(&e.children[0], MdastNode::Link(_)))
+        );
+    }
+
+    #[test]
+    fn multiple_candidates_and_prefix_suffix_are_preserved() {
+        let h = run("pre 漢**[a](/a)語** mid 漢*[b](/b)語* post");
+        let children = first_paragraph_children(&h);
+        assert!(matches!(&children[0], MdastNode::Text(t) if t.value == "pre 漢"));
+        assert!(children.iter().any(|n| matches!(n, MdastNode::Strong(_))));
+        assert!(children.iter().any(|n| matches!(n, MdastNode::Emphasis(_))));
+        assert!(matches!(children.last(), Some(MdastNode::Text(t)) if t.value == " post"));
+    }
+
+    #[test]
+    fn multiple_movable_sibling_kinds_remain_nested_and_ordered() {
+        let input = "漢**[a](/a)![b](/b)[c][id]*d*~~e~~語** end\n\n[id]: /c\n";
+        let mut mdast = markdown::to_mdast(input, &markdown::ParseOptions::gfm()).unwrap();
+        CjkFriendlyPlugin::new().visit(&mut mdast);
+        let children = first_paragraph_children(&mdast);
+        let MdastNode::Strong(repaired) = &children[1] else {
+            unreachable!("expected Strong, got {children:#?}")
+        };
+        assert!(matches!(&repaired.children[0], MdastNode::Link(_)));
+        assert!(matches!(&repaired.children[1], MdastNode::Image(_)));
+        assert!(matches!(&repaired.children[2], MdastNode::LinkReference(_)));
+        assert!(matches!(&repaired.children[3], MdastNode::Emphasis(_)));
+        assert!(matches!(&repaired.children[4], MdastNode::Delete(_)));
+        assert!(matches!(&repaired.children[5], MdastNode::Text(t) if t.value == "語"));
+    }
+
+    #[test]
+    fn inline_barriers_partition_sibling_matching() {
+        fn first_child(input: &str, options: markdown::ParseOptions) -> MdastNode {
+            let parsed = markdown::to_mdast(input, &options).unwrap();
+            let MdastNode::Root(root) = parsed else {
+                unreachable!()
+            };
+            match &root.children[0] {
+                MdastNode::Paragraph(paragraph) => paragraph.children[0].clone(),
+                node => node.clone(),
+            }
+        }
+        let break_node = {
+            let parsed = markdown::to_mdast("a\\\nb", &markdown::ParseOptions::mdx()).unwrap();
+            first_paragraph_children(&parsed)[1].clone()
+        };
+        let barriers = [
+            first_child("`code`", markdown::ParseOptions::mdx()),
+            first_child("<i>", markdown::ParseOptions::default()),
+            first_child("{value}", markdown::ParseOptions::mdx()),
+            first_child("<X />", markdown::ParseOptions::mdx()),
+            break_node,
+            first_child("[^note]\n\n[^note]: note", markdown::ParseOptions::gfm()),
+        ];
+        for mut barrier in barriers {
+            barrier.position_set(Some(Position::new(1, 4, 5, 1, 5, 6)));
+            let original = vec![
+                MdastNode::Text(Text {
+                    value: "漢**".into(),
+                    position: Some(Position::new(1, 1, 0, 1, 4, 5)),
+                }),
+                barrier,
+                MdastNode::Text(Text {
+                    value: "語.**漢".into(),
+                    position: Some(Position::new(1, 5, 6, 1, 11, 15)),
+                }),
+            ];
+            assert_eq!(retokenise_children(original.clone()), original);
+        }
+    }
+
+    #[test]
+    fn does_not_pair_across_paragraphs_list_items_rows_or_cells() {
+        for input in [
+            "漢**\n\n語** end",
+            "- 漢**\n- 語** end",
+            "| 漢** | 語** end |\n| --- | --- |",
+            "| 漢** |\n| --- |\n| 語** end |",
+        ] {
+            let mut mdast = markdown::to_mdast(input, &markdown::ParseOptions::gfm()).unwrap();
+            CjkFriendlyPlugin::new().visit(&mut mdast);
+            fn count_strong(node: &MdastNode) -> usize {
+                usize::from(matches!(node, MdastNode::Strong(_)))
+                    + node
+                        .children()
+                        .map(|children| children.iter().map(count_strong).sum())
+                        .unwrap_or(0)
+            }
+            assert_eq!(
+                count_strong(&mdast),
+                0,
+                "crossed block boundary: {mdast:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_source_forms_have_distinct_proven_boundaries() {
+        let parsed = markdown::to_mdast(
+            "[label](/x) <https://example.com> https://example.com",
+            &markdown::ParseOptions::gfm(),
+        )
+        .unwrap();
+        let links: Vec<_> = first_paragraph_children(&parsed)
+            .iter()
+            .filter_map(|node| match node {
+                MdastNode::Link(link) => Some(link),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(links.len(), 3);
+        assert_eq!(
+            link_source_boundaries(links[0]),
+            Some((Boundary::NonCjkPunctuation, Boundary::NonCjkPunctuation))
+        );
+        assert_eq!(
+            link_source_boundaries(links[1]),
+            Some((Boundary::NonCjkPunctuation, Boundary::NonCjkPunctuation))
+        );
+        assert_eq!(
+            link_source_boundaries(links[2]),
+            Some((Boundary::Other, Boundary::Other))
+        );
+
+        let mut unprovable = links[0].clone();
+        unprovable.position = None;
+        assert_eq!(link_source_boundaries(&unprovable), None);
+    }
+
+    #[test]
+    fn source_punctuation_not_visible_link_text_drives_opener() {
+        let bracket = run("漢**[ascii](/x)語** end");
+        assert!(matches!(
+            &first_paragraph_children(&bracket)[1],
+            MdastNode::Strong(_)
+        ));
+    }
+
+    #[test]
+    fn escaped_unmatched_and_unprovable_text_remain_literal() {
+        for input in ["漢\\**[x](/x)語** end", "漢**[x](/x)語 end"] {
+            let h = run(input);
+            assert!(!first_paragraph_children(&h)
+                .iter()
+                .any(|node| matches!(node, MdastNode::Strong(_))));
+        }
+
+        let mut children = vec![MdastNode::Text(Text {
+            value: "漢**[x]語** end".into(),
+            position: Some(Position::new(1, 1, 0, 1, 20, 99)),
+        })];
+        let original = children.clone();
+        children = retokenise_children(children);
+        assert_eq!(children, original);
+    }
+
+    #[test]
     fn cjk_punct_inside_strong_close_japanese() {
         // The canonical remark-cjk-friendly bug.
         let h = run("**テスト。**テスト");
@@ -637,6 +1039,27 @@ mod tests {
     fn cjk_punct_inside_strong_with_kanji_lead() {
         let h = run("これは**重要。**テスト");
         assert_eq!(dump(&h), "これは[STRONG:重要。]テスト");
+    }
+
+    #[test]
+    fn amended_opener_in_one_text_node_is_preserved() {
+        let h = run("これは**「重要」** end");
+        assert_eq!(dump(&h), "これは[STRONG:「重要」] end");
+    }
+
+    #[test]
+    fn positionless_same_text_is_supported_but_ordinary_markers_are_not_reparsed() {
+        let amended = retokenise_children(vec![MdastNode::Text(Text {
+            value: "**bold.**漢".into(),
+            position: None,
+        })]);
+        assert!(matches!(&amended[0], MdastNode::Strong(_)));
+
+        let ordinary = vec![MdastNode::Text(Text {
+            value: " **bold** ".into(),
+            position: None,
+        })];
+        assert_eq!(retokenise_children(ordinary.clone()), ordinary);
     }
 
     #[test]
