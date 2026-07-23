@@ -40,6 +40,7 @@ export const {
 } = api;
 
 export { ZfbMdWasmTrapError, ZfbMdWasmTrapRecoveryLimitError } from "./runtime.js";
+export { MdastAdapterError, toMdastRoot } from "./mdast.js";
 
 export type {
   CompileResult,
@@ -47,6 +48,7 @@ export type {
   ParseToAstResult,
   ParseToAstOptions,
   ParseDialect,
+  FrontmatterPolicy,
   ParsePipelineOptions,
   Diagnostic,
   DiagnosticSource,
@@ -64,6 +66,7 @@ export type {
   HighlightDiagnosticSource,
   AstPoint,
   AstPosition,
+  RawMdastData,
   MarkdownRsStop,
   MdastNode,
   MdastRoot,
@@ -79,6 +82,10 @@ export type {
   Code,
   Definition,
   Text,
+  DirectiveNodeBase,
+  ContainerDirective,
+  LeafDirective,
+  TextDirective,
   Emphasis,
   Strong,
   InlineCode,

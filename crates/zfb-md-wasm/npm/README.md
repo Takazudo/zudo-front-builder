@@ -181,7 +181,7 @@ and can produce normal class markup without a diagnostic.
 `parseToAst()` parses markdown/MDX source into a serialized **mdast** tree —
 raw markdown-rs output converted into an open carrier that can optionally
 hold generic directive nodes, before any zfb visitor runs. Use it when a
-consumer needs the *tree*, not rendered output: a live
+consumer needs the _tree_, not rendered output: a live
 preview that wants remark/unist-ecosystem tooling (`mdast-util-to-hast`, a
 custom mdast transform, editor↔preview scroll sync keyed on source
 positions) instead of zfb's own HTML/JS rendering.
@@ -294,6 +294,41 @@ discriminated-union narrowing you'd get from a closed union. `position`
 and `type` are always available without a cast; kind-specific fields
 need the assertion above.
 
+### Validated mdast/unified adapter
+
+Use `toMdastRoot` when passing the result to the mdast/unified ecosystem. It
+validates the complete tree and returns a detached value assignable directly
+to `mdast.Root`, with the canonical MDX and remark-directive content models:
+
+```ts
+import type { Root } from "mdast";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm";
+
+const result = await parseToAst("# Welcome\n", { filename: "post.md" });
+const root: Root = toMdastRoot(result.ast);
+
+for (const node of root.children) {
+  if (node.type === "heading") {
+    console.log(node.depth); // narrowed without an assertion
+    node.data ??= {};
+    node.data.hName = `h${node.depth}`;
+  }
+}
+```
+
+The adapter recursively checks required fields, positions, scalar values,
+directive/JSX attributes, and each parent's allowed child model. Unknown or
+currently unsupported node types (including math, TOML, and `mdxjsEsm`) are
+never dropped: `toMdastRoot` throws `MdastAdapterError`, whose `path` and
+`nodeType` identify the failing value. A `null` parse result throws at `$`.
+Check `diagnostics` first when normal parse failures are expected.
+
+The returned tree is a deep clone. Internal `_markdownRsStops` coordinates
+are validated and omitted, and an omitted MDX JSX fragment name is normalized
+to canonical `null`. The broad raw `MdastRoot` remains available for consumers
+that intentionally handle future or custom nodes without this closed-world
+validation.
+
 The tree is **mdast, not hast**: block/inline structure (`heading`,
 `paragraph`, `emphasis`, `list`, …), not an HTML-shaped tree. It is the
 **raw parser output** — with source selection controlled by the frontmatter
@@ -339,10 +374,10 @@ against `remark-parse` under a capability-matched config — full method in
 `test/bench/bench-parse-ast.mjs`) shows a consistent win at the document
 sizes a live preview actually parses:
 
-| doc | bytes | remark-parse mean | parseToAst+JSON.parse mean | mean win |
-| --- | --- | --- | --- | --- |
-| small (~1.4 KB) | 1,361 | 0.70 ms | 0.29 ms | ~2.4x |
-| medium (~21 KB) | 21,846 | 12.06 ms | 6.24 ms | ~1.9x |
+| doc             | bytes  | remark-parse mean | parseToAst+JSON.parse mean | mean win |
+| --------------- | ------ | ----------------- | -------------------------- | -------- |
+| small (~1.4 KB) | 1,361  | 0.70 ms           | 0.29 ms                    | ~2.4x    |
+| medium (~21 KB) | 21,846 | 12.06 ms          | 6.24 ms                    | ~1.9x    |
 
 (One-off wasm init — fetch/compile/instantiate, paid once — was 16.1 ms in
 that run; steady-state numbers above never include it.) On a CJK-heavy
@@ -443,14 +478,14 @@ covers both APIs** when both run in class mode.
 
 - **Absent, `null`, or `{ mode: "inline" }`** (the default) reproduces the
   pre-existing per-token inline-color behaviour byte-for-byte: `<pre
-  class="syntect-{theme-slug}">` with `<span style="color:#…;">` tokens. This
+class="syntect-{theme-slug}">` with `<span style="color:#…;">` tokens. This
   mode is where `pipeline.theme` applies.
 - **`{ mode: "class" }`** switches fenced code to the same `hi-root` /
   `hi-{role}` semantic class markup `highlightCode()` produces — no inline
   colours, so **who owns color is the host page's stylesheet**, not the wasm
   output. `classPrefix`/`roleClasses` behave exactly like `highlightCode()`'s
   options (see above for the full role → default-class table).
-- **`mode: "class"` is mutually exclusive with a *non-null* top-level
+- **`mode: "class"` is mutually exclusive with a _non-null_ top-level
   `theme`** — themes don't affect class emission, so naming one alongside
   `mode: "class"` returns an `options`-source diagnostic
   (`codeHighlight.mode "class" is mutually exclusive with theme`) rather than
@@ -462,7 +497,7 @@ covers both APIs** when both run in class mode.
   the token markup wrapped in `dangerouslySetInnerHTML`) is unchanged from
   inline mode.
 
-```ts
+````ts
 import { renderHtml } from "@takazudo/zfb-md-wasm";
 
 const { html } = await renderHtml("```js\nconst x = 1;\n```\n", {
@@ -471,7 +506,7 @@ const { html } = await renderHtml("```js\nconst x = 1;\n```\n", {
 // html -> `<pre class="hi-root"><code><span class="line">
 //           <span class="hi-kw">const</span> x = <span class="hi-num">1</span>;
 //         </span></code></pre>` (whitespace added for readability)
-```
+````
 
 ## Evaluating compiled modules in a browser
 
@@ -563,10 +598,10 @@ size-optimized cargo profile (`opt-level = "z"`, LTO, one codegen unit,
 `panic = "abort"`) plus `wasm-opt`, which roughly halves the raw binary either
 way. The package ships **two** wasm artifacts (zfb#1849, epic zfb#1845):
 
-| Entry | Import | What it has | Raw `.wasm` | Gzipped |
-| --- | --- | --- | --- | --- |
-| Default | `@takazudo/zfb-md-wasm` | `compile` + `renderHtml` + `highlightCode` | ~2.9 MB | ~1.3 MB |
-| Highlight-only | `@takazudo/zfb-md-wasm/highlight` | `highlightCode` only (no md/MDX/JSX pipeline, no SWC) | ~1.4 MB | ~0.7 MB |
+| Entry          | Import                            | What it has                                           | Raw `.wasm` | Gzipped |
+| -------------- | --------------------------------- | ----------------------------------------------------- | ----------- | ------- |
+| Default        | `@takazudo/zfb-md-wasm`           | `compile` + `renderHtml` + `highlightCode`            | ~2.9 MB     | ~1.3 MB |
+| Highlight-only | `@takazudo/zfb-md-wasm/highlight` | `highlightCode` only (no md/MDX/JSX pipeline, no SWC) | ~1.4 MB     | ~0.7 MB |
 
 The highlight-only artifact drops the `pipeline` Cargo feature entirely (see
 `crates/zfb-md-wasm/Cargo.toml`) rather than subsetting syntect grammars —

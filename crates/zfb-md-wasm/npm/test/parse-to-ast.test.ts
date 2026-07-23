@@ -23,13 +23,21 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { unified } from "unified";
+import { toHast } from "mdast-util-to-hast";
 import remarkGfm from "remark-gfm";
 import remarkDirective from "remark-directive";
 import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
+import { visit } from "unist-util-visit";
 import { describe, it, expect } from "vitest";
 
-import { parseToAst, type Diagnostic, type ParseToAstOptions } from "../dist/index.js";
+import {
+  MdastAdapterError,
+  parseToAst,
+  toMdastRoot,
+  type Diagnostic,
+  type ParseToAstOptions,
+} from "../dist/index.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(testDir, "..", "..", "tests", "fixtures", "parse-to-ast");
@@ -175,6 +183,172 @@ describe("parseToAst (raw mdast export)", () => {
     expect(diag.source).toBe("markdown");
     expect(diag.message).toContain("closing tag");
     expect(diag.line).toBe(5);
+  });
+});
+
+describe("toMdastRoot (validated ecosystem adapter)", () => {
+  it("adapts every successful tree in the shared parse fixture corpus", async () => {
+    let adapted = 0;
+    for (const entry of manifest.fixtures) {
+      const out = await parseToAst(entry.source, entry.options);
+      if (out.ast) {
+        expect(() => toMdastRoot(out.ast), entry.slug).not.toThrow();
+        adapted += 1;
+      }
+    }
+    expect(adapted).toBeGreaterThan(5);
+  });
+
+  it("clones core/GFM output for unist-util-visit and mdast-util-to-hast", async () => {
+    const out = await parseToAst("# Hello\n\nA ~~small~~ [link](https://example.com).\n", {
+      filename: "post.md",
+    });
+    const root = toMdastRoot(out.ast);
+    expect(root).not.toBe(out.ast);
+
+    const headings: number[] = [];
+    visit(root, "heading", (node) => {
+      headings.push(node.depth);
+      node.data ??= {};
+      node.data.hName = "h-special";
+    });
+    expect(headings).toEqual([1]);
+
+    const hast = toHast(root);
+    expect(hast).toMatchObject({
+      type: "root",
+      children: [
+        { type: "element", tagName: "h-special" },
+        { type: "text", value: "\n" },
+        { type: "element", tagName: "p" },
+      ],
+    });
+  });
+
+  it("preserves YAML, directives, and named MDX JSX while normalizing fragments", async () => {
+    const source = [
+      "---",
+      "title: Adapter",
+      "---",
+      ":::note{#tip enabled}",
+      '<Badge kind="info" count={40 + 2}>Hi</Badge>',
+      "",
+      "<>fragment</>",
+      ":::",
+      "",
+    ].join("\n");
+    const out = await parseToAst(source, {
+      filename: "post.mdx",
+      directives: true,
+      frontmatter: "node",
+    });
+    expect(out.diagnostics).toEqual([]);
+    const root = toMdastRoot(out.ast);
+
+    const seen = new Map<string, unknown[]>();
+    visit(root, (node) => {
+      const values = seen.get(node.type) ?? [];
+      values.push("name" in node ? node.name : undefined);
+      seen.set(node.type, values);
+    });
+    expect(seen.get("yaml")).toEqual([undefined]);
+    expect(seen.get("containerDirective")).toEqual(["note"]);
+    expect(seen.get("mdxJsxTextElement")).toEqual(["Badge", null]);
+
+    const directive = root.children.find((node) => node.type === "containerDirective");
+    expect(directive).toMatchObject({ name: "note", attributes: { id: "tip", enabled: "" } });
+    expect(JSON.stringify(root)).not.toContain("_markdownRsStops");
+  });
+
+  it("preserves and clones data on MDX attribute records", async () => {
+    const out = await parseToAst("<Badge count={40 + 2} />\n", { filename: "post.mdx" });
+    if (!out.ast) throw new Error("fixture must parse");
+    const element = out.ast.children[0];
+    if (element?.type !== "mdxJsxFlowElement") throw new Error("fixture shape changed");
+    const attribute = element.attributes[0];
+    if (attribute?.type !== "mdxJsxAttribute") throw new Error("fixture shape changed");
+    attribute.data = { transform: { ready: true } };
+    if (typeof attribute.value !== "object" || attribute.value === null) {
+      throw new Error("fixture shape changed");
+    }
+    attribute.value.data = { expression: { checked: true } };
+
+    const root = toMdastRoot(out.ast);
+    const adaptedElement = root.children[0];
+    if (adaptedElement?.type !== "mdxJsxFlowElement") throw new Error("fixture shape changed");
+    const adaptedAttribute = adaptedElement.attributes[0];
+    if (adaptedAttribute?.type !== "mdxJsxAttribute") throw new Error("fixture shape changed");
+    expect(adaptedAttribute.data).toEqual({ transform: { ready: true } });
+    expect(adaptedAttribute.data).not.toBe(attribute.data);
+    expect(adaptedAttribute.value).not.toBe(attribute.value);
+    expect(adaptedAttribute.value).toMatchObject({
+      data: { expression: { checked: true } },
+    });
+  });
+
+  it("deep-clones data and does not share nested transform state", async () => {
+    const out = await parseToAst("# Clone\n", { filename: "post.md" });
+    if (!out.ast) throw new Error("fixture must parse");
+    out.ast.data = { nested: { value: 1 } };
+    const root = toMdastRoot(out.ast);
+    expect(root.data).toEqual({ nested: { value: 1 } });
+    expect(root.data).not.toBe(out.ast.data);
+    expect(root.data?.nested).not.toBe(out.ast.data.nested);
+  });
+
+  it("rejects null, unknown, misplaced, malformed, and unexpected structures with path/type", async () => {
+    expect(() => toMdastRoot(null)).toThrowError(
+      expect.objectContaining({ path: "$", nodeType: null }),
+    );
+
+    const out = await parseToAst("# Heading\n\nParagraph.\n", { filename: "post.md" });
+    if (!out.ast) throw new Error("fixture must parse");
+
+    const unknown = structuredClone(out.ast);
+    Object.defineProperty(unknown.children[0], "type", { value: "futureWidget" });
+    expect(() => Reflect.apply(toMdastRoot, undefined, [unknown])).toThrowError(
+      expect.objectContaining({ path: "$.children[0]", nodeType: "futureWidget" }),
+    );
+
+    const misplaced = structuredClone(out.ast);
+    const heading = misplaced.children[0];
+    const paragraph = misplaced.children[1];
+    if (!heading || !paragraph) throw new Error("fixture shape changed");
+    Reflect.set(paragraph, "children", [heading]);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [misplaced])).toThrowError(
+      expect.objectContaining({ path: "$.children[1].children[0]", nodeType: "heading" }),
+    );
+
+    const malformed = structuredClone(out.ast);
+    Reflect.set(malformed.children[0]!, "depth", 7);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [malformed])).toThrowError(
+      expect.objectContaining({ path: "$.children[0].depth", nodeType: "heading" }),
+    );
+
+    const unexpected = structuredClone(out.ast);
+    Reflect.set(unexpected.children[0]!, "futureField", true);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [unexpected])).toThrowError(
+      expect.objectContaining({ path: "$.children[0].futureField", nodeType: "heading" }),
+    );
+
+    try {
+      Reflect.apply(toMdastRoot, undefined, [unknown]);
+    } catch (error) {
+      expect(error).toBeInstanceOf(MdastAdapterError);
+      expect(String(error)).toContain("futureWidget");
+    }
+
+    const nestedRoot = structuredClone(out.ast);
+    Reflect.set(nestedRoot.children[1]!, "children", [structuredClone(out.ast)]);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [nestedRoot])).toThrowError(
+      expect.objectContaining({ path: "$.children[1].children[0]", nodeType: "root" }),
+    );
+
+    const unsupported = structuredClone(out.ast);
+    Object.defineProperty(unsupported.children[0], "type", { value: "mdxjsEsm" });
+    expect(() => Reflect.apply(toMdastRoot, undefined, [unsupported])).toThrowError(
+      expect.objectContaining({ path: "$.children[0]", nodeType: "mdxjsEsm" }),
+    );
   });
 });
 

@@ -43,6 +43,24 @@ function unpackForConsumer(archivePath: string): string {
   return fixtureRoot;
 }
 
+function installTarballConsumer(archivePath: string): string {
+  const fixtureRoot = join(tempRoot, "declaration-fixture");
+  mkdirSync(fixtureRoot, { recursive: true });
+  writeFileSync(
+    join(fixtureRoot, "package.json"),
+    JSON.stringify({
+      private: true,
+      type: "module",
+      dependencies: { "@takazudo/zfb-md-wasm": `file:${archivePath}` },
+    }),
+  );
+  execFileSync("pnpm", ["install", "--ignore-workspace", "--no-frozen-lockfile"], {
+    cwd: fixtureRoot,
+    stdio: "pipe",
+  });
+  return fixtureRoot;
+}
+
 function esbuildBin(): string {
   return resolve(packageRoot, "node_modules", ".bin", "esbuild");
 }
@@ -62,6 +80,40 @@ describe("packed browser conditional entry", () => {
     assertPackedContents(packedPaths(archive));
   });
 
+  it("resolves every public declaration from a tarball-only isolated consumer", () => {
+    const fixtureRoot = installTarballConsumer(packedPackage());
+    writeFileSync(
+      join(fixtureRoot, "consumer.ts"),
+      [
+        'import { MdastAdapterError, toMdastRoot, type MdastRoot } from "@takazudo/zfb-md-wasm";',
+        'import { highlightCode, type HighlightCodeResult } from "@takazudo/zfb-md-wasm/highlight";',
+        "declare const raw: MdastRoot;",
+        "const root: ReturnType<typeof toMdastRoot> = toMdastRoot(raw);",
+        "const error: MdastAdapterError | undefined = undefined;",
+        'const highlighted: Promise<HighlightCodeResult> = highlightCode("x", { language: "text" });',
+        "void root; void error; void highlighted;",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(fixtureRoot, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          target: "ES2022",
+          skipLibCheck: false,
+        },
+        include: ["consumer.ts"],
+      }),
+    );
+    execFileSync(resolve(packageRoot, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.json"], {
+      cwd: fixtureRoot,
+      stdio: "pipe",
+    });
+  });
+
   it("selects browser.js and keeps relative glue/wasm resources through generic esbuild", async () => {
     const archive = packedPackage();
     const fixtureRoot = unpackForConsumer(archive);
@@ -69,8 +121,9 @@ describe("packed browser conditional entry", () => {
     writeFileSync(
       nodeConsumerPath,
       [
-        'import { init, version } from "@takazudo/zfb-md-wasm";',
+        'import { init, toMdastRoot, version } from "@takazudo/zfb-md-wasm";',
         "await init();",
+        'if (typeof toMdastRoot !== "function") throw new Error("missing Node adapter export");',
         "console.log(await version());",
       ].join("\n"),
     );
@@ -86,7 +139,7 @@ describe("packed browser conditional entry", () => {
     writeFileSync(
       entryPath,
       [
-        'export { __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init, parseToAst } from "@takazudo/zfb-md-wasm";',
+        'export { MdastAdapterError, __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init, parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm";',
       ].join("\n"),
     );
 
@@ -198,6 +251,12 @@ describe("packed browser conditional entry", () => {
         type: "root",
         children: [{ type: "containerDirective", name: "note" }],
       });
+      const adapted = bundled.toMdastRoot(parsed.ast);
+      expect(adapted).toMatchObject({
+        type: "root",
+        children: [{ type: "containerDirective", name: "note" }],
+      });
+      expect(bundled.MdastAdapterError).toBeTypeOf("function");
       expect(after.currentGeneration).toBe(before.currentGeneration + 1);
       expect(after.trapRecoveriesStarted).toBe(before.trapRecoveriesStarted + 1);
       expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 3);
