@@ -69,6 +69,10 @@ globset = { workspace = true }
 # `zfb-css::pipeline::hash_8` so the project speaks one hashing dialect.
 sha2 = "0.10"
 hex = "0.4"
+# remark-directive decodes HTML character references in attribute values and
+# uses Unicode punctuation/whitespace when recognizing directive names.
+html-escape = "0.2"
+unicode_categories = "0.1"
 
 # SWC umbrella crate, used by `tsx_frontmatter` to parse `.tsx` modules
 # and walk their AST without executing them. The umbrella version is

@@ -143,7 +143,7 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
         &workspace.join("components/root-card.tsx"),
         r#"
             import { rootSource } from "@/src/root-source";
-            import "./root-card.css";
+            import "./generated/root-card.css";
             import { rootCompatibleDep } from "root-compatible-dep";
             export function RootCard() {
               return "ROOT_COMPONENT_MARKER:" + rootSource + ":" + rootCompatibleDep;
@@ -151,20 +151,28 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
         "#,
     );
     write(
-        &workspace.join("components/root-card.css"),
+        &workspace.join("components/generated/root-card.css"),
         "/* ROOT_CSS_MARKER: resolution-only; SSR uses the empty CSS loader. */\n",
     );
     write(
         &workspace.join("src/root-source.tsx"),
         r#"
-            import rootData from "@/src/root-data.json";
+            import rootData from "@/src/data/generated/root-data.json";
             import { rootLib } from "@/lib/root-lib";
             export const rootSource = "ROOT_SRC_MARKER:" + rootLib + ":" + rootData.rootData;
         "#,
     );
     write(
-        &workspace.join("src/root-data.json"),
+        &workspace.join("src/data/generated/root-data.json"),
         r#"{ "rootData": "ROOT_JSON_MARKER" }"#,
+    );
+    write(
+        &workspace.join("src/data/generated/unreached.json"),
+        r#"{ "rootData": "UNREACHED_MUST_NOT_STAGE" }"#,
+    );
+    write(
+        &workspace.join(".gitignore"),
+        "components/generated/\nsrc/data/generated/\n",
     );
     write(
         &workspace.join("lib/root-lib.ts"),
@@ -237,9 +245,9 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
     for staged_key in [
         "pages/index.tsx",
         "../../components/root-card.tsx",
-        "../../components/root-card.css",
+        "../../components/generated/root-card.css",
         "../../src/root-source.tsx",
-        "../../src/root-data.json",
+        "../../src/data/generated/root-data.json",
         "../../lib/root-lib.ts",
         "../shared/Badge.tsx",
         ".zudo-doc/routes-src/generated-route.tsx",
@@ -250,6 +258,249 @@ fn real_esbuild_stages_workspace_root_alias_graph_with_sibling_and_dot_paths() {
             "metafile must contain exact staged spelling {staged_key}; got {keys:?}"
         );
     }
+    assert!(
+        !session
+            .shadow_root()
+            .join("src/data/generated/unreached.json")
+            .exists(),
+        "an unreached sibling of an exact ignored leaf must stay absent"
+    );
+}
+
+/// Issue #1905's combined consumer shape. The 17 inputs reported by the
+/// blocked next.92 adoption are deliberately all reached in one real-esbuild
+/// call: six package-owned generated route sources, nine public subpath
+/// exports from a `workspace:*` sibling, and two generated JSON leaves
+/// reached through the claimed workspace-root alias. CSS is an additional
+/// (non-17) input because it has its own loader/output contract.
+///
+/// Keep the exact metafile spellings below: a green bundle alone cannot tell
+/// a staged input apart from a live-tree fallback.
+#[cfg(unix)]
+#[test]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored"]
+fn real_esbuild_combines_all_next_92_residual_stage_escape_classes() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_workspace_root_alias_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (workspace, project) = write_workspace(temp.path());
+    let node_modules = write_hoisted_node_modules(&workspace);
+    write(
+        &workspace.join("components/root-card.tsx"),
+        r#"
+            import { rootSource } from "@/src/root-source";
+            import "./generated/root-card.css";
+            export const rootCard = "ROOT_CSS_CONSUMER:" + rootSource;
+        "#,
+    );
+    write(
+        &workspace.join("components/generated/root-card.css"),
+        "/* COMBINED_ROOT_CSS_MARKER: SSR's CSS loader is intentionally empty. */\n",
+    );
+    write(
+        &workspace.join("src/root-source.ts"),
+        r#"
+            import first from "@/src/data/generated/first.json";
+            import second from "@/src/data/generated/second.json";
+            export const rootSource = "COMBINED_ROOT_JSON:" + first.value + ":" + second.value;
+        "#,
+    );
+    write(
+        &workspace.join("src/data/generated/first.json"),
+        r#"{ "value": "FIRST_JSON_MARKER" }"#,
+    );
+    write(
+        &workspace.join("src/data/generated/second.json"),
+        r#"{ "value": "SECOND_JSON_MARKER" }"#,
+    );
+    write(
+        &workspace.join(".gitignore"),
+        "components/generated/\nsrc/data/generated/\n",
+    );
+
+    let route_files = [
+        ("robots.txt.tsx", "robots"),
+        ("404.tsx", "not-found"),
+        ("_chrome.tsx", "chrome"),
+        ("_context.ts", "context"),
+        ("docs-slug.tsx", "docs-slug"),
+        ("sitemap.xml.tsx", "sitemap"),
+    ];
+    for (file, marker) in route_files {
+        write(
+            &project.join(".zudo-doc/routes-src").join(file),
+            &format!("export const routeMarker = \"COMBINED_ROUTE_{marker}\";\n"),
+        );
+    }
+    write(&project.join(".gitignore"), ".zudo-doc/\n");
+
+    let ui = workspace.join("sub-packages/ui-preact");
+    let package_exports = [
+        ("code", "code"),
+        ("action-button", "action-button"),
+        ("h4", "h4"),
+        ("h5", "h5"),
+        ("h6", "h6"),
+        ("em", "em"),
+        ("hr", "hr"),
+        ("strong", "strong"),
+        ("story-contract", "story-contract"),
+    ];
+    let exports = package_exports
+        .iter()
+        .map(|(name, _)| {
+            let extension = if *name == "story-contract" {
+                "ts"
+            } else {
+                "tsx"
+            };
+            format!(r#""./{name}":"./src/{name}/{name}.{extension}""#)
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    write(
+        &ui.join("package.json"),
+        &format!(r#"{{"name":"@acme/ui-preact","exports":{{{exports}}}}}"#),
+    );
+    for (name, marker) in package_exports {
+        let extension = if name == "story-contract" {
+            "ts"
+        } else {
+            "tsx"
+        };
+        write(
+            &ui.join("src")
+                .join(name)
+                .join(format!("{name}.{extension}")),
+            &format!("export const packageMarker = \"COMBINED_PACKAGE_{marker}\";\n"),
+        );
+    }
+    fs::create_dir_all(node_modules.join("@acme")).expect("create scoped node_modules directory");
+    std::os::unix::fs::symlink(&ui, node_modules.join("@acme/ui-preact"))
+        .expect("link declared workspace package into hoisted install");
+    write(
+        &project.join("package.json"),
+        r#"{"name":"host","dependencies":{"@acme/ui-preact":"workspace:*"}}"#,
+    );
+
+    let route_imports = route_files
+        .iter()
+        .enumerate()
+        .map(|(index, (file, _))| {
+            format!("import {{ routeMarker as route{index} }} from \"#route-{index}\"; // {file}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let package_imports = package_exports
+        .iter()
+        .enumerate()
+        .map(|(index, (name, _))| {
+            format!("import {{ packageMarker as package{index} }} from \"@acme/ui-preact/{name}\";")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let route_values = (0..route_files.len())
+        .map(|index| format!("route{index}"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let package_values = (0..package_exports.len())
+        .map(|index| format!("package{index}"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    write(
+        &project.join("pages/index.tsx"),
+        &format!(
+            "import {{ rootCard }} from \"@components/root-card\";\n{route_imports}\n{package_imports}\nexport default function Home() {{ return rootCard + {route_values} + {package_values}; }}\n"
+        ),
+    );
+
+    let mut input = base_input(&project, esbuild, node_modules);
+    for (index, (file, _)) in route_files.iter().enumerate() {
+        input.tsconfig_paths.insert(
+            format!("#route-{index}"),
+            vec![project
+                .join(".zudo-doc/routes-src")
+                .join(file)
+                .to_string_lossy()
+                .into_owned()],
+        );
+    }
+    let mut session = ShadowSession::new(&project).expect("shadow session");
+    let output = bundle_with_session(input, Some(&mut session)).expect(
+        "all next.92 residual stage-escape classes must resolve from one staged workspace consumer",
+    );
+    let body = bundle_text(&output.bundle_path);
+    for marker in [
+        "COMBINED_ROOT_JSON",
+        "FIRST_JSON_MARKER",
+        "SECOND_JSON_MARKER",
+        "COMBINED_ROUTE_robots",
+        "COMBINED_ROUTE_not-found",
+        "COMBINED_ROUTE_chrome",
+        "COMBINED_ROUTE_context",
+        "COMBINED_ROUTE_docs-slug",
+        "COMBINED_ROUTE_sitemap",
+        "COMBINED_PACKAGE_code",
+        "COMBINED_PACKAGE_action-button",
+        "COMBINED_PACKAGE_h4",
+        "COMBINED_PACKAGE_h5",
+        "COMBINED_PACKAGE_h6",
+        "COMBINED_PACKAGE_em",
+        "COMBINED_PACKAGE_hr",
+        "COMBINED_PACKAGE_strong",
+        "COMBINED_PACKAGE_story-contract",
+    ] {
+        assert!(
+            body.contains(marker),
+            "bundle must contain {marker}; got: {body}"
+        );
+    }
+
+    let shadow = fs::canonicalize(session.shadow_root())
+        .expect("canonicalize work mirror")
+        .join("sub-packages/host");
+    let keys = metafile_input_keys(&shadow);
+    let residual_keys = [
+        ".zudo-doc/routes-src/robots.txt.tsx",
+        ".zudo-doc/routes-src/404.tsx",
+        ".zudo-doc/routes-src/_chrome.tsx",
+        ".zudo-doc/routes-src/_context.ts",
+        ".zudo-doc/routes-src/docs-slug.tsx",
+        ".zudo-doc/routes-src/sitemap.xml.tsx",
+        "node_modules/@acme/ui-preact/src/code/code.tsx",
+        "node_modules/@acme/ui-preact/src/action-button/action-button.tsx",
+        "node_modules/@acme/ui-preact/src/h4/h4.tsx",
+        "node_modules/@acme/ui-preact/src/h5/h5.tsx",
+        "node_modules/@acme/ui-preact/src/h6/h6.tsx",
+        "node_modules/@acme/ui-preact/src/em/em.tsx",
+        "node_modules/@acme/ui-preact/src/hr/hr.tsx",
+        "node_modules/@acme/ui-preact/src/strong/strong.tsx",
+        "node_modules/@acme/ui-preact/src/story-contract/story-contract.ts",
+        "../../src/data/generated/first.json",
+        "../../src/data/generated/second.json",
+    ];
+    assert_eq!(
+        residual_keys.len(),
+        17,
+        "the adoption report has 17 residual inputs"
+    );
+    for expected in residual_keys {
+        assert!(
+            keys.iter().any(|key| key == expected),
+            "metafile must contain exact staged residual spelling {expected}; got {keys:?}"
+        );
+    }
+    assert!(
+        keys.iter()
+            .any(|key| key == "../../components/generated/root-card.css"),
+        "the CSS proof must use its staged metafile input; got {keys:?}"
+    );
+    assert!(
+        keys.iter().all(|key| !key.starts_with('/')),
+        "no canonical live first-party input may appear in the metafile; got {keys:?}"
+    );
 }
 
 #[test]

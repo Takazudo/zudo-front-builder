@@ -11,8 +11,10 @@
 //   (slice-equality against the original source — an independent anchor,
 //   not a re-derivation of the Rust arithmetic) and adds the ONE proof that
 //   genuinely needs a JS runtime: node-by-node UTF-16 position parity
-//   against real `remark-parse`, the actual remark/unist reference
-//   implementation this export claims compatibility with.
+//   against real `remark-parse`/`remark-mdx`, the actual remark/unist
+//   reference implementations this export claims compatibility with. It
+//   also drives filename inference/overrides, the closed options boundary,
+//   and all five independent GFM switches in both dialects.
 // - Blind spots: browser execution (the committed browser bench harness,
 //   `package-browser.test.ts`'s bundled-entry check below, and the
 //   md-wasm-browser-smoke Chromium lane cover that surface).
@@ -21,10 +23,21 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { unified } from "unified";
+import { toHast } from "mdast-util-to-hast";
+import remarkGfm from "remark-gfm";
+import remarkDirective from "remark-directive";
+import remarkMdx from "remark-mdx";
 import remarkParse from "remark-parse";
+import { visit } from "unist-util-visit";
 import { describe, it, expect } from "vitest";
 
-import { parseToAst, type Diagnostic } from "../dist/index.js";
+import {
+  MdastAdapterError,
+  parseToAst,
+  toMdastRoot,
+  type Diagnostic,
+  type ParseToAstOptions,
+} from "../dist/index.js";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixturesDir = join(testDir, "..", "..", "tests", "fixtures", "parse-to-ast");
@@ -32,14 +45,26 @@ const fixturesDir = join(testDir, "..", "..", "tests", "fixtures", "parse-to-ast
 interface ParseToAstFixture {
   slug: string;
   source: string;
-  options: Record<string, unknown>;
+  options: ParseToAstOptions;
 }
 interface ParseToAstManifest {
   fixtures: ParseToAstFixture[];
 }
+interface DiagnosticFixture {
+  slug: string;
+  source: string;
+  options: { filename: string };
+  line: number;
+  column: number;
+}
 const manifest: ParseToAstManifest = JSON.parse(
   readFileSync(join(fixturesDir, "manifest.json"), "utf8"),
 );
+const diagnosticFixtures = (
+  JSON.parse(readFileSync(join(fixturesDir, "diagnostics.json"), "utf8")) as {
+    fixtures: DiagnosticFixture[];
+  }
+).fixtures;
 function fixture(slug: string): ParseToAstFixture {
   const found = manifest.fixtures.find((f) => f.slug === slug);
   if (!found) throw new Error(`no fixture named \`${slug}\` in the parse-to-ast manifest`);
@@ -161,6 +186,337 @@ describe("parseToAst (raw mdast export)", () => {
   });
 });
 
+describe("toMdastRoot (validated ecosystem adapter)", () => {
+  it("adapts every successful tree in the shared parse fixture corpus", async () => {
+    let adapted = 0;
+    for (const entry of manifest.fixtures) {
+      const out = await parseToAst(entry.source, entry.options);
+      if (out.ast) {
+        expect(() => toMdastRoot(out.ast), entry.slug).not.toThrow();
+        adapted += 1;
+      }
+    }
+    expect(adapted).toBeGreaterThan(5);
+  });
+
+  it("clones core/GFM output for unist-util-visit and mdast-util-to-hast", async () => {
+    const out = await parseToAst("# Hello\n\nA ~~small~~ [link](https://example.com).\n", {
+      filename: "post.md",
+    });
+    const root = toMdastRoot(out.ast);
+    expect(root).not.toBe(out.ast);
+
+    const headings: number[] = [];
+    visit(root, "heading", (node) => {
+      headings.push(node.depth);
+      node.data ??= {};
+      node.data.hName = "h-special";
+    });
+    expect(headings).toEqual([1]);
+
+    const hast = toHast(root);
+    expect(hast).toMatchObject({
+      type: "root",
+      children: [
+        { type: "element", tagName: "h-special" },
+        { type: "text", value: "\n" },
+        { type: "element", tagName: "p" },
+      ],
+    });
+  });
+
+  it("preserves YAML, directives, and named MDX JSX while normalizing fragments", async () => {
+    const source = [
+      "---",
+      "title: Adapter",
+      "---",
+      ":::note{#tip enabled}",
+      '<Badge kind="info" count={40 + 2}>Hi</Badge>',
+      "",
+      "<>fragment</>",
+      ":::",
+      "",
+    ].join("\n");
+    const out = await parseToAst(source, {
+      filename: "post.mdx",
+      directives: true,
+      frontmatter: "node",
+    });
+    expect(out.diagnostics).toEqual([]);
+    const root = toMdastRoot(out.ast);
+
+    const seen = new Map<string, unknown[]>();
+    visit(root, (node) => {
+      const values = seen.get(node.type) ?? [];
+      values.push("name" in node ? node.name : undefined);
+      seen.set(node.type, values);
+    });
+    expect(seen.get("yaml")).toEqual([undefined]);
+    expect(seen.get("containerDirective")).toEqual(["note"]);
+    expect(seen.get("mdxJsxTextElement")).toEqual(["Badge", null]);
+
+    const directive = root.children.find((node) => node.type === "containerDirective");
+    expect(directive).toMatchObject({ name: "note", attributes: { id: "tip", enabled: "" } });
+    expect(JSON.stringify(root)).not.toContain("_markdownRsStops");
+  });
+
+  it("preserves and clones data on MDX attribute records", async () => {
+    const out = await parseToAst("<Badge count={40 + 2} />\n", { filename: "post.mdx" });
+    if (!out.ast) throw new Error("fixture must parse");
+    const element = out.ast.children[0];
+    if (element?.type !== "mdxJsxFlowElement") throw new Error("fixture shape changed");
+    const attribute = element.attributes[0];
+    if (attribute?.type !== "mdxJsxAttribute") throw new Error("fixture shape changed");
+    attribute.data = { transform: { ready: true } };
+    if (typeof attribute.value !== "object" || attribute.value === null) {
+      throw new Error("fixture shape changed");
+    }
+    attribute.value.data = { expression: { checked: true } };
+
+    const root = toMdastRoot(out.ast);
+    const adaptedElement = root.children[0];
+    if (adaptedElement?.type !== "mdxJsxFlowElement") throw new Error("fixture shape changed");
+    const adaptedAttribute = adaptedElement.attributes[0];
+    if (adaptedAttribute?.type !== "mdxJsxAttribute") throw new Error("fixture shape changed");
+    expect(adaptedAttribute.data).toEqual({ transform: { ready: true } });
+    expect(adaptedAttribute.data).not.toBe(attribute.data);
+    expect(adaptedAttribute.value).not.toBe(attribute.value);
+    expect(adaptedAttribute.value).toMatchObject({
+      data: { expression: { checked: true } },
+    });
+  });
+
+  it("deep-clones data and does not share nested transform state", async () => {
+    const out = await parseToAst("# Clone\n", { filename: "post.md" });
+    if (!out.ast) throw new Error("fixture must parse");
+    out.ast.data = { nested: { value: 1 } };
+    const root = toMdastRoot(out.ast);
+    expect(root.data).toEqual({ nested: { value: 1 } });
+    expect(root.data).not.toBe(out.ast.data);
+    expect(root.data?.nested).not.toBe(out.ast.data.nested);
+  });
+
+  it("rejects null, unknown, misplaced, malformed, and unexpected structures with path/type", async () => {
+    expect(() => toMdastRoot(null)).toThrowError(
+      expect.objectContaining({ path: "$", nodeType: null }),
+    );
+
+    const out = await parseToAst("# Heading\n\nParagraph.\n", { filename: "post.md" });
+    if (!out.ast) throw new Error("fixture must parse");
+
+    const unknown = structuredClone(out.ast);
+    Object.defineProperty(unknown.children[0], "type", { value: "futureWidget" });
+    expect(() => Reflect.apply(toMdastRoot, undefined, [unknown])).toThrowError(
+      expect.objectContaining({ path: "$.children[0]", nodeType: "futureWidget" }),
+    );
+
+    const misplaced = structuredClone(out.ast);
+    const heading = misplaced.children[0];
+    const paragraph = misplaced.children[1];
+    if (!heading || !paragraph) throw new Error("fixture shape changed");
+    Reflect.set(paragraph, "children", [heading]);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [misplaced])).toThrowError(
+      expect.objectContaining({ path: "$.children[1].children[0]", nodeType: "heading" }),
+    );
+
+    const malformed = structuredClone(out.ast);
+    Reflect.set(malformed.children[0]!, "depth", 7);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [malformed])).toThrowError(
+      expect.objectContaining({ path: "$.children[0].depth", nodeType: "heading" }),
+    );
+
+    const unexpected = structuredClone(out.ast);
+    Reflect.set(unexpected.children[0]!, "futureField", true);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [unexpected])).toThrowError(
+      expect.objectContaining({ path: "$.children[0].futureField", nodeType: "heading" }),
+    );
+
+    try {
+      Reflect.apply(toMdastRoot, undefined, [unknown]);
+    } catch (error) {
+      expect(error).toBeInstanceOf(MdastAdapterError);
+      expect(String(error)).toContain("futureWidget");
+    }
+
+    const nestedRoot = structuredClone(out.ast);
+    Reflect.set(nestedRoot.children[1]!, "children", [structuredClone(out.ast)]);
+    expect(() => Reflect.apply(toMdastRoot, undefined, [nestedRoot])).toThrowError(
+      expect.objectContaining({ path: "$.children[1].children[0]", nodeType: "root" }),
+    );
+
+    const unsupported = structuredClone(out.ast);
+    Object.defineProperty(unsupported.children[0], "type", { value: "mdxjsEsm" });
+    expect(() => Reflect.apply(toMdastRoot, undefined, [unsupported])).toThrowError(
+      expect.objectContaining({ path: "$.children[0]", nodeType: "mdxjsEsm" }),
+    );
+  });
+});
+
+describe("parseToAst frontmatter policies", () => {
+  it("keeps extract as default and exposes canonical YAML only in node mode", async () => {
+    const policyFixture = fixture("frontmatter-policy-crlf-bom");
+    const source = policyFixture.source;
+    for (const policy of ["extract", "node", "none"] as const) {
+      const out = await parseToAst(source, {
+        ...policyFixture.options,
+        frontmatter: policy,
+        directives: true,
+      });
+      expect(out.diagnostics, policy).toEqual([]);
+      expect(out.frontmatter, policy).toEqual(
+        policy === "none" ? null : { title: "日本語 😀", literal: ":::not-a-directive" },
+      );
+      const yaml: MdastNodeish[] = [];
+      const directives: MdastNodeish[] = [];
+      const textDirectives: MdastNodeish[] = [];
+      walk(out.ast, (node) => {
+        if (node.type === "yaml") yaml.push(node);
+        if (node.type === "containerDirective") directives.push(node);
+        if (node.type === "textDirective") textDirectives.push(node);
+      });
+      expect(yaml, policy).toHaveLength(policy === "node" ? 1 : 0);
+      expect(directives, policy).toHaveLength(1);
+      if (policy === "node") {
+        expect(textDirectives).toHaveLength(0);
+        const position = yaml[0]!.position!;
+        expect(source.slice(position.start.offset, position.end.offset)).toBe(
+          "---\r\ntitle: 日本語 😀\r\nliteral: ':::not-a-directive'\r\n---",
+        );
+        expect(position.start).toEqual({ line: 1, column: 2, offset: 1 });
+      }
+    }
+    const implicit = await parseToAst("---\ntitle: default\n---\n# Body\n", {
+      filename: "post.md",
+    });
+    expect(implicit.frontmatter).toEqual({ title: "default" });
+    expect(JSON.stringify(implicit.ast)).not.toContain('"type":"yaml"');
+  });
+
+  it("separates malformed and unterminated YAML diagnostics by policy", async () => {
+    for (const source of ["---\nbroken: [\n---\n", "---\ntitle: x\n"]) {
+      for (const policy of ["extract", "node", "none"] as const) {
+        const out = await parseToAst(source, { filename: "post.md", frontmatter: policy });
+        if (policy === "none") {
+          expect(out.ast, `${policy} ${JSON.stringify(source)}`).not.toBeNull();
+          expect(out.frontmatter).toBeNull();
+          expect(out.diagnostics).toEqual([]);
+        } else {
+          expect(out.ast).toBeNull();
+          expect(out.frontmatter).toBeNull();
+          expect(out.diagnostics).toHaveLength(1);
+          expect(out.diagnostics[0]!.source).toBe("frontmatter");
+        }
+      }
+    }
+  });
+});
+
+describe("parseToAst dialect selection and closed options", () => {
+  it("infers from .md/.mdx and lets an explicit dialect override either valid extension", async () => {
+    const markdown =
+      "<!-- marker -->\n\n<div>raw</div>\n\n![alt](x.png){w=full}\n\n<https://example.com>\n\n    code\n";
+    for (const options of [
+      { filename: "post.md" },
+      { filename: "post.mdx", dialect: "markdown" as const },
+    ]) {
+      const out = await parseToAst(markdown, options);
+      expect(out.diagnostics).toHaveLength(0);
+      const types = new Set<string>();
+      walk(out.ast, (node) => types.add(node.type as string));
+      for (const required of ["html", "image", "link", "code"]) {
+        expect(types).toContain(required);
+      }
+      expect(JSON.stringify(out.ast)).toContain("{w=full}");
+    }
+
+    const mdx = '<Card label="x" />\n\n{1 + 2}\n';
+    for (const options of [
+      {},
+      { filename: "post.mdx" },
+      { filename: "post.md", dialect: "mdx" as const },
+    ]) {
+      const out = await parseToAst(mdx, options);
+      expect(out.diagnostics).toHaveLength(0);
+      const types = new Set<string>();
+      walk(out.ast, (node) => types.add(node.type as string));
+      expect(types).toContain("mdxJsxFlowElement");
+      expect(types).toContain("mdxFlowExpression");
+    }
+  });
+
+  it("returns one options diagnostic for invalid parse-only documents without trapping", async () => {
+    const invalid = [
+      { filename: null },
+      { dialect: null },
+      { dialect: "commonmark" },
+      { directives: null },
+      { directives: "yes" },
+      { frontmatter: null },
+      { frontmatter: "strip" },
+      { frontmatter: true },
+      { filename: "post.MD" },
+      { filename: "post.txt", dialect: "markdown" },
+      { jsxRuntime: "react" },
+      { development: true },
+      { pipeline: { theme: "InspiredGitHub" } },
+      { nope: true },
+    ];
+    for (const options of invalid) {
+      // Deliberately bypass the TypeScript contract to verify the runtime
+      // boundary rejects malformed JS input as structured data.
+      const out = await parseToAst("---\nbroken: [\n---\n", options as never);
+      expect(out.ast, JSON.stringify(options)).toBeNull();
+      expect(out.frontmatter, JSON.stringify(options)).toBeNull();
+      expect(out.diagnostics, JSON.stringify(options)).toHaveLength(1);
+      expect(out.diagnostics[0]!.source, JSON.stringify(options)).toBe("options");
+    }
+  });
+
+  it("keeps all five GFM flags orthogonal in both dialects", async () => {
+    const cases = [
+      ["strikethrough", "a ~~gone~~ b\n", "delete"],
+      ["table", "| a | b |\n| - | - |\n| 1 | 2 |\n", "table"],
+      ["autolinkLiteral", "Visit www.example.com.\n", "link"],
+      ["taskListItem", "- [x] done\n", "checked"],
+      ["footnoteDefinition", "[^note]: detail\n\nSee [^note].\n", "footnoteDefinition"],
+    ] as const;
+    for (const dialect of ["markdown", "mdx"] as const) {
+      for (const [flag, source, marker] of cases) {
+        const base = {
+          strikethrough: false,
+          table: false,
+          autolinkLiteral: false,
+          taskListItem: false,
+          footnoteDefinition: false,
+        };
+        const off = await parseToAst(source, {
+          filename: "post.mdx",
+          dialect,
+          pipeline: { gfm: base },
+        });
+        const on = await parseToAst(source, {
+          filename: "post.mdx",
+          dialect,
+          pipeline: { gfm: { ...base, [flag]: true } },
+        });
+        expect(off.diagnostics).toHaveLength(0);
+        expect(on.diagnostics).toHaveLength(0);
+        if (marker === "checked") {
+          expect(JSON.stringify(off.ast)).not.toContain('"checked":true');
+          expect(JSON.stringify(on.ast)).toContain('"checked":true');
+        } else {
+          const offTypes = new Set<string>();
+          const onTypes = new Set<string>();
+          walk(off.ast, (node) => offTypes.add(node.type as string));
+          walk(on.ast, (node) => onTypes.add(node.type as string));
+          expect(offTypes).not.toContain(marker);
+          expect(onTypes).toContain(marker);
+        }
+      }
+    }
+  });
+});
+
 describe("parseToAst custom/unrecognized node survival (zfb#1828 requirement 3)", () => {
   it("round-trips an MDX-JSX custom component with type/name/attributes intact", async () => {
     const { source, options } = fixture("mdx-custom-component");
@@ -199,6 +555,123 @@ describe("parseToAst custom/unrecognized node survival (zfb#1828 requirement 3)"
     const text = ast.children[0]!.children as MdastNodeish[];
     expect(text[0]!.value).toContain(":::note");
   });
+});
+
+describe("parseToAst generic directives", () => {
+  function collect(value: unknown, type: string, found: MdastNodeish[] = []): MdastNodeish[] {
+    if (Array.isArray(value)) {
+      for (const item of value) collect(item, type, found);
+    } else if (value !== null && typeof value === "object") {
+      const node = value as MdastNodeish;
+      if (node.type === type) found.push(node);
+      for (const nested of Object.values(node)) collect(nested, type, found);
+    }
+    return found;
+  }
+
+  function assertSlices(node: MdastNodeish, source: string, parent?: MdastNodeish["position"]) {
+    expect(node.position, `${node.type} carries a position`).toBeDefined();
+    const position = node.position!;
+    if (parent) {
+      expect(position.start.offset).toBeGreaterThanOrEqual(parent.start.offset);
+      expect(position.end.offset).toBeLessThanOrEqual(parent.end.offset);
+    }
+    const slice = source.slice(position.start.offset, position.end.offset);
+    expect(slice.length, `${node.type} selects original source`).toBeGreaterThan(0);
+    if (node.type === "text") expect(slice).toBe(node.value);
+    for (const child of (node.children as MdastNodeish[] | undefined) ?? []) {
+      assertSlices(child, source, position);
+    }
+  }
+
+  for (const slug of ["directives-markdown-lf", "directives-mdx-crlf"] as const) {
+    it(`emits canonical nodes with independently sliceable UTF-16 positions: ${slug}`, async () => {
+      const { source, options } = fixture(slug);
+      const out = await parseToAst(source, options);
+      expect(out.diagnostics).toEqual([]);
+      const containers = collect(out.ast, "containerDirective");
+      const texts = collect(out.ast, "textDirective");
+      expect(containers.length).toBeGreaterThan(0);
+      expect(texts.length).toBeGreaterThan(0);
+      for (const directive of [...containers, ...collect(out.ast, "leafDirective"), ...texts]) {
+        expect(directive).toMatchObject({
+          name: expect.any(String),
+          attributes: expect.any(Object),
+          children: expect.any(Array),
+        });
+        assertSlices(directive, source);
+      }
+      const labels = collect(out.ast, "paragraph").filter(
+        (node) => (node.data as Record<string, unknown> | undefined)?.directiveLabel === true,
+      );
+      expect(labels.length).toBeGreaterThan(0);
+      if (slug === "directives-markdown-lf") {
+        expect(containers[0]).toMatchObject({
+          name: "outer",
+          attributes: {
+            id: "hero",
+            class: "wide",
+            disabled: "",
+            key: "a&b",
+          },
+        });
+        expect(collect(containers[0], "containerDirective")).toHaveLength(2);
+        expect(collect(containers[0], "leafDirective")).toHaveLength(1);
+        expect(collect(containers[0], "textDirective")).toHaveLength(1);
+      }
+    });
+  }
+
+  it("matches the unified/remark-directive 4 node-kind oracle under both dialects", async () => {
+    for (const slug of ["directives-markdown-lf", "directives-mdx-crlf"] as const) {
+      const { source, options } = fixture(slug);
+      const out = await parseToAst(source, options);
+      const bodyStart = source.indexOf(":::");
+      const body = source.slice(bodyStart);
+      const processor = unified().use(remarkParse).use(remarkGfm);
+      if (options.dialect === "mdx" || options.filename?.endsWith(".mdx")) {
+        processor.use(remarkMdx);
+      }
+      processor.use(remarkDirective);
+      const oracle = processor.parse(body);
+      for (const kind of ["containerDirective", "leafDirective", "textDirective"]) {
+        expect(collect(out.ast, kind).length, `${slug}: ${kind}`).toBe(
+          collect(oracle, kind).length,
+        );
+      }
+    }
+  });
+
+  it("keeps malformed candidates literal and default-off output unchanged", async () => {
+    const malformed = fixture("directives-malformed-literal");
+    const recovered = await parseToAst(malformed.source, malformed.options);
+    expect(recovered.diagnostics).toEqual([]);
+    expect(collect(recovered.ast, "containerDirective")).toHaveLength(0);
+    expect(JSON.stringify(recovered.ast)).toContain(":::bad trailing");
+
+    const valid = fixture("directives-markdown-lf");
+    const disabled = await parseToAst(valid.source, {
+      filename: valid.options.filename,
+      directives: false,
+    });
+    expect(collect(disabled.ast, "containerDirective")).toHaveLength(0);
+    expect(JSON.stringify(disabled.ast)).toContain(":::outer");
+  });
+});
+
+describe("parseToAst markdown diagnostics use original-source UTF-16 coordinates", () => {
+  for (const fixture of diagnosticFixtures) {
+    it(fixture.slug, async () => {
+      const out = await parseToAst(fixture.source, fixture.options);
+      expect(out.ast).toBeNull();
+      expect(out.diagnostics).toHaveLength(1);
+      expect(out.diagnostics[0]).toMatchObject({
+        source: "markdown",
+        line: fixture.line,
+        column: fixture.column,
+      });
+    });
+  }
 });
 
 describe("parseToAst UTF-16 position parity with remark-parse (zfb#1856)", () => {
@@ -255,4 +728,28 @@ describe("parseToAst UTF-16 position parity with remark-parse (zfb#1856)", () =>
       expect(zfbNode.end, `${zfbNode.type}[${i}] end (UTF-16 units)`).toEqual(remarkNode.end);
     }
   });
+
+  for (const [slug, oracle] of [
+    ["markdown-commonmark-dialect", "markdown"],
+    ["mdx-dialect", "mdx"],
+  ] as const) {
+    it(`matches ${oracle === "mdx" ? "remark-mdx" : "remark-parse"} supported structure and positions for ${slug}`, async () => {
+      const { source, options } = fixture(slug);
+      const zfbOut = await parseToAst(source, options);
+      expect(zfbOut.diagnostics).toHaveLength(0);
+      const processor =
+        oracle === "mdx"
+          ? unified().use(remarkParse).use(remarkMdx).use(remarkGfm)
+          : unified().use(remarkParse).use(remarkGfm);
+      const remarkTree = processor.parse(source);
+      // markdown-rs does not model JSX attribute positions; that locked,
+      // documented divergence is the only positioned remark record omitted
+      // from this supported-structure comparison.
+      const supported = (nodes: FlatNode[]) =>
+        nodes.filter((node) => !POSITIONLESS_TYPES.has(node.type));
+      expect(supported(flattenPositions(zfbOut.ast))).toEqual(
+        supported(flattenPositions(remarkTree)),
+      );
+    });
+  }
 });

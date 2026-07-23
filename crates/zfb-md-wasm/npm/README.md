@@ -178,9 +178,10 @@ and can produce normal class markup without a diagnostic.
 
 ## `parseToAst(source, options?)` — markdown/MDX → raw mdast
 
-`parseToAst()` parses markdown/MDX source into a serialized **mdast**
-tree — the raw markdown-rs parser output, before any of zfb's own visitors
-run. Use it when a consumer needs the *tree*, not rendered output: a live
+`parseToAst()` parses markdown/MDX source into a serialized **mdast** tree —
+raw markdown-rs output converted into an open carrier that can optionally
+hold generic directive nodes, before any zfb visitor runs. Use it when a
+consumer needs the _tree_, not rendered output: a live
 preview that wants remark/unist-ecosystem tooling (`mdast-util-to-hast`, a
 custom mdast transform, editor↔preview scroll sync keyed on source
 positions) instead of zfb's own HTML/JS rendering.
@@ -196,6 +197,74 @@ const { ast, frontmatter, diagnostics }: ParseToAstResult = await parseToAst(
 // frontmatter -> { title: "Hello" }
 // diagnostics -> []
 ```
+
+`parseToAst` has its own closed options document:
+
+```ts
+interface ParseToAstOptions {
+  filename?: string; // lowercase .md/.mdx only; default <anonymous>.mdx
+  dialect?: "markdown" | "mdx";
+  directives?: boolean; // default false
+  frontmatter?: "extract" | "node" | "none"; // default extract
+  pipeline?: {
+    gfm?: {
+      strikethrough?: boolean; // default true
+      table?: boolean; // default true
+      autolinkLiteral?: boolean; // default false
+      taskListItem?: boolean; // default false
+      footnoteDefinition?: boolean; // default false; controls definitions + references
+    };
+  };
+}
+```
+
+Frontmatter handling is explicit and parse-only:
+
+| policy                | parsed source                                                       | AST YAML node                         | returned `frontmatter`              | malformed/unterminated YAML                                             |
+| --------------------- | ------------------------------------------------------------------- | ------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
+| `"extract"` (default) | body after the recognized fence                                     | none                                  | parsed JSON, `null` if absent/empty | `ast: null`, `frontmatter: null`, one `frontmatter` diagnostic          |
+| `"node"`              | full logical source, with only markdown-rs YAML frontmatter enabled | canonical `yaml` node when recognized | same parsed JSON as `extract`       | same failure as `extract`; no partial AST                               |
+| `"none"`              | full logical source, YAML recognition disabled                      | none                                  | always `null`                       | no YAML diagnostic; the selected Markdown/MDX dialect parses every byte |
+
+Recognition in `extract` and `node` is deliberately zfb-owned and YAML-only:
+after one optional UTF-8 BOM, the document must start with `---` plus LF or
+CRLF and close on a line exactly `---` plus LF, CRLF, or EOF. Empty YAML maps
+to `null`. In `node`, `yaml.value` excludes fences and their line endings;
+its position covers the complete fenced block. A leading BOM is ignored as
+syntax in every policy but remains in original coordinates. `none` performs
+no hidden extraction at all.
+
+Frontmatter policy, dialect, and directives are orthogonal. Directives never
+claim bytes inside a `yaml` node. Invalid policy strings/types return one
+`options` diagnostic with `ast` and `frontmatter` both `null`; `compile` and
+`renderHtml` reject this parse-only option. All exported unist offsets and
+columns are original-source UTF-16 units, while `_markdownRsStops` remain
+absolute original-source UTF-8 byte offsets.
+
+With `directives: true`, generic remark-directive syntax is parsed before any
+zfb visitor can run. The raw tree can contain `containerDirective`,
+`leafDirective`, and `textDirective` nodes with `name`, always-present
+`attributes`, `children`, and `position`. Container labels are paragraph
+children carrying `data: { directiveLabel: true }`. Boolean attributes use
+the empty string. No directive registry, component mapping, or expansion is
+applied. With the option absent or false, directive-looking source remains
+the same literal paragraph/MDX-expression output as before and incurs no
+directive parse pass.
+
+Without `dialect`, a `.md` filename selects Markdown/CommonMark and `.mdx`
+selects MDX. Omitting `filename` uses `<anonymous>.mdx`, so the default is
+MDX. An explicit dialect is authoritative for either valid extension (for
+example `{ filename: "preview.mdx", dialect: "markdown" }`), but it does not
+allow any other extension. `filename: null`, `dialect: null`, invalid enum
+strings/types, compile-only keys (`jsxRuntime`, `development`), other pipeline
+keys, and unknown keys return one `options` diagnostic with `ast` and
+`frontmatter` both `null`; they never trap.
+
+Markdown mode keeps CommonMark HTML/comments, angle autolinks, indented code,
+and literal braces (`![alt](x.png){w=full}` leaves `{w=full}` as text). MDX
+mode keeps JSX and expression parsing and its conflicting HTML/autolink/
+indented-code exclusions. The five GFM switches above are independent of the
+dialect and have the same defaults in both modes. Math remains disabled.
 
 `ast` is `MdastRoot | null` — a real TypeScript union over the mdast node
 set markdown-rs emits (`Root`, `Paragraph`, `Heading`, `Text`, `List`,
@@ -225,12 +294,46 @@ discriminated-union narrowing you'd get from a closed union. `position`
 and `type` are always available without a cast; kind-specific fields
 need the assertion above.
 
+### Validated mdast/unified adapter
+
+Use `toMdastRoot` when passing the result to the mdast/unified ecosystem. It
+validates the complete tree and returns a detached value assignable directly
+to `mdast.Root`, with the canonical MDX and remark-directive content models:
+
+```ts
+import type { Root } from "mdast";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm";
+
+const result = await parseToAst("# Welcome\n", { filename: "post.md" });
+const root: Root = toMdastRoot(result.ast);
+
+for (const node of root.children) {
+  if (node.type === "heading") {
+    console.log(node.depth); // narrowed without an assertion
+    node.data ??= {};
+    node.data.hName = `h${node.depth}`;
+  }
+}
+```
+
+The adapter recursively checks required fields, positions, scalar values,
+directive/JSX attributes, and each parent's allowed child model. Unknown or
+currently unsupported node types (including math, TOML, and `mdxjsEsm`) are
+never dropped: `toMdastRoot` throws `MdastAdapterError`, whose `path` and
+`nodeType` identify the failing value. A `null` parse result throws at `$`.
+Check `diagnostics` first when normal parse failures are expected.
+
+The returned tree is a deep clone. Internal `_markdownRsStops` coordinates
+are validated and omitted, and an omitted MDX JSX fragment name is normalized
+to canonical `null`. The broad raw `MdastRoot` remains available for consumers
+that intentionally handle future or custom nodes without this closed-world
+validation.
+
 The tree is **mdast, not hast**: block/inline structure (`heading`,
 `paragraph`, `emphasis`, `list`, …), not an HTML-shaped tree. It is the
-**raw parser output** — post-frontmatter-strip (frontmatter comes back
-separately via `frontmatter`, same as `compile`/`renderHtml`), but
-**pre-visitor**: no `githubAlerts`/directive rewriting, no zfb-synthesized
-node types. MDX JSX elements and expressions survive exactly as
+**raw parser output** — with source selection controlled by the frontmatter
+policy above, and **pre-visitor**: no `githubAlerts`/directive rewriting, no
+zfb-synthesized node types. MDX JSX elements and expressions survive exactly as
 markdown-rs parsed them (`mdxJsxFlowElement`/`mdxJsxTextElement` carry
 `name`/`attributes`/`children`; `:::note`-style directive text and
 GitHub-style `> [!NOTE]` alerts stay plain paragraph/blockquote text,
@@ -271,10 +374,10 @@ against `remark-parse` under a capability-matched config — full method in
 `test/bench/bench-parse-ast.mjs`) shows a consistent win at the document
 sizes a live preview actually parses:
 
-| doc | bytes | remark-parse mean | parseToAst+JSON.parse mean | mean win |
-| --- | --- | --- | --- | --- |
-| small (~1.4 KB) | 1,361 | 0.70 ms | 0.29 ms | ~2.4x |
-| medium (~21 KB) | 21,846 | 12.06 ms | 6.24 ms | ~1.9x |
+| doc             | bytes  | remark-parse mean | parseToAst+JSON.parse mean | mean win |
+| --------------- | ------ | ----------------- | -------------------------- | -------- |
+| small (~1.4 KB) | 1,361  | 0.70 ms           | 0.29 ms                    | ~2.4x    |
+| medium (~21 KB) | 21,846 | 12.06 ms          | 6.24 ms                    | ~1.9x    |
 
 (One-off wasm init — fetch/compile/instantiate, paid once — was 16.1 ms in
 that run; steady-state numbers above never include it.) On a CJK-heavy
@@ -360,11 +463,9 @@ derives from `zfb.config.ts` at build time. See "Limitations" for why it's
 resolved JSON rather than a config file. Unknown fields are rejected at both
 nesting levels (an `options`-source diagnostic).
 
-`parseToAst` accepts this same options document (so one options object can
-serve every tier), but only `filename` and `pipeline.gfm` participate —
-`theme`/`codeHighlight`/`jsxRuntime`/`development` are visitor/serializer
-knobs this raw-parse tier never runs, so it accepts and silently ignores
-them.
+This options document is for `compile` and `renderHtml`. `parseToAst` uses the
+distinct closed `ParseToAstOptions` shown in its section above; it rejects
+visitor/serializer and compile-only knobs rather than silently ignoring them.
 
 ### `codeHighlight`: inline vs. class mode for `compile`/`renderHtml`
 
@@ -377,14 +478,14 @@ covers both APIs** when both run in class mode.
 
 - **Absent, `null`, or `{ mode: "inline" }`** (the default) reproduces the
   pre-existing per-token inline-color behaviour byte-for-byte: `<pre
-  class="syntect-{theme-slug}">` with `<span style="color:#…;">` tokens. This
+class="syntect-{theme-slug}">` with `<span style="color:#…;">` tokens. This
   mode is where `pipeline.theme` applies.
 - **`{ mode: "class" }`** switches fenced code to the same `hi-root` /
   `hi-{role}` semantic class markup `highlightCode()` produces — no inline
   colours, so **who owns color is the host page's stylesheet**, not the wasm
   output. `classPrefix`/`roleClasses` behave exactly like `highlightCode()`'s
   options (see above for the full role → default-class table).
-- **`mode: "class"` is mutually exclusive with a *non-null* top-level
+- **`mode: "class"` is mutually exclusive with a _non-null_ top-level
   `theme`** — themes don't affect class emission, so naming one alongside
   `mode: "class"` returns an `options`-source diagnostic
   (`codeHighlight.mode "class" is mutually exclusive with theme`) rather than
@@ -396,7 +497,7 @@ covers both APIs** when both run in class mode.
   the token markup wrapped in `dangerouslySetInnerHTML`) is unchanged from
   inline mode.
 
-```ts
+````ts
 import { renderHtml } from "@takazudo/zfb-md-wasm";
 
 const { html } = await renderHtml("```js\nconst x = 1;\n```\n", {
@@ -405,7 +506,7 @@ const { html } = await renderHtml("```js\nconst x = 1;\n```\n", {
 // html -> `<pre class="hi-root"><code><span class="line">
 //           <span class="hi-kw">const</span> x = <span class="hi-num">1</span>;
 //         </span></code></pre>` (whitespace added for readability)
-```
+````
 
 ## Evaluating compiled modules in a browser
 
@@ -497,10 +598,10 @@ size-optimized cargo profile (`opt-level = "z"`, LTO, one codegen unit,
 `panic = "abort"`) plus `wasm-opt`, which roughly halves the raw binary either
 way. The package ships **two** wasm artifacts (zfb#1849, epic zfb#1845):
 
-| Entry | Import | What it has | Raw `.wasm` | Gzipped |
-| --- | --- | --- | --- | --- |
-| Default | `@takazudo/zfb-md-wasm` | `compile` + `renderHtml` + `highlightCode` | ~2.9 MB | ~1.3 MB |
-| Highlight-only | `@takazudo/zfb-md-wasm/highlight` | `highlightCode` only (no md/MDX/JSX pipeline, no SWC) | ~1.4 MB | ~0.7 MB |
+| Entry          | Import                            | What it has                                           | Raw `.wasm` | Gzipped |
+| -------------- | --------------------------------- | ----------------------------------------------------- | ----------- | ------- |
+| Default        | `@takazudo/zfb-md-wasm`           | `compile` + `renderHtml` + `highlightCode`            | ~2.9 MB     | ~1.3 MB |
+| Highlight-only | `@takazudo/zfb-md-wasm/highlight` | `highlightCode` only (no md/MDX/JSX pipeline, no SWC) | ~1.4 MB     | ~0.7 MB |
 
 The highlight-only artifact drops the `pipeline` Cargo feature entirely (see
 `crates/zfb-md-wasm/Cargo.toml`) rather than subsetting syntect grammars —

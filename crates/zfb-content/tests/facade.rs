@@ -35,7 +35,8 @@
 use zfb_content::facade::{
     build_pipeline, build_pipeline_from_json, compile_mdx_jsx_from_config, parse_pipeline_options,
     render_html, render_html_from_config, render_mdx_jsx_module, CodeHighlightMode,
-    CodeHighlightOptions, FacadeError, GfmOptions, PipelineOptions,
+    CodeHighlightOptions, FacadeError, GfmOptions, ParseDialect, ParseMdastOptions,
+    PipelineOptions,
 };
 use zfb_content::frontmatter::extract_from_filename;
 use zfb_content::pipeline::{Pipeline, ResolvedGfmConstructs};
@@ -690,9 +691,9 @@ fn theme_null_uses_built_in_default_theme_not_no_highlighting() {
 #[test]
 fn parse_mdast_returns_raw_tree_with_positions() {
     use markdown::mdast::Node;
-    let options = PipelineOptions::default();
-    let ast = zfb_content::facade::parse_mdast(&options, "# Hi\n\nSome *em* text.\n")
-        .expect("valid markdown parses");
+    let ast =
+        zfb_content::facade::parse_mdast(ParseMdastOptions::default(), "# Hi\n\nSome *em* text.\n")
+            .expect("valid markdown parses");
     let Node::Root(root) = &ast else {
         panic!("top node is a Root");
     };
@@ -726,22 +727,22 @@ fn parse_mdast_respects_resolved_gfm_construct_toggles() {
                 .is_some_and(|c| c.iter().any(contains_table))
     }
 
-    let default_on = zfb_content::facade::parse_mdast(&PipelineOptions::default(), table_src)
+    let default_on = zfb_content::facade::parse_mdast(ParseMdastOptions::default(), table_src)
         .expect("table source parses");
     assert!(
         contains_table(&default_on),
         "conservative default has gfm_table ON"
     );
 
-    let options = PipelineOptions {
+    let options = ParseMdastOptions {
         gfm: GfmOptions {
             table: false,
             ..GfmOptions::default()
         },
-        ..PipelineOptions::default()
+        ..ParseMdastOptions::default()
     };
     let toggled_off =
-        zfb_content::facade::parse_mdast(&options, table_src).expect("still parses without table");
+        zfb_content::facade::parse_mdast(options, table_src).expect("still parses without table");
     assert!(
         !contains_table(&toggled_off),
         "gfm.table=false must not produce a Table node"
@@ -751,8 +752,8 @@ fn parse_mdast_respects_resolved_gfm_construct_toggles() {
 #[test]
 fn parse_mdast_keeps_mdx_constructs_and_surfaces_parse_errors() {
     use markdown::mdast::Node;
-    let options = PipelineOptions::default();
-    let ast = zfb_content::facade::parse_mdast(&options, "<Card label=\"x\" />\n")
+    let options = ParseMdastOptions::default();
+    let ast = zfb_content::facade::parse_mdast(options, "<Card label=\"x\" />\n")
         .expect("MDX JSX parses under the mdx construct set");
     fn contains_jsx(node: &Node) -> bool {
         matches!(
@@ -765,10 +766,163 @@ fn parse_mdast_keeps_mdx_constructs_and_surfaces_parse_errors() {
     // An OPENED-but-never-closed element errors at EOF; a merely incomplete
     // tag (`<Card` with no `>`) is NOT an error at the raw-mdast stage —
     // markdown-rs degrades it to text.
-    let err = zfb_content::facade::parse_mdast(&options, "<Card>\n")
+    let err = zfb_content::facade::parse_mdast(options, "<Card>\n")
         .expect_err("unclosed JSX element is a parse error");
     assert!(
         matches!(err, zfb_content::pipeline::PipelineError::Parse(_)),
         "parse failures surface as PipelineError::Parse: {err:?}"
     );
+}
+
+fn serialized_node_type_count(node: &markdown::mdast::Node, node_type: &str) -> usize {
+    fn count(value: &serde_json::Value, node_type: &str) -> usize {
+        match value {
+            serde_json::Value::Object(map) => {
+                usize::from(map.get("type").and_then(serde_json::Value::as_str) == Some(node_type))
+                    + map
+                        .values()
+                        .map(|value| count(value, node_type))
+                        .sum::<usize>()
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().map(|value| count(value, node_type)).sum()
+            }
+            _ => 0,
+        }
+    }
+
+    count(
+        &serde_json::to_value(node).expect("raw mdast serializes"),
+        node_type,
+    )
+}
+
+#[test]
+fn markdown_dialect_preserves_commonmark_constructs_and_literal_braces() {
+    let source = "<!-- marker -->\n\n<div>raw</div>\n\n![alt](x.png){w=full}\n\n<https://example.com>\n\n    indented\n";
+    let ast = zfb_content::facade::parse_mdast(
+        ParseMdastOptions {
+            dialect: ParseDialect::Markdown,
+            ..ParseMdastOptions::default()
+        },
+        source,
+    )
+    .expect("CommonMark-only constructs parse in markdown mode");
+
+    assert_eq!(serialized_node_type_count(&ast, "html"), 2);
+    assert_eq!(serialized_node_type_count(&ast, "image"), 1);
+    assert_eq!(serialized_node_type_count(&ast, "link"), 1);
+    assert_eq!(serialized_node_type_count(&ast, "code"), 1);
+    let json = serde_json::to_value(&ast).expect("raw mdast serializes");
+    assert!(
+        json.to_string().contains("{w=full}"),
+        "image attribute-like braces remain literal Markdown text"
+    );
+}
+
+#[test]
+fn raw_parser_applies_each_gfm_switch_independently_in_both_dialects() {
+    struct Case {
+        name: &'static str,
+        source: &'static str,
+        required_types: &'static [&'static str],
+        enable: fn(&mut GfmOptions),
+    }
+
+    let cases = [
+        Case {
+            name: "strikethrough",
+            source: "before ~~gone~~ after\n",
+            required_types: &["delete"],
+            enable: |gfm| gfm.strikethrough = true,
+        },
+        Case {
+            name: "table",
+            source: "| a | b |\n| - | - |\n| 1 | 2 |\n",
+            required_types: &["table"],
+            enable: |gfm| gfm.table = true,
+        },
+        Case {
+            name: "autolinkLiteral",
+            source: "Visit www.example.com today.\n",
+            required_types: &["link"],
+            enable: |gfm| gfm.autolink_literal = true,
+        },
+        Case {
+            name: "taskListItem",
+            source: "- [x] done\n",
+            required_types: &[],
+            enable: |gfm| gfm.task_list_item = true,
+        },
+        Case {
+            name: "footnoteDefinition",
+            source: "[^note]: detail\n\nSee [^note].\n",
+            required_types: &["footnoteDefinition", "footnoteReference"],
+            enable: |gfm| gfm.footnote_definition = true,
+        },
+    ];
+
+    for dialect in [ParseDialect::Markdown, ParseDialect::Mdx] {
+        for case in &cases {
+            let off = zfb_content::facade::parse_mdast(
+                ParseMdastOptions {
+                    dialect,
+                    gfm: GfmOptions {
+                        strikethrough: false,
+                        table: false,
+                        autolink_literal: false,
+                        task_list_item: false,
+                        footnote_definition: false,
+                    },
+                    frontmatter: false,
+                },
+                case.source,
+            )
+            .unwrap_or_else(|error| panic!("{} off in {dialect:?}: {error}", case.name));
+
+            let mut gfm = GfmOptions {
+                strikethrough: false,
+                table: false,
+                autolink_literal: false,
+                task_list_item: false,
+                footnote_definition: false,
+            };
+            (case.enable)(&mut gfm);
+            let on = zfb_content::facade::parse_mdast(
+                ParseMdastOptions {
+                    dialect,
+                    gfm,
+                    frontmatter: false,
+                },
+                case.source,
+            )
+            .unwrap_or_else(|error| panic!("{} on in {dialect:?}: {error}", case.name));
+
+            for required_type in case.required_types {
+                assert_eq!(
+                    serialized_node_type_count(&off, required_type),
+                    0,
+                    "{} off must suppress `{required_type}` in {dialect:?}",
+                    case.name
+                );
+                assert!(
+                    serialized_node_type_count(&on, required_type) > 0,
+                    "{} on must produce `{required_type}` in {dialect:?}",
+                    case.name
+                );
+            }
+            if case.name == "taskListItem" {
+                let off_json = serde_json::to_string(&off).expect("off tree serializes");
+                let on_json = serde_json::to_string(&on).expect("on tree serializes");
+                assert!(
+                    !off_json.contains("\"checked\":"),
+                    "taskListItem off leaves ordinary list items in {dialect:?}"
+                );
+                assert!(
+                    on_json.contains("\"checked\":true"),
+                    "taskListItem on marks the checked item in {dialect:?}"
+                );
+            }
+        }
+    }
 }

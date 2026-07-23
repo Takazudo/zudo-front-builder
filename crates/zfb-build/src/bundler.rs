@@ -2346,7 +2346,7 @@ pub fn bundle_with_session(
         let root_level_entry = root_level_staged_entry_file(&target, &project_root).is_some();
         let discovered_files = discovery.files;
         plugin_preprocessing_files.insert(target.clone());
-        if root_level_entry && !bundle_exclude.is_empty() {
+        if root_level_entry {
             root_entry_dependency_seed_files.insert(target.clone());
             root_entry_dependency_seed_files.extend(
                 discovered_files
@@ -2381,13 +2381,14 @@ pub fn bundle_with_session(
     // first-party graphs. This keeps the workspace root from becoming a
     // wholesale mirror while still giving the existing materialisation pass
     // every reached file (including CSS and JSON leaves).
-    let (runtime_alias_claims, runtime_alias_raw_import_edges) = collect_runtime_alias_claim_graph(
-        &project_root,
-        &first_party_root,
-        &input.tsconfig_paths,
-        &bundle_exclude,
-        &effective_virtual_context,
-    )?;
+    let (runtime_alias_claims, runtime_alias_raw_import_edges, exact_gitignored_runtime_leaves) =
+        collect_runtime_alias_claim_graph(
+            &project_root,
+            &first_party_root,
+            &input.tsconfig_paths,
+            &bundle_exclude,
+            &effective_virtual_context,
+        )?;
     plugin_preprocessing_files.extend(runtime_alias_claims);
     mat_ctx
         .raw_import_edges
@@ -2400,22 +2401,26 @@ pub fn bundle_with_session(
     // the wholesale sibling mirror below and is the single source of truth the
     // Wave 2/3 CSS-discovery / audit sub-issues consume. Empty (and inert) for
     // a standalone project, so a non-workspace build stays byte-identical.
+    let sibling_mirror_claim_files = plugin_preprocessing_files
+        .difference(&exact_gitignored_runtime_leaves)
+        .cloned()
+        .collect();
     let sibling_mirror_plan = SiblingMirrorPlan::compute(
         &project_root,
         &first_party_root,
-        &plugin_preprocessing_files,
+        &sibling_mirror_claim_files,
         &input.tsconfig_paths,
         &input.plugin_alias_entries,
     );
 
     // Seed the staged-dependency closure from the materialized project module
     // graph and the framework packages the generated entry/hydration shim
-    // import (issue #1645). Only meaningful with `bundle.exclude` active: with
-    // no exclusions the live `<shadow>/node_modules` symlink resolves every bare
-    // import, so seeding here would needlessly stage copies — gate it off to
-    // keep the empty-exclude path byte-for-byte identical.
+    // import (issue #1645). Source discovery also runs with an empty exclude so
+    // package-name workspace siblings can be detected and copied before the
+    // stage-escape audit. Ordinary dependencies remain live-link-resolved in
+    // that mode; the root-seed loop below only admits workspace sources.
     let mut synthetic_entry_import_specifiers = BTreeSet::new();
-    if !bundle_exclude.is_empty() {
+    {
         let mut source_graph_roots = vec![
             pages_dir.clone(),
             components_dir.clone(),
@@ -2466,9 +2471,11 @@ pub fn bundle_with_session(
         // covers the hydration shim's bare framework import) appear in NO
         // project source file, so the file-driven seed above can never discover
         // them.
-        synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
-        synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
-        synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
+        if !bundle_exclude.is_empty() {
+            synthetic_entry_import_specifiers.insert(ZFB_RUNTIME_SERVER_SPECIFIER.to_string());
+            synthetic_entry_import_specifiers.insert(adapter.render_to_string_module().to_string());
+            synthetic_entry_import_specifiers.insert(adapter.jsx_import_source().to_string());
+        }
     }
 
     // Specifiers the alias system resolves (tsconfig `paths`, plugin aliases,
@@ -2508,13 +2515,15 @@ pub fn bundle_with_session(
 
     // WHERE staged `node_modules` targets land depends on `bundle.exclude`:
     //
-    // - Empty exclude → the live `<shadow>/node_modules` symlink exists (2b), so
-    //   staged node_modules targets must be kept OUT of `<shadow>/node_modules`
-    //   (else a bare import could climb the live symlink and resurrect a
-    //   dependency). They go into a separate `zfb-exact-node-modules-*` tempdir
-    //   whose own `node_modules` component preserves esbuild's JS-before-TS
-    //   context without a project-live ancestor fallback. The tempdir is written
-    //   by a dedicated sessionless copy writer.
+    // - Empty exclude, ordinary deps only → the live `<shadow>/node_modules`
+    //   symlink exists (2b), so explicitly staged node_modules targets stay in a
+    //   separate `zfb-exact-node-modules-*` tempdir.
+    // - Any workspace-package source → use REAL copies at the natural shadow
+    //   node_modules position even with an empty exclude. Otherwise a bare
+    //   package import cannot see the isolated tempdir, climbs to the WORK
+    //   mirror's live workspace link, and correctly trips the stage-escape
+    //   audit. The staged dependency closure supplies the ordinary packages
+    //   those workspace packages need, so no live shadow link is necessary.
     //
     // - Exclusions active → the live symlink is NOT created (2b), so there is
     //   nothing to climb to. Staged deps are materialised as REAL copies at
@@ -2526,7 +2535,20 @@ pub fn bundle_with_session(
     //   node_modules paths to their in-place shadow location) with NO separate
     //   isolation writer, so the main session-aware `ShadowWriter` materialises
     //   them (and the prune pass keeps them correct across session ticks).
+    let workspace_package_staging_active = exact_target_staging_alias_dirs
+        .values()
+        .chain(
+            exact_target_staging_dirs
+                .iter()
+                .filter(|path| project_path_is_inside_node_modules(path, &project_root)),
+        )
+        .any(|source_root| {
+            source_root.canonicalize().is_ok_and(|canonical| {
+                canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
+            })
+        });
     let needs_tempdir_isolation = bundle_exclude.is_empty()
+        && !workspace_package_staging_active
         && exact_target_staging_files
             .iter()
             .chain(exact_target_staging_dirs.iter())
@@ -2544,11 +2566,12 @@ pub fn bundle_with_session(
     let tempdir_isolation_root = node_modules_isolation
         .as_ref()
         .map(|isolation| isolation.path());
-    let node_modules_isolation_root: Option<&Path> = if bundle_exclude.is_empty() {
-        tempdir_isolation_root
-    } else {
-        Some(shadow)
-    };
+    let node_modules_isolation_root: Option<&Path> =
+        if bundle_exclude.is_empty() && !workspace_package_staging_active {
+            tempdir_isolation_root
+        } else {
+            Some(shadow)
+        };
     if let Some(root) = node_modules_isolation_root {
         ensure_shadow_path_outside_project(
             &input.project_root,
@@ -3033,9 +3056,9 @@ pub fn bundle_with_session(
     //     `<shadow>/node_modules` to walk into instead of an empty tempdir
     //     ancestry. WHAT lives there depends on `bundle.exclude`:
     //
-    //     - Empty exclude → symlink `<shadow>/node_modules → <live node_modules>`
-    //       (the historical behaviour; byte-identical to a build without the knob).
-    //     - Exclusions active → the live symlink is a fallback that could
+    //     - Empty exclude with no staged workspace package → symlink
+    //       `<shadow>/node_modules → <live node_modules>` (historical behavior).
+    //     - Exclusions active OR a staged workspace package → the live symlink is a fallback that could
     //       resurrect an excluded dependency (esbuild climbing to the real tree),
     //       so it is NEVER created. Non-excluded dependencies are supplied as REAL
     //       staged copies materialised into the shadow at their logical paths
@@ -3054,7 +3077,7 @@ pub fn bundle_with_session(
     //     session later returns to an empty exclude the branch below re-creates it.
     if let Some(ref nm_dir) = input.node_modules_dir {
         let shadow_nm = shadow.join("node_modules");
-        if bundle_exclude.is_empty() {
+        if bundle_exclude.is_empty() && !workspace_package_staging_active {
             #[cfg(unix)]
             {
                 // Session mode (#993) reuses the persistent shadow across
@@ -3094,7 +3117,7 @@ pub fn bundle_with_session(
                 })?;
             }
         } else {
-            // Exclusions active: remove any stale live symlink from a previous
+            // Staged-only dependency view: remove any stale live symlink from a previous
             // empty-exclude tick of a persistent session. `remove_file` deletes
             // the symlink itself (not its target); a real staged `node_modules`
             // dir written by the staging loops below is left untouched because it
@@ -3401,12 +3424,16 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
+        let prune_workspace_infra = logical_root.canonicalize().is_ok_and(|canonical| {
+            canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
+        });
         materialise_isolated_exact_dir(
             logical_root,
             logical_root,
             &dest,
             target_writer,
             &is_plugin_preprocessing_excluded,
+            prune_workspace_infra,
         )
         .with_context(|| {
             format!(
@@ -3429,12 +3456,16 @@ pub fn bundle_with_session(
             work,
             node_modules_isolation_root,
         );
+        let prune_workspace_infra = source_root.canonicalize().is_ok_and(|canonical| {
+            canonical_workspace_package_logical_path(&canonical, &project_root).is_some()
+        });
         materialise_isolated_exact_dir(
             source_root,
             logical_root,
             &dest,
             target_writer,
             &is_plugin_preprocessing_excluded,
+            prune_workspace_infra,
         )
         .with_context(|| {
             format!(
@@ -4504,6 +4535,22 @@ fn canonical_runtime_alias_path(
     Some(normalize_path_lexical(&workspace_root.join(relative)))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeAliasClaimMode {
+    Standard,
+    ExactNonSourceLeaf,
+}
+
+impl RuntimeAliasClaimMode {
+    fn for_runtime_target(path: &Path) -> Self {
+        if raw_source_extension(path) {
+            Self::Standard
+        } else {
+            Self::ExactNonSourceLeaf
+        }
+    }
+}
+
 fn runtime_alias_path_is_claimable(
     path: &Path,
     canonical_workspace_root: &Path,
@@ -4511,9 +4558,16 @@ fn runtime_alias_path_is_claimable(
     project_root: &Path,
     root_package_claimed: bool,
     bundle_exclude: &BundleExcludeMatcher,
+    claim_mode: RuntimeAliasClaimMode,
 ) -> Result<bool> {
     if !path.starts_with(workspace_root)
-        || !runtime_alias_claim_is_allowed(path, workspace_root, project_root, bundle_exclude)?
+        || !runtime_alias_claim_is_allowed(
+            path,
+            workspace_root,
+            project_root,
+            bundle_exclude,
+            claim_mode,
+        )?
     {
         return Ok(false);
     }
@@ -4528,6 +4582,7 @@ fn runtime_alias_path_is_claimable(
             workspace_root,
             project_root,
             bundle_exclude,
+            claim_mode,
         )?
     {
         return Ok(false);
@@ -4553,6 +4608,7 @@ fn runtime_alias_claim_is_allowed(
     workspace_root: &Path,
     project_root: &Path,
     bundle_exclude: &BundleExcludeMatcher,
+    claim_mode: RuntimeAliasClaimMode,
 ) -> Result<bool> {
     let Ok(relative) = path.strip_prefix(workspace_root) else {
         return Ok(false);
@@ -4598,7 +4654,17 @@ fn runtime_alias_claim_is_allowed(
     let matcher = builder
         .build()
         .context("bundler: build first-party .gitignore matcher")?;
-    Ok(!matcher.matched_path_or_any_parents(path, false).is_ignore())
+    let gitignored = matcher.matched_path_or_any_parents(path, false).is_ignore();
+    // Issue #1903: a runtime resolver edge identifies one concrete leaf; it
+    // does not claim the ignored directory around it. Permit that exact leaf
+    // only when it is a regular non-JS/TS file. Source modules remain subject
+    // to the wholesale mirror's gitignore posture, while the hidden/infra,
+    // reserved-name, bundle.exclude, containment, canonical-path, and
+    // workspace-membership checks above/below remain fail-closed.
+    Ok(!gitignored
+        || (claim_mode == RuntimeAliasClaimMode::ExactNonSourceLeaf
+            && path.is_file()
+            && !raw_source_extension(path)))
 }
 
 fn reject_root_package_relative_tree_escapes(
@@ -4643,9 +4709,13 @@ fn collect_runtime_alias_claim_graph(
     tsconfig_paths: &BTreeMap<String, Vec<String>>,
     bundle_exclude: &BundleExcludeMatcher,
     context: &ModuleWorkerBuildContext,
-) -> Result<(BTreeSet<PathBuf>, BTreeSet<RawImportEdge>)> {
+) -> Result<(
+    BTreeSet<PathBuf>,
+    BTreeSet<RawImportEdge>,
+    BTreeSet<PathBuf>,
+)> {
     if first_party_root == project_root || tsconfig_paths.is_empty() {
-        return Ok((BTreeSet::new(), BTreeSet::new()));
+        return Ok((BTreeSet::new(), BTreeSet::new(), BTreeSet::new()));
     }
     let root_package_claimed =
         zfb_types::first_party::workspace_explicitly_claims_root_package(project_root);
@@ -4697,6 +4767,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    RuntimeAliasClaimMode::for_runtime_target(&file),
                 )? {
                     continue;
                 }
@@ -4708,6 +4779,7 @@ fn collect_runtime_alias_claim_graph(
 
     let mut claims = BTreeSet::new();
     let mut raw_import_edges = BTreeSet::new();
+    let mut exact_gitignored_leaves = BTreeSet::new();
     let mut pending = concrete_entries;
     while let Some(entry) = pending.pop_first() {
         if entry.starts_with(project_root)
@@ -4718,12 +4790,29 @@ fn collect_runtime_alias_claim_graph(
                 project_root,
                 root_package_claimed,
                 bundle_exclude,
+                RuntimeAliasClaimMode::for_runtime_target(&entry),
             )?
         {
             continue;
         }
         if !claims.insert(entry.clone()) {
             continue;
+        }
+        if !raw_source_extension(&entry)
+            && !runtime_alias_path_is_claimable(
+                &entry,
+                &canonical_root,
+                first_party_root,
+                project_root,
+                root_package_claimed,
+                bundle_exclude,
+                RuntimeAliasClaimMode::Standard,
+            )?
+        {
+            // This path was admitted only by the exact non-source-leaf
+            // exception. Materialise it file-by-file, but never let it become
+            // a directory-level SiblingMirrorPlan claim.
+            exact_gitignored_leaves.insert(entry.clone());
         }
         if raw_source_extension(&entry)
             || entry
@@ -4750,6 +4839,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    RuntimeAliasClaimMode::for_runtime_target(&file),
                 )? {
                     continue;
                 }
@@ -4765,6 +4855,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    RuntimeAliasClaimMode::Standard,
                 )? || !runtime_alias_path_is_claimable(
                     &edge.source_path,
                     &canonical_root,
@@ -4772,6 +4863,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    RuntimeAliasClaimMode::Standard,
                 )? {
                     bail!(
                         "bundler: runtime alias module worker from {} reached unclaimed or excluded source {}",
@@ -4788,6 +4880,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    RuntimeAliasClaimMode::Standard,
                 )? || !runtime_alias_path_is_claimable(
                     &edge.target,
                     &canonical_root,
@@ -4795,6 +4888,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    RuntimeAliasClaimMode::for_runtime_target(&edge.target),
                 )? {
                     bail!(
                         "bundler: runtime alias raw import from {} reached unclaimed or excluded target {}",
@@ -4833,6 +4927,7 @@ fn collect_runtime_alias_claim_graph(
                     project_root,
                     root_package_claimed,
                     bundle_exclude,
+                    RuntimeAliasClaimMode::for_runtime_target(&file),
                 )? {
                     continue;
                 }
@@ -4845,7 +4940,7 @@ fn collect_runtime_alias_claim_graph(
         }
     }
     reject_root_package_relative_tree_escapes(&claims, first_party_root)?;
-    Ok((claims, raw_import_edges))
+    Ok((claims, raw_import_edges, exact_gitignored_leaves))
 }
 
 /// Resolve a claim path to its **mirror root** per issue #1691's claim policy:
@@ -5815,6 +5910,7 @@ fn materialise_isolated_exact_dir(
     dest: &Path,
     writer: &ShadowWriter<'_>,
     is_excluded: &dyn Fn(&Path) -> bool,
+    prune_workspace_infra: bool,
 ) -> Result<()> {
     let physical_root = source_root.canonicalize().with_context(|| {
         format!(
@@ -5830,10 +5926,9 @@ fn materialise_isolated_exact_dir(
             if entry.depth() == 0 || !entry.file_type().is_dir() {
                 return true;
             }
-            !matches!(
-                entry.file_name().to_string_lossy().as_ref(),
-                "node_modules" | ".git"
-            )
+            let name = entry.file_name().to_string_lossy();
+            !matches!(name.as_ref(), "node_modules" | ".git")
+                && (!prune_workspace_infra || !MIRROR_SKIP_DIRS.iter().any(|skip| name == *skip))
         })
     {
         let entry = match entry {
@@ -8319,6 +8414,109 @@ fn package_source_identity(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| normalize_path_lexical(path))
 }
 
+/// Classify an installed package before it is copied into the staged
+/// dependency view. Ordinary npm/pnpm packages retain their historical
+/// behavior. A symlink which canonicalises directly into first-party source,
+/// however, is a workspace-package claim and is accepted only when all three
+/// authorities agree: the installed owner name, pnpm workspace membership,
+/// and the nearest importing package's dependency manifest.
+fn workspace_package_source_is_eligible(
+    manifest_importer: &Path,
+    package_name: &str,
+    source_dependency: &Path,
+    project_root: &Path,
+) -> bool {
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    if first_party_root == project_root {
+        return true;
+    }
+    let Ok(canonical_source) = source_dependency.canonicalize() else {
+        return false;
+    };
+
+    let importer_package = nearest_package_root(manifest_importer, &first_party_root)
+        .and_then(|root| fs::read(root.join("package.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let declared_value = importer_package.as_ref().and_then(|package| {
+        ["dependencies", "optionalDependencies", "peerDependencies"]
+            .iter()
+            .find_map(|section| {
+                package
+                    .get(section)
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|dependencies| dependencies.get(package_name))
+            })
+    });
+    let declared_workspace = declared_value
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|requirement| requirement.starts_with("workspace:"));
+
+    // A normal npm/pnpm package remains under a node_modules component after
+    // canonicalisation (including pnpm's content-addressable store). Preserve
+    // its historical staging unless the importer explicitly says workspace:*,
+    // in which case an outside-workspace target is an invalid installed link.
+    if path_is_inside_node_modules(&canonical_source) && !declared_workspace {
+        return true;
+    }
+    let Some(_logical_source) =
+        canonical_workspace_package_logical_path(&canonical_source, project_root)
+    else {
+        return false;
+    };
+
+    let Ok(package_bytes) = fs::read(canonical_source.join("package.json")) else {
+        return false;
+    };
+    let Ok(package): Result<serde_json::Value, _> = serde_json::from_slice(&package_bytes) else {
+        return false;
+    };
+    package.get("name").and_then(serde_json::Value::as_str) == Some(package_name)
+        && declared_value.is_some()
+}
+
+/// Convert a canonical installed-link target back to the workspace's logical
+/// spelling before applying pnpm membership. This is load-bearing on macOS,
+/// where temp paths commonly canonicalise from `/var/...` to `/private/var/...`.
+fn canonical_workspace_package_logical_path(
+    canonical_source: &Path,
+    project_root: &Path,
+) -> Option<PathBuf> {
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    if first_party_root == project_root {
+        return None;
+    }
+    let canonical_first_party_root = first_party_root.canonicalize().ok()?;
+    let relative = canonical_source
+        .strip_prefix(&canonical_first_party_root)
+        .ok()?;
+    let logical_source = normalize_path_lexical(&first_party_root.join(relative));
+    zfb_types::first_party::workspace_claims_package(project_root, &logical_source)
+        .then_some(logical_source)
+}
+
+fn nearest_package_root(importer: &Path, boundary: &Path) -> Option<PathBuf> {
+    let canonical_boundary = boundary.canonicalize().ok();
+    let boundary = canonical_boundary
+        .as_deref()
+        .filter(|canonical| importer.starts_with(canonical))
+        .unwrap_or(boundary);
+    let mut directory = if importer.is_dir() {
+        importer
+    } else {
+        importer.parent()?
+    };
+    while directory.starts_with(boundary) {
+        if directory.join("package.json").is_file() {
+            return Some(directory.to_path_buf());
+        }
+        if directory == boundary {
+            break;
+        }
+        directory = directory.parent()?;
+    }
+    None
+}
+
 /// Return whether `package_name` already has an equivalent staged package at
 /// one of the locations Node resolution will search from `importer`.
 ///
@@ -8440,6 +8638,7 @@ fn package_is_external(package_name: &str, external_specifiers: &[String]) -> bo
 #[allow(clippy::too_many_arguments)]
 fn stage_dependency_candidate(
     importer: &Path,
+    manifest_importer: &Path,
     package_name: &str,
     logical_dependency: PathBuf,
     source_dependency: PathBuf,
@@ -8452,6 +8651,14 @@ fn stage_dependency_candidate(
     pending: &mut BTreeMap<PathBuf, PathBuf>,
 ) {
     if bundle_exclude.is_excluded(&logical_dependency, project_root) {
+        return;
+    }
+    if !workspace_package_source_is_eligible(
+        manifest_importer,
+        package_name,
+        &source_dependency,
+        project_root,
+    ) {
         return;
     }
     if staged_equivalent_dependency_is_reachable(
@@ -8552,6 +8759,19 @@ fn extend_node_modules_dependency_staging(
     let canonical_project_root = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let workspace_node_modules_dir = (first_party_root != project_root)
+        .then(|| first_party_root.join("node_modules"))
+        .filter(|candidate| candidate.is_dir());
+    // Preserve package-local precedence, then consult the same workspace
+    // install root that the WORK mirror exposes to esbuild. This second tier
+    // is what makes a nested host's hoisted workspace:* link stageable even
+    // when it has no project-local node_modules entry.
+    let resolve_configured_package = |package_name: &str| {
+        resolve_vendored_package_dir(node_modules_dir, package_name).or_else(|| {
+            resolve_vendored_package_dir(workspace_node_modules_dir.as_deref(), package_name)
+        })
+    };
     // Staged-dependency-view contract seed set: every package root already
     // staged as an exact target whose own bare dependencies must therefore be
     // present in the isolated view too. Two seed kinds:
@@ -8601,9 +8821,7 @@ fn extend_node_modules_dependency_staging(
             resolve_installed_package_dir(&synthetic_importer, &package_name, project_root)
         {
             (dependency.clone(), dependency)
-        } else if let Some(dependency) =
-            resolve_vendored_package_dir(node_modules_dir, &package_name)
-        {
+        } else if let Some(dependency) = resolve_configured_package(&package_name) {
             (
                 project_root.join("node_modules").join(&package_name),
                 dependency,
@@ -8612,6 +8830,7 @@ fn extend_node_modules_dependency_staging(
             continue;
         };
         stage_dependency_candidate(
+            &synthetic_importer,
             &synthetic_importer,
             &package_name,
             logical_dependency,
@@ -8663,9 +8882,7 @@ fn extend_node_modules_dependency_staging(
                         resolve_installed_package_dir(logical_importer, &package_name, project_root)
                     {
                         (dependency.clone(), dependency)
-                    } else if let Some(dependency) =
-                        resolve_vendored_package_dir(node_modules_dir, &package_name)
-                    {
+                    } else if let Some(dependency) = resolve_configured_package(&package_name) {
                         (
                             project_root.join("node_modules").join(&package_name),
                             dependency,
@@ -8685,7 +8902,15 @@ fn extend_node_modules_dependency_staging(
                 } else {
                     continue;
                 };
+            if bundle_exclude.is_empty()
+                && !source_dependency.canonicalize().is_ok_and(|canonical| {
+                    canonical_workspace_package_logical_path(&canonical, project_root).is_some()
+                })
+            {
+                continue;
+            }
             stage_dependency_candidate(
+                logical_importer,
                 logical_importer,
                 &package_name,
                 logical_dependency,
@@ -8789,9 +9014,7 @@ fn extend_node_modules_dependency_staging(
                     resolve_installed_package_dir(&logical_importer, &package_name, project_root)
                 {
                     (dependency.clone(), dependency)
-                } else if let Some(dependency) =
-                    resolve_vendored_package_dir(node_modules_dir, &package_name)
-                {
+                } else if let Some(dependency) = resolve_configured_package(&package_name) {
                     // The configured EXTERNAL vendored node_modules
                     // (`BundlerInput::node_modules_dir`) is a closure source too:
                     // a bare dep that lives only in the vendor tree (outside
@@ -8826,6 +9049,7 @@ fn extend_node_modules_dependency_staging(
                 }
                 stage_dependency_candidate(
                     &logical_importer,
+                    &physical_importer,
                     &package_name,
                     logical_dependency,
                     source_dependency,
@@ -10612,6 +10836,133 @@ mod tests {
     use zfb_test_utils::locate_esbuild as locate_real_esbuild;
 
     // --- #1645 staged-dependency-view seed predicates ---
+
+    fn write_package_staging_workspace() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let host = workspace.join("apps/host");
+        let sibling = workspace.join("packages/ui");
+        fs::create_dir_all(host.join("pages")).unwrap();
+        fs::create_dir_all(sibling.join("src")).unwrap();
+        fs::write(
+            workspace.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        fs::write(
+            sibling.join("package.json"),
+            r#"{"name":"@acme/ui","exports":{"./button":"./src/button.ts"}}"#,
+        )
+        .unwrap();
+        let importer = host.join("pages/index.tsx");
+        fs::write(&importer, "export default null;\n").unwrap();
+        (temp, host, sibling, importer)
+    }
+
+    #[test]
+    fn workspace_package_staging_accepts_only_runtime_manifest_sections() {
+        let (_temp, host, sibling, importer) = write_package_staging_workspace();
+        for section in ["dependencies", "optionalDependencies", "peerDependencies"] {
+            fs::write(
+                host.join("package.json"),
+                format!(r#"{{"name":"host","{section}":{{"@acme/ui":"workspace:*"}}}}"#),
+            )
+            .unwrap();
+            assert!(workspace_package_source_is_eligible(
+                &importer, "@acme/ui", &sibling, &host,
+            ));
+        }
+        fs::write(
+            host.join("package.json"),
+            r#"{"name":"host","devDependencies":{"@acme/ui":"workspace:*"}}"#,
+        )
+        .unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &sibling, &host,
+        ));
+    }
+
+    #[test]
+    fn workspace_package_staging_rejects_unclaimed_mismatched_and_outside_targets() {
+        let (temp, host, sibling, importer) = write_package_staging_workspace();
+        fs::write(
+            host.join("package.json"),
+            r#"{"name":"host","dependencies":{"@acme/ui":"workspace:*"}}"#,
+        )
+        .unwrap();
+
+        let unclaimed = temp.path().join("workspace/unclaimed/ui");
+        fs::create_dir_all(&unclaimed).unwrap();
+        fs::write(unclaimed.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &unclaimed, &host,
+        ));
+
+        let invalid_subdirectory_target = sibling.join("src");
+        assert!(!workspace_package_source_is_eligible(
+            &importer,
+            "@acme/ui",
+            &invalid_subdirectory_target,
+            &host,
+        ));
+
+        fs::write(sibling.join("package.json"), r#"{"name":"@acme/not-ui"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &sibling, &host,
+        ));
+
+        let outside = temp.path().join("outside/ui");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &outside, &host,
+        ));
+
+        let outside_node_modules = temp.path().join("outside/node_modules/@acme/ui");
+        fs::create_dir_all(&outside_node_modules).unwrap();
+        fs::write(
+            outside_node_modules.join("package.json"),
+            r#"{"name":"@acme/ui"}"#,
+        )
+        .unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer,
+            "@acme/ui",
+            &outside_node_modules,
+            &host,
+        ));
+
+        fs::write(sibling.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        fs::write(host.join("package.json"), r#"{"name":"host"}"#).unwrap();
+        assert!(!workspace_package_source_is_eligible(
+            &importer, "@acme/ui", &sibling, &host,
+        ));
+    }
+
+    #[test]
+    fn bare_package_owner_parsing_handles_scoped_unscoped_and_subpaths() {
+        assert_eq!(
+            bare_package_name("toolkit/feature").as_deref(),
+            Some("toolkit")
+        );
+        assert_eq!(
+            bare_package_name("@acme/ui/button").as_deref(),
+            Some("@acme/ui")
+        );
+        assert_eq!(bare_package_name("./relative"), None);
+    }
+
+    #[test]
+    fn workspace_package_staging_keeps_ordinary_npm_dependency_behavior() {
+        let (temp, host, _sibling, importer) = write_package_staging_workspace();
+        let ordinary = temp
+            .path()
+            .join("workspace/node_modules/.pnpm/left-pad@1/node_modules/left-pad");
+        fs::create_dir_all(&ordinary).unwrap();
+        assert!(workspace_package_source_is_eligible(
+            &importer, "left-pad", &ordinary, &host,
+        ));
+    }
 
     #[test]
     fn specifier_matches_alias_key_exact_and_anchored_wildcard() {
@@ -14647,11 +14998,18 @@ mod tests {
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
         let is_excluded = |_: &Path| false;
 
-        materialise_isolated_exact_dir(&source_root, &source_root, &dest, &writer, &is_excluded)
-            .expect(
-                "a dangling symlink inside an isolated exact-target dir must be \
+        materialise_isolated_exact_dir(
+            &source_root,
+            &source_root,
+            &dest,
+            &writer,
+            &is_excluded,
+            false,
+        )
+        .expect(
+            "a dangling symlink inside an isolated exact-target dir must be \
                  skipped, not fatal",
-            );
+        );
 
         assert!(
             dest.join("real.ts").is_file(),
@@ -14660,6 +15018,51 @@ mod tests {
         assert!(
             !dest.join("dangling.ts").exists(),
             "the dangling symlink must not be staged"
+        );
+    }
+
+    #[test]
+    fn materialise_workspace_package_is_real_bounded_copy_on_every_platform() {
+        let source = tempfile::tempdir().unwrap();
+        let source_root = source.path().join("ui");
+        fs::create_dir_all(source_root.join("src/assets")).unwrap();
+        fs::create_dir_all(source_root.join("dist")).unwrap();
+        fs::create_dir_all(source_root.join("node_modules/vendor")).unwrap();
+        fs::write(source_root.join("package.json"), r#"{"name":"@acme/ui"}"#).unwrap();
+        fs::write(source_root.join("src/index.ts"), "export default 1;\n").unwrap();
+        fs::write(source_root.join("src/assets/icon.svg"), "<svg/>\n").unwrap();
+        fs::write(source_root.join("dist/leak.js"), "generated\n").unwrap();
+        fs::write(
+            source_root.join("node_modules/vendor/index.js"),
+            "vendored\n",
+        )
+        .unwrap();
+
+        let shadow = tempfile::tempdir().unwrap();
+        let dest = shadow.path().join("node_modules/@acme/ui");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        materialise_isolated_exact_dir(
+            &source_root,
+            Path::new("node_modules/@acme/ui"),
+            &dest,
+            &writer,
+            &|_| false,
+            true,
+        )
+        .unwrap();
+
+        assert!(dest.is_dir());
+        assert!(dest.join("package.json").is_file());
+        assert!(dest.join("src/index.ts").is_file());
+        assert!(dest.join("src/assets/icon.svg").is_file());
+        assert!(!dest.join("dist").exists());
+        assert!(!dest.join("node_modules").exists());
+        assert!(
+            !fs::symlink_metadata(&dest)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "copy-mode package staging must not require symlink privileges"
         );
     }
 

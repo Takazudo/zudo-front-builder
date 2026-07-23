@@ -29,7 +29,10 @@
 //!   diagnostics with frontmatter-shifted lines, same arithmetic as
 //!   `renderHtml`; (f) the UTF-16 code-unit pin on a CJK+emoji source
 //!   (surrogate pairs discriminate UTF-16 units from code points from
-//!   bytes).
+//!   bytes); (g) filename inference/explicit dialect overrides, CommonMark
+//!   versus MDX construct behavior, the closed parse-only options boundary,
+//!   and all five independent GFM switches in both dialects; (h) shared
+//!   Markdown/MDX fixtures with supported structure and UTF-16 positions.
 //! - **Blind spots**: executing the compiled wasm artifact (npm package
 //!   scope); remark-parity (needs real JS remark — npm package scope);
 //!   benchmark characteristics (the bench harness under `npm/test/bench/`
@@ -148,8 +151,10 @@ fn assert_shifted_tree(
 ) {
     match (shifted, raw) {
         (Value::Object(s), Value::Object(r)) => {
-            let s_keys: Vec<_> = s.keys().collect();
-            let r_keys: Vec<_> = r.keys().collect();
+            let mut s_keys: Vec<_> = s.keys().collect();
+            let mut r_keys: Vec<_> = r.keys().collect();
+            s_keys.sort_unstable();
+            r_keys.sort_unstable();
             assert_eq!(s_keys, r_keys, "key sets diverge at {path}");
             for (key, s_val) in s {
                 let r_val = &r[key];
@@ -318,7 +323,7 @@ fn whole_tree_positions_are_shifted_on_frontmatter_fixture() {
         .count() as u64;
     assert!(prefix_lines > 0, "fixture must actually have frontmatter");
     let raw =
-        zfb_content::facade::parse_mdast(&zfb_content::facade::PipelineOptions::default(), &body)
+        zfb_content::facade::parse_mdast(zfb_content::facade::ParseMdastOptions::default(), &body)
             .expect("body parses");
     let raw_json = serde_json::to_value(&raw).expect("mdast serializes");
 
@@ -365,7 +370,7 @@ fn no_frontmatter_source_is_returned_unshifted() {
     let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
     assert_eq!(out["frontmatter"], Value::Null);
     let raw =
-        zfb_content::facade::parse_mdast(&zfb_content::facade::PipelineOptions::default(), source)
+        zfb_content::facade::parse_mdast(zfb_content::facade::ParseMdastOptions::default(), source)
             .expect("source parses");
     let raw_json = serde_json::to_value(&raw).expect("mdast serializes");
     assert_eq!(
@@ -398,9 +403,8 @@ fn contract_shape_mdx_nodes_and_stops_are_shifted() {
 
 #[test]
 fn contract_shape_directive_and_alert_text_stays_raw() {
-    // `:::note` directives and `> [!NOTE]` alerts are zfb VISITOR features.
-    // The locked contract is RAW parser mdast (pre-visitors), so both must
-    // come back as plain markdown shapes — no custom/synthesized nodes.
+    // Directives are opt-in on the raw tier. With `directives` absent (the
+    // default), directive-looking input and alerts remain plain markdown.
     let source = ":::note\ndirective body\n:::\n\n> [!NOTE]\n> alert body\n";
     let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
     assert_eq!(out["diagnostics"].as_array().unwrap().len(), 0);
@@ -425,16 +429,293 @@ fn contract_shape_directive_and_alert_text_stays_raw() {
     );
 }
 
+fn utf16_slice(source: &str, start: usize, end: usize) -> String {
+    String::from_utf16(&source.encode_utf16().collect::<Vec<_>>()[start..end])
+        .expect("node positions never split a UTF-16 surrogate pair")
+}
+
+fn assert_directive_subtree_slices(node: &Value, source: &str, parent: Option<(usize, usize)>) {
+    let start = node["position"]["start"]["offset"].as_u64().unwrap() as usize;
+    let end = node["position"]["end"]["offset"].as_u64().unwrap() as usize;
+    assert!(start <= end, "ordered span for {}", node["type"]);
+    if let Some((parent_start, parent_end)) = parent {
+        assert!(
+            parent_start <= start && end <= parent_end,
+            "{} span is contained by its directive parent",
+            node["type"]
+        );
+    }
+    let slice = utf16_slice(source, start, end);
+    if node["type"] == "text" {
+        assert_eq!(slice, node["value"], "text span slices original source");
+    } else {
+        assert!(
+            !slice.is_empty(),
+            "{} has a concrete source slice",
+            node["type"]
+        );
+    }
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            assert_directive_subtree_slices(child, source, Some((start, end)));
+        }
+    }
+}
+
+fn collect_nodes_of_type<'a>(value: &'a Value, node_type: &str, found: &mut Vec<&'a Value>) {
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some(node_type) {
+                found.push(value);
+            }
+            for nested in map.values() {
+                collect_nodes_of_type(nested, node_type, found);
+            }
+        }
+        Value::Array(items) => {
+            for nested in items {
+                collect_nodes_of_type(nested, node_type, found);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[test]
-fn gfm_toggles_flow_through_options() {
-    let source = "a ~~strike~~ b\n";
-    let on = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
-    assert!(count_nodes_of_type(&on["ast"], "delete") > 0);
-    let off = parse(zfb_md_wasm::parse_to_ast(
-        source,
-        r#"{"filename":"post.mdx","pipeline":{"gfm":{"strikethrough":false}}}"#,
+fn directives_are_opt_in_and_emit_generic_nodes_in_both_dialects() {
+    for slug in ["directives-markdown-lf", "directives-mdx-crlf"] {
+        let fixture = load_fixture(slug);
+        let enabled_options = serde_json::to_string(&fixture.options).unwrap();
+        let enabled = parse(zfb_md_wasm::parse_to_ast(&fixture.source, &enabled_options));
+        assert_eq!(enabled["diagnostics"], serde_json::json!([]), "{slug}");
+        assert!(count_nodes_of_type(&enabled["ast"], "containerDirective") > 0);
+        assert!(count_nodes_of_type(&enabled["ast"], "textDirective") > 0);
+
+        let mut directives = Vec::new();
+        for kind in ["containerDirective", "leafDirective", "textDirective"] {
+            collect_nodes_of_type(&enabled["ast"], kind, &mut directives);
+        }
+        for directive in directives {
+            assert!(directive["name"].is_string());
+            assert!(directive["attributes"].is_object());
+            assert!(directive["children"].is_array());
+            assert_directive_subtree_slices(directive, &fixture.source, None);
+        }
+
+        let disabled_options = serde_json::json!({
+            "filename": fixture.options["filename"],
+            "directives": false
+        });
+        let disabled = parse(zfb_md_wasm::parse_to_ast(
+            &fixture.source,
+            &serde_json::to_string(&disabled_options).unwrap(),
+        ));
+        for kind in ["containerDirective", "leafDirective", "textDirective"] {
+            assert_eq!(
+                count_nodes_of_type(&disabled["ast"], kind),
+                0,
+                "{slug}: {kind}"
+            );
+        }
+    }
+}
+
+#[test]
+fn directive_labels_attributes_nesting_and_malformed_recovery_are_pinned() {
+    let fixture = load_fixture("directives-markdown-lf");
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        &fixture.source,
+        &serde_json::to_string(&fixture.options).unwrap(),
     ));
-    assert_eq!(count_nodes_of_type(&off["ast"], "delete"), 0);
+    let outer = &out["ast"]["children"][0];
+    assert_eq!(outer["type"], "containerDirective");
+    assert_eq!(outer["name"], "outer");
+    assert_eq!(outer["attributes"]["id"], "hero");
+    assert_eq!(outer["attributes"]["class"], "wide");
+    assert_eq!(outer["attributes"]["disabled"], "");
+    assert_eq!(outer["attributes"]["key"], "a&b");
+    assert_eq!(outer["children"][0]["data"]["directiveLabel"], true);
+    assert_eq!(count_nodes_of_type(outer, "containerDirective"), 2);
+    assert_eq!(count_nodes_of_type(outer, "leafDirective"), 1);
+    assert_eq!(count_nodes_of_type(outer, "textDirective"), 1);
+
+    let malformed = load_fixture("directives-malformed-literal");
+    let recovered = parse(zfb_md_wasm::parse_to_ast(
+        &malformed.source,
+        &serde_json::to_string(&malformed.options).unwrap(),
+    ));
+    assert_eq!(recovered["diagnostics"], serde_json::json!([]));
+    for kind in ["containerDirective", "leafDirective", "textDirective"] {
+        assert_eq!(count_nodes_of_type(&recovered["ast"], kind), 0);
+    }
+    assert!(serde_json::to_string(&recovered["ast"])
+        .unwrap()
+        .contains(":::bad trailing"));
+}
+
+#[test]
+fn mdx_expression_stops_inside_directives_preserve_relative_and_absolute_coordinates() {
+    let source = "---\ntitle: Stops\n---\n:::note\n{40 + 2}\n\n<Card count={2 + 3} />\n:::\n";
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        source,
+        r#"{"filename":"stops.mdx","directives":true}"#,
+    ));
+    assert_eq!(out["diagnostics"], serde_json::json!([]));
+    let mut expressions = Vec::new();
+    collect_nodes_of_type(&out["ast"], "mdxFlowExpression", &mut expressions);
+    assert_eq!(expressions.len(), 1);
+    let stops = expressions[0]["_markdownRsStops"].as_array().unwrap();
+    assert_eq!(stops[0][0], 0, "index remains relative to expression value");
+    assert_eq!(
+        stops[0][1].as_u64(),
+        Some(source.find("40 + 2").unwrap() as u64),
+        "absolute byte offset indexes the full original source"
+    );
+
+    let mut elements = Vec::new();
+    collect_nodes_of_type(&out["ast"], "mdxJsxFlowElement", &mut elements);
+    assert_eq!(elements.len(), 1);
+    let attribute_stops = elements[0]["attributes"][0]["value"]["_markdownRsStops"]
+        .as_array()
+        .unwrap();
+    assert_eq!(attribute_stops[0][0], 0);
+    assert_eq!(
+        attribute_stops[0][1].as_u64(),
+        Some(source.find("2 + 3").unwrap() as u64),
+        "nested JSX attribute stop indexes the full original source"
+    );
+}
+
+#[test]
+fn filename_inference_and_explicit_dialect_override_are_authoritative() {
+    let commonmark = "<!-- marker -->\n\n<div>raw</div>\n\n![alt](x.png){w=full}\n\n<https://example.com>\n\n    indented\n";
+    for options in [
+        serde_json::json!({ "filename": "post.md" }),
+        serde_json::json!({ "filename": "post.mdx", "dialect": "markdown" }),
+    ] {
+        let out = parse(zfb_md_wasm::parse_to_ast(
+            commonmark,
+            &serde_json::to_string(&options).unwrap(),
+        ));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{options}");
+        assert_eq!(count_nodes_of_type(&out["ast"], "html"), 2, "{options}");
+        assert_eq!(count_nodes_of_type(&out["ast"], "link"), 1, "{options}");
+        assert_eq!(count_nodes_of_type(&out["ast"], "code"), 1, "{options}");
+        assert!(out["ast"].to_string().contains("{w=full}"), "{options}");
+    }
+
+    let mdx = "<Card label=\"x\" />\n\n{1 + 2}\n";
+    for options in [
+        serde_json::json!({}),
+        serde_json::json!({ "filename": "post.mdx" }),
+        serde_json::json!({ "filename": "post.md", "dialect": "mdx" }),
+    ] {
+        let out = parse(zfb_md_wasm::parse_to_ast(
+            mdx,
+            &serde_json::to_string(&options).unwrap(),
+        ));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{options}");
+        assert_eq!(
+            count_nodes_of_type(&out["ast"], "mdxJsxFlowElement"),
+            1,
+            "{options}"
+        );
+        assert_eq!(
+            count_nodes_of_type(&out["ast"], "mdxFlowExpression"),
+            1,
+            "{options}"
+        );
+    }
+}
+
+#[test]
+fn every_gfm_toggle_flows_independently_through_both_dialects() {
+    struct Case {
+        option: &'static str,
+        source: &'static str,
+        required_types: &'static [&'static str],
+        checked_marker: bool,
+    }
+    let cases = [
+        Case {
+            option: "strikethrough",
+            source: "a ~~strike~~ b\n",
+            required_types: &["delete"],
+            checked_marker: false,
+        },
+        Case {
+            option: "table",
+            source: "| a | b |\n| - | - |\n| 1 | 2 |\n",
+            required_types: &["table"],
+            checked_marker: false,
+        },
+        Case {
+            option: "autolinkLiteral",
+            source: "Visit www.example.com.\n",
+            required_types: &["link"],
+            checked_marker: false,
+        },
+        Case {
+            option: "taskListItem",
+            source: "- [x] done\n",
+            required_types: &[],
+            checked_marker: true,
+        },
+        Case {
+            option: "footnoteDefinition",
+            source: "[^note]: detail\n\nSee [^note].\n",
+            required_types: &["footnoteDefinition", "footnoteReference"],
+            checked_marker: false,
+        },
+    ];
+
+    for dialect in ["markdown", "mdx"] {
+        for case in &cases {
+            let mut all_off = serde_json::json!({
+                "strikethrough": false,
+                "table": false,
+                "autolinkLiteral": false,
+                "taskListItem": false,
+                "footnoteDefinition": false
+            });
+            let off_options = serde_json::json!({
+                "filename": "post.mdx",
+                "dialect": dialect,
+                "pipeline": { "gfm": all_off.clone() }
+            });
+            all_off[case.option] = Value::Bool(true);
+            let on_options = serde_json::json!({
+                "filename": "post.mdx",
+                "dialect": dialect,
+                "pipeline": { "gfm": all_off }
+            });
+            let off = parse(zfb_md_wasm::parse_to_ast(
+                case.source,
+                &serde_json::to_string(&off_options).unwrap(),
+            ));
+            let on = parse(zfb_md_wasm::parse_to_ast(
+                case.source,
+                &serde_json::to_string(&on_options).unwrap(),
+            ));
+            assert_eq!(off["diagnostics"], serde_json::json!([]), "{off_options}");
+            assert_eq!(on["diagnostics"], serde_json::json!([]), "{on_options}");
+            for node_type in case.required_types {
+                assert_eq!(
+                    count_nodes_of_type(&off["ast"], node_type),
+                    0,
+                    "{off_options}"
+                );
+                assert!(
+                    count_nodes_of_type(&on["ast"], node_type) > 0,
+                    "{on_options}"
+                );
+            }
+            if case.checked_marker {
+                assert!(!off["ast"].to_string().contains("\"checked\":true"));
+                assert!(on["ast"].to_string().contains("\"checked\":true"));
+            }
+        }
+    }
 }
 
 #[test]
@@ -464,18 +745,230 @@ fn parse_error_diagnostic_line_is_frontmatter_shifted() {
 }
 
 #[test]
-fn options_document_is_shared_with_the_other_tiers() {
-    // jsxRuntime/development are compile-tier knobs; parseToAst accepts and
-    // ignores them so one options document serves every tier (same contract
-    // as renderHtml). Unknown fields still fail fast.
-    let out = parse(zfb_md_wasm::parse_to_ast(
-        "# ok\n",
-        r#"{"filename":"a.mdx","jsxRuntime":"react","development":true}"#,
-    ));
-    assert_eq!(out["ast"]["type"], "root");
-    let bad = parse(zfb_md_wasm::parse_to_ast("# ok\n", r#"{"nope":1}"#));
-    assert_eq!(bad["ast"], Value::Null);
-    assert_eq!(bad["diagnostics"][0]["source"], "options");
+fn parse_options_are_closed_non_null_and_fail_before_source_processing() {
+    for options in [
+        r#"{"filename":null}"#,
+        r#"{"dialect":null}"#,
+        r#"{"dialect":"commonmark"}"#,
+        r#"{"directives":null}"#,
+        r#"{"directives":"yes"}"#,
+        r#"{"frontmatter":null}"#,
+        r#"{"frontmatter":"strip"}"#,
+        r#"{"frontmatter":true}"#,
+        r#"{"filename":"post.MD"}"#,
+        r#"{"filename":"post.txt","dialect":"markdown"}"#,
+        r#"{"jsxRuntime":"react"}"#,
+        r#"{"development":true}"#,
+        r#"{"pipeline":{"theme":"InspiredGitHub"}}"#,
+        r#"{"nope":1}"#,
+    ] {
+        let out = parse(zfb_md_wasm::parse_to_ast("---\nbroken: [\n---\n", options));
+        assert_eq!(out["ast"], Value::Null, "{options}");
+        assert_eq!(out["frontmatter"], Value::Null, "{options}");
+        assert_eq!(out["diagnostics"].as_array().unwrap().len(), 1, "{options}");
+        assert_eq!(out["diagnostics"][0]["source"], "options", "{options}");
+    }
+}
+
+#[test]
+fn frontmatter_policies_preserve_values_nodes_directives_and_original_positions() {
+    for newline in ["\n", "\r\n"] {
+        for bom in ["", "\u{FEFF}"] {
+            let source = format!(
+                "{bom}---{newline}title: 日本語 😀{newline}literal: ':::not-a-directive'{newline}---{newline}:::note{newline}本文 🎉{newline}:::{newline}"
+            );
+            for policy in ["extract", "node", "none"] {
+                let options = format!(
+                    r#"{{"filename":"post.md","frontmatter":"{policy}","directives":true}}"#
+                );
+                let out = parse(zfb_md_wasm::parse_to_ast(&source, &options));
+                assert_eq!(
+                    out["diagnostics"],
+                    serde_json::json!([]),
+                    "{newline:?} {bom:?} {policy}"
+                );
+                assert_eq!(
+                    out["frontmatter"],
+                    if policy == "none" {
+                        Value::Null
+                    } else {
+                        serde_json::json!({"title":"日本語 😀","literal":":::not-a-directive"})
+                    },
+                    "{newline:?} {bom:?} {policy}"
+                );
+                let yaml_count = count_nodes_of_type(&out["ast"], "yaml");
+                assert_eq!(
+                    yaml_count,
+                    usize::from(policy == "node"),
+                    "{newline:?} {bom:?} {policy}"
+                );
+                assert_eq!(
+                    count_nodes_of_type(&out["ast"], "containerDirective"),
+                    1,
+                    "body directive survives under {policy}"
+                );
+                let mut directives = Vec::new();
+                collect_nodes_of_type(&out["ast"], "containerDirective", &mut directives);
+                let directive_start = directives[0]["position"]["start"]["offset"]
+                    .as_u64()
+                    .unwrap() as usize;
+                let directive_end =
+                    directives[0]["position"]["end"]["offset"].as_u64().unwrap() as usize;
+                assert_eq!(
+                    utf16_slice(&source, directive_start, directive_end),
+                    format!(":::note{newline}本文 🎉{newline}:::")
+                );
+                if policy == "node" {
+                    assert_eq!(
+                        count_nodes_of_type(&out["ast"], "textDirective"),
+                        0,
+                        "directive-looking YAML stays protected"
+                    );
+                    let yaml = &out["ast"]["children"][0];
+                    assert_eq!(yaml["type"], "yaml");
+                    assert_eq!(
+                        yaml["value"],
+                        format!("title: 日本語 😀{newline}literal: ':::not-a-directive'")
+                    );
+                    let start = yaml["position"]["start"]["offset"].as_u64().unwrap();
+                    let end = yaml["position"]["end"]["offset"].as_u64().unwrap();
+                    let expected = format!(
+                        "---{newline}title: 日本語 😀{newline}literal: ':::not-a-directive'{newline}---"
+                    );
+                    assert_eq!(utf16_slice(&source, start as usize, end as usize), expected);
+                    assert_eq!(start, u64::from(!bom.is_empty()));
+                    assert_eq!(
+                        yaml["position"]["start"]["column"],
+                        1 + u64::from(!bom.is_empty())
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn frontmatter_policies_cover_empty_missing_eof_and_failure_semantics() {
+    for policy in ["extract", "node", "none"] {
+        let options = format!(r#"{{"filename":"post.md","frontmatter":"{policy}"}}"#);
+
+        let empty = parse(zfb_md_wasm::parse_to_ast("---\n\n---\n", &options));
+        assert_eq!(
+            empty["diagnostics"],
+            serde_json::json!([]),
+            "empty {policy}"
+        );
+        assert_eq!(empty["frontmatter"], Value::Null, "empty {policy}");
+        assert_eq!(
+            count_nodes_of_type(&empty["ast"], "yaml"),
+            usize::from(policy == "node")
+        );
+
+        let eof = parse(zfb_md_wasm::parse_to_ast("---\ntitle: x\n---", &options));
+        assert_eq!(eof["diagnostics"], serde_json::json!([]), "eof {policy}");
+        if policy == "node" {
+            assert_eq!(eof["ast"]["position"]["start"]["offset"], 0);
+            assert_eq!(eof["ast"]["position"]["end"]["offset"], 16);
+        }
+        if policy == "extract" {
+            assert_eq!(eof["ast"]["position"]["start"]["offset"], 16);
+            assert_eq!(eof["ast"]["position"]["start"]["column"], 4);
+        }
+
+        let missing = parse(zfb_md_wasm::parse_to_ast("# Plain 😀\n", &options));
+        assert_eq!(
+            missing["diagnostics"],
+            serde_json::json!([]),
+            "missing {policy}"
+        );
+        assert_eq!(missing["frontmatter"], Value::Null);
+        assert_eq!(count_nodes_of_type(&missing["ast"], "yaml"), 0);
+
+        let toml = parse(zfb_md_wasm::parse_to_ast(
+            "+++\ntitle = 'x'\n+++\n",
+            &options,
+        ));
+        assert_eq!(toml["diagnostics"], serde_json::json!([]), "toml {policy}");
+        assert_eq!(toml["frontmatter"], Value::Null, "toml {policy}");
+        assert_eq!(count_nodes_of_type(&toml["ast"], "yaml"), 0);
+        assert_eq!(count_nodes_of_type(&toml["ast"], "toml"), 0);
+
+        for malformed in ["---\nbroken: [\n---\n", "---\ntitle: x\n"] {
+            let failed = parse(zfb_md_wasm::parse_to_ast(malformed, &options));
+            if policy == "none" {
+                assert_eq!(
+                    failed["diagnostics"],
+                    serde_json::json!([]),
+                    "{malformed:?}"
+                );
+                assert!(failed["ast"].is_object());
+                assert_eq!(failed["frontmatter"], Value::Null);
+            } else {
+                assert_eq!(failed["ast"], Value::Null, "{malformed:?} {policy}");
+                assert_eq!(failed["frontmatter"], Value::Null);
+                assert_eq!(failed["diagnostics"].as_array().unwrap().len(), 1);
+                assert_eq!(failed["diagnostics"][0]["source"], "frontmatter");
+            }
+        }
+    }
+}
+
+#[test]
+fn node_and_none_keep_mdx_stops_absolute_in_original_utf8_bytes() {
+    let source = "\u{FEFF}---\ntitle: 日本語 😀\n---\n{1 + 2}\n";
+    let expression_byte = source.find("{1 + 2}").unwrap();
+    for policy in ["extract", "node", "none"] {
+        let options = format!(r#"{{"filename":"post.mdx","frontmatter":"{policy}"}}"#);
+        let out = parse(zfb_md_wasm::parse_to_ast(source, &options));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{policy}");
+        let mut expressions = Vec::new();
+        collect_nodes_of_type(&out["ast"], "mdxFlowExpression", &mut expressions);
+        let stops = expressions[0]["_markdownRsStops"].as_array().unwrap();
+        assert!(
+            stops
+                .iter()
+                .all(|stop| stop[1].as_u64().unwrap() as usize >= expression_byte),
+            "{policy}: stops are absolute original-source UTF-8 bytes: {stops:?}"
+        );
+    }
+}
+
+#[test]
+fn frontmatter_diagnostics_use_original_source_utf16_columns() {
+    let source = "\u{FEFF}---\r\n日本語😀: [}\r\n---\r\n";
+    for policy in ["extract", "node"] {
+        let options = format!(r#"{{"filename":"post.md","frontmatter":"{policy}"}}"#);
+        let out = parse(zfb_md_wasm::parse_to_ast(source, &options));
+        let diagnostic = &out["diagnostics"][0];
+        assert_eq!(diagnostic["source"], "frontmatter");
+        assert_eq!(diagnostic["line"], 2, "{policy}");
+        // `}` is column 9 in JavaScript/UTF-16: 日本語 = 3 units, 😀 = 2,
+        // then `: [` = 3. A byte column would be much larger.
+        assert_eq!(diagnostic["column"], 9, "{policy}: {diagnostic:?}");
+    }
+}
+
+#[test]
+fn compile_and_render_html_reject_parse_only_keys() {
+    for key in [
+        r#""dialect":"mdx""#,
+        r#""directives":true"#,
+        r#""frontmatter":"extract""#,
+    ] {
+        for result in [
+            parse(zfb_md_wasm::compile(
+                "# ok\n",
+                &format!(r#"{{"filename":"post.mdx",{key}}}"#),
+            )),
+            parse(zfb_md_wasm::render_html(
+                "# ok\n",
+                &format!(r#"{{"filename":"post.md",{key}}}"#),
+            )),
+        ] {
+            assert_eq!(result["diagnostics"].as_array().unwrap().len(), 1, "{key}");
+            assert_eq!(result["diagnostics"][0]["source"], "options", "{key}");
+        }
+    }
 }
 
 #[test]
@@ -554,7 +1047,7 @@ fn utf16_positions_are_shifted_on_non_ascii_fixture() {
     );
 
     let raw = zfb_content::facade::parse_mdast(
-        &zfb_content::facade::PipelineOptions::default(),
+        zfb_content::facade::ParseMdastOptions::default(),
         &fixture.source,
     )
     .expect("fixture body parses");
@@ -569,6 +1062,55 @@ fn utf16_positions_are_shifted_on_non_ascii_fixture() {
 
     assert_every_node_has_position(&out["ast"], "ast");
     assert_utf16_shifted_tree(&out["ast"], &raw_json, &fixture.source, "ast");
+}
+
+#[test]
+fn shared_dialect_fixtures_pin_supported_structure_and_utf16_positions() {
+    use zfb_content::facade::{ParseDialect, ParseMdastOptions};
+
+    for (slug, dialect, required, forbidden) in [
+        (
+            "markdown-commonmark-dialect",
+            ParseDialect::Markdown,
+            &["html", "image", "link", "code", "delete"][..],
+            &["mdxFlowExpression", "mdxJsxFlowElement"][..],
+        ),
+        (
+            "mdx-dialect",
+            ParseDialect::Mdx,
+            &["mdxJsxFlowElement", "mdxTextExpression", "emphasis"][..],
+            &["html"][..],
+        ),
+    ] {
+        let fixture = load_fixture(slug);
+        let options_json = serde_json::to_string(&fixture.options).unwrap();
+        let out = parse(zfb_md_wasm::parse_to_ast(&fixture.source, &options_json));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{slug}");
+        for node_type in required {
+            assert!(
+                count_nodes_of_type(&out["ast"], node_type) > 0,
+                "{slug} contains `{node_type}`"
+            );
+        }
+        for node_type in forbidden {
+            assert_eq!(
+                count_nodes_of_type(&out["ast"], node_type),
+                0,
+                "{slug} excludes `{node_type}`"
+            );
+        }
+
+        let raw = zfb_content::facade::parse_mdast(
+            ParseMdastOptions {
+                dialect,
+                ..ParseMdastOptions::default()
+            },
+            &fixture.source,
+        )
+        .expect("shared dialect fixture parses natively");
+        let raw_json = serde_json::to_value(raw).expect("raw mdast serializes");
+        assert_utf16_shifted_tree(&out["ast"], &raw_json, &fixture.source, "ast");
+    }
 }
 
 /// Independent UTF-16 point oracle (test-only, deliberately NOT the
@@ -595,8 +1137,10 @@ fn independent_utf16_point(source: &str, byte_offset: usize) -> (u64, u64, u64) 
 fn assert_utf16_shifted_tree(shifted: &Value, raw: &Value, source: &str, path: &str) {
     match (shifted, raw) {
         (Value::Object(s), Value::Object(r)) => {
-            let s_keys: Vec<_> = s.keys().collect();
-            let r_keys: Vec<_> = r.keys().collect();
+            let mut s_keys: Vec<_> = s.keys().collect();
+            let mut r_keys: Vec<_> = r.keys().collect();
+            s_keys.sort_unstable();
+            r_keys.sort_unstable();
             assert_eq!(s_keys, r_keys, "key sets diverge at {path}");
             for (key, s_val) in s {
                 let r_val = &r[key];

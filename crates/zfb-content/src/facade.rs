@@ -475,6 +475,44 @@ pub fn render_mdx_jsx_module(
     mdx_to_jsx_module_with_pipeline(input, opts, pipeline)
 }
 
+/// Base syntax used by [`parse_mdast`].
+///
+/// GFM is deliberately not a third dialect: its five constructs are applied
+/// independently through [`ParseMdastOptions::gfm`] on top of either base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParseDialect {
+    /// CommonMark, including HTML/comments, angle autolinks, indented code,
+    /// and literal braces.
+    Markdown,
+    /// MDX, including JSX and expressions and markdown-rs's corresponding
+    /// conflicting-CommonMark construct exclusions.
+    #[default]
+    Mdx,
+}
+
+/// Options for the raw mdast parser facade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ParseMdastOptions {
+    /// CommonMark or MDX base construct set. Defaults to MDX to preserve the
+    /// raw facade's pre-dialect behavior for direct Rust callers.
+    pub dialect: ParseDialect,
+    /// Five independently resolved GFM construct switches.
+    pub gfm: GfmOptions,
+    /// Recognize markdown-rs YAML frontmatter and emit a `yaml` node.
+    /// Disabled by default; zfb's wasm boundary enables it only after its
+    /// stricter YAML-only recognizer has accepted the opening/closing fences.
+    pub frontmatter: bool,
+}
+
+/// Recursive raw-mdast carrier used by interoperability boundaries which
+/// need to compose node kinds that markdown-rs's closed [`markdown::mdast::Node`]
+/// enum cannot represent (currently the three remark-directive node kinds).
+///
+/// This is an alias rather than a second structurally identical carrier so
+/// the directive parser remains the single owner of carrier validation.
+pub type InteropMdastNode = crate::directive_parser::DirectiveMdastNode;
+
 /// Parse `input` into a RAW markdown-rs mdast tree — feeds `zfb-md-wasm`'s
 /// `parseToAst` export (zfb#1857, epic zfb#1854).
 ///
@@ -482,16 +520,10 @@ pub fn render_mdx_jsx_module(
 /// output — post-frontmatter-strip (the caller strips frontmatter before
 /// calling this; see `zfb-md-wasm`'s `parseToAst`), PRE-zfb-visitors — so
 /// every node carries real parser `position` info and no visitor-synthesized
-/// `position: None` nodes exist. Parse options mirror [`Pipeline::run`]'s
-/// exactly: [`crate::pipeline::constructs_for_pipeline`] over the resolved
-/// GFM set, on top of [`markdown::ParseOptions::mdx`] (math constructs stay
-/// off — same as the HTML-serializer path; the JSX-emit path's math-enabled
-/// constructs are deliberately NOT used here).
-///
-/// Only [`PipelineOptions::gfm`] participates — every other option drives
-/// visitor/serializer behavior this raw-parse entry point never runs. Takes
-/// the full options struct anyway so the wasm boundary passes one options
-/// document to every tier.
+/// `position: None` nodes exist. Markdown starts from
+/// [`markdown::ParseOptions::default`], MDX starts from
+/// [`markdown::ParseOptions::mdx`], and the same five resolved GFM switches
+/// are then applied to either base. Math stays off.
 ///
 /// `zfb-md-wasm` converts this function's UTF-8-byte positions to the
 /// UTF-16 code-unit contract `parseToAst` actually returns — see that
@@ -501,15 +533,46 @@ pub fn render_mdx_jsx_module(
 /// # Errors
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects `input`.
 pub fn parse_mdast(
-    options: &PipelineOptions,
+    options: ParseMdastOptions,
     input: &str,
 ) -> Result<markdown::mdast::Node, PipelineError> {
     let resolved_gfm: ResolvedGfmConstructs = options.gfm.into();
-    let parse_options = markdown::ParseOptions {
-        constructs: crate::pipeline::constructs_for_pipeline(resolved_gfm),
-        ..markdown::ParseOptions::mdx()
+    let mut parse_options = match options.dialect {
+        ParseDialect::Markdown => markdown::ParseOptions::default(),
+        ParseDialect::Mdx => markdown::ParseOptions::mdx(),
     };
+    parse_options.constructs.gfm_strikethrough = resolved_gfm.strikethrough;
+    parse_options.constructs.gfm_table = resolved_gfm.table;
+    parse_options.constructs.gfm_autolink_literal = resolved_gfm.autolink_literal;
+    parse_options.constructs.gfm_task_list_item = resolved_gfm.task_list_item;
+    // markdown-rs splits footnotes into block-definition and inline-label
+    // constructs; the locked public flag controls both halves.
+    parse_options.constructs.gfm_footnote_definition = resolved_gfm.footnote_definition;
+    parse_options.constructs.gfm_label_start_footnote = resolved_gfm.footnote_definition;
+    parse_options.constructs.frontmatter = options.frontmatter;
     markdown::to_mdast(input, &parse_options).map_err(|m| PipelineError::Parse(m.to_string()))
+}
+
+/// Parse into the open recursive interoperability carrier.
+///
+/// When `directives` is false this follows the ordinary markdown-rs path and
+/// converts markdown-rs's own serde output into the carrier. Crucially, it
+/// does not invoke the directive scanner. When true it composes the generic
+/// directive parser over the exact same selected dialect/GFM options.
+pub fn parse_interop_mdast(
+    options: ParseMdastOptions,
+    input: &str,
+    directives: bool,
+) -> Result<InteropMdastNode, PipelineError> {
+    if directives {
+        return crate::directive_parser::parse_directive_mdast(options, input);
+    }
+
+    let base = parse_mdast(options, input)?;
+    let serialized = serde_json::to_value(base)
+        .map_err(|error| PipelineError::Parse(format!("serialize mdast: {error}")))?;
+    serde_json::from_value(serialized)
+        .map_err(|error| PipelineError::Parse(format!("validate interop mdast: {error}")))
 }
 
 /// One-shot convenience: parse `config_json`, build a [`Pipeline`], and

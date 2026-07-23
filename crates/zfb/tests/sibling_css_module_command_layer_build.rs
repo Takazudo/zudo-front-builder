@@ -268,6 +268,11 @@ fn write_workspace_root_alias_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
         r#"{ "name": "workspace-root", "private": true }"#,
     )
     .unwrap();
+    fs::write(
+        ws_root.join(".gitignore"),
+        "components/generated/\ncomponents/data/generated/\n",
+    )
+    .unwrap();
     let (nm_handle, embedded_nm_path) =
         zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
     std::os::unix::fs::symlink(&embedded_nm_path, ws_root.join("node_modules"))
@@ -306,10 +311,12 @@ fn write_workspace_root_alias_fixture(ws_root: &Path) -> (PathBuf, tempfile::Tem
 
     let components = ws_root.join("components");
     fs::create_dir_all(&components).unwrap();
+    fs::create_dir_all(components.join("generated")).unwrap();
+    fs::create_dir_all(components.join("data/generated")).unwrap();
     fs::write(
         components.join("root-card.tsx"),
         r#"import { rootSource } from "@/components/root-source";
-import styles from "./root-card.module.css";
+import styles from "./generated/root-card.module.css";
 
 export function RootCard() {
   return <section class={styles.rootAliasStyle}>ROOT_COMPONENT_MARKER:{rootSource}</section>;
@@ -318,22 +325,27 @@ export function RootCard() {
     )
     .unwrap();
     fs::write(
-        components.join("root-card.module.css"),
+        components.join("generated/root-card.module.css"),
         ".rootAliasStyle { color: #123abc; } /* ROOT_CSS_MARKER */\n",
     )
     .unwrap();
 
     fs::write(
         components.join("root-source.ts"),
-        r#"import rootData from "@/components/root-data.json";
+        r#"import rootData from "@/components/data/generated/root-data.json";
 
 export const rootSource = `ROOT_SRC_MARKER:ROOT_LIB_MARKER:${rootData.rootData}`;
 "#,
     )
     .unwrap();
     fs::write(
-        components.join("root-data.json"),
+        components.join("data/generated/root-data.json"),
         r#"{ "rootData": "ROOT_JSON_MARKER" }"#,
+    )
+    .unwrap();
+    fs::write(
+        components.join("data/generated/unreached.json"),
+        r#"{ "rootData": "UNREACHED_MUST_NOT_STAGE" }"#,
     )
     .unwrap();
 
