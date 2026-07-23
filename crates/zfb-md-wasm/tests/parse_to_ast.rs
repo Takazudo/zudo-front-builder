@@ -405,6 +405,13 @@ fn root_position_covers_the_complete_non_empty_parsed_input() {
             end_offset: 7,
         },
         Case {
+            name: "final-cr",
+            source: "hello\r",
+            end_line: 2,
+            end_column: 1,
+            end_offset: 6,
+        },
+        Case {
             name: "no-final-line-ending",
             source: "hello",
             end_line: 1,

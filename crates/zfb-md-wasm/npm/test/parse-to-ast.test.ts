@@ -202,6 +202,7 @@ describe("toMdastRoot (validated ecosystem adapter)", () => {
   it.each([
     { name: "final LF", source: "hello\n" },
     { name: "final CRLF", source: "hello\r\n" },
+    { name: "final CR", source: "hello\r" },
     { name: "no final line ending", source: "hello" },
     { name: "empty input", source: "" },
     { name: "whitespace-only input", source: " \n" },

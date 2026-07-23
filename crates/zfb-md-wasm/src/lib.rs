@@ -1057,9 +1057,25 @@ fn normalize_interop_root_end(node: &mut InteropMdastNode, source: &str) {
         return;
     }
 
-    let line_start = source.rfind('\n').map_or(0, |index| index + 1);
+    let bytes = source.as_bytes();
+    let mut line = 1;
+    let mut line_start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\r' {
+            if bytes.get(index + 1) == Some(&b'\n') {
+                index += 1;
+            }
+            line += 1;
+            line_start = index + 1;
+        } else if bytes[index] == b'\n' {
+            line += 1;
+            line_start = index + 1;
+        }
+        index += 1;
+    }
     node.position.end = markdown::unist::Point {
-        line: source.bytes().filter(|byte| *byte == b'\n').count() + 1,
+        line,
         column: source.len() - line_start + 1,
         offset: source.len(),
     };
