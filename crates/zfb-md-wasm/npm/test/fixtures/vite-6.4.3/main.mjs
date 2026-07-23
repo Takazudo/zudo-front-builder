@@ -24,6 +24,11 @@ window.runFixture = async () => {
   await init();
   const beforeTrap = __getTrapRecoveryStateForTests();
   const parsed = await parseToAst("# Vite\n\nFixture.");
+  // Combined packed-consumer regressions: list-end UTF-16 positions (#1916)
+  // and structured UTF-16 diagnostics whose message remains opaque (#1915).
+  const listSource = "- 日本 😀\n\nnext\n";
+  const list = await parseToAst(listSource, { filename: "list.md", frontmatter: "none" });
+  const diagnostic = await parseToAst("😀<a></b>", { filename: "diagnostic.mdx" });
   const highlighted = await highlightCode("const vite = true;", {
     language: "javascript",
   });
@@ -48,6 +53,9 @@ window.runFixture = async () => {
     transientError,
     trapName,
     parsed,
+    listSource,
+    list,
+    diagnostic,
     highlighted,
     recovered,
     beforeTrap,
