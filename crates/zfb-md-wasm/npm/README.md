@@ -403,8 +403,10 @@ for your own environment.
 
 ## Browser loading and emitted resources
 
-The package root has a `browser` export condition. A browser-aware bundler
-uses static resource edges for exactly `zfb_md_wasm_glue.zfb-resource.mjs` and
+The package root has a `browser` export condition. Its browser entry imports
+the generated glue and Wasm binary through an explicit bundler `?url` asset
+contract. Vite and zfb's pinned esbuild setup therefore keep separate resource
+edges for exactly `zfb_md_wasm_glue.zfb-resource.mjs` and
 `zfb_md_wasm_bg.wasm`; a zfb production build emits them under hashed names:
 
 ```text
@@ -427,7 +429,8 @@ the first public API call fetches the glue and wasm. Your production server
 must serve the generated `.mjs` with `application/javascript` and `.wasm`
 with `application/wasm`. Consume the packed package/browser entry — do not
 replace the static imports with source paths or manually copied resource
-files, which breaks zfb's emitted URL graph.
+files, which breaks the emitted URL graph. No Vite plugin, alias, or
+package-specific consumer configuration is required.
 
 The `./highlight` subpath (see "Artifact size" above) has the identical
 `browser` export condition and resource-loading contract, pointed at its own
