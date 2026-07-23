@@ -8,9 +8,10 @@ sidebar_position: 7.5
 
 `@takazudo/zfb-md-wasm`, a WebAssembly build of zfb's md/mdx → JS/HTML pipeline
 for **browser-side dynamic conversion**. The two API tiers (`compile()` and
-`renderHtml()`), direct semantic `highlightCode()`, how to evaluate a compiled
-module in a browser, Node usage for tests and tooling, and the parity
-guarantee's explicit limitations.
+`renderHtml()`), parsing to a raw mdast tree with `parseToAst()` (plus the
+validated `toMdastRoot()` adapter), direct semantic `highlightCode()`, how to
+evaluate a compiled module in a browser, using the package with Vite, Node
+usage for tests and tooling, and the parity guarantee's explicit limitations.
 
 </Info>
 
@@ -150,6 +151,168 @@ const { html, frontmatter, diagnostics } = await renderHtml("# Heading\n\nSome *
 
 `renderHtml` accepts and ignores `jsxRuntime` / `development`, so one
 options object can serve both tiers if you build it dynamically.
+
+## Parsing to an AST (parseToAst)
+
+`parseToAst()` is a third pipeline tier, sitting one step earlier than
+`renderHtml()`: it stops right after parsing and hands back the raw mdast
+tree as JSON instead of continuing on to HTML or JS. Reach for it when your
+host needs to walk or transform the tree itself — a table of contents, a
+custom renderer, word-count/reading-time metadata, or anything else that
+needs structured access to the document rather than a finished string.
+
+```ts
+import { parseToAst, type ParseToAstOptions, type ParseToAstResult } from "@takazudo/zfb-md-wasm";
+
+const result: ParseToAstResult = await parseToAst(
+  "# Welcome\n\nHello **world**.\n",
+  { filename: "post.md" } satisfies ParseToAstOptions,
+);
+// result.ast         -> { type: "root", position: {...}, children: [...] }
+// result.frontmatter -> null (no frontmatter in this source)
+// result.diagnostics -> []
+```
+
+### `ParseToAstOptions`
+
+`parseToAst` takes its own distinct, closed options document — it is not the
+`compile`/`renderHtml` options shape:
+
+- `filename` — must end in lowercase `.md` or `.mdx`. With no explicit
+  `dialect`, `.md` selects CommonMark and `.mdx` selects MDX; omitting
+  `filename` uses `<anonymous>.mdx`, hence MDX. An explicit `dialect`
+  overrides either valid extension, but does not waive the extension gate
+  itself.
+- `dialect` — `"markdown"` or `"mdx"`, inferred from `filename` as above when
+  omitted.
+- `directives` — parse generic remark-directive syntax
+  (`:::name`/`::name`/`:name`). Default `false`; directive-looking text
+  survives exactly as markdown-rs parsed it when this is off.
+- `frontmatter` — YAML handling policy, default `"extract"`:
+
+  | Policy | Parsed source | AST `yaml` node | `frontmatter` value | Malformed YAML |
+  | --- | --- | --- | --- | --- |
+  | `extract` (default) | frontmatter-stripped body | none | parsed JSON / `null` | one `frontmatter` diagnostic |
+  | `node` | full logical source | canonical `yaml` node | parsed JSON / `null` | one `frontmatter` diagnostic |
+  | `none` | full logical source, every byte as Markdown/MDX | none | always `null` | never produces a `frontmatter` diagnostic |
+
+- `pipeline.gfm` — the five boolean `GfmOptions` switches only
+  (`strikethrough`, `table`, `autolinkLiteral`, `taskListItem`,
+  `footnoteDefinition`). `parseToAst`'s pipeline options are stricter than
+  `compile`/`renderHtml`'s: it rejects `theme`, `cjkFriendly`, `hardBreaks`,
+  `codeHighlight`, and `features` outright (`deny_unknown_fields`) rather
+  than silently accepting and ignoring visitor/serializer-only knobs it can
+  never apply.
+
+### `ParseToAstResult`
+
+```ts
+interface ParseToAstResult {
+  ast: MdastRoot | null; // serialized raw mdast root on success, null on failure
+  frontmatter: unknown; // parsed YAML frontmatter as JSON, per the policy table above
+  diagnostics: Diagnostic[]; // same Diagnostic shape as compile()/renderHtml()
+}
+```
+
+`ast` is markdown-rs's raw mdast tree converted through its serde shape into
+an open, unist-shaped carrier — every documented node keeps its `type`,
+`position`, and node-specific fields, but this is **pre-zfb-visitors** raw
+output, not the HTML/JS a rendered pipeline would produce.
+
+### UTF-16 positions
+
+Every node in the tree carries `position: { start, end }`, each an
+`AstPoint` with `line` (1-based), `column` (1-based), and `offset`
+(0-based). `column` and `offset` are **UTF-16 code units** — the same
+indexing `String.prototype.slice` and remark/unist's own convention use —
+**not** Unicode scalar values: a non-BMP scalar (most emoji) is a surrogate
+pair, so it advances `offset`/`column` by 2, not 1. Positions are reported
+against the **original source**, frontmatter lines included, even under
+`frontmatter: "extract"` where the body markdown-rs actually parses has had
+those lines stripped.
+
+<Warning title="The open node union does not narrow on `type` alone">
+
+`MdastNode` includes `UnknownMdastNode` as a catch-all for any node type not
+in the documented set, and that catch-all's `type` field is the general
+`string` — not a literal. That keeps unrecognized node types typed instead of
+falling back to `unknown`, but it also means a plain equality check does
+**not** narrow away the catch-all:
+
+```ts
+// child: MdastNode
+if (child.type === "heading") {
+  child.depth; // still a type error — TypeScript can't rule out UnknownMdastNode here
+}
+```
+
+Assert the node kind explicitly once you've confirmed the shape at runtime,
+or use `toMdastRoot()` below, which returns a tree that narrows correctly
+without a cast.
+
+</Warning>
+
+### `toMdastRoot()` — a validated, narrowing adapter
+
+`parseToAst`'s raw `ast` is forward-compatible by design: unrecognized nodes
+survive as `UnknownMdastNode` instead of breaking the call. `toMdastRoot()`
+is the opposite, stricter tool — it validates a raw tree and returns a
+detached, ecosystem-shaped [`mdast`](https://github.com/syntax-tree/mdast)
+`Root` that narrows on `type` the way `@types/mdast` consumers expect:
+
+```ts
+import { parseToAst, toMdastRoot, MdastAdapterError } from "@takazudo/zfb-md-wasm";
+
+const { ast } = await parseToAst("# Welcome\n\nHello **world**.\n");
+try {
+  const root = toMdastRoot(ast);
+  const heading = root.children[0];
+  if (heading.type === "heading") {
+    heading.depth; // narrows correctly — no assertion needed
+  }
+} catch (error) {
+  if (error instanceof MdastAdapterError) {
+    // error.path     -> e.g. "$.children[0]"
+    // error.nodeType -> the offending node's `type`, or null for a null ast
+  }
+}
+```
+
+`toMdastRoot()` **throws** `MdastAdapterError` (a `TypeError` subclass
+carrying `.path` and `.nodeType`) instead of diagnosing — it does not return
+a result object. It throws on:
+
+- a `null` `ast` (path `"$"`), and
+- any unknown or unsupported node type, explicitly including `math`,
+  `toml`, and `mdxjsEsm`.
+
+Because it throws, check `diagnostics` first whenever a parse failure is
+expected — `toMdastRoot()` is for turning an already-successful `ast` into a
+narrowing tree, not for distinguishing parse failure from adapter failure.
+
+#### Documented divergences from remark
+
+- `mdxJsxAttribute` (and its value/expression-attribute siblings) carry no
+  `position` — markdown-rs does not model attribute positions.
+- Top-level `import`/`export` degrade to plain paragraphs (no `mdxjsEsm`
+  nodes) — the wasm boundary cannot host a JS ESM/acorn parser. Consumers
+  needing remark-mdx-equivalent ESM/estree data keep remark for those
+  documents.
+- `_markdownRsStops` (carried by MDX expression/ESM-shaped nodes) is
+  markdown-rs-internal bookkeeping, unstable, and **UTF-8 byte**-based —
+  unlike `position`, it does not share the UTF-16 code-unit contract above.
+  Never slice a string with it.
+
+### Using with Vite
+
+`parseToAst()` (and every other `@takazudo/zfb-md-wasm` export) needs no
+Vite plugin, alias, or config to work — a plain `vite` devDependency is
+enough. The package's `browser` export condition and its `?url`
+asset-import contract for the glue/wasm resources both resolve automatically
+under Vite's default dev server and production build (and equally under
+zfb's own esbuild pipeline). The [server MIME requirement](#lazy-browser-resources-and-server-mime)
+still applies in production: serve the emitted `.mjs` as
+`application/javascript` and the `.wasm` as `application/wasm`.
 
 ## Direct semantic code highlighting
 
@@ -334,3 +497,8 @@ input that triggered it.
   pipeline config that the `pipeline` option mirrors.
 - [Syntax Highlighting](./syntax-highlighting.mdx) — native zfb's syntect
   setup, for comparison with the wasm build's `fancy-regex` backend.
+- [`@takazudo/zfb-md-wasm` API reference](../api/md-wasm.mdx) — the full
+  option/result type reference for `compile`, `renderHtml`, `parseToAst`,
+  `toMdastRoot`, and `highlightCode`.
+- [Importing Wasm](./importing-wasm.mdx) — loading Wasm modules on the SSR
+  side, for comparison with this page's browser-side usage.
