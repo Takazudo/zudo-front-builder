@@ -151,8 +151,10 @@ fn assert_shifted_tree(
 ) {
     match (shifted, raw) {
         (Value::Object(s), Value::Object(r)) => {
-            let s_keys: Vec<_> = s.keys().collect();
-            let r_keys: Vec<_> = r.keys().collect();
+            let mut s_keys: Vec<_> = s.keys().collect();
+            let mut r_keys: Vec<_> = r.keys().collect();
+            s_keys.sort_unstable();
+            r_keys.sort_unstable();
             assert_eq!(s_keys, r_keys, "key sets diverge at {path}");
             for (key, s_val) in s {
                 let r_val = &r[key];
@@ -1135,8 +1137,10 @@ fn independent_utf16_point(source: &str, byte_offset: usize) -> (u64, u64, u64) 
 fn assert_utf16_shifted_tree(shifted: &Value, raw: &Value, source: &str, path: &str) {
     match (shifted, raw) {
         (Value::Object(s), Value::Object(r)) => {
-            let s_keys: Vec<_> = s.keys().collect();
-            let r_keys: Vec<_> = r.keys().collect();
+            let mut s_keys: Vec<_> = s.keys().collect();
+            let mut r_keys: Vec<_> = r.keys().collect();
+            s_keys.sort_unstable();
+            r_keys.sort_unstable();
             assert_eq!(s_keys, r_keys, "key sets diverge at {path}");
             for (key, s_val) in s {
                 let r_val = &r[key];
