@@ -1042,6 +1042,29 @@ fn normalize_interop_list_ends(node: &mut InteropMdastNode, source: &str, inside
     }
 }
 
+/// Normalize a non-empty document root to the complete parsed input.
+///
+/// markdown-rs derives the root end from its final child, which omits a final
+/// line ending (and leaves whitespace-only input at the empty point). A unist
+/// root instead covers the entire document. Do this while offsets and columns
+/// are still UTF-8 byte based; the existing shift and UTF-16 conversion below
+/// then map the EOF point into the public original-source coordinate space.
+///
+/// Empty input deliberately retains markdown-rs's existing `{1, 1, 0}` point.
+#[cfg(feature = "pipeline")]
+fn normalize_interop_root_end(node: &mut InteropMdastNode, source: &str) {
+    if source.is_empty() || node.kind != "root" {
+        return;
+    }
+
+    let line_start = source.rfind('\n').map_or(0, |index| index + 1);
+    node.position.end = markdown::unist::Point {
+        line: source.bytes().filter(|byte| *byte == b'\n').count() + 1,
+        column: source.len() - line_start + 1,
+        offset: source.len(),
+    };
+}
+
 /// Deliberately duplicates [`prepare`]'s front half (options JSON →
 /// filename gate → frontmatter extraction) MINUS `facade::build_pipeline`:
 /// building the full pipeline loads the syntect theme set this raw-parse
@@ -1128,6 +1151,7 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
     // Normalize against the exact parsed input before frontmatter shifting
     // and before conversion to UTF-16.
     normalize_interop_list_ends(&mut ast, &input, false);
+    normalize_interop_root_end(&mut ast, &input);
     // `utf16` is built against the FULL original source (not `body`): the
     // shift above already moved every position into original-source byte
     // coordinates, so the UTF-16 prefix map must be indexed the same way.
