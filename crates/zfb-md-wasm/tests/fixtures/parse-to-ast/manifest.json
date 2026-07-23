@@ -21,6 +21,16 @@
       "options": { "filename": "frontmattered.mdx" }
     },
     {
+      "slug": "frontmatter-policy-lf",
+      "source": "---\ntitle: 日本語 😀\nliteral: ':::not-a-directive'\n---\n:::note\n本文 🎉\n:::\n",
+      "options": { "filename": "policy.md", "directives": true }
+    },
+    {
+      "slug": "frontmatter-policy-crlf-bom",
+      "source": "﻿---\r\ntitle: 日本語 😀\r\nliteral: ':::not-a-directive'\r\n---\r\n:::note\r\n本文 🎉\r\n:::\r\n",
+      "options": { "filename": "policy.md", "directives": true }
+    },
+    {
       "slug": "markdown-commonmark-dialect",
       "source": "# Markdown dialect 😀\n\n<!-- marker -->\n\n<div>raw HTML</div>\n\n![alt](x.png){w=full}\n\n<https://example.com>\n\n    indented code\n\n~~strike~~\n",
       "options": { "filename": "commonmark.md" }

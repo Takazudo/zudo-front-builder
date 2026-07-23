@@ -30,6 +30,7 @@ fn matches_pinned_remark_directive_oracle() {
             ParseMdastOptions {
                 dialect: case.dialect,
                 gfm: GfmOptions::default(),
+                frontmatter: false,
             },
             &case.source,
         )

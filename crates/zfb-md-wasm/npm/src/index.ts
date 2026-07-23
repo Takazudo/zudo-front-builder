@@ -55,6 +55,7 @@ export type {
   ParseToAstResult,
   ParseToAstOptions,
   ParseDialect,
+  FrontmatterPolicy,
   ParsePipelineOptions,
   Diagnostic,
   DiagnosticSource,

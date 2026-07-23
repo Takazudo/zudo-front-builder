@@ -105,6 +105,16 @@ fn scan_claims(options: ParseMdastOptions, region: &str) -> Result<Vec<Claim>, P
     let mut fenced: Option<(u8, usize)> = None;
 
     while offset < region.len() {
+        // Frontmatter is a protected document-level construct.  In the wasm
+        // `node` policy zfb has already recognized the exact YAML range and
+        // enables this flag; do not let directive-looking YAML values become
+        // directive claims before markdown-rs gets to emit the canonical node.
+        if offset == 0 && options.frontmatter {
+            if let Some(end) = markdown_frontmatter_end(region) {
+                offset = end;
+                continue;
+            }
+        }
         let (line_end, next) = line_bounds(region, offset);
         let line = &region[offset..line_end];
         let prefix = flow_prefix(line);
@@ -231,7 +241,11 @@ fn scan_claims(options: ParseMdastOptions, region: &str) -> Result<Vec<Claim>, P
     // Phrasing directives are scanned only outside ranges already claimed as
     // flow syntax.  A successful text directive owns its complete range, so
     // nested bracket content is parsed exactly once by `label_children`.
-    let mut cursor = 0;
+    let mut cursor = if options.frontmatter {
+        markdown_frontmatter_end(region).unwrap_or(0)
+    } else {
+        0
+    };
     while cursor < region.len() {
         if let Some(block) = claims
             .iter()
@@ -281,6 +295,38 @@ fn scan_claims(options: ParseMdastOptions, region: &str) -> Result<Vec<Claim>, P
     }
     claims.sort_by_key(|claim| claim.start);
     Ok(claims)
+}
+
+fn markdown_frontmatter_end(source: &str) -> Option<usize> {
+    let (open_end, after_open_offset) = line_bounds(source, 0);
+    let opener = source[..open_end]
+        .strip_suffix('\r')
+        .unwrap_or(&source[..open_end])
+        .trim_end_matches([' ', '\t']);
+    let marker = match opener {
+        "---" => "---",
+        "+++" => "+++",
+        _ => return None,
+    };
+    let after_open = &source[after_open_offset..];
+    let mut line_start = 0usize;
+    while line_start <= after_open.len() {
+        let relative_end = after_open.as_bytes()[line_start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|position| line_start + position);
+        let line_end = relative_end.unwrap_or(after_open.len());
+        let content_end = line_end
+            - usize::from(line_end > line_start && after_open.as_bytes()[line_end - 1] == b'\r');
+        if after_open[line_start..content_end].trim_end_matches([' ', '\t']) == marker {
+            return Some(after_open_offset + relative_end.map_or(line_end, |end| end + 1));
+        }
+        match relative_end {
+            Some(end) => line_start = end + 1,
+            None => break,
+        }
+    }
+    None
 }
 
 fn parse_head(source: &str, start: usize, limit: usize, multiline: bool) -> Option<Head> {
@@ -1228,6 +1274,7 @@ mod tests {
         ParseMdastOptions {
             dialect,
             gfm: GfmOptions::default(),
+            frontmatter: false,
         }
     }
 
@@ -1299,5 +1346,38 @@ mod tests {
         find(&root, "leafDirective", &mut leaf);
         assert_eq!(leaf.len(), 1);
         validate_tree(&root, source).unwrap();
+    }
+
+    #[test]
+    fn markdown_frontmatter_is_protected_from_both_directive_passes() {
+        for source in [
+            "---  \r\nliteral: ':badge[x]'\r\nflow: ':::note'\r\n---\t\r\n:::body\r\nok\r\n:::\r\n",
+            "+++\nliteral = ':badge[x]'\nflow = ':::note'\n+++\n:::body\nok\n:::\n",
+        ] {
+            let mut parse_options = options(ParseDialect::Markdown);
+            parse_options.frontmatter = true;
+            let ast = parse_directive_mdast(parse_options, source).expect("frontmatter parses");
+            let serialized = serde_json::to_value(ast).unwrap();
+            assert_eq!(
+                count_kind(&serialized, "containerDirective"),
+                1,
+                "only the body directive is claimed"
+            );
+            assert_eq!(count_kind(&serialized, "textDirective"), 0);
+        }
+    }
+
+    fn count_kind(value: &Value, kind: &str) -> usize {
+        match value {
+            Value::Array(values) => values.iter().map(|value| count_kind(value, kind)).sum(),
+            Value::Object(map) => {
+                usize::from(map.get("type").and_then(Value::as_str) == Some(kind))
+                    + map
+                        .values()
+                        .map(|value| count_kind(value, kind))
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
     }
 }

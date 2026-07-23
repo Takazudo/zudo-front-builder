@@ -15,6 +15,9 @@ export interface GfmOptions {
 /** Base syntax selected by `parseToAst`. */
 export type ParseDialect = "markdown" | "mdx";
 
+/** How `parseToAst` handles recognized YAML frontmatter. */
+export type FrontmatterPolicy = "extract" | "node" | "none";
+
 /** Raw-parser pipeline options. Visitor/serializer options are not accepted. */
 export interface ParsePipelineOptions {
   gfm?: GfmOptions;
@@ -33,6 +36,17 @@ export interface ParseToAstOptions {
   dialect?: ParseDialect;
   /** Parse generic remark-directive syntax. Default: `false`. */
   directives?: boolean;
+  /**
+   * YAML handling policy. Default: `"extract"`.
+   *
+   * - `extract`: parse the stripped body, return YAML as JSON, no YAML node;
+   * - `node`: parse the full logical source, return JSON plus canonical YAML node;
+   * - `none`: parse every logical-source byte as Markdown/MDX and always return null.
+   *
+   * Malformed/unterminated YAML fails `extract`/`node` with one
+   * `frontmatter` diagnostic; `none` never produces a YAML diagnostic.
+   */
+  frontmatter?: FrontmatterPolicy;
   pipeline?: ParsePipelineOptions;
 }
 
@@ -385,12 +399,9 @@ export interface Delete extends RawMdastData {
   children: MdastNode[];
 }
 /**
- * Frontmatter block, IF markdown-rs's own frontmatter construct were ever
- * enabled on this raw-parse tier. In practice this never appears through
- * `parseToAst`: `zfb-md-wasm` strips frontmatter and returns it separately
- * via `ParseToAstResult.frontmatter` before this tree is even parsed.
- * Documented for completeness (it is part of the `Node` enum this export
- * serializes from) and so the catch-all member is never needed for it.
+ * Canonical markdown-rs YAML frontmatter node emitted by
+ * `frontmatter: "node"`. Its value excludes fences and line endings while
+ * its position covers the complete fenced block.
  */
 export interface Yaml extends RawMdastData {
   type: "yaml";
@@ -534,10 +545,11 @@ export type MdastRoot = Root;
 /**
  * Result document of `parseToAst` (zfb#1857, epic zfb#1854). `ast` is the
  * raw markdown-rs mdast converted through its serde shape into an open
- * carrier (unist-shaped `type`, fields, and `position`), post-frontmatter-
- * strip and PRE-zfb-visitors. When `directives` is true the carrier can also
- * contain the three generic directive kinds; otherwise directive-looking
- * text survives exactly as markdown-rs parsed it. `position.offset` and
+ * carrier (unist-shaped `type`, fields, and `position`) and PRE-zfb-visitors.
+ * Source selection follows {@link FrontmatterPolicy}. When `directives` is
+ * true the carrier can also contain the three generic directive kinds;
+ * otherwise directive-looking text survives exactly as markdown-rs parsed
+ * it. `position.offset` and
  * `position.column` are UTF-16 code units (see {@link AstPoint}).
  *
  * Markdown mode preserves CommonMark HTML/comments, angle autolinks,

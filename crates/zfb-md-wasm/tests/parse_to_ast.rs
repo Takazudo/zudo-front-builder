@@ -750,6 +750,9 @@ fn parse_options_are_closed_non_null_and_fail_before_source_processing() {
         r#"{"dialect":"commonmark"}"#,
         r#"{"directives":null}"#,
         r#"{"directives":"yes"}"#,
+        r#"{"frontmatter":null}"#,
+        r#"{"frontmatter":"strip"}"#,
+        r#"{"frontmatter":true}"#,
         r#"{"filename":"post.MD"}"#,
         r#"{"filename":"post.txt","dialect":"markdown"}"#,
         r#"{"jsxRuntime":"react"}"#,
@@ -762,6 +765,184 @@ fn parse_options_are_closed_non_null_and_fail_before_source_processing() {
         assert_eq!(out["frontmatter"], Value::Null, "{options}");
         assert_eq!(out["diagnostics"].as_array().unwrap().len(), 1, "{options}");
         assert_eq!(out["diagnostics"][0]["source"], "options", "{options}");
+    }
+}
+
+#[test]
+fn frontmatter_policies_preserve_values_nodes_directives_and_original_positions() {
+    for newline in ["\n", "\r\n"] {
+        for bom in ["", "\u{FEFF}"] {
+            let source = format!(
+                "{bom}---{newline}title: 日本語 😀{newline}literal: ':::not-a-directive'{newline}---{newline}:::note{newline}本文 🎉{newline}:::{newline}"
+            );
+            for policy in ["extract", "node", "none"] {
+                let options = format!(
+                    r#"{{"filename":"post.md","frontmatter":"{policy}","directives":true}}"#
+                );
+                let out = parse(zfb_md_wasm::parse_to_ast(&source, &options));
+                assert_eq!(
+                    out["diagnostics"],
+                    serde_json::json!([]),
+                    "{newline:?} {bom:?} {policy}"
+                );
+                assert_eq!(
+                    out["frontmatter"],
+                    if policy == "none" {
+                        Value::Null
+                    } else {
+                        serde_json::json!({"title":"日本語 😀","literal":":::not-a-directive"})
+                    },
+                    "{newline:?} {bom:?} {policy}"
+                );
+                let yaml_count = count_nodes_of_type(&out["ast"], "yaml");
+                assert_eq!(
+                    yaml_count,
+                    usize::from(policy == "node"),
+                    "{newline:?} {bom:?} {policy}"
+                );
+                assert_eq!(
+                    count_nodes_of_type(&out["ast"], "containerDirective"),
+                    1,
+                    "body directive survives under {policy}"
+                );
+                let mut directives = Vec::new();
+                collect_nodes_of_type(&out["ast"], "containerDirective", &mut directives);
+                let directive_start = directives[0]["position"]["start"]["offset"]
+                    .as_u64()
+                    .unwrap() as usize;
+                let directive_end =
+                    directives[0]["position"]["end"]["offset"].as_u64().unwrap() as usize;
+                assert_eq!(
+                    utf16_slice(&source, directive_start, directive_end),
+                    format!(":::note{newline}本文 🎉{newline}:::")
+                );
+                if policy == "node" {
+                    assert_eq!(
+                        count_nodes_of_type(&out["ast"], "textDirective"),
+                        0,
+                        "directive-looking YAML stays protected"
+                    );
+                    let yaml = &out["ast"]["children"][0];
+                    assert_eq!(yaml["type"], "yaml");
+                    assert_eq!(
+                        yaml["value"],
+                        format!("title: 日本語 😀{newline}literal: ':::not-a-directive'")
+                    );
+                    let start = yaml["position"]["start"]["offset"].as_u64().unwrap();
+                    let end = yaml["position"]["end"]["offset"].as_u64().unwrap();
+                    let expected = format!(
+                        "---{newline}title: 日本語 😀{newline}literal: ':::not-a-directive'{newline}---"
+                    );
+                    assert_eq!(utf16_slice(&source, start as usize, end as usize), expected);
+                    assert_eq!(start, u64::from(!bom.is_empty()));
+                    assert_eq!(
+                        yaml["position"]["start"]["column"],
+                        1 + u64::from(!bom.is_empty())
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn frontmatter_policies_cover_empty_missing_eof_and_failure_semantics() {
+    for policy in ["extract", "node", "none"] {
+        let options = format!(r#"{{"filename":"post.md","frontmatter":"{policy}"}}"#);
+
+        let empty = parse(zfb_md_wasm::parse_to_ast("---\n\n---\n", &options));
+        assert_eq!(
+            empty["diagnostics"],
+            serde_json::json!([]),
+            "empty {policy}"
+        );
+        assert_eq!(empty["frontmatter"], Value::Null, "empty {policy}");
+        assert_eq!(
+            count_nodes_of_type(&empty["ast"], "yaml"),
+            usize::from(policy == "node")
+        );
+
+        let eof = parse(zfb_md_wasm::parse_to_ast("---\ntitle: x\n---", &options));
+        assert_eq!(eof["diagnostics"], serde_json::json!([]), "eof {policy}");
+        if policy == "node" {
+            assert_eq!(eof["ast"]["position"]["start"]["offset"], 0);
+            assert_eq!(eof["ast"]["position"]["end"]["offset"], 16);
+        }
+        if policy == "extract" {
+            assert_eq!(eof["ast"]["position"]["start"]["offset"], 16);
+            assert_eq!(eof["ast"]["position"]["start"]["column"], 4);
+        }
+
+        let missing = parse(zfb_md_wasm::parse_to_ast("# Plain 😀\n", &options));
+        assert_eq!(
+            missing["diagnostics"],
+            serde_json::json!([]),
+            "missing {policy}"
+        );
+        assert_eq!(missing["frontmatter"], Value::Null);
+        assert_eq!(count_nodes_of_type(&missing["ast"], "yaml"), 0);
+
+        let toml = parse(zfb_md_wasm::parse_to_ast(
+            "+++\ntitle = 'x'\n+++\n",
+            &options,
+        ));
+        assert_eq!(toml["diagnostics"], serde_json::json!([]), "toml {policy}");
+        assert_eq!(toml["frontmatter"], Value::Null, "toml {policy}");
+        assert_eq!(count_nodes_of_type(&toml["ast"], "yaml"), 0);
+        assert_eq!(count_nodes_of_type(&toml["ast"], "toml"), 0);
+
+        for malformed in ["---\nbroken: [\n---\n", "---\ntitle: x\n"] {
+            let failed = parse(zfb_md_wasm::parse_to_ast(malformed, &options));
+            if policy == "none" {
+                assert_eq!(
+                    failed["diagnostics"],
+                    serde_json::json!([]),
+                    "{malformed:?}"
+                );
+                assert!(failed["ast"].is_object());
+                assert_eq!(failed["frontmatter"], Value::Null);
+            } else {
+                assert_eq!(failed["ast"], Value::Null, "{malformed:?} {policy}");
+                assert_eq!(failed["frontmatter"], Value::Null);
+                assert_eq!(failed["diagnostics"].as_array().unwrap().len(), 1);
+                assert_eq!(failed["diagnostics"][0]["source"], "frontmatter");
+            }
+        }
+    }
+}
+
+#[test]
+fn node_and_none_keep_mdx_stops_absolute_in_original_utf8_bytes() {
+    let source = "\u{FEFF}---\ntitle: 日本語 😀\n---\n{1 + 2}\n";
+    let expression_byte = source.find("{1 + 2}").unwrap();
+    for policy in ["extract", "node", "none"] {
+        let options = format!(r#"{{"filename":"post.mdx","frontmatter":"{policy}"}}"#);
+        let out = parse(zfb_md_wasm::parse_to_ast(source, &options));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{policy}");
+        let mut expressions = Vec::new();
+        collect_nodes_of_type(&out["ast"], "mdxFlowExpression", &mut expressions);
+        let stops = expressions[0]["_markdownRsStops"].as_array().unwrap();
+        assert!(
+            stops
+                .iter()
+                .all(|stop| stop[1].as_u64().unwrap() as usize >= expression_byte),
+            "{policy}: stops are absolute original-source UTF-8 bytes: {stops:?}"
+        );
+    }
+}
+
+#[test]
+fn frontmatter_diagnostics_use_original_source_utf16_columns() {
+    let source = "\u{FEFF}---\r\n日本語😀: [}\r\n---\r\n";
+    for policy in ["extract", "node"] {
+        let options = format!(r#"{{"filename":"post.md","frontmatter":"{policy}"}}"#);
+        let out = parse(zfb_md_wasm::parse_to_ast(source, &options));
+        let diagnostic = &out["diagnostics"][0];
+        assert_eq!(diagnostic["source"], "frontmatter");
+        assert_eq!(diagnostic["line"], 2, "{policy}");
+        // `}` is column 9 in JavaScript/UTF-16: 日本語 = 3 units, 😀 = 2,
+        // then `: [` = 3. A byte column would be much larger.
+        assert_eq!(diagnostic["column"], 9, "{policy}: {diagnostic:?}");
     }
 }
 
