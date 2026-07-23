@@ -63,8 +63,8 @@
 //! verbatim — see that type's rustdoc for the authoritative shape.
 //! Unknown fields are rejected at both levels (`deny_unknown_fields`).
 //! [`parse_to_ast`] instead accepts a distinct closed document containing
-//! `filename`, `dialect` (`"markdown"` or `"mdx"`), `directives`, and
-//! `pipeline.gfm`.
+//! `filename`, `dialect` (`"markdown"` or `"mdx"`), `directives`,
+//! `frontmatter` (`"extract"`, `"node"`, or `"none"`), and `pipeline.gfm`.
 //! Its absent filename defaults to `<anonymous>.mdx`; absent dialect is
 //! inferred as Markdown for `.md` and MDX for `.mdx`, while an explicit
 //! dialect overrides either valid extension.
@@ -168,9 +168,13 @@ struct ParsePipelineOptions {
 
 /// The distinct, closed options document consumed only by [`parse_to_ast`].
 ///
-/// Directive and frontmatter-policy keys intentionally remain unknown until
-/// their owning implementations can honor them; accepting either as a no-op
-/// would make this boundary behaviorally incoherent.
+/// Frontmatter policy table:
+///
+/// | policy | parsed source | AST YAML | returned value | malformed YAML |
+/// | --- | --- | --- | --- | --- |
+/// | `extract` | body | none | parsed JSON/null | frontmatter diagnostic |
+/// | `node` | full logical source | canonical `yaml` | parsed JSON/null | frontmatter diagnostic |
+/// | `none` | full logical source | none | null | parsed as Markdown/MDX |
 #[cfg(feature = "pipeline")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -180,7 +184,18 @@ struct ParseToAstOptions {
     #[serde(default, deserialize_with = "deserialize_present_non_null")]
     dialect: Option<ParseDialect>,
     directives: bool,
+    frontmatter: FrontmatterPolicy,
     pipeline: ParsePipelineOptions,
+}
+
+#[cfg(feature = "pipeline")]
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FrontmatterPolicy {
+    #[default]
+    Extract,
+    Node,
+    None,
 }
 
 /// Deserialize an optional field while rejecting an explicitly present
@@ -286,8 +301,8 @@ struct RenderHtmlResult {
 ///
 /// `ast` is the RAW mdast tree: markdown-rs nodes converted through its own
 /// serde output into an open recursive carrier, optionally composed with the
-/// three generic directive node kinds, post-frontmatter-strip and
-/// PRE-zfb-visitors. Every `position` is shifted back into original-source
+/// three generic directive node kinds and PRE-zfb-visitors. Every `position`
+/// is shifted back into original-source
 /// coordinates (lines plus UTF-16 offsets/columns — see [`parse_to_ast`]).
 #[cfg(feature = "pipeline")]
 #[derive(Debug, Serialize)]
@@ -300,24 +315,33 @@ struct ParseToAstResult {
 /// Source view selected for the raw parser plus the one coordinate anchor
 /// needed to map its byte positions back to the complete original source.
 ///
-/// This issue exposes only extraction mode, but keeping selection and
-/// position anchoring behind this carrier leaves the `node`/`none` policies
-/// owned by the next frontmatter wave without baking stripped-body
-/// assumptions into directive serialization.
+/// Source selection also owns the markdown-rs YAML switch: it is enabled
+/// only for zfb-recognized YAML under the `node` policy.
 #[cfg(feature = "pipeline")]
 struct SelectedParseSource {
     frontmatter: JsonValue,
-    body: String,
-    body_offset: usize,
+    input: String,
+    input_offset: usize,
+    markdown_frontmatter: bool,
 }
 
 #[cfg(feature = "pipeline")]
 fn select_parse_source(
     filename: &str,
     source: &str,
+    policy: FrontmatterPolicy,
 ) -> Result<SelectedParseSource, (JsonValue, Diagnostic)> {
+    let bom_offset = usize::from(source.starts_with('\u{FEFF}')) * '\u{FEFF}'.len_utf8();
+    if matches!(policy, FrontmatterPolicy::None) {
+        return Ok(SelectedParseSource {
+            frontmatter: JsonValue::Null,
+            input: source[bom_offset..].to_string(),
+            input_offset: bom_offset,
+            markdown_frontmatter: false,
+        });
+    }
     let extracted = extract_from_filename(filename, source)
-        .map_err(|error| (JsonValue::Null, frontmatter_diagnostic(&error)))?;
+        .map_err(|error| (JsonValue::Null, frontmatter_diagnostic(&error, source)))?;
     let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
         return Err((
             JsonValue::Null,
@@ -327,10 +351,21 @@ fn select_parse_source(
             ),
         ));
     };
-    Ok(SelectedParseSource {
-        frontmatter: extracted.value,
-        body,
-        body_offset,
+    let recognized = body_offset > bom_offset;
+    Ok(match policy {
+        FrontmatterPolicy::Extract => SelectedParseSource {
+            frontmatter: extracted.value,
+            input: body,
+            input_offset: body_offset,
+            markdown_frontmatter: false,
+        },
+        FrontmatterPolicy::Node => SelectedParseSource {
+            frontmatter: extracted.value,
+            input: source[bom_offset..].to_string(),
+            input_offset: bom_offset,
+            markdown_frontmatter: recognized,
+        },
+        FrontmatterPolicy::None => unreachable!("handled above"),
     })
 }
 
@@ -396,7 +431,12 @@ fn prepare(
 
     let extracted = match extract_from_filename(&filename, source) {
         Ok(uf) => uf,
-        Err(e) => return Err(Box::new((JsonValue::Null, frontmatter_diagnostic(&e)))),
+        Err(e) => {
+            return Err(Box::new((
+                JsonValue::Null,
+                frontmatter_diagnostic(&e, source),
+            )))
+        }
     };
     let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
         // Unreachable after the extension gate above (`.md`/`.mdx` always
@@ -429,16 +469,33 @@ fn prepare(
 }
 
 #[cfg(feature = "pipeline")]
-fn frontmatter_diagnostic(err: &FrontmatterError) -> Diagnostic {
+fn frontmatter_diagnostic(err: &FrontmatterError, source: &str) -> Diagnostic {
     match err {
         FrontmatterError::Yaml(e) => {
             let loc = e.location();
-            Diagnostic::error("frontmatter", format!("invalid YAML in frontmatter: {e}")).at(
-                // serde_yaml locations are 1-based within the YAML text,
-                // which begins on source line 2 (after the opening `---`).
-                loc.as_ref().map(|l| l.line() as u64 + 1),
-                loc.as_ref().map(|l| l.column() as u64),
-            )
+            let bom_offset = usize::from(source.starts_with('\u{FEFF}')) * '\u{FEFF}'.len_utf8();
+            let logical = &source[bom_offset..];
+            let yaml_start = logical
+                .strip_prefix("---\n")
+                .or_else(|| logical.strip_prefix("---\r\n"))
+                .map(|yaml| source.len() - yaml.len());
+            let place = loc.as_ref().map(|location| {
+                let expected_line = location.line() as u64 + 1;
+                let indexed = yaml_start
+                    .and_then(|start| start.checked_add(location.index()))
+                    .and_then(|offset| source_utf16_place(source, offset));
+                // serde_yaml can report a virtual next line at EOF (for
+                // example an unclosed flow sequence). Its byte index remains
+                // at the preceding line's end, while its public line/column
+                // correctly point at the following source line. Preserve
+                // that compatibility baseline; use the index-derived place
+                // when it agrees so non-ASCII columns become UTF-16 units.
+                indexed
+                    .filter(|(line, _)| *line == expected_line)
+                    .unwrap_or((expected_line, location.column() as u64))
+            });
+            Diagnostic::error("frontmatter", format!("invalid YAML in frontmatter: {e}"))
+                .at(place.map(|value| value.0), place.map(|value| value.1))
         }
         FrontmatterError::Unterminated => Diagnostic::error("frontmatter", err.to_string()),
         FrontmatterError::Tsx(_) => Diagnostic::error("frontmatter", err.to_string()),
@@ -937,25 +994,27 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
 
     let SelectedParseSource {
         frontmatter,
-        body,
-        body_offset,
-    } = match select_parse_source(&filename, source) {
+        input,
+        input_offset,
+        markdown_frontmatter,
+    } = match select_parse_source(&filename, source, opts.frontmatter) {
         Ok(selected) => selected,
         Err((frontmatter, diagnostic)) => return fail(frontmatter, diagnostic),
     };
-    let shift = PositionShift::for_body_at(source, body_offset);
+    let shift = PositionShift::for_body_at(source, input_offset);
 
     let mut ast = match facade::parse_interop_mdast(
         ParseMdastOptions {
             dialect,
             gfm: opts.pipeline.gfm,
+            frontmatter: markdown_frontmatter,
         },
-        &body,
+        &input,
         opts.directives,
     ) {
         Ok(ast) => ast,
         Err(e) => {
-            let diag = markdown_diagnostic(&e, &filename, source, &body, body_offset);
+            let diag = markdown_diagnostic(&e, &filename, source, &input, input_offset);
             return fail(frontmatter, diag);
         }
     };

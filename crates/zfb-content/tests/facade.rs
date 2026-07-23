@@ -874,6 +874,7 @@ fn raw_parser_applies_each_gfm_switch_independently_in_both_dialects() {
                         task_list_item: false,
                         footnote_definition: false,
                     },
+                    frontmatter: false,
                 },
                 case.source,
             )
@@ -887,9 +888,15 @@ fn raw_parser_applies_each_gfm_switch_independently_in_both_dialects() {
                 footnote_definition: false,
             };
             (case.enable)(&mut gfm);
-            let on =
-                zfb_content::facade::parse_mdast(ParseMdastOptions { dialect, gfm }, case.source)
-                    .unwrap_or_else(|error| panic!("{} on in {dialect:?}: {error}", case.name));
+            let on = zfb_content::facade::parse_mdast(
+                ParseMdastOptions {
+                    dialect,
+                    gfm,
+                    frontmatter: false,
+                },
+                case.source,
+            )
+            .unwrap_or_else(|error| panic!("{} on in {dialect:?}: {error}", case.name));
 
             for required_type in case.required_types {
                 assert_eq!(

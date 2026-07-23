@@ -499,6 +499,10 @@ pub struct ParseMdastOptions {
     pub dialect: ParseDialect,
     /// Five independently resolved GFM construct switches.
     pub gfm: GfmOptions,
+    /// Recognize markdown-rs YAML frontmatter and emit a `yaml` node.
+    /// Disabled by default; zfb's wasm boundary enables it only after its
+    /// stricter YAML-only recognizer has accepted the opening/closing fences.
+    pub frontmatter: bool,
 }
 
 /// Recursive raw-mdast carrier used by interoperability boundaries which
@@ -545,6 +549,7 @@ pub fn parse_mdast(
     // constructs; the locked public flag controls both halves.
     parse_options.constructs.gfm_footnote_definition = resolved_gfm.footnote_definition;
     parse_options.constructs.gfm_label_start_footnote = resolved_gfm.footnote_definition;
+    parse_options.constructs.frontmatter = options.frontmatter;
     markdown::to_mdast(input, &parse_options).map_err(|m| PipelineError::Parse(m.to_string()))
 }
 

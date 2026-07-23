@@ -178,6 +178,65 @@ describe("parseToAst (raw mdast export)", () => {
   });
 });
 
+describe("parseToAst frontmatter policies", () => {
+  it("keeps extract as default and exposes canonical YAML only in node mode", async () => {
+    const policyFixture = fixture("frontmatter-policy-crlf-bom");
+    const source = policyFixture.source;
+    for (const policy of ["extract", "node", "none"] as const) {
+      const out = await parseToAst(source, {
+        ...policyFixture.options,
+        frontmatter: policy,
+        directives: true,
+      });
+      expect(out.diagnostics, policy).toEqual([]);
+      expect(out.frontmatter, policy).toEqual(
+        policy === "none" ? null : { title: "日本語 😀", literal: ":::not-a-directive" },
+      );
+      const yaml: MdastNodeish[] = [];
+      const directives: MdastNodeish[] = [];
+      const textDirectives: MdastNodeish[] = [];
+      walk(out.ast, (node) => {
+        if (node.type === "yaml") yaml.push(node);
+        if (node.type === "containerDirective") directives.push(node);
+        if (node.type === "textDirective") textDirectives.push(node);
+      });
+      expect(yaml, policy).toHaveLength(policy === "node" ? 1 : 0);
+      expect(directives, policy).toHaveLength(1);
+      if (policy === "node") {
+        expect(textDirectives).toHaveLength(0);
+        const position = yaml[0]!.position!;
+        expect(source.slice(position.start.offset, position.end.offset)).toBe(
+          "---\r\ntitle: 日本語 😀\r\nliteral: ':::not-a-directive'\r\n---",
+        );
+        expect(position.start).toEqual({ line: 1, column: 2, offset: 1 });
+      }
+    }
+    const implicit = await parseToAst("---\ntitle: default\n---\n# Body\n", {
+      filename: "post.md",
+    });
+    expect(implicit.frontmatter).toEqual({ title: "default" });
+    expect(JSON.stringify(implicit.ast)).not.toContain('"type":"yaml"');
+  });
+
+  it("separates malformed and unterminated YAML diagnostics by policy", async () => {
+    for (const source of ["---\nbroken: [\n---\n", "---\ntitle: x\n"]) {
+      for (const policy of ["extract", "node", "none"] as const) {
+        const out = await parseToAst(source, { filename: "post.md", frontmatter: policy });
+        if (policy === "none") {
+          expect(out.ast, `${policy} ${JSON.stringify(source)}`).not.toBeNull();
+          expect(out.frontmatter).toBeNull();
+          expect(out.diagnostics).toEqual([]);
+        } else {
+          expect(out.ast).toBeNull();
+          expect(out.frontmatter).toBeNull();
+          expect(out.diagnostics).toHaveLength(1);
+          expect(out.diagnostics[0]!.source).toBe("frontmatter");
+        }
+      }
+    }
+  });
+});
+
 describe("parseToAst dialect selection and closed options", () => {
   it("infers from .md/.mdx and lets an explicit dialect override either valid extension", async () => {
     const markdown =
@@ -218,6 +277,9 @@ describe("parseToAst dialect selection and closed options", () => {
       { dialect: "commonmark" },
       { directives: null },
       { directives: "yes" },
+      { frontmatter: null },
+      { frontmatter: "strip" },
+      { frontmatter: true },
       { filename: "post.MD" },
       { filename: "post.txt", dialect: "markdown" },
       { jsxRuntime: "react" },

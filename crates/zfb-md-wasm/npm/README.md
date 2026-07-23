@@ -205,6 +205,7 @@ interface ParseToAstOptions {
   filename?: string; // lowercase .md/.mdx only; default <anonymous>.mdx
   dialect?: "markdown" | "mdx";
   directives?: boolean; // default false
+  frontmatter?: "extract" | "node" | "none"; // default extract
   pipeline?: {
     gfm?: {
       strikethrough?: boolean; // default true
@@ -216,6 +217,29 @@ interface ParseToAstOptions {
   };
 }
 ```
+
+Frontmatter handling is explicit and parse-only:
+
+| policy                | parsed source                                                       | AST YAML node                         | returned `frontmatter`              | malformed/unterminated YAML                                             |
+| --------------------- | ------------------------------------------------------------------- | ------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------- |
+| `"extract"` (default) | body after the recognized fence                                     | none                                  | parsed JSON, `null` if absent/empty | `ast: null`, `frontmatter: null`, one `frontmatter` diagnostic          |
+| `"node"`              | full logical source, with only markdown-rs YAML frontmatter enabled | canonical `yaml` node when recognized | same parsed JSON as `extract`       | same failure as `extract`; no partial AST                               |
+| `"none"`              | full logical source, YAML recognition disabled                      | none                                  | always `null`                       | no YAML diagnostic; the selected Markdown/MDX dialect parses every byte |
+
+Recognition in `extract` and `node` is deliberately zfb-owned and YAML-only:
+after one optional UTF-8 BOM, the document must start with `---` plus LF or
+CRLF and close on a line exactly `---` plus LF, CRLF, or EOF. Empty YAML maps
+to `null`. In `node`, `yaml.value` excludes fences and their line endings;
+its position covers the complete fenced block. A leading BOM is ignored as
+syntax in every policy but remains in original coordinates. `none` performs
+no hidden extraction at all.
+
+Frontmatter policy, dialect, and directives are orthogonal. Directives never
+claim bytes inside a `yaml` node. Invalid policy strings/types return one
+`options` diagnostic with `ast` and `frontmatter` both `null`; `compile` and
+`renderHtml` reject this parse-only option. All exported unist offsets and
+columns are original-source UTF-16 units, while `_markdownRsStops` remain
+absolute original-source UTF-8 byte offsets.
 
 With `directives: true`, generic remark-directive syntax is parsed before any
 zfb visitor can run. The raw tree can contain `containerDirective`,
@@ -272,10 +296,9 @@ need the assertion above.
 
 The tree is **mdast, not hast**: block/inline structure (`heading`,
 `paragraph`, `emphasis`, `list`, …), not an HTML-shaped tree. It is the
-**raw parser output** — post-frontmatter-strip (frontmatter comes back
-separately via `frontmatter`, same as `compile`/`renderHtml`), but
-**pre-visitor**: no `githubAlerts`/directive rewriting, no zfb-synthesized
-node types. MDX JSX elements and expressions survive exactly as
+**raw parser output** — with source selection controlled by the frontmatter
+policy above, and **pre-visitor**: no `githubAlerts`/directive rewriting, no
+zfb-synthesized node types. MDX JSX elements and expressions survive exactly as
 markdown-rs parsed them (`mdxJsxFlowElement`/`mdxJsxTextElement` carry
 `name`/`attributes`/`children`; `:::note`-style directive text and
 GitHub-style `> [!NOTE]` alerts stay plain paragraph/blockquote text,
