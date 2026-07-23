@@ -451,7 +451,7 @@ export interface MdxJsxTextElement extends RawMdastData {
  * (mirrors the `mdxJsxAttribute`/`mdxJsxExpressionAttribute` divergence
  * below -- markdown-rs does not model attribute positions anywhere).
  */
-export interface MdxJsxAttributeValueExpression {
+export interface MdxJsxAttributeValueExpression extends RawMdastData {
   type: "mdxJsxAttributeValueExpression";
   value: string;
   _markdownRsStops: MarkdownRsStop[];
@@ -461,7 +461,7 @@ export interface MdxJsxAttributeValueExpression {
  * Divergence: carries no `position` -- markdown-rs does not model attribute
  * positions (zfb#1828 requirement 2's one documented exception).
  */
-export interface MdxJsxAttribute {
+export interface MdxJsxAttribute extends RawMdastData {
   type: "mdxJsxAttribute";
   name: string;
   /** Absent for a bare boolean attribute (`<a b />`) -- see {@link List.start}. */
@@ -471,7 +471,7 @@ export interface MdxJsxAttribute {
  * A JSX spread attribute (`{...expr}`). Divergence: carries no `position`,
  * same reason as {@link MdxJsxAttribute}.
  */
-export interface MdxJsxExpressionAttribute {
+export interface MdxJsxExpressionAttribute extends RawMdastData {
   type: "mdxJsxExpressionAttribute";
   value: string;
   _markdownRsStops: MarkdownRsStop[];

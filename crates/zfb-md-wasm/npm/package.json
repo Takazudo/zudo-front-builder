@@ -73,16 +73,23 @@
     "typecheck": "tsc --noEmit",
     "typecheck:consumer": "tsc --project test/tsconfig.consumer.json"
   },
+  "dependencies": {
+    "@types/mdast": "^4.0.0",
+    "mdast-util-directive": "^3.1.0",
+    "mdast-util-mdx": "^3.0.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "binaryen": "130.0.0",
     "esbuild": "0.27.7",
+    "mdast-util-to-hast": "^13.2.1",
     "remark-gfm": "^4.0.1",
     "remark-mdx": "^3.1.1",
     "remark-parse": "^11.0.0",
     "remark-directive": "^4.0.0",
     "typescript": "^5.9.0",
     "unified": "^11.0.5",
+    "unist-util-visit": "^5.0.0",
     "vitest": "^2.1.9"
   }
 }

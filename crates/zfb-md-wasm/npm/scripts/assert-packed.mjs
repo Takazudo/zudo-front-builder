@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 const REQUIRED_PACKED_FILES = [
   "package/dist/index.js",
   "package/dist/index.d.ts",
+  "package/dist/mdast.js",
+  "package/dist/mdast.d.ts",
   "package/dist/browser.js",
   "package/dist/wasm/zfb_md_wasm_glue.zfb-resource.mjs",
   "package/dist/wasm/zfb_md_wasm_glue.zfb-resource.d.mts",
