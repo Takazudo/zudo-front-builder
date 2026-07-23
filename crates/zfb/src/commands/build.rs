@@ -12547,7 +12547,7 @@ mod tests {
     fn client_script_unsupported_query_is_a_hard_preprocess_error() {
         let tmp = tempdir().unwrap();
         let entry = tmp.path().join("bad.client.ts");
-        std::fs::write(&entry, "import url from './x.txt?url';\n").unwrap();
+        std::fs::write(&entry, "import { url } from './x.txt?url';\n").unwrap();
         std::fs::write(tmp.path().join("x.txt"), "x").unwrap();
         let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
             entry_name: "bad".into(),
