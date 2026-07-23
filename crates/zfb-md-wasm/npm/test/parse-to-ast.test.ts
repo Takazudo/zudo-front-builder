@@ -199,6 +199,47 @@ describe("toMdastRoot (validated ecosystem adapter)", () => {
     expect(adapted).toBeGreaterThan(5);
   });
 
+  it.each([
+    { name: "final LF", source: "hello\n" },
+    { name: "final CRLF", source: "hello\r\n" },
+    { name: "final CR", source: "hello\r" },
+    { name: "no final line ending", source: "hello" },
+    { name: "empty input", source: "" },
+    { name: "whitespace-only input", source: " \n" },
+    { name: "CJK and surrogate-pair emoji", source: "日本 😀\n" },
+    { name: "non-ASCII without final line ending", source: "日本 😀" },
+  ])("covers the complete source like remark: $name", async ({ source }) => {
+    const out = await parseToAst(source, {
+      filename: "case.md",
+      frontmatter: "none",
+    });
+    expect(out.diagnostics).toEqual([]);
+    const expected = unified().use(remarkParse).parse(source).position;
+    expect(out.ast?.position, "raw parseToAst root").toEqual(expected);
+
+    const adapted = toMdastRoot(out.ast);
+    expect(adapted.position, "toMdastRoot root").toEqual(expected);
+    expect(source.slice(adapted.position.start.offset, adapted.position.end.offset)).toBe(source);
+  });
+
+  it("covers the complete shifted body after extracted frontmatter", async () => {
+    const body = "日本 😀\r\n";
+    const source = `---\ntitle: x\n---\n${body}`;
+    const bodyStart = source.indexOf(body);
+    const out = await parseToAst(source, { filename: "case.md" });
+    expect(out.diagnostics).toEqual([]);
+
+    for (const root of [out.ast, toMdastRoot(out.ast)]) {
+      expect(root?.position).toEqual({
+        start: { line: 4, column: 1, offset: bodyStart },
+        end: { line: 5, column: 1, offset: source.length },
+      });
+      if (root) {
+        expect(source.slice(root.position.start.offset, root.position.end.offset)).toBe(body);
+      }
+    }
+  });
+
   it("clones core/GFM output for unist-util-visit and mdast-util-to-hast", async () => {
     const out = await parseToAst("# Hello\n\nA ~~small~~ [link](https://example.com).\n", {
       filename: "post.md",

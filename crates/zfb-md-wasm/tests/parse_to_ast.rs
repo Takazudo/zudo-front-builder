@@ -380,6 +380,137 @@ fn no_frontmatter_source_is_returned_unshifted() {
 }
 
 #[test]
+fn root_position_covers_the_complete_non_empty_parsed_input() {
+    struct Case {
+        name: &'static str,
+        source: &'static str,
+        end_line: u64,
+        end_column: u64,
+        end_offset: u64,
+    }
+
+    for case in [
+        Case {
+            name: "final-lf",
+            source: "hello\n",
+            end_line: 2,
+            end_column: 1,
+            end_offset: 6,
+        },
+        Case {
+            name: "final-crlf",
+            source: "hello\r\n",
+            end_line: 2,
+            end_column: 1,
+            end_offset: 7,
+        },
+        Case {
+            name: "final-cr",
+            source: "hello\r",
+            end_line: 2,
+            end_column: 1,
+            end_offset: 6,
+        },
+        Case {
+            name: "no-final-line-ending",
+            source: "hello",
+            end_line: 1,
+            end_column: 6,
+            end_offset: 5,
+        },
+        Case {
+            name: "empty-input",
+            source: "",
+            end_line: 1,
+            end_column: 1,
+            end_offset: 0,
+        },
+        Case {
+            name: "whitespace-only",
+            source: " \n",
+            end_line: 2,
+            end_column: 1,
+            end_offset: 2,
+        },
+        Case {
+            name: "utf16-non-ascii",
+            source: "日本 😀\n",
+            end_line: 2,
+            end_column: 1,
+            end_offset: 6,
+        },
+        Case {
+            name: "utf16-non-ascii-without-final-line-ending",
+            source: "日本 😀",
+            end_line: 1,
+            end_column: 6,
+            end_offset: 5,
+        },
+    ] {
+        let out = parse(zfb_md_wasm::parse_to_ast(
+            case.source,
+            r#"{"filename":"case.md","frontmatter":"none"}"#,
+        ));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{}", case.name);
+        let position = &out["ast"]["position"];
+        assert_eq!(
+            position["start"],
+            serde_json::json!({"line": 1, "column": 1, "offset": 0}),
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            position["end"],
+            serde_json::json!({
+                "line": case.end_line,
+                "column": case.end_column,
+                "offset": case.end_offset,
+            }),
+            "{}",
+            case.name
+        );
+        assert_eq!(
+            utf16_slice(
+                case.source,
+                position["start"]["offset"].as_u64().unwrap() as usize,
+                position["end"]["offset"].as_u64().unwrap() as usize,
+            ),
+            case.source,
+            "{}",
+            case.name
+        );
+    }
+}
+
+#[test]
+fn root_position_covers_the_complete_frontmatter_shifted_body() {
+    let body = "日本 😀\r\n";
+    let source = format!("---\ntitle: x\n---\n{body}");
+    let body_start = source.find(body).unwrap();
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        &source,
+        r#"{"filename":"case.md"}"#,
+    ));
+    let position = &out["ast"]["position"];
+
+    assert_eq!(
+        position,
+        &serde_json::json!({
+            "start": {"line": 4, "column": 1, "offset": body_start},
+            "end": {"line": 5, "column": 1, "offset": source.encode_utf16().count()},
+        })
+    );
+    assert_eq!(
+        utf16_slice(
+            &source,
+            position["start"]["offset"].as_u64().unwrap() as usize,
+            position["end"]["offset"].as_u64().unwrap() as usize,
+        ),
+        body
+    );
+}
+
+#[test]
 fn contract_shape_mdx_nodes_and_stops_are_shifted() {
     let source = "---\ntitle: Stops\n---\n\nBefore.\n\n{40 + 2}\n";
     let out = parse(zfb_md_wasm::parse_to_ast(source, MDX_OPTIONS));
