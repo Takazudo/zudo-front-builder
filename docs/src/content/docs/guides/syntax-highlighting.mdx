@@ -437,6 +437,27 @@ This only makes sense for grammars absent from syntect's bundled set. For all
 standard languages (Rust, TypeScript, Python, Go, etc.), the built-in pipeline
 handles them without an extra step.
 
+## Highlighting code in the browser
+
+Everything on this page runs at **build time** through zfb's syntect pipeline.
+If you instead need to highlight code **at runtime in the browser** — a live
+Markdown/MDX editor, a paste-and-preview box, or any surface where the source
+isn't known until after the page has loaded — use `highlightCode()` from
+`@takazudo/zfb-md-wasm` instead. See
+[Direct semantic code highlighting](./browser-markdown-preview.mdx#direct-semantic-code-highlighting)
+for the walkthrough.
+
+<Tip>
+
+Only ever calling `highlightCode`? Import from the
+`@takazudo/zfb-md-wasm/highlight` subpath instead of the package root — a
+slim, highlight-only artifact built without the full MDX/Markdown pipeline,
+roughly half the download of the default entry point.
+
+</Tip>
+
+See [zfb-md-wasm](../api/md-wasm.mdx) for the full API reference.
+
 ## See also
 
 - [Extending the Markdown Pipeline](./extending-the-markdown-pipeline.mdx) —
