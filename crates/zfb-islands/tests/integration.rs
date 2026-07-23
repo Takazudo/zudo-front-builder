@@ -757,8 +757,8 @@ fn shared_bundle_discovers_marked_glue_and_wasm_resources() {
     std::fs::write(
         &island,
         r#"
-import glueHref from "./fixture-glue.zfb-resource.mjs";
-import wasmHref from "./fixture-payload.wasm";
+import glueHref from "./fixture-glue.zfb-resource.mjs?url";
+import wasmHref from "./fixture-payload.wasm?url";
 
 export default function ResourceIsland() {
   return glueHref + wasmHref;
