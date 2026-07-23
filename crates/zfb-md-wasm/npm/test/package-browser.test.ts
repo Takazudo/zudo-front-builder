@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { assertPackedContents, packedPaths } from "../scripts/assert-packed.mjs";
+import { createWasmApi } from "../src/runtime.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tempRoot = mkdtempSync(join(tmpdir(), "zfb-md-wasm-package-"));
@@ -78,6 +79,37 @@ describe("packed browser conditional entry", () => {
   it("contains exactly the required generated resources in its tarball", () => {
     const archive = packedPackage();
     assertPackedContents(packedPaths(archive));
+  });
+
+  it("composes recovery markers with an emitted glue URL's existing query and hash", async () => {
+    const importedSpecifiers: string[] = [];
+    const api = createWasmApi({
+      glueUrl: new URL("https://cdn.example.test/glue.mjs?asset=packed#module"),
+      loadWasmBytes: async () => new ArrayBuffer(0),
+      compileWasm: async () => ({}) as WebAssembly.Module,
+      importGlue: async (specifier) => {
+        importedSpecifiers.push(specifier);
+        return {
+          initSync() {},
+          highlightCode() {
+            return JSON.stringify({ html: "", diagnostics: [] });
+          },
+          version() {
+            return "fixture";
+          },
+          __forceTrapForTests() {},
+        };
+      },
+    });
+
+    await api.init();
+
+    expect(importedSpecifiers).toHaveLength(1);
+    const imported = new URL(importedSpecifiers[0]!);
+    expect(imported.searchParams.get("asset")).toBe("packed");
+    expect(imported.searchParams.get("zfbMdWasmGen")).toBe("0");
+    expect(imported.searchParams.get("zfbMdWasmAttempt")).toBe("1");
+    expect(imported.hash).toBe("#module");
   });
 
   it("resolves every public declaration from a tarball-only isolated consumer", () => {

@@ -1,5 +1,5 @@
-import glueHref from "./wasm-highlight/zfb_md_wasm_highlight_glue.zfb-resource.mjs";
-import wasmHref from "./wasm-highlight/zfb_md_wasm_highlight_bg.wasm";
+import glueHref from "./wasm-highlight/zfb_md_wasm_highlight_glue.zfb-resource.mjs?url";
+import wasmHref from "./wasm-highlight/zfb_md_wasm_highlight_bg.wasm?url";
 import { createWasmApi } from "./runtime.js";
 
 // Mirrors src/browser.ts, but points at the highlight-only artifact under
@@ -7,14 +7,12 @@ import { createWasmApi } from "./runtime.js";
 // highlight-surface API -- see src/highlight.ts for the direct/Node twin
 // and why `compile`/`renderHtml` are absent here.
 //
-// These hrefs are emitted by esbuild's `file` loader. Resolving them from the
-// final entry keeps the resource graph correct when the island entry is hashed
-// or served under a non-root base path.
-// TypeScript sees the generated module's normal wasm-bindgen default export,
-// whereas esbuild's file loader replaces each value with a string URL. The
-// cast documents that build-only boundary without changing the emitted import.
-const GLUE_URL = new URL(glueHref as unknown as string, import.meta.url);
-const WASM_URL = new URL(wasmHref as unknown as string, import.meta.url);
+// `?url` is the explicit cross-bundler asset contract: both Vite and zfb's
+// pinned esbuild file loaders replace these imports with URL strings. Resolving
+// them from the final entry keeps relative esbuild output correct while also
+// accepting Vite's base-prefixed URLs.
+const GLUE_URL = new URL(glueHref, import.meta.url);
+const WASM_URL = new URL(wasmHref, import.meta.url);
 
 async function loadBrowserWasmBytes(): Promise<ArrayBuffer> {
   const response = await fetch(WASM_URL);

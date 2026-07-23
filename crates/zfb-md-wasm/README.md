@@ -86,10 +86,10 @@ _later_ stage fails. `diagnostics` is empty on success, otherwise:
   For `"options"` they point into the **options JSON document**. `null` when
   the underlying error carries no location, or when an upstream location is
   malformed or outside the parsed body.
-- Caveat: the human-readable `message` text may embed positions in the
-  coordinate space the underlying library used (body-relative for
-  markdown-rs, YAML-relative for serde_yaml). The **structured fields** are
-  the contract; the message is display-only.
+- `message` is opaque display text. Do not parse or rewrite it: it may embed
+  positions in the coordinate space the underlying library used (body-relative
+  for markdown-rs, YAML-relative for serde_yaml). The structured `line` and
+  `column` fields are the sole supported locations.
 
 ## Direct semantic code highlighting
 

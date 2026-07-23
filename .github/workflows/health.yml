@@ -712,6 +712,17 @@ jobs:
           name: zfb-md-wasm-packed-tarball
           path: wasm-md-artifact
 
+      # Issue #1912: consume the exact asserted tarball through unmodified
+      # Vite 6.4.3 in both dev and production-preview modes. This fixture
+      # owns a lockfile/workspace marker so it cannot resolve the repository
+      # source package. Chromium was installed above at the same Playwright
+      # version pinned by the fixture.
+      - name: Run packed md-wasm Vite 6.4.3 browser fixture
+        run: |
+          pnpm --dir crates/zfb-md-wasm/npm/test/fixtures/vite-6.4.3 install --frozen-lockfile
+          ZFB_MD_WASM_TARBALL="$GITHUB_WORKSPACE/wasm-md-artifact/zfb-md-wasm.tgz" \
+            pnpm --dir crates/zfb-md-wasm/npm/test/fixtures/vite-6.4.3 test
+
       # Artifact upload/download does not preserve the executable bit.
       - name: Fix permissions on downloaded zfb binary
         run: chmod 0755 wasm-md-browser-artifacts/zfb/zfb

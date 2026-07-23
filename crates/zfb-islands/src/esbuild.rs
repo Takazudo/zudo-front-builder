@@ -1915,13 +1915,25 @@ fn validate_resource_metafile_edge(
     if !output
         .inputs
         .keys()
-        .any(|input_path| input_path.ends_with(expected_source_suffix))
+        .any(|input_path| metafile_input_matches_resource(input_path, expected_source_suffix))
     {
         return Err(anyhow!(
             "resource output {resource_filename:?} has no metafile file-loader edge from a source ending in {expected_source_suffix:?}"
         ));
     }
     Ok(())
+}
+
+/// esbuild preserves an import's resource query in metafile input keys. The
+/// browser package uses the explicit `?url` contract shared with Vite, so
+/// recognize that one exact query in addition to the legacy bare file-loader
+/// edge. Do not generally strip queries: an unrelated loader/plugin input must
+/// not satisfy the fail-closed resource oracle.
+fn metafile_input_matches_resource(input_path: &str, expected_source_suffix: &str) -> bool {
+    input_path.ends_with(expected_source_suffix)
+        || input_path
+            .strip_suffix("?url")
+            .is_some_and(|path| path.ends_with(expected_source_suffix))
 }
 
 /// Metafile paths are relative to esbuild's configured working directory by
@@ -4648,8 +4660,8 @@ mod tests {
         write_resource_metafile(
             &metafile,
             &[
-                (wasm.clone(), "/fixture/payload.wasm"),
-                (glue.clone(), "/fixture/glue.zfb-resource.mjs"),
+                (wasm.clone(), "/fixture/payload.wasm?url"),
+                (glue.clone(), "/fixture/glue.zfb-resource.mjs?url"),
             ],
         )
         .unwrap();
@@ -4668,6 +4680,30 @@ mod tests {
         );
         assert_eq!(out.resources[0].bytes, b"export const glue = true;\n");
         assert_eq!(out.resources[1].bytes, [0_u8, 97, 115, 109]);
+    }
+
+    #[test]
+    fn resource_metafile_edge_only_accepts_the_exact_url_query() {
+        assert!(metafile_input_matches_resource(
+            "/fixture/payload.wasm",
+            WASM_EXTENSION
+        ));
+        assert!(metafile_input_matches_resource(
+            "/fixture/payload.wasm?url",
+            WASM_EXTENSION
+        ));
+        assert!(metafile_input_matches_resource(
+            "/fixture/glue.zfb-resource.mjs?url",
+            ZFB_RESOURCE_MJS_EXTENSION
+        ));
+        assert!(!metafile_input_matches_resource(
+            "/fixture/payload.wasm?raw",
+            WASM_EXTENSION
+        ));
+        assert!(!metafile_input_matches_resource(
+            "/fixture/payload.wasm?url&raw",
+            WASM_EXTENSION
+        ));
     }
 
     #[test]

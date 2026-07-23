@@ -117,7 +117,7 @@ pub enum ScanError {
     ImportQuery {
         /// Module containing the unsupported import.
         path: PathBuf,
-        /// Helpful description including the one supported `?raw` form.
+        /// Helpful description including the supported `?raw` and `?url` forms.
         message: String,
     },
     /// A syntactically-supported terminal raw edge did not resolve to an
@@ -1836,6 +1836,7 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
                         target: resolved,
                     });
                 }
+                CollectedImportEdge::Url => {}
             }
         }
     }
@@ -2035,6 +2036,7 @@ pub fn scan_islands_with_meta<R: Resolver>(
                             })?;
                     raw_edges.entry(current.clone()).or_default().push(resolved);
                 }
+                CollectedImportEdge::Url => {}
             }
         }
 
@@ -2497,6 +2499,7 @@ fn discover_module_workers<R: Resolver>(
                         target,
                     });
                 }
+                CollectedImportEdge::Url => {}
             }
         }
         for specifier in collect_global_require_specifiers(&module, unresolved_ctxt) {
@@ -2941,16 +2944,18 @@ fn atom_to_string(value: &Wtf8Atom) -> String {
 enum CollectedImportEdge {
     Module(String),
     Raw(String),
+    Url,
 }
 
 fn supported_raw_form(reason: impl AsRef<str>) -> String {
     format!(
         "{}. Only a static default import written as \
-         `import text from \"./file.ext?raw\"` is supported. The target must \
+         `import text from \"./file.ext?raw\"` or \
+         `import href from \"./file.ext?url\"` is supported. Raw targets must \
          be project-local: relative paths and exact first-party tsconfig \
-         alias/baseUrl targets are supported; absolute paths are not. Dynamic imports, \
-         `?url`, named/namespace/side-effect raw imports, and additional query \
-         parameters are not supported.",
+         alias/baseUrl targets are supported. URL targets must be relative. \
+         Absolute paths, dynamic imports, named/namespace/side-effect query \
+         imports, and additional query parameters are not supported.",
         reason.as_ref()
     )
 }
@@ -2960,7 +2965,8 @@ fn query_suffix(specifier: &str) -> Option<&str> {
 }
 
 /// Collect typed import-style edges. Ordinary JS module edges are traversed;
-/// exact `?raw` default imports become terminal asset edges.
+/// exact `?raw` and relative `?url` default imports become terminal asset
+/// edges.
 fn collect_import_edges(module: &Module) -> std::result::Result<Vec<CollectedImportEdge>, String> {
     let mut out = Vec::new();
     for item in &module.body {
@@ -3004,6 +3010,28 @@ fn collect_import_edges(module: &Module) -> std::result::Result<Vec<CollectedImp
                             )));
                         }
                         out.push(CollectedImportEdge::Raw(target));
+                    }
+                    Some("url")
+                        if !specifier[..specifier.len() - "url".len() - 1].contains('?') =>
+                    {
+                        if import_decl.specifiers.len() != 1
+                            || !matches!(import_decl.specifiers[0], ImportSpecifier::Default(_))
+                            || import_decl.with.is_some()
+                            || import_decl.phase != swc_core::ecma::ast::ImportPhase::Evaluation
+                        {
+                            return Err(supported_raw_form(format!(
+                                "URL import {specifier:?} is not a single static default import"
+                            )));
+                        }
+                        let target = specifier.strip_suffix("?url").expect("exact URL query");
+                        if Path::new(target).is_absolute()
+                            || !(target.starts_with("./") || target.starts_with("../"))
+                        {
+                            return Err(supported_raw_form(format!(
+                                "URL import target {target:?} is not relative"
+                            )));
+                        }
+                        out.push(CollectedImportEdge::Url);
                     }
                     Some(query) => {
                         return Err(supported_raw_form(format!(
@@ -3180,7 +3208,7 @@ fn collect_import_specifiers(module: &Module) -> Vec<String> {
         .into_iter()
         .filter_map(|edge| match edge {
             CollectedImportEdge::Module(specifier) => Some(specifier),
-            CollectedImportEdge::Raw(_) => None,
+            CollectedImportEdge::Raw(_) | CollectedImportEdge::Url => None,
         })
         .collect()
 }
@@ -8989,8 +9017,10 @@ mod tests {
     #[test]
     fn unsupported_import_queries_fail_with_supported_form() {
         for source in [
-            r#"import url from "./x.txt?url";"#,
             r#"import { x } from "./x.txt?raw";"#,
+            r#"import { x } from "./x.txt?url";"#,
+            r#"import url from "pkg/x.txt?url";"#,
+            r#"import url from "./x.txt?url&raw";"#,
             r#"const x = import("./x.txt?raw");"#,
             r#"const x = import(`./x.txt?raw`);"#,
             r#"const x = import("./x.txt?raw" + suffix);"#,
@@ -9013,6 +9043,24 @@ mod tests {
                 "error must teach the supported form: {error}"
             );
         }
+    }
+
+    #[test]
+    fn relative_url_import_is_a_terminal_asset_edge() {
+        let entry = root().join("pages/home.tsx");
+        let asset = root().join("pages/x.txt");
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                entry.clone(),
+                r#"import href from "./x.txt?url"; export default href;"#,
+            )
+            .with_file(asset, r#""use client"; export const NeverScanned = 1;"#);
+
+        let meta = scan_reachable_modules_with_meta(std::slice::from_ref(&entry), &resolver)
+            .expect("relative URL import");
+
+        assert_eq!(meta.modules, vec![entry]);
+        assert!(meta.raw_import_edges.is_empty());
     }
 
     #[test]
