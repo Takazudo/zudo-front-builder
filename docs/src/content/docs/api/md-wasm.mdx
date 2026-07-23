@@ -14,7 +14,7 @@ This package is unrelated to importing a `.wasm` module into an SSR route at bui
 
 | Export | Signature | Description |
 |---|---|---|
-| `init` | `() => Promise<void>` | Eagerly instantiate the wasm module. Optional — every other call function lazily initializes on first use. |
+| `init` | `() => Promise<void>` | Eagerly instantiate the wasm module. Optional — every other function initializes the module lazily on first use. |
 | `compile` | `(source: string, options?: ZfbMdWasmOptions) => Promise<CompileResult>` | MDX → JSX → SWC → ES-module JS. |
 | `renderHtml` | `(source: string, options?: ZfbMdWasmOptions) => Promise<RenderHtmlResult>` | Markdown → mdast → visitors → hast → HTML string. |
 | `parseToAst` | `(source: string, options?: ParseToAstOptions) => Promise<ParseToAstResult>` | Markdown/MDX → raw mdast tree, pre-zfb-visitors. |
@@ -39,7 +39,7 @@ This package is unrelated to importing a `.wasm` module into an SSR route at bui
 function init(): Promise<void>
 ```
 
-Eagerly instantiate the wasm module. Calling it up front only controls **when** the fetch/compile cost happens — every other call function initializes lazily on first use if `init()` was never called.
+Eagerly instantiate the wasm module. Calling it up front only controls **when** the fetch/compile cost happens — every other function initializes the module lazily on first use if `init()` was never called.
 
 ## `compile(source, options?)`
 

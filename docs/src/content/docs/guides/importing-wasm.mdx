@@ -139,7 +139,8 @@ in zfb.config.json (e.g. "@takazudo/zfb-adapter-cloudflare") or remove
 ```
 
 With an adapter configured, `zfb build` emits a hashed Wasm module beside the
-Worker entry — an `x-<hash>.wasm` file per imported module — plus an
+Worker entry — a `<name>-<hash>.wasm` file per imported module (the module's
+basename plus a content hash, e.g. `index_bg-a1b2c3d4.wasm`) — plus an
 `.assetsignore` entry so it is never served as a public static file. See
 [Emitted Wasm layout](./ssr-and-cloudflare-bindings.mdx#emitted-wasm-layout)
 for the exact `dist/` shape and `.assetsignore` contents on the Cloudflare
