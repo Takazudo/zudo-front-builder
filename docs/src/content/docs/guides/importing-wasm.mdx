@@ -1,0 +1,222 @@
+---
+title: Importing WebAssembly
+sidebar_position: 6.5
+description: How to default-import a compiled WebAssembly module in a zfb page or route, and how that import behaves differently across zfb dev, static (SSG), and SSR builds.
+---
+
+<Info title="What this page covers">
+
+The `.wasm`-import build primitive: default-importing a compiled
+`WebAssembly.Module` into a zfb page or route, instantiating it, and how the
+same import behaves differently across `zfb dev`, static (SSG) builds, and SSR
+builds. This page is deploy-target-agnostic; for Cloudflare-specific deploy
+mechanics (Wrangler rules, package-size limits, a full Satori/Resvg example),
+see [SSR and Cloudflare Bindings](./ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route).
+
+</Info>
+
+## What it's for
+
+Reach for a `.wasm` import when a page or route needs a real WebAssembly
+library or compute kernel, not JavaScript. The typical shapes:
+
+- **OG-image generation at request time.** A `pages/api/og.tsx` route renders
+  an image on every request using [`satori`](https://github.com/vercel/satori)
+  plus [`@resvg/resvg-wasm`](https://www.npmjs.com/package/@resvg/resvg-wasm)
+  — the SVG-to-PNG rasterizer ships as Wasm.
+- **A compiled parser or codec** that only exists as a `wasm32` build — no
+  pure-JS equivalent, or the JS port is meaningfully slower.
+- **A compute kernel** (image processing, hashing, a physics/geometry
+  routine) that is faster compiled than hand-written JS.
+- **A static value computed from Wasm at build time** — a page with no
+  `prerender = false` export can still import and evaluate a `.wasm` module;
+  the result gets baked into the emitted HTML like any other build-time
+  computation.
+
+The common thread: the import gives you a real `WebAssembly.Module`, the same
+object `WebAssembly.instantiate` or a library's own `initWasm()`-style loader
+expects — not a JS reimplementation, not a URL string.
+
+## The primitive
+
+Default-import a `.wasm` file from a page, route, or any module it imports.
+The imported value is a compiled `WebAssembly.Module` — you still have to
+instantiate it before calling into it:
+
+```tsx
+// pages/api/answer.tsx
+import wasmModule from "../../wasm/answer.wasm";
+
+export const prerender = false;
+
+function answer(module: WebAssembly.Module) {
+  const exported = new WebAssembly.Instance(module).exports.answer;
+  if (typeof exported !== "function") {
+    throw new Error("Wasm module must export answer()");
+  }
+  return exported();
+}
+
+export default function AnswerRoute() {
+  return new Response(`ANSWER:${answer(wasmModule)}`);
+}
+```
+
+Some Wasm libraries wrap this same step in their own initializer instead of
+raw `WebAssembly.Instance` — for example `@resvg/resvg-wasm`'s
+`initWasm(resvgWasm)`. Either way, the value coming out of the `.wasm` import
+is the compiled module, and instantiation is always a separate step you (or
+the library) perform explicitly.
+
+<Warning title="The import is a Module, not an Instance">
+
+`import wasmModule from "./thing.wasm"` gives you a `WebAssembly.Module`. It
+is **not** already instantiated — you cannot call exported functions on it
+directly. You must run `new WebAssembly.Instance(wasmModule)` (or hand it to
+a library's own loader, e.g. `initWasm(wasmModule)`) before its exports are
+callable. Calling a method directly on the imported value is a type error and
+a runtime error.
+
+</Warning>
+
+## Behavior across build pipelines
+
+The same `import x from "./thing.wasm"` statement behaves differently
+depending on which pipeline evaluates the page.
+
+### `zfb dev`
+
+`zfb dev` runs the page's render code — including any Wasm import — through
+its embedded V8 isolate at **request time**, the same as any other
+`prerender = false` route. No adapter needs to be configured; the dev server
+loads and instantiates the module itself.
+
+Like any other SSR-only edit, editing the `.wasm` file or the route that
+imports it is picked up on the next request, but it does **not** trigger a
+browser auto-refresh — SSR-only edits produce no static HTML write, so no
+`Page` SSE event fires. Reload the browser tab manually after an edit to see
+the new output.
+
+### SSG / static routes
+
+A page with no `export const prerender = false` (the default) still imports
+and evaluates the `.wasm` module fine — the import is resolved and
+instantiated **at build time**, and whatever the page renders from it gets
+baked into the static HTML like any other build-time computation. The
+`.wasm` file itself is **not** shipped to `dist/` for a purely static page —
+only the resulting HTML is.
+
+```tsx
+// pages/index.tsx — no prerender export, so this runs at build time
+import wasmModule from "../wasm/answer.wasm";
+
+function answer(module: WebAssembly.Module) {
+  const exported = new WebAssembly.Instance(module).exports.answer;
+  if (typeof exported !== "function") {
+    throw new Error("Wasm module must export answer()");
+  }
+  return exported();
+}
+
+export default function Page() {
+  return <p>Computed at build time: {answer(wasmModule)}</p>;
+}
+```
+
+### SSR routes (`prerender = false`)
+
+A route that opts into SSR and imports `.wasm` needs a configured adapter —
+see the literal-export requirement below. This is not a Wasm-specific rule:
+it's the same fail-fast check `zfb build` applies to **any** `prerender =
+false` route without a configured adapter, since the build cannot produce a
+deployable artifact for a route it doesn't know how to wrap. `zfb build`
+fails immediately rather than silently dropping the route:
+
+```text
+no adapter configured but route <route> requires SSR. Either set `adapter`
+in zfb.config.json (e.g. "@takazudo/zfb-adapter-cloudflare") or remove
+`export const prerender = false` from the page.
+```
+
+With an adapter configured, `zfb build` emits a hashed Wasm module beside the
+Worker entry — a `<name>-<hash>.wasm` file per imported module (the module's
+basename plus a content hash, e.g. `index_bg-a1b2c3d4.wasm`) — plus an
+`.assetsignore` entry so it is never served as a public static file. See
+[Emitted Wasm layout](./ssr-and-cloudflare-bindings.mdx#emitted-wasm-layout)
+for the exact `dist/` shape and `.assetsignore` contents on the Cloudflare
+adapter.
+
+<Warning title="prerender = false must be a literal export">
+
+zfb detects `prerender` via **static AST inspection at build time**, not
+runtime evaluation. The export must be a **literal `export const`**
+declaration:
+
+```tsx
+export const prerender = false; // ✅ detected correctly
+```
+
+Indirect assignments or computed values are **not** detected and silently
+fall back to SSG:
+
+```tsx
+// ❌ indirect assignment — not a literal export const
+const flags = { prerender: false };
+export const prerender = flags.prerender;
+```
+
+If a route imports `.wasm` but its `prerender = false` export was not
+detected, the route runs as SSG instead — its Wasm import still evaluates
+fine at build time (see the SSG section above), but the route will not get a
+fresh per-request execution in production.
+
+</Warning>
+
+## Ambient typing
+
+The `.wasm` default-import type comes from an ambient module declaration
+shipped by `@takazudo/zfb` (`declare module "*.wasm"`, resolving the default
+export to `WebAssembly.Module`). The package's own root entry point pulls
+this declaration in internally so it stays reachable from the package's
+emitted root declaration file; a project's page files virtually always
+import *something* from `@takazudo/zfb` already (`Island`, `clientScript`,
+etc.), and that alone is enough to put the ambient `.wasm` typing into scope
+for **every** `.wasm` import across the whole TypeScript program —
+`declare module` augmentations are global once any file in the program
+references the package, no per-file import required.
+
+If a Wasm-only helper module sits **outside** that import graph — nothing in
+its own file, and nothing it imports, ever pulls in `@takazudo/zfb` — add a
+declaration-only bridge file so the ambient type still applies:
+
+```ts
+// src/zfb-wasm.d.ts
+import "@takazudo/zfb";
+```
+
+Make sure this file is covered by your `tsconfig.json`'s `include` list —
+for example, `"include": ["src/**/*"]` already picks it up; a narrower
+`include` needs the file added explicitly.
+
+## Wasm in client/island code is a separate concern
+
+The primitive on this page is for **server-side** `.wasm` imports (SSG build
+time, or SSR at request time via a page/route module graph). Client-side
+`"use client"` island code, and packages compiled to WebAssembly specifically
+for the browser (like `@takazudo/zfb-md-wasm`), also ship `.wasm` resources —
+but they go through the islands esbuild pass, not this import primitive, and
+are emitted as `islands-resource-<name>-<hash>.wasm` files alongside their JS
+glue rather than as a compiled-module import into a page. See
+[Browser Markdown Preview](./browser-markdown-preview.mdx) for a worked
+example of a browser-targeted Wasm package.
+
+## See also
+
+- [SSR and Cloudflare Bindings — Importing Wasm in an SSR route](./ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route) —
+  the Cloudflare-specific deploy mechanics: a full Satori/Resvg example, the
+  Wrangler `CompiledWasm` module rule, the 3 MiB (Free) / 10 MiB (Paid)
+  compressed package limits, and the service-binding escape hatch for a
+  module that outgrows those limits.
+- [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — the
+  mental model for what the adapter actually emits and how a `prerender =
+  false` request is dispatched in production.

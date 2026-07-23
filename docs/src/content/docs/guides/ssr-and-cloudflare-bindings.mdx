@@ -210,7 +210,14 @@ for the deeper mechanism.
 
 ## Importing Wasm in an SSR route
 
-An SSR route (or any helper it imports) can default-import a `.wasm` file.
+An SSR route (or any helper it imports) can default-import a `.wasm` file —
+see [Importing WebAssembly](./importing-wasm.mdx) for the adapter-agnostic
+mechanism (the default import resolves to a `WebAssembly.Module`, the
+ambient typing that makes that work, and the `src/zfb-wasm.d.ts` bridge for
+Wasm-only helpers outside the `@takazudo/zfb` import graph). This section
+covers the Cloudflare-specific half: what the adapter emits and how Wrangler
+treats it.
+
 zfb copies the module through the SSR bundle and exposes it to the Worker as
 a compiled Wasm module. A practical use case is OG-image generation with
 [`satori`](https://github.com/vercel/satori) and
@@ -248,20 +255,9 @@ export default async function OgImage() {
 }
 ```
 
-The SDK declares the default import as `WebAssembly.Module`; it is not an
-instantiated module or an untyped URL string. The starter's page files already
-import `@takazudo/zfb`, which makes that ambient declaration part of the
-TypeScript program. If a project keeps Wasm-only helpers outside that import
-graph, add an included declaration-only bridge instead of duplicating the
-module declaration:
-
-```ts
-// src/zfb-wasm.d.ts
-import "@takazudo/zfb";
-```
-
-For example, make sure the file is covered by your `tsconfig.json` `include`
-list when it does not already include all of `src/`.
+See [Ambient typing](./importing-wasm.mdx#ambient-typing) for why the default
+import already types as `WebAssembly.Module` and how the `src/zfb-wasm.d.ts`
+bridge works for Wasm-only helpers outside the `@takazudo/zfb` import graph.
 
 ### Emitted Wasm layout
 
