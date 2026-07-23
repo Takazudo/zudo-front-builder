@@ -29,6 +29,18 @@ field optional; `{}` selects all defaults). Both return a result object plus a
 `diagnostics` array — **expected failures come back as diagnostics, never as a
 thrown error** (see the trap contract below for what _does_ throw).
 
+### Diagnostic location contract
+
+`Diagnostic.message` is opaque display text. Do not parse or rewrite it:
+upstream markdown-rs prose can embed a related coordinate (for example, an
+MDX opener location), and that coordinate is not part of this package's public
+contract and may use the dependency's coordinate space. The structured
+`line`/`column` pair is the sole supported diagnostic location. For
+`"markdown"` and `"frontmatter"` diagnostics it is 1-based in the original
+source's JavaScript UTF-16 code units (including frontmatter); for `"options"`
+it refers to the options JSON document. Either field is `null` when no
+structural location is available.
+
 ### `compile(source, options?)` — MDX → ES-module JS
 
 Full MDX → JSX → SWC → ES module. The emitted module has a `MDXContent`

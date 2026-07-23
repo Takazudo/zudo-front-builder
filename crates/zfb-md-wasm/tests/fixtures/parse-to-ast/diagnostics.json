@@ -2,66 +2,66 @@
   "fixtures": [
     {
       "slug": "ascii",
-      "source": "a<!-- marker -->",
+      "source": "<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 1,
-      "column": 3
+      "column": 4
     },
     {
       "slug": "cjk-bmp",
-      "source": "あ<!-- marker -->",
+      "source": "あ<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 1,
-      "column": 3
+      "column": 5
     },
     {
       "slug": "emoji-surrogate-pair",
-      "source": "😀<!-- marker -->",
+      "source": "😀<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 1,
-      "column": 4
+      "column": 6
     },
     {
       "slug": "combining-sequence",
-      "source": "é<!-- marker -->",
+      "source": "é<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 1,
-      "column": 4
+      "column": 6
     },
     {
       "slug": "later-line-lf",
-      "source": "first\nあ<!-- marker -->",
+      "source": "first\nあ<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 2,
-      "column": 3
+      "column": 5
     },
     {
       "slug": "later-line-crlf",
-      "source": "first\r\n😀<!-- marker -->",
+      "source": "first\r\n😀<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 2,
-      "column": 4
+      "column": 6
     },
     {
       "slug": "bom",
-      "source": "﻿あ<!-- marker -->",
+      "source": "﻿あ<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 1,
-      "column": 4
+      "column": 6
     },
     {
       "slug": "frontmatter-lf",
-      "source": "---\ntitle: LF\n---\nあ<!-- marker -->",
+      "source": "---\ntitle: LF\n---\nあ<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 4,
-      "column": 3
+      "column": 5
     },
     {
       "slug": "frontmatter-crlf",
-      "source": "---\r\ntitle: CRLF\r\n---\r\n😀<!-- marker -->",
+      "source": "---\r\ntitle: CRLF\r\n---\r\n😀<a></b>",
       "options": { "filename": "diagnostic.mdx" },
       "line": 4,
-      "column": 4
+      "column": 6
     }
   ]
 }
