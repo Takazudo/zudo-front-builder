@@ -95,8 +95,11 @@ This is what actually renders your pages.
 When an SSR route imports Wasm, zfb emits an `x-<hash>.wasm` file beside these
 two JavaScript files. `_zfb_inner.mjs` imports it as a compiled
 `WebAssembly.Module`, while `.assetsignore` prevents it from becoming a public
-asset. The [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route)
-has the Satori/Resvg setup, Wrangler rule, and package-size details.
+asset. See [Importing WebAssembly](../guides/importing-wasm.mdx) for the
+adapter-agnostic build primitive — the default import, ambient typing, and
+dev/SSG/SSR behavior — and the
+[SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route)
+for the Satori/Resvg setup, Wrangler rule, and package-size details.
 
 The two-file layout avoids a second esbuild pass inside the adapter. Workerd's
 module loader resolves relative ESM imports from the deployed worker directory,
