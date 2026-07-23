@@ -942,6 +942,106 @@ fn shift_json_stops(fields: &mut BTreeMap<String, JsonValue>, offset_delta: usiz
     }
 }
 
+/// Return whether the complete byte slice between a list container's final
+/// child and its current end is only the separator line ending and optional
+/// indentation consumed by markdown-rs while closing the container.
+///
+/// This deliberately recognizes a complete LF or CRLF first, followed only
+/// by ASCII horizontal whitespace. It does not search for a suffix, accept a
+/// partial CRLF, or subtract a fixed byte count. Consequently child-owned
+/// trailing whitespace remains part of the candidate child span, while a
+/// second newline or any marker/syntax byte rejects normalization.
+#[cfg(feature = "pipeline")]
+fn is_plain_list_separator_gap(source: &str, candidate_end: usize, current_end: usize) -> bool {
+    let Some(gap) = source.get(candidate_end..current_end) else {
+        // `str::get` simultaneously proves ordering, range validity, and
+        // that both offsets are UTF-8 character boundaries.
+        return false;
+    };
+    let remainder = gap.strip_prefix("\r\n").or_else(|| gap.strip_prefix('\n'));
+    remainder.is_some_and(|bytes| bytes.bytes().all(|byte| matches!(byte, b' ' | b'\t')))
+}
+
+/// Blockquote blank lines carry their `>` continuation prefix in the list
+/// span in remark/unist, but not in the terminal list-item span. Accept that
+/// complete, source-proven shape for list items only. The enclosing list uses
+/// [`is_plain_list_separator_gap`] and therefore retains the owned marker.
+#[cfg(feature = "pipeline")]
+fn is_blockquote_list_item_separator_gap(
+    source: &str,
+    candidate_end: usize,
+    current_end: usize,
+) -> bool {
+    let Some(gap) = source.get(candidate_end..current_end) else {
+        return false;
+    };
+    let Some(remainder) = gap.strip_prefix("\r\n").or_else(|| gap.strip_prefix('\n')) else {
+        return false;
+    };
+    remainder.bytes().any(|byte| byte == b'>')
+        && remainder
+            .bytes()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'>'))
+}
+
+/// Normalize markdown-rs list/list-item ends at the wasm interoperability
+/// boundary. This is post-order so a nested terminal list is corrected before
+/// its containing item is considered.
+///
+/// A non-empty list item may end at its final child's end only when the
+/// complete intervening source slice proves the parser consumed exactly one
+/// separator LF/CRLF plus optional separator indentation. Inside a
+/// blockquote, the item-only predicate also recognizes the quote-owned blank
+/// line prefix; the parent list deliberately keeps that marker. A list may
+/// end at its corrected terminal list item under the plain predicate only.
+///
+/// Empty items, EOF lists, child-owned whitespace/newlines, directives, and
+/// all unrecognized/partial gap shapes remain untouched.
+#[cfg(feature = "pipeline")]
+fn normalize_interop_list_ends(node: &mut InteropMdastNode, source: &str, inside_blockquote: bool) {
+    let descendants_inside_blockquote = inside_blockquote || node.kind == "blockquote";
+    if let Some(children) = node.children.as_mut() {
+        for child in children {
+            normalize_interop_list_ends(child, source, descendants_inside_blockquote);
+        }
+    }
+
+    let Some(candidate) = node
+        .children
+        .as_ref()
+        .and_then(|children| children.last())
+        .map(|child| child.position.end.clone())
+    else {
+        return;
+    };
+    if candidate.offset < node.position.start.offset {
+        return;
+    }
+
+    let matches_gap = match node.kind.as_str() {
+        "listItem" => {
+            is_plain_list_separator_gap(source, candidate.offset, node.position.end.offset)
+                || (inside_blockquote
+                    && is_blockquote_list_item_separator_gap(
+                        source,
+                        candidate.offset,
+                        node.position.end.offset,
+                    ))
+        }
+        "list" => {
+            node.children
+                .as_ref()
+                .and_then(|children| children.last())
+                .is_some_and(|child| child.kind == "listItem")
+                && is_plain_list_separator_gap(source, candidate.offset, node.position.end.offset)
+        }
+        _ => false,
+    };
+    if matches_gap {
+        node.position.end = candidate;
+    }
+}
+
 /// Deliberately duplicates [`prepare`]'s front half (options JSON →
 /// filename gate → frontmatter extraction) MINUS `facade::build_pipeline`:
 /// building the full pipeline loads the syntect theme set this raw-parse
@@ -1022,6 +1122,12 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
             return fail(frontmatter, diag);
         }
     };
+    // This boundary intentionally publishes remark/unist-compatible list
+    // spans while `zfb-content::facade::parse_mdast` remains the unchanged,
+    // markdown-rs-native byte-position API for native pipeline consumers.
+    // Normalize against the exact parsed input before frontmatter shifting
+    // and before conversion to UTF-16.
+    normalize_interop_list_ends(&mut ast, &input, false);
     // `utf16` is built against the FULL original source (not `body`): the
     // shift above already moved every position into original-source byte
     // coordinates, so the UTF-16 prefix map must be indexed the same way.
@@ -1237,7 +1343,9 @@ pub fn force_trap_for_tests() {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "pipeline")]
-    use super::markdown_diagnostic;
+    use super::{
+        is_blockquote_list_item_separator_gap, is_plain_list_separator_gap, markdown_diagnostic,
+    };
     use super::{markdown_place_in_source, markdown_place_to_body_offset, split_place};
     #[cfg(feature = "pipeline")]
     use zfb_content::pipeline::PipelineError;
@@ -1321,5 +1429,47 @@ mod tests {
         assert_eq!(diagnostic.message, "malformed location");
         assert_eq!(diagnostic.line, None);
         assert_eq!(diagnostic.column, None);
+    }
+
+    #[test]
+    #[cfg(feature = "pipeline")]
+    fn list_separator_predicates_require_complete_valid_source_slices() {
+        for gap in ["\n", "\r\n", "\n  \t", "\r\n \t"] {
+            let source = format!("é{gap}next");
+            assert!(
+                is_plain_list_separator_gap(&source, "é".len(), "é".len() + gap.len()),
+                "{gap:?}"
+            );
+        }
+        for gap in ["", "\r", "\n\n", "\r\n\r\n", "\n>", "\n x", " \n"] {
+            let source = format!("é{gap}next");
+            assert!(
+                !is_plain_list_separator_gap(&source, "é".len(), "é".len() + gap.len()),
+                "{gap:?}"
+            );
+        }
+
+        let source = "é\n> >";
+        assert!(is_blockquote_list_item_separator_gap(
+            source,
+            "é".len(),
+            source.len()
+        ));
+        assert!(
+            !is_plain_list_separator_gap(source, "é".len(), source.len()),
+            "blockquote-owned markers are not a plain list separator"
+        );
+        assert!(
+            !is_plain_list_separator_gap(source, 1, source.len()),
+            "a candidate inside the UTF-8 encoding of `é` is rejected"
+        );
+        assert!(
+            !is_plain_list_separator_gap(source, source.len(), 0),
+            "reversed offsets are rejected"
+        );
+        assert!(
+            !is_plain_list_separator_gap(source, 0, source.len() + 1),
+            "out-of-range offsets are rejected"
+        );
     }
 }

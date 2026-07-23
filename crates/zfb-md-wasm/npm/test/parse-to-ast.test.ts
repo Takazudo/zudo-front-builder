@@ -674,6 +674,82 @@ describe("parseToAst markdown diagnostics use original-source UTF-16 coordinates
   }
 });
 
+describe("parseToAst list end normalization (zfb#1916)", () => {
+  function listPositions(value: unknown) {
+    type Point = { line: number; column: number; offset: number };
+    const positions: Array<{ type: string; start: Point; end: Point }> = [];
+    walk(value, (node) => {
+      if ((node.type === "list" || node.type === "listItem") && node.position) {
+        positions.push({
+          type: node.type,
+          start: node.position.start,
+          end: node.position.end,
+        });
+      }
+    });
+    return positions;
+  }
+
+  for (const testCase of [
+    { name: "unordered LF", source: "- alpha\n\nnext\n" },
+    { name: "ordered CRLF", source: "1. alpha\r\n \t\r\nnext\r\n" },
+    { name: "multiple loose items", source: "- one\n\n  second paragraph\n\n- two\n\nnext\n" },
+    { name: "nested terminal list", source: "- outer\n  - inner\n\nnext\n" },
+    { name: "blockquote marker ownership", source: "> - quoted\n>\n> next\n" },
+    { name: "CJK and surrogate-pair emoji", source: "- 日本 😀\n\nnext\n" },
+    { name: "EOF final LF", source: "- alpha\n" },
+    { name: "EOF without final LF", source: "- alpha" },
+    { name: "empty item", source: "-\n\nnext\n" },
+    { name: "child-owned trailing spaces", source: "- alpha  \n\nnext\n" },
+    {
+      name: "GFM task item",
+      source: "- [x] done\n\nnext\n",
+      gfm: true,
+    },
+    {
+      name: "directive container",
+      source: ":::note\n- alpha\n\n:::\n",
+      directives: true,
+    },
+  ]) {
+    it(`matches remark for raw and adapted list nodes: ${testCase.name}`, async () => {
+      const options: ParseToAstOptions = {
+        filename: "case.md",
+        frontmatter: "none",
+        ...(testCase.directives ? { directives: true } : {}),
+        ...(testCase.gfm ? { pipeline: { gfm: { taskListItem: true } } } : {}),
+      };
+      const out = await parseToAst(testCase.source, options);
+      expect(out.diagnostics).toEqual([]);
+      const adapted = toMdastRoot(out.ast);
+
+      const oracle = unified().use(remarkParse);
+      if (testCase.gfm) oracle.use(remarkGfm);
+      if (testCase.directives) oracle.use(remarkDirective);
+      const remarkTree = oracle.parse(testCase.source);
+      const expected = listPositions(remarkTree);
+
+      expect(listPositions(out.ast), "raw parseToAst positions").toEqual(expected);
+      expect(listPositions(adapted), "toMdastRoot positions").toEqual(expected);
+    });
+  }
+
+  it("composes normalization with frontmatter shifting and UTF-16 conversion", async () => {
+    const source = "---\ntitle: x\n---\n- 日本 😀\n\nnext\n";
+    const out = await parseToAst(source, { filename: "case.md" });
+    expect(out.diagnostics).toEqual([]);
+    const adapted = toMdastRoot(out.ast);
+
+    for (const tree of [out.ast, adapted]) {
+      const positioned = listPositions(tree);
+      expect(positioned.map(({ type }) => type)).toEqual(["list", "listItem"]);
+      for (const node of positioned) {
+        expect(source.slice(node.start.offset, node.end.offset)).toBe("- 日本 😀");
+      }
+    }
+  });
+});
+
 describe("parseToAst UTF-16 position parity with remark-parse (zfb#1856)", () => {
   interface FlatNode {
     type: string;

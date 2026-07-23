@@ -95,9 +95,6 @@ tags:\n\
 \n\
 Some *emphasis*, **strong**, `inline()` and ~~gone~~ text.\n\
 \n\
-- first item\n\
-- second item with [a link](https://example.com/)\n\
-\n\
 | col a | col b |\n\
 | ----- | ----- |\n\
 | 1     | 2     |\n\
@@ -114,7 +111,10 @@ fn main() {}\n\
 \n\
 {2 + 3}\n\
 \n\
-![alt text](https://example.com/img.png)\n";
+![alt text](https://example.com/img.png)\n\
+\n\
+- first item\n\
+- second item with [a link](https://example.com/)\n";
 
 const MDX_OPTIONS: &str = r#"{"filename":"post.mdx"}"#;
 
@@ -478,6 +478,250 @@ fn collect_nodes_of_type<'a>(value: &'a Value, node_type: &str, found: &mut Vec<
             }
         }
         _ => {}
+    }
+}
+
+fn source_slices_for_type(ast: &Value, node_type: &str, source: &str) -> Vec<String> {
+    let mut nodes = Vec::new();
+    collect_nodes_of_type(ast, node_type, &mut nodes);
+    nodes
+        .into_iter()
+        .map(|node| {
+            let start = node["position"]["start"]["offset"].as_u64().unwrap() as usize;
+            let end = node["position"]["end"]["offset"].as_u64().unwrap() as usize;
+            utf16_slice(source, start, end)
+        })
+        .collect()
+}
+
+fn assert_position_tree_invariants(node: &Value, source: &str, parent: Option<(usize, usize)>) {
+    let position = &node["position"];
+    let start = position["start"]["offset"].as_u64().unwrap() as usize;
+    let end = position["end"]["offset"].as_u64().unwrap() as usize;
+    assert!(start <= end, "ordered span for {}", node["type"]);
+    let _ = utf16_slice(source, start, end);
+    if let Some((parent_start, parent_end)) = parent {
+        assert!(
+            parent_start <= start && end <= parent_end,
+            "{} [{start}, {end}) is contained by [{parent_start}, {parent_end})",
+            node["type"]
+        );
+    }
+
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        let mut previous_end = start;
+        for child in children {
+            let child_start = child["position"]["start"]["offset"].as_u64().unwrap() as usize;
+            assert!(
+                previous_end <= child_start,
+                "sibling offsets are monotonic and non-overlapping under {}",
+                node["type"]
+            );
+            assert_position_tree_invariants(child, source, Some((start, end)));
+            previous_end = child["position"]["end"]["offset"].as_u64().unwrap() as usize;
+        }
+    }
+}
+
+#[test]
+fn list_end_spans_normalize_from_complete_source_gaps() {
+    struct Case {
+        name: &'static str,
+        source: &'static str,
+        options: &'static str,
+        lists: &'static [&'static str],
+        items: &'static [&'static str],
+    }
+
+    let cases = [
+        Case {
+            name: "unordered-lf",
+            source: "- alpha\n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- alpha"],
+            items: &["- alpha"],
+        },
+        Case {
+            name: "ordered-crlf-and-separator-indentation",
+            source: "1. alpha\r\n \t\r\nnext\r\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["1. alpha"],
+            items: &["1. alpha"],
+        },
+        Case {
+            name: "multiple-items",
+            source: "- one\n- two\n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- one\n- two"],
+            items: &["- one", "- two"],
+        },
+        Case {
+            name: "loose-non-final-item",
+            source: "- one\n\n  second paragraph\n\n- two\n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- one\n\n  second paragraph\n\n- two"],
+            items: &["- one\n\n  second paragraph", "- two"],
+        },
+        Case {
+            name: "nested-terminal-list",
+            source: "- outer\n  - inner\n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- outer\n  - inner", "- inner"],
+            items: &["- outer\n  - inner", "- inner"],
+        },
+        Case {
+            name: "gfm-task-list",
+            source: "- [x] done\n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none","pipeline":{"gfm":{"taskListItem":true}}}"#,
+            lists: &["- [x] done"],
+            items: &["- [x] done"],
+        },
+        Case {
+            name: "blockquote-owned-marker",
+            source: "> - quoted\n>\n> next\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- quoted\n>"],
+            items: &["- quoted"],
+        },
+        Case {
+            name: "directive-container",
+            source: ":::note\n- alpha\n\n:::\n",
+            options: r#"{"filename":"case.md","frontmatter":"none","directives":true}"#,
+            lists: &["- alpha"],
+            items: &["- alpha"],
+        },
+        Case {
+            name: "frontmatter-and-utf16",
+            source: "---\ntitle: x\n---\n- 日本 😀\n\nnext\n",
+            options: r#"{"filename":"case.md"}"#,
+            lists: &["- 日本 😀"],
+            items: &["- 日本 😀"],
+        },
+        Case {
+            name: "eof-final-lf",
+            source: "- alpha\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- alpha"],
+            items: &["- alpha"],
+        },
+        Case {
+            name: "eof-no-final-lf",
+            source: "- alpha",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- alpha"],
+            items: &["- alpha"],
+        },
+        Case {
+            name: "empty-item",
+            source: "-\n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["-"],
+            items: &["-"],
+        },
+        Case {
+            name: "child-owned-trailing-spaces",
+            source: "- alpha  \n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- alpha  "],
+            items: &["- alpha  "],
+        },
+        Case {
+            name: "child-owned-fence-markers",
+            source: "- ```\n  code\n  ```\n\nnext\n",
+            options: r#"{"filename":"case.md","frontmatter":"none"}"#,
+            lists: &["- ```\n  code\n  ```"],
+            items: &["- ```\n  code\n  ```"],
+        },
+    ];
+
+    for case in cases {
+        let out = parse(zfb_md_wasm::parse_to_ast(case.source, case.options));
+        assert_eq!(out["diagnostics"], serde_json::json!([]), "{}", case.name);
+        assert_eq!(
+            source_slices_for_type(&out["ast"], "list", case.source),
+            case.lists,
+            "{} list slices",
+            case.name
+        );
+        assert_eq!(
+            source_slices_for_type(&out["ast"], "listItem", case.source),
+            case.items,
+            "{} item slices",
+            case.name
+        );
+        assert_position_tree_invariants(&out["ast"], case.source, None);
+    }
+}
+
+#[test]
+fn raw_facade_positions_stay_markdown_rs_native() {
+    let source = "- alpha\n\nnext\n";
+    let raw = zfb_content::facade::parse_mdast(
+        zfb_content::facade::ParseMdastOptions {
+            dialect: zfb_content::facade::ParseDialect::Markdown,
+            ..zfb_content::facade::ParseMdastOptions::default()
+        },
+        source,
+    )
+    .expect("raw facade parses");
+    let raw = serde_json::to_value(raw).expect("raw mdast serializes");
+    assert_eq!(raw["children"][0]["position"]["end"]["offset"], 8);
+    assert_eq!(
+        raw["children"][0]["children"][0]["position"]["end"]["offset"],
+        8
+    );
+
+    let public = parse(zfb_md_wasm::parse_to_ast(
+        source,
+        r#"{"filename":"case.md","frontmatter":"none"}"#,
+    ));
+    assert_eq!(
+        public["ast"]["children"][0]["position"]["start"], raw["children"][0]["position"]["start"],
+        "list start is unchanged"
+    );
+    assert_eq!(public["ast"]["children"][0]["position"]["end"]["offset"], 7);
+    assert_eq!(
+        public["ast"]["children"][0]["children"][0]["position"]["start"],
+        raw["children"][0]["children"][0]["position"]["start"],
+        "list-item start is unchanged"
+    );
+    assert_eq!(
+        public["ast"]["children"][0]["children"][0]["position"]["end"]["offset"],
+        7
+    );
+    assert_eq!(
+        public["ast"]["children"][0]["children"][0]["children"][0],
+        raw["children"][0]["children"][0]["children"][0],
+        "the list item's paragraph is unchanged"
+    );
+    assert_eq!(
+        public["ast"]["children"][1], raw["children"][1],
+        "the unrelated following paragraph is unchanged"
+    );
+
+    for eof_source in ["- alpha", "- alpha\n"] {
+        let raw = zfb_content::facade::parse_mdast(
+            zfb_content::facade::ParseMdastOptions {
+                dialect: zfb_content::facade::ParseDialect::Markdown,
+                ..zfb_content::facade::ParseMdastOptions::default()
+            },
+            eof_source,
+        )
+        .expect("raw EOF list parses");
+        let raw = serde_json::to_value(raw).expect("raw EOF mdast serializes");
+        let public = parse(zfb_md_wasm::parse_to_ast(
+            eof_source,
+            r#"{"filename":"case.md","frontmatter":"none"}"#,
+        ));
+        assert_eq!(
+            public["ast"]["children"][0]["position"], raw["children"][0]["position"],
+            "EOF list position is unchanged for {eof_source:?}"
+        );
+        assert_eq!(
+            public["ast"]["children"][0]["children"][0]["position"],
+            raw["children"][0]["children"][0]["position"],
+            "EOF item position is unchanged for {eof_source:?}"
+        );
     }
 }
 
