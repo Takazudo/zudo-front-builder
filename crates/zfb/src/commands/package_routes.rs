@@ -1306,7 +1306,7 @@ mod tests {
     #[test]
     fn unlinked_entrypoint_keeps_absolute_import() {
         let tmp = tempfile::tempdir().unwrap();
-        let pages = tmp.path().join("pages");
+        let pages = tmp.path().join("apps/site/pages");
         let entrypoint = tmp.path().join("local-route.tsx");
         std::fs::create_dir_all(&pages).unwrap();
         std::fs::write(&entrypoint, "export default function Page() {}\n").unwrap();
