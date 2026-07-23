@@ -36,7 +36,15 @@ function packageSelectionPlugin(seenIds) {
 }
 
 function resourceKind(rawUrl) {
-  const pathname = new URL(rawUrl).pathname;
+  const url = new URL(rawUrl);
+  // Vite imports `?url` assets through a JavaScript module proxy before the
+  // fixture application runs. Those proxy loads are not runtime resources;
+  // only the URLs returned by the proxies and loaded by createWasmApi count
+  // toward this browser-resource assertion.
+  if (url.searchParams.has("url") && !url.searchParams.has("zfbMdWasmGen")) {
+    return undefined;
+  }
+  const { pathname } = url;
   if (pathname.includes("zfb_md_wasm_highlight_glue.zfb-resource")) return "highlight-glue";
   if (pathname.includes("zfb_md_wasm_highlight_bg") && pathname.endsWith(".wasm")) {
     return "highlight-wasm";
@@ -55,11 +63,24 @@ async function exercise(origin, selectedIds, label) {
   const page = await browser.newPage();
   const requests = [];
   const responses = [];
+  const browserErrors = [];
+  const browserRequests = [];
   let failedFirstWasm = false;
 
+  page.on("pageerror", (error) => {
+    browserErrors.push(error.stack ?? error.message);
+  });
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("request", (request) => {
+    browserRequests.push(request.url());
+  });
+
   await page.route("**/*", async (route) => {
-    const kind = resourceKind(route.request().url());
-    if (kind === "wasm" && !failedFirstWasm) {
+    const request = route.request();
+    const kind = resourceKind(request.url());
+    if (kind === "wasm" && request.resourceType() === "fetch" && !failedFirstWasm) {
       failedFirstWasm = true;
       await route.fulfill({
         status: 503,
@@ -88,6 +109,14 @@ async function exercise(origin, selectedIds, label) {
 
   try {
     await page.goto(new URL("/fixture/", origin).href, { waitUntil: "networkidle" });
+    try {
+      await page.waitForFunction(() => typeof window.runFixture === "function");
+    } catch (error) {
+      throw new Error(
+        `${label}: fixture module did not load: ${browserErrors.join("\n") || error}\n` +
+          `Requests: ${browserRequests.join("\n")}`,
+      );
+    }
     const result = await page.evaluate(() => window.runFixture());
 
     assert(
@@ -96,6 +125,22 @@ async function exercise(origin, selectedIds, label) {
     );
     assert(result.trapName === "ZfbMdWasmTrapError", `${label}: trap was not wrapped once`);
     assert(result.parsed.ast.type === "root", `${label}: parseToAst failed`);
+    const list = result.list.ast.children[0];
+    assert(
+      result.list.diagnostics.length === 0 &&
+        list.type === "list" &&
+        result.listSource.slice(list.position.start.offset, list.position.end.offset) ===
+          "- 日本 😀",
+      `${label}: packed list end position did not use the complete UTF-16 list span`,
+    );
+    assert(
+      result.diagnostic.diagnostics.length === 1 &&
+        result.diagnostic.diagnostics[0].source === "markdown" &&
+        result.diagnostic.diagnostics[0].line === 1 &&
+        result.diagnostic.diagnostics[0].column === 6 &&
+        typeof result.diagnostic.diagnostics[0].message === "string",
+      `${label}: packed diagnostic did not retain structured UTF-16 coordinates`,
+    );
     for (const [name, value] of [
       ["root highlight", result.highlighted],
       ["recovery highlight", result.recovered],
