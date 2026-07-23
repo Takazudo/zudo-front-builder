@@ -135,14 +135,21 @@ export interface ZfbMdWasmOptions {
 export type DiagnosticSource = "options" | "frontmatter" | "markdown" | "compile";
 
 /**
- * One diagnostic entry. `line`/`column` are 1-based. For `"markdown"` /
- * `"frontmatter"` they point into the *original source* (frontmatter lines
- * included). For `"options"` they point into the *options JSON document*.
- * `null` when the underlying error carries no location.
+ * One diagnostic entry. `line`/`column` are the sole supported diagnostic
+ * location and are 1-based. For `"markdown"` / `"frontmatter"` they point
+ * into the *original source* (frontmatter lines included) in JavaScript
+ * UTF-16 code units. For `"options"` they point into the *options JSON
+ * document*. They are `null` when the underlying error carries no location.
  */
 export interface Diagnostic {
   severity: "error";
   source: DiagnosticSource;
+  /**
+   * Opaque display text from this package or an upstream dependency. Do not
+   * parse or rewrite it: embedded coordinates, when present, are not public
+   * API and may use the dependency's own coordinate space. Use structured
+   * `line` and `column` for the supported location instead.
+   */
   message: string;
   line: number | null;
   column: number | null;
