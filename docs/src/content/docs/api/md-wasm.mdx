@@ -1,0 +1,254 @@
+---
+title: zfb-md-wasm
+description: "Reference for @takazudo/zfb-md-wasm — the WebAssembly build of zfb's markdown/MDX pipeline. Exports, async signatures, option/result types (ZfbMdWasmOptions, PipelineOptions, Diagnostic, ParseToAstOptions, HighlightCodeOptions, HighlightRole), the raw mdast shape, and package entry points."
+sidebar_position: 7
+---
+
+## Overview
+
+`@takazudo/zfb-md-wasm` ships zfb's markdown/MDX → JS/HTML pipeline compiled to WebAssembly. This page is the signature/type reference. For the narrative walkthrough — installing the package, evaluating a compiled module in a browser, the JSX-runtime import-map setup, and the parity guarantee's limitations — see [Browser Markdown Preview](../guides/browser-markdown-preview.mdx).
+
+This package is unrelated to importing a `.wasm` module into an SSR route at build time — that is a separate feature covered in [Importing Wasm](../guides/importing-wasm.mdx).
+
+## Exports
+
+| Export | Signature | Description |
+|---|---|---|
+| `init` | `() => Promise<void>` | Eagerly instantiate the wasm module. Optional — every other call function lazily initializes on first use. |
+| `compile` | `(source: string, options?: ZfbMdWasmOptions) => Promise<CompileResult>` | MDX → JSX → SWC → ES-module JS. |
+| `renderHtml` | `(source: string, options?: ZfbMdWasmOptions) => Promise<RenderHtmlResult>` | Markdown → mdast → visitors → hast → HTML string. |
+| `parseToAst` | `(source: string, options?: ParseToAstOptions) => Promise<ParseToAstResult>` | Markdown/MDX → raw mdast tree, pre-zfb-visitors. |
+| `highlightCode` | `(code: string, options: HighlightCodeOptions) => Promise<HighlightCodeResult>` | Direct semantic-class syntax highlighting for an arbitrary source string. |
+| `version` | `() => Promise<string>` | Release-stamped package version string. |
+| `toMdastRoot` | `(ast: MdastRoot \| null) => Root` | Validates and converts a raw `parseToAst` tree into a strict, ecosystem-compatible `mdast` `Root`. The one synchronous export. |
+| `ZfbMdWasmTrapError` | `class extends Error` | Thrown when a wasm trap (Rust panic / internal fault) occurred; the instance is auto-reinstantiated first. |
+| `ZfbMdWasmTrapRecoveryLimitError` | `class extends Error` | Thrown once the bounded trap-recovery budget (16 recoveries) is exhausted. |
+| `MdastAdapterError` | `class extends TypeError` | Thrown by `toMdastRoot` for an unsupported or malformed node. |
+
+`init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, and `version` are all **async** — every call returns a Promise, whether or not the underlying wasm module is already instantiated.
+
+<Note>
+
+**Expected failures never throw.** Markdown parse errors, malformed options JSON, unknown syntect theme names, and similar problems all come back as a `diagnostics` entry in the resolved result — never as a thrown error or a rejected Promise. Only a genuine wasm trap rejects, with `ZfbMdWasmTrapError` or `ZfbMdWasmTrapRecoveryLimitError` (see [Error classes](#error-classes)).
+
+</Note>
+
+## `init()`
+
+```ts
+function init(): Promise<void>
+```
+
+Eagerly instantiate the wasm module. Calling it up front only controls **when** the fetch/compile cost happens — every other call function initializes lazily on first use if `init()` was never called.
+
+## `compile(source, options?)`
+
+```ts
+function compile(source: string, options?: ZfbMdWasmOptions): Promise<CompileResult>
+```
+
+MDX → JSX → SWC → ES-module JS, the same emitter zfb's own build uses. `options` defaults to `{}`. `jsxRuntime` and `development` are consumed only here — `renderHtml` accepts and silently ignores both, so one options object can serve either call.
+
+## `renderHtml(source, options?)`
+
+```ts
+function renderHtml(source: string, options?: ZfbMdWasmOptions): Promise<RenderHtmlResult>
+```
+
+Markdown → mdast → visitors → hast → HTML string, skipping SWC entirely. `options` defaults to `{}`.
+
+## `parseToAst(source, options?)`
+
+```ts
+function parseToAst(source: string, options?: ParseToAstOptions): Promise<ParseToAstResult>
+```
+
+Markdown/MDX → raw mdast tree. Takes the distinct, closed `ParseToAstOptions` document, **not** `ZfbMdWasmOptions` — its `pipeline` sub-object only accepts `gfm` (see [Validation and position contract](#validation-and-position-contract)). `options` defaults to `{}`.
+
+## `highlightCode(code, options)`
+
+```ts
+function highlightCode(code: string, options: HighlightCodeOptions): Promise<HighlightCodeResult>
+```
+
+Direct semantic-class syntax highlighting for an arbitrary source string — no Markdown fence involved, and no `options` default: `language` is required.
+
+## `version()`
+
+```ts
+function version(): Promise<string>
+```
+
+Release-stamped package version string. Published artifacts stamp this with the package semver during release; local development builds fall back to the Rust manifest version placeholder.
+
+## `toMdastRoot(ast)`
+
+```ts
+function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@types/mdast)
+```
+
+Validates a raw `parseToAst().ast` tree and returns a detached, `@types/mdast`-compatible `Root`, typed against the same `mdast`/`mdast-util-directive`/`mdast-util-mdx` content-model registries the ecosystem uses. This strict adapter is intentionally separate from the forward-compatible raw tier `parseToAst` returns: an unsupported or malformed node **throws** `MdastAdapterError` instead of being silently dropped or coerced. Synchronous — it does not touch the wasm boundary at all.
+
+## Error classes
+
+- **`ZfbMdWasmTrapError extends Error`** — thrown by the async call that observed a wasm trap. Constructed with `(cause: unknown)`, exposed via `.cause`. The trapped instance is dropped and a fresh one started from the cached compiled `WebAssembly.Module` **before** this error is thrown, so the very next call already uses the replacement — no caches or globals survive between calls, so re-instantiation loses nothing but time.
+- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — thrown instead of `ZfbMdWasmTrapError` once 16 automatic trap recoveries have been exhausted for the process. Constructed with `(maxRecoveries: number, cause: unknown)`, `cause` exposed via `.cause`. Further recovery stays disabled (to avoid unbounded ES module record growth) until the JS realm is reloaded.
+- **`MdastAdapterError extends TypeError`** — thrown by `toMdastRoot`. Carries `path: string` (a JSON-path-like pointer into the offending node, e.g. `"$.children[2].value"`) and `nodeType: string | null` (the node's observed `type`, or `null` when the value wasn't even a typed record).
+
+## Type reference
+
+### `ZfbMdWasmOptions`
+
+The options document shared by `compile` and `renderHtml`. Every field is optional; `{}` selects all defaults.
+
+| Field | Type | Description |
+|---|---|---|
+| `filename?` | `string` | Must end in `.md` or `.mdx`. Defaults to `"<anonymous>.mdx"` for `compile`, `"<anonymous>.md"` for `renderHtml`. |
+| `jsxRuntime?` | `"preact" \| "react"` | Consumed only by `compile`; `renderHtml` accepts and ignores it. |
+| `development?` | `boolean` | Consumed only by `compile`; `renderHtml` accepts and ignores it. |
+| `pipeline?` | `PipelineOptions` | Shared pipeline configuration. |
+
+### `PipelineOptions`
+
+Mirrors `zfb_content::facade::PipelineOptions` verbatim.
+
+| Field | Type | Description |
+|---|---|---|
+| `theme?` | `string \| null` | A syntect theme name. Absent or explicit `null` keeps the built-in default (`"base16-ocean.dark"`) — fenced code is **always** highlighted; there is no "no syntax highlighting" value. Mutually exclusive with `codeHighlight.mode: "class"`. |
+| `gfm?` | `GfmOptions` | Per-extension GFM toggles. |
+| `cjkFriendly?` | `boolean` | — |
+| `hardBreaks?` | `boolean` | — |
+| `codeHighlight?` | `CodeHighlightOptions \| null` | Output mode + class-mode knobs for fenced-code highlighting. Absent, `null`, or `{ mode: "inline" }` reproduce the pre-existing inline-color behavior byte-for-byte. |
+| `features?` | `MarkdownFeaturesConfig` | `Record<string, unknown>` — left open on the TypeScript side; the wasm boundary passes it through **verbatim** to Rust's own `deny_unknown_fields` deserializer, which is the authoritative validator for its keys. |
+
+### `GfmOptions`
+
+| Field | Type |
+|---|---|
+| `strikethrough?` | `boolean` |
+| `table?` | `boolean` |
+| `autolinkLiteral?` | `boolean` |
+| `taskListItem?` | `boolean` |
+| `footnoteDefinition?` | `boolean` |
+
+### `CodeHighlightOptions`
+
+`zfb_content::facade::CodeHighlightOptions`, verbatim.
+
+| Field | Type | Description |
+|---|---|---|
+| `mode?` | `"inline" \| "class"` | Output mode for fenced-code highlighting. Defaults to `"inline"`. |
+| `classPrefix?` | `string` | Class-name prefix for class-mode role classes (e.g. default `"hi-"` yields `hi-kw`, `hi-str`, …). Only meaningful when `mode` is `"class"`. |
+| `roleClasses?` | `Partial<Record<HighlightRole, string>> \| null` | Per-role class overrides for class mode. Absent or `null` uses `{classPrefix}{role}` for every role. Only meaningful when `mode` is `"class"`. |
+
+### `CompileResult` / `RenderHtmlResult`
+
+| Field | Type | Description |
+|---|---|---|
+| `code` (`CompileResult`) / `html` (`RenderHtmlResult`) | `string \| null` | ES-module JS source, or HTML fragment, on success; `null` on failure. |
+| `frontmatter` | `unknown` | Parsed YAML frontmatter as JSON, `null` when absent or unextractable. |
+| `diagnostics` | `Diagnostic[]` | Empty on success. |
+
+### `Diagnostic`
+
+One diagnostic entry. `line`/`column` are the sole supported diagnostic location and are 1-based.
+
+| Field | Type | Description |
+|---|---|---|
+| `severity` | `"error"` | — |
+| `source` | `"options" \| "frontmatter" \| "markdown" \| "compile"` | — |
+| `message` | `string` | Opaque display text from this package or an upstream dependency. Do not parse or rewrite it — embedded coordinates, when present, use the dependency's own coordinate space. Use structured `line`/`column` instead. |
+| `line` | `number \| null` | `null` when the underlying error carries no location. For `"markdown"`/`"frontmatter"` it points into the original source; for `"options"` it points into the options JSON document. |
+| `column` | `number \| null` | Same location rules as `line`. For `"markdown"`/`"frontmatter"` this is JavaScript UTF-16 code units — see [Validation and position contract](#validation-and-position-contract). |
+
+### `ParseToAstOptions`
+
+The distinct, closed options document consumed by `parseToAst`. Visitor/serializer options are not accepted.
+
+| Field | Type | Description |
+|---|---|---|
+| `filename?` | `string` | Must end in `.md` or `.mdx`. With no explicit `dialect`, `.md` selects CommonMark and `.mdx` selects MDX; omitting `filename` uses `"<anonymous>.mdx"`, hence MDX. |
+| `dialect?` | `"markdown" \| "mdx"` | Overrides either valid extension but does not waive the extension gate. |
+| `directives?` | `boolean` | Parse generic remark-directive syntax. Default `false`. |
+| `frontmatter?` | `"extract" \| "node" \| "none"` | YAML handling policy. Default `"extract"`. `"extract"` parses the stripped body and returns YAML as JSON (no YAML node). `"node"` parses the full logical source and returns JSON plus a canonical YAML node. `"none"` parses every logical-source byte as Markdown/MDX and always returns `null`. Malformed/unterminated YAML fails `"extract"`/`"node"` with one `frontmatter` diagnostic; `"none"` never produces one. |
+| `pipeline?` | `ParsePipelineOptions` | `{ gfm?: GfmOptions }` — the **only** pipeline knob `parseToAst` accepts; `theme`, `cjkFriendly`, `hardBreaks`, `codeHighlight`, and `features` are not part of this closed document. |
+
+### `ParseToAstResult`
+
+| Field | Type | Description |
+|---|---|---|
+| `ast` | `MdastRoot \| null` | Serialized raw mdast root on success, `null` on failure. |
+| `frontmatter` | `unknown` | Same contract as `CompileResult.frontmatter`. |
+| `diagnostics` | `Diagnostic[]` | Empty on success. |
+
+### `HighlightCodeOptions`
+
+Options for direct arbitrary-code semantic class highlighting.
+
+| Field | Type | Description |
+|---|---|---|
+| `language` | `string` | Required syntax token, for example `"html"`, `"css"`, or `"javascript"`. |
+| `mode?` | `"class"` | The only supported direct output mode. Defaults to `"class"`. |
+| `classPrefix?` | `string` | Semantic role class prefix. Defaults to `"hi-"`. |
+| `roleClasses?` | `Partial<Record<HighlightRole, string>>` | Full-name role overrides, for example `{ keyword: "text-violet-600" }`. |
+
+### `HighlightCodeResult` and `HighlightDiagnostic`
+
+| Field | Type | Description |
+|---|---|---|
+| `html` | `string \| null` | Complete semantic `<pre><code>` wrapper, or `null` for invalid options/internal errors. |
+| `diagnostics` | `HighlightDiagnostic[]` | Sources used by direct highlighting are a distinct, smaller set than `Diagnostic`. |
+
+`HighlightDiagnostic` fields: `severity: "error" | "warning"`, `source: "options" | "highlight" | "internal"`, `message: string`, `line: number | null` (always `null` — JSON option parse locations are 1-based but this call never reports one), `column: number | null` (same).
+
+Invalid options (missing/empty `language`, an unsupported `mode`, a bad `classPrefix`, an unknown role key, or extra fields) return `{ html: null, diagnostics: [{ severity: "error", source: "options", … }] }`. An unknown but non-empty `language` is different: it succeeds with escaped fallback markup and a `{ severity: "warning", source: "highlight" }` diagnostic.
+
+### `HighlightRole`
+
+The fixed 18-role semantic taxonomy `highlightCode` emits (mechanically checked against Rust's canonical `HiRole::FULL_NAMES`):
+
+| Role | Default class | Role | Default class |
+|---|---|---|---|
+| `"escape"` | `hi-esc` | `"variable"` | `hi-var` |
+| `"operator"` | `hi-op` | `"tag"` | `hi-tag` |
+| `"comment"` | `hi-com` | `"attribute"` | `hi-attr` |
+| `"string"` | `hi-str` | `"punctuation"` | `hi-punct` |
+| `"number"` | `hi-num` | `"inserted"` | `hi-ins` |
+| `"constant"` | `hi-const` | `"deleted"` | `hi-del` |
+| `"keyword"` | `hi-kw` | `"heading"` | `hi-hd` |
+| `"function"` | `hi-fn` | `"type"` | `hi-ty` |
+| `"namespace"` | `hi-ns` | `"property"` | `hi-prop` |
+
+The default class for each role is `${classPrefix}${suffix}` (default `classPrefix` is `"hi-"`); `roleClasses` overrides use the **full name** as the key (`keyword`), never the class suffix (`kw`).
+
+## Raw mdast shape (`parseToAst` / `toMdastRoot`)
+
+`parseToAst`'s `ast` field is a serialized **raw** markdown-rs mdast tree (`MdastRoot`, always a `root`-typed `Root` node when present) — the parser's own node shape converted through its serde representation into an open, unist-shaped carrier, and deliberately **pre**-zfb-visitors. Every node in the tree always carries a `position: { start: AstPosition; end: AstPosition }`; `AstPoint`'s `column` and `offset` (0-based) are JavaScript **UTF-16 code units**, matching `String.prototype.slice`, `mdast-util-to-hast`, and remark/unist's own convention — not Unicode scalar values, so a surrogate-pair character (most emoji) advances `column`/`offset` by 2, not 1.
+
+The full core-mdast and MDX node set (`Root`, `Paragraph`, `Heading`, `List`, `Code`, `Link`, `MdxJsxFlowElement`, …) plus a forward-compatible `UnknownMdastNode` catch-all are all re-exported as named types from the package for callers who want to narrow on `node.type`. Two documented divergences from remark-parse/remark-mdx: `mdxJsxAttribute` (and its value/expression-attribute siblings) carry no `position` — markdown-rs does not model attribute positions; and top-level MDX `import`/`export` degrade to paragraphs (no `mdxjsEsm` nodes, no estree data) since the wasm boundary hosts no JS/acorn parser. `_markdownRsStops` (on MDX expression/ESM nodes) is internal, unstable, markdown-rs re-parse bookkeeping and — unlike `position` — is **UTF-8 byte**-based; never slice a string with it.
+
+`toMdastRoot` (see above) converts this raw tier into a strict, ecosystem-compatible tree for consumers that want ordinary `mdast`/`unist-util-visit` tooling instead of the raw carrier.
+
+## Validation and position contract
+
+- **Unknown fields are rejected**, on the Rust side, `deny_unknown_fields`-style, at **both** nesting levels of `ZfbMdWasmOptions` (top level and `pipeline`). `ParseToAstOptions` is a **separate, stricter** closed document: its `pipeline` sub-object accepts only `gfm` — passing `theme`, `cjkFriendly`, `hardBreaks`, `codeHighlight`, or `features` there is rejected, even though those are valid `PipelineOptions` fields for `compile`/`renderHtml`.
+- **`Diagnostic.line`/`.column`** (from `compile`/`renderHtml`) and **`AstPoint.column`/`.offset`** (from `parseToAst`) share the same JavaScript **UTF-16 code unit** convention described above. Pure-ASCII sources have byte offsets equal to UTF-16 offsets, so this only matters once a source has non-ASCII content.
+
+## Package entry points
+
+Two subpath exports, both compiled from the same crate but shipping distinct wasm artifacts:
+
+| Subpath | Artifact | Re-exported surface | Use when |
+|---|---|---|---|
+| `.` | Full pipeline (carries SWC) | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, all three error classes, every type above | Compiling MDX, rendering Markdown to HTML, or parsing to a raw AST. |
+| `./highlight` | Slim, highlight-only — built with the `pipeline` Cargo feature off, so `compile`/`renderHtml`/`parseToAst` don't even exist on the underlying glue | `init`, `highlightCode`, `version`, both trap error classes, the `HighlightRole`/`HighlightCodeOptions`/`HighlightCodeResult`/`HighlightDiagnostic*` types | Only ever calling `highlightCode` — roughly half the download of the default artifact. |
+
+Each subpath's `exports` map resolves a `browser` condition (a static, bundler-friendly resource path used by `src/browser.ts` / `src/highlight-browser.ts`) ahead of a `default` condition (the dynamic Node-`fs`-or-`fetch` loader in `src/index.ts` / `src/highlight.ts`); both conditions share the same `types` entry and the same underlying `createWasmApi` runtime.
+
+The package is **ESM-only** (`"type": "module"`, no `require` support), requires **Node ≥ 20.0.0**, and is currently at version **`0.1.0-next.95`**.
+
+## See also
+
+- [Browser Markdown Preview](../guides/browser-markdown-preview.mdx) — the narrative guide: installation, evaluating a compiled module, the JSX-runtime import-map footgun, lazy resource loading, and the parity guarantee's explicit limitations.
+- [Importing Wasm](../guides/importing-wasm.mdx) — the separate, unrelated feature of importing a `.wasm` module into an SSR route at build time.
+- [Syntax Highlighting](../guides/syntax-highlighting.mdx) — native zfb's syntect setup, for comparison with this package's `fancy-regex` backend.
