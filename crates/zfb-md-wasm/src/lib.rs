@@ -330,7 +330,7 @@ fn select_parse_source(
     filename: &str,
     source: &str,
     policy: FrontmatterPolicy,
-) -> Result<SelectedParseSource, (JsonValue, Diagnostic)> {
+) -> Result<SelectedParseSource, (JsonValue, Box<Diagnostic>)> {
     let bom_offset = usize::from(source.starts_with('\u{FEFF}')) * '\u{FEFF}'.len_utf8();
     if matches!(policy, FrontmatterPolicy::None) {
         return Ok(SelectedParseSource {
@@ -340,15 +340,19 @@ fn select_parse_source(
             markdown_frontmatter: false,
         });
     }
-    let extracted = extract_from_filename(filename, source)
-        .map_err(|error| (JsonValue::Null, frontmatter_diagnostic(&error, source)))?;
+    let extracted = extract_from_filename(filename, source).map_err(|error| {
+        (
+            JsonValue::Null,
+            Box::new(frontmatter_diagnostic(&error, source)),
+        )
+    })?;
     let (Some(body), Some(body_offset)) = (extracted.body, extracted.body_offset) else {
         return Err((
             JsonValue::Null,
-            Diagnostic::error(
+            Box::new(Diagnostic::error(
                 "options",
                 format!("filename `{filename}` did not resolve to a markdown body"),
-            ),
+            )),
         ));
     };
     let recognized = body_offset > bom_offset;
@@ -999,7 +1003,7 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
         markdown_frontmatter,
     } = match select_parse_source(&filename, source, opts.frontmatter) {
         Ok(selected) => selected,
-        Err((frontmatter, diagnostic)) => return fail(frontmatter, diagnostic),
+        Err((frontmatter, diagnostic)) => return fail(frontmatter, *diagnostic),
     };
     let shift = PositionShift::for_body_at(source, input_offset);
 
