@@ -92,7 +92,7 @@ addVirtualModule("virtual:metadata-db", () =>
 );
 ```
 
-`loader` は **完全な ESM ソーステキスト** を文字列として返します。バンドラ／組み込み V8 ホストは、返された文字列をそのモジュールのソースとしてそのまま使います。loader は、その specifier が最初に import された瞬間に **ビルドごとに正確に 1 回** 呼び出されます。同じ specifier の以降の import はキャッシュされたソースを再利用します。
+`loader` は **完全な ESM ソーステキスト** を文字列として返します。バンドラ／組み込み V8 ホストは、返された文字列をそのモジュールのソースとしてそのまま使います。loader は **遅延実行ではなく、即時に実行されます** — `zfb build` の実行ごとに 1 回、`zfb dev` のホスト起動ごとに 1 回、すべてのプラグインの `setup` フックが返り終えた直後の setup フェーズで実行されます。登録された specifier がどのページ／モジュールからも import されなくても実行されます。生成されたソースはメモ化され、以降その specifier を import するたびに再利用されます。（`zfb preview` の下では、この登録は形の一貫性のために受け付けられますが無効です — 前述の `setup` セクションを参照してください — そのため loader はそこでは決して実行されません。）
 
 loader のコントラクトは **1 つ** だけです。「loader が JSON を返し zfb がそれをラップする」という代替モードはありません。JSON を公開したいなら、自分で `() => "export default " + JSON.stringify(data)` としてください。
 
@@ -214,7 +214,7 @@ interface ZfbRouteEntry {
 
 ### 実践例: `postBuild` で `sitemap.xml` を生成する
 
-ビルドが生成したすべての HTML ルートから `sitemap.xml` を書き出すプラグインです。フィルタは `extension === "html"`（`.xml` / `.rss` / `.txt` ルートをスキップ）と `prerender !== false`（ディスク上のアーティファクトを持たない SSR ルートをスキップ）を組み合わせています。
+ビルドが生成したすべての HTML ルートから `sitemap.xml` を書き出すプラグインです。フィルタは `extension === "html"`（`.xml` / `.rss` / `.txt` ルートをスキップ）と `prerender !== false`（ディスク上のアーティファクトを持たない SSR ルートをスキップ）を組み合わせています。`siteUrl` は `ctx.options` から取得します — この plugin の `zfb.config.ts` 内の `options` エントリからそのままコピーされる、プラグイン固有のブロックです。これにより、ソースを編集しなくても同じプラグインモジュールをプロジェクトをまたいで使い回せます。
 
 ```ts
 // plugins/sitemap.ts
@@ -224,9 +224,9 @@ import { join } from "node:path";
 
 export default definePlugin({
   name: "sitemap",
-  postBuild({ outDir, routes }) {
+  postBuild({ outDir, routes, options }) {
     if (!routes) return; // guard: absent on preBuild
-    const siteUrl = "https://example.com";
+    const siteUrl = options.siteUrl as string;
     const htmlRoutes = routes.routes.filter(
       (r) => r.extension === "html" && r.prerender !== false,
     );
@@ -248,9 +248,13 @@ export default definePlugin({
 import { defineConfig } from "@takazudo/zfb/config";
 
 export default defineConfig({
-  plugins: [{ name: "./plugins/sitemap.ts" }],
+  plugins: [
+    { name: "./plugins/sitemap.ts", options: { siteUrl: "https://example.com" } },
+  ],
 });
 ```
+
+`options` はこの `PluginConfig` エントリからそのままコピーされ、`setup`、`preBuild`、`postBuild` のすべてのフックに `ctx.options` として渡されます。型は付いていない（`Record<string, unknown>`）ので、上記のように読み出すフィールドはキャストするか検証してください。
 
 このプラグインは `dist/` が完全に書き出された後に実行されます。生成された HTML ページの隣に作るファイルは、本番では静的アセットとして提供されます。
 
@@ -260,9 +264,37 @@ v1 から変更ありません。`ctx.register(path, handler)` で 1 つ以上�
 
 形については [`ZfbDevMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
 
+### リクエストとレスポンスの契約
+
+`ctx.register(path, handler)` は、URL パスの **プレフィックス** ごとに 1 つのハンドラをインストールします。`/doc-history` への登録は `/doc-history` と `/doc-history/foo` にマッチしますが、`/doc-historyx` にはマッチしません — これは単純な文字列プレフィックスではなく、境界を意識したプレフィックスマッチです。同じ `path` で `register` を 2 回呼び出すと、以前登録したハンドラを **上書き** します。同じパスに 2 つのハンドラを積み重ねる方法はありません。
+
+ハンドラはリクエストを受け取ります。
+
+```ts
+interface ZfbDevMiddlewareRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>; // lower-cased header names -> first value
+  body?: string;                    // absent for GET/HEAD; UTF-8 only (no binary in v1)
+}
+```
+
+そして（`undefined` を返すと、page cache や `/__zfb/livereload.js` など zfb 組み込みの dev ルートにフォールスルーします）レスポンスを返します。
+
+```ts
+interface ZfbDevMiddlewareResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body?: string;
+  bodyEncoding?: "utf8" | "base64"; // set "base64" to return binary content
+}
+```
+
+`body` はデフォルトで UTF-8 文字列です。バイナリペイロードを返すには `bodyEncoding: "base64"` を設定して base64 エンコードしてください。この契約は `previewMiddleware` が使うものと同じです — 次で説明します。
+
 ## `previewMiddleware(ctx)`
 
-`devMiddleware` の `zfb preview`（静的モード）版です（#1542、epic #1541 Preview Parity）。形も、`ctx.register(path, handler)` の呼び出しも、リクエスト／レスポンスのワイヤーフォーマットも同じですが、**モードごとに個別のオプトイン** です。`devMiddleware` しか定義していないプラグインは `zfb preview` の下ではリクエスト時ハンドラを一切持たず、その逆も同様です。両方のモードで使えるようにしたいときは、同じハンドラを両方のフックに登録してください。
+`devMiddleware` の `zfb preview`（静的モード）版です（#1542、epic #1541 Preview Parity）。形も、`ctx.register(path, handler)` の呼び出しも、[リクエストとレスポンスの契約](#リクエストとレスポンスの契約)も同じですが、**モードごとに個別のオプトイン** です。`devMiddleware` しか定義していないプラグインは `zfb preview` の下ではリクエスト時ハンドラを一切持たず、その逆も同様です。両方のモードで使えるようにしたいときは、同じハンドラを両方のフックに登録してください。
 
 ```ts
 // plugins/api-echo.ts
