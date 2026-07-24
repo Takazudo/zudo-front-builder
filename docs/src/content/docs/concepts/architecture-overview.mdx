@@ -1,25 +1,28 @@
 ---
 title: Architecture overview
-description: "Top-down mental model of zfb's runtime stack — the two bundles, what runs where, and why the Hono/Workers shape is the stable contract."
+description: "Top-down mental model of zfb's runtime stack — build-time vs browser JS, what runs where, and why the Hono/Workers shape is the stable contract."
 sidebar_position: -0.5
 category: Concepts
 ---
 
 <Info title="What this page covers">
 
-The two-bundle model, a diagram of the full build-time pipeline, why the worker
-bundle is shaped as a Cloudflare Workers module, and the layering principle that
-keeps esbuild and the JS runtime swappable. For the step-by-step build pipeline,
-read [Build pipeline](./build-pipeline.mdx).
+The build-time-vs-browser JS split, a diagram of the full build-time pipeline,
+why the worker bundle is shaped as a Cloudflare Workers module, and the
+layering principle that keeps esbuild and the JS runtime swappable. For the
+step-by-step build pipeline, read [Build pipeline](./build-pipeline.mdx).
 
 </Info>
 
-zfb produces two kinds of JavaScript output, sends them to two different
-destinations, and uses two different execution environments to get there. Getting
-that split clear in your head first makes the rest of the architecture fall into
-place.
+zfb's JavaScript output splits into two classes by *when and where* it runs: a
+worker bundle that exists only at build time, and browser-shipped output that
+actually reaches end users. The browser class itself has two independent
+members — the island bundle and any client-script bundles — but the split
+that matters architecturally is build-time vs browser, not a fixed count of
+files. Getting that split clear in your head first makes the rest of the
+architecture fall into place.
 
-## The two bundles, two destinations
+## Build-time vs browser: the two classes of output
 
 **Worker bundle — build-time only, never shipped to users.**
 
@@ -44,20 +47,36 @@ same bundle shape also deploys unchanged to Cloudflare Workers for any
 `prerender = false` routes; that production path is covered later in
 this page and in the [SSR guide](../guides/ssr-and-cloudflare-bindings.mdx).)
 
-**Island bundle — shipped to the browser.**
+**Browser output — shipped to end users, as up to two independent bundles.**
 
-Components marked with `"use client"` are a different story. esbuild bundles
-all of them together into a single shared ESM module (`dist/assets/islands-<hash>.js`),
-which lands in `dist/assets/` alongside the HTML files. A single `<script type="module">`
-tag referencing this bundle is injected project-wide on island-bearing builds; the bundle
-calls `mountIslands()` at load time, which hydrates every `[data-zfb-island]` element on
-the page. The island bundle is the *only* JavaScript that ever reaches end users.
+Components marked with `"use client"` are one source of browser JavaScript. esbuild
+bundles all of them together into a single shared ESM module
+(`dist/assets/islands-<hash>.js`), which lands in `dist/assets/` alongside the HTML
+files. A single `<script type="module">` tag referencing this bundle is injected
+project-wide on island-bearing builds; the bundle calls `mountIslands()` at load time,
+which hydrates every `[data-zfb-island]` element on the page.
 
-The distinction matters because the two bundles have completely different
-lifetimes, different execution environments, and different optimization targets.
-Conflating them is the source of most confusion about how zfb works.
+A second, independent mechanism also produces browser JavaScript, with nothing to do
+with island hydration: any file named `<name>.client.<ext>` (`.ts`/`.tsx`/`.js`/`.jsx`)
+under `pages/`, `components/`, or `src/` opts into the **client-script pipeline**
+(`discover_client_scripts` in `crates/zfb-islands/src/client_scripts.rs`). Each
+discovered entry is bundled independently (`build_production_client_scripts`) and
+served from its own stable URL — content-hashed to `/assets/client/<name>-<hash>.js` in
+production. A client script is a plain ESM entry point a page references directly with
+`clientScript("name")`; it does not hydrate a component or participate in the island
+protocol. See [Client Scripts](../guides/client-scripts.mdx) for the full convention.
 
-See [Islands](./islands.mdx) for how to opt in with `"use client"`.
+The island bundle and any client-script bundles together are the *only* JavaScript
+that ever reaches end users — the worker bundle above never does. A project can ship
+an islands bundle, one or more client-script bundles, both, or neither; the two are
+independent of each other.
+
+The distinction that matters is build-time vs browser, not a fixed bundle count.
+Conflating "runs at build time" with "runs in the browser" is the source of most
+confusion about how zfb works.
+
+See [Islands](./islands.mdx) for how to opt in with `"use client"`, and
+[Client Scripts](../guides/client-scripts.mdx) for the `.client.*` convention.
 
 ## What runs where
 
@@ -69,12 +88,14 @@ flowchart TD
         esbuild_worker["esbuild\n(worker bundle)"]
         v8["embedded V8\n(synthetic HTTP requests → HTML)"]
         esbuild_islands["esbuild\n(shared island bundle)"]
+        esbuild_client["esbuild\n(one bundle per .client.* entry)"]
         dist_html["dist/\nHTML files"]
         dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
+        dist_client["dist/assets/client/\n&lt;name&gt;-&lt;hash&gt;.js"]
     end
 
     deploy["Static host\n(any CDN / Cloudflare Workers Static Assets)"]
-    browser["Browser\n(island bundle hydrates via mountIslands())"]
+    browser["Browser\n(islands hydrate via mountIslands(); client scripts run independently)"]
 
     src --> esbuild_worker
     esbuild_worker --> v8
@@ -83,8 +104,12 @@ flowchart TD
     src --> esbuild_islands
     esbuild_islands --> dist_js
 
+    src --> esbuild_client
+    esbuild_client --> dist_client
+
     dist_html --> deploy
     dist_js --> deploy
+    dist_client --> deploy
     deploy --> browser
 ```
 
@@ -135,7 +160,7 @@ Three layers, each with a distinct job:
 | Layer | What it owns | What it does NOT own |
 |-------|-------------|----------------------|
 | **Your source** | Pages, components, content, styles | Build mechanics |
-| **zfb** | The build contract — route table, page props shape, island protocol, `dist/` layout | Which bundler, which JS runtime |
+| **zfb** | The build contract — route table, page props shape, island protocol, client-script pipeline, `dist/` layout | Which bundler, which JS runtime |
 | **Tools** | esbuild (bundling), embedded V8 (build-time evaluation) | Your code's semantics |
 
 zfb owns the contract — what inputs it accepts, what the output looks like, and
@@ -148,5 +173,6 @@ The bundler is the cheap, fast saw. zfb is the carpenter.
 Downstream of the contract:
 
 - [Islands](./islands.mdx) — how `"use client"` opts a component into the island bundle
+- [Client Scripts](../guides/client-scripts.mdx) — how `.client.*` files opt into a second, independent browser bundle
 - [Build engine](../architecture/build-engine.mdx) — how the Rust crates coordinate the pipeline
 - [Incremental rebuild](./incremental-rebuild.mdx) — how the dependency graph keeps dev rebuilds fast

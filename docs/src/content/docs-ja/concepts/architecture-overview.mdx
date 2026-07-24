@@ -1,24 +1,27 @@
 ---
 title: アーキテクチャ概要
-description: zfb のランタイムスタックをトップダウンで捉えるメンタルモデル — 2 つのバンドル、何がどこで動くのか、そしてなぜ Hono/Workers の形が安定したコントラクトなのか。
+description: zfb のランタイムスタックをトップダウンで捉えるメンタルモデル — ビルド時とブラウザの JS、何がどこで動くのか、そしてなぜ Hono/Workers の形が安定したコントラクトなのか。
 sidebar_position: -0.5
 category: Concepts
 ---
 
 <Info title="このページで扱う内容">
 
-2 バンドルモデル、ビルド時パイプライン全体の図、なぜワーカーバンドルが
+ビルド時とブラウザの JS の分割、ビルド時パイプライン全体の図、なぜワーカーバンドルが
 Cloudflare Workers モジュールの形をしているのか、そして esbuild と JS ランタイムを
 差し替え可能に保つレイヤリングの原則。ステップごとのビルドパイプラインについては
 [Build pipeline](./build-pipeline.mdx) を参照してください。
 
 </Info>
 
-zfb は 2 種類の JavaScript 出力を生成し、それらを 2 つの異なる宛先に送り、そこへ
-到達するために 2 つの異なる実行環境を使います。まずこの分割を頭の中で整理しておくと、
-残りのアーキテクチャがすっと腑に落ちます。
+zfb の JavaScript 出力は、*いつ・どこで* 動くかによって 2 つのクラスに分かれます。
+ビルド時にしか存在しないワーカーバンドルと、ブラウザに配信され実際にエンドユーザーに
+届く出力です。ブラウザ側のクラス自体は、アイランドバンドルと任意のクライアントスクリプト
+バンドルという 2 つの独立したメンバーを持ちますが、アーキテクチャ上重要な分割は
+「ビルド時かブラウザか」であって、ファイル数が固定で 2 つということではありません。
+まずこの分割を頭の中で整理しておくと、残りのアーキテクチャがすっと腑に落ちます。
 
-## 2 つのバンドル、2 つの宛先
+## ビルド時とブラウザ: 2 つの出力クラス
 
 **ワーカーバンドル — ビルド時専用、ユーザーには決して配信されません。**
 
@@ -43,19 +46,38 @@ Rust オーケストレーターはこのバンドルを組み込み V8 アイ�
 その本番経路についてはこのページの後半と
 [SSR guide](../guides/ssr-and-cloudflare-bindings.mdx) で扱います。）
 
-**アイランドバンドル — ブラウザに配信されます。**
+**ブラウザ出力 — エンドユーザーに配信される、最大 2 つの独立したバンドル。**
 
-`"use client"` でマークされたコンポーネントは別物です。esbuild はそれらすべてをまとめて
-単一の共有 ESM モジュール（`dist/assets/islands-<hash>.js`）にバンドルし、それは HTML
-ファイルと並んで `dist/assets/` に配置されます。アイランドを含むビルドでは、このバンドルを
-参照する単一の `<script type="module">` タグがプロジェクト全体に注入されます。バンドルは
-読み込み時に `mountIslands()` を呼び出し、ページ上のすべての `[data-zfb-island]` 要素を
-ハイドレートします。アイランドバンドルはエンドユーザーに到達する *唯一* の JavaScript です。
+`"use client"` でマークされたコンポーネントは、ブラウザ JavaScript の 1 つの発生源です。
+esbuild はそれらすべてをまとめて単一の共有 ESM モジュール（`dist/assets/islands-<hash>.js`）
+にバンドルし、それは HTML ファイルと並んで `dist/assets/` に配置されます。アイランドを含む
+ビルドでは、このバンドルを参照する単一の `<script type="module">` タグがプロジェクト全体に
+注入されます。バンドルは読み込み時に `mountIslands()` を呼び出し、ページ上のすべての
+`[data-zfb-island]` 要素をハイドレートします。
 
-この区別が重要なのは、2 つのバンドルがまったく異なるライフタイム、異なる実行環境、異なる
-最適化目標を持つからです。両者を混同することが、zfb の動作についての混乱のほとんどの原因です。
+もう 1 つ、アイランドのハイドレーションとは無関係な、独立した仕組みもブラウザ JavaScript を
+生成します。`pages/`・`components/`・`src/` の下にある `<name>.client.<ext>`
+（`.ts`/`.tsx`/`.js`/`.jsx`）という名前のファイルは、**クライアントスクリプトパイプライン**
+（`crates/zfb-islands/src/client_scripts.rs` の `discover_client_scripts`）にオプトイン
+します。発見された各エントリは独立してバンドルされ（`build_production_client_scripts`）、
+自分自身の安定した URL から配信されます — 本番では `/assets/client/<name>-<hash>.js` に
+コンテンツハッシュ化されます。クライアントスクリプトはページが `clientScript("name")` で
+直接参照するプレーンな ESM エントリポイントであり、コンポーネントをハイドレートしたり
+アイランドプロトコルに参加したりすることはありません。完全な規約については
+[Client Scripts](../guides/client-scripts.mdx) を参照してください。
 
-`"use client"` でオプトインする方法については [Islands](./islands.mdx) を参照してください。
+アイランドバンドルと任意のクライアントスクリプトバンドルを合わせたものが、エンドユーザーに
+到達する *唯一* の JavaScript です — 上記のワーカーバンドルは決して届きません。プロジェクトは
+アイランドバンドル、1 つ以上のクライアントスクリプトバンドル、両方、あるいはどちらもなし、を
+出荷でき、両者は互いに独立しています。
+
+重要な区別は「ビルド時かブラウザか」であって、固定されたバンドル数ではありません。
+「ビルド時に動く」と「ブラウザで動く」を混同することが、zfb の動作についての混乱の
+ほとんどの原因です。
+
+`"use client"` でオプトインする方法については [Islands](./islands.mdx) を、
+`.client.*` の規約については [Client Scripts](../guides/client-scripts.mdx) を
+参照してください。
 
 ## 何がどこで動くのか
 
@@ -67,12 +89,14 @@ flowchart TD
         esbuild_worker["esbuild\n(worker bundle)"]
         v8["embedded V8\n(synthetic HTTP requests → HTML)"]
         esbuild_islands["esbuild\n(shared island bundle)"]
+        esbuild_client["esbuild\n(one bundle per .client.* entry)"]
         dist_html["dist/\nHTML files"]
         dist_js["dist/assets/\nislands-&lt;hash&gt;.js"]
+        dist_client["dist/assets/client/\n&lt;name&gt;-&lt;hash&gt;.js"]
     end
 
     deploy["Static host\n(any CDN / Cloudflare Workers Static Assets)"]
-    browser["Browser\n(island bundle hydrates via mountIslands())"]
+    browser["Browser\n(islands hydrate via mountIslands(); client scripts run independently)"]
 
     src --> esbuild_worker
     esbuild_worker --> v8
@@ -81,8 +105,12 @@ flowchart TD
     src --> esbuild_islands
     esbuild_islands --> dist_js
 
+    src --> esbuild_client
+    esbuild_client --> dist_client
+
     dist_html --> deploy
     dist_js --> deploy
+    dist_client --> deploy
     deploy --> browser
 ```
 
@@ -132,7 +160,7 @@ Hono/Workers のバンドル形を選んだのは、ビルド時と本番の実�
 | レイヤー | 何を所有するか | 何を所有しないか |
 |-------|-------------|----------------------|
 | **あなたのソース** | ページ、コンポーネント、コンテンツ、スタイル | ビルドの仕組み |
-| **zfb** | ビルドコントラクト — ルートテーブル、ページ props の形、アイランドプロトコル、`dist/` のレイアウト | どのバンドラ、どの JS ランタイムか |
+| **zfb** | ビルドコントラクト — ルートテーブル、ページ props の形、アイランドプロトコル、クライアントスクリプトパイプライン、`dist/` のレイアウト | どのバンドラ、どの JS ランタイムか |
 | **ツール** | esbuild（バンドル）、組み込み V8（ビルド時評価） | あなたのコードのセマンティクス |
 
 zfb はコントラクトを所有します。どんな入力を受け付けるのか、出力がどう見えるのか、ビルドを
@@ -144,5 +172,6 @@ zfb はコントラクトを所有します。どんな入力を受け付ける�
 コントラクトの下流:
 
 - [Islands](./islands.mdx) — `"use client"` がどのようにコンポーネントをアイランドバンドルにオプトインさせるのか
+- [Client Scripts](../guides/client-scripts.mdx) — `.client.*` ファイルがどのように 2 つ目の独立したブラウザバンドルにオプトインするのか
 - [Build engine](../architecture/build-engine.mdx) — Rust クレートがどのようにパイプラインを調整するのか
 - [Incremental rebuild](./incremental-rebuild.mdx) — 依存グラフがどのように dev リビルドを高速に保つのか

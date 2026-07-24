@@ -98,7 +98,7 @@ are also documented in `zfb dev --help`.
    for that page. (Boot's initial render and watch-ADD discovery already carry a fresh
    bundle, so the reload step is skipped on those paths — each tick re-bundles at most
    once.)
-2. **CSS pipeline.** When `rerun_css` is true, Tailwind v4 + PostCSS run. If the
+2. **CSS pipeline.** When `rerun_css` is true, Tailwind v4 + lightningcss run. If the
    CSS output is byte-identical to the previous tick, no `Css` event is emitted.
 3. **Islands re-bundle.** When `rerun_islands` is true, the esbuild Go binary
    subprocess is invoked. It bundles every `"use client"` component and writes a

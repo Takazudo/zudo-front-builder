@@ -17,7 +17,7 @@ zfb は、それぞれが 1 つの役割を担う小さな Rust クレート群�
 4. **Dependency graph** — `crates/zfb-graph`。ページとソースの依存関係を追跡します。ウォッチャーが変更を報告すると、グラフは「どのページをリビルドする必要があるか」という 1 つの問いに答えます。
 5. **Build orchestrator** — `crates/zfb-build`。ページ単位の作業を調整し、`atomic_write_string` 経由で出力をアトミックに書き込むため、書き込みの途中で `dist/` が中途半端に壊れた状態になることは決してありません。
 6. **Renderer** — `crates/zfb-render`。SWC で TSX を JS にコンパイルし、得られた ES モジュールを JS ランタイムホスト経由で評価し、ページの `default()` エクスポートを呼び出して HTML 文字列を生成します。コンテンツコレクションのエントリ（`.md` / `.mdx`）は JSX モジュールと同じパイプラインを通してコンパイルされます。レンダラは `mdx://<collection>/<slug>` の specifier を解決し、それらを `entry.Content` としてユーザーページに提供します（[MDX Components](./mdx-components.mdx) を参照）。
-7. **CSS pipeline** — `crates/zfb-css`。必要に応じて Tailwind v4 と PostCSS を実行します。[Styling](./styling.mdx) を参照してください。
+7. **CSS pipeline** — `crates/zfb-css`。必要に応じて Tailwind v4 と lightningcss を実行します。[Styling](./styling.mdx) を参照してください。
 8. **Islands pipeline** — `crates/zfb-islands`。`"use client"` コンポーネントをスキャンし、それらすべてを esbuild 経由で単一の共有 ESM モジュールにバンドルします。加えて、動的 `import()` 呼び出しのためのコード分割チャンクも生成します。[Islands](./islands.mdx) を参照してください。
 9. **Server** — `crates/zfb-server`。dev モード専用。ページキャッシュを静的ファイルとして配信する axum ベースの HTTP サーバーに加え、ブラウザリロードイベント用に `/__zfb/reload` で SSE チャネルを提供します（イベント種別の完全な内訳は [Dev mode lifecycle](./dev-mode-lifecycle.mdx) を参照）。
 
@@ -48,9 +48,13 @@ CLI → Router → Watcher → Build orchestrator → Renderer → CSS pipeline 
 
 ## プレビュー: `zfb preview`
 
-`zfb preview` は 3 つのコマンドの中で最もシンプルです。既存の `dist/` ディレクトリを `:4321`
-で静的ファイルとして配信します。レンダリングもウォッチングもリビルドもありません。デプロイ前に
-本番ビルドをローカルで確認できるように存在しています。
+`zfb preview` には 2 つのモードがあります。デフォルト（adapter 未設定、または `adapter: "none"`）
+では、既存の `dist/` ディレクトリを `:4321` で静的ファイルとして配信します。レンダリングも
+ウォッチングもリビルドもありません。デプロイ前に本番ビルドをローカルで確認できるように
+存在しています。プロジェクトが Cloudflare アダプタ（`adapter: "@takazudo/zfb-adapter-cloudflare"`）
+を設定している場合は、代わりに `wrangler dev` に処理を委譲します。これにより出力された
+`dist/_worker.js` がローカルで実行され、`prerender = false` のルートは静的ファイルとしてではなく、
+実際の Worker ランタイムを通してレンダリングされます。
 
 ## なぜ分割するのか
 
