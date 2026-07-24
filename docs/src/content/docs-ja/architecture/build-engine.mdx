@@ -54,6 +54,19 @@ zfb はオーケストレーション、依存グラフ、ページ単位のコ�
 
 この構造により、各ツールのトレイト境界より上のクレートは、ツールが変わっても影響を受けません。`ClientBundler` のコントラクトについては [Islands](../concepts/islands.mdx) を、依存グラフがどのようにページ単位のポリシーへ供給されるかについては [Incremental rebuild](../concepts/incremental-rebuild.mdx) を参照してください。
 
+## シャドウステージング: バンドラーが esbuild に一貫したツリーを渡す仕組み
+
+サーバーサイドのワーカーバンドル向けに esbuild が走る前に、`zfb-build` のバンドラー（`crates/zfb-build/src/bundler.rs`）は **シャドウツリー** を実体化します。これはプロジェクトのソースルート（`pages/`・`content/`・`components/`・`layouts/`）の一時的なコピーで、プロジェクト自身のディレクトリ構造をそのまま反映するため、相対 import は変更なしで解決されます。各 `.mdx` ファイルはその場で JSX 出力にコンパイルされ、`.mdx` 拡張子は保持されるため esbuild の `--loader:.mdx=jsx` がそのまま適用され、フレームワークのハイドレーションシムもそれらと並んで実ファイルとして実体化されます。
+
+シャドウルートには 2 つの合成ファイルが置かれます。
+
+- **合成された `tsconfig.json`。** バンドラーはユーザーの tsconfig パスエイリアス（すでにプロジェクト自身の `extends` チェーンに対して解決済み）をシャドウツリー向けにリベースします — `rebase_tsconfig_paths_to_shadow` — その後 `write_synthetic_tsconfig` で結果を書き込みます。esbuild は `--tsconfig=` 経由でこのファイルを読み、プロジェクトのエイリアス（`@/components/foo` → `./components/foo`）を解決します。そのため、エイリアス付き import は esbuild がライブツリーから読んでもシャドウコピーから読んでも同じように振る舞います。
+- **合成された `entry.mjs`。** シャドウの `pages/` 配下で見つかったすべてのページモジュール、ハイドレーションシム、そして `@takazudo/zfb-runtime/server` の `createPageRouter` を import し、`routes` マップと esbuild がバンドルする Workers スタイルの `default { fetch }` エントリを再エクスポートします。
+
+**`--preserve-symlinks` と `node_modules` シンボリックリンク。** デフォルトでは、MDX 以外のソースファイルはコピーではなくライブファイルへのシンボリックリンクとしてシャドウツリーに配置されます — 安価であり、esbuild はそれを透過的に読み取ります。`copy_mode`（シンボリックリンクの代わりに実コピー）が発動するのは、esbuild が `--preserve-symlinks` **なし** で動く唯一の構成、すなわち tsconfig パスが空でないワークスペースプロジェクトのときだけです。この場合、esbuild はシンボリックリンクされたソースをライブツリーへカノニカライズしてしまい、`import.meta.glob` 展開のようなシャドウ専用の変換が見えなくなってしまいます。それとは別に、呼び出し側が `node_modules_dir`（例: pnpm ワークスペースの `<workspace-root>/node_modules/.pnpm/node_modules`）を設定している場合、バンドラーは `<shadow>/node_modules` シンボリックリンクを作成し、esbuild がシャドウツリーの内側からワークスペースパッケージを解決できるようにします。`--preserve-symlinks` は、解決中に esbuild をライブパスへカノニカライズして戻すのではなく、`<shadow>/node_modules/<pkg>` シンボリックリンクに留めます — esbuild は、解決済みパスに `node_modules` セグメントを含むあらゆるインポーターについて `tsconfig.json` の探索をスキップするため、このアンカーを失うと、ワークスペースパッケージの内部に書かれた import のエイリアス解決が静かに壊れてしまいます（このフラグが存在する理由となった回帰については issue #443 / #450 を参照してください）。
+
+すべてのバンドル後に、esbuild 自身のメタファイルに対して fail-closed な **ステージエスケープ監査** が実行されます。ある入力が、ステージされたスペリングを一切持たずにシャドウツリーの外にあるライブなファーストパーティソースへ解決された場合、あるいはライブなワークスペースのシブリングへエスケープする `node_modules` シンボリックリンクへ解決された場合、ビルドをハードエラーにします。シャドウツリー自体はビルド時専用の成果物です。バンドルが書き出されると破棄され、`dist/` 内の何もそれの存在に依存しません。
+
 ## V8 モードのゲート: `output` と自動検出
 
 `zfb-render` は、デフォルトで有効な `embed_v8` cargo フィーチャーの背後に組み込み V8 ホストを公開します。ビルドエンジンはすべてのビルドの開始時に、デプロイ成果物が V8 を備えたランタイムを構造の一部として前提とするかどうか（`V8Mode` の判定）を決定し、設定とルートテーブルが食い違う場合には明確なエラーを表示します。
@@ -103,7 +116,7 @@ zfb はオーケストレーション、依存グラフ、ページ単位のコ�
 
 dev サーバー（`zfb-server`）は、オーケストレーターの出力の上に乗る薄い読み手です。`PageCache`（URL パスからレンダリング済み HTML へのマップで、レンダリングごとに更新される）、`ReloadEvent` 値の `tokio::sync::broadcast` チャンネル、そしてキャッシュ・`dist/assets/`・`public/`・`/__zfb/reload` の SSE エンドポイントを配信する `axum` ルーターを所有します。
 
-配線箇所は `zfb-server` の `livereload.rs` にある `outcome_to_events` です。noop でないすべての `BuildOutcome` は `ReloadEvent` に変換されてブロードキャストされます。CSS のみの変更は `css` イベントを発し、ブラウザはクライアントの状態を失うことなくスタイルシートを差し替えます。それ以外はすべて `page` イベントを発し、`location.reload()` をトリガーします。
+配線箇所は `zfb-server` の `livereload.rs` にある `outcome_to_events` です。noop でないすべての `BuildOutcome` は `ReloadEvent` の 3 つのバリアントのうち 1 つ以上に変換され、ブロードキャストされます。CSS のみの変更は `Css` イベントを発し、ブラウザはクライアントの状態を失うことなくスタイルシートをインプレースで差し替えます。共有アイランドバンドルが変わった場合は `Islands` イベントを発し、ブラウザは新しいバンドルを動的インポートしてハイドレーションをやり直します。それ以外はすべて `Page` イベントを発し、`location.reload()` をトリガーします。イベント種別の完全な内訳と、どの編集シナリオがどのイベントを発火させるかについては [Dev mode lifecycle](../concepts/dev-mode-lifecycle.mdx#3-つの-sse-イベント種別) を参照してください。
 
 ### `prerender = false` ルート向けのリクエスト時 SSR
 
