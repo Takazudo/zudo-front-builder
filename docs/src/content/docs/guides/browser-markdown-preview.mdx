@@ -400,6 +400,18 @@ assets/islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs
 assets/islands-resource-zfb_md_wasm_bg-<hash>.wasm
 ```
 
+The [`./highlight` subpath](#bundle-size) declares its own, separate pair of
+resources instead — `zfb_md_wasm_highlight_glue.zfb-resource.mjs` and
+`zfb_md_wasm_highlight_bg.wasm` — hashed the same way:
+
+```text
+assets/islands-resource-zfb_md_wasm_highlight_glue.zfb-resource-<hash>.mjs
+assets/islands-resource-zfb_md_wasm_highlight_bg-<hash>.wasm
+```
+
+Importing both `@takazudo/zfb-md-wasm` and `@takazudo/zfb-md-wasm/highlight`
+in the same bundle loads both wasm artifacts — pick one entry per bundle.
+
 To keep them out of the initial page load, dynamically import the root only
 from a user action. The first public API call then fetches the glue and wasm:
 
