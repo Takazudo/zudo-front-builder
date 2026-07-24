@@ -38,7 +38,7 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `outDir?: string` — output directory used by build and preview; dev treats it as a read-only prebuilt seed rather than a live-output directory. Default: `"dist"`. An explicit `--outdir` overrides it for build and preview.
 - `publicDir?: string` — static assets directory, copied verbatim. Default: `"public"`.
 - `host?: string` — dev/preview server bind host.
-- `port?: number` — dev/preview server port.
+- `port?: number` — dev/preview server port. The built-in fallback differs per command when this is omitted: `zfb dev` falls back to `3000`, `zfb preview` falls back to `4321`. Setting `port` here overrides both commands' fallback; the CLI `--port` flag in turn overrides this config value. See [CLI Reference](./cli.mdx).
 - `allowedHosts?: string[]` — Host header values the dev/preview server accepts when bound to a non-localhost interface (mirrors Vite's `server.allowedHosts`). Only consulted for non-loopback binds; `localhost`, the explicitly bound host, and any IP-literal Host (`127.0.0.1`, `[::1]`, the LAN URLs the startup banner prints) are always allowed — DNS rebinding needs a DNS name, so raw IPs are safe. Entries match exactly (case-insensitive, request port stripped); a leading-dot entry like `".example.com"` also matches subdomains.
 - `framework?: "preact" | "react"` — JSX framework runtime. Default: `"preact"`.
 - `collections?: CollectionDef[]` — content collections. Each entry has:
@@ -62,8 +62,20 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
 - `copyPublicWithBase?: boolean` — whether `public/` assets are copied under the `base` sub-path segment (default `true`) or flat to the `dist/` root (`false`). Set `false` when the deploy pipeline relocates the entire `dist/` tree into the base path (e.g. `cp -a dist/. deploy-root/pj/site/`) to avoid a double-nested `dist/<base>/<base>/...` path. See [Static Assets — flat copy for deploy-relocation pipelines](../concepts/static-assets.mdx).
 - `stripMdExt?: boolean` — strip `.md`/`.mdx` extensions from internal link hrefs during MDX compilation and append a trailing `/`. Default: `false`.
 - `trailingSlash?: boolean` — append a trailing `/` to extensionless absolute hrefs when rewriting base paths. Default: `false`.
-- `markdown?: MarkdownConfig` — Markdown/MDX parsing options (e.g. GFM toggle). See the [Markdown Features](../markdown-features/index.mdx) section.
-- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — markdown link resolver settings. Enable to rewrite `[label](./other.mdx)` links to their rendered route URLs. Extensionless (`./other`) and directory-style (`other/`) targets resolve too, probing `{name}.mdx` → `{name}.md` → `{name}/index.mdx` → `{name}/index.md`. Relative targets resolve from the source file's directory; a directory-style link written from a non-index page against its rendered URL (which sits one directory deeper — `../sibling/` from `section/article.mdx`) resolves via a URL-space fallback when every file-space candidate misses.
+- `markdown?: MarkdownConfig` — Markdown/MDX parsing options. Fields:
+  - `gfm?: GfmFlag` — GFM construct toggles (strikethrough, table, autolinks, and more). See [GFM](../markdown-features/gfm.mdx).
+  - `toc?: { heading?: string; maxDepth?: number }` — inserts a table of contents after the first heading matching `heading` (default `"TOC"`), up to `maxDepth` levels (default `2`). Wires the same underlying plugin and config shape as `markdown.features.headingMarkerToc`, documented at [Heading-marker TOC](../markdown-features/heading-marker-toc.mdx).
+  - `externalLinks?: { target?: string; rel?: string[] }` — annotates external `<a>` elements with `target`/`rel`. See [External links](../markdown-features/external-links.mdx).
+  - `cjkFriendly?: boolean` — CJK-friendly emphasis and autolink-boundary handling. Default `true` (on). See [CJK-friendly emphasis](../markdown-features/cjk-friendly.mdx).
+  - `hardBreaks?: boolean` — convert soft line breaks into `<br>`. Default `false` (off). See [Hard breaks](../markdown-features/hard-breaks.mdx).
+  - `features?: MarkdownFeaturesConfig` — per-feature opt-in toggles (mermaid, directives, code enrichment, reading time, and more). See the [Markdown Features](../markdown-features/index.mdx) feature map.
+- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — markdown link resolver settings. Enable to rewrite `[label](./other.mdx)` links to their rendered route URLs. Extensionless (`./other`) and directory-style (`other/`) targets resolve too, probing `{name}.mdx` → `{name}.md` → `{name}/index.mdx` → `{name}/index.md`. Relative targets resolve from the source file's directory; a directory-style link written from a non-index page against its rendered URL (which sits one directory deeper — `../sibling/` from `section/article.mdx`) resolves via a URL-space fallback when every file-space candidate misses. Fields:
+  - `enabled?: boolean` — must be set to `true` for anything to happen. Default `false`: the resolver does nothing and links pass through unchanged.
+  - `docsDir?: string` — legacy single-directory form. Scanned against a hard-coded `/docs/` route prefix. Ignored once `dirs` is non-empty.
+  - `dirs?: { dir: string; routePrefix: string }[]` — explicit per-directory source map (e.g. EN docs at `src/content/docs/` → `/docs/`, JA docs at `src/content/docs-ja/` → `/ja/docs/`). Takes precedence over `docsDir` and is required for any project with more than one docs root (locale mirrors).
+  - `onBrokenLinks?: "warn" | "error" | "ignore"` — what to do when a `.md`/`.mdx` link cannot be resolved. Default `"warn"` (emits a warning, build continues).
+
+  See [Resolve links](../markdown-features/resolve-links.mdx) and the [Markdown Features](../markdown-features/index.mdx) feature map for the full behavior.
 - `emitRoutesManifest?: boolean` — whether `zfb build` writes the post-build route manifest to `<outDir>/__zfb/routes.json`. Default: `true` (emit). Set `false` to suppress.
 - `extraWatchPaths?: string[]` — extra absolute filesystem paths the dev watcher follows in addition to the in-project source roots. See [Watching paths outside the project root](#watching-paths-outside-the-project-root).
 
@@ -101,6 +113,76 @@ These values apply to islands, client scripts, their module workers, and the
 page/SSR bundle. zfb does not synthesize other `import.meta.env.*` keys. The
 three keys in the table are reserved and cannot be overridden through
 `bundle.define`.
+
+### `bundle.exclude`, `bundle.mainFields`, `bundle.external`
+
+The page/SSR pass bundles with esbuild's `--platform=neutral`, which is
+deliberately minimal: its `main-fields` resolution list is empty by default,
+and it rejects packages that resolve only through a CJS-only `require()`
+path. These three fields are escape hatches for CJS-only dependencies that
+reach the neutral pass — either directly imported or newly pulled in by an
+eager `import.meta.glob(...)` expansion. All three are absent/empty by
+default, which is byte-identical to a build without this knob.
+
+`bundle.exclude` — project-relative glob patterns (gitignore-style, matched
+in POSIX form against the path relative to the project root) for source
+files the bundler must never pull into the esbuild graph. A matched file is
+neither staged into the shadow tree nor expanded by an eager
+`import.meta.glob(...)`. Unrelated to `CollectionDef.exclude` (content
+filtering, not bundling).
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    exclude: ["components/**/*.stories.tsx"],
+  },
+});
+```
+
+Before: a route's `import.meta.glob("./components/**/*.tsx")` picks up
+`Button.stories.tsx`, which imports a CJS-only test-mocking package, and the
+neutral-platform build fails to resolve it. After: the glob skips
+`*.stories.tsx` files entirely and the build succeeds.
+
+`bundle.mainFields` — an explicit esbuild `--main-fields` list for the
+neutral pass. Setting e.g. `["main", "module"]` lets a dependency that ships
+only `main`/`module` (no `exports` map) resolve, since `neutral` otherwise
+consults no main-fields at all.
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    mainFields: ["main", "module"],
+  },
+});
+```
+
+Before: `The "main" field here was ignored. Main fields must be configured
+explicitly when using the "neutral" platform.` After: esbuild consults
+`main` then `module` and resolves the dependency.
+
+`bundle.external` — bare specifiers to mark `--external` for the neutral
+pass, so esbuild leaves them unbundled instead of trying to resolve them.
+The other escape hatch for a CJS-only dependency that `mainFields` alone
+can't satisfy. Appended to the framework-provided externals.
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    external: ["some-cjs-only-package"],
+  },
+});
+```
+
+Before: esbuild tries to resolve `some-cjs-only-package` under
+`--platform=neutral` and fails. After: esbuild marks the bare import
+external instead of resolving it.
 
 ### `bundle.loaders`
 
