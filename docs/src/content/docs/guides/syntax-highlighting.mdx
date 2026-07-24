@@ -30,6 +30,44 @@ site. See [Class mode (recommended)](#class-mode-recommended) below.
 
 </Tip>
 
+## Recognized languages
+
+A fenced code block's language tag resolves through zfb's alias table onto one
+of syntect's bundled Sublime Text–compatible grammars, plus one grammar zfb
+adds itself (`TOML` — syntect does not bundle it). The mapped tags:
+
+| Tag(s) | Grammar |
+|---|---|
+| `ts`, `typescript`, `tsx` | JavaScript (see note below) |
+| `js`, `javascript`, `jsx` | JavaScript |
+| `rs`, `rust` | Rust |
+| `py`, `python` | Python |
+| `sh`, `bash`, `zsh` | Bash (Bourne Again Shell) |
+| `md`, `markdown`, `mdx` | Markdown |
+| `yaml`, `yml` | YAML |
+| `json` | JSON |
+| `c` | C |
+| `cpp`, `c++` | C++ |
+| `go` | Go |
+| `toml` | TOML |
+| `html` | HTML |
+| `css` | CSS |
+
+<Note>
+
+**`ts`/`tsx` are highlighted via the JavaScript grammar.** syntect's bundled
+syntax set has no usable TypeScript/TSX grammar it can load — every
+redistributable source zfb evaluated ships either an unsupported file format
+or relies on an `extends:` inheritance mechanism syntect does not implement
+(see `crates/zfb-content/assets/syntaxes/README.md` for the full sourcing
+investigation). Both tags fall through to JavaScript highlighting instead of
+the plain unhighlighted fallback.
+
+</Note>
+
+A tag not in this table falls back to the themed no-highlight path described
+above — the code is preserved and escaped, just without token colouring.
+
 ## Customising the theme (built-in themes)
 
 The simplest way to change the colour scheme is to pick one of syntect's

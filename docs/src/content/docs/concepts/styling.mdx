@@ -9,7 +9,9 @@ Styling in zfb has two layers — global CSS and Tailwind v4 — and one well-su
 
 ## Global CSS
 
-The default template ships with `styles/global.css`. This is plain CSS, processed by zfb's CSS pipeline, and made available to every page. Use it for design tokens, resets, base typography, and anything else that should apply site-wide:
+The default template ships with `styles/global.css`. This is plain CSS, processed by zfb's CSS pipeline, and made available to every page. Use it for design tokens, resets, base typography, and anything else that should apply site-wide.
+
+zfb resolves the global stylesheet from either `styles/global.css` or `src/styles/global.css` — the top-level `styles/global.css` wins if both exist. The `src/styles/` fallback exists for projects that organise sources under `src/` (a common Vite/Astro/Next-style layout).
 
 ```css
 :root {
@@ -41,7 +43,7 @@ Tailwind v4 is opt-in via `zfb.config.{ts,json}`:
 
 When enabled, the `zfb-css` crate runs the bundled `tailwindcss-v4` binary as part of the build. There is **no per-project Tailwind install** — you do not add `tailwindcss` to `package.json` and you do not maintain a `tailwind.config.js`. The compiler is built into zfb itself.
 
-Once Tailwind is on, utility classes work in any `.tsx` file:
+Once Tailwind is on, utility classes work in `.tsx` files under the scanned content roots (see [Where Tailwind looks](#where-tailwind-looks) below):
 
 ```tsx
 export default function Hero() {
@@ -54,6 +56,10 @@ export default function Hero() {
 ```
 
 Tailwind v4's CSS-first configuration is supported through `@theme` directives in `global.css` — you customise tokens by editing CSS, not a JS config file.
+
+### Where Tailwind looks
+
+Tailwind's `@source` content scan covers five default roots, resolved against the project root: `pages/`, `components/`, `layouts/`, `content/`, and `src/`. A utility class has to actually appear in a file under one of these directories to be picked up — a class used only in a file outside all five is not scanned, so it silently never reaches the emitted stylesheet (a green build, but the class has no styles).
 
 Setting `tailwind: { enabled: false }` switches to an `AuthoredCssEngine` that passes
 your authored `styles/global.css` through verbatim — no Tailwind `@import`, no utility
@@ -121,6 +127,15 @@ Limitations:
 - CSS Modules imported by **bare specifier** from `node_modules` (e.g. `import s from "@org/pkg/x.module.css"`) are not scoped — only project-relative `./` / `../` imports are.
 - The `:export` block and `composes` directive are not supported; use plain class selectors.
 
+## Monorepo / workspace-sibling packages
+
+In a pnpm-workspace-style monorepo, a sibling package reached only through a tsconfig path alias (not a plain relative import) is still picked up by the CSS pipeline:
+
+- The sibling's own `*.module.css` files join the same CSS Modules scan as project-local files, so their scoped class names resolve the same way as any other module.
+- The sibling's source files also feed Tailwind's `@source` content scan, so utility classes used only inside the sibling package are generated too — not silently dropped.
+
+The aliased target becomes a "mirror root": the CSS pipeline treats a claimed workspace-sibling directory the same way it treats `pages/`, `components/`, and the other scanned roots described in [Where Tailwind looks](#where-tailwind-looks) above.
+
 ## What lands in `dist/`
 
-The build pipeline runs Tailwind and PostCSS, writes a hashed stylesheet to `dist/assets/`, and injects a `<link rel="stylesheet">` into each rendered HTML page. The stylesheet reference is stable so CDN caches can hold it across deployments until the content changes.
+The build pipeline runs Tailwind v4 and lightningcss, writes a hashed stylesheet to `dist/assets/`, and injects a `<link rel="stylesheet">` into each rendered HTML page. The stylesheet reference is stable so CDN caches can hold it across deployments until the content changes.

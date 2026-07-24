@@ -144,10 +144,11 @@ dev サーバーの `serve_page` フォールバックも、ビルド時の `cop
 # public/_redirects
 /old-page /new-page 301
 /blog/* /articles/:splat
+/blog/:slug /articles/:slug 301
 /api/* /api-handler 200
 ```
 
-- `source` には単一の splat（`*`、ターゲット側では `:splat` としてキャプチャされます）と、任意個の `:name` プレースホルダーセグメントを含められます。
+- `source` には単一の splat（`*`、ターゲット側では `:splat` としてキャプチャされます）と、任意個の `:name` プレースホルダーセグメントを含められます。各 `:name` セグメント（上記の `:slug` など）はパスセグメントを 1 つだけキャプチャし、`target` 側でも同じ名前で再利用されます。
 - `status` は省略可能で、デフォルトは **302** です。`301`/`302`/`303`/`307`/`308` はクライアントをリダイレクトし、`200` は **リライト** します — ブラウザの URL を変えずに `target` のコンテンツを配信します（同一サイト向けターゲットのみの軽量なリバースプロキシ）。
 - ルールは **ファイルに書かれた順に** 試され、最初に一致した `source` が勝ちます。`200` のリライトは一度だけ解決されます — そのターゲットがルールセットに対して再度マッチングされることはありません（チェーンなし）。
 - 評価されるのは `GET`/`HEAD` リクエストだけです。これは実際の Workers Static Assets がアセット層（したがって `_redirects`）をこの2つのメソッドに対してしかプローブしない挙動を反映しています。それ以外のメソッドは `_redirects` を完全にバイパスします。
@@ -172,6 +173,21 @@ export default defineConfig({
 ```
 
 デフォルト: `"public"`。パスはプロジェクトルートからの相対で解決されます。ディレクトリが存在しない場合は黙って no-op になります。すべてのプロジェクトに必要なわけではありません。
+
+### デプロイ再配置パイプライン向けのフラットコピー
+
+デプロイパイプラインが `dist/` ツリー全体を base のサブパス配下に再配置する場合 — 例えば `cp -a dist/. deploy-root/pj/site/` を実行するようなワークフロー — public アセットを `dist/<base>/...` の下に置いてしまうと、二重にネストしたパス（`deploy-root/pj/site/pj/site/img/logo.svg`）ができてしまいます。`copyPublicWithBase: false` を設定すると、public アセットは代わりに `dist/` のルートへフラットにコピーされます。
+
+```ts
+export default defineConfig({
+  base: "/pj/site/",
+  copyPublicWithBase: false,
+});
+```
+
+この設定では `public/img/logo.svg` は `dist/img/logo.svg` に配置されます。`cp -a dist/. deploy-root/pj/site/` のあとは `deploy-root/pj/site/img/logo.svg` に到達し、`/pj/site/img/logo.svg` として配信されます — これはページが `withBase()` 経由で参照するのと同じ URL で、二重ネストは起きません。
+
+**`zfb preview` の注意点:** `copyPublicWithBase: false` の場合、`zfb preview` では base プレフィックス付きの public アセット URL が 404 になります。フラットコピーは dist のルートに存在し、`zfb preview` はデプロイ側の再配置をシミュレートしないためです。これはフラットコピー方式が持つ想定内のトレードオフであり、本番デプロイには影響しません。
 
 ## `public/` に入れないもの
 

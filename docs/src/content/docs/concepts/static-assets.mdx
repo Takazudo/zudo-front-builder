@@ -152,10 +152,11 @@ Drop a `public/_redirects` file to declare redirect and rewrite rules, following
 # public/_redirects
 /old-page /new-page 301
 /blog/* /articles/:splat
+/blog/:slug /articles/:slug 301
 /api/* /api-handler 200
 ```
 
-- `source` may contain a single splat (`*`, captured as `:splat` in the target) and any number of `:name` placeholder segments.
+- `source` may contain a single splat (`*`, captured as `:splat` in the target) and any number of `:name` placeholder segments — each `:name` segment (e.g. `:slug` above) captures exactly one path segment and is reused in `target` under the same name.
 - `status` is optional and defaults to **302**. `301`/`302`/`303`/`307`/`308` redirect the client; `200` **rewrites** — it serves `target`'s content without changing the browser's URL (a lightweight reverse-proxy, same-site targets only).
 - Rules are tried **in file order**; the first matching `source` wins. A `200` rewrite resolves once — its target is never re-matched against the rule set (no chaining).
 - Only `GET`/`HEAD` requests are evaluated, mirroring real Workers Static Assets (which only ever probes the asset layer — and therefore `_redirects` — for those two methods). Any other method bypasses `_redirects` entirely.
