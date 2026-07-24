@@ -132,7 +132,9 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 - `_worker.js` + `_zfb_inner.mjs` — the Worker entry (a thin wrapper
   plus the bundled SSR routes) that serves your `prerender = false`
   routes, and
-- `x-<hash>.wasm` files for every Wasm module imported by the SSR bundle,
+- `<name>-<hash>.wasm` files for every Wasm module imported by the SSR
+  bundle (e.g. `index_bg-a1b2c3d4.wasm` — this is esbuild's own
+  `--asset-names=[name]-[hash]` convention, not a zfb-specific scheme),
   plus `.assetsignore`. The ignore file lists `_worker.js`,
   `_zfb_inner.mjs`, and every emitted Wasm basename, so the asset server
   never serves server code or compiled modules as public files (a request
@@ -142,7 +144,10 @@ You deploy this `dist/` as a **Cloudflare Worker with Static Assets**
 via `wrangler deploy`, driven by a `wrangler.toml` at your project root
 that points `main` at `dist/_worker.js` and hands the rest of `dist/` to
 the built-in asset server. The Worker handles dynamic routes; the asset
-server handles everything else.
+server handles everything else — including a `public/_redirects` file,
+if your project has one; see
+[Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-redirect-rewrite-rules)
+for the supported rule syntax.
 
 <Warning title="Cloudflare Pages advanced mode is unverified">
 
@@ -167,6 +172,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [assets]
 directory = "./dist"
+binding = "ASSETS" # lets the Worker probe assets itself — see below
 not_found_handling = "404-page"
 ```
 
@@ -176,6 +182,15 @@ not_found_handling = "404-page"
   warning below.
 - `[assets] directory = "./dist"` hands your static output to the
   built-in asset server.
+- `[assets] binding = "ASSETS"` is **recommended**: it exposes
+  `env.ASSETS` to the emitted `_worker.js`, which probes it directly for
+  GET/HEAD requests ahead of your SSR routes (`canDelegateToAssets()` in
+  `worker-wrapper.mjs` no-ops the probe when this binding is absent). See
+  [SSR on a Worker — the in-Worker `env.ASSETS` probe is not dead
+  code](../concepts/ssr-on-a-worker.mdx#the-in-worker-env-assets-probe-is-not-dead-code)
+  for why the probe still matters even though the platform's own asset
+  router already serves most hits under the default
+  `run_worker_first = false`.
 - `not_found_handling = "404-page"` is **recommended**: unmatched asset
   paths fall through to the Worker, which serves your `pages/404.tsx`
   and any dynamic `prerender = false` route.
@@ -188,6 +203,59 @@ silently breaks dynamic routes like `pages/api/*.tsx`. Use `404-page` so
 unmatched paths reach the Worker.
 
 </Warning>
+
+### Styled 404 vs a route's own 404
+
+With `not_found_handling = "404-page"` and `[assets] binding = "ASSETS"`
+both set, an unmatched path can produce two different 404 responses
+before the client sees one: the asset layer's styled `dist/404.html`
+(built from `pages/404.tsx`), and whatever the inner Worker itself
+returns for that same miss. `_worker.js` picks between them with a fixed
+precedence:
+
+1. The inner Worker returns a **non-404** — a genuinely dynamic route
+   matched — and that response wins outright.
+2. The inner Worker **also** 404s, but with only the framework's generic
+   not-found body (Hono's default `text/plain` "404 Not Found", or a bare
+   404 with no `content-type`) — the **styled `dist/404.html` wins**, so
+   visitors see your designed page instead of plain text.
+3. The inner Worker 404s with **any other `content-type`** — that
+   response is deliberate and is returned unchanged: a `text/html` 404 is
+   a `prerender = false` route rendering its own not-found page, and an
+   `application/json` 404 is an intentional machine-readable API error.
+
+If you hand-write a `prerender = false` route that returns its own 404s
+(an API endpoint, say), set `content-type: application/json` on them — a
+bare `text/plain` 404 is indistinguishable from the framework default and
+yields to the styled page. Under `not_found_handling = "none"` the asset
+404 carries no styled body, so the inner Worker's 404 is always shown.
+
+### Running the Worker before assets (`run_worker_first`)
+
+Every example on this page assumes the zfb default,
+`run_worker_first = false`: the platform's edge asset router serves a
+matching static file before `_worker.js` ever runs (see
+[SSR on a Worker — the dispatch flow](../concepts/ssr-on-a-worker.mdx#the-dispatch-flow)
+for the full mental model). Setting `run_worker_first = true` inverts
+that — every request, including hits on prerendered static pages, reaches
+the Worker first:
+
+```toml
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
+```
+
+The cost: every request now pays for a Worker invocation, even the ones
+that used to be served for free straight off the edge — there is no more
+"static hits never touch the Worker" fast path. Reach for this only when
+a route genuinely needs to run ahead of static serving. The canonical
+case is a **password/session gate**: an SSR route checks a cookie on
+every request — including ones for prerendered pages — and redirects to
+a login page before the asset layer ever serves the protected content
+(see the [`password-gate` example](./examples.mdx), which does exactly
+this).
 
 <Warning title="compatibility_flags = ['nodejs_compat'] is mandatory">
 
@@ -448,6 +516,63 @@ semantics differ, and the deeper details are out of scope here.
 
 </Note>
 
+## Reading a KV namespace (`env.MY_KV`)
+
+[Workers KV][kv] is Cloudflare's eventually-consistent key-value store. A
+KV binding is exposed on `env` exactly like D1 above — the adapter does
+not treat it specially:
+
+```tsx
+// pages/api/greeting.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+interface Env {
+  // `KVNamespace` comes from `@cloudflare/workers-types`.
+  MY_KV: KVNamespace;
+}
+
+export default async function Greeting() {
+  const { env } = getCloudflareContext<Env>();
+  const stored = await env.MY_KV.get("greeting");
+  return new Response(stored ?? "no greeting set yet");
+}
+```
+
+Writes use `.put()`:
+
+```tsx
+await env.MY_KV.put("greeting", "hello from KV");
+```
+
+`.get(key, "json")` parses a value stored with `JSON.stringify(...)` back
+into an object.
+
+## Wiring up the KV binding
+
+Like D1, a KV namespace is bound through `wrangler.toml`. The binding
+**name** (`MY_KV` below) is the property you read on `env`:
+
+```toml
+# wrangler.toml — add alongside the [assets] block above
+[[kv_namespaces]]
+binding = "MY_KV"   # → env.MY_KV inside the Worker
+id = "<namespace-id>" # printed by `wrangler kv namespace create`
+```
+
+1. **Create the namespace** — `wrangler kv namespace create MY_KV`. This
+   prints the namespace `id`; paste it into `wrangler.toml`.
+2. **Read and write** — `env.MY_KV.get(...)` / `.put(...)` as shown above.
+3. **Deploy** — `zfb build`, then `wrangler deploy`.
+
+Every other binding — R2 buckets, Workers AI, the Cache API, Durable
+Objects, service bindings — reaches an SSR route the exact same way:
+declare it in `wrangler.toml`, add its type to your `Env` interface, and
+read it off `env` inside `getCloudflareContext()`. See the
+[Examples](./examples.mdx) index for standalone KV, Workers AI, and
+reverse-proxy recipes.
+
 ## Local development
 
 <Tip title="A working end-to-end example">
@@ -611,3 +736,4 @@ behaviour as a black box we don't have to re-implement.
 
 [als]: https://nodejs.org/api/async_context.html
 [d1]: https://developers.cloudflare.com/d1/
+[kv]: https://developers.cloudflare.com/kv/
