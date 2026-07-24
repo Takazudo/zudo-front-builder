@@ -17,7 +17,7 @@ sidebar_position: 2
 以下が必要です。
 
 - **Node.js ≥ 22** — npm CLI ラッパーと、`zfb check` を支える `tsc` サブプロセスに必要です。デフォルトの TypeScript 設定ローダー自体は Node ではなく、zfb の組み込み V8 ランタイム内で動きます。
-- **pnpm ≥ 11** — [公式インストーラー](https://pnpm.io/installation) からインストールしてください。zfb は pnpm を使うプロジェクトをスキャフォールドし、`PATH` 上に pnpm が見つかる場合は `pnpm install` を自動で実行します。
+- **pnpm ≥ 10** — [公式インストーラー](https://pnpm.io/installation) からインストールしてください。これは公開されている `@takazudo/zfb` パッケージの `engines` フィールドで宣言されている最小バージョンと一致します。zfb は pnpm を使うプロジェクトをスキャフォールドし、`PATH` 上に pnpm が見つかる場合は `pnpm install` を自動で実行します。zfb モノレポ本体をビルドするコントリビューターは、より新しい pnpm が必要です — 下記の「ソースからビルドする（コントリビューター向け）」の節を参照してください。
 
 ## サポートされているプラットフォーム
 
