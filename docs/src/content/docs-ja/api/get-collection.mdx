@@ -42,7 +42,7 @@ export default function FeaturedPost() {
 - `slug: string` — コレクション相対パスから末尾の `.md`、`.mdx`、または `.tsx` 拡張子を 1 つ取り除き、スラッシュ区切りのパスに正規化したものです。ネストしたファイルはパスベースの slug を生成します（例: `"2024/hello"`）。
 - `data: T` — パース済みのフロントマター。ジェネリックパラメータで型付けされます。
 - `body: string` — フロントマターを除いた生のマークダウン本文。
-- `module_specifier: string` — `mdx://<collection>/<slug>` 形式の安定したブリッジキー。レンダラが内部的に使用します。カスタムブリッジを構築する場合は `Content` のルックアップに渡します。
+- `module_specifier: string` — コンパイル済みモジュールをルックアップするために、レンダラが内部的に使用する安定したブリッジキーです。`.md` / `.mdx` エントリは `mdx://<collection>/<slug>#<hash>`（`body` にマークダウン本文が入ります）、`.tsx` エントリは `tsx://<collection>/<slug>#<hash>`（`body` は空 — 別個のマークダウン本文がないため）になります。末尾のハッシュはコンパイル済み JSX ソースから導出されます。独自のブリッジを構築する場合は、この specifier をカスタムの `Content` ルックアップに渡してください。
 - `Content: (props: ContentProps) => ContentElement` — このエントリのレンダリング可能なコンポーネント。利用可能な場合はレンダラブリッジ経由でレンダリングし、ブリッジが存在しないテストや dev のコンテキストでは `<pre data-zfb-content-fallback>` ブロックにフォールバックします。
 
 ## ContentProps

@@ -44,8 +44,13 @@ export function paths(): PathEntry[] | Promise<PathEntry[]>;
   `[slug].tsx`, the key is `slug`. For `[lang]/[slug].tsx`, you supply
   both `lang` and `slug`. For catchall `[...slug].tsx`, `slug` is a
   `string[]` of the trailing segments.
-- `props` is optional, opaque to the engine, and forwarded verbatim to
-  the page component as the `props` prop. The engine never inspects it.
+- `props` is optional and opaque to the engine — it's just data you
+  control. It is **not** passed to the component as a nested `props`
+  object: each key is spread onto the component's props at the top
+  level, alongside `params`. A `paths()` entry returning
+  `props: { title: "..." }` means the component receives
+  `{ params, title }`, not `{ params, props: { title } }`. If a
+  `props` key collides with `params`, the `props` value wins.
 
 ### Source and compiled entrypoints
 
@@ -87,12 +92,12 @@ export function paths() {
   }));
 }
 
-export default function BlogPost({ params, props }) {
+export default function BlogPost({ params, title }) {
   const post = getCollection("blog").find((e) => e.slug === params.slug);
   if (!post) return <p>Not found.</p>;
   return (
     <article>
-      <h2>{props.title}</h2>
+      <h2>{title}</h2>
       <post.Content />
     </article>
   );
@@ -107,8 +112,10 @@ A few things worth noting:
   async module loading or another Promise-backed helper.
 - `params.slug` is what hits the URL. A post with `slug: "hello-zfb"`
   becomes `/blog/hello-zfb`.
-- `props.title` is opaque to the engine — it's just data threaded to
-  the component. You can put anything serializable there.
+- `title` — like any key you put in `props` — is opaque to the
+  engine. It arrives spread onto the component's top-level props
+  alongside `params` (see above), not nested under a `props` key.
+  Put anything serializable there.
 
 ## Catchall: a full-tree docs page
 
@@ -193,3 +200,7 @@ this when it builds the route table — see
 - [Content Collections](./content-collections.mdx) — the data
   source most `paths()` calls draw from; also documents the synchronous
   `getCollection` / `getEntry` API.
+- [Static route props](../api/meta-export.mdx#getstaticprops) — `paths()`
+  enumerates URLs for dynamic and catchall routes; `getStaticProps()`
+  is the equivalent for a single static route that needs build-time
+  data without a bracketed segment.
