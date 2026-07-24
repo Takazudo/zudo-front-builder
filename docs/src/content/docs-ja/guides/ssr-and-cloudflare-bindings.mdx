@@ -97,9 +97,9 @@ pnpm add -D @takazudo/zfb-adapter-cloudflare
 
 - すべての SSG ページの静的 HTML、
 - `_worker.js` + `_zfb_inner.mjs` — `prerender = false` のルートを配信する Worker エントリ（薄いラッパーと、バンドルされた SSR ルート）、そして
-- SSR バンドルがインポートする Wasm モジュールごとの `x-<hash>.wasm` ファイルと `.assetsignore`。この ignore ファイルは `_worker.js`、`_zfb_inner.mjs`、生成された Wasm の basename をすべて列挙し、アセットサーバーがサーバーコードやコンパイル済みモジュールを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
+- SSR バンドルがインポートする Wasm モジュールごとの `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これは esbuild 自身の `--asset-names=[name]-[hash]` の命名規則であり、zfb 固有の仕様ではありません）と `.assetsignore`。この ignore ファイルは `_worker.js`、`_zfb_inner.mjs`、生成された Wasm の basename をすべて列挙し、アセットサーバーがサーバーコードやコンパイル済みモジュールを公開ファイルとして配信しないようにします（これがないと `/_worker.js` へのリクエストがそれをプレーンテキストとしてダウンロードさせてしまいます）。
 
-この `dist/` は **Static Assets を備えた Cloudflare Worker** として `wrangler deploy` でデプロイします。デプロイはプロジェクトルートの `wrangler.toml` が駆動し、`main` を `dist/_worker.js` に向け、`dist/` の残りを組み込みのアセットサーバーに委ねます。Worker が動的ルートを処理し、アセットサーバーがそれ以外のすべてを処理します。
+この `dist/` は **Static Assets を備えた Cloudflare Worker** として `wrangler deploy` でデプロイします。デプロイはプロジェクトルートの `wrangler.toml` が駆動し、`main` を `dist/_worker.js` に向け、`dist/` の残りを組み込みのアセットサーバーに委ねます。Worker が動的ルートを処理し、アセットサーバーがそれ以外のすべて — プロジェクトにあれば `public/_redirects` ファイルも含めて — を処理します。ルール構文については [Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照してください。
 
 <Warning title="Cloudflare Pages のアドバンストモードは未検証">
 
@@ -120,6 +120,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [assets]
 directory = "./dist"
+binding = "ASSETS" # Worker 自身がアセットを探れるようにする — 下記参照
 not_found_handling = "404-page"
 ```
 
@@ -127,6 +128,7 @@ not_found_handling = "404-page"
 - `compatibility_date` は Workers ランタイムの挙動を固定します。
 - `compatibility_flags = ["nodejs_compat"]` は**必須**です。下の警告を参照してください。
 - `[assets] directory = "./dist"` は静的な出力を組み込みのアセットサーバーに委ねます。
+- `[assets] binding = "ASSETS"` は**推奨**です。これにより生成された `_worker.js` に `env.ASSETS` が公開され、SSR ルートへフォールスルーする前に GET/HEAD リクエストを自ら探ります（`worker-wrapper.mjs` の `canDelegateToAssets()` は、このバインディングが無いとプローブを no-op にします）。デフォルトの `run_worker_first = false` の下でもプラットフォーム自身のアセットルーターがほとんどのヒットをすでに配信しているのに、なぜこのプローブが重要なのかについては [SSR on a Worker — 内側の `env.ASSETS` プローブはデッドコードではない](../concepts/ssr-on-a-worker.mdx#内側の-env-assets-プローブはデッドコードではない) を参照してください。
 - `not_found_handling = "404-page"` は**推奨**です。マッチしなかったアセットパスは Worker にフォールスルーし、Worker が `pages/404.tsx` と、あらゆる動的な `prerender = false` ルートを配信します。
 
 <Warning title="`not_found_handling = 'single-page-application'` を設定しないこと">
@@ -134,6 +136,29 @@ not_found_handling = "404-page"
 `single-page-application` は、あらゆる未解決のパスに対して、**Worker がリクエストを見る前に**アセットサーバーが `index.html` を返すようにします。これは `pages/api/*.tsx` のような動的ルートを黙って壊します。未解決のパスが Worker に届くよう `404-page` を使ってください。
 
 </Warning>
+
+### スタイル付き 404 と、ルート自身が返す 404
+
+`not_found_handling = "404-page"` と `[assets] binding = "ASSETS"` を両方設定していると、マッチしなかったパスはクライアントに届く前に 2 種類の異なる 404 レスポンスを生み出しえます — アセット層のスタイル付き `dist/404.html`（`pages/404.tsx` からビルドされたもの）と、内側の Worker が同じミスに対して返すものです。`_worker.js` は次の固定された優先順位でどちらかを選びます:
+
+1. 内側の Worker が**非 404** を返す — 本当に動的なルートがマッチした — 場合、そのレスポンスが無条件で勝ちます。
+2. 内側の Worker**も**、フレームワークの汎用的な not-found ボディ（Hono のデフォルトの `text/plain` "404 Not Found"、または content-type のない素の 404）だけで 404 を返す場合 — **スタイル付きの `dist/404.html` が勝ち**、訪問者はプレーンテキストの代わりにデザインされたページを見ます。
+3. 内側の Worker が**それ以外の `content-type`** で 404 を返す場合 — そのレスポンスは意図的なものとみなされ、そのまま返されます。`text/html` の 404 は自分自身の not-found ページをレンダリングする `prerender = false` ルートであり、`application/json` の 404 は意図的な機械可読の API エラーです。
+
+自分で書いた `prerender = false` ルート（API エンドポイントなど）が独自の 404 を返す場合は、`content-type: application/json` を設定してください。素の `text/plain` の 404 はフレームワークのデフォルトと区別がつかず、スタイル付きページに道を譲ってしまいます。`not_found_handling = "none"` の下では、アセットの 404 はスタイル付きボディを持たないため、内側の Worker の 404 が常に表示されます。
+
+### アセットより先に Worker を実行する（`run_worker_first`）
+
+このページのすべての例は、zfb のデフォルトである `run_worker_first = false` を前提にしています — プラットフォームのエッジアセットルーターが、`_worker.js` が実行される前にマッチする静的ファイルを配信します（全体のメンタルモデルは [SSR on a Worker — ディスパッチフロー](../concepts/ssr-on-a-worker.mdx#ディスパッチフロー) を参照してください）。`run_worker_first = true` を設定するとこれが反転し、プリレンダリング済みの静的ページへのヒットを含む**すべての**リクエストが最初に Worker に到達します:
+
+```toml
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
+```
+
+コスト: これまでエッジから無料で直接配信されていたリクエストも含め、すべてのリクエストが Worker の起動コストを払うことになります — 「静的ヒットは Worker に一切触れない」という高速経路はもうありません。これは、あるルートが本当に静的配信より先に実行される必要があるときだけ使ってください。典型的なケースは**パスワード／セッションゲート**です。SSR ルートがすべてのリクエスト（プリレンダリング済みページへのものも含む）でクッキーを確認し、アセット層が保護対象のコンテンツを配信する前にログインページへリダイレクトします（これを実際に行っている [`password-gate` の例](./examples.mdx) を参照してください）。
 
 <Warning title="compatibility_flags = ['nodejs_compat'] は必須">
 
@@ -346,6 +371,53 @@ Workers では、`[env.preview]` のような名前付き環境は**別個の Wo
 
 </Note>
 
+## KV ネームスペース（`env.MY_KV`）を読む
+
+[Workers KV][kv] は Cloudflare の結果整合性を持つキーバリューストアです。KV バインディングは、上の D1 とまったく同じように `env` に公開されます。アダプターはこれを特別扱いしません:
+
+```tsx
+// pages/api/greeting.tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+interface Env {
+  // `KVNamespace` comes from `@cloudflare/workers-types`.
+  MY_KV: KVNamespace;
+}
+
+export default async function Greeting() {
+  const { env } = getCloudflareContext<Env>();
+  const stored = await env.MY_KV.get("greeting");
+  return new Response(stored ?? "no greeting set yet");
+}
+```
+
+書き込みには `.put()` を使います:
+
+```tsx
+await env.MY_KV.put("greeting", "hello from KV");
+```
+
+`.get(key, "json")` は、`JSON.stringify(...)` で保存した値を JSON としてパースし直します。
+
+## KV バインディングの配線
+
+D1 と同様、KV ネームスペースも `wrangler.toml` を通してバインドされます。バインディングの**名前**（下記の `MY_KV`）が、`env` で読むプロパティになります:
+
+```toml
+# wrangler.toml — add alongside the [assets] block above
+[[kv_namespaces]]
+binding = "MY_KV"   # → env.MY_KV inside the Worker
+id = "<namespace-id>" # printed by `wrangler kv namespace create`
+```
+
+1. **ネームスペースを作成する** — `wrangler kv namespace create MY_KV`。これが `id` を出力します。`wrangler.toml` に貼り付けてください。
+2. **読み書きする** — 上記のように `env.MY_KV.get(...)` / `.put(...)` を使います。
+3. **デプロイする** — `zfb build` を実行し、`wrangler deploy` します。
+
+他のあらゆるバインディング — R2 バケット、Workers AI、Cache API、Durable Objects、service binding — も、SSR ルートからまったく同じ方法で読めます。`wrangler.toml` で宣言し、`Env` インターフェースにその型を追加し、`getCloudflareContext()` の中で `env` から読み取るだけです。単独の KV・Workers AI・リバースプロキシのレシピは [Examples](./examples.mdx) の一覧を参照してください。
+
 ## ローカル開発
 
 <Tip title="動作するエンドツーエンドの実例">
@@ -503,3 +575,4 @@ wrangler のリロードは `dist/` が実際に更新されたときにのみ�
 
 [als]: https://nodejs.org/api/async_context.html
 [d1]: https://developers.cloudflare.com/d1/
+[kv]: https://developers.cloudflare.com/kv/
