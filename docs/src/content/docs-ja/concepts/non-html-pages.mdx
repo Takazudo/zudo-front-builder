@@ -84,7 +84,13 @@ pages/about.tsx + extension="json"      → .json (frontmatter override)
 | `woff`, `woff2`, `ttf`, `otf`, `eot` | 対応するフォント media type |
 | `mp4`, `webm`, `mp3`, `ogg` | 対応する video / audio media type |
 | `pdf` | `application/pdf` |
-| 未知の拡張子 | `text/html; charset=utf-8`（寛容なフォールバック — `contentType` を明示的に設定してください） |
+| 未知の拡張子 | `application/octet-stream`（`contentType` を明示的に設定してください） |
+
+「未知の拡張子」の行が当てはまるのは、zfb が認識しない拡張子を持つ
+ファイル（例: `.foo`）のケースです — 拡張子がまったくないルートとは
+別のケースです。拡張子なしのルート（`/about`、`/`）は通常の HTML
+出力の形であり、直接 `text/html; charset=utf-8` にデフォルトします。
+上記の `application/octet-stream` フォールバックへ落ちることはありません。
 
 ページごとに `export const contentType = "..."` で上書きできます。
 

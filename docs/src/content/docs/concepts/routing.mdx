@@ -44,17 +44,24 @@ A catchall can also be **optional**: `[[...param]]` (double brackets) matches th
 
 ```tsx
 // pages/blog/[slug].tsx
-export default function BlogPost({ slug }: { slug: string }) {
-  return <article>Post for {slug}</article>;
+export default function BlogPost({ params }: { params: { slug: string } }) {
+  return <article>Post for {params.slug}</article>;
 }
 ```
 
 ```tsx
 // pages/docs/[...slug].tsx
-export default function DocsPage({ slug }: { slug: string[] }) {
-  return <main>{slug.join("/")}</main>;
+export default function DocsPage({ params }: { params: { slug: string[] } }) {
+  return <main>{params.slug.join("/")}</main>;
 }
 ```
+
+Both snippets above show only the component's exported shape. A real
+dynamic route also needs a `paths()` export (covered next) to
+enumerate its concrete URLs at build time, unless it opts into
+per-request rendering with `export const prerender = false`. Either
+way, the URL parameter always arrives under `params` — it is never
+destructured at the top level.
 
 ## The `paths()` export
 
@@ -79,3 +86,20 @@ clause exposes `paths`; nonliteral `paths()` implementations use their runtime
 ESM export during enumeration. Static routes require no `paths()` export. Route
 enumeration happens once per route per build, and the result is reused for each
 output URL. See [Dynamic Routes](./dynamic-routes.mdx) for the full contract.
+
+A static route (no bracketed segment) that still needs build-time data
+uses `getStaticProps()` instead — see
+[`getStaticProps()`](../api/meta-export.mdx#getstaticprops). Summed up:
+`paths()` enumerates URLs for dynamic/catchall routes, `getStaticProps()`
+computes props for a single static route.
+
+## Error pages
+
+`pages/404.tsx` and `pages/500.tsx` are a special case in the output
+layout. Every other HTML route writes a directory-style
+`<path>/index.html` (see the table above), but a top-level `404.tsx`
+or `500.tsx` — a single static segment whose name is exactly `404` or
+`500` — writes a flat `404.html` / `500.html` at the `dist` root
+instead of `404/index.html` / `500/index.html`. This only applies at
+the top level: `pages/foo/404.tsx` still follows the normal
+directory-index rule and outputs `foo/404/index.html`.

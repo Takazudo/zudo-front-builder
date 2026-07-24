@@ -28,6 +28,48 @@ Markdown and MDX entries parse YAML frontmatter and compile the body through the
 
 You can additionally supply an optional `schema` field — a JSON Schema subset that validates each entry's frontmatter when you run `zfb check` (the build itself does not enforce it). The supported keywords (`type`, `properties`, `items`, `required`, `enum`) are documented on the [`defineConfig`](../api/define-config.mdx) page. The `[{ name, path }]` form remains supported for projects that don't need per-field validation.
 
+## Filtering and slug rewriting
+
+Two more fields narrow which files count as entries and normalize slugs across locale variants.
+
+### `include` / `exclude`
+
+Both take an array of globs in the `globset` dialect (Unix-style: `*`, `**`, `?`, `[...]`), matched against each candidate file's path **relative to the collection's `path`** (not the project root). When set:
+
+- `include` runs first — an entry is kept only if at least one pattern matches. Omit it (or leave it empty) to skip this stage entirely; every file then passes.
+- `exclude` runs second, against entries that already passed `include` — a match drops the entry.
+
+```ts
+export default {
+  collections: [
+    {
+      name: "blog",
+      path: "content/blog",
+      include: ["**/*.mdx"],
+      exclude: ["**/*.draft.mdx"],
+    },
+  ],
+};
+```
+
+This mirrors Astro's `['**/*.mdx', '!**/*.draft.mdx']` convention — zfb
+splits the negative side into its own `exclude` field instead of
+prefixing a pattern with `!`.
+
+### `idStripSuffix`
+
+When an entry's derived slug ends with this fixed string, the suffix
+is stripped from **both** the entry's `slug` and its
+`module_specifier`; entries that don't end with the suffix pass
+through unchanged. The main use case is a multi-locale layout where
+one directory holds both the default-locale file and a
+locale-suffixed override (`foo.mdx` and `foo.en.mdx`): declare a
+second collection over the same `path` with `idStripSuffix: ".en"`,
+and that collection's slugs round-trip as `foo` instead of `foo.en`.
+Because the strip is applied consistently to the specifier as well
+as the slug, `getEntry("blog-en", "foo")` still resolves correctly
+even though the underlying file is `foo.en.mdx`.
+
 ## Loading entries from a page
 
 Pages use `getCollection()` to enumerate every entry:
@@ -102,6 +144,6 @@ Keep these in mind before enabling the flag:
 
 ## How parsing works
 
-Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's frontmatter, and compiles the entry to JSX source that is then handed to the existing SWC TSX -> JS pipeline. Markdown/MDX entries use the MDX emitter and get an `mdx://<collection>/<slug>` specifier; TSX entries use their source module directly and get a `tsx://<collection>/<slug>` specifier. The page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
+Under the hood, the `zfb-content` crate handles three jobs: it walks the configured directory, parses each file's frontmatter, and compiles the entry to JSX source that is then handed to the existing SWC TSX -> JS pipeline. Markdown/MDX entries use the MDX emitter and get an `mdx://<collection>/<slug>#<hash>` specifier; TSX entries use their source module directly (no separate compile step) and get a `tsx://<collection>/<slug>#<hash>` specifier. In both cases the trailing hash is derived from the compiled JSX source. The page renderer evaluates that module on demand and surfaces it to your page as `entry.Content`.
 
 The compilation and surface contract are stable. See [MDX Components](./mdx-components.mdx) for the rendering side.

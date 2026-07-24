@@ -110,7 +110,14 @@ correctly:
 | `woff`, `woff2`, `ttf`, `otf`, `eot` | matching font media type |
 | `mp4`, `webm`, `mp3`, `ogg` | matching video/audio media type |
 | `pdf` | `application/pdf` |
-| unknown extension | `text/html; charset=utf-8` (permissive fallback — set `contentType` explicitly) |
+| unknown extension | `application/octet-stream` (set `contentType` explicitly) |
+
+The `unknown extension` row applies to a file that carries an
+extension zfb doesn't recognize (e.g. `.foo`) — it is not the same
+case as an extensionless route. A route with no extension at all
+(`/about`, `/`) is the normal HTML output shape and defaults to
+`text/html; charset=utf-8` directly; it never falls through to the
+`application/octet-stream` fallback above.
 
 Override per page with `export const contentType = "..."`:
 

@@ -44,17 +44,25 @@ catchall は **オプショナル** にもできます。二重角括弧の `[[.
 
 ```tsx
 // pages/blog/[slug].tsx
-export default function BlogPost({ slug }: { slug: string }) {
-  return <article>Post for {slug}</article>;
+export default function BlogPost({ params }: { params: { slug: string } }) {
+  return <article>Post for {params.slug}</article>;
 }
 ```
 
 ```tsx
 // pages/docs/[...slug].tsx
-export default function DocsPage({ slug }: { slug: string[] }) {
-  return <main>{slug.join("/")}</main>;
+export default function DocsPage({ params }: { params: { slug: string[] } }) {
+  return <main>{params.slug.join("/")}</main>;
 }
 ```
+
+上の 2 つのスニペットは、コンポーネントがエクスポートする形だけを
+示しています。実際の動的ルートでは、ビルド時に具体的な URL を列挙
+するための `paths()` エクスポート（次項で解説）も必要です。ただし
+`export const prerender = false` を指定してリクエストごとのレンダ
+リングにオプトインする場合はその限りではありません。いずれの場合も、
+URL パラメータは常に `params` の下に届きます — トップレベルで分割
+代入されることはありません。
 
 ## `paths()` エクスポート
 
@@ -79,3 +87,19 @@ export default function BlogPost({ params }: { params: { slug: string } }) {
 `paths()` export は不要です。ルート列挙はルートごと・ビルドごとに 1 回行われ、結果は
 各出力 URL に再利用されます。完全なコントラクトは
 [動的ルート](./dynamic-routes.mdx) を参照してください。
+
+角かっこの区切りを持たない静的ルートでも、ビルド時データが必要な場合は
+代わりに `getStaticProps()` を使います — [`getStaticProps()`](../api/meta-export.mdx#getstaticprops)
+を参照してください。まとめると、`paths()` は動的・catchall ルートの
+URL を列挙し、`getStaticProps()` は単一の静的ルートの props を計算します。
+
+## エラーページ
+
+`pages/404.tsx` と `pages/500.tsx` は出力レイアウトにおける特別なケース
+です。他の HTML ルートはすべて上の表のとおりディレクトリ形式の
+`<path>/index.html` を書き出しますが、トップレベルの `404.tsx` /
+`500.tsx`（名前がちょうど `404` または `500` である単一の静的セグメント）
+は、`404/index.html` / `500/index.html` ではなく、`dist` ルート直下に
+フラットな `404.html` / `500.html` を書き出します。これが当てはまるのは
+トップレベルだけです。`pages/foo/404.tsx` は通常のディレクトリインデックス
+規則に従い、`foo/404/index.html` を出力します。
