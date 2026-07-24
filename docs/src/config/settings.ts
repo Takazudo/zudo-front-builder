@@ -116,8 +116,10 @@ export const settings = {
   } satisfies FooterConfig as FooterConfig | false,
   headerNav: [
     { label: "Getting Started", path: "/docs/getting-started", categoryMatch: "getting-started" },
+    { label: "Install", path: "/docs/install", categoryMatch: "install" },
     { label: "Concepts", path: "/docs/concepts", categoryMatch: "concepts" },
     { label: "Guides", path: "/docs/guides", categoryMatch: "guides" },
+    { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
     { label: "Reference", path: "/docs/api", categoryMatch: "api" },
     { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
     { label: "Claude", path: "/docs/claude", categoryMatch: "claude" },

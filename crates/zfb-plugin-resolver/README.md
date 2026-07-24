@@ -45,6 +45,7 @@ pub fn build_resolver_inputs(
     aliases: &[(String, String)],
     virtual_modules: &[(String, String)],
     working_dir: &Path,
+    user_tsconfig_paths: &BTreeMap<String, Vec<String>>,
 ) -> Result<ResolverInputs>
 ```
 
@@ -56,6 +57,13 @@ Given plugin-registered aliases and virtual modules:
    normalized to POSIX forward-slash form for platform-stable JSON.
 3. Builds `virtual_module_alias_args` — the virtual-module subset of `paths_entries`,
    surfaced as `--alias:<spec>=<path>` flags by `virtual_module_alias_flags()` (#1263).
+
+`user_tsconfig_paths` is the consumer project's own `compilerOptions.paths` map. **User wins**
+(#1267): when a virtual-module specifier is already claimed there — an exact key, or a
+wildcard pattern it falls under — that specifier is dropped from BOTH `paths_entries` and
+`virtual_module_alias_args`, so the user's own mapping governs instead. The virtual module's
+temp file is still materialized (and its lifetime still held in `_temp_files`) even when
+suppressed this way; it is simply left unreferenced.
 
 Callers write the merged entries into a synthetic tsconfig and pass `--tsconfig=<path>` to
 esbuild, AND pass each `virtual_module_alias_flags()` entry so `virtual:*` imports resolve
