@@ -8,8 +8,11 @@ zfb's Markdown pipeline is layered. A set of **Core** features runs
 in the engine's main markdown pipeline/config surface, giving you heading
 anchors, server-side syntax highlighting, CJK-friendly handling, and more.
 Some Core rows are always on; others are top-level or `markdown.*` config
-knobs implemented in the core pipeline. The table below is authoritative for
-each row's default and config key.
+knobs implemented in the core pipeline. The table below aims to document
+every Core and Opt-in surface's default and config key, but it is
+hand-maintained rather than generated from the config schema, so it can
+lag behind newly landed constructs — check the linked feature page or the
+config type it mirrors for the current behavior.
 
 This page is the map. Each feature has its own page with a usage example,
 config key, and ordering notes.
@@ -68,6 +71,7 @@ at config load time.
 
 | Feature | Tier | Config key | Value shape | Default / gating |
 |---|---|---|---|---|
+| [GFM constructs](./gfm.mdx) | Core | `markdown.gfm` | `boolean \| { strikethrough?: boolean; table?: boolean; autolinkLiteral?: boolean; taskListItem?: boolean; footnoteDefinition?: boolean }` | Absent → conservative default (`strikethrough`/`table` on, other three off). `true`/`false` shorthand toggles all five. |
 | [CJK-friendly emphasis](./cjk-friendly.mdx) | Core | `markdown.cjkFriendly` | `boolean` | `true`; set `false` to opt out. |
 | [Heading links](./heading-links.mdx) | Core | `markdown.features.headingIds` | `{ strategy?: "flat" \| "hierarchical" }` | Plugin always on; default strategy is `"flat"`. |
 | [Code block title](./code-title.mdx) | Core | none | n/a | Always on. |
@@ -75,7 +79,7 @@ at config load time.
 | [Resolve links](./resolve-links.mdx) | Core | `resolveMarkdownLinks` | `{ enabled?: boolean; docsDir?: string; dirs?: { dir: string; routePrefix: string }[]; onBrokenLinks?: "warn" \| "error" \| "ignore" }` | Off unless `enabled: true`. |
 | [Strip .md extension](./strip-md-ext.mdx) | Opt-in | `stripMdExt` | `boolean` | `false`; when `true`, strips `.md`/`.mdx` and appends `/`. |
 | [Hard breaks](./hard-breaks.mdx) | Opt-in | `markdown.hardBreaks` | `boolean` | `false`; when `true`, soft line breaks become `<br>`. |
-| [Syntax highlighting](./syntax-highlighting.mdx) | Core | `codeHighlight` | `{ theme?: string; themesDir?: string; themeLight?: string; themeDark?: string }` | On with the default syntect theme. |
+| [Syntax highlighting](./syntax-highlighting.mdx) | Core | `codeHighlight` | `{ theme?: string; themesDir?: string; themeLight?: string; themeDark?: string; mode?: "inline" \| "class"; classPrefix?: string; roleClasses?: Partial<Record<CodeHighlightRole, string>>; defaultStylesheet?: boolean }` | On with the default syntect theme (`mode: "inline"`); `mode: "class"` emits semantic role classes instead — see the linked page for the full shape. |
 | [Directives registry](./directives-registry.mdx) | Core primitive | `markdown.features.directives` or Rust API | `Record<string, DirectiveSpec>` | Registry visitor runs only when supplied; zero default names. |
 | [Directives](./directives.mdx) | Opt-in | `markdown.features.directives` | `Record<string, string \| { component: string; kind?: "container" \| "leaf" \| "text"; titleFromLabel?: boolean }>` | Off when absent; `{}` wires an empty registry. |
 | [Mermaid diagrams](./mermaid.mdx) | Opt-in | `markdown.features.mermaid` | `boolean \| {}` | Off when absent or `false`; marks blocks as `<div class="mermaid">`. |
