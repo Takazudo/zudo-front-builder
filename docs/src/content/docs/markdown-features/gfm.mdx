@@ -1,0 +1,118 @@
+---
+title: GitHub Flavored Markdown (GFM)
+description: Configure the five GFM constructs (strikethrough, tables, autolink literals, task lists, footnotes) via markdown.gfm.
+tier: Core
+---
+
+zfb's Markdown pipeline supports the five [GitHub Flavored Markdown
+(GFM)](https://github.github.com/gfm/) constructs implemented by the
+`markdown-rs` parser: strikethrough, tables, autolink literals, task list
+items, and footnote definitions. The `markdown.gfm` config key controls
+which of the five are active.
+
+## Conservative default
+
+When `markdown.gfm` is absent — including when the whole `markdown` block
+is omitted — zfb applies a **conservative default**: strikethrough and
+tables are on; autolink literals, task list items, and footnote
+definitions are off. This is the smallest behavioral delta from zfb's
+historical effective state (table-only), rather than turning on the full
+GFM surface unconditionally.
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  // markdown.gfm omitted — conservative default applies:
+  // strikethrough + table on, everything else off
+});
+```
+
+## Value shapes
+
+`markdown.gfm` accepts three shapes:
+
+### Absent (default)
+
+Omit the field entirely (or omit `markdown` altogether) to get the
+conservative default shown above.
+
+### Boolean shorthand
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: {
+    gfm: true, // every GFM construct on
+  },
+});
+```
+
+`gfm: true` turns every construct on, including autolink literals, task
+list items, and footnote definitions. `gfm: false` turns every construct
+off — including strikethrough and tables.
+
+### Per-construct object
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: {
+    gfm: {
+      autolinkLiteral: true,
+      taskListItem: true,
+      // strikethrough, table, footnoteDefinition omitted here fall back
+      // to the conservative default, not to `false`
+    },
+  },
+});
+```
+
+Fields you omit from the object keep the conservative-default value for
+that construct (`strikethrough: true`, `table: true`, the other three
+`false`). Fields you set explicitly are honored verbatim.
+
+## Constructs
+
+| Construct | Object key | Conservative default | Renders as |
+|---|---|---|---|
+| Strikethrough (`~~text~~`) | `strikethrough` | On | `<del>text</del>` |
+| Pipe tables | `table` | On | `<table>` |
+| Autolink literal (bare `https://example.com`) | `autolinkLiteral` | Off | `<a href="...">` |
+| Task list items (`- [x]` / `- [ ]`) | `taskListItem` | Off | Parsed only — see below |
+| Footnote definitions (`[^ref]: ...`) | `footnoteDefinition` | Off | Parsed only — see below |
+
+<Warning title="taskListItem and footnoteDefinition are parsed but not rendered">
+
+Enabling `taskListItem` or `footnoteDefinition` makes the parser recognize
+the syntax and build the corresponding mdast nodes, but zfb's
+mdast-to-output converters have no output arm for either node shape yet:
+
+- **`taskListItem`** — the `- [x]` / `- [ ]` marker is consumed during
+  parsing and the resulting checked/unchecked state is never read by any
+  downstream renderer. A task list item renders as an ordinary `<li>`
+  bullet, with no checkbox and no visual difference between a checked and
+  an unchecked item.
+- **`footnoteDefinition`** — both the footnote definition block and the
+  inline `[^ref]` reference marker fall through to zfb's
+  unhandled-node catch-all and render as nothing. The footnote text and
+  its reference marker disappear from the output silently — no build
+  warning, no error.
+
+Turning either flag on will not error, but it also will not produce the
+checkbox or footnote UI you'd see on GitHub. This has been filed as a
+likely code bug — see
+[issue #1950](https://github.com/Takazudo/zudo-front-builder/issues/1950).
+
+</Warning>
+
+## Interaction with CJK-friendly handling
+
+`autolinkLiteral` interacts with `markdown.cjkFriendly` (on by default):
+a bare URL flush against CJK text would otherwise swallow the trailing
+CJK run into the link `href`. See
+[CJK-friendly emphasis](./cjk-friendly.mdx) for the boundary rule.
+
+## See also
+
+- [Markdown Features](./index.mdx) — the full feature map.
+- [CJK-friendly emphasis](./cjk-friendly.mdx) — the `autolinkLiteral` +
+  CJK boundary interaction.
