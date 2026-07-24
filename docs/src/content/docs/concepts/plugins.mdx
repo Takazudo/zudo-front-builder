@@ -92,7 +92,7 @@ addVirtualModule("virtual:metadata-db", () =>
 );
 ```
 
-`loader` returns the **complete ESM source text** as a string. The bundler / embedded V8 host feeds the returned string in as the module's source verbatim. The loader is invoked **exactly once per build** at the moment the specifier is first imported; subsequent imports of the same specifier reuse the cached source.
+`loader` returns the **complete ESM source text** as a string. The bundler / embedded V8 host feeds the returned string in as the module's source verbatim. The loader runs **eagerly, not lazily on import**: exactly once per `zfb build` run and once per `zfb dev` host boot, during the setup phase right after every plugin's `setup` hook has returned — even if the registered specifier is never imported by any page or module. The resulting source is memoised; every subsequent import of that specifier reuses it. (Under `zfb preview`, the registration is accepted for shape-consistency but is inert — see the `setup` section above — so the loader never runs there.)
 
 There is **one** loader contract. There is no alternate "loader returns JSON and zfb wraps it" mode — if you want to expose JSON, do `() => "export default " + JSON.stringify(data)` yourself.
 
@@ -214,7 +214,7 @@ The plugin `ctx.routes` and the on-disk `routes.json` are two access shapes over
 
 ### Worked example: generating a `sitemap.xml` in `postBuild`
 
-A plugin that writes a `sitemap.xml` from every HTML route the build produced. The filter combines `extension === "html"` (skip `.xml` / `.rss` / `.txt` routes) with `prerender !== false` (skip SSR routes that have no on-disk artifact).
+A plugin that writes a `sitemap.xml` from every HTML route the build produced. The filter combines `extension === "html"` (skip `.xml` / `.rss` / `.txt` routes) with `prerender !== false` (skip SSR routes that have no on-disk artifact). `siteUrl` comes from `ctx.options` — the plugin-specific block copied verbatim from this plugin's `options` entry in `zfb.config.ts` — so the same plugin module works across projects without editing its source.
 
 ```ts
 // plugins/sitemap.ts
@@ -224,9 +224,9 @@ import { join } from "node:path";
 
 export default definePlugin({
   name: "sitemap",
-  postBuild({ outDir, routes }) {
+  postBuild({ outDir, routes, options }) {
     if (!routes) return; // guard: absent on preBuild
-    const siteUrl = "https://example.com";
+    const siteUrl = options.siteUrl as string;
     const htmlRoutes = routes.routes.filter(
       (r) => r.extension === "html" && r.prerender !== false,
     );
@@ -248,9 +248,13 @@ export default definePlugin({
 import { defineConfig } from "@takazudo/zfb/config";
 
 export default defineConfig({
-  plugins: [{ name: "./plugins/sitemap.ts" }],
+  plugins: [
+    { name: "./plugins/sitemap.ts", options: { siteUrl: "https://example.com" } },
+  ],
 });
 ```
+
+`options` is copied verbatim from this `PluginConfig` entry and passed to every hook — `setup`, `preBuild`, `postBuild` — as `ctx.options`. It is untyped (`Record<string, unknown>`), so cast or validate the fields you read from it, as above.
 
 The plugin runs after `dist/` is fully written; any file it creates alongside the emitted HTML pages is served as a static asset in production.
 
@@ -260,9 +264,37 @@ Unchanged from v1. Register one or more HTTP handlers via `ctx.register(path, ha
 
 See [`ZfbDevMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) for the shape.
 
+### Request/response contract
+
+`ctx.register(path, handler)` installs one handler per URL path **prefix**. A registration on `/doc-history` matches `/doc-history` and `/doc-history/foo`, but not `/doc-historyx` — the match is prefix-with-boundary, not a raw string prefix. Calling `register` twice with the same `path` **overwrites** the previously registered handler; there is no way to stack two handlers on one path.
+
+The handler receives a request:
+
+```ts
+interface ZfbDevMiddlewareRequest {
+  method: string;
+  url: string;
+  headers: Record<string, string>; // lower-cased header names -> first value
+  body?: string;                    // absent for GET/HEAD; UTF-8 only (no binary in v1)
+}
+```
+
+and returns a response (or `undefined`, which falls through to zfb's built-in dev routes — the page cache, `/__zfb/livereload.js`, etc.):
+
+```ts
+interface ZfbDevMiddlewareResponse {
+  status: number;
+  headers?: Record<string, string>;
+  body?: string;
+  bodyEncoding?: "utf8" | "base64"; // set "base64" to return binary content
+}
+```
+
+`body` is a UTF-8 string by default; set `bodyEncoding: "base64"` to return a base64-encoded binary payload instead. This is the same request/response shape `previewMiddleware` uses — see below.
+
 ## `previewMiddleware(ctx)`
 
-The `zfb preview` (static mode) counterpart of `devMiddleware` (#1542, epic #1541 Preview Parity). Same shape, same `ctx.register(path, handler)` call, same request/response wire format — but it is a **separate, per-mode opt-in**: a plugin that only defines `devMiddleware` gets no request-time handlers at all under `zfb preview`, and vice versa. Register the SAME handler under both hooks if you want it available in both modes:
+The `zfb preview` (static mode) counterpart of `devMiddleware` (#1542, epic #1541 Preview Parity). Same shape, same `ctx.register(path, handler)` call, same [request/response contract](#request-response-contract) — but it is a **separate, per-mode opt-in**: a plugin that only defines `devMiddleware` gets no request-time handlers at all under `zfb preview`, and vice versa. Register the SAME handler under both hooks if you want it available in both modes:
 
 ```ts
 // plugins/api-echo.ts

@@ -38,7 +38,7 @@ zfb new <name> [--template <template>]
 v0 は 2 つのテンプレートを同梱しており、どちらもコンパイル時に `crates/zfb/templates/` からバイナリに焼き込まれています。
 
 - `basic-blog`（デフォルト）— `package.json` を備えたフル機能のブログスキャフォールド。pnpm が `PATH` にある場合、`zfb new` は自動的に `pnpm install` を実行します。
-- `node-free` — `package.json` を同梱せず、スキャフォールド後の `pnpm install` ステップも完全にスキップします。`PATH` に Node / pnpm がない環境で実行するプロジェクト向けです。[Node なしでインストール](../install/node-free.mdx) を参照してください。
+- `node-free` — `package.json` を同梱せず、スキャフォールド後の `pnpm install` ステップも完全にスキップします。`PATH` に Node / pnpm がない環境で実行するプロジェクト向けです。`.md`/`.html` によるページ作成については [Markdown と HTML ページ](../concepts/md-html-pages.mdx) を、Node なしで `zfb` バイナリ自体をインストールする方法については [Node なしでインストール](../install/node-free.mdx) を参照してください。
 
 ### 例
 
@@ -225,6 +225,8 @@ zfb check --skip-tsc
 | `ZFB_DEV_TIMING` | 未設定 | `1` または `true` を設定すると、ファイル変更 tick ごとの dev モードのフェーズタイミングを出力します。 |
 | `ZFB_PLUGIN_HOOK_TIMEOUT` | `120`（秒） | 単一のプラグインフックの応答を待つ最大時間（秒）。これを超えるとプラグインホストが強制終了され、ビルドが失敗します。優先順位: 設定の `pluginHookTimeoutSecs` > この環境変数 > 組み込みのデフォルト 120 秒。 |
 | `ZFB_ESBUILD_BIN` | 未設定 | esbuild バイナリへの絶対パス。埋め込み / staged 済みの esbuild バイナリが利用できない、または上書きしたい場合に、バンドラ、islands コンパイラ、テスト、TypeScript 設定ロード（`zfb.config.ts`）で使用されます。 |
+| `ZFB_TAILWIND_BIN` | 未設定 | Tailwind CSS v4 バイナリへの絶対パス。CSS エンジンが使用する埋め込み / staged 済みの Tailwind バイナリを上書きします。空文字列は未設定と同じ扱いになります（上記の `ZFB_ESBUILD_BIN` と同じ契約）。 |
+| `ZFB_DEBUG_SNAPSHOT` | 未設定 | `1` または `true` を設定すると、`zfb build` 実行時にコンテンツスナップショットのエントリ数とシリアライズ後のバイト数を stderr に出力します。大規模サイトでの V8 メモリ負荷の監視に使えます。[インクリメンタルリビルド](../concepts/incremental-rebuild.mdx) を参照してください。 |
 | `ZFB_SKIP_WRANGLER_VERSION_CHECK` | 未設定 | `1`、`true`、または `yes` を設定すると、`zfb preview` のアダプタモードにおける wrangler バージョンゲートを迂回します。一時的なリリースエンジニアリング用途を意図しています。 |
 
 <Note>

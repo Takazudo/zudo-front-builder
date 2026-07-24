@@ -7,7 +7,7 @@ sidebar_position: 54
 
 `ResolveLinksPlugin` normalises internal Markdown links (`[text](./page.mdx)`,
 `[text](../other/page)`) using the content source map built at startup.
-It is wired in at the project level when a source map is available.
+It is **opt-in** — see [Config](#config) below to enable it.
 
 ## What it does
 
@@ -26,9 +26,39 @@ configured.
 
 ## Config
 
-`ResolveLinksPlugin` is wired in per-project and does not appear as a key
-in `zfb.config.ts`. When a content source map is present (the default for
-content collections), it is active automatically.
+Link resolution does nothing unless you opt in with
+`resolveMarkdownLinks: { enabled: true }` in `zfb.config.ts`:
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  resolveMarkdownLinks: {
+    enabled: true,
+    docsDir: "src/content/docs",
+  },
+});
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Turns the plugin on. Every other option below has no effect until this is `true`. |
+| `docsDir` | `""` | Legacy single-dir shape — scans this directory against the hard-coded `/docs/` route prefix. Ignored when `dirs` is non-empty. |
+| `dirs` | `[]` | Explicit `{ dir, routePrefix }` entries, one per source collection. Takes precedence over `docsDir` when non-empty — required for projects with more than one docs root (e.g. locale mirrors), since `docsDir` can only represent a single `/docs/` prefix. |
+| `onBrokenLinks` | `"warn"` | What happens when a `.md`/`.mdx` link can't be resolved: `"warn"` logs and continues, `"error"` fails the build after reporting every broken link found during the walk, `"ignore"` does neither. |
+
+For a project with more than one docs collection (e.g. EN + JA), use `dirs`
+so each collection maps to its own route prefix:
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  resolveMarkdownLinks: {
+    enabled: true,
+    dirs: [
+      { dir: "src/content/docs", routePrefix: "/docs/" },
+      { dir: "src/content/docs-ja", routePrefix: "/ja/docs/" },
+    ],
+  },
+});
+```
 
 ## See also
 

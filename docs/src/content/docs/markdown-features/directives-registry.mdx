@@ -44,14 +44,38 @@ paragraph unchanged.
 The registry accepts typed attribute schemas for each registered directive.
 Unknown attributes emit a build-time **warning** (the attr still passes
 through unchanged). Type-coercion failures (e.g. a non-boolean value for
-a `Boolean` attr) emit hard **errors**. The schema is declared alongside the
-`register` call:
+a `Boolean` attr) emit hard **errors**. Each attribute is declared as an
+`AttrSchema`:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Attribute name as written in the MDX source (e.g. `"tone"`, `"data-foo"`). |
+| `ty` | Expected type — see `AttrType` below. |
+| `default` | Value applied when the attr is absent and `required` is `false`. `None` means no default. |
+| `required` | When `true` and the attr is absent with no default, a diagnostic is emitted. |
+
+`AttrType` has four variants:
+
+| Variant | Accepts | Notes |
+|---------|---------|-------|
+| `String` | Any string value, passed through verbatim. | No validation. |
+| `Enum(Vec<String>)` | One of the declared allowed values (case-sensitive). | A value outside the list emits a diagnostic. |
+| `Boolean` | `"true"` / `"false"` (case-insensitive). | A bare attribute with no `=value` also counts as `true`. Emits as the string `"true"`/`"false"` in JSX (v1 only supports string-literal attributes). |
+| `Number` | Any value parseable via `f64::from_str`. | The original source string is stored (not the parsed number) so the JSX emitter passes it through unchanged; a non-parseable value emits a diagnostic. |
+
+The schema is declared alongside the `register` call:
 
 ```rust
 registry.register(
     DirectiveDef::text("badge", "Badge")
         .with_attrs(vec![
             AttrSchema { name: "tone".into(), ty: AttrType::String, default: None, required: false },
+            AttrSchema {
+                name: "size".into(),
+                ty: AttrType::Enum(vec!["sm".into(), "md".into(), "lg".into()]),
+                default: Some("md".into()),
+                required: false,
+            },
         ]),
 );
 ```

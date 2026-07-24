@@ -7,7 +7,7 @@ sidebar_position: 54
 
 `ResolveLinksPlugin` は、起動時に構築されたコンテンツのソースマップを使って、
 内部 Markdown リンク（`[text](./page.mdx)`、`[text](../other/page)`）を正規化します。
-ソースマップが利用可能なときに、プロジェクトレベルで組み込まれます。
+この機能は**オプトイン**です — 有効化の方法は下記の[設定](#設定)を参照してください。
 
 ## 何をするか
 
@@ -25,9 +25,39 @@ mdast フェーズで、HTML が生成される前に、プラグインはすべ
 
 ## 設定
 
-`ResolveLinksPlugin` はプロジェクトごとに組み込まれ、`zfb.config.ts` のキーとしては
-現れません。コンテンツのソースマップが存在するとき（コンテンツコレクションでは
-デフォルト）、自動的に有効になります。
+リンク解決は、`zfb.config.ts` で `resolveMarkdownLinks: { enabled: true }` を
+指定してオプトインしない限り、何も行いません:
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  resolveMarkdownLinks: {
+    enabled: true,
+    docsDir: "src/content/docs",
+  },
+});
+```
+
+| オプション | デフォルト | 説明 |
+|--------|---------|-------------|
+| `enabled` | `false` | プラグインを有効にします。これが `true` になるまで、以下の他のオプションはすべて効果を持ちません。 |
+| `docsDir` | `""` | レガシーな単一ディレクトリ指定。このディレクトリを、ハードコードされた `/docs/` ルートプレフィックスに対してスキャンします。`dirs` が空でない場合は無視されます。 |
+| `dirs` | `[]` | ソースコレクションごとの `{ dir, routePrefix }` エントリを明示的に列挙します。空でない場合は `docsDir` より優先されます — `docsDir` は単一の `/docs/` プレフィックスしか表現できないため、複数のドキュメントルートを持つプロジェクト（ロケールミラーなど）では必須です。 |
+| `onBrokenLinks` | `"warn"` | `.md`/`.mdx` リンクが解決できなかった場合の挙動: `"warn"` はログを出力して続行し、`"error"` は走査中に見つかった壊れたリンクをすべて報告したうえでビルドを失敗させ、`"ignore"` はどちらも行いません。 |
+
+EN・JA のように複数のドキュメントコレクションを持つプロジェクトでは、各コレクションを
+それぞれのルートプレフィックスにマッピングするため `dirs` を使用します:
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  resolveMarkdownLinks: {
+    enabled: true,
+    dirs: [
+      { dir: "src/content/docs", routePrefix: "/docs/" },
+      { dir: "src/content/docs-ja", routePrefix: "/ja/docs/" },
+    ],
+  },
+});
+```
 
 ## 関連項目
 

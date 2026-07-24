@@ -44,9 +44,14 @@ export function paths(): PathEntry[] | Promise<PathEntry[]>;
   `[slug].tsx` ならキーは `slug` です。`[lang]/[slug].tsx` なら `lang` と
   `slug` の両方を指定します。キャッチオール `[...slug].tsx` では、`slug` は
   末尾セグメントの `string[]` です。
-- `props` はオプションで、エンジンにとっては不透明であり、`props` prop と
-  してページコンポーネントへそのまま転送されます。エンジンがそれを検査
-  することはありません。
+- `props` はオプションで、エンジンにとっては不透明な、あなたが管理する
+  データです。ただし `props` という名前のネストしたオブジェクトとして
+  コンポーネントへ渡されるわけでは **ありません**。各キーは `params`
+  と並んで、コンポーネントの props の **トップレベルに展開（spread）**
+  されます。`paths()` のエントリが `props: { title: "..." }` を返した
+  場合、コンポーネントが受け取るのは `{ params, title }` であり、
+  `{ params, props: { title } }` ではありません。`props` のキーが
+  `params` と衝突した場合は `props` 側の値が優先されます。
 
 ### ソースとコンパイル済み entrypoint
 
@@ -87,12 +92,12 @@ export function paths() {
   }));
 }
 
-export default function BlogPost({ params, props }) {
+export default function BlogPost({ params, title }) {
   const post = getCollection("blog").find((e) => e.slug === params.slug);
   if (!post) return <p>Not found.</p>;
   return (
     <article>
-      <h2>{props.title}</h2>
+      <h2>{title}</h2>
       <post.Content />
     </article>
   );
@@ -107,8 +112,10 @@ export default function BlogPost({ params, props }) {
   Promise を返す別のヘルパーが必要な場合は、`export async function paths()` を使ってください。
 - `params.slug` が URL に現れるものです。`slug: "hello-zfb"` の記事は
   `/blog/hello-zfb` になります。
-- `props.title` はエンジンにとって不透明で、コンポーネントへ渡される
-  ただのデータです。シリアライズ可能なものなら何でも入れられます。
+- `title` は — `props` に入れた他のキーと同様に — エンジンにとって
+  不透明です。`props` というキーの下にネストされるのではなく、上で
+  説明したとおり `params` と並んでコンポーネントのトップレベル props
+  に展開されて届きます。シリアライズ可能なものなら何でも入れられます。
 
 ## キャッチオール: ツリー全体のドキュメントページ
 
@@ -192,3 +199,7 @@ export default function DocsPage({ params }) {
 - [Content Collections](./content-collections.mdx) — ほとんどの
   `paths()` 呼び出しがデータソースとして参照するもの。同期的な
   `getCollection` / `getEntry` API についても解説しています。
+- [静的ルートの props](../api/meta-export.mdx#getstaticprops) —
+  `paths()` は動的ルート・キャッチオールルートの URL を列挙するもの
+  で、`getStaticProps()` はそれに相当する、角かっこの区切りを持たない
+  単一の静的ルートがビルド時データを必要とする場合の仕組みです。

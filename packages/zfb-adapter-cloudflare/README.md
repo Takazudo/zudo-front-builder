@@ -70,7 +70,9 @@ lifecycle (`wrangler d1 create`, migrations, preview-vs-prod).
    `dist/`.
 2. Hand the SSR bundle to this adapter, which writes `dist/_worker.js`
    (the wrapper), `dist/_zfb_inner.mjs` (the bundle), copied
-   `x-<hash>.wasm` modules, and `dist/.assetsignore` (see below) — ready
+   `<name>-<hash>.wasm` modules (e.g. `index_bg-a1b2c3d4.wasm` — this is
+   esbuild's own `--asset-names=[name]-[hash]` convention, not a
+   zfb-specific scheme), and `dist/.assetsignore` (see below) — ready
    for Workers Static Assets.
 
 ## `wrangler.toml`

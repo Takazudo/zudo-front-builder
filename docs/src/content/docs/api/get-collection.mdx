@@ -42,7 +42,7 @@ Each entry has the following fields:
 - `slug: string` — the collection-relative path with one trailing `.md`, `.mdx`, or `.tsx` extension stripped, normalized to forward-slash paths. Nested files produce path-based slugs (e.g. `"2024/hello"`).
 - `data: T` — the parsed frontmatter, typed by the generic parameter.
 - `body: string` — the raw markdown body with frontmatter stripped.
-- `module_specifier: string` — stable bridge key in the form `mdx://<collection>/<slug>`. Used internally by the renderer; pass to `Content` lookup if building a custom bridge.
+- `module_specifier: string` — stable bridge key used internally by the renderer to look up the compiled module. `.md` / `.mdx` entries get `mdx://<collection>/<slug>#<hash>` (with the entry's markdown `body` populated); `.tsx` entries get `tsx://<collection>/<slug>#<hash>` (with an empty `body` — there's no separate markdown body). The trailing hash is derived from the compiled JSX source. Pass the specifier to a custom `Content` lookup if building your own bridge.
 - `Content: (props: ContentProps) => ContentElement` — renderable component for this entry. Renders via the renderer bridge when available; falls back to a `<pre data-zfb-content-fallback>` block in test and dev contexts where the bridge is absent.
 
 ## ContentProps

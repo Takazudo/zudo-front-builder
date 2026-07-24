@@ -84,6 +84,12 @@ The spike's bench harness loaded five representative scenarios — static page, 
 
 The V8-class engines win on the correctness axes; QuickJS wins on footprint and build cost. `ssr_rs`'s default per-render isolate creation dominates everything else and accumulates memory under load.
 
+<Note title="This build-cost row is not the workspace build time">
+
+The ~3 minute figure above is the now-removed spike crate compiling its `deno_core` dependency in isolation — one crate, one dependency graph. It is not the same measurement as the 15–30 minute cold first `cargo build` of zfb's *whole* workspace described in [Why Rust](./why-rust.mdx#honest-counterpoint-build-cost), which compiles every workspace crate plus `deno_core` together. The two numbers describe different build scopes, not a discrepancy in how long `deno_core` takes to compile.
+
+</Note>
+
 ## Constraints zfb imposes
 
 Two project-level invariants shape the choice.

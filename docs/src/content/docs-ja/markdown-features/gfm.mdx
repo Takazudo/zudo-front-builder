@@ -1,0 +1,115 @@
+---
+title: GitHub Flavored Markdown (GFM)
+description: markdown.gfm で GFM の 5 つの構文（打ち消し線・テーブル・autolink literal・タスクリスト・脚注）を設定する。
+tier: Core
+---
+
+zfb の Markdown パイプラインは、`markdown-rs` パーサーが実装する [GitHub Flavored
+Markdown (GFM)](https://github.github.com/gfm/) の 5 つの構文 — 打ち消し線、
+テーブル、autolink literal、タスクリスト項目、脚注定義 — をサポートします。この
+5 つのうちどれを有効にするかは `markdown.gfm` 設定キーで制御します。
+
+## 保守的なデフォルト
+
+`markdown.gfm` が指定されていない場合 — `markdown` ブロック全体を省略した場合も
+含めて — zfb は **保守的なデフォルト** を適用します。打ち消し線とテーブルは有効、
+autolink literal・タスクリスト項目・脚注定義は無効です。これは GFM の全機能を
+無条件に有効化するのではなく、zfb のこれまでの実質的な状態（テーブルのみ）からの
+挙動の差分を最小限に抑えたものです。
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  // markdown.gfm を省略 — 保守的なデフォルトが適用される:
+  // 打ち消し線 + テーブルは有効、それ以外はすべて無効
+});
+```
+
+## 値の形式
+
+`markdown.gfm` は 3 つの形式を受け付けます:
+
+### 省略時（デフォルト）
+
+フィールドを完全に省略する（あるいは `markdown` ごと省略する）と、上に示した
+保守的なデフォルトになります。
+
+### 真偽値のショートハンド
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: {
+    gfm: true, // すべての GFM 構文を有効化
+  },
+});
+```
+
+`gfm: true` は autolink literal・タスクリスト項目・脚注定義を含め、すべての構文を
+有効にします。`gfm: false` は打ち消し線とテーブルも含めて、すべての構文を無効に
+します。
+
+### 構文ごとのオブジェクト
+
+```ts title="zfb.config.ts"
+export default defineConfig({
+  markdown: {
+    gfm: {
+      autolinkLiteral: true,
+      taskListItem: true,
+      // ここで省略した strikethrough・table・footnoteDefinition は
+      // `false` ではなく保守的なデフォルトにフォールバックする
+    },
+  },
+});
+```
+
+オブジェクトから省略したフィールドは、その構文の保守的なデフォルト値
+（`strikethrough: true`、`table: true`、残りの 3 つは `false`）を保ちます。明示的に
+設定したフィールドはそのまま尊重されます。
+
+## 構文一覧
+
+| 構文 | オブジェクトキー | 保守的なデフォルト | レンダリング結果 |
+|---|---|---|---|
+| 打ち消し線 (`~~text~~`) | `strikethrough` | 有効 | `<del>text</del>` |
+| パイプテーブル | `table` | 有効 | `<table>` |
+| autolink literal（素の `https://example.com`） | `autolinkLiteral` | 無効 | `<a href="...">` |
+| タスクリスト項目 (`- [x]` / `- [ ]`) | `taskListItem` | 無効 | パースのみ — 後述 |
+| 脚注定義 (`[^ref]: ...`) | `footnoteDefinition` | 無効 | パースのみ — 後述 |
+
+<Warning title="taskListItem と footnoteDefinition はパースされるがレンダリングされない">
+
+`taskListItem` や `footnoteDefinition` を有効にすると、パーサーは構文を認識して
+対応する mdast ノードを構築しますが、zfb の mdast-to-output コンバーターは、まだ
+どちらのノード形状に対する出力アームも持っていません:
+
+- **`taskListItem`** — `- [x]` / `- [ ]` マーカーはパース時に消費されますが、その
+  結果のチェック済み／未チェックの状態は下流のレンダラーから一切読み取られません。
+  タスクリスト項目は通常の `<li>` の箇条書きとしてレンダリングされ、チェックボックス
+  は付かず、チェック済み項目と未チェック項目に見た目の違いはありません。
+- **`footnoteDefinition`** — 脚注定義ブロックとインラインの `[^ref]` 参照マーカーは、
+  どちらも zfb の未処理ノードのキャッチオールに落ち、何もレンダリングされません。
+  脚注のテキストとその参照マーカーは出力から黙って消えます — ビルド警告もエラーも
+  出ません。
+
+どちらのフラグを有効にしてもエラーにはなりませんが、GitHub で見られるような
+チェックボックスや脚注の UI も生成されません。これはコードのバグの可能性が高い
+ものとして起票済みです — 
+[issue #1950](https://github.com/Takazudo/zudo-front-builder/issues/1950) を参照して
+ください。
+
+</Warning>
+
+## CJK フレンドリー処理との関係
+
+`autolinkLiteral` は `markdown.cjkFriendly`（デフォルトで有効）と相互作用します。
+CJK テキストに密着した素の URL は、そのままだと末尾の CJK の並びをリンクの `href`
+に飲み込んでしまいます。境界規則については
+[CJK フレンドリーな強調](./cjk-friendly.mdx) を参照してください。
+
+## 関連項目
+
+- [Markdown 機能](./index.mdx) — 機能の全体マップ。
+- [CJK フレンドリーな強調](./cjk-friendly.mdx) — `autolinkLiteral` と CJK 境界の
+  相互作用。

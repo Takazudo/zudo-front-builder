@@ -15,7 +15,7 @@ zfb is built as a set of small Rust crates that each own one job. This page is a
 4. **Dependency graph** — `crates/zfb-graph`. Tracks page-to-source dependencies. When the watcher reports a change, the graph answers a single question: which pages need to be rebuilt?
 5. **Build orchestrator** — `crates/zfb-build`. Coordinates the per-page work and writes outputs atomically via `atomic_write_string`, so a partial write can never leave `dist/` in a half-broken state.
 6. **Renderer** — `crates/zfb-render`. Compiles TSX to JS with SWC, evaluates the resulting ES module via the JS runtime host, and calls the page's `default()` export to produce an HTML string. Content collection entries (`.md` / `.mdx`) are compiled through the same pipeline as JSX modules — the renderer resolves `mdx://<collection>/<slug>` specifiers and surfaces them to user pages as `entry.Content` (see [MDX Components](./mdx-components.mdx)).
-7. **CSS pipeline** — `crates/zfb-css`. Runs Tailwind v4 and PostCSS as needed. See [Styling](./styling.mdx).
+7. **CSS pipeline** — `crates/zfb-css`. Runs Tailwind v4 and lightningcss as needed. See [Styling](./styling.mdx).
 8. **Islands pipeline** — `crates/zfb-islands`. Scans for `"use client"` components and bundles them all into a single shared ESM module via esbuild, plus any code-split chunks for dynamic `import()` calls. See [Islands](./islands.mdx).
 9. **Server** — `crates/zfb-server`. Dev mode only. An axum-based HTTP server that serves the page cache as static files, plus an SSE channel at `/__zfb/reload` for browser reload events (see [Dev mode lifecycle](./dev-mode-lifecycle.mdx) for the full event-type breakdown).
 
@@ -37,7 +37,7 @@ When the watcher reports a change, the dependency graph picks the affected pages
 
 ## Preview: `zfb preview`
 
-`zfb preview` is the simplest command of the three: it serves the existing `dist/` directory as static files on `:4321`. There is no rendering, no watching, no rebuilding — it exists so you can sanity-check a production build locally before deploying it.
+`zfb preview` has two modes. By default (no adapter, or `adapter: "none"`) it serves the existing `dist/` directory as static files on `:4321` — no rendering, no watching, no rebuilding, just a sanity check of a production build before deploying it. When the project configures the Cloudflare adapter (`adapter: "@takazudo/zfb-adapter-cloudflare"`), it instead hands off to `wrangler dev`, which runs the emitted `dist/_worker.js` locally so `prerender = false` routes actually render through the real Worker runtime rather than being served as static files.
 
 ## Why the split
 

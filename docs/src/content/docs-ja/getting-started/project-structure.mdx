@@ -88,7 +88,7 @@ my-site/
 
 ## zfb.config.json
 
-設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000`）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
+設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000` — これは `zfb dev` サーバーのデフォルトで、`zfb preview` は未設定時に代わりに `4321` にフォールバックします）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
 
 `outDir` は `zfb dev`、`zfb build`、`zfb preview` のすべてで尊重されます。build と preview では CLI の `--outdir` が config の `outDir` より優先され、組み込みのフォールバックは `dist/` です。
 
@@ -96,4 +96,4 @@ my-site/
 
 ## package.json、tsconfig.json、.gitignore
 
-標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、島が import する任意のライブラリを宣言します。`tsconfig.json` は `pages/`・`layouts/`・`components/` 内の TSX がクリーンに型チェックされるよう構成されています。同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。加えて `**/zfb-tailwind-entry-*.css` も除外します。これは Tailwind パイプラインが CSS エントリの隣に生成する一時エントリファイルです（[スタイリング](../concepts/styling.mdx)を参照）。
+標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、島が import する任意のライブラリを宣言します。`zfb new` は `@takazudo/zfb` と `@takazudo/zfb-runtime` を、そのプロジェクトをスキャフォールドした CLI のバージョンに厳密ピン留めします — `=0.1.0-next.7` のような exact pin であり、`^`/`~` レンジではありません。これにより、スキャフォールドしたプロジェクトが将来のリリースへ静かにドリフトすることがなくなります。`tsconfig.json` は `pages/`・`layouts/`・`components/` 内の TSX がクリーンに型チェックされるよう構成されています。同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。加えて `**/zfb-tailwind-entry-*.css` も除外します。これは Tailwind パイプラインが CSS エントリの隣に生成する一時エントリファイルです（[スタイリング](../concepts/styling.mdx)を参照）。

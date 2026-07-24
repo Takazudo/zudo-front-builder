@@ -1,0 +1,62 @@
+---
+title: definePlugin
+description: "Identity helper that types a plugin module's default export as a ZfbPlugin, surfacing hook signatures and field-level typos at compile time."
+sidebar_position: 8
+---
+
+## Signature
+
+```ts
+definePlugin(plugin: ZfbPlugin): ZfbPlugin
+```
+
+`definePlugin` is exported from `@takazudo/zfb/plugins`. Like [`defineConfig`](./define-config.mdx), it is an identity helper: it returns its argument unchanged. Its only job is to type the object literal as `ZfbPlugin` so an editor surfaces field-level types and hook-signature typos at compile time.
+
+```ts
+// plugins/my-plugin.ts
+import { definePlugin } from "@takazudo/zfb/plugins";
+
+export default definePlugin({
+  name: "my-plugin",
+  async preBuild({ outDir, logger }) {
+    logger.info(`generating index into ${outDir}`);
+  },
+});
+```
+
+A plugin module's default export must be the object returned by `definePlugin` (or an equivalent `ZfbPlugin`-shaped literal) — `zfb.config.ts` references the module by `name`, and the Rust-side plugin host loads it via dynamic `import()`.
+
+## The `ZfbPlugin` shape
+
+```ts
+interface ZfbPlugin {
+  name: string;
+  setup?(ctx: ZfbSetupContext): Promise<void> | void;
+  preBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
+  postBuild?(ctx: ZfbBuildHookContext): Promise<void> | void;
+  devMiddleware?(ctx: ZfbDevMiddlewareContext): Promise<void> | void;
+  previewMiddleware?(ctx: ZfbPreviewMiddlewareContext): Promise<void> | void;
+}
+```
+
+`name` is informational — the resolved module specifier, not `name`, is what zfb uses to identify the plugin internally; `name` only surfaces in log/error lines. All five hooks are optional and independent; a plugin declares any subset. Declaration order in `zfb.config.ts`'s `plugins` array matters when multiple plugins touch the same surface.
+
+See [Plugins](../concepts/plugins.mdx) for the full lifecycle narrative — hook ordering, `setup`'s four registration methods, the `devMiddleware`/`previewMiddleware` request/response contract, and worked examples.
+
+## Hook signatures
+
+- **`setup?(ctx: ZfbSetupContext)`** — runs once per host boot (`zfb build`, `zfb dev`, and `zfb preview`), before `preBuild`. `ctx` exposes `command` (`"build" | "dev" | "preview"`), `projectRoot`, `config`, `options`, `logger`, and four registration methods: `addAlias`, `addVirtualModule`, `injectRoute`, `addClientEntry`. Registrations made under `"preview"` are accepted for shape-consistency but are inert — preview never re-enters the scan → bundle → render pipeline those registries feed.
+- **`preBuild?(ctx: ZfbBuildHookContext)`** — file-generation work before the bundler/renderer/CSS/islands passes. Runs once per `zfb build` and once per `zfb dev` boot. Does not fire under `zfb preview`.
+- **`postBuild?(ctx: ZfbBuildHookContext)`** — finalisation after `dist/` has been fully written. `ctx.routes` — the complete route manifest — is present only here (`undefined` on `preBuild`). Does not fire under `zfb preview`.
+- **`devMiddleware?(ctx: ZfbDevMiddlewareContext)`** — registers per-request HTTP handlers for `zfb dev` via `ctx.register(path, handler)`. Fires only during `zfb dev`.
+- **`previewMiddleware?(ctx: ZfbPreviewMiddlewareContext)`** — the `zfb preview` (static mode) counterpart of `devMiddleware`; same registration call and request/response shape, but a separate per-mode opt-in — a plugin registering only `devMiddleware` gets no handlers under `zfb preview`.
+
+Both `preBuild`/`postBuild` receive `{ projectRoot, outDir, config, options, logger }` (plus `routes` on `postBuild`); `devMiddleware`/`previewMiddleware` receive `{ projectRoot, config, options, logger, register }`; `setup` receives `{ command, projectRoot, config, options, logger, addAlias, addVirtualModule, injectRoute, addClientEntry }`. `options` on every context is the plugin's own `PluginConfig.options` block, copied verbatim.
+
+`ZfbBuildHookContext`, `ZfbDevMiddlewareContext`, `ZfbPreviewMiddlewareContext`, `ZfbSetupContext`, `ZfbPluginLogger`, `ZfbRouteEntry`, and `ZfbRouteManifest` are all exported from `@takazudo/zfb/plugins` alongside `ZfbPlugin` and `definePlugin`.
+
+## See also
+
+- [Plugins](../concepts/plugins.mdx) — the full plugin hook contract, worked examples, and conflict-detection errors (`AliasConflict`, `VirtualModuleConflict`, `InjectRouteConflict`, `ClientEntryConflict`, `InvalidClientEntry`).
+- [`defineConfig`](./define-config.mdx) — wiring `plugins: [{ name: "...", options: {...} }]` in `zfb.config.ts`.
+- [`definePreset`](./define-preset.mdx) — stamping preset-contributed plugins with provenance so relative-path plugin specifiers resolve against the preset package.

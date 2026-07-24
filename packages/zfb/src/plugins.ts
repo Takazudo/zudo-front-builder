@@ -193,10 +193,15 @@ export type ZfbPreviewMiddlewareContext = {
  * Loader signature for a virtual-module registration. Must return the
  * **complete ESM module source text** as a string — the bundler /
  * embedded V8 host feeds the returned string in as the module's
- * source verbatim. The loader is invoked **exactly once per build**
- * (and once per `zfb dev` host boot) the first time any consumer
- * imports the registered specifier; subsequent imports of the same
- * specifier re-use the memoised result.
+ * source verbatim. The loader runs **eagerly**, not lazily on first
+ * import: exactly once per `zfb build` run and once per `zfb dev`
+ * host boot, during the setup phase right after every plugin's
+ * `setup` hook has returned — even if the registered specifier is
+ * never imported by any page or module. The resulting source is
+ * memoised; every subsequent import of that specifier reuses it.
+ * (Under `zfb preview`, `addVirtualModule` registrations are accepted
+ * but inert — see [`ZfbSetupContext.command`](#command) — so the
+ * loader never runs there.)
  *
  * Example:
  *
@@ -280,7 +285,8 @@ export type ZfbSetupContext = {
    * Register a virtual module. `specifier` is a bare import
    * specifier (recommended `virtual:` prefix, not enforced).
    * `loader` returns the complete ESM source text as a string and
-   * runs **exactly once per build** at first import.
+   * runs **eagerly, once per build/dev-boot during setup** — not
+   * lazily at first import (see [`ZfbVirtualModuleLoader`]).
    *
    * Two plugins registering the same `specifier` raises
    * `VirtualModuleConflict` and aborts the build.

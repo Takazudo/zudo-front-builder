@@ -92,10 +92,12 @@ This is what actually renders your pages.
 
 ### Compiled Wasm modules
 
-When an SSR route imports Wasm, zfb emits an `x-<hash>.wasm` file beside these
-two JavaScript files. `_zfb_inner.mjs` imports it as a compiled
-`WebAssembly.Module`, while `.assetsignore` prevents it from becoming a public
-asset. See [Importing WebAssembly](../guides/importing-wasm.mdx) for the
+When an SSR route imports Wasm, zfb emits a `<name>-<hash>.wasm` file (e.g.
+`index_bg-a1b2c3d4.wasm` — esbuild's own `--asset-names=[name]-[hash]`
+convention, not a zfb-specific scheme) beside these two JavaScript files.
+`_zfb_inner.mjs` imports it as a compiled `WebAssembly.Module`, while
+`.assetsignore` prevents it from becoming a public asset. See
+[Importing WebAssembly](../guides/importing-wasm.mdx) for the
 adapter-agnostic build primitive — the default import, ambient typing, and
 dev/SSG/SSR behavior — and the
 [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#importing-wasm-in-an-ssr-route)

@@ -1,0 +1,56 @@
+---
+title: slugify
+description: Heading-anchor slug utilities — slugify() and SlugAllocator — exported from the @takazudo/zfb/slugify subpath.
+sidebar_position: 9
+---
+
+## Signature
+
+```ts
+function slugify(input: string): string
+```
+
+Exported from the `@takazudo/zfb/slugify` subpath. Produces the `id` attribute value zfb assigns to `<h2>`–`<h6>` heading elements, processing `input` one Unicode code point at a time: whitespace and a fixed ASCII punctuation set (`` ! " # $ % & ' ( ) * + , . / : ; < = > ? @ [ \ ] ^ ` { | } ~ ``, plus Unicode control characters) collapse to a single `-` separator — no leading, trailing, or duplicate dashes — and every other character is lowercased and kept. `slugify("Hello, World!")` returns `"hello-world"`.
+
+<Note title="Not github-slugger compatible">
+
+`slugify` is intentionally **not** a drop-in replacement for npm `github-slugger`. Stripped punctuation collapses to a `-` (`slugify("a,b")` returns `"a-b"`, where github-slugger produces `"ab"`), and pre-existing dashes/underscores pass through unchanged. It is a byte-for-byte TypeScript port of zfb's own Rust `slugify` (`crates/zfb-content/src/plugins/heading_links.rs`) — parity is enforced by a shared fixture (`crates/zfb-content/tests/fixtures/slugify-parity.json`) consumed by both a Rust integration test and this package's `slugify.test.ts` vitest suite.
+
+</Note>
+
+This produces a **heading-anchor** slug — distinct from the collection-entry URL slug (`CollectionEntry.slug`), which is produced by a separate internal helper from a file's path, not its heading text.
+
+## `SlugAllocator`
+
+```ts
+class SlugAllocator {
+  constructor(strategy?: "flat" | "hierarchical");
+  allocate(depth: number, base: string): string;
+  reset(): void;
+}
+```
+
+Per-document dedupe allocator layered on top of `slugify()`'s output, mirroring the Rust `SlugAllocator`. Construct one per document — or call `reset()` between documents to clear its state — and call `allocate(depth, base)` once per heading, in document order:
+
+- `depth` — heading depth, `2`–`6`. `h1` is never allocated; it's owned by the page layout, not the Markdown body.
+- `base` — the `slugify()`-ed heading text.
+
+Two strategies, matching [Heading links — `strategy`](../markdown-features/heading-links.mdx#config):
+
+- **`"flat"`** (default) — a single per-document dedupe counter: the first heading that slugifies to `"intro"` gets `intro`, the second gets `intro-1`, the third `intro-2`, and so on.
+- **`"hierarchical"`** — each slug is prefixed with its ancestor heading chain (popping ancestors at or above the current depth first), then deduped on the full candidate path — e.g. `foo`, `foo-moo`, `foo-moo-mew` for a `Foo` > `Moo` > `Mew` heading nest.
+
+```ts
+import { SlugAllocator } from "@takazudo/zfb/slugify";
+
+const allocator = new SlugAllocator("flat");
+allocator.allocate(2, "getting-started"); // "getting-started"
+allocator.allocate(2, "getting-started"); // "getting-started-1" (collision)
+allocator.reset(); // clear counters before the next document
+```
+
+An empty `base` (a heading that slugifies to nothing) returns `""` from both `allocate` and the standalone `slugify` without mutating allocator state.
+
+## See also
+
+- [Heading links](../markdown-features/heading-links.mdx) — the always-on Markdown plugin that calls this allocator to assign `id` attributes and inject anchor links on every heading.

@@ -34,7 +34,7 @@ declare module "zfb/config" {
 - `outDir?: string` — build と preview が使う出力ディレクトリです。dev ではライブ出力先ではなく、読み取り専用の事前ビルド済みシードとして扱われます。デフォルト: `"dist"`。build と preview では、明示的な `--outdir` がこの設定より優先されます。
 - `publicDir?: string` — 静的アセットのディレクトリ。そのままコピーされます。デフォルト: `"public"`。
 - `host?: string` — dev / preview サーバーがバインドするホスト。
-- `port?: number` — dev / preview サーバーのポート。
+- `port?: number` — dev / preview サーバーのポート。省略時の組み込みフォールバックはコマンドごとに異なり、`zfb dev` は `3000`、`zfb preview` は `4321` にフォールバックします。ここで `port` を設定すると両コマンドのフォールバックを上書きし、さらに CLI の `--port` フラグがこの設定値を上書きします。[CLI リファレンス](./cli.mdx)を参照してください。
 - `allowedHosts?: string[]` — 非 localhost インターフェースにバインドしたときに dev / preview サーバーが受け付ける Host ヘッダー値（Vite の `server.allowedHosts` に相当）。非ループバックバインドのときだけ参照されます。`localhost`・明示的にバインドしたホスト・IP リテラルの Host（`127.0.0.1`・`[::1]`・起動バナーが表示する LAN URL など）は常に許可されます（DNS リバインディングには DNS 名が必要なため、生の IP は安全です）。エントリは完全一致（大文字小文字を区別せず、リクエスト側のポートは除去して比較）。`".example.com"` のような先頭ドット付きエントリはサブドメインにもマッチします。
 - `framework?: "preact" | "react"` — JSX フレームワークのランタイム。デフォルト: `"preact"`。
 - `collections?: CollectionDef[]` — コンテンツコレクション。各エントリは以下を持ちます。
@@ -58,8 +58,20 @@ declare module "zfb/config" {
 - `copyPublicWithBase?: boolean` — `public/` のアセットを `base` サブパス配下へコピーするか（デフォルトの `true`）、`dist/` ルートへフラットにコピーするか（`false`）。デプロイ処理が `dist/` ツリー全体を base パスへ移動する場合（例: `cp -a dist/. deploy-root/pj/site/`）は、`dist/<base>/<base>/...` の二重ネストを避けるため `false` にします。[静的アセット — デプロイ時に再配置するパイプライン向けのフラットコピー](../concepts/static-assets.mdx)を参照してください。
 - `stripMdExt?: boolean` — MDX コンパイル時に内部リンクの href から `.md` / `.mdx` 拡張子を取り除き、末尾に `/` を付与します。デフォルト: `false`。
 - `trailingSlash?: boolean` — base パスの書き換え時に、拡張子なしの絶対 href に末尾の `/` を付与します。デフォルト: `false`。
-- `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション（例: GFM の切り替え）。[Markdown Features](/ja/docs/markdown-features/) のセクションを参照してください。
-- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — マークダウンリンクリゾルバの設定。`[label](./other.mdx)` のリンクをレンダリング後のルート URL に書き換えるには有効にします。拡張子なし（`./other`）およびディレクトリ形式（`other/`）のターゲットも解決され、`{name}.mdx` → `{name}.md` → `{name}/index.mdx` → `{name}/index.md` の順に探索されます。相対ターゲットはソースファイルのディレクトリから解決されます。非 index ページからレンダリング後の URL（ソースファイルより 1 階層深い位置 — 例: `section/article.mdx` からの `../sibling/`）を基準に書かれたディレクトリ形式リンクは、ファイル空間の候補がすべて外れた場合に URL 空間フォールバックで解決されます。
+- `markdown?: MarkdownConfig` — Markdown / MDX のパースオプション。フィールド:
+  - `gfm?: GfmFlag` — GFM 構文の切り替え（打ち消し線、テーブル、オートリンクなど）。[GFM](../markdown-features/gfm.mdx)を参照してください。
+  - `toc?: { heading?: string; maxDepth?: number }` — `heading`（デフォルト `"TOC"`）にマッチする最初の見出しの後に、`maxDepth` レベル（デフォルト `2`）までの目次を挿入します。`markdown.features.headingMarkerToc` と同じ基盤プラグインと設定形状を配線しており、[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx)で説明しています。
+  - `externalLinks?: { target?: string; rel?: string[] }` — 外部の `<a>` 要素に `target` / `rel` を付与します。[外部リンク](../markdown-features/external-links.mdx)を参照してください。
+  - `cjkFriendly?: boolean` — CJK に配慮した強調とオートリンク境界の処理。デフォルトは `true`（オン）。[CJK フレンドリーな強調](../markdown-features/cjk-friendly.mdx)を参照してください。
+  - `hardBreaks?: boolean` — ソフト改行を `<br>` に変換します。デフォルトは `false`（オフ）。[ハード改行](../markdown-features/hard-breaks.mdx)を参照してください。
+  - `features?: MarkdownFeaturesConfig` — 機能ごとのオプトイン切り替え（mermaid、ディレクティブ、コードエンリッチメント、読了時間など）。[Markdown Features](../markdown-features/index.mdx) の機能マップを参照してください。
+- `resolveMarkdownLinks?: ResolveMarkdownLinksConfig` — マークダウンリンクリゾルバの設定。`[label](./other.mdx)` のリンクをレンダリング後のルート URL に書き換えるには有効にします。拡張子なし（`./other`）およびディレクトリ形式（`other/`）のターゲットも解決され、`{name}.mdx` → `{name}.md` → `{name}/index.mdx` → `{name}/index.md` の順に探索されます。相対ターゲットはソースファイルのディレクトリから解決されます。非 index ページからレンダリング後の URL（ソースファイルより 1 階層深い位置 — 例: `section/article.mdx` からの `../sibling/`）を基準に書かれたディレクトリ形式リンクは、ファイル空間の候補がすべて外れた場合に URL 空間フォールバックで解決されます。フィールド:
+  - `enabled?: boolean` — 何かを起こすには `true` に設定する必要があります。デフォルトは `false` で、リゾルバは何もせず、リンクはそのまま通過します。
+  - `docsDir?: string` — レガシーの単一ディレクトリ形式。ハードコードされた `/docs/` ルートプレフィックスに対してスキャンされます。`dirs` が空でなくなると無視されます。
+  - `dirs?: { dir: string; routePrefix: string }[]` — ディレクトリごとの明示的なソースマップ（例: EN ドキュメントは `src/content/docs/` → `/docs/`、JA ドキュメントは `src/content/docs-ja/` → `/ja/docs/`）。`docsDir` より優先され、複数のドキュメントルート（ロケールミラー）を持つプロジェクトでは必須です。
+  - `onBrokenLinks?: "warn" | "error" | "ignore"` — `.md` / `.mdx` リンクを解決できないときの挙動。デフォルトは `"warn"`（警告を出してビルドは継続）。
+
+  全体の挙動については[リンクの解決](../markdown-features/resolve-links.mdx)と [Markdown Features](../markdown-features/index.mdx) の機能マップを参照してください。
 - `emitRoutesManifest?: boolean` — `zfb build` がビルド後のルートマニフェストを `<outDir>/__zfb/routes.json` に書き出すかどうか。デフォルト: `true`（書き出す）。`false` を設定すると抑制します。
 - `extraWatchPaths?: string[]` — プロジェクト内のソースルートに加えて、dev ウォッチャーが追跡する追加の絶対ファイルシステムパス。[プロジェクトルート外のパスを監視する](#プロジェクトルート外のパスを監視する) を参照してください。
 
@@ -90,6 +102,52 @@ zfb は次の 3 つのコンパイル時置換を所有します。値は minify
 | `zfb build` | `false` | `true` | `"production"` |
 
 これらの値は islands、クライアントスクリプト、それらの module worker、ページ / SSR バンドルに適用されます。zfb はそれ以外の `import.meta.env.*` キーを合成しません。表にある 3 つのキーは予約されており、`bundle.define` から上書きできません。
+
+### `bundle.exclude`、`bundle.mainFields`、`bundle.external`
+
+ページ / SSR パスは esbuild の `--platform=neutral` でバンドルします。これは意図的に最小限で、`main-fields` の解決リストはデフォルトで空であり、CJS 専用の `require()` 経路でしか解決できないパッケージを拒否します。これら 3 つのフィールドは、neutral パスに到達する CJS 専用の依存（直接インポートされるか、eager な `import.meta.glob(...)` の展開で新たに取り込まれるもの）向けのエスケープハッチです。3 つともデフォルトでは未設定 / 空であり、このつまみを使わないビルドとバイト単位で同一です。
+
+`bundle.exclude` — バンドラーが esbuild グラフへ決して取り込んではいけないソースファイルを指定する、プロジェクト相対の glob パターン（gitignore スタイル。プロジェクトルートからの相対パスに対して POSIX 形式でマッチ）。マッチしたファイルはシャドウツリーへステージングされることも、eager な `import.meta.glob(...)` で展開されることもありません。`CollectionDef.exclude`（バンドルではなくコンテンツのフィルタリング）とは無関係です。
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    exclude: ["components/**/*.stories.tsx"],
+  },
+});
+```
+
+変更前: あるルートの `import.meta.glob("./components/**/*.tsx")` が `Button.stories.tsx` を拾い、それが CJS 専用のテストモック用パッケージをインポートするため、neutral プラットフォームのビルドがそれを解決できずに失敗します。変更後: glob は `*.stories.tsx` ファイルを完全にスキップし、ビルドが成功します。
+
+`bundle.mainFields` — neutral パス向けの明示的な esbuild `--main-fields` リスト。例えば `["main", "module"]` を設定すると、`main` / `module` しか提供しない（`exports` マップを持たない）依存を解決できます。`neutral` はそうしなければ main-fields をまったく参照しないためです。
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    mainFields: ["main", "module"],
+  },
+});
+```
+
+変更前: `The "main" field here was ignored. Main fields must be configured explicitly when using the "neutral" platform.` 変更後: esbuild は `main` そして `module` を参照し、依存を解決します。
+
+`bundle.external` — neutral パス向けに `--external` としてマークするベア specifier。esbuild はそれらの解決を試みる代わりに、バンドルせずそのまま残します。`mainFields` だけでは満たせない CJS 専用の依存向けのもう 1 つのエスケープハッチです。フレームワークが提供する externals に追加されます。
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  bundle: {
+    external: ["some-cjs-only-package"],
+  },
+});
+```
+
+変更前: esbuild は `--platform=neutral` の下で `some-cjs-only-package` の解決を試みて失敗します。変更後: esbuild はそのベアインポートを解決せず external としてマークします。
 
 ### `bundle.loaders`
 

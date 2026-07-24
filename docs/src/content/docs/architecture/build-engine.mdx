@@ -58,6 +58,19 @@ zfb owns orchestration, the dependency graph, and the per-page contract. The too
 
 This structure means the crates above each tool's trait boundary are unaffected when the tool changes. See [Islands](../concepts/islands.mdx) for the `ClientBundler` contract and [Incremental rebuild](../concepts/incremental-rebuild.mdx) for how the dependency graph feeds the per-page policy.
 
+## Shadow staging: how the bundler feeds esbuild a coherent tree
+
+Before esbuild ever runs for the server-side worker bundle, `zfb-build`'s bundler (`crates/zfb-build/src/bundler.rs`) materialises a **shadow tree**: a temporary copy of the project's source roots (`pages/`, `content/`, `components/`, `layouts/`) that mirrors the project's own directory structure, so relative imports resolve unchanged. Each `.mdx` file is compiled to its JSX output in place, keeping the `.mdx` extension so esbuild's `--loader:.mdx=jsx` still applies, and the framework's hydration shim is materialised alongside them as a real file.
+
+Two synthetic files anchor the shadow root:
+
+- **A synthetic `tsconfig.json`.** The bundler rebases the user's `tsconfig` path aliases (already resolved against the project's own `extends` chain) onto the shadow tree — `rebase_tsconfig_paths_to_shadow` — then writes the result with `write_synthetic_tsconfig`. esbuild resolves the project's aliases (`@/components/foo` → `./components/foo`) through this file via `--tsconfig=`, so an aliased import behaves identically whether esbuild reads it from the live tree or the shadow copy.
+- **A synthetic `entry.mjs`.** It imports every page module found under the shadow `pages/`, the hydration shim, and `createPageRouter` from `@takazudo/zfb-runtime/server`, and re-exports the `routes` map plus the Workers-style `default { fetch }` entry that esbuild bundles.
+
+**`--preserve-symlinks` and the `node_modules` symlink.** By default, non-MDX source files are staged into the shadow tree as symlinks back to the live files rather than copies — cheap, and esbuild reads through them transparently. `copy_mode` (real copies instead of symlinks) only kicks in for the one configuration where esbuild runs *without* `--preserve-symlinks`: a workspace project with non-empty tsconfig paths, where esbuild would otherwise canonicalise a symlinked source back to the live tree and make shadow-only transforms (like `import.meta.glob` expansion) invisible. Separately, when the caller configures a `node_modules_dir` (e.g. a pnpm workspace's `<workspace-root>/node_modules/.pnpm/node_modules`), the bundler creates a `<shadow>/node_modules` symlink so esbuild can resolve workspace packages from inside the shadow tree. `--preserve-symlinks` keeps esbuild anchored at the `<shadow>/node_modules/<pkg>` symlink during resolution instead of canonicalising back to the live path — esbuild skips `tsconfig.json` discovery for any importer whose resolved path contains a `node_modules` segment, so losing that anchor would silently break alias resolution for imports written inside workspace packages (see issues #443 / #450, the regression this flag exists to prevent).
+
+A fail-closed **stage-escape audit** runs against esbuild's own metafile after every bundle: it hard-fails the build if any input resolved to live first-party source outside the shadow tree with no staged spelling, or to a `node_modules` symlink escaping to a live workspace sibling. The shadow tree itself is a build-time-only artifact — it is discarded once the bundle is written, and nothing in `dist/` ever depends on it existing.
+
 ## V8-mode gate: `output` and auto-detection
 
 `zfb-render` exposes the embedded V8 host behind a default-on `embed_v8` cargo feature. The build engine decides at the start of every build whether the deploy artifact assumes a V8-bearing runtime is part of the shape — the `V8Mode` decision — and surfaces a clear error when the config and the route table disagree.
@@ -107,7 +120,7 @@ The orchestrator does a second pass: when a tick fires, it drains every `Change`
 
 The dev server (`zfb-server`) is a thin reader on top of the orchestrator's outputs. It owns a `PageCache` (URL path to rendered HTML, populated after every render), a `tokio::sync::broadcast` channel of `ReloadEvent` values, and an `axum` router that serves the cache, `dist/assets/`, `public/`, and an SSE endpoint at `/__zfb/reload`.
 
-The wiring point is `outcome_to_events` in `zfb-server`'s `livereload.rs`. Every non-noop `BuildOutcome` is translated into `ReloadEvent`s and broadcast. CSS-only changes emit a `css` event so the browser swaps stylesheets without losing client state; everything else emits a `page` event and triggers `location.reload()`.
+The wiring point is `outcome_to_events` in `zfb-server`'s `livereload.rs`. Every non-noop `BuildOutcome` is translated into one or more of three `ReloadEvent` variants and broadcast: `Css` for CSS-only changes (the browser swaps stylesheets in place without losing client state), `Islands` when the shared island bundle changed (the browser dynamic-imports the new bundle and re-runs hydration), and `Page` for everything else, which triggers `location.reload()`. See [Dev mode lifecycle](../concepts/dev-mode-lifecycle.mdx#the-three-sse-event-types) for the full event taxonomy and which edit scenarios trigger which event.
 
 ### Request-time SSR for `prerender = false` routes
 

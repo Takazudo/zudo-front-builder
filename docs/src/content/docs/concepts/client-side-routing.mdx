@@ -117,6 +117,26 @@ Add `data-zfb-reload` to any `<a>` or `<form>` to force a full browser reload fo
 <a href="/admin" data-zfb-reload>Admin (full reload)</a>
 ```
 
+## Form submissions
+
+`<ClientRouter />` also intercepts same-origin `<form>` submits and turns them into a soft navigation through the same `navigate()` path as link clicks — no full-page round trip.
+
+- **GET forms** — the form's fields are serialized into the destination URL's query string, and the result is a plain GET soft navigation; no request body is sent.
+- **POST (or any other non-GET method) forms** — the submitted `FormData` is carried through to `navigate()`'s `formData` option and sent as the body of a real POST request, encoded as `application/x-www-form-urlencoded` when the form's `enctype` requests it, or as multipart `FormData` otherwise.
+- **The submitter's `formaction` / `formmethod` win** — a `<button formaction="...">` / `formmethod="..."` on the element that triggered the submit overrides the `<form>`'s own `action` / `method`, matching standard HTML form semantics.
+
+### Opting out of a soft form submission
+
+A submit falls through to a normal, full browser form submission when any of the following are true:
+
+- the `<form>` carries `data-zfb-reload` (same opt-out attribute as links — see [Opting a link out of the router](#opting-a-link-out-of-the-router) above)
+- `method="dialog"` — the special HTML keyword used inside `<dialog>` elements
+- the resolved action URL is cross-origin
+- the submit was triggered by a modifier-key click (Cmd/Ctrl/Shift/Alt) or a non-primary mouse button on the submitter
+- another handler already called `event.preventDefault()` on the `submit` event
+
+`event.formData` on [`zfb:before-preparation`](#navigation-lifecycle-events) is set only for a form-triggered navigation (`undefined` for link clicks and for programmatic `navigate()` calls that don't pass one) — listen there to inspect or react to a submission before it's sent.
+
 ## Deep-linking transient UI state with `syncHistoryEntry()`
 
 Modals, dialogs, and viewers often want their own URL — so Back closes them, and the state is shareable and bookmarkable — without performing a real page navigation. Don't reach for raw `history.pushState()` / `history.replaceState()` for this: the router tracks its own history index and the URL it navigated *from* to detect Back/Forward direction and same-page traversals (see [Same-page traversal](#same-page-traversal) below), and a hand-rolled history entry desyncs that bookkeeping.
@@ -212,10 +232,12 @@ The router can warm up the browser cache before the user clicks a link. Each lin
 
 | Strategy | Trigger |
 |---|---|
-| `"hover"` | `pointerenter` (with idle-callback delay; cancelled on `pointerleave`) |
+| `"hover"` | `pointerenter` / `focusin` (keyboard focus) — both with idle-callback delay; cancelled on `pointerleave` / `focusout` |
 | `"viewport"` | `IntersectionObserver` — fires when the link scrolls into view |
 | `"tap"` | `touchstart` / `mousedown` — fires just before the click event |
 | `"load"` | `requestIdleCallback` after `DOMContentLoaded` |
+
+Keyboard-focus prefetch mirrors hover: tabbing onto a `"hover"`-strategy link queues the same idle-callback prefetch a pointer hover would, and moving focus away cancels it before it fires — so keyboard-only navigation gets the same prefetch benefit as pointer hover, with no separate `data-zfb-prefetch` value needed for it.
 
 The prefetch module uses `<link rel="prefetch">` where supported and falls back to `fetch()` with `priority: "low"`. Prefetches are deduplicated per URL; slow connections (Save-Data header, 2G/slow-2G) are skipped unless the caller passes `ignoreSlowConnection: true`.
 
@@ -244,6 +266,44 @@ export default defineConfig({
 
 When this flag is set, the bundler emits a `<meta name="zfb-prefetch-disabled" content="true">` tag on every page and the prefetch module becomes a no-op at runtime. See [defineConfig](../api/define-config.mdx) for the full config reference.
 
+### Imperative prefetch API
+
+For triggers `data-zfb-prefetch` can't express — warming a link right before it's inserted programmatically, or firing a prefetch from a custom event — call `prefetch()` directly:
+
+```ts
+import { prefetch } from "@takazudo/zfb-runtime/client-router";
+
+prefetch("/docs/api", { ignoreSlowConnection: true });
+```
+
+```ts
+function prefetch(url: string, opts?: PrefetchOptions): void;
+
+type PrefetchOptions = {
+  ignoreSlowConnection?: boolean; // bypass the Save-Data / 2G skip described above
+  with?: "link" | "fetch";        // force a transport instead of feature-detecting <link rel="prefetch"> support
+};
+```
+
+`prefetch()` resolves `url` against the current origin (a cross-origin href is silently skipped) and is idempotent per URL — a second call for an already-prefetched or in-flight href is a no-op.
+
+If you call the router's `init()` yourself instead of mounting `<ClientRouter />` (see the warning above), wire up the prefetch listeners with the matching `prefetchInit()`. Unlike the router's `init`, this one **is** re-exported from the root `@takazudo/zfb-runtime` barrel, not just the `/client-router` subpath:
+
+```ts
+import { prefetchInit } from "@takazudo/zfb-runtime";
+
+prefetchInit({ defaultStrategy: "viewport" });
+```
+
+```ts
+function prefetchInit(options?: PrefetchInitOptions): void;
+
+type PrefetchInitOptions = {
+  prefetchAll?: boolean;              // same effect as <ClientRouter prefetchAll />
+  defaultStrategy?: PrefetchStrategy; // strategy prefetchAll opts links into; defaults to "hover"
+};
+```
+
 ## Navigation lifecycle events
 
 The router dispatches six custom events on `document` during each navigation. Listen with `document.addEventListener`:
@@ -267,6 +327,24 @@ One exception: none of these six events fire for a same-page Back/Forward traver
 | `zfb:after-swap` | No | Immediately after the DOM swap; the new body is live but scripts have not yet re-executed. |
 | `zfb:page-load` | No | After new-page scripts have re-executed and islands have been re-mounted. Equivalent to `DOMContentLoaded` for the incoming page. |
 | `zfb:navigation-aborted` | No | The navigation was cancelled (e.g. `e.preventDefault()` on `zfb:before-preparation`, or an in-flight navigation was superseded by a newer one). |
+
+### Typed event access
+
+Each event name above is also exported as a `TRANSITION_*` string constant, and the two events that carry extra properties (`zfb:before-preparation`, `zfb:before-swap`) are backed by a concrete class plus a type guard — so a listener can narrow `Event` to the typed event without a manual cast:
+
+```ts
+import {
+  TRANSITION_BEFORE_PREPARATION,
+  isTransitionBeforePreparationEvent,
+} from "@takazudo/zfb-runtime/client-router";
+
+document.addEventListener(TRANSITION_BEFORE_PREPARATION, (e) => {
+  if (!isTransitionBeforePreparationEvent(e)) return;
+  console.log("navigating from", e.from.href, "to", e.to.href); // fully typed
+});
+```
+
+Available exports: the six `TRANSITION_*` constants (one per row above), the `TransitionBeforePreparationEvent` and `TransitionBeforeSwapEvent` classes, and their matching `isTransitionBeforePreparationEvent` / `isTransitionBeforeSwapEvent` type guards.
 
 ### `zfb:before-preparation` event properties
 
@@ -294,6 +372,25 @@ Call `event.preventDefault()` to stop the navigation; the router will then trigg
 ```ts
 event.viewTransition  // ViewTransition — the active View Transition object
 event.swap            // () => void — call to execute the default head/body swap; replace to implement a custom swap
+```
+
+### Example: compose a custom swap from `swapFunctions`
+
+`event.swap` defaults to the router's own `swap()`, which is itself just five granular steps called in sequence. Both `swap` and the `swapFunctions` object bundling those steps (`deselectScripts`, `swapRootAttributes`, `swapHeadElements`, `swapBodyElement`, `saveFocus`) are importable, so `event.swap` can be reassigned to a variant that reuses some of the same steps:
+
+```ts
+import { swapFunctions } from "@takazudo/zfb-runtime/client-router";
+
+document.addEventListener("zfb:before-swap", (e) => {
+  // e is a TransitionBeforeSwapEvent — reuse every default step except the head swap.
+  e.swap = () => {
+    swapFunctions.deselectScripts(e.newDocument);
+    swapFunctions.swapRootAttributes(e.newDocument);
+    const restoreFocus = swapFunctions.saveFocus();
+    swapFunctions.swapBodyElement(e.newDocument.body, document.body);
+    restoreFocus();
+  };
+});
 ```
 
 ### Example: run code after every SPA navigation
@@ -338,6 +435,14 @@ Opt such a page back into the fetch with the `traverseRefetch` prop:
 ```
 
 This emits `<meta name="zfb-traverse-refetch" content="true">`, which the router checks on the current (target) page before taking the fast-path — when present, a same-page traversal falls through to a normal fetch and swap instead. Mount `<ClientRouter />` with the same `traverseRefetch` value on every page that participates in SPA navigation, since the meta is read from whichever page is currently live.
+
+### Back/Forward across bfcache
+
+Putting the whole picture together, a Back or Forward press is served one of three ways:
+
+1. **Same-page fast-path** — described above: the destination shares `pathname`/`search` with the current page, so the router serves it entirely from the live DOM. No fetch, no swap, no remount; island state survives untouched.
+2. **SPA cross-page swap** — the destination is a different page (or the current page opted out via `traverseRefetch`), so the router fetches and swaps like a link click: `<head>`/`<body>` are replaced and islands remount.
+3. **Browser bfcache restore** — Safari and other WebKit-based browsers can serve a Back/Forward navigation straight from the browser's own back/forward cache instead of re-running any JavaScript on the page, including this router. That restore fires the standard `pageshow` event with `event.persisted: true`; the router listens for it and re-syncs its internal bookkeeping — the tracked history index, the "navigated from" URL, and the scroll position — from the restored `history.state`, so the *next* Back/Forward press is still computed correctly. This is a browser-level restore, not a router mechanism, so — like case 1 — none of the six `zfb:*` lifecycle events fire for it.
 
 ## View Transitions
 

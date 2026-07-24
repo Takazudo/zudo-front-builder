@@ -117,6 +117,26 @@ type Options = {
 <a href="/admin" data-zfb-reload>Admin (full reload)</a>
 ```
 
+## フォーム送信
+
+`<ClientRouter />` は同一オリジンの `<form>` 送信もインターセプトし、リンククリックと同じ `navigate()` の経路でソフトナビゲーションに変換します。完全なページの往復は発生しません。
+
+- **GET フォーム** — フォームのフィールドは遷移先 URL のクエリ文字列にシリアライズされ、通常の GET ソフトナビゲーションになります。リクエストボディは送信されません。
+- **POST（またはそれ以外の GET 以外のメソッド）フォーム** — 送信された `FormData` は `navigate()` の `formData` オプションを通じて渡され、実際の POST リクエストのボディとして送信されます。フォームの `enctype` が要求する場合は `application/x-www-form-urlencoded` として、そうでなければマルチパートの `FormData` としてエンコードされます。
+- **送信者の `formaction` / `formmethod` が優先される** — 送信をトリガーした要素の `<button formaction="...">` / `formmethod="..."` は、`<form>` 自体の `action` / `method` を上書きします。これは標準の HTML フォームのセマンティクスと同じです。
+
+### ソフトなフォーム送信からオプトアウトする
+
+以下のいずれかに該当する場合、送信は通常の完全なブラウザフォーム送信にフォールバックします。
+
+- `<form>` が `data-zfb-reload` を持っている（リンクと同じオプトアウト属性。上の [リンクをルーターからオプトアウトする](#リンクをルーターからオプトアウトする) を参照）
+- `method="dialog"` — `<dialog>` 要素内で使われる特別な HTML キーワード
+- 解決されたアクション URL がクロスオリジンである
+- 送信者への修飾キー（Cmd/Ctrl/Shift/Alt）クリック、またはプライマリでないマウスボタンによって送信がトリガーされた
+- 別のハンドラがすでに `submit` イベントで `event.preventDefault()` を呼び出している
+
+[`zfb:before-preparation`](#ナビゲーションライフサイクルイベント) の `event.formData` は、フォームによってトリガーされたナビゲーションの場合にのみ設定されます（リンククリックや、渡さなかった場合のプログラムによる `navigate()` 呼び出しでは `undefined` です）。送信が送られる前に検査したり反応したりするには、ここをリッスンしてください。
+
 ## `syncHistoryEntry()` で一時的な UI 状態をディープリンクする
 
 モーダル・ダイアログ・ビューアは、独自の URL を持ちたいことがよくあります。そうすれば「戻る」で閉じられ、状態が共有・ブックマーク可能になります。しかも実際のページ遷移は行いません。このために生の `history.pushState()` / `history.replaceState()` に手を伸ばさないでください。ルーターは戻る/進むの方向や同一ページ内トラバーサルを検出するために、自身の履歴インデックスとナビゲーション *元* の URL を追跡しており（後述の [同一ページ内トラバーサル](#同一ページ内トラバーサル) を参照）、手作りの履歴エントリはその管理情報を狂わせます。
@@ -212,10 +232,12 @@ function openPhotoLightbox(slug: string) {
 
 | 戦略 | トリガー |
 |---|---|
-| `"hover"` | `pointerenter`（アイドルコールバックの遅延あり。`pointerleave` でキャンセル） |
+| `"hover"` | `pointerenter` / `focusin`（キーボードフォーカス） — いずれもアイドルコールバックの遅延あり。`pointerleave` / `focusout` でキャンセル |
 | `"viewport"` | `IntersectionObserver` — リンクがビューに入ったときに発火 |
 | `"tap"` | `touchstart` / `mousedown` — クリックイベントの直前に発火 |
 | `"load"` | `DOMContentLoaded` の後の `requestIdleCallback` |
+
+キーボードフォーカスによるプリフェッチはホバーと同じ挙動をします。`"hover"` 戦略のリンクへ Tab キーでフォーカスを移すと、ポインタでホバーしたときと同じアイドルコールバックのプリフェッチがキューに入り、フォーカスを外すと発火前にキャンセルされます。そのため、キーボードのみのナビゲーションでもポインタホバーと同じプリフェッチの恩恵を受けられます。別途 `data-zfb-prefetch` の値を用意する必要はありません。
 
 プリフェッチモジュールはサポートされている場合は `<link rel="prefetch">` を使い、そうでなければ `priority: "low"` の `fetch()` にフォールバックします。プリフェッチは URL 単位で重複排除されます。低速な接続（Save-Data ヘッダ、2G/slow-2G）は、呼び出し側が `ignoreSlowConnection: true` を渡さない限りスキップされます。
 
@@ -244,6 +266,44 @@ export default defineConfig({
 
 このフラグが設定されると、バンドラはすべてのページに `<meta name="zfb-prefetch-disabled" content="true">` タグを出力し、プリフェッチモジュールはランタイムで何もしなくなります。設定の完全なリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
 
+### 命令的なプリフェッチ API
+
+`data-zfb-prefetch` では表現できないトリガー — リンクをプログラムから挿入する直前にウォームアップしたい場合や、カスタムイベントからプリフェッチを発火させたい場合など — には、`prefetch()` を直接呼び出します。
+
+```ts
+import { prefetch } from "@takazudo/zfb-runtime/client-router";
+
+prefetch("/docs/api", { ignoreSlowConnection: true });
+```
+
+```ts
+function prefetch(url: string, opts?: PrefetchOptions): void;
+
+type PrefetchOptions = {
+  ignoreSlowConnection?: boolean; // bypass the Save-Data / 2G skip described above
+  with?: "link" | "fetch";        // force a transport instead of feature-detecting <link rel="prefetch"> support
+};
+```
+
+`prefetch()` は `url` を現在のオリジンに対して解決し（クロスオリジンの href は黙ってスキップされます）、URL 単位で冪等です。すでにプリフェッチ済み、あるいは進行中の href に対する 2 回目の呼び出しは no-op になります。
+
+`<ClientRouter />` をマウントする代わりに自分でルーターの `init()` を呼び出す場合（上の警告を参照）、対応する `prefetchInit()` でプリフェッチのリスナーを自分で配線してください。ルーターの `init` とは異なり、こちらは `/client-router` サブパスだけでなく、ルートの `@takazudo/zfb-runtime` バレルからも**再エクスポートされています**。
+
+```ts
+import { prefetchInit } from "@takazudo/zfb-runtime";
+
+prefetchInit({ defaultStrategy: "viewport" });
+```
+
+```ts
+function prefetchInit(options?: PrefetchInitOptions): void;
+
+type PrefetchInitOptions = {
+  prefetchAll?: boolean;              // same effect as <ClientRouter prefetchAll />
+  defaultStrategy?: PrefetchStrategy; // strategy prefetchAll opts links into; defaults to "hover"
+};
+```
+
 ## ナビゲーションライフサイクルイベント
 
 ルーターは各ナビゲーションの間に、6 つのカスタムイベントを `document` 上でディスパッチします。`document.addEventListener` でリッスンします。
@@ -267,6 +327,24 @@ document.addEventListener("zfb:before-preparation", (e) => {
 | `zfb:after-swap` | なし | DOM スワップの直後。新しい body はライブですが、スクリプトはまだ再実行されていません。 |
 | `zfb:page-load` | なし | 新しいページのスクリプトが再実行され、島が再マウントされた後。受信ページにとっての `DOMContentLoaded` に相当します。 |
 | `zfb:navigation-aborted` | なし | ナビゲーションがキャンセルされた（例: `zfb:before-preparation` での `e.preventDefault()`、あるいは進行中のナビゲーションが新しいものに取って代わられた）。 |
+
+### 型付きのイベントアクセス
+
+上記の各イベント名は `TRANSITION_*` という文字列定数としてもエクスポートされています。また、追加のプロパティを持つ 2 つのイベント（`zfb:before-preparation`、`zfb:before-swap`）は、具体的なクラスと型ガードによって裏付けられています。そのため、手動でのキャストなしにリスナー内で `Event` を型付きイベントへ絞り込めます。
+
+```ts
+import {
+  TRANSITION_BEFORE_PREPARATION,
+  isTransitionBeforePreparationEvent,
+} from "@takazudo/zfb-runtime/client-router";
+
+document.addEventListener(TRANSITION_BEFORE_PREPARATION, (e) => {
+  if (!isTransitionBeforePreparationEvent(e)) return;
+  console.log("navigating from", e.from.href, "to", e.to.href); // fully typed
+});
+```
+
+利用可能なエクスポート: 上の表の各行に対応する 6 つの `TRANSITION_*` 定数、`TransitionBeforePreparationEvent` と `TransitionBeforeSwapEvent` の各クラス、そしてそれに対応する `isTransitionBeforePreparationEvent` / `isTransitionBeforeSwapEvent` 型ガードです。
 
 ### `zfb:before-preparation` イベントのプロパティ
 
@@ -294,6 +372,25 @@ event.loader          // () => Promise<void> — call to execute the default fet
 ```ts
 event.viewTransition  // ViewTransition — the active View Transition object
 event.swap            // () => void — call to execute the default head/body swap; replace to implement a custom swap
+```
+
+### 例: `swapFunctions` からカスタムスワップを組み立てる
+
+`event.swap` のデフォルトはルーター自身の `swap()` です。これは、5 つの細かいステップを順番に呼び出しているだけです。`swap` と、それらのステップ（`deselectScripts`・`swapRootAttributes`・`swapHeadElements`・`swapBodyElement`・`saveFocus`）をまとめた `swapFunctions` オブジェクトはどちらもインポート可能です。そのため、`event.swap` を、同じステップの一部を再利用するバリアントに差し替えられます。
+
+```ts
+import { swapFunctions } from "@takazudo/zfb-runtime/client-router";
+
+document.addEventListener("zfb:before-swap", (e) => {
+  // e is a TransitionBeforeSwapEvent — reuse every default step except the head swap.
+  e.swap = () => {
+    swapFunctions.deselectScripts(e.newDocument);
+    swapFunctions.swapRootAttributes(e.newDocument);
+    const restoreFocus = swapFunctions.saveFocus();
+    swapFunctions.swapBodyElement(e.newDocument.body, document.body);
+    restoreFocus();
+  };
+});
 ```
 
 ### 例: すべての SPA ナビゲーションの後にコードを実行する
@@ -338,6 +435,14 @@ document.addEventListener("zfb:before-preparation", (e) => {
 ```
 
 これは `<meta name="zfb-traverse-refetch" content="true">` を出力し、ルーターは高速パスを取る前に現在（対象）のページでこれをチェックします。存在する場合、同一ページ内トラバーサルは高速パスではなく通常のフェッチとスワップに落ちます。メタは現在ライブなページから読み取られるため、SPA ナビゲーションに参加するすべてのページで、同じ `traverseRefetch` の値を指定して `<ClientRouter />` をマウントしてください。
+
+### bfcache をまたぐ戻る/進む
+
+全体像をまとめると、「戻る」や「進む」の押下は次の 3 通りのいずれかで処理されます。
+
+1. **同一ページの高速パス** — 上で説明したとおりです。遷移先が現在のページと `pathname`/`search` を共有しているため、ルーターは完全にライブな DOM から処理します。フェッチもスワップも再マウントもなく、島/クライアントの状態はそのまま保たれます。
+2. **SPA のページ間スワップ** — 遷移先が別のページである場合（あるいは現在のページが `traverseRefetch` でオプトアウトしている場合）、ルーターはリンククリックと同様にフェッチとスワップを行います。`<head>`/`<body>` が入れ替わり、島が再マウントされます。
+3. **ブラウザの bfcache 復元** — Safari をはじめとする WebKit ベースのブラウザは、このルーターを含むページ上の JavaScript を一切再実行せずに、ブラウザ自身の back/forward キャッシュから直接「戻る」/「進む」のナビゲーションを提供することがあります。この復元では、標準の `pageshow` イベントが `event.persisted: true` で発火します。ルーターはこれをリッスンし、復元された `history.state` から内部の管理情報 — 追跡している履歴インデックス、「遷移元」の URL、スクロール位置 — を再同期します。これにより、*次の*「戻る」/「進む」の押下も正しく計算されます。これはルーターの仕組みではなくブラウザレベルの復元であるため、ケース 1 と同様に、6 つの `zfb:*` ライフサイクルイベントは 1 つも発火しません。
 
 ## View Transitions
 

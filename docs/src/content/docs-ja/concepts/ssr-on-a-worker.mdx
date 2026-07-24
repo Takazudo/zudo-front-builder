@@ -63,7 +63,7 @@ export default async function AccountPage(): Promise<Response> {
 
 ### コンパイル済み Wasm モジュール
 
-SSR ルートが Wasm をインポートすると、zfb はこれら 2 つの JavaScript ファイルの隣に `x-<hash>.wasm` ファイルを出力します。`_zfb_inner.mjs` はこれをコンパイル済みの `WebAssembly.Module` としてインポートし、`.assetsignore` はそれが公開アセットにならないようにします。Satori/Resvg の設定、Wrangler のルール、パッケージサイズの詳細は [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) にあります。
+SSR ルートが Wasm をインポートすると、zfb はこれら 2 つの JavaScript ファイルの隣に `<name>-<hash>.wasm` ファイル（例: `index_bg-a1b2c3d4.wasm` — これは esbuild 自身の `--asset-names=[name]-[hash]` の命名規則であり、zfb 固有の仕様ではありません）を出力します。`_zfb_inner.mjs` はこれをコンパイル済みの `WebAssembly.Module` としてインポートし、`.assetsignore` はそれが公開アセットにならないようにします。Satori/Resvg の設定、Wrangler のルール、パッケージサイズの詳細は [SSR and Cloudflare Bindings guide](../guides/ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) にあります。
 
 この 2 ファイル構成は、アダプター内での 2 回目の esbuild パスを回避します。Workerd のモジュールローダーは、デプロイされたワーカーディレクトリ内の相対 ESM インポートを解決するため、`_worker.js` は単純に `import inner from "./_zfb_inner.mjs"` でき、両ファイルは独立したままです。
 
