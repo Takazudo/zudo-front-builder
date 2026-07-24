@@ -326,6 +326,26 @@ for (const file of await glob("dist/**/*.html")) {
 
 これは syntect の同梱セットに存在しない文法の場合にのみ意味があります。標準的な言語（Rust、TypeScript、Python、Go など）はすべて、組み込みのパイプラインが追加の手順なしで処理します。
 
+## ブラウザでコードをハイライトする
+
+このページのすべては、zfb の syntect パイプラインを通じて **ビルド時** に実行されます。
+代わりに **実行時にブラウザで** コードをハイライトする必要がある場合 — ライブの
+Markdown/MDX エディタ、貼り付けてプレビューするボックス、あるいはページ読み込み後まで
+ソースが分からないあらゆる場面 — では、`@takazudo/zfb-md-wasm` の `highlightCode()` を
+使ってください。手順については [直接的なセマンティックコードハイライト](./browser-markdown-preview.mdx#直接的なセマンティックコードハイライト)
+を参照してください。
+
+<Tip>
+
+`highlightCode` しか呼ばないなら、パッケージのルートではなく
+`@takazudo/zfb-md-wasm/highlight` サブパスからインポートしてください — 完全な
+MDX/Markdown パイプラインなしでビルドされた、スリムでハイライト専用のアーティファクトで、
+デフォルトのエントリポイントのおよそ半分のダウンロードサイズです。
+
+</Tip>
+
+完全な API リファレンスについては [zfb-md-wasm](../api/md-wasm.mdx) を参照してください。
+
 ## 関連項目
 
 - [Markdown パイプラインの拡張](./extending-the-markdown-pipeline.mdx) — `SyntectPlugin` が hast フェーズのパイプラインにどう組み込まれるか、それをどう差し替え・拡張するか。

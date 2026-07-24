@@ -1,0 +1,262 @@
+---
+title: zfb-md-wasm
+description: "@takazudo/zfb-md-wasm のリファレンス — zfb の markdown/MDX パイプラインの WebAssembly ビルド。エクスポート、async のシグネチャ、オプション / 結果の型（ZfbMdWasmOptions、PipelineOptions、Diagnostic、ParseToAstOptions、HighlightCodeOptions、HighlightRole）、生の mdast の形、パッケージのエントリポイント。"
+sidebar_position: 7
+---
+
+## 概要
+
+`@takazudo/zfb-md-wasm` は、zfb の markdown/MDX → JS/HTML パイプラインを WebAssembly にコンパイルして提供します。このページはシグネチャと型のリファレンスです。パッケージのインストール、ブラウザでのコンパイル済みモジュールの評価、JSX ランタイムの import map 設定、パリティ保証の制限といったナラティブな解説については、[ブラウザでの Markdown プレビュー](../guides/browser-markdown-preview.mdx) を参照してください。
+
+このパッケージは、ビルド時に `.wasm` モジュールを SSR ルートへインポートすることとは無関係です — そちらは別の機能で、[Wasm のインポート](../guides/importing-wasm.mdx) で扱います。
+
+## エクスポート
+
+| エクスポート | シグネチャ | 説明 |
+|---|---|---|
+| `init` | `() => Promise<void>` | wasm モジュールを事前にインスタンス化します。任意 — 他のすべての関数は、初回使用時にモジュールを遅延的に初期化します。 |
+| `compile` | `(source: string, options?: ZfbMdWasmOptions) => Promise<CompileResult>` | MDX → JSX → SWC → ES モジュール JS。 |
+| `renderHtml` | `(source: string, options?: ZfbMdWasmOptions) => Promise<RenderHtmlResult>` | Markdown → mdast → ビジター → hast → HTML 文字列。 |
+| `parseToAst` | `(source: string, options?: ParseToAstOptions) => Promise<ParseToAstResult>` | Markdown/MDX → 生の mdast ツリー、zfb ビジター適用前。 |
+| `highlightCode` | `(code: string, options: HighlightCodeOptions) => Promise<HighlightCodeResult>` | 任意のソース文字列に対する、直接的なセマンティッククラスのシンタックスハイライト。 |
+| `version` | `() => Promise<string>` | リリース時にスタンプされるパッケージのバージョン文字列。 |
+| `toMdastRoot` | `(ast: MdastRoot \| null) => Root` | 生の `parseToAst` ツリーを検証し、厳密でエコシステム互換の `mdast` の `Root` へ変換します。唯一の同期エクスポートです。 |
+| `ZfbMdWasmTrapError` | `class extends Error` | wasm トラップ（Rust の panic / 内部障害）が発生したときにスローされます。スローの前にインスタンスは自動で再インスタンス化されます。 |
+| `ZfbMdWasmTrapRecoveryLimitError` | `class extends Error` | トラップ回復の上限（16 回）を使い切ったときにスローされます。 |
+| `MdastAdapterError` | `class extends TypeError` | サポートされていない、または不正なノードに対して `toMdastRoot` がスローします。 |
+
+`init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version` はすべて **async** です — 基盤となる wasm モジュールが既にインスタンス化されているかどうかにかかわらず、各呼び出しは Promise を返します。
+
+<Note>
+
+**想定される失敗は決してスローしません。** Markdown のパースエラー、不正なオプション JSON、未知の syntect テーマ名などの問題は、すべて解決された結果の `diagnostics` エントリとして返されます — スローされるエラーや reject された Promise になることはありません。reject するのは本物の wasm トラップのときだけで、`ZfbMdWasmTrapError` または `ZfbMdWasmTrapRecoveryLimitError` になります（[エラークラス](#エラークラス) を参照）。
+
+</Note>
+
+## `init()`
+
+```ts
+function init(): Promise<void>
+```
+
+wasm モジュールを事前にインスタンス化します。前もって呼び出すことで制御できるのは、fetch / コンパイルのコストが **いつ** 発生するかだけです — `init()` を一度も呼ばなかった場合、他のすべての関数は初回使用時にモジュールを遅延的に初期化します。
+
+## `compile(source, options?)`
+
+```ts
+function compile(source: string, options?: ZfbMdWasmOptions): Promise<CompileResult>
+```
+
+MDX → JSX → SWC → ES モジュール JS。zfb 自身のビルドが使うのと同じエミッタです。`options` のデフォルトは `{}` です。`jsxRuntime` と `development` はここでのみ消費されます — `renderHtml` は両方を受け取りますが黙って無視するため、1 つのオプションオブジェクトでどちらの呼び出しにも使えます。
+
+## `renderHtml(source, options?)`
+
+```ts
+function renderHtml(source: string, options?: ZfbMdWasmOptions): Promise<RenderHtmlResult>
+```
+
+Markdown → mdast → ビジター → hast → HTML 文字列。SWC を完全にスキップします。`options` のデフォルトは `{}` です。
+
+## `parseToAst(source, options?)`
+
+```ts
+function parseToAst(source: string, options?: ParseToAstOptions): Promise<ParseToAstResult>
+```
+
+Markdown/MDX → 生の mdast ツリー。`ZfbMdWasmOptions` では **なく**、独立した閉じた `ParseToAstOptions` ドキュメントを受け取ります — その `pipeline` サブオブジェクトは `gfm` のみを受け付けます（[バリデーションと位置の契約](#バリデーションと位置の契約) を参照）。`options` のデフォルトは `{}` です。
+
+## `highlightCode(code, options)`
+
+```ts
+function highlightCode(code: string, options: HighlightCodeOptions): Promise<HighlightCodeResult>
+```
+
+任意のソース文字列に対する、直接的なセマンティッククラスのシンタックスハイライト — Markdown のフェンスは関与せず、`options` のデフォルトもありません。`language` は必須です。
+
+## `version()`
+
+```ts
+function version(): Promise<string>
+```
+
+リリース時にスタンプされるパッケージのバージョン文字列。公開されるアーティファクトはリリース時にパッケージの semver をスタンプします。ローカルの開発ビルドでは、Rust マニフェストのバージョンのプレースホルダにフォールバックします。
+
+## `toMdastRoot(ast)`
+
+```ts
+function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@types/mdast)
+```
+
+生の `parseToAst().ast` ツリーを検証し、切り離された `@types/mdast` 互換の `Root` を返します。型はエコシステムが使うのと同じ `mdast` / `mdast-util-directive` / `mdast-util-mdx` のコンテンツモデルレジストリに対して付けられます。この厳密なアダプタは、`parseToAst` が返す前方互換の生の階層とは意図的に分けられています。サポートされていない、または不正なノードは、黙って破棄されたり強制変換されたりするのではなく、`MdastAdapterError` を **スロー** します。同期処理であり、wasm の境界には一切触れません。
+
+## エラークラス
+
+- **`ZfbMdWasmTrapError extends Error`** — wasm トラップを観測した async 呼び出しがスローします。`(cause: unknown)` で構築され、`.cause` で公開されます。このエラーがスローされる **前** に、トラップしたインスタンスは破棄され、キャッシュ済みのコンパイル済み `WebAssembly.Module` から新しいインスタンスが起動されます。そのため、直後の呼び出しはすでに置き換え後のインスタンスを使います — 呼び出し間で存続するキャッシュやグローバルはないため、再インスタンス化で失われるのは時間だけです。
+- **`ZfbMdWasmTrapRecoveryLimitError extends Error`** — プロセスで自動トラップ回復を 16 回使い切ると、`ZfbMdWasmTrapError` の代わりにスローされます。`(maxRecoveries: number, cause: unknown)` で構築され、`cause` は `.cause` で公開されます。それ以降の回復は（ES モジュールレコードの無制限な増加を避けるため）、JS レルムがリロードされるまで無効のままになります。
+- **`MdastAdapterError extends TypeError`** — `toMdastRoot` がスローします。`path: string`（問題のノードを指す JSON パス風のポインタ、例: `"$.children[2].value"`）と `nodeType: string | null`（観測されたノードの `type`、または値が型付きレコードですらなかった場合は `null`）を持ちます。
+
+## 型リファレンス
+
+### `ZfbMdWasmOptions`
+
+`compile` と `renderHtml` が共有するオプションドキュメント。すべてのフィールドは任意で、`{}` はすべてのデフォルトを選びます。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `filename?` | `string` | `.md` または `.mdx` で終わる必要があります。デフォルトは `compile` では `"<anonymous>.mdx"`、`renderHtml` では `"<anonymous>.md"` です。 |
+| `jsxRuntime?` | `"preact" \| "react"` | `compile` でのみ消費されます。`renderHtml` は受け取って無視します。 |
+| `development?` | `boolean` | `compile` でのみ消費されます。`renderHtml` は受け取って無視します。 |
+| `pipeline?` | `PipelineOptions` | 共有のパイプライン設定。 |
+
+### `PipelineOptions`
+
+`zfb_content::facade::PipelineOptions` をそのまま反映します。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `theme?` | `string \| null` | syntect のテーマ名。未指定または明示的な `null` の場合は組み込みのデフォルト（`"base16-ocean.dark"`）が保たれます — フェンス付きコードは **常に** ハイライトされ、「シンタックスハイライトなし」という値は存在しません。`codeHighlight.mode: "class"` とは排他です。 |
+| `gfm?` | `GfmOptions` | 拡張ごとの GFM トグル。 |
+| `cjkFriendly?` | `boolean` | — |
+| `hardBreaks?` | `boolean` | — |
+| `codeHighlight?` | `CodeHighlightOptions \| null` | フェンス付きコードのハイライトの出力モードと、クラスモードのつまみ。未指定、`null`、または `{ mode: "inline" }` は、既存のインライン着色の挙動をバイト単位で再現します。 |
+| `features?` | `MarkdownFeaturesConfig` | `Record<string, unknown>` — TypeScript 側では開いたままにされています。wasm の境界はこれを **そのまま** Rust 自身の `deny_unknown_fields` デシリアライザへ渡し、そのデシリアライザがキーの権威あるバリデータになります。 |
+
+### `GfmOptions`
+
+| フィールド | 型 |
+|---|---|
+| `strikethrough?` | `boolean` |
+| `table?` | `boolean` |
+| `autolinkLiteral?` | `boolean` |
+| `taskListItem?` | `boolean` |
+| `footnoteDefinition?` | `boolean` |
+
+### `CodeHighlightOptions`
+
+`zfb_content::facade::CodeHighlightOptions` をそのまま。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `mode?` | `"inline" \| "class"` | フェンス付きコードのハイライトの出力モード。デフォルトは `"inline"`。 |
+| `classPrefix?` | `string` | クラスモードのロールクラスに付くクラス名プレフィックス（例: デフォルトの `"hi-"` は `hi-kw`、`hi-str`、… を生みます）。`mode` が `"class"` のときのみ意味を持ちます。 |
+| `roleClasses?` | `Partial<Record<HighlightRole, string>> \| null` | クラスモードでのロールごとのクラス上書き。未指定または `null` の場合、すべてのロールで `{classPrefix}{role}` が使われます。`mode` が `"class"` のときのみ意味を持ちます。 |
+
+### `CompileResult` / `RenderHtmlResult`
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `code`（`CompileResult`） / `html`（`RenderHtmlResult`） | `string \| null` | 成功時は ES モジュール JS ソース、または HTML 断片。失敗時は `null`。 |
+| `frontmatter` | `unknown` | パースされた YAML frontmatter を JSON として。存在しない、または抽出できない場合は `null`。 |
+| `diagnostics` | `Diagnostic[]` | 成功時は空。 |
+
+### `Diagnostic`
+
+1 つの診断エントリ。`line` / `column` はサポートされる唯一の診断位置で、1 始まりです。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `severity` | `"error"` | — |
+| `source` | `"options" \| "frontmatter" \| "markdown" \| "compile"` | — |
+| `message` | `string` | このパッケージまたは上流の依存関係が出す不透明な表示テキスト。パースしたり書き換えたりしないでください — 埋め込まれた座標が含まれる場合、それは依存関係自身の座標系を使います。代わりに構造化された `line` / `column` を使ってください。 |
+| `line` | `number \| null` | 基になるエラーが位置を持たない場合は `null`。`"markdown"` / `"frontmatter"` では元のソースを指し、`"options"` ではオプション JSON ドキュメントを指します。 |
+| `column` | `number \| null` | 位置のルールは `line` と同じ。`"markdown"` / `"frontmatter"` では JavaScript の UTF-16 コードユニットです — [バリデーションと位置の契約](#バリデーションと位置の契約) を参照。 |
+
+### `ParseToAstOptions`
+
+`parseToAst` が消費する、独立した閉じたオプションドキュメント。ビジター / シリアライザのオプションは受け付けません。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `filename?` | `string` | `.md` または `.mdx` で終わる必要があります。明示的な `dialect` がない場合、`.md` は CommonMark を、`.mdx` は MDX を選びます。`filename` を省略すると `"<anonymous>.mdx"` が使われ、したがって MDX になります。 |
+| `dialect?` | `"markdown" \| "mdx"` | どちらの有効な拡張子も上書きしますが、拡張子のゲートは免除しません。 |
+| `directives?` | `boolean` | 汎用の remark-directive 構文をパースします。デフォルトは `false`。 |
+| `frontmatter?` | `"extract" \| "node" \| "none"` | YAML の処理ポリシー。デフォルトは `"extract"`。`"extract"` は除去された本文をパースし、YAML を JSON として返します（YAML ノードなし）。`"node"` は論理ソース全体をパースし、JSON に加えて正規の YAML ノードを返します。`"none"` は論理ソースの全バイトを Markdown/MDX としてパースし、常に `null` を返します。不正な、または閉じられていない YAML は `"extract"` / `"node"` を 1 つの `frontmatter` 診断とともに失敗させます。`"none"` は診断を生成しません。 |
+| `pipeline?` | `ParsePipelineOptions` | `{ gfm?: GfmOptions }` — `parseToAst` が受け付ける **唯一の** パイプラインのつまみです。`theme`、`cjkFriendly`、`hardBreaks`、`codeHighlight`、`features` はこの閉じたドキュメントには含まれません。 |
+
+### `ParseToAstResult`
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `ast` | `MdastRoot \| null` | 成功時はシリアライズされた生の mdast ルート、失敗時は `null`。 |
+| `frontmatter` | `unknown` | `CompileResult.frontmatter` と同じ契約。 |
+| `diagnostics` | `Diagnostic[]` | 成功時は空。 |
+
+### `HighlightCodeOptions`
+
+任意コードの直接的なセマンティッククラスハイライトのためのオプション。
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `language` | `string` | 必須の構文トークン。例: `"html"`、`"css"`、`"javascript"`。 |
+| `mode?` | `"class"` | サポートされる唯一の直接出力モード。デフォルトは `"class"`。 |
+| `classPrefix?` | `string` | セマンティックロールクラスのプレフィックス。デフォルトは `"hi-"`。 |
+| `roleClasses?` | `Partial<Record<HighlightRole, string>>` | フルネームのロール上書き。例: `{ keyword: "text-violet-600" }`。 |
+
+### `HighlightCodeResult` と `HighlightDiagnostic`
+
+| フィールド | 型 | 説明 |
+|---|---|---|
+| `html` | `string \| null` | 完全なセマンティックな `<pre><code>` ラッパー、または無効なオプション / 内部エラーの場合は `null`。 |
+| `diagnostics` | `HighlightDiagnostic[]` | 直接ハイライトが使う source は、`Diagnostic` とは異なる、より小さな集合です。 |
+
+`HighlightDiagnostic` のフィールド: `severity: "error" | "warning"`、`source: "options" | "highlight" | "internal"`、`message: string`、`line: number | null`（常に `null` — JSON オプションのパース位置は 1 始まりですが、この呼び出しは位置を報告しません）、`column: number | null`（同じ）。
+
+無効なオプション（`language` の欠落 / 空文字列、サポートされない `mode`、不正な `classPrefix`、未知のロールキー、余分なフィールド）は `{ html: null, diagnostics: [{ severity: "error", source: "options", … }] }` を返します。未知だが空でない `language` は別で、エスケープされたフォールバックの markup と `{ severity: "warning", source: "highlight" }` の診断とともに成功します。
+
+### `HighlightRole`
+
+`highlightCode` が出力する、固定された 18 個のロールからなるセマンティックな分類体系（Rust の正規の `HiRole::FULL_NAMES` に対して機械的に検証されています）:
+
+| ロール | デフォルトクラス | ロール | デフォルトクラス |
+|---|---|---|---|
+| `"escape"` | `hi-esc` | `"variable"` | `hi-var` |
+| `"operator"` | `hi-op` | `"tag"` | `hi-tag` |
+| `"comment"` | `hi-com` | `"attribute"` | `hi-attr` |
+| `"string"` | `hi-str` | `"punctuation"` | `hi-punct` |
+| `"number"` | `hi-num` | `"inserted"` | `hi-ins` |
+| `"constant"` | `hi-const` | `"deleted"` | `hi-del` |
+| `"keyword"` | `hi-kw` | `"heading"` | `hi-hd` |
+| `"function"` | `hi-fn` | `"type"` | `hi-ty` |
+| `"namespace"` | `hi-ns` | `"property"` | `hi-prop` |
+
+各ロールのデフォルトクラスは `${classPrefix}${suffix}` です（デフォルトの `classPrefix` は `"hi-"`）。`roleClasses` の上書きはキーに **フルネーム**（`keyword`）を使い、クラスのサフィックス（`kw`）は使いません。
+
+## 生の mdast の形（`parseToAst` / `toMdastRoot`）
+
+`parseToAst` の `ast` フィールドは、シリアライズされた **生の** markdown-rs mdast ツリー（`MdastRoot`。存在する場合は常に `root` 型の `Root` ノード）です — パーサ自身のノードの形を、その serde 表現を通して、開いた unist 形状のキャリアへ変換したもので、意図的に zfb ビジター適用 **前** です。ツリー内のすべてのノードは常に `position: { start: AstPosition; end: AstPosition }` を持ちます。`AstPoint` の `column` と `offset`（0 始まり）は JavaScript の **UTF-16 コードユニット** で、`String.prototype.slice`、`mdast-util-to-hast`、remark/unist 自身の規約と一致します — Unicode スカラー値ではないため、サロゲートペアの文字（多くの絵文字）は `column` / `offset` を 1 ではなく 2 進めます。
+
+コア mdast と MDX の完全なノードセット（`Root`、`Paragraph`、`Heading`、`List`、`Code`、`Link`、`MdxJsxFlowElement`、…）に加えて、前方互換の `UnknownMdastNode` キャッチオールが、`node.type` で型を絞り込みたい呼び出し元のために、名前付きの型としてパッケージから再エクスポートされています。remark-parse / remark-mdx からの、文書化された 2 つの相違点: `mdxJsxAttribute`（およびその値属性 / 式属性の兄弟）は `position` を持ちません — markdown-rs は属性の位置をモデル化しません。また、トップレベルの MDX `import` / `export` は段落へと格下げされます（`mdxjsEsm` ノードなし、estree データなし） — wasm の境界には JS/acorn パーサが存在しないためです。`_markdownRsStops`（MDX の式 / ESM ノードに付く）は内部的で不安定な、markdown-rs の再パース用の管理情報であり、`position` とは異なり **UTF-8 バイト** ベースです。これで文字列をスライスしては決していけません。
+
+`directives: true` の場合（[`ParseToAstOptions`](#parsetoastoptions) を参照。デフォルトは `false`）、ツリーは 3 つの汎用 remark-directive ノード型も持てます。いずれも同じ `DirectiveNodeBase` の形（`position`、`name`、`attributes`、`children`）を共有します:
+
+- `containerDirective` — ブロック形式、`:::name`
+- `leafDirective` — ブロック形式、`::name`
+- `textDirective` — インライン形式、`:name`
+
+`DirectiveNodeBase` の `name` はディレクティブの名前文字列で、`attributes` は `Record<string, string>` です — 真偽値の属性は空文字列で表され、`true` やキーの省略にはなりません。`directives` をデフォルトの `false` のままにすると、ディレクティブのように見えるテキストは markdown-rs がパースしたそのままで残り、これら 3 つのノード型はどれも現れません。
+
+`toMdastRoot`（上記参照）は、この生の階層を、生のキャリアではなく通常の `mdast` / `unist-util-visit` のツールを使いたい利用者のために、厳密でエコシステム互換のツリーへ変換します。
+
+## バリデーションと位置の契約
+
+- **未知のフィールドは拒否されます**。Rust 側で `deny_unknown_fields` 方式により、`ZfbMdWasmOptions` の **両方の** ネストレベル（トップレベルと `pipeline`）で行われます。`ParseToAstOptions` は **別の、より厳格な** 閉じたドキュメントです: その `pipeline` サブオブジェクトは `gfm` のみを受け付けます — `theme`、`cjkFriendly`、`hardBreaks`、`codeHighlight`、`features` をそこに渡すと、たとえそれらが `compile` / `renderHtml` にとって有効な `PipelineOptions` フィールドであっても拒否されます。
+- **`Diagnostic.line` / `.column`**（`compile` / `renderHtml` 由来）と **`AstPoint.column` / `.offset`**（`parseToAst` 由来）は、上で説明した同じ JavaScript の **UTF-16 コードユニット** 規約を共有します。純粋な ASCII のソースはバイトオフセットが UTF-16 オフセットと等しいため、これが問題になるのはソースに非 ASCII のコンテンツが含まれる場合だけです。
+
+## パッケージのエントリポイント
+
+2 つのサブパスエクスポート。どちらも同じクレートからコンパイルされますが、異なる wasm アーティファクトを提供します:
+
+| サブパス | アーティファクト | 再エクスポートされる面 | 使う場面 |
+|---|---|---|---|
+| `.` | フルパイプライン（SWC を含む） | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、3 つのエラークラスすべて、上記のすべての型 | MDX のコンパイル、Markdown の HTML へのレンダリング、または生の AST へのパース。 |
+| `./highlight` | スリム、ハイライト専用 — `pipeline` の Cargo feature をオフにしてビルドされるため、`compile` / `renderHtml` / `parseToAst` は基盤のグルーに存在すらしません | `init`、`highlightCode`、`version`、両方のトラップエラークラス、`HighlightRole` / `HighlightCodeOptions` / `HighlightCodeResult` / `HighlightDiagnostic*` の型 | `highlightCode` しか呼ばない場合 — デフォルトのアーティファクトのおよそ半分のダウンロードサイズ。 |
+
+各サブパスの `exports` マップは、`default` 条件（`src/index.ts` / `src/highlight.ts` にある、動的な Node の `fs` または `fetch` ローダ）よりも先に `browser` 条件（`src/browser.ts` / `src/highlight-browser.ts` が使う、静的でバンドラフレンドリーなリソースパス）を解決します。両方の条件は同じ `types` エントリと、同じ基盤の `createWasmApi` ランタイムを共有します。
+
+このパッケージは **ESM 専用** で（`"type": "module"`、`require` のサポートなし）、**Node ≥ 20.0.0** を必要とします。このページに焼き込まれたバージョン番号を信頼するのではなく、実行時に `version()`（上記）を呼ぶか、インストール済みパッケージ自身の `package.json` を確認してください — バージョン番号はリリースごとに変わります。
+
+## 関連項目
+
+- [ブラウザでの Markdown プレビュー](../guides/browser-markdown-preview.mdx) — ナラティブなガイド: インストール、コンパイル済みモジュールの評価、JSX ランタイムの import map の落とし穴、リソースの遅延ロード、パリティ保証の明示的な制限。
+- [Wasm のインポート](../guides/importing-wasm.mdx) — ビルド時に `.wasm` モジュールを SSR ルートへインポートするという、別の無関係な機能。
+- [シンタックスハイライト](../guides/syntax-highlighting.mdx) — このパッケージの `fancy-regex` バックエンドと比較するための、ネイティブ zfb の syntect のセットアップ。

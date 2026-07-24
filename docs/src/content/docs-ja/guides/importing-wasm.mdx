@@ -1,0 +1,216 @@
+---
+title: WebAssembly のインポート
+sidebar_position: 6.5
+description: zfb のページやルートでコンパイル済みの WebAssembly モジュールをデフォルトインポートする方法と、そのインポートが zfb dev、静的（SSG）、SSR の各ビルドでどう異なる挙動をするか。
+---
+
+<Info title="このページで扱う内容">
+
+`.wasm` インポートのビルドプリミティブ: コンパイル済みの `WebAssembly.Module` を
+zfb のページやルートへデフォルトインポートし、それをインスタンス化する方法と、同じ
+インポートが `zfb dev`、静的（SSG）ビルド、SSR ビルドでどう異なる挙動をするか。この
+ページはデプロイターゲットに依存しません。Cloudflare 固有のデプロイの仕組み（Wrangler
+ルール、パッケージサイズの制限、完全な Satori/Resvg の例）については、[SSR と Cloudflare
+バインディング](./ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) を
+参照してください。
+
+</Info>
+
+## 用途
+
+ページやルートが JavaScript ではなく本物の WebAssembly ライブラリや計算カーネルを
+必要とするときに、`.wasm` インポートを使ってください。典型的な形は次のとおりです:
+
+- **リクエスト時の OG 画像生成。** `pages/api/og.tsx` ルートは、
+  [`satori`](https://github.com/vercel/satori) と
+  [`@resvg/resvg-wasm`](https://www.npmjs.com/package/@resvg/resvg-wasm)
+  を使ってリクエストごとに画像をレンダリングします — SVG から PNG への
+  ラスタライザは Wasm として提供されます。
+- **コンパイル済みのパーサやコーデック** で、`wasm32` ビルドとしてしか存在しない
+  もの — 純粋な JS の同等物がない、または JS 移植版が明確に遅い場合。
+- **計算カーネル**（画像処理、ハッシュ、物理 / 幾何ルーチン）で、手書きの JS より
+  コンパイルしたほうが速いもの。
+- **ビルド時に Wasm から計算される静的な値** — `prerender = false` の export を
+  持たないページでも、`.wasm` モジュールをインポートして評価できます。その結果は、
+  他のビルド時計算と同様に、出力される HTML に焼き込まれます。
+
+共通するのは、インポートによって本物の `WebAssembly.Module` — `WebAssembly.instantiate`
+やライブラリ自身の `initWasm()` 風ローダが期待するのと同じオブジェクト — が得られる
+ことです。JS による再実装でも、URL 文字列でもありません。
+
+## プリミティブ
+
+ページ、ルート、またはそれらがインポートする任意のモジュールから、`.wasm` ファイルを
+デフォルトインポートします。インポートされる値はコンパイル済みの `WebAssembly.Module`
+です — 呼び出す前に、依然としてインスタンス化する必要があります:
+
+```tsx
+// pages/api/answer.tsx
+import wasmModule from "../../wasm/answer.wasm";
+
+export const prerender = false;
+
+function answer(module: WebAssembly.Module) {
+  const exported = new WebAssembly.Instance(module).exports.answer;
+  if (typeof exported !== "function") {
+    throw new Error("Wasm module must export answer()");
+  }
+  return exported();
+}
+
+export default function AnswerRoute() {
+  return new Response(`ANSWER:${answer(wasmModule)}`);
+}
+```
+
+一部の Wasm ライブラリは、生の `WebAssembly.Instance` の代わりに、この同じ手順を
+独自の初期化子で包んでいます — 例えば `@resvg/resvg-wasm` の `initWasm(resvgWasm)`
+です。いずれの場合も、`.wasm` インポートから出てくる値はコンパイル済みモジュールで
+あり、インスタンス化は常に、あなた（またはライブラリ）が明示的に行う別の手順です。
+
+<Warning title="インポートされるのは Instance ではなく Module">
+
+`import wasmModule from "./thing.wasm"` は `WebAssembly.Module` を返します。これは
+**まだ** インスタンス化されていません — エクスポートされた関数を直接呼ぶことはでき
+ません。エクスポートを呼べるようにするには、その前に
+`new WebAssembly.Instance(wasmModule)` を実行する（またはライブラリ自身のローダ、
+例えば `initWasm(wasmModule)` に渡す）必要があります。インポートされた値のメソッドを
+直接呼ぶことは、型エラーであり実行時エラーです。
+
+</Warning>
+
+## ビルドパイプラインごとの挙動
+
+同じ `import x from "./thing.wasm"` 文でも、どのパイプラインがページを評価するかに
+よって異なる挙動をします。
+
+### `zfb dev`
+
+`zfb dev` は、ページのレンダリングコード — Wasm インポートを含む — を、他の
+`prerender = false` ルートと同様に、**リクエスト時** に埋め込み V8 アイソレートで
+実行します。アダプターを設定する必要はありません。dev サーバーがモジュールを自分で
+ロードしてインスタンス化します。
+
+他の SSR 専用の編集と同様に、`.wasm` ファイルやそれをインポートするルートを編集すると、
+次のリクエストで反映されますが、ブラウザの自動リフレッシュは **トリガーされません** —
+SSR 専用の編集は静的 HTML の書き込みを生まないため、`Page` の SSE イベントが発火
+しません。編集後に新しい出力を見るには、ブラウザのタブを手動でリロードしてください。
+
+### SSG / 静的ルート
+
+`export const prerender = false` を持たないページ（デフォルト）でも、`.wasm` モジュールを
+問題なくインポートして評価します — インポートは **ビルド時** に解決・インスタンス化され、
+ページがそこからレンダリングするものは、他のビルド時計算と同様に静的 HTML に焼き込まれ
+ます。純粋に静的なページでは、`.wasm` ファイル自体は `dist/` に出力されません — 出力
+されるのは結果の HTML だけです。
+
+```tsx
+// pages/index.tsx — no prerender export, so this runs at build time
+import wasmModule from "../wasm/answer.wasm";
+
+function answer(module: WebAssembly.Module) {
+  const exported = new WebAssembly.Instance(module).exports.answer;
+  if (typeof exported !== "function") {
+    throw new Error("Wasm module must export answer()");
+  }
+  return exported();
+}
+
+export default function Page() {
+  return <p>Computed at build time: {answer(wasmModule)}</p>;
+}
+```
+
+### SSR ルート（`prerender = false`）
+
+SSR にオプトインして `.wasm` をインポートするルートには、設定済みのアダプターが
+必要です — 下記のリテラル export の要件を参照してください。これは Wasm 固有のルール
+ではありません: これは `zfb build` が、設定済みアダプターのない **あらゆる**
+`prerender = false` ルートに適用する、同じ fail-fast チェックです。ビルドは、どう
+包めばよいか分からないルートに対してデプロイ可能なアーティファクトを生成できない
+ためです。`zfb build` は、ルートを黙って落とすのではなく、直ちに失敗します:
+
+```text
+no adapter configured but route <route> requires SSR. Either set `adapter`
+in zfb.config.json (e.g. "@takazudo/zfb-adapter-cloudflare") or remove
+`export const prerender = false` from the page.
+```
+
+アダプターが設定されていれば、`zfb build` は Worker エントリの隣にハッシュ付きの Wasm
+モジュールを出力します — インポートされたモジュールごとに `<name>-<hash>.wasm` ファイル
+（モジュールのベース名にコンテンツハッシュを付けたもの、例: `index_bg-a1b2c3d4.wasm`）
+— さらに、公開の静的ファイルとして配信されないよう `.assetsignore` エントリも出力
+します。Cloudflare アダプターでの正確な `dist/` の形と `.assetsignore` の内容に
+ついては、[生成される Wasm レイアウト](./ssr-and-cloudflare-bindings.mdx#生成される-wasm-レイアウト)
+を参照してください。
+
+<Warning title="prerender = false はリテラルの export でなければならない">
+
+zfb は `prerender` を、実行時の評価ではなく **ビルド時の静的な AST 検査** によって
+検出します。この export は **リテラルの `export const`** 宣言でなければなりません:
+
+```tsx
+export const prerender = false; // ✅ detected correctly
+```
+
+間接的な代入や計算された値は検出 **されず**、黙って SSG にフォールバックします:
+
+```tsx
+// ❌ indirect assignment — not a literal export const
+const flags = { prerender: false };
+export const prerender = flags.prerender;
+```
+
+ルートが `.wasm` をインポートしていても `prerender = false` の export が検出されなかった
+場合、そのルートは代わりに SSG として実行されます — その Wasm インポートはビルド時に
+問題なく評価されますが（上記の SSG の節を参照）、本番でリクエストごとの新鮮な実行は
+行われません。
+
+</Warning>
+
+## アンビエント型付け
+
+`.wasm` のデフォルトインポートの型は、`@takazudo/zfb` が提供するアンビエントモジュール
+宣言（`declare module "*.wasm"`。デフォルト export を `WebAssembly.Module` に解決します）
+に由来します。パッケージ自身のルートエントリポイントがこの宣言を内部で取り込むため、
+パッケージが出力するルート宣言ファイルから到達可能なまま保たれます。プロジェクトの
+ページファイルは、ほぼ必ず `@takazudo/zfb` から *何か*（`Island`、`clientScript` など）
+を既にインポートしており、それだけで、TypeScript プログラム全体の **すべての** `.wasm`
+インポートに対してアンビエントな `.wasm` の型付けがスコープに入ります — `declare module`
+の拡張は、プログラム内のいずれかのファイルがパッケージを参照した時点でグローバルになり、
+ファイルごとのインポートは不要です。
+
+Wasm 専用のヘルパーモジュールがそのインポートグラフの **外側** にある場合 — そのファイル
+自身も、それがインポートするものも、`@takazudo/zfb` を一切取り込まない場合 —
+アンビエント型が引き続き適用されるよう、宣言のみのブリッジファイルを追加してください:
+
+```ts
+// src/zfb-wasm.d.ts
+import "@takazudo/zfb";
+```
+
+このファイルが `tsconfig.json` の `include` リストの対象になっていることを確認して
+ください — 例えば `"include": ["src/**/*"]` なら既に拾われます。より狭い `include` の
+場合は、このファイルを明示的に追加する必要があります。
+
+## クライアント / アイランドコードの Wasm は別の関心事
+
+このページのプリミティブは **サーバーサイド** の `.wasm` インポート（SSG のビルド時、
+またはページ / ルートのモジュールグラフを経由した SSR のリクエスト時）向けです。
+クライアントサイドの `"use client"` アイランドコードや、ブラウザ向けに特別に
+WebAssembly へコンパイルされたパッケージ（`@takazudo/zfb-md-wasm` など）も `.wasm`
+リソースを提供します — ただし、それらはこのインポートプリミティブではなく islands の
+esbuild パスを通り、ページへのコンパイル済みモジュールのインポートとしてではなく、
+JS グルーと並んで `islands-resource-<name>-<hash>.wasm` ファイルとして出力されます。
+ブラウザ向けの Wasm パッケージの具体例については、[ブラウザでの Markdown
+プレビュー](./browser-markdown-preview.mdx) を参照してください。
+
+## 関連項目
+
+- [SSR と Cloudflare バインディング — SSR ルートで Wasm をインポートする](./ssr-and-cloudflare-bindings.mdx#ssr-ルートで-wasm-をインポートする) —
+  Cloudflare 固有のデプロイの仕組み: 完全な Satori/Resvg の例、Wrangler の
+  `CompiledWasm` モジュールルール、3 MiB（Free）/ 10 MiB（Paid）の圧縮パッケージ制限、
+  そしてその制限を超えるモジュールのためのサービスバインディングのエスケープハッチ。
+- [Worker 上の SSR（アダプターモード）](../concepts/ssr-on-a-worker.mdx) — アダプターが
+  実際に何を出力し、本番で `prerender = false` のリクエストがどのようにディスパッチ
+  されるかのメンタルモデル。

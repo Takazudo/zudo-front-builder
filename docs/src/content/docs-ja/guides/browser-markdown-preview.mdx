@@ -1,0 +1,495 @@
+---
+title: ブラウザでの Markdown プレビュー
+description: "@takazudo/zfb-md-wasm パッケージを使い、MDX を実行可能な ES モジュールへコンパイルしたり、Markdown を HTML へレンダリングしたりを、zfb のビルド時パイプラインと出力パリティを保ちながら、すべてブラウザ内で行います。"
+sidebar_position: 7.5
+---
+
+<Info title="このページで扱う内容">
+
+`@takazudo/zfb-md-wasm`、zfb の md/mdx → JS/HTML パイプラインの **ブラウザ側での動的変換**
+向け WebAssembly ビルド。2 つの API 階層（`compile()` と `renderHtml()`）、`parseToAst()`
+による生の mdast ツリーへのパース（および検証付きの `toMdastRoot()` アダプタ）、直接的な
+セマンティックな `highlightCode()`、ブラウザでコンパイル済みモジュールを評価する方法、
+Vite でのパッケージの使い方、テストとツールでの Node 利用、そしてパリティ保証の明示的な
+制限を扱います。
+
+</Info>
+
+## これは何か、なぜ存在するのか
+
+`@takazudo/zfb-md-wasm` は、zfb 自身の markdown/MDX → JS 変換パイプラインを WebAssembly
+にコンパイルし、あなたのマシンでのビルド時だけでなく、ブラウザのタブ内でも実行できる
+ようにします。
+
+代表的なユースケースは **CMS のライブプレビュー** です: 編集者が CMS に Markdown や MDX を
+入力するとき、プレビューペインは `zfb build` が最終的に生成するものを — 近似ではなく —
+そのまま表示すべきです。これを [`@mdx-js/mdx`](https://mdxjs.com/) をブラウザで実行して
+行うと、独自のパース、プラグイン、JSX 出力の挙動を持つ *別の* パイプラインを使うことに
+なり、そのプレビューは zfb の実際のビルド出力からずれる可能性があります。`zfb-md-wasm` は、
+zfb 自身がビルド時に使うのと **同じ Rust パイプライン** をコンパイルすることでそのずれを
+避けるため、プレビューは実際に出荷されるものに忠実であり続けます。パリティこそが、単に
+`@mdx-js/mdx` に手を伸ばすのではなくこのパッケージが存在する、そのすべての理由です。
+
+Node ≥ 20 でもこのパッケージをロードできます — パッケージ自身のテストスイートがそう
+しています — が、ターゲットはブラウザです。`zfb` バイナリを直接実行するシェルアクセスを
+持つサーバーは、このパッケージをロードするのではなく、引き続きそうすべきです。
+
+<Note>
+
+`pnpm add @takazudo/zfb-md-wasm`（またはお好みのパッケージマネージャ）でインストール
+します。
+
+</Note>
+
+## 2 つの API 階層
+
+`compile()` と `renderHtml()` はどちらも、markdown/MDX の `source` 文字列とオプション
+オブジェクト — すべてのフィールドは任意で、`{}` はすべてのデフォルトを選びます — を受け
+取り、どちらも `diagnostics` 配列を持つ結果オブジェクトに解決します。**想定される失敗は
+決してスローしません。** パースエラー、不正なオプション JSON、未知のテーマなどの問題は、
+すべて `code` / `html` が `null` に設定された `Diagnostic[]` エントリとして返され、
+スローされるエラーになることはありません。（スローされる `ZfbMdWasmTrapError` は wasm
+ビルドの実際のバグを意味します — その、より限定的なケースについては、パッケージ自身の
+README「Error / trap / re-init contract」を参照してください。）
+
+### `compile()` — MDX から ES モジュール JS へ
+
+完全な MDX → JSX → SWC → ES モジュール。結果の `code` は、自動 JSX ランタイムを使う
+`MDXContent` のデフォルト export（コンポーネント関数）を持つ ES モジュールソースです。
+
+```ts
+import { compile } from "@takazudo/zfb-md-wasm";
+
+const { code, frontmatter, diagnostics } = await compile(
+  "---\ntitle: Hello\n---\n\n# Welcome\n\n<Callout>Sum is {1 + 2}</Callout>\n",
+  { filename: "post.mdx", jsxRuntime: "preact" },
+);
+// code        -> ES-module JS source (string), or null on failure
+// frontmatter -> { title: "Hello" }
+// diagnostics -> []
+```
+
+frontmatter の値は結果の `frontmatter` フィールドで返されます — コンテンツ内のバインディング
+としては公開 **されません**。ソース内の `{frontmatter.title}` ではなく、ホスト側のコード
+（上記の `frontmatter` オブジェクト）から参照してください: コンパイル済みモジュールの
+スコープには `frontmatter` 変数がないため、コンテンツ内での参照はモジュール実行時に
+`ReferenceError` をスローします。
+
+### ブラウザでコンパイル済みモジュールを評価する
+
+`compile()` は、実行可能なモジュールではなく ES モジュールの _ソーステキスト_ を返します。
+blob URL と動的な `import()` でそれを実行可能なモジュールに変換します:
+
+```ts
+const { code, diagnostics } = await compile(source, { filename: "preview.mdx" });
+if (code === null) {
+  // Compilation failed — render the `diagnostics` array instead of a module.
+  return;
+}
+const url = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+const { default: MDXContent } = await import(/* @vite-ignore */ url);
+URL.revokeObjectURL(url);
+
+// render <MDXContent components={{ Callout }} /> with your framework
+```
+
+PascalCase のコンポーネント（上記ソースの `<Callout>`）は、モジュールの `components` prop を
+通して渡します — zfb が自身の [MDX Components](../concepts/mdx-components.mdx) で使うのと
+同じ規約です。
+
+### JSX ランタイムを供給する
+
+コンパイル済みモジュールは JSX ランタイムを裸の指定子 — `preact/jsx-runtime` または
+`react/jsx-runtime` — でインポートするため、それを評価するページは、
+[import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap)
+やバンドラを通じて、それらの指定子を自分で解決しなければなりません。`zfb-md-wasm` は
+どちらのランタイムも同梱・バンドルしません。
+
+<Warning title="Fragment の癖 — preact 利用者はエイリアスが 1 つ必要">
+
+zfb のエミッタは JSX の _ファクトリ_ をあなたが選んだ `jsxRuntime` から取りますが、
+どちらのランタイムを選んだかにかかわらず、**`Fragment` は常に `react/jsx-runtime` から
+インポートします**。これは zfb の本番エミッタの形であり — パリティとして正しく、バグでは
+ありません — しかしこれは、**preact** 利用者が `react/jsx-runtime` を preact 自身の
+ランタイムへエイリアスしなければならないことを意味します。さもなければ `Fragment` は
+実行時に解決に失敗します:
+
+```html
+<script type="importmap">
+  {
+    "imports": {
+      "preact/jsx-runtime": "https://esm.sh/preact/jsx-runtime",
+      "react/jsx-runtime": "https://esm.sh/preact/jsx-runtime"
+    }
+  }
+</script>
+```
+
+`react` 利用者は `react/jsx-runtime` を React 自身のランタイムにマッピングするだけでよく、
+エイリアスは不要です。
+
+</Warning>
+
+### `renderHtml()` — Markdown から HTML へ
+
+Markdown → hast → HTML 文字列で、**実行時に SWC をスキップします**。プレーンな markdown の
+プレビューだけが必要で、コンポーネントモジュールを評価する必要がないときに使ってください。
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm";
+
+const { html, frontmatter, diagnostics } = await renderHtml("# Heading\n\nSome **bold** text.\n", {
+  filename: "post.md",
+});
+// html -> "<h1>Heading</h1><p>Some <strong>bold</strong> text.</p>"
+```
+
+`renderHtml` は `jsxRuntime` / `development` を受け取って無視するため、オプション
+オブジェクトを動的に組み立てれば、1 つで両方の階層に使えます。
+
+## AST へのパース（parseToAst）
+
+`parseToAst()` は 3 つ目のパイプライン階層で、`renderHtml()` より 1 段階手前に位置します:
+パースの直後で止まり、HTML や JS へ進む代わりに、生の mdast ツリーを JSON として返します。
+ホストがツリー自体を走査または変換する必要があるとき — 目次、カスタムレンダラ、単語数 /
+読了時間のメタデータ、あるいは完成した文字列ではなくドキュメントへの構造化されたアクセスを
+必要とするその他のもの — に使ってください。
+
+```ts
+import { parseToAst, type ParseToAstOptions, type ParseToAstResult } from "@takazudo/zfb-md-wasm";
+
+const result: ParseToAstResult = await parseToAst(
+  "# Welcome\n\nHello **world**.\n",
+  { filename: "post.md" } satisfies ParseToAstOptions,
+);
+// result.ast         -> { type: "root", position: {...}, children: [...] }
+// result.frontmatter -> null (no frontmatter in this source)
+// result.diagnostics -> []
+```
+
+### `ParseToAstOptions`
+
+`parseToAst` は独自の、独立した閉じたオプションドキュメントを受け取ります — `compile` /
+`renderHtml` のオプションの形ではありません:
+
+- `filename` — 小文字の `.md` または `.mdx` で終わる必要があります。明示的な `dialect` が
+  ない場合、`.md` は CommonMark を、`.mdx` は MDX を選びます。`filename` を省略すると
+  `<anonymous>.mdx` が使われ、したがって MDX になります。明示的な `dialect` はどちらの
+  有効な拡張子も上書きしますが、拡張子のゲート自体は免除しません。
+- `dialect` — `"markdown"` または `"mdx"`。省略時は上記のとおり `filename` から推論されます。
+- `directives` — 汎用の remark-directive 構文（`:::name` / `::name` / `:name`）をパース
+  します。デフォルトは `false`。オフのときは、ディレクティブのように見えるテキストは
+  markdown-rs がパースしたそのままで残ります。
+- `frontmatter` — YAML の処理ポリシー。デフォルトは `"extract"`:
+
+  | ポリシー | パースされるソース | AST の `yaml` ノード | `frontmatter` の値 | 不正な YAML |
+  | --- | --- | --- | --- | --- |
+  | `extract`（デフォルト） | frontmatter を除去した本文 | なし | パースされた JSON / `null` | `frontmatter` 診断が 1 つ |
+  | `node` | 論理ソース全体 | 正規の `yaml` ノード | パースされた JSON / `null` | `frontmatter` 診断が 1 つ |
+  | `none` | 論理ソース全体、全バイトを Markdown/MDX として | なし | 常に `null` | `frontmatter` 診断を生成しない |
+
+- `pipeline.gfm` — 5 つの真偽値 `GfmOptions` スイッチ（`strikethrough`、`table`、
+  `autolinkLiteral`、`taskListItem`、`footnoteDefinition`）のみ。`parseToAst` のパイプ
+  ラインオプションは `compile` / `renderHtml` のものより厳格です: 適用できないビジター /
+  シリアライザ専用のつまみを黙って受け入れて無視するのではなく、`theme`、`cjkFriendly`、
+  `hardBreaks`、`codeHighlight`、`features` をきっぱり拒否します（`deny_unknown_fields`）。
+
+### `ParseToAstResult`
+
+```ts
+interface ParseToAstResult {
+  ast: MdastRoot | null; // serialized raw mdast root on success, null on failure
+  frontmatter: unknown; // parsed YAML frontmatter as JSON, per the policy table above
+  diagnostics: Diagnostic[]; // same Diagnostic shape as compile()/renderHtml()
+}
+```
+
+`ast` は markdown-rs の生の mdast ツリーを、その serde の形を通して、開いた unist 形状の
+キャリアへ変換したものです — 文書化されたすべてのノードは `type`、`position`、ノード固有の
+フィールドを保持しますが、これは **zfb ビジター適用前** の生の出力であり、レンダリング
+されたパイプラインが生成する HTML/JS ではありません。
+
+### UTF-16 の位置
+
+ツリー内のすべてのノードは `position: { start, end }` を持ち、それぞれ `line`（1 始まり）、
+`column`（1 始まり）、`offset`（0 始まり）を持つ `AstPoint` です。`column` と `offset` は
+**UTF-16 コードユニット** — `String.prototype.slice` や remark/unist 自身の規約が使うのと
+同じインデックス — であり、Unicode スカラー値では **ありません**: BMP 外のスカラー（多くの
+絵文字）はサロゲートペアであるため、`offset` / `column` を 1 ではなく 2 進めます。位置は
+**元のソース** に対して報告され、frontmatter の行も含まれます。これは、markdown-rs が実際に
+パースする本文からそれらの行が除去されている `frontmatter: "extract"` の下でも同様です。
+
+<Warning title="開いたノードのユニオンは `type` だけでは絞り込めない">
+
+`MdastNode` は、文書化されたセットにないあらゆるノード型のキャッチオールとして
+`UnknownMdastNode` を含み、そのキャッチオールの `type` フィールドは、リテラルではなく
+一般的な `string` です。これにより、認識されないノード型が `unknown` にフォールバックせず
+型付けされたまま保たれますが、同時に、単純な等価チェックではキャッチオールを **絞り込んで
+除外できない** ことも意味します:
+
+```ts
+// child: MdastNode
+if (child.type === "heading") {
+  child.depth; // still a type error — TypeScript can't rule out UnknownMdastNode here
+}
+```
+
+実行時に形を確認したうえでノードの種類を明示的にアサートするか、下記の `toMdastRoot()` を
+使ってください。これはキャストなしで正しく絞り込めるツリーを返します。
+
+</Warning>
+
+### `toMdastRoot()` — 検証付きで型を絞り込むアダプタ
+
+`parseToAst` の生の `ast` は設計上、前方互換です: 認識されないノードは、呼び出しを壊すの
+ではなく `UnknownMdastNode` として残ります。`toMdastRoot()` はその逆の、より厳格なツール
+です — 生のツリーを検証し、切り離されたエコシステム形状の
+[`mdast`](https://github.com/syntax-tree/mdast) の `Root` を返します。これは
+`@types/mdast` の利用者が期待するとおりに `type` で絞り込めます:
+
+```ts
+import { parseToAst, toMdastRoot, MdastAdapterError } from "@takazudo/zfb-md-wasm";
+
+const { ast } = await parseToAst("# Welcome\n\nHello **world**.\n");
+try {
+  const root = toMdastRoot(ast);
+  const heading = root.children[0];
+  if (heading.type === "heading") {
+    heading.depth; // narrows correctly — no assertion needed
+  }
+} catch (error) {
+  if (error instanceof MdastAdapterError) {
+    // error.path     -> e.g. "$.children[0]"
+    // error.nodeType -> the offending node's `type`, or null for a null ast
+  }
+}
+```
+
+`toMdastRoot()` は診断する代わりに `MdastAdapterError`（`.path` と `.nodeType` を持つ
+`TypeError` のサブクラス）を **スロー** します — 結果オブジェクトは返しません。次の場合に
+スローします:
+
+- `null` の `ast`（path は `"$"`）、および
+- 未知またはサポートされていないノード型（`math`、`toml`、`mdxjsEsm` を明示的に含む）。
+
+スローするため、パース失敗が想定される場合は必ず先に `diagnostics` を確認してください —
+`toMdastRoot()` は、既に成功した `ast` を絞り込み可能なツリーに変換するためのものであり、
+パース失敗とアダプタ失敗を区別するためのものではありません。
+
+#### remark からの文書化された相違点
+
+- `mdxJsxAttribute`（およびその値属性 / 式属性の兄弟）は `position` を持ちません —
+  markdown-rs は属性の位置をモデル化しません。
+- トップレベルの `import` / `export` はプレーンな段落へと格下げされます（`mdxjsEsm` ノード
+  なし） — wasm の境界は JS の ESM/acorn パーサをホストできません。remark-mdx 相当の
+  ESM/estree データが必要な利用者は、それらのドキュメントには remark を使い続けてください。
+- `_markdownRsStops`（MDX の式 / ESM 形状のノードが持つ）は markdown-rs 内部の管理情報で、
+  不安定であり、**UTF-8 バイト** ベースです — `position` とは異なり、上記の UTF-16 コード
+  ユニットの契約を共有しません。これで文字列をスライスしては決していけません。
+
+### Vite で使う
+
+`parseToAst()`（および他のすべての `@takazudo/zfb-md-wasm` エクスポート）は、動作に Vite の
+プラグイン、エイリアス、設定を必要としません — 素の `vite` devDependency で十分です。
+パッケージの `browser` export 条件と、グルー / wasm リソースに対する `?url` アセット
+インポートの契約は、どちらも Vite のデフォルトの dev サーバーと本番ビルドの下で（そして
+zfb 自身の esbuild パイプラインの下でも同様に）自動的に解決されます。本番では
+[サーバー MIME の要件](#遅延ロードされるブラウザリソースとサーバー-mime) が引き続き適用
+されます: 出力される `.mjs` を `application/javascript` として、`.wasm` を
+`application/wasm` として配信してください。
+
+## 直接的なセマンティックコードハイライト
+
+`highlightCode()` は、任意の HTML、CSS、JavaScript、またはその他の同梱された構文に対する、
+直接的なルート API です。Markdown のフェンスを必要とせず、インラインの色や Shiki のクラスを
+出力することもありません。エスケープされた、セマンティックなクラスモードの HTML を返します。
+
+```ts
+import {
+  highlightCode,
+  type HighlightCodeOptions,
+  type HighlightCodeResult,
+} from "@takazudo/zfb-md-wasm";
+
+const output: HighlightCodeResult = await highlightCode("const answer = 42;", {
+  language: "javascript", // required
+  mode: "class", // optional; the only accepted mode
+  classPrefix: "hi-", // optional; defaults to "hi-"
+  roleClasses: { keyword: "text-violet-600 dark:text-violet-400" },
+} satisfies HighlightCodeOptions);
+```
+
+```ts
+type HighlightRole =
+  | "escape"
+  | "operator"
+  | "comment"
+  | "string"
+  | "number"
+  | "constant"
+  | "keyword"
+  | "function"
+  | "type"
+  | "namespace"
+  | "property"
+  | "variable"
+  | "tag"
+  | "attribute"
+  | "punctuation"
+  | "inserted"
+  | "deleted"
+  | "heading";
+
+interface HighlightCodeOptions {
+  language: string;
+  mode?: "class";
+  classPrefix?: string;
+  roleClasses?: Partial<Record<HighlightRole, string>>;
+}
+interface HighlightCodeResult {
+  html: string | null;
+  diagnostics: HighlightDiagnostic[];
+}
+```
+
+デフォルトの出力は `<pre class="hi-root"><code>…</code></pre>` で、空でない各行に
+`<span class="line">` が付きます。固定されたフルネームのロールキーとデフォルトの `hi-`
+クラスは次のとおりです: `escape` → `hi-esc`、`operator` → `hi-op`、`comment` → `hi-com`、
+`string` → `hi-str`、`number` → `hi-num`、`constant` → `hi-const`、`keyword` → `hi-kw`、
+`function` → `hi-fn`、`type` → `hi-ty`、`namespace` → `hi-ns`、`property` → `hi-prop`、
+`variable` → `hi-var`、`tag` → `hi-tag`、`attribute` → `hi-attr`、`punctuation` →
+`hi-punct`、`inserted` → `hi-ins`、`deleted` → `hi-del`、`heading` → `hi-hd`。
+
+`roleClasses` のキーは、そのリストのフルネームです。例えば `{ keyword: "my-keyword" }` は
+`hi-kw` を置き換えます。`kw` は有効な上書きキーではありません。`classPrefix` は、ルート
+（`"token-"` の場合は `token-root`）と、上書きされていないすべてのトークンクラスの両方を
+変更します。
+
+無効なオプション（例えば language の欠落、サポートされないモード、無効なプレフィックス、
+認識されないロールキー、余分なプロパティ）は、`source: "options"` の `error` 診断とともに
+`html: null` を返します。スローはしません。未知だが空でない language は、`source: "highlight"`
+の `warning` 診断 1 つと null の位置フィールドを伴う、成功したエスケープ済みフォールバックに
+なります。不完全なエディタ入力は受け入れられ、診断なしで通常の markup を返すことがあります。
+
+### 遅延ロードされるブラウザリソースとサーバー MIME
+
+パッケージのブラウザ export は 2 つの静的リソースを宣言します:
+`zfb_md_wasm_glue.zfb-resource.mjs` と `zfb_md_wasm_bg.wasm` です。zfb の本番ビルドは、
+次の名前のハッシュ付き island アセットを出力します:
+
+```text
+assets/islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs
+assets/islands-resource-zfb_md_wasm_bg-<hash>.wasm
+```
+
+[`./highlight` サブパス](#バンドルサイズ) は代わりに、独自の別のリソースのペアを宣言します
+— `zfb_md_wasm_highlight_glue.zfb-resource.mjs` と `zfb_md_wasm_highlight_bg.wasm` — で、
+同じ方法でハッシュ化されます:
+
+```text
+assets/islands-resource-zfb_md_wasm_highlight_glue.zfb-resource-<hash>.mjs
+assets/islands-resource-zfb_md_wasm_highlight_bg-<hash>.wasm
+```
+
+同じバンドルで `@takazudo/zfb-md-wasm` と `@takazudo/zfb-md-wasm/highlight` の両方を
+インポートすると、両方の wasm アーティファクトがロードされます — バンドルごとに 1 つの
+エントリを選んでください。
+
+初期ページロードから除外するには、ユーザー操作からのみルートを動的にインポートします。
+最初の公開 API 呼び出しで、グルーと wasm がフェッチされます:
+
+```ts
+button.addEventListener("click", async () => {
+  const { highlightCode } = await import("@takazudo/zfb-md-wasm");
+  const result = await highlightCode(editor.value, { language: "javascript" });
+  preview.innerHTML = result.html ?? "";
+});
+```
+
+出力される `.mjs` を `application/javascript` として、`.wasm` を `application/wasm` として
+配信してください。リソースを手動でコピーしたり、パッケージのソースパスをインポートしたり
+しないでください: zfb がハッシュ付きの URL グラフを維持できるよう、パックされたブラウザ
+エントリを使ってください。
+
+## Node での利用（テストとツール）
+
+同じ `compile` / `renderHtml` / `highlightCode` / `version` API が、追加のセットアップ
+なしで Node ≥ 20 の下で動作します — これはまさに、パッケージ自身の vitest スイートが wasm
+ビルドを検証する方法です。プレビュー出力のスナップショットテストや、`zfb` バイナリを
+起動せずにパリティチェックを行いたいツールに有用です。
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm";
+
+const { html } = await renderHtml("# Hello from Node\n");
+```
+
+## パリティ保証と制限
+
+出力は、固定されたフィクスチャコーパスにおいて zfb のネイティブパイプラインと一致します —
+パリティテストスイートは完全一致でゲートします。この保証には、ブラウザビルドに対する意図
+的な制限が伴います:
+
+- **ファイルシステムに依存するプラグインは不活性です。** `transclude`、`imageDimensions`、
+  `linkValidation` は登録されますが、ファイルシステムには一切触れません — ブラウザのタブ
+  にはファイルシステムがありません — これは、zfb 自身の MDX ローダがビルドコンテキストの
+  ルートを無効化した状態でそれらを実行するのとまったく同じです。ホストコールバック版
+  （ブラウザのホストが必要に応じてファイル内容を供給できるようにするもの）は将来の epic の
+  可能性であり、ここでは実装されていません。
+- **設定は `zfb.config.ts` ではなく、解決済みの JSON です。** TypeScript の設定を評価する
+  には JS エンジンが必要であり、それはビルド側にとどまります。まず設定を JSON へ解決し —
+  zfb がビルド時に `zfb.config.ts` から導出するのと同じ形、[Markdown のカスタマイズ](./customizing-markdown.mdx)
+  を参照 — それを `pipeline` オプションとして渡してください。
+- **クロスファイル機能はありません。** ルートテーブルのリンク解決とクロスファイルの
+  アンカー解決には、プロジェクト全体のルートグラフが必要ですが、単一ドキュメントのブラウザ
+  呼び出しはそれを決して持ちません。
+- **デフォルトの wasm アーティファクトは、`renderHtml` のみの用途でも SWC を含みます。**
+  単一の cdylib は、利用者が `renderHtml` しか呼ばないというだけで、ダウンロードから SWC を
+  tree-shaking で除去することはできません。スリムな `renderHtml` 専用のアーティファクトは、
+  文書化された可能なフォローアップであり、ここでは実装されていません。
+- **スリムな `highlightCode` 専用のアーティファクトは利用可能です** — `./highlight` の
+  export サブパス経由です。markdown/MDX/JSX パイプライン全体（SWC）を落とし、`init`、
+  `highlightCode`、`version` のみを export します — `compile` や `renderHtml` はありません。
+  完全な文法セットを保ちつつ、デフォルトのアーティファクトのおよそ半分のダウンロードサイズ
+  です（生で約 52% 小さく、gzip で約 45% 小さい）。両方のアーティファクトは、共有のオラクル
+  に対してバイト単位で同一にハイライトします。利用者がコードのハイライトしか行わない場合は、
+  `@takazudo/zfb-md-wasm/highlight` としてインポートしてください。
+- **シンタックスハイライトは syntect の `fancy-regex` バックエンドを使います** — ネイティブ
+  zfb の `oniguruma` バックエンドではありません（`oniguruma` は wasm にコンパイルできません）。
+  ネイティブ側の挙動については [シンタックスハイライト](./syntax-highlighting.mdx) を参照
+  してください。2 つのバックエンドは zfb のフィクスチャコーパスにおいてバイト単位で同一
+  です。文法レベルの相違は、クレート自身の情報提供用のバックエンド相違テストによって追跡
+  されます。
+
+## バンドルサイズ
+
+SWC を wasm バイトに含めるため、これは設計上大きなモジュールになります — ビルドは、サイズ
+最適化プロファイル（`opt-level = "z"`、LTO、1 つの codegen unit、`panic = "abort"`）に加えて
+`wasm-opt` を適用して縮小します。ここの特定の数値に依存しないでください。リリースごとに
+変わります。CI の `wasm-md` ジョブは、実行のたびに権威ある gzip サイズを出力します — この
+ページに書かれた数値を信頼するのではなく、そのジョブのサイズ行で現在の値を確認してください。
+
+## トラップからの回復
+
+想定される `highlightCode` のオプションエラーや未知の language のフォールバックは、通常の
+結果診断です。本物の wasm トラップは別です: 該当インスタンスは汚染されるため、その呼び出しは
+`ZfbMdWasmTrapError` をスローします。ラッパーは、キャッシュ済みのコンパイル済み wasm
+モジュールから直ちに新しいインスタンスを起動するため、次の `compile`、`renderHtml`、
+`highlightCode`、`version` の呼び出しは、2 回目の wasm の fetch / コンパイルなしに置き換え後
+のインスタンスを使います。ブラウザでの回復は、新しいグルーモジュールの世代
+（`?zfbMdWasmGen=N`）をインポートし、無制限なモジュールレコードを避けるため 16 回の回復に
+上限が設けられています。トラップは常にパッケージのバグです。それを引き起こした入力を報告
+してください。
+
+## 関連項目
+
+- [MDX Components](../concepts/mdx-components.mdx) — `compile()` の出力が従う `components`
+  prop の規約。
+- [Markdown のカスタマイズ](./customizing-markdown.mdx) — `pipeline` オプションが反映する
+  パイプライン設定を zfb がどう解決するか。
+- [シンタックスハイライト](./syntax-highlighting.mdx) — wasm ビルドの `fancy-regex`
+  バックエンドと比較するための、ネイティブ zfb の syntect のセットアップ。
+- [`@takazudo/zfb-md-wasm` API リファレンス](../api/md-wasm.mdx) — `compile`、`renderHtml`、
+  `parseToAst`、`toMdastRoot`、`highlightCode` の完全なオプション / 結果の型リファレンス。
+- [Wasm のインポート](./importing-wasm.mdx) — このページのブラウザ側の使い方と比較する
+  ための、SSR 側での Wasm モジュールのロード。
