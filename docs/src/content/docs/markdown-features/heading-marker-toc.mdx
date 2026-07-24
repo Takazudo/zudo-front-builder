@@ -65,3 +65,27 @@ The plugin inserts a `<ul>` list after the `## TOC` heading containing links to 
 ## Visitor ordering
 
 `TocPlugin` runs **after** `HeadingLinksPlugin` in the hast phase so that `id` attributes (deduplicated slugs) are already set on each heading when the TOC links are built. Each `<a href="#id">` in the TOC mirrors the final, deduplicated slug.
+
+## Alternate config key
+
+The same `{ heading?: string; maxDepth?: number }` options object is also
+reachable through the top-level `markdown.toc` key:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    toc: {
+      heading: "TOC",
+      maxDepth: 2,
+    },
+  },
+});
+```
+
+Unlike `markdown.features.headingMarkerToc`, `markdown.toc` does not accept
+the `true` boolean shorthand — only the options object.
+`markdown.features.headingMarkerToc` (documented above) is the canonical key
+— prefer it, since every other opt-in Markdown feature lives under
+`markdown.features.*`. `markdown.toc` wires the same `TocPlugin` and is kept
+for backward compatibility.
