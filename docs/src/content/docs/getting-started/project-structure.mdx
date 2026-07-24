@@ -88,7 +88,7 @@ See [Static Assets](../concepts/static-assets.mdx) for the full reference, inclu
 
 ## zfb.config.json
 
-The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
+The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`, the `zfb dev` server default — `zfb preview` falls back to `4321` instead when unset), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
 
 `outDir` is honored by `zfb dev`, `zfb build`, and `zfb preview`. For build and preview, CLI `--outdir` overrides config `outDir`; the built-in fallback is `dist/`.
 
@@ -96,4 +96,4 @@ The template scaffolds `zfb.config.json`. If you rename it to `zfb.config.ts`, z
 
 ## package.json, tsconfig.json, .gitignore
 
-Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and any libraries your islands import. `tsconfig.json` is configured so TSX in `pages/`, `layouts/`, and `components/` type-checks cleanly. The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control, plus `**/zfb-tailwind-entry-*.css` — the temp entry file the Tailwind pipeline synthesises next to your CSS entry (see [Styling](../concepts/styling.mdx)).
+Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and any libraries your islands import. `zfb new` exact-pins `@takazudo/zfb` and `@takazudo/zfb-runtime` to the version of the CLI that scaffolded the project — an exact pin like `=0.1.0-next.7`, not a `^`/`~` range — so a fresh scaffold never silently drifts to a future release. `tsconfig.json` is configured so TSX in `pages/`, `layouts/`, and `components/` type-checks cleanly. The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control, plus `**/zfb-tailwind-entry-*.css` — the temp entry file the Tailwind pipeline synthesises next to your CSS entry (see [Styling](../concepts/styling.mdx)).

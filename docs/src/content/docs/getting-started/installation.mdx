@@ -17,7 +17,7 @@ sidebar_position: 2
 You will need:
 
 - **Node.js ≥ 22** — required by the npm CLI wrapper and by the `tsc` subprocess that powers `zfb check`. The default TypeScript config loader itself runs inside zfb's embedded V8 runtime, not Node.
-- **pnpm ≥ 11** — install via the [official installer](https://pnpm.io/installation). zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`.
+- **pnpm ≥ 10** — install via the [official installer](https://pnpm.io/installation). This matches the minimum declared in the published `@takazudo/zfb` package's `engines` field; zfb scaffolds projects that use pnpm and will run `pnpm install` for you when it can find pnpm on your `PATH`. Contributors building the zfb monorepo itself need a newer pnpm — see [From source (contributors)](#from-source-contributors) below.
 
 ## Supported platforms
 
