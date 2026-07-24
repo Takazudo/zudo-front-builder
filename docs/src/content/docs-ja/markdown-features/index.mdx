@@ -8,8 +8,10 @@ zfb の Markdown パイプラインは階層構造になっています。**Core
 エンジンのメイン Markdown パイプライン / config surface の中で動作し、見出しアンカー、
 サーバーサイドのシンタックスハイライト、CJK フレンドリーな処理などを提供します。
 Core の行には常時有効なものもあれば、トップレベルまたは `markdown.*` config knob として
-Core パイプラインに実装されているものもあります。下の表が、各行のデフォルトと設定キーに
-ついての authoritative な一覧です。
+Core パイプラインに実装されているものもあります。下の表は、各 Core / Opt-in サーフェスの
+デフォルトと設定キーをすべて記載することを目指していますが、config スキーマから生成された
+ものではなく手作業で保守されているため、新しく追加された構文に追随できていない場合が
+あります。最新の挙動は、リンク先の機能ページやそれが対応する config 型で確認してください。
 
 このページは全体の地図です。各機能には、使用例・設定キー・順序に関する
 注意点をまとめた専用ページがあります。
@@ -60,6 +62,7 @@ Boolean shorthand は**普遍ではありません**。値の形に `boolean` �
 
 | Feature | Tier | Config key | Value shape | Default / gating |
 |---|---|---|---|---|
+| [GFM 構文](./gfm.mdx) | Core | `markdown.gfm` | `boolean \| { strikethrough?: boolean; table?: boolean; autolinkLiteral?: boolean; taskListItem?: boolean; footnoteDefinition?: boolean }` | 省略時は保守的なデフォルト（`strikethrough` / `table` が on、残り 3 つは off）。`true` / `false` のショートハンドは 5 つすべてを切り替える。 |
 | [CJK フレンドリーな強調](./cjk-friendly.mdx) | Core | `markdown.cjkFriendly` | `boolean` | `true`; opt out するには `false`。 |
 | [見出しリンク](./heading-links.mdx) | Core | `markdown.features.headingIds` | `{ strategy?: "flat" \| "hierarchical" }` | Plugin は常に有効。デフォルト strategy は `"flat"`。 |
 | [コードブロックのタイトル](./code-title.mdx) | Core | none | n/a | 常に有効。 |
@@ -67,7 +70,7 @@ Boolean shorthand は**普遍ではありません**。値の形に `boolean` �
 | [リンク解決](./resolve-links.mdx) | Core | `resolveMarkdownLinks` | `{ enabled?: boolean; docsDir?: string; dirs?: { dir: string; routePrefix: string }[]; onBrokenLinks?: "warn" \| "error" \| "ignore" }` | `enabled: true` でない限り off。 |
 | [.md 拡張子の除去](./strip-md-ext.mdx) | Opt-in | `stripMdExt` | `boolean` | `false`; `true` のとき `.md` / `.mdx` を除去して `/` を付ける。 |
 | [ハード改行](./hard-breaks.mdx) | Opt-in | `markdown.hardBreaks` | `boolean` | `false`; `true` のとき soft line break が `<br>` になる。 |
-| [シンタックスハイライト](./syntax-highlighting.mdx) | Core | `codeHighlight` | `{ theme?: string; themesDir?: string; themeLight?: string; themeDark?: string }` | デフォルトの syntect テーマで有効。 |
+| [シンタックスハイライト](./syntax-highlighting.mdx) | Core | `codeHighlight` | `{ theme?: string; themesDir?: string; themeLight?: string; themeDark?: string; mode?: "inline" \| "class"; classPrefix?: string; roleClasses?: Partial<Record<CodeHighlightRole, string>>; defaultStylesheet?: boolean }` | デフォルトの syntect テーマで有効（`mode: "inline"`）。`mode: "class"` はセマンティックな role class を出力する — 完全な形はリンク先ページを参照。 |
 | [ディレクティブレジストリ](./directives-registry.mdx) | Core primitive | `markdown.features.directives` or Rust API | `Record<string, DirectiveSpec>` | レジストリ visitor は指定されたときだけ実行。デフォルト名はゼロ。 |
 | [ディレクティブ](./directives.mdx) | Opt-in | `markdown.features.directives` | `Record<string, string \| { component: string; kind?: "container" \| "leaf" \| "text"; titleFromLabel?: boolean }>` | 省略時は off。`{}` は空のレジストリを配線する。 |
 | [Mermaid ダイアグラム](./mermaid.mdx) | Opt-in | `markdown.features.mermaid` | `boolean \| {}` | 省略または `false` で off。ブロックを `<div class="mermaid">` としてマークする。 |
