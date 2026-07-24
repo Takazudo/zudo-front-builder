@@ -65,3 +65,27 @@ headingMarkerToc: true,
 ## ビジターの順序
 
 `TocPlugin` は hast フェーズで `HeadingLinksPlugin` の **後に** 実行されるため、TOC のリンクを構築する時点で、各見出しにはすでに `id` 属性（重複排除済みのスラッグ）が設定されています。TOC 内の各 `<a href="#id">` は、最終的で重複排除済みのスラッグと一致します。
+
+## 別の設定キー
+
+同じ `{ heading?: string; maxDepth?: number }` のオプションオブジェクトは、
+トップレベルの `markdown.toc` キーからも指定できます:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  markdown: {
+    toc: {
+      heading: "TOC",
+      maxDepth: 2,
+    },
+  },
+});
+```
+
+`markdown.features.headingMarkerToc` と異なり、`markdown.toc` は `true` という
+真偽値ショートハンドを受け付けません — オプションオブジェクトのみです。
+（上記で説明した）`markdown.features.headingMarkerToc` が正式なキーです —
+他のすべてのオプトイン Markdown 機能が `markdown.features.*` 配下にあるため、
+基本的にはこちらを使ってください。`markdown.toc` は同じ `TocPlugin` を組み込む、
+後方互換性のために残されているキーです。
