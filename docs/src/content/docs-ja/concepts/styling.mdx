@@ -11,6 +11,8 @@ zfb のスタイリングには 2 つのレイヤー（グローバル CSS と T
 
 デフォルトテンプレートには `styles/global.css` が付属しています。これはプレーンな CSS で、zfb の CSS パイプラインによって処理され、すべてのページから利用できます。デザイントークン、リセット、ベースとなるタイポグラフィなど、サイト全体に適用すべきものに使ってください。
 
+zfb はグローバルスタイルシートを `styles/global.css` または `src/styles/global.css` のどちらかから解決します。両方が存在する場合はトップレベルの `styles/global.css` が優先されます。`src/styles/` へのフォールバックは、ソースを `src/` 配下にまとめる構成（Vite・Astro・Next 風のよくあるレイアウト）のプロジェクト向けです。
+
 ```css
 :root {
   --color-text: #1a1a1a;
@@ -41,7 +43,7 @@ Tailwind v4 は `zfb.config.{ts,json}` から opt-in で有効化します。
 
 有効にすると、`zfb-css` クレートがビルドの一環として同梱の `tailwindcss-v4` バイナリを実行します。**プロジェクトごとに Tailwind をインストールする必要はありません**。`package.json` に `tailwindcss` を追加することも、`tailwind.config.js` を保守することもありません。コンパイラは zfb 自体に組み込まれています。
 
-Tailwind を有効にすると、ユーティリティクラスはあらゆる `.tsx` ファイルで動作します。
+Tailwind を有効にすると、ユーティリティクラスは走査対象のコンテンツルート配下にある `.tsx` ファイルで動作します（詳細は下記の [Tailwind が見る場所](#tailwind-が見る場所) を参照）。
 
 ```tsx
 export default function Hero() {
@@ -54,6 +56,10 @@ export default function Hero() {
 ```
 
 Tailwind v4 の CSS ファーストな設定は `global.css` 内の `@theme` ディレクティブを通じてサポートされます。トークンのカスタマイズは JS の設定ファイルではなく CSS を編集して行います。
+
+### Tailwind が見る場所
+
+Tailwind の `@source` コンテンツスキャンは、プロジェクトルートから解決される 5 つのデフォルトルートをカバーします。`pages/`・`components/`・`layouts/`・`content/`・`src/` です。ユーティリティクラスは、これら 5 つのいずれかの配下にあるファイルに実際に現れて初めて拾われます。5 つすべての外側でしか使われていないクラスはスキャンされないため、ビルドは成功するのにスタイルが当たらない、という結果が黙って発生します。
 
 `tailwind: { enabled: false }` を設定すると `AuthoredCssEngine` に切り替わり、あなたが書いた `styles/global.css` がそのまま素通りします。Tailwind の `@import` も、ユーティリティのスキャンも、preflight のリセットも、サブプロセスもありません。CSS Modules のコンパイル、クラス名のハッシュ化、アセットの出力はすべて変わらず動作し続け、Tailwind 固有のステップだけがスキップされます。
 
@@ -113,6 +119,15 @@ export default function Card() {
 - `node_modules` から **ベア specifier** でインポートされる CSS Modules（例: `import s from "@org/pkg/x.module.css"`）はスコープ化されません。スコープ化されるのはプロジェクト相対の `./` / `../` インポートだけです。
 - `:export` ブロックと `composes` ディレクティブはサポートされていません。プレーンなクラスセレクタを使ってください。
 
+## モノレポ / ワークスペース sibling パッケージ
+
+pnpm workspace 風のモノレポでは、相対 import ではなく tsconfig のパスエイリアス経由でのみ到達する sibling パッケージも、CSS パイプラインに拾われます。
+
+- sibling 自身の `*.module.css` ファイルは、プロジェクトローカルのファイルと同じ CSS Modules スキャンに加わるため、そのスコープ付きクラス名も他のモジュールと同じように解決されます。
+- sibling のソースファイルは Tailwind の `@source` コンテンツスキャンにも供給されるため、sibling パッケージ内でしか使われていないユーティリティクラスも生成されます。黙って落とされることはありません。
+
+エイリアス先は「mirror root」になります。CSS パイプラインは、主張された workspace sibling ディレクトリを、上記の [Tailwind が見る場所](#tailwind-が見る場所) で説明した `pages/`・`components/` などのスキャン対象ルートと同じように扱います。
+
 ## `dist/` に出力されるもの
 
-ビルドパイプラインは Tailwind と PostCSS を実行し、ハッシュ付きのスタイルシートを `dist/assets/` に書き出し、レンダリングされた各 HTML ページに `<link rel="stylesheet">` を注入します。スタイルシートの参照は安定しているため、CDN キャッシュは内容が変わるまでデプロイをまたいで保持できます。
+ビルドパイプラインは Tailwind v4 と lightningcss を実行し、ハッシュ付きのスタイルシートを `dist/assets/` に書き出し、レンダリングされた各 HTML ページに `<link rel="stylesheet">` を注入します。スタイルシートの参照は安定しているため、CDN キャッシュは内容が変わるまでデプロイをまたいで保持できます。
