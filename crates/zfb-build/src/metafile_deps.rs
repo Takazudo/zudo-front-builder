@@ -277,8 +277,8 @@ fn has_node_modules_segment(path: &Path) -> bool {
 ///    ([`zfb_types::first_party::workspace_root_claims_path`], the declared-
 ///    membership half of #1986's eligibility predicate) — an unclaimed
 ///    directory inside the workspace tree is not a workspace package;
-/// 5. `<subpath>` lies under one of the package's **declared entry roots**
-///    ([`declared_entry_roots`]).
+/// 5. `<subpath>` is covered by one of the package's **declared entries**
+///    ([`declared_entries`]).
 ///
 /// Condition 5 is what keeps this from becoming a blanket "workspace siblings
 /// are always fine" exemption. A package whose only declaration is
@@ -286,9 +286,13 @@ fn has_node_modules_segment(path: &Path) -> bool {
 /// reaching `src/internal.ts` past that built entry is undeclared, escapes the
 /// stage, and stays rejected. A package declaring `"exports": {"./*":
 /// "./src/*"}` declares `src/`, so its whole source tree is accepted. A
-/// package declaring a root-level entry (`"main": "./index.ts"`) declares the
-/// package root, so the whole package is accepted — correctly, since such a
-/// package has no build-artifact directory to distinguish from its source.
+/// package declaring a root-level FILE (`"main": "./index.ts"`) declares the
+/// package root only when it declares no directory entry alongside it — see
+/// [`declared_entries_cover`] for why both halves of that rule are needed.
+/// `{"main": "./index.js", "exports": {"./*": "./dist/*"}}` is an ordinary
+/// dist-shipping package, and reading its root `main` as a blanket
+/// package-wide grant would authorise every `src/` file behind the built
+/// entry.
 fn package_input_is_declared_first_party_entry(
     key: &str,
     canonical: &Path,
@@ -318,9 +322,7 @@ fn package_input_is_declared_first_party_entry(
     }
 
     let subpath = subpath.join("/");
-    declared_entry_roots(&manifest)
-        .iter()
-        .any(|root| root.is_empty() || subpath.starts_with(root))
+    declared_entries_cover(&declared_entries(&manifest), &subpath)
 }
 
 /// Split a `node_modules`-shaped metafile key into `(package name,
@@ -371,24 +373,82 @@ fn package_root_for_input(canonical: &Path, subpath: &[String]) -> Option<PathBu
     Some(root)
 }
 
-/// The package-relative directory prefixes a `package.json` declares as entry
-/// roots, from `exports` (walked recursively — conditions, subpath maps and
-/// arrays are all just nesting around the target strings), `main` and
-/// `module`.
+/// One entry a `package.json` declares, in the two shapes a target can take.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum DeclaredEntry {
+    /// A package-relative directory prefix authorising every subpath under it
+    /// (`./src/*` -> `src/`, `./dist/index.js` -> `dist/`). The empty prefix
+    /// authorises the whole package and is only ever produced by a
+    /// root-level WILDCARD (`./*`).
+    Prefix(String),
+    /// A concrete file at the package root (`"main": "./index.js"`), which
+    /// authorises exactly that one file. Deliberately NOT a prefix: an
+    /// ordinary dist-shipping package commonly carries a root `main`, and
+    /// reading it as the empty prefix would grant its whole source tree.
+    ExactFile(String),
+}
+
+impl DeclaredEntry {
+    fn covers(&self, subpath: &str) -> bool {
+        match self {
+            Self::Prefix(prefix) => prefix.is_empty() || subpath.starts_with(prefix),
+            Self::ExactFile(file) => subpath == file,
+        }
+    }
+}
+
+/// Whether the package's declared entries authorise `subpath`.
 ///
-/// Each declared target contributes the directory portion of its path up to
-/// the first `*`: `./dist/index.js` -> `dist/`, `./src/*` -> `src/`,
-/// `./index.ts` -> `` (the package root). An empty prefix means the package
-/// declares an entry at its own root and therefore has no build-artifact
-/// directory to keep separate. Targets that are absolute or climb out with
-/// `..` are ignored.
+/// Almost always this is just "any entry covers it". The one aggregate rule:
+/// a root-level FILE entry (`"main": "./index.ts"`) authorises the whole
+/// package **only when the package declares no directory entry at all**.
+///
+/// Both halves are load-bearing:
+///
+/// - A package whose only declarations are root-level files has no
+///   build-artifact directory to keep separate from its source, and its entry
+///   necessarily imports its siblings (`./index.ts` -> `./helper.ts`); esbuild
+///   records those as inputs too, so treating the root file as *literally*
+///   the only authorised input would reject the ordinary consume-from-source
+///   shape.
+/// - A package that ALSO declares a directory entry does have that
+///   separation, and there the root file must authorise only itself:
+///   `{"main": "./index.js", "exports": {"./*": "./dist/*"}}` is an ordinary
+///   dist-shipping package, and reading its root `main` as a package-wide
+///   grant would authorise every `src/` file behind the built entry — the
+///   blanket exemption condition 5 exists to prevent.
+///
+/// This is decided by plain arithmetic over the DECLARED set. It deliberately
+/// does not walk the entry's imports: which files the entry actually reaches
+/// is esbuild's answer to give, and predicting it in Rust is the failure mode
+/// this whole audit is built to avoid.
+fn declared_entries_cover(entries: &[DeclaredEntry], subpath: &str) -> bool {
+    let declares_directory = entries
+        .iter()
+        .any(|entry| matches!(entry, DeclaredEntry::Prefix(prefix) if !prefix.is_empty()));
+    entries.iter().any(|entry| match entry {
+        DeclaredEntry::ExactFile(_) if !declares_directory => true,
+        other => other.covers(subpath),
+    })
+}
+
+/// The entries a `package.json` declares, from `exports` (walked recursively
+/// — conditions, subpath maps and arrays are all just nesting around the
+/// target strings), `main` and `module`.
+///
+/// A target carrying a directory component contributes the directory portion
+/// of its path up to the first `*`: `./dist/index.js` -> `dist/`, `./src/*`
+/// -> `src/`. A target with no directory component contributes an exact file
+/// (`./index.ts`) unless it is a wildcard (`./*`), which is the only spelling
+/// that declares the package root itself. Targets that are absolute or climb
+/// out with `..` are ignored.
 ///
 /// The `./` prefix is **required** for `exports` targets — the spec mandates
 /// it, and a bare string there is a package name, not a location inside this
 /// package — but **optional** for `main` and `module`, where the bare form
 /// (`"main": "dist/index.js"`) is both valid and common.
-fn declared_entry_roots(manifest: &serde_json::Value) -> Vec<String> {
-    fn entry_root(target: &str, require_dot_slash: bool) -> Option<String> {
+fn declared_entries(manifest: &serde_json::Value) -> Vec<DeclaredEntry> {
+    fn entry(target: &str, require_dot_slash: bool) -> Option<DeclaredEntry> {
         let target = match target.strip_prefix("./") {
             Some(rest) => rest,
             None if require_dot_slash => return None,
@@ -397,20 +457,21 @@ fn declared_entry_roots(manifest: &serde_json::Value) -> Vec<String> {
         if target.starts_with('/') || target.split('/').any(|segment| segment == "..") {
             return None;
         }
-        let up_to_wildcard = match target.find('*') {
-            Some(at) => &target[..at],
-            None => target,
+        let (up_to_wildcard, has_wildcard) = match target.find('*') {
+            Some(at) => (&target[..at], true),
+            None => (target, false),
         };
         Some(match up_to_wildcard.rfind('/') {
-            Some(at) => up_to_wildcard[..=at].to_string(),
-            None => String::new(),
+            Some(at) => DeclaredEntry::Prefix(up_to_wildcard[..=at].to_string()),
+            None if has_wildcard => DeclaredEntry::Prefix(String::new()),
+            None => DeclaredEntry::ExactFile(up_to_wildcard.to_string()),
         })
     }
 
-    fn collect(value: &serde_json::Value, require_dot_slash: bool, out: &mut Vec<String>) {
+    fn collect(value: &serde_json::Value, require_dot_slash: bool, out: &mut Vec<DeclaredEntry>) {
         match value {
             serde_json::Value::String(target) => {
-                out.extend(entry_root(target, require_dot_slash));
+                out.extend(entry(target, require_dot_slash));
             }
             serde_json::Value::Array(items) => items
                 .iter()
@@ -422,13 +483,13 @@ fn declared_entry_roots(manifest: &serde_json::Value) -> Vec<String> {
         }
     }
 
-    let mut roots = Vec::new();
+    let mut entries = Vec::new();
     for (field, require_dot_slash) in [("exports", true), ("main", false), ("module", false)] {
         if let Some(value) = manifest.get(field) {
-            collect(value, require_dot_slash, &mut roots);
+            collect(value, require_dot_slash, &mut entries);
         }
     }
-    roots
+    entries
 }
 
 /// One metafile input, resolved under the two spellings every post-esbuild
@@ -1422,13 +1483,13 @@ mod tests {
     }
 
     #[test]
-    fn declared_entry_roots_reads_only_declared_targets() {
+    fn declared_entries_reads_only_declared_targets() {
         // Unit-level proof of the declaration reader: nested conditional
         // exports and arrays are just nesting around target strings; a
-        // wildcard contributes its prefix directory; a root-level entry
-        // contributes the package root (empty prefix); `..`-climbing targets
-        // contribute nothing, and a bare (non-`./`) string is a package name
-        // in `exports` but a valid path in `main`/`module`.
+        // wildcard contributes its prefix directory; a root-level FILE
+        // contributes only itself; `..`-climbing targets contribute nothing,
+        // and a bare (non-`./`) string is a package name in `exports` but a
+        // valid path in `main`/`module`.
         let manifest: serde_json::Value = serde_json::from_str(
             r#"{
                 "main": "dist/index.js",
@@ -1441,14 +1502,100 @@ mod tests {
         )
         .unwrap();
 
-        let mut roots = declared_entry_roots(&manifest);
-        roots.sort();
-        assert_eq!(roots, vec!["", "dist/", "lib/", "src/"]);
+        let mut entries = declared_entries(&manifest);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                DeclaredEntry::Prefix("dist/".into()),
+                DeclaredEntry::Prefix("lib/".into()),
+                DeclaredEntry::Prefix("src/".into()),
+                DeclaredEntry::ExactFile("index.mjs".into()),
+            ]
+        );
+
+        // A root-level WILDCARD is the one spelling that declares the whole
+        // package tree — it literally says "every subpath maps to itself".
+        let root_wildcard: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./*": "./*" } }"#).unwrap();
+        assert_eq!(
+            declared_entries(&root_wildcard),
+            vec![DeclaredEntry::Prefix(String::new())]
+        );
 
         // An absolute `main` names nothing inside the package.
         let absolute: serde_json::Value =
             serde_json::from_str(r#"{ "main": "/etc/passwd" }"#).unwrap();
-        assert!(declared_entry_roots(&absolute).is_empty());
+        assert!(declared_entries(&absolute).is_empty());
+    }
+
+    #[test]
+    fn root_level_main_authorises_only_itself_not_the_whole_package() {
+        // A root-level `main` used to collapse to the empty prefix, which
+        // accepted EVERY package subpath — so the extremely common
+        // dist-shipping shape below silently granted blanket access to the
+        // package's own `src/`, defeating condition 5 of the acceptance rule.
+        let manifest: serde_json::Value =
+            serde_json::from_str(r#"{ "main": "./index.js", "exports": { "./*": "./dist/*" } }"#)
+                .unwrap();
+        let entries = declared_entries(&manifest);
+
+        assert!(
+            declared_entries_cover(&entries, "index.js"),
+            "the declared root entry itself must stay accepted: {entries:?}"
+        );
+        assert!(
+            declared_entries_cover(&entries, "dist/thing.js"),
+            "the declared `dist/` wildcard must stay accepted: {entries:?}"
+        );
+        assert!(
+            !declared_entries_cover(&entries, "src/internal.ts"),
+            "an undeclared deep subpath must NOT be authorised by a root-level \
+             `main` when the package also declares a directory entry: {entries:?}"
+        );
+        // The bare-form spelling (`"main": "dist/index.js"`, no `./`) is
+        // equally common and must be read the same way.
+        let bare: serde_json::Value =
+            serde_json::from_str(r#"{ "main": "index.js", "module": "dist/index.mjs" }"#).unwrap();
+        let bare = declared_entries(&bare);
+        assert!(declared_entries_cover(&bare, "index.js"));
+        assert!(!declared_entries_cover(&bare, "src/internal.ts"));
+    }
+
+    #[test]
+    fn root_only_source_package_still_authorises_its_sibling_sources() {
+        // The other half of the rule above: when a package declares NOTHING
+        // but root-level files it has no build-artifact directory to keep
+        // separate, and its entry necessarily imports its siblings — esbuild
+        // records `helper.ts` as an input right beside `index.ts`. Reading
+        // the root entry as literally the only authorised file would reject
+        // the ordinary consume-from-source shape.
+        let manifest: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": "./index.ts" } }"#).unwrap();
+        let entries = declared_entries(&manifest);
+
+        assert!(declared_entries_cover(&entries, "index.ts"));
+        assert!(
+            declared_entries_cover(&entries, "helper.ts"),
+            "a root-entry source package must authorise the siblings its entry \
+             imports: {entries:?}"
+        );
+        assert!(
+            declared_entries_cover(&entries, "internal/deep.ts"),
+            "…including nested ones, since nothing declares a directory to keep \
+             separate: {entries:?}"
+        );
+
+        // Adding a single directory entry flips the package into the
+        // "has a build-artifact directory" shape, and the root file narrows
+        // to itself again.
+        let with_dist: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": "./index.ts", "./x": "./dist/x.js" } }"#)
+                .unwrap();
+        let with_dist = declared_entries(&with_dist);
+        assert!(declared_entries_cover(&with_dist, "index.ts"));
+        assert!(declared_entries_cover(&with_dist, "dist/x.js"));
+        assert!(!declared_entries_cover(&with_dist, "helper.ts"));
     }
 
     #[test]
