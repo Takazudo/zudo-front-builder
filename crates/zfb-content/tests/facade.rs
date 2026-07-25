@@ -543,6 +543,25 @@ fn code_highlight_class_mode_with_theme_is_rejected() {
     );
 }
 
+/// When class mode has BOTH a `theme` set AND a malformed `classPrefix`,
+/// native (`config.rs:2194-2236`) reports the class/theme mutual-exclusion
+/// error first — that check runs ahead of the classPrefix/roleClasses
+/// validation. Lifting the classPrefix/roleClasses validation out to cover
+/// inline mode (zfb#1978) must preserve this precedence, not run it
+/// unconditionally before the theme check.
+#[test]
+fn code_highlight_class_mode_theme_error_takes_precedence_over_invalid_class_prefix() {
+    let err = build_pipeline_from_json(
+        r#"{"theme": "InspiredGitHub", "codeHighlight": {"mode": "class", "classPrefix": "1hi-"}}"#,
+    )
+    .map(|_| ())
+    .expect_err("mode class + theme + invalid classPrefix must be rejected");
+    assert!(
+        matches!(err, FacadeError::ClassModeExcludesTheme),
+        "theme exclusion must be reported first, got: {err:?}"
+    );
+}
+
 #[test]
 fn code_highlight_invalid_class_prefix_is_rejected() {
     let err =
