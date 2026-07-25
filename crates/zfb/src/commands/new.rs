@@ -938,12 +938,19 @@ mod tests {
     }
 
     #[test]
-    fn templates_gitignore_ignores_tailwind_entry_temp_file() {
+    fn templates_gitignore_ignores_generated_entry_temp_files() {
         // Drift risk: this glob is hand-derived from zfb-css's private
         // ENTRY_TMP_PREFIX ("zfb-tailwind-entry-") / ENTRY_TMP_SUFFIX
         // (".css") constants (crates/zfb-css/src/engine.rs). If those change,
         // this glob and the shipped .gitignore templates must change too.
-        const EXPECTED_GLOB: &str = "**/zfb-tailwind-entry-*.css";
+        // The islands glob is the same class of hand-derived constant, taken
+        // from zfb-islands's IN_PROJECT_ENTRY_PREFIX (".zfb-esbuild-entry-") /
+        // IN_PROJECT_ENTRY_SUFFIX (".tsx") (crates/zfb-islands/src/esbuild.rs).
+        // Belt-and-braces only: the bundler drops its own entry and sweeps
+        // stale ones (issue #1970), so this glob just covers the window
+        // between a zfb process being killed mid-bundle and the next build.
+        const EXPECTED_GLOBS: [&str; 2] =
+            ["**/zfb-tailwind-entry-*.css", ".zfb-esbuild-entry-*.tsx"];
         for template_name in ["basic-blog", "node-free"] {
             let dir = TEMPLATES
                 .get_dir(template_name)
@@ -953,10 +960,12 @@ mod tests {
                 .get_file(&gitignore_path)
                 .unwrap_or_else(|| panic!("{gitignore_path} missing from template"));
             let contents = String::from_utf8_lossy(gitignore_file.contents());
-            assert!(
-                contents.contains(EXPECTED_GLOB),
-                "{gitignore_path} must contain '{EXPECTED_GLOB}', got:\n{contents}"
-            );
+            for expected in EXPECTED_GLOBS {
+                assert!(
+                    contents.contains(expected),
+                    "{gitignore_path} must contain '{expected}', got:\n{contents}"
+                );
+            }
         }
     }
 
