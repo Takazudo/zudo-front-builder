@@ -3,11 +3,18 @@
 //! Rust port of zudo-doc's `rehypeHeadingLinks`. Walks the hast tree
 //! and, for each `<h2>` … `<h6>`:
 //!
-//! - Generates a slug from the heading's text content using a
-//!   github-slugger-equivalent algorithm (lowercase, non-alphanumerics
-//!   collapsed to `-`, leading/trailing `-` stripped).
+//! - Generates a slug from the heading's text content: lowercased, with
+//!   whitespace and a fixed ASCII punctuation set collapsed to a single
+//!   `-` separator (no leading, trailing, or doubled dashes). Every other
+//!   character — including Unicode letters and any punctuation outside
+//!   that ASCII set, e.g. full-width parens — passes through unchanged.
+//!   This is a github-slugger-*style* algorithm, **not** a compatible
+//!   one: github-slugger *removes* the punctuation it strips where this
+//!   collapses it to a dash (`"a,b"` → `"a-b"` here, `"ab"` there).
 //! - Deduplicates slugs within one document by appending `-1`, `-2`, …
-//!   to repeated slugs (matching `github-slugger` behaviour).
+//!   to repeated slugs. This is a plain per-base counter, unlike
+//!   `github-slugger`'s collision-aware numbering (which skips a suffix
+//!   already taken by another heading's literal slug).
 //! - Adds `id="<slug>"` to the heading element (or replaces an
 //!   existing `id` attribute).
 //! - Appends an empty anchor element as the last child:

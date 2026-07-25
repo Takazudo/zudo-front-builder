@@ -1006,6 +1006,24 @@ impl EsbuildSubprocessBundler {
         &self.config
     }
 
+    /// Reap `.zfb-esbuild-entry-*.tsx` files stranded in this project by an
+    /// earlier zfb process that died without unwinding (issue #1970 / #1976)
+    /// — see [`sweep_orphaned_in_project_entries`].
+    ///
+    /// Called ONCE per build, at the [`ClientBundler::bundle`] /
+    /// [`Self::bundle_per_island`] lifecycle boundary and strictly BEFORE the
+    /// first entry is allocated. It deliberately does not live in
+    /// [`Self::bundle_one_entry`], which runs once per island plus the runtime
+    /// pass: there, every sweep after the first is a full `read_dir` of the
+    /// project root that can only be a no-op, repeated on every `zfb dev`
+    /// rebuild.
+    fn sweep_stranded_entries(&self) {
+        if self.config.mock_subprocess || !self.config.working_dir.is_dir() {
+            return;
+        }
+        sweep_orphaned_in_project_entries(&self.config.working_dir);
+    }
+
     /// Internal: produce the JS payload for the given islands. Split out so
     /// tests can drive it directly without going through `bundle`'s
     /// [`BundleOutput`] assembly step.
@@ -1088,6 +1106,8 @@ impl EsbuildSubprocessBundler {
         framework: FrameworkKind,
         config: &BundleConfig,
     ) -> Result<PerIslandBundleOutput> {
+        self.sweep_stranded_entries();
+
         // Outdir layout: {outdir}/islands/.
         let islands_dir = config.outdir.join("islands");
         std::fs::create_dir_all(&islands_dir)
@@ -1272,35 +1292,7 @@ impl EsbuildSubprocessBundler {
         // working_dir was wherever the test binary was launched from
         // (real builds always have an existing project root, so
         // production never takes this branch).
-        let entry_tmp = if self.config.working_dir.is_dir() {
-            // Reap entries stranded in this project by an earlier zfb
-            // process that died without unwinding (issue #1970 / #1976) —
-            // see `sweep_orphaned_in_project_entries`.
-            sweep_orphaned_in_project_entries(&self.config.working_dir);
-            tempfile::Builder::new()
-                .prefix(IN_PROJECT_ENTRY_PREFIX)
-                .suffix(IN_PROJECT_ENTRY_SUFFIX)
-                .tempfile_in(&self.config.working_dir)
-                .context("failed to allocate entry temp file inside working_dir")?
-        } else {
-            tempfile::Builder::new()
-                .prefix("zfb-esbuild-entry-")
-                .suffix(IN_PROJECT_ENTRY_SUFFIX)
-                .tempfile()
-                .context("failed to allocate entry temp file")?
-        };
-        std::fs::write(entry_tmp.path(), entry_source.as_bytes())
-            .context("failed to write entry temp file")?;
-        // Claim the entry for as long as this call owns it, so a concurrent
-        // process's sweep can prove it is still live rather than inferring it
-        // from age alone (see `sweep_orphaned_in_project_entries`). The lock
-        // is *shared*, not exclusive: esbuild only reads the entry, and on
-        // Windows an exclusive lock would deny it that read. Released when
-        // `entry_tmp` drops at the end of this function — including when the
-        // OS closes the handle for a process that never unwinds, which is
-        // exactly the case the sweep exists for. Best-effort: on a filesystem
-        // without lock support the sweep simply falls back to its age gate.
-        let _ = entry_tmp.as_file().lock_shared();
+        let entry_tmp = allocate_locked_entry_tmp(&self.config.working_dir, entry_source)?;
 
         // Staging output **directory**. `--splitting` requires `--outdir`
         // (esbuild rejects `--outfile` with splitting), and esbuild emits the
@@ -1698,6 +1690,56 @@ const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs
 /// Best-effort throughout: this is opportunistic hygiene, never a correctness
 /// step, so every I/O failure — including a filesystem with no lock support —
 /// simply leaves the candidate alone.
+/// Allocate the esbuild entry temp file for one
+/// [`EsbuildSubprocessBundler::bundle_one_entry`] call, write `entry_source`
+/// into it, and claim it with a **shared** lock.
+///
+/// Split out of `bundle_one_entry` so the ownership claim — the production
+/// half of the sweep's safety contract — is reachable from a unit test
+/// without spawning esbuild (see
+/// `allocated_entry_is_locked_so_a_concurrent_sweep_spares_it`).
+///
+/// The entry is allocated inside `working_dir` whenever that exists, so
+/// esbuild's upward `node_modules` walk starts beside the project (see the
+/// long note at the call site); otherwise it falls back to the system
+/// tempdir, which only the `zfb-islands` unit tests take.
+///
+/// The write happens **before** the lock, and must stay that way: on Windows
+/// a shared `LockFileEx` byte-range lock denies writes to the locked range,
+/// so locking first would make the `std::fs::write` below fail with a lock
+/// violation on every real Windows bundle.
+///
+/// The lock lets a concurrent process's sweep prove the entry is still live
+/// rather than inferring it from age alone (see
+/// [`sweep_orphaned_in_project_entries`]). It is *shared*, not exclusive:
+/// esbuild only reads the entry, and on Windows an exclusive lock would deny
+/// it that read. It is released when the returned handle drops — including
+/// when the OS closes the handle for a process that never unwinds, which is
+/// exactly the case the sweep exists for. Best-effort: on a filesystem
+/// without lock support the sweep simply falls back to its age gate.
+fn allocate_locked_entry_tmp(
+    working_dir: &Path,
+    entry_source: &str,
+) -> Result<tempfile::NamedTempFile> {
+    let entry_tmp = if working_dir.is_dir() {
+        tempfile::Builder::new()
+            .prefix(IN_PROJECT_ENTRY_PREFIX)
+            .suffix(IN_PROJECT_ENTRY_SUFFIX)
+            .tempfile_in(working_dir)
+            .context("failed to allocate entry temp file inside working_dir")?
+    } else {
+        tempfile::Builder::new()
+            .prefix("zfb-esbuild-entry-")
+            .suffix(IN_PROJECT_ENTRY_SUFFIX)
+            .tempfile()
+            .context("failed to allocate entry temp file")?
+    };
+    std::fs::write(entry_tmp.path(), entry_source.as_bytes())
+        .context("failed to write entry temp file")?;
+    let _ = entry_tmp.as_file().lock_shared();
+    Ok(entry_tmp)
+}
+
 fn sweep_orphaned_in_project_entries(working_dir: &Path) {
     let Ok(dir) = std::fs::read_dir(working_dir) else {
         return;
@@ -2912,6 +2954,8 @@ fn serialize_manifest(entries: &[(String, String)]) -> String {
 
 impl ClientBundler for EsbuildSubprocessBundler {
     fn bundle(&self, islands: &[Island], config: &BundleConfig) -> Result<BundleOutput> {
+        self.sweep_stranded_entries();
+
         let OneEntryOutput {
             js,
             chunks,
@@ -3228,6 +3272,41 @@ mod tests {
         assert!(
             !owned.exists(),
             "an unlocked, past-grace entry must be swept"
+        );
+    }
+
+    #[test]
+    fn allocated_entry_is_locked_so_a_concurrent_sweep_spares_it() {
+        // The test above takes the owner's lock by hand, so it pins the
+        // sweep's respect-a-lock behaviour but not the production path that
+        // acquires the lock in the first place. This one drives the real
+        // allocation (`allocate_locked_entry_tmp`, the step
+        // `bundle_one_entry` runs before every esbuild invocation) and then
+        // backdates the entry past the grace period, leaving the ownership
+        // lock as the ONLY thing that can spare it. Drop
+        // `allocate_locked_entry_tmp`'s `lock_shared` call and this fails.
+        let dir = tempfile::tempdir().unwrap();
+        let entry_tmp =
+            allocate_locked_entry_tmp(dir.path(), "// entry\n").expect("allocate the entry");
+        let path = entry_tmp.path().to_path_buf();
+        assert_eq!(
+            path.parent(),
+            Some(dir.path()),
+            "an existing working_dir must host the entry"
+        );
+        entry_tmp
+            .as_file()
+            .set_modified(
+                std::time::SystemTime::now()
+                    - (ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60)),
+            )
+            .unwrap();
+
+        sweep_orphaned_in_project_entries(dir.path());
+
+        assert!(
+            path.exists(),
+            "an entry still owned by an in-flight bundle must be spared however old it is"
         );
     }
 
