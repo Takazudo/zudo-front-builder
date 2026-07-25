@@ -543,6 +543,25 @@ fn code_highlight_class_mode_with_theme_is_rejected() {
     );
 }
 
+/// When class mode has BOTH a `theme` set AND a malformed `classPrefix`,
+/// native (`config.rs:2194-2236`) reports the class/theme mutual-exclusion
+/// error first — that check runs ahead of the classPrefix/roleClasses
+/// validation. Lifting the classPrefix/roleClasses validation out to cover
+/// inline mode (zfb#1978) must preserve this precedence, not run it
+/// unconditionally before the theme check.
+#[test]
+fn code_highlight_class_mode_theme_error_takes_precedence_over_invalid_class_prefix() {
+    let err = build_pipeline_from_json(
+        r#"{"theme": "InspiredGitHub", "codeHighlight": {"mode": "class", "classPrefix": "1hi-"}}"#,
+    )
+    .map(|_| ())
+    .expect_err("mode class + theme + invalid classPrefix must be rejected");
+    assert!(
+        matches!(err, FacadeError::ClassModeExcludesTheme),
+        "theme exclusion must be reported first, got: {err:?}"
+    );
+}
+
 #[test]
 fn code_highlight_invalid_class_prefix_is_rejected() {
     let err =
@@ -595,6 +614,78 @@ fn code_highlight_default_class_prefix_matches_shared_constant() {
     let ch = options.code_highlight.expect("code_highlight present");
     assert_eq!(ch.class_prefix, zfb_content::DEFAULT_CLASS_HIGHLIGHT_PREFIX);
     assert!(ch.role_classes.is_none());
+}
+
+// ── codeHighlight: validation runs for the "inline" arm too (zfb#1865 / zfb#1978) ──
+//
+// Native `crates/zfb/src/config.rs` validates `classPrefix` / `roleClasses`
+// for ANY `code_highlight` present, regardless of `mode` — those fields are
+// inert in "inline" mode but must still be rejected the same way. Before
+// this fix the facade only validated inside the `mode == "class"` arm, so
+// the exact payload from the issue was silently accepted here while native
+// rejected it.
+
+/// The issue's exact repro payload: `mode: "inline"` with an invalid
+/// `classPrefix` (leading digit) and a short (non-canonical) `roleClasses`
+/// key. Native rejects this; before zfb#1978 the facade accepted it.
+#[test]
+fn code_highlight_inline_mode_invalid_class_prefix_is_rejected() {
+    let err = build_pipeline_from_json(
+        r#"{"codeHighlight": {"mode": "inline", "classPrefix": "1bad", "roleClasses": {"kw": "x"}}}"#,
+    )
+    .map(|_| ())
+    .expect_err("invalid classPrefix must be rejected even in inline mode");
+    assert!(
+        matches!(err, FacadeError::ClassHighlight(_)),
+        "expected FacadeError::ClassHighlight, got: {err:?}"
+    );
+    assert!(err.to_string().contains("codeHighlight."), "got: {err}");
+}
+
+/// Same invalid `classPrefix`, but with `mode` entirely absent (the default
+/// is inline) — proving validation is keyed on "`code_highlight` present",
+/// not on any particular mode string.
+#[test]
+fn code_highlight_default_mode_invalid_class_prefix_is_rejected() {
+    let err = build_pipeline_from_json(r#"{"codeHighlight": {"classPrefix": "1bad"}}"#)
+        .map(|_| ())
+        .expect_err("invalid classPrefix must be rejected with mode omitted (defaults inline)");
+    assert!(matches!(err, FacadeError::ClassHighlight(_)));
+}
+
+/// An unknown (short) `roleClasses` key is rejected in inline mode too.
+#[test]
+fn code_highlight_inline_mode_unknown_role_key_is_rejected() {
+    let err = build_pipeline_from_json(
+        r#"{"codeHighlight": {"mode": "inline", "roleClasses": {"kw": "text-blue-600"}}}"#,
+    )
+    .map(|_| ())
+    .expect_err("short role name must be rejected even in inline mode");
+    assert!(matches!(err, FacadeError::ClassHighlight(_)));
+}
+
+/// Valid `classPrefix` / `roleClasses` in inline mode are accepted (the
+/// fields are inert there, but well-formed input must not be rejected) and
+/// the inline rendering behavior is unchanged — no `hi-root`/role classes
+/// leak into inline output, matching the shipped inline contract.
+#[test]
+fn code_highlight_inline_mode_valid_class_fields_are_accepted_and_stay_inert() {
+    let html = render(
+        r#"{"codeHighlight": {
+            "mode": "inline",
+            "classPrefix": "token-",
+            "roleClasses": {"keyword": "text-violet-600"}
+        }}"#,
+        RUST_FENCE,
+    );
+    assert!(
+        html.contains("class=\"syntect-"),
+        "inline mode must still carry its syntect-* class: {html}"
+    );
+    assert!(
+        !html.contains("class=\"token-root\""),
+        "inline mode must never emit the class-mode root, even with valid class fields set: {html}"
+    );
 }
 
 // ── codeHighlight: legacy-interaction matrix (zfb#1852) ─────────────────────
