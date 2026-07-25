@@ -4,6 +4,7 @@
 //! workspace, preventing code duplication and circular dependencies.
 
 pub mod asset_urls;
+pub mod audit_eligibility;
 pub mod base_prefix;
 pub mod client_scripts;
 pub mod first_party;
@@ -17,6 +18,7 @@ pub use asset_urls::{
     STABLE_CLIENT_SCRIPTS_URL_PREFIX, STABLE_CSS_FILENAME, STABLE_CSS_URL, STABLE_ISLANDS_FILENAME,
     STABLE_ISLANDS_URL,
 };
+pub use audit_eligibility::{stage_escape_audit_eligibility, AuditEligibility};
 pub use base_prefix::dev_mount_prefix;
 pub use client_scripts::{
     client_script_entry_name, is_client_script_file, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
