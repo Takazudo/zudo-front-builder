@@ -22,22 +22,26 @@
 //! off there is now NO backstop whatsoever for this build.
 //!
 //! A first-party CHILD package still lives under `packages/*`, physically
-//! nested inside `project_root` — but `materialise_shadow` only mirrors the
-//! conventional `pages_dir` / `content_dir` / `components_dir` / `layouts_dir`
-//! trees (see `preflight_raw_tree` call sites in bundler.rs), so a directory
-//! like `packages/` outside those roots is never copied into the shadow. The
-//! wholesale `<shadow>/node_modules` symlink to the live `node_modules_dir`
-//! (bundler.rs:3078) still exists (a normal, non-workspace-widened build sets
-//! it up unconditionally), and a real pnpm-style
-//! `node_modules/@scope/child -> packages/child` symlink still resolves a
-//! bare package-name import straight to the LIVE, unmirrored child source.
+//! nested inside `project_root`. As an ordinary (non-gitignored) top-level
+//! directory it IS still copied into the shadow by
+//! `enumerate_extra_top_level_dirs`'s "extra source dir" pass — a staged
+//! `packages/child/index.ts` genuinely exists. But `import { x } from
+//! "@scope/child"` is a BARE package-name specifier, so esbuild resolves it
+//! through its ordinary node_modules walk, never through that staged
+//! relative path. The wholesale `<shadow>/node_modules` symlink to the live
+//! `node_modules_dir` (bundler.rs:3078) still exists (a normal,
+//! non-workspace-widened build sets it up unconditionally), and a real
+//! pnpm-style `node_modules/@scope/child -> packages/child` symlink resolves
+//! the bare import straight to the LIVE child source — bypassing the staged
+//! copy entirely, not merely reaching an unmirrored file.
 //!
 //! This test proves the escape is **silent**: `bundle_with_session` returns
 //! `Ok`, the emitted bundle carries the live child package's marker, and the
 //! real esbuild metafile records the import as `node_modules/@scope/child/index.ts`
-//! — the epic's documented "case 2" shape (a `node_modules`-shaped key) — with
-//! no staged spelling ever produced for `packages/child`, because nothing
-//! ever staged it in the first place.
+//! — the epic's documented "case 2" shape (a `node_modules`-shaped key) —
+//! even though a staged `packages/child/index.ts` sits right there, unused.
+//! Guard (b) exists precisely to reject a case-2 key like this one; it is
+//! not armed here.
 //!
 //! Not fixed by this test — Wave 3 (#1986), Wave 4 (#2040), and Wave 6
 //! (#1988) own the eligibility predicate, the case-2 policy, and the SSR
@@ -130,8 +134,10 @@ fn real_esbuild_silently_resolves_root_workspace_child_package_escape_through_no
     write_root_workspace(root);
 
     // First-party CHILD package, physically nested INSIDE project_root
-    // (since project_root == workspace root here) but outside every
-    // conventional shadow-mirrored tree (pages/content/components/layouts).
+    // (since project_root == workspace root here). It IS staged as an
+    // ordinary "extra top-level dir" — the escape below is about a bare
+    // package-name import bypassing that staged copy, not about the
+    // package never being staged at all.
     write(
         &root.join("packages/child/package.json"),
         r#"{ "name": "@scope/child", "private": true }"#,
@@ -190,7 +196,27 @@ fn real_esbuild_silently_resolves_root_workspace_child_package_escape_through_no
         keys.iter()
             .any(|key| key == "node_modules/@scope/child/index.ts"),
         "expected the case-2 escaped child-package metafile key \
-         node_modules/@scope/child/index.ts (no staged spelling was ever produced for \
-         packages/child); got {keys:?}"
+         node_modules/@scope/child/index.ts; got {keys:?}"
+    );
+
+    // `packages/` is an ordinary (non-gitignored) top-level directory, so
+    // `enumerate_extra_top_level_dirs` DOES sweep it into the shadow as a
+    // normal "extra source dir" copy — a staged `packages/child/index.ts`
+    // genuinely exists. That staged copy is exactly what makes this an
+    // interesting escape rather than a trivial "nothing was ever mirrored"
+    // case: `import { childMarker } from "@scope/child"` is a BARE
+    // package-name specifier, so esbuild resolves it via its node_modules
+    // walk, not via the staged relative path — it never even looks at
+    // `shadow/packages/child`. The staged copy above sits there unused while
+    // resolution silently takes the `<shadow>/node_modules` symlink straight
+    // to the LIVE source instead.
+    assert!(
+        session
+            .shadow_root()
+            .join("packages/child/index.ts")
+            .is_file(),
+        "packages/child must have been staged normally (it is an ordinary, non-gitignored \
+         top-level dir) — the bug is that the bare package-name import bypasses this staged \
+         copy entirely, not that nothing was ever staged"
     );
 }
