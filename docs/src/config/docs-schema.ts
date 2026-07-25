@@ -1,39 +1,17 @@
 import { z } from "zod";
+import { buildDocsSchema as buildDefaultDocsSchema } from "@takazudo/zudo-doc/docs-schema";
 
 /**
- * Build the docs frontmatter zod schema.
+ * The package default schema plus the one key this site adds.
  *
- * Returns a single `z.object(...).passthrough()` that is reused for every
- * docs collection (default + per-locale). `.passthrough()` keeps custom
- * frontmatter keys available downstream (e.g. frontmatter-preview UI).
+ * `tier` drives the feature-tier badge on Markdown Features pages (#877 step
+ * 6). The package default already declares every other key this site uses —
+ * including `category_no_page` and `category_sort_order` — and keeps
+ * `.passthrough()`, so `tier` only needs declaring to get enum validation
+ * across the 46 pages that set it.
  */
 export function buildDocsSchema() {
-  return z
-    .object({
-      title: z.string(),
-      description: z.string().optional(),
-      category: z.string().optional(),
-      sidebar_position: z.number().optional(),
-      sidebar_label: z.string().optional(),
-      tags: z.array(z.string()).optional(),
-      search_exclude: z.boolean().optional(),
-      pagination_next: z.string().nullable().optional(),
-      pagination_prev: z.string().nullable().optional(),
-      draft: z.boolean().optional(),
-      unlisted: z.boolean().optional(),
-      hide_sidebar: z.boolean().optional(),
-      hide_toc: z.boolean().optional(),
-      doc_history: z.boolean().optional(),
-      standalone: z.boolean().optional(),
-      slug: z.string().optional(),
-      generated: z.boolean().optional(),
-      // Feature tier badge on Markdown Features pages (issue #877 step 6).
-      tier: z.enum(["Core", "Opt-in"]).optional(),
-      // Category metadata expressed as a directory index.mdx's frontmatter.
-      // `category_no_page` makes the index a non-linked sidebar header excluded
-      // from routes/sitemap/search; `category_sort_order` sets child sort direction.
-      category_no_page: z.boolean().optional(),
-      category_sort_order: z.enum(["asc", "desc"]).optional(),
-    })
-    .passthrough();
+  return buildDefaultDocsSchema().extend({
+    tier: z.enum(["Core", "Opt-in"]).optional(),
+  });
 }

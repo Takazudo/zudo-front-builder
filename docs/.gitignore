@@ -5,8 +5,7 @@ dist
 .zfb/
 .zfb-build/
 
-# Build artifact written by @takazudo/zudo-doc/plugins/routes (the package-owned
-# /404, /sitemap.xml, /robots.txt routes) at build time — regenerated each build.
+# zudo-doc build artifact (routes-src/ staged here at build time)
 .zudo-doc/
 
 # Wrangler local state/tmp written by `pnpm preview` (wrangler dev).
@@ -24,3 +23,17 @@ src/content/docs/claude-agents/
 # scripts/setup-zfb-wisdom.sh (they hold absolute paths). SKILL.md is tracked.
 .claude/skills/zfb-wisdom/docs
 .claude/skills/zfb-wisdom/docs-ja
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*

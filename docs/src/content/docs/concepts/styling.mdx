@@ -43,7 +43,7 @@ Tailwind v4 is opt-in via `zfb.config.{ts,json}`:
 
 When enabled, the `zfb-css` crate runs the bundled `tailwindcss-v4` binary as part of the build. There is **no per-project Tailwind install** — you do not add `tailwindcss` to `package.json` and you do not maintain a `tailwind.config.js`. The compiler is built into zfb itself.
 
-Once Tailwind is on, utility classes work in `.tsx` files under the scanned content roots (see [Where Tailwind looks](#where-tailwind-looks) below):
+Once Tailwind is on, utility classes work in `.tsx` files under the scanned content roots (see [Where Tailwind looks](#tailwind-v4-where-tailwind-looks) below):
 
 ```tsx
 export default function Hero() {
@@ -134,7 +134,7 @@ In a pnpm-workspace-style monorepo, a sibling package reached only through a tsc
 - The sibling's own `*.module.css` files join the same CSS Modules scan as project-local files, so their scoped class names resolve the same way as any other module.
 - The sibling's source files also feed Tailwind's `@source` content scan, so utility classes used only inside the sibling package are generated too — not silently dropped.
 
-The aliased target becomes a "mirror root": the CSS pipeline treats a claimed workspace-sibling directory the same way it treats `pages/`, `components/`, and the other scanned roots described in [Where Tailwind looks](#where-tailwind-looks) above.
+The aliased target becomes a "mirror root": the CSS pipeline treats a claimed workspace-sibling directory the same way it treats `pages/`, `components/`, and the other scanned roots described in [Where Tailwind looks](#tailwind-v4-where-tailwind-looks) above.
 
 ## What lands in `dist/`
 

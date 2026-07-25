@@ -35,7 +35,7 @@ Importing `<ClientRouter />` registers the click and form-submit intercepts as a
 |---|---|---|---|
 | `fallback` | `"none" \| "animate" \| "swap"` | `"animate"` | Behaviour when the browser does not support native View Transitions. |
 | `prefetchAll` | `boolean` | `false` | When `true`, every same-origin link is opted into the `"hover"` prefetch strategy automatically. |
-| `preserveHtmlAttrs` | `string[]` | `[]` | Extra `<html>` attribute names whose **runtime** values survive each SPA swap — see [Preserving runtime `<html>` attributes](#preserving-runtime-html-attributes). |
+| `preserveHtmlAttrs` | `string[]` | `[]` | Extra `<html>` attribute names whose **runtime** values survive each SPA swap — see [Preserving runtime `<html>` attributes](#mounting-clientrouter-preserving-runtime-html-attributes). |
 | `traverseRefetch` | `boolean` | `false` | Opt this page out of the same-page Back/Forward fast-path, forcing a re-fetch on every traversal — see [Same-page traversal](#same-page-traversal). |
 
 ### Fallback modes
@@ -129,7 +129,7 @@ Add `data-zfb-reload` to any `<a>` or `<form>` to force a full browser reload fo
 
 A submit falls through to a normal, full browser form submission when any of the following are true:
 
-- the `<form>` carries `data-zfb-reload` (same opt-out attribute as links — see [Opting a link out of the router](#opting-a-link-out-of-the-router) above)
+- the `<form>` carries `data-zfb-reload` (same opt-out attribute as links — see [Opting a link out of the router](#programmatic-navigation-with-navigate-opting-a-link-out-of-the-router) above)
 - `method="dialog"` — the special HTML keyword used inside `<dialog>` elements
 - the resolved action URL is cross-origin
 - the submit was triggered by a modifier-key click (Cmd/Ctrl/Shift/Alt) or a non-primary mouse button on the submitter
@@ -483,7 +483,7 @@ console.log(supportsViewTransitions);
 console.log(transitionEnabledOnThisPage());
 ```
 
-When `supportsViewTransitions` is `false`, the `fallback` prop controls the degraded experience (see [Fallback modes](#fallback-modes)).
+When `supportsViewTransitions` is `false`, the `fallback` prop controls the degraded experience (see [Fallback modes](#mounting-clientrouter-fallback-modes)).
 
 ### Persisting elements across navigations
 
