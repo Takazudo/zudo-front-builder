@@ -43,7 +43,7 @@ Tailwind v4 は `zfb.config.{ts,json}` から opt-in で有効化します。
 
 有効にすると、`zfb-css` クレートがビルドの一環として同梱の `tailwindcss-v4` バイナリを実行します。**プロジェクトごとに Tailwind をインストールする必要はありません**。`package.json` に `tailwindcss` を追加することも、`tailwind.config.js` を保守することもありません。コンパイラは zfb 自体に組み込まれています。
 
-Tailwind を有効にすると、ユーティリティクラスは走査対象のコンテンツルート配下にある `.tsx` ファイルで動作します（詳細は下記の [Tailwind が見る場所](#tailwind-が見る場所) を参照）。
+Tailwind を有効にすると、ユーティリティクラスは走査対象のコンテンツルート配下にある `.tsx` ファイルで動作します（詳細は下記の [Tailwind が見る場所](#tailwind-v4-tailwind-が見る場所) を参照）。
 
 ```tsx
 export default function Hero() {
@@ -126,7 +126,7 @@ pnpm workspace 風のモノレポでは、相対 import ではなく tsconfig �
 - sibling 自身の `*.module.css` ファイルは、プロジェクトローカルのファイルと同じ CSS Modules スキャンに加わるため、そのスコープ付きクラス名も他のモジュールと同じように解決されます。
 - sibling のソースファイルは Tailwind の `@source` コンテンツスキャンにも供給されるため、sibling パッケージ内でしか使われていないユーティリティクラスも生成されます。黙って落とされることはありません。
 
-エイリアス先は「mirror root」になります。CSS パイプラインは、主張された workspace sibling ディレクトリを、上記の [Tailwind が見る場所](#tailwind-が見る場所) で説明した `pages/`・`components/` などのスキャン対象ルートと同じように扱います。
+エイリアス先は「mirror root」になります。CSS パイプラインは、主張された workspace sibling ディレクトリを、上記の [Tailwind が見る場所](#tailwind-v4-tailwind-が見る場所) で説明した `pages/`・`components/` などのスキャン対象ルートと同じように扱います。
 
 ## `dist/` に出力されるもの
 

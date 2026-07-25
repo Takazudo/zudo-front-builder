@@ -294,7 +294,7 @@ interface ZfbDevMiddlewareResponse {
 
 ## `previewMiddleware(ctx)`
 
-`devMiddleware` の `zfb preview`（静的モード）版です（#1542、epic #1541 Preview Parity）。形も、`ctx.register(path, handler)` の呼び出しも、[リクエストとレスポンスの契約](#リクエストとレスポンスの契約)も同じですが、**モードごとに個別のオプトイン** です。`devMiddleware` しか定義していないプラグインは `zfb preview` の下ではリクエスト時ハンドラを一切持たず、その逆も同様です。両方のモードで使えるようにしたいときは、同じハンドラを両方のフックに登録してください。
+`devMiddleware` の `zfb preview`（静的モード）版です（#1542、epic #1541 Preview Parity）。形も、`ctx.register(path, handler)` の呼び出しも、[リクエストとレスポンスの契約](#devmiddleware-ctx-リクエストとレスポンスの契約)も同じですが、**モードごとに個別のオプトイン** です。`devMiddleware` しか定義していないプラグインは `zfb preview` の下ではリクエスト時ハンドラを一切持たず、その逆も同様です。両方のモードで使えるようにしたいときは、同じハンドラを両方のフックに登録してください。
 
 ```ts
 // plugins/api-echo.ts
