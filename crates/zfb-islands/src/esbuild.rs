@@ -1291,6 +1291,16 @@ impl EsbuildSubprocessBundler {
         };
         std::fs::write(entry_tmp.path(), entry_source.as_bytes())
             .context("failed to write entry temp file")?;
+        // Claim the entry for as long as this call owns it, so a concurrent
+        // process's sweep can prove it is still live rather than inferring it
+        // from age alone (see `sweep_orphaned_in_project_entries`). The lock
+        // is *shared*, not exclusive: esbuild only reads the entry, and on
+        // Windows an exclusive lock would deny it that read. Released when
+        // `entry_tmp` drops at the end of this function — including when the
+        // OS closes the handle for a process that never unwinds, which is
+        // exactly the case the sweep exists for. Best-effort: on a filesystem
+        // without lock support the sweep simply falls back to its age gate.
+        let _ = entry_tmp.as_file().lock_shared();
 
         // Staging output **directory**. `--splitting` requires `--outdir`
         // (esbuild rejects `--outfile` with splitting), and esbuild emits the
@@ -1667,14 +1677,27 @@ const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs
 /// the *next*, entirely successful build — which is exactly how #1970 was
 /// reported (two entries present, only the live build's own one removed).
 ///
-/// **Liveness is decided by mtime**, see [`ORPHANED_ENTRY_GRACE`]. A
-/// PID- or file-lock-based check would be more precise, but an exclusive
-/// advisory lock on the entry itself would block the esbuild subprocess from
-/// reading it on Windows (`LockFileEx` denies other handles), and a companion
-/// lock file would just double the litter.
+/// **A candidate must clear two independent liveness checks**, and either one
+/// alone is enough to spare it:
+///
+/// 1. Its mtime must be older than [`ORPHANED_ENTRY_GRACE`]. The entry is
+///    written once and then only read, so a live entry's mtime is at most the
+///    duration of one `bundle_one_entry` call.
+/// 2. An **exclusive** lock on it must be available. Every live
+///    `bundle_one_entry` holds a *shared* lock on its own entry until it
+///    returns, so a candidate we can lock exclusively is provably unowned.
+///    This covers what age cannot: a bundling process suspended or stuck
+///    inside a single esbuild invocation for longer than the grace period
+///    still holds its lock and is left alone.
+///
+/// The lock is shared rather than exclusive on the owner's side because
+/// esbuild has to read the entry, and on Windows an exclusive lock would deny
+/// it that read. Locks also survive nothing: the OS releases them when the
+/// owning process dies, which is precisely the case this sweep handles.
 ///
 /// Best-effort throughout: this is opportunistic hygiene, never a correctness
-/// step, so every I/O failure simply leaves the candidate alone.
+/// step, so every I/O failure — including a filesystem with no lock support —
+/// simply leaves the candidate alone.
 fn sweep_orphaned_in_project_entries(working_dir: &Path) {
     let Ok(dir) = std::fs::read_dir(working_dir) else {
         return;
@@ -1699,8 +1722,21 @@ fn sweep_orphaned_in_project_entries(working_dir: &Path) {
             .ok()
             .and_then(|modified| now.duration_since(modified).ok())
             .is_some_and(|age| age >= ORPHANED_ENTRY_GRACE);
-        if stale {
-            let _ = std::fs::remove_file(dirent.path());
+        if !stale {
+            continue;
+        }
+        let path = dirent.path();
+        // Rust's `OpenOptions` shares delete access, so holding this handle
+        // does not stop the `remove_file` below on Windows.
+        let Ok(candidate) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        else {
+            continue;
+        };
+        if candidate.try_lock().is_ok() {
+            let _ = std::fs::remove_file(&path);
         }
     }
 }
@@ -3157,6 +3193,41 @@ mod tests {
         assert!(
             live.exists(),
             "an entry inside the grace period must be left alone"
+        );
+    }
+
+    #[test]
+    fn sweep_keeps_a_stale_entry_whose_owner_still_holds_it() {
+        // The age gate alone cannot tell "abandoned" from "owned by a process
+        // suspended (or stuck in one esbuild invocation) past the grace
+        // period". The shared lock `bundle_one_entry` holds on its own entry
+        // does, and it must win over the age gate.
+        let dir = tempfile::tempdir().unwrap();
+        let owned = write_entry_aged(
+            dir.path(),
+            ".zfb-esbuild-entry-owned.tsx",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60 * 60),
+        );
+        let owner = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&owned)
+            .unwrap();
+        owner.lock_shared().expect("take the owner's shared lock");
+
+        sweep_orphaned_in_project_entries(dir.path());
+        assert!(
+            owned.exists(),
+            "an entry still locked by its owner must be spared however old it is"
+        );
+
+        // Once the owner releases it — as the OS does for a process that dies
+        // without unwinding — the next sweep reaps it.
+        drop(owner);
+        sweep_orphaned_in_project_entries(dir.path());
+        assert!(
+            !owned.exists(),
+            "an unlocked, past-grace entry must be swept"
         );
     }
 
