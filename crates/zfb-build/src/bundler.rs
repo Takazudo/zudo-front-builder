@@ -2413,6 +2413,57 @@ pub fn bundle_with_session(
         &input.plugin_alias_entries,
     );
 
+    // Issue #1724: make `mirror_sibling_root`'s own promise true — "reachable
+    // source files that DO need `?raw`/glob/worker rewrites are overwritten
+    // afterwards by the plugin-preprocessing pass". That pass materialises
+    // `plugin_preprocessing_files`, which a claimed sibling's macro-bearing
+    // source could never join: the exact-target loops above are gated to
+    // `project_root`, and `collect_runtime_alias_claim_graph` fail-closes on
+    // workspace membership (a bare `lib/shared` region is claimed by the
+    // mirror plan but is not a workspace package). So the mirror's RAW byte
+    // copy was the only pass those files ever saw and their
+    // `import.meta.glob` / module-worker `new URL(...)` macros reached
+    // esbuild literally — a GREEN build with unexpanded macro text in the
+    // bundle. Enrolling every mirrored SOURCE file here routes it through the
+    // same `materialise_source_file` every project file gets, which
+    // overwrites the raw copy in place. This is the same conclusion the #1695
+    // glob fixed-point queue already reached for glob matches inside a
+    // claimed region (see `stage_glob_matched_files_to_fixed_point`'s doc
+    // comment): a wholesale mirror is a byte copy, so macro expansion has to
+    // come from somewhere else. Non-source leaves (CSS/JSON/text) carry no
+    // macros and keep the pure mirror copy.
+    //
+    // A mirror root is claimed WHOLESALE, so this set includes files no
+    // import edge ever reaches — an unused fixture carrying an unsupported
+    // `SharedWorker` form or an unparseable snippet that esbuild would never
+    // load. Those must not become build failures they were not before, so
+    // the enrolments recorded here are marked NON-FATAL: if
+    // `materialise_source_file` rejects one, the pass below keeps the
+    // mirror's raw copy (already on disk and already recorded visited) and
+    // moves on, which is byte-for-byte the pre-#1724 outcome for that file.
+    // Every other membership in `plugin_preprocessing_files` — a discovered
+    // graph file, an exact alias target, a virtual-module import — stays a
+    // hard error, because those ARE reached and a silent non-expansion there
+    // is the very defect this issue fixes.
+    let mut mirror_derived_preprocessing_files = BTreeSet::new();
+    for mirror_root in sibling_mirror_plan.mirror_roots() {
+        for src in enumerate_mirror_root_files(mirror_root) {
+            // The mirror pass's own guards, so this set can never be wider
+            // than what was actually mirrored.
+            if !raw_source_extension(&src)
+                || path_is_inside_node_modules(&src)
+                || !src.starts_with(&first_party_root)
+                || src.starts_with(&project_root)
+                || bundle_exclude.is_excluded(&src, &project_root)
+            {
+                continue;
+            }
+            if plugin_preprocessing_files.insert(src.clone()) {
+                mirror_derived_preprocessing_files.insert(src);
+            }
+        }
+    }
+
     // Seed the staged-dependency closure from the materialized project module
     // graph and the framework packages the generated entry/hydration shim
     // import (issue #1645). Source discovery also runs with an empty exclude so
@@ -3615,7 +3666,7 @@ pub fn bundle_with_session(
                 )
             })?;
         }
-        materialise_source_file(
+        let materialised = materialise_source_file(
             physical,
             physical,
             &to,
@@ -3632,13 +3683,47 @@ pub fn bundle_with_session(
             &mat_ctx.module_worker_dependencies,
             mat_ctx.project_root,
             &mat_ctx.worker_build_context,
-        )
-        .with_context(|| {
-            format!(
-                "bundler: materialise plugin preprocessing file {}",
-                physical.display()
-            )
-        })?;
+        );
+        match materialised {
+            Ok(()) => {}
+            // Issue #1724: a WHOLESALE mirror enrolment is best-effort — see
+            // the enrolment loop's comment. The mirror's raw copy is already
+            // on disk and already recorded visited, so falling back to it is
+            // exactly the pre-#1724 outcome for a file no import edge reaches.
+            Err(error) if mirror_derived_preprocessing_files.contains(physical) => {
+                // "Not reached by any import edge" is the JUSTIFICATION for
+                // the fallback, not something this code can verify — the
+                // wholesale mirror exists precisely because Rust discovery
+                // cannot predict what esbuild will reach. So if the file IS
+                // reached, #1724 silently reinstates: the raw copy ships with
+                // its macros unexpanded. Warn through both channels (the
+                // crate's `skip_dangling_symlink_or_fail` idiom: no
+                // `tracing_subscriber` is installed in the `zfb` binary, so
+                // `tracing::warn!` alone is invisible to real CLI users) so
+                // that reinstatement leaves a trace instead of nothing.
+                // Deliberately NOT fatal — a mirror root is claimed
+                // wholesale, and an unreached fixture must not become a build
+                // failure it was not before #1724.
+                let msg = format!(
+                    "keeping the wholesale sibling mirror's raw copy of {} — preprocessing it \
+                     failed ({}). This is only safe if no import edge reaches the file; if one \
+                     does, its `import.meta.glob` / `?raw` / module-worker macros ship \
+                     UNEXPANDED (issue #1724).",
+                    physical.display(),
+                    format_args!("{error:#}"),
+                );
+                tracing::warn!("{msg}");
+                eprintln!("zfb warn: {msg}");
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "bundler: materialise plugin preprocessing file {}",
+                        physical.display()
+                    )
+                });
+            }
+        }
     }
 
     // 2f. Issue #1695: `import.meta.glob` matched-files fixed-point drain.
@@ -3874,19 +3959,45 @@ pub fn bundle_with_session(
     // a LIVE workspace sibling, unprocessed source outside the staged mirror.
     // Unlike the `bundle.exclude` audit above (armed only under active
     // exclusions), this escape exists regardless of `bundle.exclude`, so the
-    // audit runs whenever `workspace_rel.is_some()` — the widened-stage
-    // condition. Outside a workspace `workspace_rel` is `None` and this is a
-    // zero-cost no-op, byte-identical to the pre-#1706 build. esbuild runs
-    // from `shadow` (its cwd — `cmd.current_dir(shadow)` in `run_esbuild`), so
-    // metafile keys resolve against it; `work` is the mirror boundary every
-    // legitimately staged input (the project shadow at `work/<workspace_rel>`
-    // plus wholesale-mirrored siblings under `work`) lives under. A metafile
-    // input that canonicalises to live first-party source outside `work` with
-    // no staged spelling — or a staged `node_modules/@scope/pkg` symlink
-    // resolving to a live sibling — is the escape and hard-fails the build.
-    // `metafile_path` is `None` on the mock-subprocess path, so this is a
-    // deliberate no-op for mocks, like the exclusion audit.
-    if workspace_rel.is_some() {
+    // audit runs whenever [`zfb_types::stage_escape_audit_eligibility`] (issue
+    // #1986) says a first-party stage escape is structurally possible.
+    //
+    // Issue #1730/#1988: this used to gate on `workspace_rel.is_some()` alone
+    // — the widened-stage proxy — which reads a workspace whose
+    // `pnpm-workspace.yaml` claims its own root (`packages: ['.',
+    // 'packages/*']`) as "not a workspace": building FROM the workspace root
+    // makes `first_party_root_for` return `project_root` itself, so
+    // `workspace_rel` is `None` even though the wholesale `<work>/node_modules`
+    // link this stage sets up (above) reaches first-party siblings exactly as
+    // it does from a nested member. SSR has no scan-time guard (a) at all, so
+    // this was a completely SILENT escape — the epic's P1 leg
+    // (`bundler_root_workspace_stage_escape_audit_disabled_regression.rs`).
+    // The eligibility predicate is a strict superset of the old proxy (see its
+    // module docs for the full decision table): every currently-armed build
+    // stays armed, and a root-claimed workspace with a reachable first-party
+    // `node_modules` link now arms too. `work.join("node_modules")` is the
+    // wholesale symlink set up above (to `first_party_root`'s live install),
+    // so it is what the predicate scans — mirroring the islands/client site's
+    // `stage_escape_audit_policy` (`crates/zfb/src/commands/build.rs`), which
+    // scans its own stage root's `node_modules` the same way.
+    //
+    // esbuild runs from `shadow` (its cwd — `cmd.current_dir(shadow)` in
+    // `run_esbuild`), so metafile keys resolve against it; `work` is the
+    // mirror boundary every legitimately staged input (the project shadow at
+    // `work/<workspace_rel>` plus wholesale-mirrored siblings under `work`)
+    // lives under. A metafile input that canonicalises to live first-party
+    // source outside `work` with no staged spelling — or a staged
+    // `node_modules/@scope/pkg` symlink resolving to a live sibling — is the
+    // escape and hard-fails the build. `metafile_path` is `None` on the
+    // mock-subprocess path, so this is a deliberate no-op for mocks, like the
+    // exclusion audit.
+    if zfb_types::stage_escape_audit_eligibility(
+        &input.project_root,
+        &first_party_root,
+        &work.join("node_modules"),
+    )
+    .is_eligible()
+    {
         if let Some(meta_path) = metafile_path.as_deref() {
             crate::metafile_deps::audit_metafile_stage_escape_at_path(
                 meta_path,
@@ -5109,9 +5220,12 @@ impl SiblingMirrorPlan {
 /// region so esbuild (the sole resolver) can resolve anything inside it —
 /// glob directory probing, index files, `package.json` `main`/`imports`,
 /// wildcard-alias targets — that the Rust preprocessing discovery could not
-/// predict. Reachable source files that DO need `?raw`/glob/worker rewrites
-/// are overwritten afterwards by the plugin-preprocessing pass (which runs
-/// after this and materialises the discovered graph). Every file lands at its
+/// predict. Source files that DO need `?raw`/glob/worker rewrites are
+/// overwritten afterwards by the plugin-preprocessing pass: since issue #1724
+/// EVERY mirrored source file is enrolled in `plugin_preprocessing_files`
+/// (see the enrolment loop in [`bundle_with_session`]), because a claimed
+/// sibling region's macro-bearing file frequently reaches no other claim
+/// source and would otherwise ship its literal macro text. Every file lands at its
 /// workspace-relative slot via [`shadow_path_for_project_path`]
 /// (`work.join(<rel>)`), so it never collides with the nested project mirror.
 #[allow(clippy::too_many_arguments)]

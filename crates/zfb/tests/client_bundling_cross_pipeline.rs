@@ -1409,3 +1409,583 @@ async fn real_binary_build_and_dev_cover_workspace_reroot_host_contract() {
     run_and_assert_reroot_host_development(&development.path().join(REROOT_HOST_REL), &esbuild)
         .await;
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1989 (Wave 7, epic #1982) — the central confirm pass. Waves 1-6
+// fixed two staging defects (#1724, #1730) with real-esbuild coverage only at
+// the `bundle_with_session` / `build_default_islands_payload` library-call
+// level (`bundler_sibling_mirror_esbuild_regression.rs`,
+// `bundler_root_workspace_stage_escape_audit_armed_regression.rs`,
+// `commands::build.rs`'s islands unit test). The fixtures below drive the
+// SAME two topologies through a REAL `zfb build` + `zfb dev --port 0`
+// process, proving the fixes hold at the full CLI/HTTP boundary too. Each
+// fixture is written directly by the test (no checked-in fixture directory)
+// — it mirrors the shape those lower-level regression tests already proved,
+// composed only for the full-pipeline confirmation, not reinvented here.
+// ---------------------------------------------------------------------------
+
+const SIBLING_MACRO_GLOB_ONE: &str = "ZFB_SIBLING_MACRO_GLOB_ONE";
+const SIBLING_MACRO_GLOB_TWO: &str = "ZFB_SIBLING_MACRO_GLOB_TWO";
+const SIBLING_MACRO_WORKER_RAW_URL: &str = "./inner.worker.ts";
+
+fn scaffold_project_content_dirs(project: &Path) {
+    for dir in ["content", "layouts"] {
+        fs::create_dir_all(project.join(dir)).expect("create optional project content dir");
+    }
+}
+
+/// Issue #1985 (Wave 2) fix target: a workspace-sibling file reached only
+/// through a tsconfig alias, carrying its OWN top-level `import.meta.glob`
+/// AND module-worker `new URL(...)` macro. `lib/shared` is a bare
+/// (non-package) directory under the workspace root — present but never
+/// declared in `pnpm-workspace.yaml`'s `packages` globs, the same shape as
+/// `bundler_sibling_mirror_esbuild_regression.rs` cases (b)/(g)/(j)/(k),
+/// reproduced here through the full CLI instead of a direct `bundle()` call.
+fn write_sibling_macro_workspace(root: &Path) -> PathBuf {
+    fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'host/*'\n",
+    )
+    .expect("write pnpm-workspace.yaml");
+    fs::write(
+        root.join("package.json"),
+        r#"{ "private": true, "name": "sibling-macro-workspace" }"#,
+    )
+    .expect("write workspace package.json");
+
+    fs::create_dir_all(root.join("lib/shared/items")).expect("create sibling dirs");
+    fs::write(
+        root.join("lib/shared/items/one.ts"),
+        format!("export const value = \"{SIBLING_MACRO_GLOB_ONE}\";\n"),
+    )
+    .expect("write glob item one");
+    fs::write(
+        root.join("lib/shared/items/two.ts"),
+        format!("export const value = \"{SIBLING_MACRO_GLOB_TWO}\";\n"),
+    )
+    .expect("write glob item two");
+    fs::write(
+        root.join("lib/shared/gallery.ts"),
+        "const mods = import.meta.glob('./items/*.ts', { eager: true });\n\
+         export const galleryValues = Object.values(mods)\n\
+         \u{20}\u{20}.map((m) => m.value)\n\
+         \u{20}\u{20}.join(',');\n",
+    )
+    .expect("write gallery.ts");
+    fs::write(
+        root.join("lib/shared/inner.worker.ts"),
+        "self.postMessage('ZFB_SIBLING_MACRO_WORKER_MARKER');\n",
+    )
+    .expect("write inner.worker.ts");
+    fs::write(
+        root.join("lib/shared/worker-holder.ts"),
+        "export function makeWorker() {\n\
+         \u{20}\u{20}return new Worker(new URL('./inner.worker.ts', import.meta.url), { type: 'module' });\n\
+         }\n",
+    )
+    .expect("write worker-holder.ts");
+
+    let project = root.join("host/app");
+    fs::create_dir_all(project.join("pages")).expect("create project pages dir");
+    fs::create_dir_all(project.join("components")).expect("create project components dir");
+    scaffold_project_content_dirs(&project);
+    fs::write(
+        project.join("package.json"),
+        r#"{ "private": true, "name": "@sibling-macro/app" }"#,
+    )
+    .expect("write project package.json");
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{ "framework": "preact", "tailwind": { "enabled": false } }"#,
+    )
+    .expect("write zfb.config.json");
+    fs::write(
+        project.join("tsconfig.json"),
+        r#"{ "compilerOptions": { "baseUrl": ".", "paths": { "@shared/*": ["../../lib/shared/*"] } } }"#,
+    )
+    .expect("write tsconfig.json");
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+import { galleryValues } from "@shared/gallery";
+import { makeWorker } from "@shared/worker-holder";
+
+export default function Home() {
+  const workerSource = String(makeWorker);
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <title>ZFB_SIBLING_MACRO_PAGE</title>
+      </head>
+      <body>
+        <main>
+          <h1>ZFB_SIBLING_MACRO_PAGE</h1>
+          <p id="gallery">{galleryValues}</p>
+          <p id="worker-source">{workerSource}</p>
+        </main>
+      </body>
+    </html>
+  );
+}
+"#,
+    )
+    .expect("write pages/index.tsx");
+
+    project
+}
+
+fn assert_sibling_macro_body(body: &str, label: &str) {
+    assert!(
+        body.contains(SIBLING_MACRO_GLOB_ONE) && body.contains(SIBLING_MACRO_GLOB_TWO),
+        "{label}: the sibling's own import.meta.glob macro must expand and its \
+         glob-matched items' values must reach the page — the #1724/#1985 fix: {}",
+        truncate(body, 2000)
+    );
+    assert!(
+        !body.contains("import.meta.glob("),
+        "{label}: the sibling's glob macro leaked unexpanded into the rendered output: {}",
+        truncate(body, 2000)
+    );
+    assert!(
+        !body.contains(SIBLING_MACRO_WORKER_RAW_URL),
+        "{label}: the sibling's module-worker macro must be rewritten, not left pointing \
+         at the raw relative source path: {}",
+        truncate(body, 2000)
+    );
+    assert!(
+        body.contains(".js?v="),
+        "{label}: the rewritten module-worker specifier must carry the stable \
+         `<slug>.js?v=<hash>` companion filename: {}",
+        truncate(body, 2000)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
+async fn real_binary_build_and_dev_expand_sibling_alias_macros_under_workspace() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let esbuild = locate_esbuild().expect(
+        "sibling-macro-workspace cross-pipeline test requires the pinned esbuild binary; \
+         set ZFB_ESBUILD_BIN to an absolute executable path",
+    );
+
+    let production = tempfile::tempdir().expect("sibling-macro production tempdir");
+    let production_project = write_sibling_macro_workspace(production.path());
+    run_zfb_build(&production_project, &esbuild, "sibling-macro production");
+    let html = read_text(&production_project.join("dist/index.html"));
+    assert_sibling_macro_body(&html, "sibling-macro production SSR HTML");
+
+    let development = tempfile::tempdir().expect("sibling-macro development tempdir");
+    let development_project = write_sibling_macro_workspace(development.path());
+    let mut session = spawn_dev(&development_project, &esbuild);
+    let port = wait_for_ready(&mut session).await;
+    let origin = format!("http://localhost:{port}");
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build loopback HTTP client");
+    let body = poll_body(
+        &client,
+        &format!("{origin}/"),
+        "ZFB_SIBLING_MACRO_PAGE",
+        "sibling-macro development page",
+        &session,
+    )
+    .await;
+    assert_sibling_macro_body(&body, "sibling-macro development page");
+}
+
+// ---------------------------------------------------------------------------
+// Issues #1987/#1988 (Waves 5-6) fix target: a ROOT-CLAIMED pnpm workspace
+// (`packages: ['.', 'packages/*']`, so `first_party_root_for(project_root)`
+// maps to `project_root` itself — #1730's blind spot). Positive control below
+// proves #2040's "consume from source" carve-out still builds clean at this
+// topology; the negative controls after it prove guard (b)'s metafile
+// stage-escape audit is now ARMED on both the SSR leg (no scan-time guard (a)
+// exists there at all — #1730's silent P1) and the islands/client leg
+// (`require(...)`, an edge guard (a)'s static scanner never records).
+// ---------------------------------------------------------------------------
+
+/// The repo root two levels above `CARGO_MANIFEST_DIR` (`crates/zfb`).
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/ dir")
+        .parent()
+        .expect("repo root")
+        .to_path_buf()
+}
+
+/// The first `node_modules/.pnpm/<prefix>*/node_modules/<package_name>` entry
+/// — used to reach the REAL, already-installed `preact` /
+/// `preact-render-to-string` this monorepo's own `pnpm install` staged,
+/// rather than pinning an exact version string that will drift out from
+/// under this test the next time either dependency is bumped.
+fn find_pnpm_store_package(pnpm_dir: &Path, prefix: &str, package_name: &str) -> PathBuf {
+    let mut candidates: Vec<PathBuf> = fs::read_dir(pnpm_dir)
+        .expect("read node_modules/.pnpm")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(prefix))
+        })
+        .collect();
+    candidates.sort();
+    let chosen = candidates.into_iter().next().unwrap_or_else(|| {
+        panic!(
+            "no node_modules/.pnpm entry starting with {prefix:?} under {}",
+            pnpm_dir.display()
+        )
+    });
+    chosen.join("node_modules").join(package_name)
+}
+
+/// A root-claimed-workspace project has its OWN `node_modules` (for the
+/// workspace-sibling symlinks the two fixtures below set up), which disarms
+/// `commands::bundler_input`'s embedded-vendor fallback (it only activates
+/// when `detect_project_node_modules` finds nothing) — so the real SSR
+/// runtime deps (`preact`, `preact-render-to-string`, the
+/// `@takazudo/zfb-runtime` workspace package) must be linked in by hand
+/// instead of relying on the embedded snapshot the other fixtures in this
+/// file get for free.
+fn link_real_ssr_runtime_deps(root: &Path) {
+    let repo = repo_root();
+    let pnpm_dir = repo.join("node_modules/.pnpm");
+    let preact_src = find_pnpm_store_package(&pnpm_dir, "preact@", "preact");
+    let render_src = find_pnpm_store_package(
+        &pnpm_dir,
+        "preact-render-to-string@",
+        "preact-render-to-string",
+    );
+    let zfb_runtime_src = repo.join("packages/zfb-runtime");
+    let zfb_src = repo.join("packages/zfb");
+
+    fs::create_dir_all(root.join("node_modules/@takazudo")).expect("create node_modules/@takazudo");
+    std::os::unix::fs::symlink(&preact_src, root.join("node_modules/preact"))
+        .expect("link real preact into project node_modules");
+    std::os::unix::fs::symlink(
+        &render_src,
+        root.join("node_modules/preact-render-to-string"),
+    )
+    .expect("link real preact-render-to-string into project node_modules");
+    std::os::unix::fs::symlink(
+        &zfb_runtime_src,
+        root.join("node_modules/@takazudo/zfb-runtime"),
+    )
+    .expect("link the @takazudo/zfb-runtime workspace package into project node_modules");
+    // The islands runtime imports `@takazudo/zfb/runtime` (a separate package
+    // from `@takazudo/zfb-runtime` above — same monorepo, different export).
+    std::os::unix::fs::symlink(&zfb_src, root.join("node_modules/@takazudo/zfb"))
+        .expect("link the @takazudo/zfb workspace package into project node_modules");
+}
+
+fn write_root_claimed_workspace_shell(root: &Path) {
+    fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'packages/*'\n",
+    )
+    .expect("write pnpm-workspace.yaml");
+    fs::write(
+        root.join("package.json"),
+        r#"{ "name": "host", "private": true }"#,
+    )
+    .expect("write host package.json");
+    fs::write(
+        root.join("zfb.config.json"),
+        r#"{ "framework": "preact", "tailwind": { "enabled": false } }"#,
+    )
+    .expect("write zfb.config.json");
+    fs::create_dir_all(root.join("pages")).expect("create pages dir");
+    fs::create_dir_all(root.join("components")).expect("create components dir");
+    scaffold_project_content_dirs(root);
+    link_real_ssr_runtime_deps(root);
+}
+
+/// Positive control: `@acme/ui` declares `./cta` as a real entry root
+/// (`exports`) and ships no `dist` — consumed from source, #2040's carve-out.
+/// Reached by bare package name from both the SSR page and a "use client"
+/// island via an ordinary import (no scanner-bypass needed for the positive
+/// case).
+fn write_root_claimed_legitimate_workspace(root: &Path) {
+    write_root_claimed_workspace_shell(root);
+
+    let ui = root.join("packages/ui");
+    fs::create_dir_all(ui.join("src")).expect("create packages/ui/src");
+    fs::write(
+        ui.join("package.json"),
+        r#"{ "name": "@acme/ui", "private": true, "exports": { "./cta": "./src/cta.ts" } }"#,
+    )
+    .expect("write @acme/ui package.json");
+    fs::write(
+        ui.join("src/cta.ts"),
+        r#"export const ctaLabel = "ZFB_ROOT_CLAIMED_LEGIT_CTA";"#,
+    )
+    .expect("write cta.ts");
+
+    let node_modules = root.join("node_modules/@acme");
+    fs::create_dir_all(&node_modules).expect("create node_modules/@acme");
+    std::os::unix::fs::symlink(&ui, node_modules.join("ui"))
+        .expect("link @acme/ui into node_modules");
+
+    fs::write(
+        root.join("components/RootIsland.tsx"),
+        "\"use client\";\n\
+         import { ctaLabel } from \"@acme/ui/cta\";\n\
+         export function RootIsland() {\n\
+         \u{20}\u{20}return <div id=\"root-island\">{ctaLabel}</div>;\n\
+         }\n",
+    )
+    .expect("write RootIsland.tsx");
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"
+import { ctaLabel } from "@acme/ui/cta";
+import { RootIsland } from "../components/RootIsland";
+
+export default function Home() {
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <title>ZFB_ROOT_CLAIMED_LEGIT_PAGE</title>
+      </head>
+      <body>
+        <main>
+          <h1>ZFB_ROOT_CLAIMED_LEGIT_PAGE</h1>
+          <p id="ssr-cta">{ctaLabel}</p>
+          <RootIsland />
+        </main>
+      </body>
+    </html>
+  );
+}
+"#,
+    )
+    .expect("write pages/index.tsx");
+}
+
+/// Shared negative-control shell: `@scope/child` is UNDECLARED (no
+/// `exports`/`main`) — deliberately distinct from the positive control's
+/// declared-from-source `@acme/ui` above — reached only via the wholesale
+/// `node_modules/@scope/child -> packages/child` symlink a real pnpm install
+/// produces.
+fn write_root_claimed_escape_workspace_shell(root: &Path) {
+    write_root_claimed_workspace_shell(root);
+
+    let child = root.join("packages/child");
+    fs::create_dir_all(&child).expect("create packages/child");
+    fs::write(
+        child.join("package.json"),
+        r#"{ "name": "@scope/child", "private": true }"#,
+    )
+    .expect("write @scope/child package.json");
+    fs::write(
+        child.join("index.ts"),
+        r#"export const childMarker = "ZFB_ROOT_CLAIMED_ESCAPE_MARKER";"#,
+    )
+    .expect("write index.ts");
+
+    let scope_dir = root.join("node_modules/@scope");
+    fs::create_dir_all(&scope_dir).expect("create node_modules/@scope");
+    std::os::unix::fs::symlink(&child, scope_dir.join("child"))
+        .expect("link first-party child package into node_modules");
+}
+
+/// SSR leg: an ordinary `import` in `pages/index.tsx` — SSR has no scan-time
+/// guard (a) at all, so this alone must be caught by guard (b).
+fn write_root_claimed_ssr_escape_workspace(root: &Path) {
+    write_root_claimed_escape_workspace_shell(root);
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"
+import { childMarker } from "@scope/child";
+
+export default function Home() {
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <title>ZFB_ROOT_CLAIMED_ESCAPE_SSR_PAGE</title>
+      </head>
+      <body>
+        <main>
+          <h1>{childMarker}</h1>
+        </main>
+      </body>
+    </html>
+  );
+}
+"#,
+    )
+    .expect("write pages/index.tsx");
+}
+
+/// Islands/client leg: a `require(...)` call inside a "use client" island —
+/// the edge shape guard (a)'s static import/export scanner never records. A
+/// harmless `?raw` import sits alongside it to force the islands shadow to
+/// be materialised at all (a plain `require()`-only island never triggers
+/// staging, which would make node_modules resolution merely ordinary).
+fn write_root_claimed_islands_escape_workspace(root: &Path) {
+    write_root_claimed_escape_workspace_shell(root);
+    fs::write(
+        root.join("components/payload.txt"),
+        "ZFB_ROOT_CLAIMED_ESCAPE_RAW_PAYLOAD",
+    )
+    .expect("write payload.txt");
+    fs::write(
+        root.join("components/EscapeIsland.tsx"),
+        "\"use client\";\n\
+         import payload from \"./payload.txt?raw\";\n\
+         const { childMarker } = require(\"@scope/child\");\n\
+         export function EscapeIsland() {\n\
+         \u{20}\u{20}return <div id=\"escape-island\">{childMarker}:{payload}</div>;\n\
+         }\n",
+    )
+    .expect("write EscapeIsland.tsx");
+    fs::write(
+        root.join("pages/index.tsx"),
+        r#"
+import { EscapeIsland } from "../components/EscapeIsland";
+
+export default function Home() {
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <title>ZFB_ROOT_CLAIMED_ESCAPE_ISLANDS_PAGE</title>
+      </head>
+      <body>
+        <main>
+          <EscapeIsland />
+        </main>
+      </body>
+    </html>
+  );
+}
+"#,
+    )
+    .expect("write pages/index.tsx");
+}
+
+fn run_zfb_build_expect_stage_escape_rejection(root: &Path, esbuild: &Path, label: &str) -> String {
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(root)
+        .env("ZFB_ESBUILD_BIN", esbuild)
+        .output()
+        .expect("spawn `zfb build`");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "`zfb build` for {label} was expected to FAIL with a stage-escape rejection, but \
+         succeeded\nstatus: {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        output.status,
+    );
+    let logs = format!("{stdout}\n{stderr}");
+    // A bare non-zero exit proves nothing: with guard (b) disarmed, esbuild's
+    // own `Could not resolve "@scope/child"` would satisfy both `!success()`
+    // and the callers' package-name assertion while the audit never ran
+    // (verified by deleting this fixture's `node_modules/@scope/child`
+    // symlink — the old assertions stayed green). Pin the audit's own signal,
+    // matching every other negative in this epic
+    // (`bundler_root_workspace_stage_escape_audit_armed_regression.rs`,
+    // `bundler_consume_from_source_esbuild_regression.rs`,
+    // `bundler_workspace_root_alias_esbuild_regression.rs`).
+    assert!(
+        logs.contains("stage-escape audit"),
+        "`zfb build` for {label} failed, but NOT with a guard (b) stage-escape audit rejection — \
+         an incidental build failure does not prove the audit is armed\nstatus: {:?}\n--- logs \
+         ---\n{logs}",
+        output.status,
+    );
+    logs
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
+async fn real_binary_build_and_dev_accept_root_claimed_declared_sibling() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let esbuild = locate_esbuild().expect(
+        "root-claimed-workspace cross-pipeline test requires the pinned esbuild binary; \
+         set ZFB_ESBUILD_BIN to an absolute executable path",
+    );
+
+    let production = tempfile::tempdir().expect("root-claimed-legit production tempdir");
+    write_root_claimed_legitimate_workspace(production.path());
+    run_zfb_build(production.path(), &esbuild, "root-claimed-legit production");
+    let html = read_text(&production.path().join("dist/index.html"));
+    assert_contains_all(
+        &html,
+        &["ZFB_ROOT_CLAIMED_LEGIT_PAGE", "ZFB_ROOT_CLAIMED_LEGIT_CTA"],
+        "root-claimed-legit production SSR HTML",
+    );
+
+    let development = tempfile::tempdir().expect("root-claimed-legit development tempdir");
+    write_root_claimed_legitimate_workspace(development.path());
+    let mut session = spawn_dev(development.path(), &esbuild);
+    let port = wait_for_ready(&mut session).await;
+    let origin = format!("http://localhost:{port}");
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("build loopback HTTP client");
+    let body = poll_body(
+        &client,
+        &format!("{origin}/"),
+        "ZFB_ROOT_CLAIMED_LEGIT_CTA",
+        "root-claimed-legit development page",
+        &session,
+    )
+    .await;
+    assert!(
+        body.contains("ZFB_ROOT_CLAIMED_LEGIT_PAGE"),
+        "development page missing SSR marker: {}",
+        truncate(&body, 2000)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: pinned esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored"]
+async fn real_binary_build_rejects_root_claimed_undeclared_sibling_escape_on_both_legs() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let esbuild = locate_esbuild().expect(
+        "root-claimed-workspace escape cross-pipeline test requires the pinned esbuild binary; \
+         set ZFB_ESBUILD_BIN to an absolute executable path",
+    );
+
+    let ssr_case = tempfile::tempdir().expect("root-claimed SSR-leg escape tempdir");
+    write_root_claimed_ssr_escape_workspace(ssr_case.path());
+    let ssr_logs = run_zfb_build_expect_stage_escape_rejection(
+        ssr_case.path(),
+        &esbuild,
+        "root-claimed SSR-leg escape",
+    );
+    assert!(
+        ssr_logs.contains("@scope/child"),
+        "SSR-leg rejection must name the escaped @scope/child input: {ssr_logs}"
+    );
+
+    let islands_case = tempfile::tempdir().expect("root-claimed islands-leg escape tempdir");
+    write_root_claimed_islands_escape_workspace(islands_case.path());
+    let islands_logs = run_zfb_build_expect_stage_escape_rejection(
+        islands_case.path(),
+        &esbuild,
+        "root-claimed islands-leg escape",
+    );
+    assert!(
+        islands_logs.contains("@scope/child"),
+        "islands-leg rejection must name the escaped @scope/child input: {islands_logs}"
+    );
+}
