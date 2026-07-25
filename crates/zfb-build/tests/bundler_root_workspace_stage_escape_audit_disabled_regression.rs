@@ -182,15 +182,15 @@ fn real_esbuild_silently_resolves_root_workspace_child_package_escape_through_no
         "the live child package's marker must reach the emitted bundle unflagged; got: {body}"
     );
 
-    // Prove the escape at the metafile level too: `packages/child` was never
-    // staged by `materialise_shadow` (it walks only the conventional
-    // pages/content/components/layouts trees). Esbuild's real metafile
+    // Prove the escape at the metafile level too. Esbuild's real metafile
     // records the resolved input as `node_modules/@scope/child/index.ts` —
     // this is exactly the epic's documented "case 2" shape (a
     // `node_modules`-shaped key): the wholesale `<shadow>/node_modules`
-    // symlink resolves straight to the live, unmirrored child package, with
-    // no staged spelling ever produced for it. Guard (b) exists precisely to
-    // reject a case-2 key like this one when armed; it is not armed here.
+    // symlink resolves the bare package-name import straight to the live
+    // child package, bypassing the staged copy asserted below entirely (see
+    // that assertion's comment for why a staged copy existing at all does
+    // not save this import). Guard (b) exists precisely to reject a case-2
+    // key like this one when armed; it is not armed here.
     let keys = metafile_input_keys(session.shadow_root());
     assert!(
         keys.iter()
