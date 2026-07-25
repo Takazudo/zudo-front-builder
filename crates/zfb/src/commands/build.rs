@@ -11486,6 +11486,200 @@ mod tests {
         assert!(dev_client_dir.join(&plugin_worker_filename).is_file());
     }
 
+    /// Issue #1984 (epic #1982) — RED test for #1730's islands/client site.
+    ///
+    /// When `project_root` is itself claimed by `pnpm-workspace.yaml`
+    /// (`packages: ['.', 'packages/*']`), `first_party_root_for(project_root)`
+    /// maps it to itself (see
+    /// `zfb_types::first_party::project_root_that_is_the_workspace_root_maps_to_itself`),
+    /// so `stage_escape_audit_policy` reads that as "not a workspace" and
+    /// returns `None` — the islands/client metafile stage-escape audit never
+    /// arms. A first-party CHILD package still lives under `packages/*` and is
+    /// still linked into `node_modules` the way a real pnpm install would
+    /// (`node_modules/@scope/child` -> `packages/child`). A "use client"
+    /// island reaching it through a plain `require(...)` call — an edge shape
+    /// guard (a)'s static `import`/`export` scanner (`collect_import_edges`,
+    /// `zfb-islands/src/scanner.rs`) never records as a
+    /// `WorkspacePackageImportEdge` — resolves through that symlink straight
+    /// to the LIVE, unmirrored child source. Guard (b) (the metafile
+    /// stage-escape audit) would normally be the backstop for exactly this
+    /// kind of scanner-missed edge, but it never runs here, so today's build
+    /// succeeds with the live escape baked in, unflagged.
+    ///
+    /// Not fixed by this test — Wave 3 (#1986) and Wave 5 (#1987) own the
+    /// eligibility predicate and the wiring fix; this only proves today's
+    /// defect at both levels: the predicate (direct assertion) and the
+    /// resulting real-esbuild behavior (end-to-end bundle).
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "env-gate: esbuild binary — cargo test -p zfb --lib \
+                commands::build::tests::root_workspace_islands_stage_escape_audit_is_disabled_and_child_escape_goes_unflagged \
+                -- --ignored (ZFB_ESBUILD_BIN or staged workspace slot)"]
+    fn root_workspace_islands_stage_escape_audit_is_disabled_and_child_escape_goes_unflagged() {
+        if zfb_test_utils::locate_esbuild().is_none() {
+            panic!(
+                "root-workspace islands stage-escape regression requires a pinned real esbuild \
+                 binary; set ZFB_ESBUILD_BIN or stage crates/zfb/binaries/esbuild/esbuild"
+            );
+        }
+
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        // `project_root` IS the workspace root: both `.` and `packages/*` are
+        // explicitly claimed, matching #1730's repro shape.
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"host","private":true}"#,
+        )
+        .unwrap();
+
+        // Evidence #1 — the eligibility predicate is disabled at the root.
+        // `first_party_root_for` maps a root-claimed project_root to itself,
+        // so the widened check inside `stage_escape_audit_policy` never
+        // fires and the islands/client audit is never armed.
+        let first_party_root = zfb_types::first_party_root_for(root);
+        assert_eq!(
+            first_party_root,
+            zfb_types::normalize_path_lexical(root),
+            "a root-claimed workspace member must map first_party_root to itself"
+        );
+        assert!(
+            stage_escape_audit_policy(root, &first_party_root, &root.join(".stage")).is_none(),
+            "the widened-stage predicate must (today) return None for a root-workspace \
+             project, disabling the islands/client stage-escape audit"
+        );
+
+        // A first-party CHILD package under `packages/*`, reached only
+        // through a `node_modules` symlink the way a real pnpm install
+        // produces one.
+        let child_pkg = root.join("packages/child");
+        std::fs::create_dir_all(&child_pkg).unwrap();
+        std::fs::write(
+            child_pkg.join("package.json"),
+            r#"{"name":"@scope/child","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            child_pkg.join("index.js"),
+            "module.exports.childMarker = 'CHILD_PACKAGE_ESCAPE_MARKER';\n",
+        )
+        .unwrap();
+
+        // Minimal islands runtime deps — the synthesized islands entry
+        // always imports these (mirrors `stage_minimal_node_modules` in
+        // `crates/zfb-islands/tests/integration.rs`).
+        let nm = root.join("node_modules");
+        let zfb_runtime = nm.join("@takazudo/zfb");
+        std::fs::create_dir_all(&zfb_runtime).unwrap();
+        std::fs::write(
+            zfb_runtime.join("package.json"),
+            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            zfb_runtime.join("runtime.js"),
+            "export function mountIslands() {}\n",
+        )
+        .unwrap();
+        let preact = nm.join("preact");
+        std::fs::create_dir_all(&preact).unwrap();
+        std::fs::write(
+            preact.join("package.json"),
+            r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            preact.join("index.js"),
+            "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
+        )
+        .unwrap();
+        // The genuine pnpm-style symlink into the first-party child package.
+        let scope_dir = nm.join("@scope");
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        std::os::unix::fs::symlink(&child_pkg, scope_dir.join("child")).unwrap();
+
+        // The unrecorded edge: a plain `require(...)` call, which
+        // `collect_import_edges` (guard (a)'s scanner) never visits — it
+        // only collects `import`/`export ... from`/`export *`/string-literal
+        // dynamic `import()`.
+        //
+        // A harmless `?raw` import sits alongside it. `_islands_shadow`
+        // (this function's staged copy of the island-reachable closure) is
+        // only materialised when the scan finds a glob/raw/worker/plugin
+        // preprocessing need (see the `if !scan_meta...is_empty() ...`
+        // gate a few lines above `materialise_islands_shadow_with_worker_context`
+        // in this file) — a plain `require()`-only island never triggers
+        // staging at all, which would make node_modules resolution merely
+        // ordinary (no stage to escape from), not a proof of anything. The
+        // raw import forces that staged shadow to exist, WITH its own
+        // wholesale `node_modules` symlink (see
+        // `materialise_islands_shadow_with_worker_context`'s
+        // `first_party_node_modules` wiring), so the `require()` edge is
+        // proven to escape a REAL, active stage.
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        std::fs::write(
+            root.join("pages/index.tsx"),
+            "import { ChildIsland } from '../components/ChildIsland';\n\
+             export default ChildIsland;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/payload.txt"),
+            "HARMLESS_RAW_PAYLOAD_MARKER",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("components/ChildIsland.tsx"),
+            "'use client';\n\
+             import payload from './payload.txt?raw';\n\
+             const { childMarker } = require('@scope/child');\n\
+             export function ChildIsland() { return childMarker + ':' + payload; }\n",
+        )
+        .unwrap();
+
+        let outdir = root.join("dist");
+        let plugin_config = IslandsPluginConfig::default();
+        let (islands_payload, names) = build_default_islands_payload_with_bundle_options(
+            root,
+            &root.join("pages"),
+            &[],
+            &outdir,
+            crate::config::Framework::Preact,
+            None,
+            zfb_islands::BundleMode::Production,
+            &plugin_config,
+            IslandsGlobPolicy::HardError,
+            None,
+        )
+        .expect(
+            "today's build succeeds even though the require()-reached child package resolved \
+             through node_modules to LIVE, unmirrored source — the disabled audit never sees it",
+        );
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from(["ChildIsland".to_string()])
+        );
+        let bytes = islands_payload.expect("islands payload").bytes;
+        let islands_js = String::from_utf8(bytes).unwrap();
+        assert!(
+            islands_js.contains("HARMLESS_RAW_PAYLOAD_MARKER"),
+            "the raw import must have been staged normally, proving a real shadow was \
+             materialised for this build (not the no-preprocessing fast path): {islands_js}"
+        );
+        assert!(
+            islands_js.contains("CHILD_PACKAGE_ESCAPE_MARKER"),
+            "the require()-reached child package's LIVE source must have resolved into the \
+             bundle unflagged — this is the silent #1730 root-workspace stage escape: {islands_js}"
+        );
+    }
+
     #[test]
     fn client_virtual_module_preprocessing_syntax_is_an_explicit_command_error() {
         let tmp = tempdir().unwrap();
