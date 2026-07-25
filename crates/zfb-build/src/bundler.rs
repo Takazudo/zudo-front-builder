@@ -3942,19 +3942,45 @@ pub fn bundle_with_session(
     // a LIVE workspace sibling, unprocessed source outside the staged mirror.
     // Unlike the `bundle.exclude` audit above (armed only under active
     // exclusions), this escape exists regardless of `bundle.exclude`, so the
-    // audit runs whenever `workspace_rel.is_some()` — the widened-stage
-    // condition. Outside a workspace `workspace_rel` is `None` and this is a
-    // zero-cost no-op, byte-identical to the pre-#1706 build. esbuild runs
-    // from `shadow` (its cwd — `cmd.current_dir(shadow)` in `run_esbuild`), so
-    // metafile keys resolve against it; `work` is the mirror boundary every
-    // legitimately staged input (the project shadow at `work/<workspace_rel>`
-    // plus wholesale-mirrored siblings under `work`) lives under. A metafile
-    // input that canonicalises to live first-party source outside `work` with
-    // no staged spelling — or a staged `node_modules/@scope/pkg` symlink
-    // resolving to a live sibling — is the escape and hard-fails the build.
-    // `metafile_path` is `None` on the mock-subprocess path, so this is a
-    // deliberate no-op for mocks, like the exclusion audit.
-    if workspace_rel.is_some() {
+    // audit runs whenever [`zfb_types::stage_escape_audit_eligibility`] (issue
+    // #1986) says a first-party stage escape is structurally possible.
+    //
+    // Issue #1730/#1988: this used to gate on `workspace_rel.is_some()` alone
+    // — the widened-stage proxy — which reads a workspace whose
+    // `pnpm-workspace.yaml` claims its own root (`packages: ['.',
+    // 'packages/*']`) as "not a workspace": building FROM the workspace root
+    // makes `first_party_root_for` return `project_root` itself, so
+    // `workspace_rel` is `None` even though the wholesale `<work>/node_modules`
+    // link this stage sets up (above) reaches first-party siblings exactly as
+    // it does from a nested member. SSR has no scan-time guard (a) at all, so
+    // this was a completely SILENT escape — the epic's P1 leg
+    // (`bundler_root_workspace_stage_escape_audit_disabled_regression.rs`).
+    // The eligibility predicate is a strict superset of the old proxy (see its
+    // module docs for the full decision table): every currently-armed build
+    // stays armed, and a root-claimed workspace with a reachable first-party
+    // `node_modules` link now arms too. `work.join("node_modules")` is the
+    // wholesale symlink set up above (to `first_party_root`'s live install),
+    // so it is what the predicate scans — mirroring the islands/client site's
+    // `stage_escape_audit_policy` (`crates/zfb/src/commands/build.rs`), which
+    // scans its own stage root's `node_modules` the same way.
+    //
+    // esbuild runs from `shadow` (its cwd — `cmd.current_dir(shadow)` in
+    // `run_esbuild`), so metafile keys resolve against it; `work` is the
+    // mirror boundary every legitimately staged input (the project shadow at
+    // `work/<workspace_rel>` plus wholesale-mirrored siblings under `work`)
+    // lives under. A metafile input that canonicalises to live first-party
+    // source outside `work` with no staged spelling — or a staged
+    // `node_modules/@scope/pkg` symlink resolving to a live sibling — is the
+    // escape and hard-fails the build. `metafile_path` is `None` on the
+    // mock-subprocess path, so this is a deliberate no-op for mocks, like the
+    // exclusion audit.
+    if zfb_types::stage_escape_audit_eligibility(
+        &input.project_root,
+        &first_party_root,
+        &work.join("node_modules"),
+    )
+    .is_eligible()
+    {
         if let Some(meta_path) = metafile_path.as_deref() {
             crate::metafile_deps::audit_metafile_stage_escape_at_path(
                 meta_path,
