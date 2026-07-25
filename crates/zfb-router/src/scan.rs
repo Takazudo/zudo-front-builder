@@ -1565,4 +1565,172 @@ mod tests {
             "expected a warning about the unrecognised extension"
         );
     }
+
+    // ---- Page Extension Contract characterization (epic #1990, #1991) ------
+    //
+    // Pins today's router-vs-bundler extension divergence: the bundler
+    // treats `.tsx`/`.ts`/`.jsx`/`.js`/`.mdx` as page-capable script sources
+    // (plus `.md`/`.html` as non-script page sources — see
+    // `crates/zfb-build/src/bundler.rs:281-287` and `:7052-7061`), but
+    // `scan_pages` only accepts `ACCEPTED_PAGE_EXTENSIONS` above
+    // (`tsx`/`mdx`/`md`/`html`) — so `pages/index.ts`, `.js`, `.jsx` are
+    // bundle-capable yet never routed. These are BEHAVIORAL tests (observed
+    // routing outcome), deliberately not an equality check against the
+    // bundler's own extension list — that would become tautological the
+    // moment both layers share one constant.
+    //
+    // The `*_is_routed_after_epic_1990` trio below is RED today and
+    // `#[ignore]`d (`pending-feature: #1990`); Wave 2 (#1992) widens the
+    // router to make them pass — flip by dropping the `#[ignore]`, do not
+    // delete. Their `*_is_skipped_and_warned_today` siblings are green now
+    // and pin the CURRENT skip+warn contract; those must be deleted (not
+    // left green-and-stale) once Wave 2 lands, since a widened router will
+    // no longer skip these extensions.
+
+    #[test]
+    fn tsx_page_is_routed_today() {
+        let routes = scan_tree(&["index.tsx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/".to_string()]);
+    }
+
+    #[test]
+    fn mdx_page_is_routed_today() {
+        // zfb#404 regression guard, exercised through the FULL scan_pages
+        // gate (ACCEPTED_PAGE_EXTENSIONS), not just parse_route in isolation
+        // — see mdx_static_about/mdx_index_root/mdx_nested_path above, which
+        // test parse_route directly and never exercise the extension gate.
+        let routes = scan_tree(&["a.mdx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/a".to_string()]);
+    }
+
+    #[test]
+    fn md_page_is_routed_today() {
+        let routes = scan_tree(&["b.md"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/b".to_string()]);
+    }
+
+    #[test]
+    fn html_page_is_routed_today() {
+        let routes = scan_tree(&["c.html"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/c".to_string()]);
+    }
+
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1990"]
+    fn ts_page_is_routed_after_epic_1990() {
+        let routes = scan_tree(&["d.ts"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/d".to_string()]);
+    }
+
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1990"]
+    fn js_page_is_routed_after_epic_1990() {
+        let routes = scan_tree(&["e.js"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/e".to_string()]);
+    }
+
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1990"]
+    fn jsx_page_is_routed_after_epic_1990() {
+        let routes = scan_tree(&["f.jsx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/f".to_string()]);
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn ts_page_is_skipped_and_warned_today() {
+        let routes = scan_tree(&["d.ts"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            ".ts page must be skipped today: {routes:?}"
+        );
+        assert!(
+            logs_contain("unrecognised extension"),
+            "expected a warning about the unrecognised .ts extension"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn js_page_is_skipped_and_warned_today() {
+        let routes = scan_tree(&["e.js"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            ".js page must be skipped today: {routes:?}"
+        );
+        assert!(
+            logs_contain("unrecognised extension"),
+            "expected a warning about the unrecognised .js extension"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn jsx_page_is_skipped_and_warned_today() {
+        let routes = scan_tree(&["f.jsx"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            ".jsx page must be skipped today: {routes:?}"
+        );
+        assert!(
+            logs_contain("unrecognised extension"),
+            "expected a warning about the unrecognised .jsx extension"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn txt_page_is_skipped_and_warned_negative_control() {
+        // Negative control (table row `pages/g.txt`): an extension with no
+        // stake in this epic must remain skipped + warned both before and
+        // after the widening — this must NEVER flip green.
+        let routes = scan_tree(&["g.txt"]).expect("scan");
+        assert!(routes.is_empty(), ".txt page must be skipped: {routes:?}");
+        assert!(
+            logs_contain("unrecognised extension"),
+            "expected a warning about the unrecognised .txt extension"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn dynamic_md_route_stays_skipped_and_warned_across_the_epic() {
+        // Pins the existing dynamic/catchall carve-out (see the
+        // `matches!(ext, Some("md") | Some("html")) && !matches!(route.kind, ...)`
+        // gate above): dynamic `.md` routes have no `paths()` story and are
+        // skipped even though `.md` itself is an accepted extension. The
+        // gate is keyed on `ext` + `route.kind`, not on the accepted-
+        // extensions allowlist, so it must survive Wave 2's widening
+        // untouched.
+        let routes = scan_tree(&["docs/[slug].md"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            "dynamic .md page must stay skipped: {routes:?}"
+        );
+        assert!(
+            logs_contain("dynamic .md / .html page routes are not supported"),
+            "expected the dynamic .md/.html v1 warning"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn dynamic_html_route_stays_skipped_and_warned_across_the_epic() {
+        let routes = scan_tree(&["docs/[slug].html"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            "dynamic .html page must stay skipped: {routes:?}"
+        );
+        assert!(
+            logs_contain("dynamic .md / .html page routes are not supported"),
+            "expected the dynamic .md/.html v1 warning"
+        );
+    }
 }
