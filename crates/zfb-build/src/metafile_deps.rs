@@ -286,12 +286,13 @@ fn has_node_modules_segment(path: &Path) -> bool {
 /// reaching `src/internal.ts` past that built entry is undeclared, escapes the
 /// stage, and stays rejected. A package declaring `"exports": {"./*":
 /// "./src/*"}` declares `src/`, so its whole source tree is accepted. A
-/// package declaring a root-level FILE (`"main": "./index.ts"`) declares only
-/// that one file — not the package root: `{"main": "./index.js", "exports":
-/// {"./*": "./dist/*"}}` is an ordinary dist-shipping package, and reading its
-/// root `main` as a blanket package-wide grant would authorise every `src/`
-/// file behind it. Only a root-level WILDCARD (`"exports": {"./*": "./*"}`)
-/// declares the whole tree, because that is what it literally says.
+/// package declaring a root-level FILE (`"main": "./index.ts"`) declares the
+/// package root only when it declares no directory entry alongside it — see
+/// [`declared_entries_cover`] for why both halves of that rule are needed.
+/// `{"main": "./index.js", "exports": {"./*": "./dist/*"}}` is an ordinary
+/// dist-shipping package, and reading its root `main` as a blanket
+/// package-wide grant would authorise every `src/` file behind the built
+/// entry.
 fn package_input_is_declared_first_party_entry(
     key: &str,
     canonical: &Path,
@@ -321,9 +322,7 @@ fn package_input_is_declared_first_party_entry(
     }
 
     let subpath = subpath.join("/");
-    declared_entries(&manifest)
-        .iter()
-        .any(|entry| entry.covers(&subpath))
+    declared_entries_cover(&declared_entries(&manifest), &subpath)
 }
 
 /// Split a `node_modules`-shaped metafile key into `(package name,
@@ -396,6 +395,41 @@ impl DeclaredEntry {
             Self::ExactFile(file) => subpath == file,
         }
     }
+}
+
+/// Whether the package's declared entries authorise `subpath`.
+///
+/// Almost always this is just "any entry covers it". The one aggregate rule:
+/// a root-level FILE entry (`"main": "./index.ts"`) authorises the whole
+/// package **only when the package declares no directory entry at all**.
+///
+/// Both halves are load-bearing:
+///
+/// - A package whose only declarations are root-level files has no
+///   build-artifact directory to keep separate from its source, and its entry
+///   necessarily imports its siblings (`./index.ts` -> `./helper.ts`); esbuild
+///   records those as inputs too, so treating the root file as *literally*
+///   the only authorised input would reject the ordinary consume-from-source
+///   shape.
+/// - A package that ALSO declares a directory entry does have that
+///   separation, and there the root file must authorise only itself:
+///   `{"main": "./index.js", "exports": {"./*": "./dist/*"}}` is an ordinary
+///   dist-shipping package, and reading its root `main` as a package-wide
+///   grant would authorise every `src/` file behind the built entry — the
+///   blanket exemption condition 5 exists to prevent.
+///
+/// This is decided by plain arithmetic over the DECLARED set. It deliberately
+/// does not walk the entry's imports: which files the entry actually reaches
+/// is esbuild's answer to give, and predicting it in Rust is the failure mode
+/// this whole audit is built to avoid.
+fn declared_entries_cover(entries: &[DeclaredEntry], subpath: &str) -> bool {
+    let declares_directory = entries
+        .iter()
+        .any(|entry| matches!(entry, DeclaredEntry::Prefix(prefix) if !prefix.is_empty()));
+    entries.iter().any(|entry| match entry {
+        DeclaredEntry::ExactFile(_) if !declares_directory => true,
+        other => other.covers(subpath),
+    })
 }
 
 /// The entries a `package.json` declares, from `exports` (walked recursively
@@ -1507,24 +1541,61 @@ mod tests {
         let entries = declared_entries(&manifest);
 
         assert!(
-            entries.iter().any(|e| e.covers("index.js")),
+            declared_entries_cover(&entries, "index.js"),
             "the declared root entry itself must stay accepted: {entries:?}"
         );
         assert!(
-            entries.iter().any(|e| e.covers("dist/thing.js")),
+            declared_entries_cover(&entries, "dist/thing.js"),
             "the declared `dist/` wildcard must stay accepted: {entries:?}"
         );
         assert!(
-            !entries.iter().any(|e| e.covers("src/internal.ts")),
+            !declared_entries_cover(&entries, "src/internal.ts"),
             "an undeclared deep subpath must NOT be authorised by a root-level \
-             `main`: {entries:?}"
+             `main` when the package also declares a directory entry: {entries:?}"
         );
-        // The bare-form spelling (`"main": "index.js"`, no `./`) is equally
-        // common and must be read the same way.
-        let bare: serde_json::Value = serde_json::from_str(r#"{ "main": "index.js" }"#).unwrap();
+        // The bare-form spelling (`"main": "dist/index.js"`, no `./`) is
+        // equally common and must be read the same way.
+        let bare: serde_json::Value =
+            serde_json::from_str(r#"{ "main": "index.js", "module": "dist/index.mjs" }"#).unwrap();
         let bare = declared_entries(&bare);
-        assert!(bare.iter().any(|e| e.covers("index.js")));
-        assert!(!bare.iter().any(|e| e.covers("src/internal.ts")));
+        assert!(declared_entries_cover(&bare, "index.js"));
+        assert!(!declared_entries_cover(&bare, "src/internal.ts"));
+    }
+
+    #[test]
+    fn root_only_source_package_still_authorises_its_sibling_sources() {
+        // The other half of the rule above: when a package declares NOTHING
+        // but root-level files it has no build-artifact directory to keep
+        // separate, and its entry necessarily imports its siblings — esbuild
+        // records `helper.ts` as an input right beside `index.ts`. Reading
+        // the root entry as literally the only authorised file would reject
+        // the ordinary consume-from-source shape.
+        let manifest: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": "./index.ts" } }"#).unwrap();
+        let entries = declared_entries(&manifest);
+
+        assert!(declared_entries_cover(&entries, "index.ts"));
+        assert!(
+            declared_entries_cover(&entries, "helper.ts"),
+            "a root-entry source package must authorise the siblings its entry \
+             imports: {entries:?}"
+        );
+        assert!(
+            declared_entries_cover(&entries, "internal/deep.ts"),
+            "…including nested ones, since nothing declares a directory to keep \
+             separate: {entries:?}"
+        );
+
+        // Adding a single directory entry flips the package into the
+        // "has a build-artifact directory" shape, and the root file narrows
+        // to itself again.
+        let with_dist: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": "./index.ts", "./x": "./dist/x.js" } }"#)
+                .unwrap();
+        let with_dist = declared_entries(&with_dist);
+        assert!(declared_entries_cover(&with_dist, "index.ts"));
+        assert!(declared_entries_cover(&with_dist, "dist/x.js"));
+        assert!(!declared_entries_cover(&with_dist, "helper.ts"));
     }
 
     #[test]
