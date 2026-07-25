@@ -121,6 +121,34 @@ pub fn workspace_claims_package(project_root: &Path, candidate: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the `pnpm-workspace.yaml` **at `workspace_root`** claims
+/// `candidate` as a package.
+///
+/// Unlike [`workspace_claims_package`], this takes the workspace root
+/// directly instead of deriving it from a project root, so it also answers
+/// the question for a workspace whose own root IS the project being built
+/// (issue #1730's topology, where `first_party_root_for` returns the project
+/// root and `workspace_claims_package` therefore bails out). Added for the
+/// stage-escape audit-eligibility predicate — see
+/// [`crate::audit_eligibility`].
+///
+/// Both paths are compared after lexical normalisation only; pass canonical
+/// paths if the caller needs symlinks resolved. A missing or unreadable
+/// marker fails closed (`false`).
+pub fn workspace_root_claims_path(workspace_root: &Path, candidate: &Path) -> bool {
+    let workspace_root = normalize_path_lexical(workspace_root);
+    let candidate = normalize_path_lexical(candidate);
+    if !candidate.starts_with(&workspace_root) {
+        return false;
+    }
+    std::fs::read_to_string(workspace_root.join("pnpm-workspace.yaml"))
+        .ok()
+        .map(|yaml| {
+            workspace_claims_member(&workspace_package_globs(&yaml), &candidate, &workspace_root)
+        })
+        .unwrap_or(false)
+}
+
 /// Extract the `packages:` glob list from `pnpm-workspace.yaml` without a
 /// YAML dependency. Handles the two shapes pnpm documents: a block sequence
 /// (`packages:\n  - 'sub-packages/*'`) and an inline flow sequence
