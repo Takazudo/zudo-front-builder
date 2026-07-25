@@ -227,7 +227,7 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 
 コア mdast と MDX の完全なノードセット（`Root`、`Paragraph`、`Heading`、`List`、`Code`、`Link`、`MdxJsxFlowElement`、…）に加えて、前方互換の `UnknownMdastNode` キャッチオールが、`node.type` で型を絞り込みたい呼び出し元のために、名前付きの型としてパッケージから再エクスポートされています。remark-parse / remark-mdx からの、文書化された 2 つの相違点: `mdxJsxAttribute`（およびその値属性 / 式属性の兄弟）は `position` を持ちません — markdown-rs は属性の位置をモデル化しません。また、トップレベルの MDX `import` / `export` は段落へと格下げされます（`mdxjsEsm` ノードなし、estree データなし） — wasm の境界には JS/acorn パーサが存在しないためです。`_markdownRsStops`（MDX の式 / ESM ノードに付く）は内部的で不安定な、markdown-rs の再パース用の管理情報であり、`position` とは異なり **UTF-8 バイト** ベースです。これで文字列をスライスしては決していけません。
 
-`directives: true` の場合（[`ParseToAstOptions`](#parsetoastoptions) を参照。デフォルトは `false`）、ツリーは 3 つの汎用 remark-directive ノード型も持てます。いずれも同じ `DirectiveNodeBase` の形（`position`、`name`、`attributes`、`children`）を共有します:
+`directives: true` の場合（[`ParseToAstOptions`](#型リファレンス-parsetoastoptions) を参照。デフォルトは `false`）、ツリーは 3 つの汎用 remark-directive ノード型も持てます。いずれも同じ `DirectiveNodeBase` の形（`position`、`name`、`attributes`、`children`）を共有します:
 
 - `containerDirective` — ブロック形式、`:::name`
 - `leafDirective` — ブロック形式、`::name`

@@ -294,7 +294,7 @@ interface ZfbDevMiddlewareResponse {
 
 ## `previewMiddleware(ctx)`
 
-The `zfb preview` (static mode) counterpart of `devMiddleware` (#1542, epic #1541 Preview Parity). Same shape, same `ctx.register(path, handler)` call, same [request/response contract](#request-response-contract) — but it is a **separate, per-mode opt-in**: a plugin that only defines `devMiddleware` gets no request-time handlers at all under `zfb preview`, and vice versa. Register the SAME handler under both hooks if you want it available in both modes:
+The `zfb preview` (static mode) counterpart of `devMiddleware` (#1542, epic #1541 Preview Parity). Same shape, same `ctx.register(path, handler)` call, same [request/response contract](#devmiddleware-ctx-request-response-contract) — but it is a **separate, per-mode opt-in**: a plugin that only defines `devMiddleware` gets no request-time handlers at all under `zfb preview`, and vice versa. Register the SAME handler under both hooks if you want it available in both modes:
 
 ```ts
 // plugins/api-echo.ts

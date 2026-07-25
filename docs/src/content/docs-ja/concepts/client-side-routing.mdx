@@ -35,7 +35,7 @@ export default function Layout({ children }) {
 |---|---|---|---|
 | `fallback` | `"none" \| "animate" \| "swap"` | `"animate"` | ブラウザがネイティブの View Transitions をサポートしていないときの挙動。 |
 | `prefetchAll` | `boolean` | `false` | `true` のとき、すべての同一オリジンリンクが自動的に `"hover"` プリフェッチ戦略にオプトインされます。 |
-| `preserveHtmlAttrs` | `string[]` | `[]` | 各 SPA スワップをまたいで **ランタイム** の値が維持される、追加の `<html>` 属性名。[ランタイムの `<html>` 属性を保持する](#ランタイムの-html-属性を保持する) を参照。 |
+| `preserveHtmlAttrs` | `string[]` | `[]` | 各 SPA スワップをまたいで **ランタイム** の値が維持される、追加の `<html>` 属性名。[ランタイムの `<html>` 属性を保持する](#clientrouter-をマウントする-ランタイムの-html-属性を保持する) を参照。 |
 | `traverseRefetch` | `boolean` | `false` | このページを同一ページ内の戻る/進むの高速パスからオプトアウトし、トラバーサルのたびに再フェッチを強制します。[同一ページ内トラバーサル](#同一ページ内トラバーサル) を参照。 |
 
 ### フォールバックモード
@@ -129,7 +129,7 @@ type Options = {
 
 以下のいずれかに該当する場合、送信は通常の完全なブラウザフォーム送信にフォールバックします。
 
-- `<form>` が `data-zfb-reload` を持っている（リンクと同じオプトアウト属性。上の [リンクをルーターからオプトアウトする](#リンクをルーターからオプトアウトする) を参照）
+- `<form>` が `data-zfb-reload` を持っている（リンクと同じオプトアウト属性。上の [リンクをルーターからオプトアウトする](#navigate-によるプログラムによるナビゲーション-リンクをルーターからオプトアウトする) を参照）
 - `method="dialog"` — `<dialog>` 要素内で使われる特別な HTML キーワード
 - 解決されたアクション URL がクロスオリジンである
 - 送信者への修飾キー（Cmd/Ctrl/Shift/Alt）クリック、またはプライマリでないマウスボタンによって送信がトリガーされた
@@ -483,7 +483,7 @@ console.log(supportsViewTransitions);
 console.log(transitionEnabledOnThisPage());
 ```
 
-`supportsViewTransitions` が `false` のとき、`fallback` プロパティが劣化した体験を制御します（[フォールバックモード](#フォールバックモード) を参照）。
+`supportsViewTransitions` が `false` のとき、`fallback` プロパティが劣化した体験を制御します（[フォールバックモード](#clientrouter-をマウントする-フォールバックモード) を参照）。
 
 ### ナビゲーションをまたいで要素を永続化する
 

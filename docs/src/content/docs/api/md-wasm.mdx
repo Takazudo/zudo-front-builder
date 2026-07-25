@@ -227,7 +227,7 @@ The default class for each role is `${classPrefix}${suffix}` (default `classPref
 
 The full core-mdast and MDX node set (`Root`, `Paragraph`, `Heading`, `List`, `Code`, `Link`, `MdxJsxFlowElement`, …) plus a forward-compatible `UnknownMdastNode` catch-all are all re-exported as named types from the package for callers who want to narrow on `node.type`. Two documented divergences from remark-parse/remark-mdx: `mdxJsxAttribute` (and its value/expression-attribute siblings) carry no `position` — markdown-rs does not model attribute positions; and top-level MDX `import`/`export` degrade to paragraphs (no `mdxjsEsm` nodes, no estree data) since the wasm boundary hosts no JS/acorn parser. `_markdownRsStops` (on MDX expression/ESM nodes) is internal, unstable, markdown-rs re-parse bookkeeping and — unlike `position` — is **UTF-8 byte**-based; never slice a string with it.
 
-With `directives: true` (see [`ParseToAstOptions`](#parsetoastoptions), default `false`), the tree can also carry the three generic remark-directive node types, all sharing the same `DirectiveNodeBase` shape (`position`, `name`, `attributes`, `children`):
+With `directives: true` (see [`ParseToAstOptions`](#type-reference-parsetoastoptions), default `false`), the tree can also carry the three generic remark-directive node types, all sharing the same `DirectiveNodeBase` shape (`position`, `name`, `attributes`, `children`):
 
 - `containerDirective` — block form, `:::name`
 - `leafDirective` — block form, `::name`
