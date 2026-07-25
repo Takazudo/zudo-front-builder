@@ -173,19 +173,26 @@ else
 fi
 
 # ── TypeScript typecheck ───────────────────────────────
-step "TypeScript typecheck (pnpm -r typecheck, excluding examples)"
-if pnpm -r --filter '!./examples/*' --if-present typecheck; then
+# @takazudo/zfb-md-wasm is excluded to match health.yml's own typecheck step:
+# its src/index.ts type-imports the wasm-bindgen-generated glue, which does not
+# exist until the crate is compiled for wasm32-unknown-unknown. Its own build
+# runs `tsc`, so coverage is relocated rather than lost.
+step "TypeScript typecheck (pnpm -r typecheck, excluding examples + zfb-md-wasm)"
+if pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' --if-present typecheck; then
   pass "typecheck"
 else
   fail "typecheck"
 fi
 
 # ── JS test suites (vitest) ────────────────────────────
-step "JS test suites (pnpm -r test)"
+# Same @takazudo/zfb-md-wasm exclusion as health.yml's test step: its tests
+# import the built dist/index.js, which needs a wasm build b4push never runs.
+# Without this, b4push fails on a fresh checkout (issue #2043).
+step "JS test suites (pnpm -r test, excluding zfb-md-wasm)"
 if [ "${B4PUSH_SKIP_JS_TEST:-}" = "1" ]; then
   skip "JS tests (B4PUSH_SKIP_JS_TEST=1)"
 else
-  if pnpm -r test; then
+  if pnpm -r --filter '!@takazudo/zfb-md-wasm' test; then
     pass "JS tests"
   else
     fail "JS tests"

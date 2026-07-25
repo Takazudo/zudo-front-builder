@@ -383,9 +383,22 @@ pub fn parse_pipeline_options(config_json: &str) -> Result<PipelineOptions, Faca
 /// Returns [`FacadeError::ClassModeExcludesTheme`] when `code_highlight.mode`
 /// is `"class"` and `theme` is also set, and
 /// [`FacadeError::ClassHighlight`] when `code_highlight.classPrefix` /
-/// `roleClasses` fails validation.
+/// `roleClasses` fails validation — checked whenever `code_highlight` is
+/// present, regardless of `mode` (native parity, zfb#1865 / zfb#1978): the
+/// fields are inert in `"inline"` mode but must still reject malformed
+/// input exactly as native `config.rs` does.
 pub fn build_pipeline(options: &PipelineOptions) -> Result<Pipeline, FacadeError> {
     let resolved_gfm: ResolvedGfmConstructs = options.gfm.into();
+    // Native config.rs (crates/zfb/src/config.rs:2184-2236) validates
+    // classPrefix/roleClasses for ANY code_highlight present, not just
+    // mode "class" — those fields are inert in "inline" mode but still
+    // get parsed and must reject the same malformed input native does
+    // (zfb#1865 / zfb#1978). In class mode, native runs the class/theme
+    // mutual-exclusion check FIRST (config.rs:2194-2218), then
+    // classPrefix/roleClasses validation (config.rs:2230-2236) — preserve
+    // that precedence rather than validating classPrefix/roleClasses
+    // unconditionally up front, or a config with both a theme AND a
+    // malformed classPrefix would report the wrong error.
     match &options.code_highlight {
         Some(ch) if ch.mode == CodeHighlightMode::Class => {
             if options.theme.is_some() {
@@ -403,7 +416,22 @@ pub fn build_pipeline(options: &PipelineOptions) -> Result<Pipeline, FacadeError
                 &role_classes,
             )?)
         }
-        _ => Ok(Pipeline::with_defaults_and_full_config(
+        Some(ch) => {
+            // Non-class mode (e.g. "inline"): classPrefix/roleClasses are
+            // inert here, but native still validates them whenever
+            // code_highlight is present — see the module-level note above.
+            let role_classes = ch.role_classes.clone().unwrap_or_default();
+            validate_class_highlight_classes(&ch.class_prefix, &role_classes)?;
+            Ok(Pipeline::with_defaults_and_full_config(
+                options.theme.as_deref(),
+                resolved_gfm,
+                None,
+                options.cjk_friendly,
+                options.hard_breaks,
+                Some(&options.features),
+            )?)
+        }
+        None => Ok(Pipeline::with_defaults_and_full_config(
             options.theme.as_deref(),
             resolved_gfm,
             None,
