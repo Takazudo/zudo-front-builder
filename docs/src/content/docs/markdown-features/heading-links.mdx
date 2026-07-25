@@ -13,14 +13,42 @@ to any section.
 
 For each heading the plugin:
 
-1. Computes a GitHub-slugger-compatible slug from the heading text.
+1. Computes a slug from the heading text: lowercased, a fixed set of ASCII
+   punctuation stripped, whitespace collapsed to a single `-`. This is a
+   github-slugger-*style* algorithm, not a byte-for-byte compatible one —
+   see the note below.
 2. Deduplicates repeated slugs within the same document by appending a
-   counter (`overview`, `overview-1`, `overview-2`, …).
+   counter (`overview`, `overview-1`, `overview-2`, …). This is a simpler
+   per-base counter than `github-slugger`'s own numbering, which is
+   collision-aware (it skips a suffix that's already taken by another
+   heading's literal slug); zfb's counter does not check for that case.
 3. Sets the `id` attribute on the `<h*>` element.
 4. Appends an empty `<a href="#slug" class="hash-link" aria-label="…">` as the
    heading's **last child**. The heading text is left unwrapped. The visible
    `#` glyph is rendered via CSS `::after` so the anchor body stays empty,
    keeping heading-text extraction (e.g. for TOC) clean.
+
+<Note title="Not github-slugger compatible">
+
+The slug step (1 above) is **not** compatible with npm `github-slugger`,
+despite the resemblance. The key divergence: characters in the stripped
+punctuation set collapse to a `-` separator instead of being removed
+outright — `"a,b"` slugifies to `"a-b"` here, versus `"ab"` in
+`github-slugger`. Unicode letters, numbers, symbols, and punctuation
+outside that fixed ASCII set (CJK, kana, hangul, full-width punctuation,
+emoji) pass through unchanged, lowercased where casing applies — this
+has tripped up full-width-paren headings in Japanese content before.
+
+The heading-ID algorithm above and the `slugify()` function exported
+publicly from `@takazudo/zfb/slugify` (source: `packages/zfb/src/slugify.ts`)
+are the same algorithm — not two unrelated slugifiers, as the naming might
+suggest — but they are two separate implementations: heading IDs come from
+the Rust `slugify()` in `crates/zfb-content/src/plugins/heading_links.rs`,
+and the public API is an independent TypeScript port. A shared fixture
+(`crates/zfb-content/tests/fixtures/slugify-parity.json`) tests that both
+currently produce matching output; it does not make them one implementation.
+
+</Note>
 
 ## Example
 
@@ -55,8 +83,9 @@ export default {
 
 ### `strategy: "flat"` (default)
 
-The behaviour described above: GitHub-slugger slugs with one dedup counter
-shared across `h2`–`h6`. Omitting `headingIds` entirely keeps this scheme.
+The behaviour described above: github-slugger-*style* slugs (see the note
+above) with one dedup counter shared across `h2`–`h6`. Omitting
+`headingIds` entirely keeps this scheme.
 
 ### `strategy: "hierarchical"`
 
