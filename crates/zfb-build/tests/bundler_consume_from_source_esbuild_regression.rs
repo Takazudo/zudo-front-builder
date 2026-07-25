@@ -1,5 +1,6 @@
-//! Issue #2039 (epic #1982, Wave 1) — RED tests for the "consume-from-source"
-//! workspace idiom.
+//! Issue #2039 (epic #1982, Wave 1) — regressions for the "consume-from-source"
+//! workspace idiom. Wave 4 (#2040) flipped the first test from RED to green and
+//! added the dist-shipping negative that keeps the new acceptance rule honest.
 //!
 //! Sourced from the real-world repro in #1730's second comment: a workspace
 //! layout `packages: [".", "packages/*", "apps/*", "doc"]` where a first-party
@@ -11,34 +12,34 @@
 //! leaving no `node_modules` segment in the canonical path — exactly
 //! `metafile_deps.rs`'s documented "case 2: OFFENDER" shape.
 //!
-//! **This file documents TODAY'S asymmetric behavior, not a settled policy.**
-//! Per the epic's "Scope widened during planning verification" section,
-//! consuming a first-party sibling from source is LEGITIMATE, not a stage
-//! escape — the guard's current theory that case 2 is always an offender
-//! assumes every workspace package ships a built `dist/`, which is not
-//! universal. Wave 4 (#2040) redefines case 2 accordingly; Waves 5-6 (#1987,
-//! #1988) then wire the audit at the root. Arming the audit at the root
-//! WITHOUT first settling the case-2 policy would turn the currently-green
-//! root build red — these two tests are what makes that regression visible.
+//! Wave 4 (#2040) settled the policy the Wave-1 header called open: consuming
+//! a first-party sibling from source is LEGITIMATE, not a stage escape. The
+//! old theory that case 2 is always an offender assumed every workspace
+//! package ships a built `dist/`, which is not universal. Case 2 now accepts
+//! an input the target package itself **declares** as an entry root (and that
+//! `pnpm-workspace.yaml` claims as a package); everything else stays an
+//! offender. Waves 5-6 (#1987, #1988) then wire the audit at the root — safe
+//! only because this policy landed first.
 //!
-//! - [`nested_member_consume_from_source_sibling_hard_fails_as_case_two_offender_today`]
-//!   is **current WRONG behavior to be flipped**: a perfectly ordinary
-//!   pnpm-workspace idiom hard-fails today. #2040 must make this pass.
+//! - [`nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party_source`]
+//!   was the Wave-1 RED test (then named
+//!   `…_hard_fails_as_case_two_offender_today`), flipped by #2040: the
+//!   ordinary pnpm-workspace idiom builds clean and emits the sibling's source.
+//! - [`nested_member_undeclared_deep_import_into_dist_shipping_sibling_stays_rejected`]
+//!   is #2040's own negative: acceptance keys on the declared-source
+//!   condition, not on "workspace sibling" alone.
 //! - [`root_project_consume_from_source_sibling_builds_clean_today_for_the_identical_shape`]
 //!   is **current behavior that must be PRESERVED** (the build must still be
-//!   green after #2040/#1987/#1988 land) — but today it is green only by
-//!   accident, because `first_party_root == project_root` at the workspace
-//!   root disables the widened-stage guard entirely (the #1730 blind spot),
-//!   not because the policy has been decided. Do not read this test's
-//!   present-day green result as proof the policy question is settled.
+//!   green after #1987/#1988 land). Today it is green because
+//!   `first_party_root == project_root` at the workspace root disables the
+//!   widened-stage guard entirely (the #1730 blind spot); once the wiring
+//!   waves arm the audit there, it must stay green on the merits — which is
+//!   exactly what #2040 provides.
 //!
-//! Do NOT change the audit, the case-2 classification, or any policy here —
-//! this file is tests only, per the epic's HARD STOP RULES.
-//!
-//! Unix-only: the consume-from-source fixture wires its workspace-hoisted
-//! `node_modules/@acme/ui` symlink via `std::os::unix::fs::symlink`, matching
-//! the same `#[cfg(unix)]` gate `sibling_css_module_command_layer_build.rs`
-//! and `css_modules_components_build.rs` use for their own symlink fixtures.
+//! Unix-only: the fixtures wire their workspace-hoisted `node_modules/@acme/*`
+//! symlinks via `std::os::unix::fs::symlink`, matching the same `#[cfg(unix)]`
+//! gate `sibling_css_module_command_layer_build.rs` and
+//! `css_modules_components_build.rs` use for their own symlink fixtures.
 
 #![cfg(unix)]
 
@@ -111,6 +112,35 @@ fn write_consume_from_source_sibling(root: &Path) -> PathBuf {
     node_modules
 }
 
+/// The counter-shape (#2040): a first-party sibling that DOES ship a built
+/// `dist` and declares only `./dist/index.js`. It carries live `src/` source
+/// beside that dist, reachable only by a deep import the package never
+/// declares — the shape acceptance must keep rejecting.
+fn write_dist_shipping_sibling(root: &Path) -> PathBuf {
+    let built = root.join("packages/built");
+    write(
+        &built.join("package.json"),
+        r#"{ "name": "@acme/built", "main": "./dist/index.js" }"#,
+    );
+    write(
+        &built.join("dist/index.js"),
+        r#"export const built = "BUILT_DIST_MARKER";"#,
+    );
+    write(
+        &built.join("src/internal.ts"),
+        r#"export const internal = "UNDECLARED_SOURCE_MARKER";"#,
+    );
+
+    let node_modules = root.join("node_modules");
+    fs::create_dir_all(node_modules.join("@acme")).expect("create scoped node_modules directory");
+    let link = node_modules.join("@acme/built");
+    if !link.exists() {
+        std::os::unix::fs::symlink(&built, &link)
+            .expect("link dist-shipping sibling into hoisted install");
+    }
+    node_modules
+}
+
 fn write_nested_host(root: &Path) -> PathBuf {
     let project = root.join("apps/demo");
     write(
@@ -157,15 +187,21 @@ fn bundle_text(path: &Path) -> String {
     fs::read_to_string(path).expect("read emitted bundle")
 }
 
-/// **Current WRONG behavior — #2040 must flip this to pass.**
+/// **Flipped by #2040 (Wave 4).** Before the fix this hard-failed the SSR
+/// work-mirror stage-escape audit with the case-2 offender classification
+/// (`package import resolved outside node_modules to workspace sibling …`) —
+/// see this file's header and #2039 for the original assertion.
 ///
 /// A nested workspace member (`apps/demo`) importing a consume-from-source
-/// sibling by bare package name hard-fails the SSR work-mirror stage-escape
-/// audit today, even though the resolved target is ordinary first-party
-/// workspace source reached via a package name instead of a relative path.
+/// sibling by bare package name now builds clean: `@acme/ui` declares those
+/// exact files as its entry points, is claimed by `pnpm-workspace.yaml`, and
+/// its resolved target is ordinary first-party workspace source reached via a
+/// package name instead of a relative path — not something staging was meant
+/// to isolate. The emitted markers prove the sibling's source really was
+/// bundled, not merely tolerated.
 #[test]
 #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
-fn nested_member_consume_from_source_sibling_hard_fails_as_case_two_offender_today() {
+fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party_source() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
         return;
@@ -178,14 +214,73 @@ fn nested_member_consume_from_source_sibling_hard_fails_as_case_two_offender_tod
     let project = write_nested_host(root);
     write_consumer_entry(&project);
 
+    let output = bundle_with_session(
+        base_input(&project, esbuild, node_modules),
+        Some(&mut ShadowSession::new(&project).expect("shadow session")),
+    )
+    .expect(
+        "a nested member consuming a first-party sibling from source by bare \
+         package name is a legitimate monorepo idiom, not a stage escape (#2040)",
+    );
+
+    let body = bundle_text(&output.bundle_path);
+    for marker in [
+        "CONSUMER_MARKER",
+        "CTA_BUTTON_SOURCE_MARKER",
+        "THEME_STATE_SOURCE_MARKER",
+    ] {
+        assert!(
+            body.contains(marker),
+            "bundle must contain {marker}; got: {body}"
+        );
+    }
+}
+
+/// **The guard that stops #2040 from becoming a blanket exemption.**
+///
+/// A sibling package that DOES ship a built `dist` and declares only
+/// `./dist/index.js` is still a workspace sibling reached by bare package
+/// name, i.e. still case-2 shaped. Its declared dist entry is accepted; the
+/// deep import climbing past it into `src/internal.ts` reaches a location the
+/// package never declared and must stay rejected. Acceptance therefore keys
+/// on the declared-source condition, not on "workspace sibling" alone.
+///
+/// Both imports name a path inside the package rather than the bare package
+/// name: zfb drives esbuild with the `neutral` platform, which ignores `main`
+/// entirely, so `import "@acme/built"` would not resolve at all here. The
+/// classification under test is unaffected — both keys are still
+/// `node_modules/@acme/built/...`, i.e. case-2 shaped.
+#[test]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
+fn nested_member_undeclared_deep_import_into_dist_shipping_sibling_stays_rejected() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    write_workspace_root(root);
+    write_required_project_dirs(root);
+    let node_modules = write_dist_shipping_sibling(root);
+    let project = write_nested_host(root);
+    write(
+        &project.join("pages/index.tsx"),
+        r#"
+            import { built } from "@acme/built/dist/index.js";
+            import { internal } from "@acme/built/src/internal.ts";
+            export default function Home() {
+              return "CONSUMER_MARKER:" + built + ":" + internal;
+            }
+        "#,
+    );
+
     let error = bundle_with_session(
         base_input(&project, esbuild, node_modules),
         Some(&mut ShadowSession::new(&project).expect("shadow session")),
     )
     .expect_err(
-        "today's guard hard-fails a nested member consuming a first-party \
-         sibling from source by bare package name (case 2) — this is the \
-         behavior #2040 must invert",
+        "a deep import into a location a dist-shipping sibling never declared \
+         is a genuine stage escape and must stay rejected (#2040)",
     );
     let message = format!("{error:#}");
     assert!(
@@ -193,20 +288,12 @@ fn nested_member_consume_from_source_sibling_hard_fails_as_case_two_offender_tod
         "expected a stage-escape audit failure; got: {message}"
     );
     assert!(
-        message.contains("package import resolved outside node_modules to workspace sibling"),
-        "expected the case-2 offender classification text; got: {message}"
-    );
-    let ui_src = root.join("packages/ui/src").to_string_lossy().into_owned();
-    assert!(
-        message.contains(&ui_src),
-        "expected the live workspace-sibling source path to appear in the \
-         offender message; got: {message}"
+        message.contains("node_modules/@acme/built/src/internal.ts"),
+        "expected the undeclared deep-import key as the offender; got: {message}"
     );
     assert!(
-        message.contains("node_modules/@acme/ui/src/cta-button/cta-button.tsx")
-            && message.contains("node_modules/@acme/ui/src/theme-control/theme-state.ts"),
-        "expected both staged package-name metafile keys in the offender \
-         message; got: {message}"
+        !message.contains("dist/index.js"),
+        "the package's own declared dist entry must not be flagged; got: {message}"
     );
 }
 
