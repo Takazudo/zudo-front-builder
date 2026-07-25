@@ -6,3 +6,9 @@ dist
 # Tailwind entry temp file synthesised by zfb-css next to the CSS entry
 # (see zfb-css's ENTRY_TMP_PREFIX/ENTRY_TMP_SUFFIX).
 **/zfb-tailwind-entry-*.css
+
+# Islands entry temp file synthesised by zfb-islands in the project root
+# (see zfb-islands's IN_PROJECT_ENTRY_PREFIX/IN_PROJECT_ENTRY_SUFFIX). The
+# bundler removes it on Drop and sweeps stale ones, so this only covers the
+# window after a zfb process is killed mid-bundle (issue #1970).
+.zfb-esbuild-entry-*.tsx

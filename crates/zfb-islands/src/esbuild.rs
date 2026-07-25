@@ -1273,15 +1273,19 @@ impl EsbuildSubprocessBundler {
         // (real builds always have an existing project root, so
         // production never takes this branch).
         let entry_tmp = if self.config.working_dir.is_dir() {
+            // Reap entries stranded in this project by an earlier zfb
+            // process that died without unwinding (issue #1970 / #1976) —
+            // see `sweep_orphaned_in_project_entries`.
+            sweep_orphaned_in_project_entries(&self.config.working_dir);
             tempfile::Builder::new()
-                .prefix(".zfb-esbuild-entry-")
-                .suffix(".tsx")
+                .prefix(IN_PROJECT_ENTRY_PREFIX)
+                .suffix(IN_PROJECT_ENTRY_SUFFIX)
                 .tempfile_in(&self.config.working_dir)
                 .context("failed to allocate entry temp file inside working_dir")?
         } else {
             tempfile::Builder::new()
                 .prefix("zfb-esbuild-entry-")
-                .suffix(".tsx")
+                .suffix(IN_PROJECT_ENTRY_SUFFIX)
                 .tempfile()
                 .context("failed to allocate entry temp file")?
         };
@@ -1618,6 +1622,85 @@ impl OneEntryOutput {
             chunks: Vec::new(),
             workers: Vec::new(),
             resources: Vec::new(),
+        }
+    }
+}
+
+/// Filename prefix of the synthesized entry temp file when it is allocated
+/// **inside `working_dir`** (the production placement — see
+/// [`EsbuildSubprocessBundler::bundle_one_entry`] for why it cannot live in
+/// `$TMPDIR`). Leading dot so the project's own tooling treats it as hidden.
+const IN_PROJECT_ENTRY_PREFIX: &str = ".zfb-esbuild-entry-";
+
+/// Suffix of the synthesized entry temp file. `.tsx` so esbuild's loader
+/// inference picks up JSX automatically.
+const IN_PROJECT_ENTRY_SUFFIX: &str = ".tsx";
+
+/// How long an in-project entry file must have been untouched before the
+/// sweep is willing to treat it as abandoned.
+///
+/// The entry is written once and then only read (by the esbuild subprocess),
+/// so a *live* entry's mtime is at most the duration of one
+/// `bundle_one_entry` call — seconds for a normal islands set, and still well
+/// under a minute for the largest real projects (esbuild itself is the fast
+/// part of a build). Thirty minutes is therefore a ~100x margin against
+/// deleting an entry that a **concurrent** zfb process in the same project
+/// root is still feeding to esbuild — the case that matters, because running
+/// `zfb dev` and `zfb build` against one project at the same time is normal.
+/// Erring long is nearly free: an orphan lingers for one extra build cycle
+/// instead of forever.
+const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Delete `.zfb-esbuild-entry-*.tsx` files left in `working_dir` by an
+/// earlier zfb process that terminated without unwinding (issue #1970,
+/// fixed in #1976).
+///
+/// **Why this is needed at all.** The entry is a `tempfile::NamedTempFile`
+/// whose `Drop` removes it, and `bundle_one_entry` is synchronous with a
+/// locally-owned handle, so the success path *and* every `?` error path
+/// already clean up (proved by `working_dir_is_clean_after_multi_entry_bundle`
+/// in `tests/integration.rs`). What `Drop` cannot cover is termination that
+/// never unwinds the stack: a `SIGTERM`/`SIGKILL`ed `zfb dev` session or an
+/// interrupted `zfb build` strands the entry beside the project, and until
+/// this sweep nothing ever removed it. Because the file is not covered by any
+/// `.gitignore`, it then surfaces as an untracked file in `git status` after
+/// the *next*, entirely successful build — which is exactly how #1970 was
+/// reported (two entries present, only the live build's own one removed).
+///
+/// **Liveness is decided by mtime**, see [`ORPHANED_ENTRY_GRACE`]. A
+/// PID- or file-lock-based check would be more precise, but an exclusive
+/// advisory lock on the entry itself would block the esbuild subprocess from
+/// reading it on Windows (`LockFileEx` denies other handles), and a companion
+/// lock file would just double the litter.
+///
+/// Best-effort throughout: this is opportunistic hygiene, never a correctness
+/// step, so every I/O failure simply leaves the candidate alone.
+fn sweep_orphaned_in_project_entries(working_dir: &Path) {
+    let Ok(dir) = std::fs::read_dir(working_dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for dirent in dir.flatten() {
+        let name = dirent.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(IN_PROJECT_ENTRY_PREFIX) || !name.ends_with(IN_PROJECT_ENTRY_SUFFIX) {
+            continue;
+        }
+        let Ok(metadata) = dirent.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= ORPHANED_ENTRY_GRACE);
+        if stale {
+            let _ = std::fs::remove_file(dirent.path());
         }
     }
 }
@@ -3030,6 +3113,80 @@ pub fn hash_8(js: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Write an in-project entry-shaped file and backdate its mtime by `age`.
+    fn write_entry_aged(dir: &Path, name: &str, age: std::time::Duration) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, "// stranded entry\n").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn sweep_removes_entry_stranded_by_a_dead_process() {
+        // Issue #1970: a `zfb dev`/`zfb build` killed mid-bundle never runs
+        // `NamedTempFile`'s Drop, so its entry stays in the project root
+        // forever. The next bundle reaps it.
+        let dir = tempfile::tempdir().unwrap();
+        let orphan = write_entry_aged(
+            dir.path(),
+            ".zfb-esbuild-entry-plnMVZ.tsx",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60),
+        );
+        sweep_orphaned_in_project_entries(dir.path());
+        assert!(
+            !orphan.exists(),
+            "an entry older than the grace period must be swept"
+        );
+    }
+
+    #[test]
+    fn sweep_keeps_a_recent_entry_a_concurrent_process_may_still_own() {
+        // Safety property: `zfb dev` and `zfb build` legitimately run against
+        // the same project root at once. Deleting the other process's live
+        // entry would break its esbuild invocation.
+        let dir = tempfile::tempdir().unwrap();
+        let live = write_entry_aged(
+            dir.path(),
+            ".zfb-esbuild-entry-trVVbc.tsx",
+            std::time::Duration::from_secs(5),
+        );
+        sweep_orphaned_in_project_entries(dir.path());
+        assert!(
+            live.exists(),
+            "an entry inside the grace period must be left alone"
+        );
+    }
+
+    #[test]
+    fn sweep_touches_nothing_but_stale_entry_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60);
+        // Same age as the swept orphan above; only the entry naming scheme
+        // may be reaped. The sibling `.zfb-*` temp classes belong to other
+        // owners (`build_plugin_tsconfig`, `zfb_plugin_resolver`) and are
+        // deliberately out of scope here.
+        let kept = [
+            write_entry_aged(dir.path(), ".zfb-islands-tsconfig-abc.json", old),
+            write_entry_aged(dir.path(), ".zfb-virtual-abc.mjs", old),
+            write_entry_aged(dir.path(), ".zfb-esbuild-entry-abc.json", old),
+            write_entry_aged(dir.path(), "page.tsx", old),
+        ];
+        let dir_shaped_like_an_entry = dir.path().join(".zfb-esbuild-entry-dir.tsx");
+        std::fs::create_dir(&dir_shaped_like_an_entry).unwrap();
+
+        sweep_orphaned_in_project_entries(dir.path());
+
+        for path in kept {
+            assert!(path.exists(), "must not sweep {}", path.display());
+        }
+        assert!(
+            dir_shaped_like_an_entry.is_dir(),
+            "a directory matching the entry name shape must not be touched"
+        );
+    }
 
     #[test]
     fn client_scripts_read_back_collects_only_contract_workers() {
