@@ -1292,9 +1292,7 @@ impl EsbuildSubprocessBundler {
         // working_dir was wherever the test binary was launched from
         // (real builds always have an existing project root, so
         // production never takes this branch).
-        let entry_tmp = allocate_locked_entry_tmp(&self.config.working_dir)?;
-        std::fs::write(entry_tmp.path(), entry_source.as_bytes())
-            .context("failed to write entry temp file")?;
+        let entry_tmp = allocate_locked_entry_tmp(&self.config.working_dir, entry_source)?;
 
         // Staging output **directory**. `--splitting` requires `--outdir`
         // (esbuild rejects `--outfile` with splitting), and esbuild emits the
@@ -1692,8 +1690,9 @@ const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs
 /// Best-effort throughout: this is opportunistic hygiene, never a correctness
 /// step, so every I/O failure — including a filesystem with no lock support —
 /// simply leaves the candidate alone.
-/// Allocate the esbuild entry temp file for one [`EsbuildSubprocessBundler::bundle_one_entry`]
-/// call and immediately claim it with a **shared** lock.
+/// Allocate the esbuild entry temp file for one
+/// [`EsbuildSubprocessBundler::bundle_one_entry`] call, write `entry_source`
+/// into it, and claim it with a **shared** lock.
 ///
 /// Split out of `bundle_one_entry` so the ownership claim — the production
 /// half of the sweep's safety contract — is reachable from a unit test
@@ -1705,6 +1704,11 @@ const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs
 /// long note at the call site); otherwise it falls back to the system
 /// tempdir, which only the `zfb-islands` unit tests take.
 ///
+/// The write happens **before** the lock, and must stay that way: on Windows
+/// a shared `LockFileEx` byte-range lock denies writes to the locked range,
+/// so locking first would make the `std::fs::write` below fail with a lock
+/// violation on every real Windows bundle.
+///
 /// The lock lets a concurrent process's sweep prove the entry is still live
 /// rather than inferring it from age alone (see
 /// [`sweep_orphaned_in_project_entries`]). It is *shared*, not exclusive:
@@ -1713,7 +1717,10 @@ const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs
 /// when the OS closes the handle for a process that never unwinds, which is
 /// exactly the case the sweep exists for. Best-effort: on a filesystem
 /// without lock support the sweep simply falls back to its age gate.
-fn allocate_locked_entry_tmp(working_dir: &Path) -> Result<tempfile::NamedTempFile> {
+fn allocate_locked_entry_tmp(
+    working_dir: &Path,
+    entry_source: &str,
+) -> Result<tempfile::NamedTempFile> {
     let entry_tmp = if working_dir.is_dir() {
         tempfile::Builder::new()
             .prefix(IN_PROJECT_ENTRY_PREFIX)
@@ -1727,6 +1734,8 @@ fn allocate_locked_entry_tmp(working_dir: &Path) -> Result<tempfile::NamedTempFi
             .tempfile()
             .context("failed to allocate entry temp file")?
     };
+    std::fs::write(entry_tmp.path(), entry_source.as_bytes())
+        .context("failed to write entry temp file")?;
     let _ = entry_tmp.as_file().lock_shared();
     Ok(entry_tmp)
 }
@@ -3277,7 +3286,8 @@ mod tests {
         // lock as the ONLY thing that can spare it. Drop
         // `allocate_locked_entry_tmp`'s `lock_shared` call and this fails.
         let dir = tempfile::tempdir().unwrap();
-        let entry_tmp = allocate_locked_entry_tmp(dir.path()).expect("allocate the entry");
+        let entry_tmp =
+            allocate_locked_entry_tmp(dir.path(), "// entry\n").expect("allocate the entry");
         let path = entry_tmp.path().to_path_buf();
         assert_eq!(
             path.parent(),
