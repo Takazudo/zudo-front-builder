@@ -2413,6 +2413,41 @@ pub fn bundle_with_session(
         &input.plugin_alias_entries,
     );
 
+    // Issue #1724: make `mirror_sibling_root`'s own promise true — "reachable
+    // source files that DO need `?raw`/glob/worker rewrites are overwritten
+    // afterwards by the plugin-preprocessing pass". That pass materialises
+    // `plugin_preprocessing_files`, which a claimed sibling's macro-bearing
+    // source could never join: the exact-target loops above are gated to
+    // `project_root`, and `collect_runtime_alias_claim_graph` fail-closes on
+    // workspace membership (a bare `lib/shared` region is claimed by the
+    // mirror plan but is not a workspace package). So the mirror's RAW byte
+    // copy was the only pass those files ever saw and their
+    // `import.meta.glob` / module-worker `new URL(...)` macros reached
+    // esbuild literally — a GREEN build with unexpanded macro text in the
+    // bundle. Enrolling every mirrored SOURCE file here routes it through the
+    // same `materialise_source_file` every project file gets, which
+    // overwrites the raw copy in place. This is the same conclusion the #1695
+    // glob fixed-point queue already reached for glob matches inside a
+    // claimed region (see `stage_glob_matched_files_to_fixed_point`'s doc
+    // comment): a wholesale mirror is a byte copy, so macro expansion has to
+    // come from somewhere else. Non-source leaves (CSS/JSON/text) carry no
+    // macros and keep the pure mirror copy.
+    for mirror_root in sibling_mirror_plan.mirror_roots() {
+        for src in enumerate_mirror_root_files(mirror_root) {
+            // The mirror pass's own guards, so this set can never be wider
+            // than what was actually mirrored.
+            if !raw_source_extension(&src)
+                || path_is_inside_node_modules(&src)
+                || !src.starts_with(&first_party_root)
+                || src.starts_with(&project_root)
+                || bundle_exclude.is_excluded(&src, &project_root)
+            {
+                continue;
+            }
+            plugin_preprocessing_files.insert(src);
+        }
+    }
+
     // Seed the staged-dependency closure from the materialized project module
     // graph and the framework packages the generated entry/hydration shim
     // import (issue #1645). Source discovery also runs with an empty exclude so
@@ -5109,9 +5144,12 @@ impl SiblingMirrorPlan {
 /// region so esbuild (the sole resolver) can resolve anything inside it —
 /// glob directory probing, index files, `package.json` `main`/`imports`,
 /// wildcard-alias targets — that the Rust preprocessing discovery could not
-/// predict. Reachable source files that DO need `?raw`/glob/worker rewrites
-/// are overwritten afterwards by the plugin-preprocessing pass (which runs
-/// after this and materialises the discovered graph). Every file lands at its
+/// predict. Source files that DO need `?raw`/glob/worker rewrites are
+/// overwritten afterwards by the plugin-preprocessing pass: since issue #1724
+/// EVERY mirrored source file is enrolled in `plugin_preprocessing_files`
+/// (see the enrolment loop in [`bundle_with_session`]), because a claimed
+/// sibling region's macro-bearing file frequently reaches no other claim
+/// source and would otherwise ship its literal macro text. Every file lands at its
 /// workspace-relative slot via [`shadow_path_for_project_path`]
 /// (`work.join(<rel>)`), so it never collides with the nested project mirror.
 #[allow(clippy::too_many_arguments)]

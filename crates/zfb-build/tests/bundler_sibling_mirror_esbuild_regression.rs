@@ -34,17 +34,16 @@
 //! the epic's parent (`base/sweep-260718`, pre-epic) and PASS on the epic
 //! branch — see the PR/issue description for both run transcripts.
 //!
-//! ## Case (b) — parked, not passing on the epic branch
+//! ## Case (b) — was parked as `#[ignore]`, fixed and asserted since #1985
 //!
-//! Case (b) is `#[ignore]`d: it exposes a genuine, real bug (build succeeds
-//! GREEN but with the wrong content — a sibling alias target's own
-//! `import.meta.glob` macro is staged raw and never expanded), not a fixture
-//! mistake. Confirmed with both a wildcard and a concrete alias target;
-//! root-caused and filed as issue #1724 (see the `#[ignore]` reason on the
-//! test itself). It still fails pre-epic (for the ordinary "Could not
-//! resolve" reason every other case fails for), so the regression-criterion
-//! FAIL side holds — it just doesn't reach PASS on the epic branch, which is
-//! exactly why it is parked rather than asserted.
+//! Case (b) exposed a genuine bug (build succeeds GREEN but with the wrong
+//! content — a sibling alias target's own `import.meta.glob` macro staged
+//! raw and never expanded), not a fixture mistake; it was filed as issue
+//! #1724 and parked. Issue #1985 (Staging Correctness epic #1982, Wave 2)
+//! fixed it by enrolling every mirrored sibling SOURCE file in
+//! `plugin_preprocessing_files`, so the preprocessing-materialise pass
+//! overwrites the mirror's raw byte copy with the expanded form. Case (b)
+//! and its three siblings below (g/j/k) are ordinary asserted tests now.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -172,14 +171,6 @@ fn a_root_wildcard_alias_reaches_root_json_under_unrelated_exclude() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1724 \
-            — a sibling alias target's own import.meta.glob macro is staged \
-            raw (mirror_sibling_root's wholesale copy) and never expanded, \
-            because the exact-target discovery/materialise pass that would \
-            expand it is gated to project_root-only targets (bundler.rs \
-            ~2149-2185). Build stays GREEN but with the literal unexpanded \
-            macro text in the bundle -- confirmed with both a wildcard and a \
-            concrete alias target."]
 fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
@@ -189,15 +180,12 @@ fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
     let (ws_root, project) = write_workspace(tmp.path());
 
     // `_gallery.ts` is reached through a CONCRETE (non-wildcard) tsconfig
-    // alias, so it lands in `exact_target_staging_files` and gets its own
-    // `discover_module_preprocessing_with_context` walk (claim source (a)) —
-    // the ordinary exact-target staging/materialise pass therefore expands
-    // its top-level `import.meta.glob` macro, same as any project file. A
-    // WILDCARD alias target (case (c)/(d)/(e)'s `@shared/*` mechanism) only
-    // ever gets the wholesale RAW-byte mirror (#1692) with no per-file
-    // preprocessing — by design, since Rust cannot enumerate a wildcard's
-    // members without walking the tree, so this file's own glob macro would
-    // stay unexpanded there. Its glob TARGET (`items/`) is invisible to the
+    // alias; case (g) below is the same shape through a WILDCARD one. Since
+    // #1985 the alias shape no longer matters: both reach the sibling only
+    // through the wholesale RAW-byte mirror (#1692), and every mirrored
+    // SOURCE file is now enrolled in `plugin_preprocessing_files`, so the
+    // preprocessing-materialise pass overwrites the raw copy with the
+    // expanded macro. Its glob TARGET (`items/`) is invisible to the
     // AST-discovery graph either way — only the #1695 fixed-point queue
     // reaches it.
     fs::create_dir_all(ws_root.join("lib/shared/items")).unwrap();
@@ -267,21 +255,21 @@ fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
 // `@gallery`-style). Case (b) above is the glob/concrete cell; the five
 // siblings below fill in the remaining cells.
 //
-// ## Confirmed result: 4 of 6 cells reproduce, 2 do not
+// ## Confirmed result: 4 of 6 cells reproduced, 2 did not — all 6 assert now
 //
 // `import.meta.glob` (case (b) + case (g) below) and the module-worker
-// `new URL(...)` macro (cases (j)/(k) below) DO reproduce, both alias shapes:
-// the exact-target discovery/materialise pass that would expand a sibling
-// alias target's own macro is gated to `project_root`-only targets
-// (`bundler.rs` ~2149-2185), so the sibling's macro is copied by the
-// wholesale raw-byte mirror verbatim regardless of which alias shape reached
-// it. Those four are `#[ignore = "pending-feature: #1724"]` until Wave 2
-// (#1985) widens the staging gate.
+// `new URL(...)` macro (cases (j)/(k) below) DID reproduce, both alias
+// shapes: no pass ever handed a claimed sibling's macro-bearing source to
+// `materialise_source_file`, so the wholesale raw-byte mirror's verbatim
+// copy was final regardless of which alias shape reached it. Wave 2 (#1985)
+// fixed that by enrolling every mirrored SOURCE file in
+// `plugin_preprocessing_files`; the four `pending-feature: #1724` `#[ignore]`
+// tags are gone and all four assert.
 //
-// `?raw` does NOT reproduce (cases (h)/(i) below, proven not assumed — see
-// their own section doc comment) — a SEPARATE preflight pass already covers
-// it independently of the gate that blocks glob/worker. Those two are
-// ordinary passing regression tests, not red #1724 tests.
+// `?raw` never reproduced (cases (h)/(i) below, proven not assumed — see
+// their own section doc comment) — a SEPARATE preflight pass in
+// `mirror_sibling_root` already covered it. Those two landed as ordinary
+// passing regression tests, never red #1724 tests.
 //
 // ## Module-worker assertion shape
 //
@@ -296,10 +284,6 @@ fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1724 \
-            — same root cause as case (b), reached via a WILDCARD alias \
-            instead of a concrete one: a sibling alias target's own \
-            import.meta.glob macro is staged raw and never expanded."]
 fn g_sibling_import_meta_glob_wildcard_alias_expands_under_unrelated_exclude() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
@@ -373,7 +357,7 @@ fn g_sibling_import_meta_glob_wildcard_alias_expands_under_unrelated_exclude() {
 // `preflight_raw_file` (see its doc comment: "a best-effort first pass used
 // only to establish terminal target identity before the broad SSR mirror
 // visits those files") for every mirrored sibling file, INDEPENDENTLY of the
-// `project_root`-only exact-target materialise gate that blocks glob/worker
+// preprocessing-materialise pass that #1985 had to reach for glob/worker
 // expansion. So a sibling alias target's own terminal `?raw` import already
 // resolves and inlines correctly today, confirmed both wildcard- and
 // concrete-alias-reached, real esbuild, under an UNRELATED non-empty
@@ -505,10 +489,6 @@ fn i_sibling_raw_import_concrete_alias_already_expands_under_unrelated_exclude()
 }
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1724 \
-            — same root cause as case (b): a sibling alias target's own \
-            module-worker `new Worker(new URL(...))` macro is staged raw and \
-            never rewritten, reached via a WILDCARD alias."]
 fn j_sibling_module_worker_wildcard_alias_expands_under_unrelated_exclude() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
@@ -571,10 +551,6 @@ fn j_sibling_module_worker_wildcard_alias_expands_under_unrelated_exclude() {
 }
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1724 \
-            — same root cause as case (b): a sibling alias target's own \
-            module-worker `new Worker(new URL(...))` macro is staged raw and \
-            never rewritten, reached via a CONCRETE alias."]
 fn k_sibling_module_worker_concrete_alias_expands_under_unrelated_exclude() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
