@@ -1,10 +1,6 @@
-/** @jsxRuntime automatic */
-/** @jsxImportSource preact */
-// Default-locale (EN) site index — the ONE route the package does not inject.
-//
-// zudo-doc packageOwnedRoutes injects /[locale] but not the root "/", so
-// the host must own this page. We use the package's default home verbatim: it
-// rebuilds the same hero (logo, siteName, description, SiteTreeNav grid, tags)
-// from `settings` via the virtual:zudo-doc-route-context payload the routes
-// plugin emits at build. See @takazudo/zudo-doc/routes/index.
-export { default, frontmatter } from "@takazudo/zudo-doc/routes/index";
+// Locked manifest (epic zudolab/zudo-doc#2651, Decision 4 on #2653): the home
+// route is a 1-line re-export of the package-owned STATIC index route.
+// Verified by the #2652 spike (Q2) to build, dev-render, and hydrate — a
+// dynamic route (see pages/docs/[[...slug]].tsx) cannot use this form because
+// `paths()` static-AST-extraction requires source, not compiled `dist/` JS.
+export { default } from "@takazudo/zudo-doc/routes/index";
