@@ -261,6 +261,385 @@ fn b_sibling_import_meta_glob_expands_under_unrelated_exclude() {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #1983 (Staging Correctness epic #1982) — the six-case matrix for
+// #1724: three macro kinds (`import.meta.glob`, `?raw`, module-worker
+// `new URL(...)`) x two alias shapes (wildcard `@shared/*`, concrete
+// `@gallery`-style). Case (b) above is the glob/concrete cell; the five
+// siblings below fill in the remaining cells.
+//
+// ## Confirmed result: 4 of 6 cells reproduce, 2 do not
+//
+// `import.meta.glob` (case (b) + case (g) below) and the module-worker
+// `new URL(...)` macro (cases (j)/(k) below) DO reproduce, both alias shapes:
+// the exact-target discovery/materialise pass that would expand a sibling
+// alias target's own macro is gated to `project_root`-only targets
+// (`bundler.rs` ~2149-2185), so the sibling's macro is copied by the
+// wholesale raw-byte mirror verbatim regardless of which alias shape reached
+// it. Those four are `#[ignore = "pending-feature: #1724"]` until Wave 2
+// (#1985) widens the staging gate.
+//
+// `?raw` does NOT reproduce (cases (h)/(i) below, proven not assumed — see
+// their own section doc comment) — a SEPARATE preflight pass already covers
+// it independently of the gate that blocks glob/worker. Those two are
+// ordinary passing regression tests, not red #1724 tests.
+//
+// ## Module-worker assertion shape
+//
+// The plain `bundle()` SSR pipeline never compiles a module worker's own
+// companion file — `ssr_worker_island_bundles_without_browser_entry_in_server_graph`
+// in `crates/zfb-build/src/bundler.rs` documents this: "the rewritten island
+// itself bundles, but the browser-only worker entry cannot appear because the
+// transform injected no import edge." So the worker cases here assert on the
+// REWRITTEN SPECIFIER TEXT the macro-expansion pass would leave in the SSR
+// bundle (a stable `<slug>.js?v=<hash>` filename replacing the literal
+// `new URL('./worker.ts', import.meta.url)`), not on worker-companion bytes.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1724 \
+            — same root cause as case (b), reached via a WILDCARD alias \
+            instead of a concrete one: a sibling alias target's own \
+            import.meta.glob macro is staged raw and never expanded."]
+fn g_sibling_import_meta_glob_wildcard_alias_expands_under_unrelated_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared/items-w")).unwrap();
+    fs::write(
+        ws_root.join("lib/shared/gallery-w.ts"),
+        r#"
+            const mods = import.meta.glob('./items-w/*.ts', { eager: true });
+            export const galleryKeys = Object.keys(mods);
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/items-w/one.ts"),
+        "export const value = 'GLOB_W_ITEM_ONE';\n",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/items-w/two.ts"),
+        "export const value = 'GLOB_W_ITEM_TWO';\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { galleryKeys } from "@shared/gallery-w";
+            export default function Home() {
+              return galleryKeys.join(",");
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@shared/*".to_string(),
+        vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+    let out = bundle(input).expect(
+        "issue #1724: a sibling file's own import.meta.glob reached via a \
+         WILDCARD alias must expand (and its matched files be staged and \
+         resolvable) under an UNRELATED non-empty bundle.exclude",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        !body.contains("import.meta.glob("),
+        "the sibling's own glob macro must be expanded, not raw-copied \
+         verbatim: {}",
+        truncate(&body)
+    );
+    for marker in ["GLOB_W_ITEM_ONE", "GLOB_W_ITEM_TWO"] {
+        assert!(
+            body.contains(marker),
+            "the glob-matched sibling item {marker} must reach the bundle: {}",
+            truncate(&body)
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `?raw` does NOT reproduce #1724 — proven, not assumed.
+//
+// The issue speculates the same root cause "presumably" affects `?raw`
+// imports too. It does not: `mirror_sibling_root`'s wholesale copy pass runs
+// `preflight_raw_file` (see its doc comment: "a best-effort first pass used
+// only to establish terminal target identity before the broad SSR mirror
+// visits those files") for every mirrored sibling file, INDEPENDENTLY of the
+// `project_root`-only exact-target materialise gate that blocks glob/worker
+// expansion. So a sibling alias target's own terminal `?raw` import already
+// resolves and inlines correctly today, confirmed both wildcard- and
+// concrete-alias-reached, real esbuild, under an UNRELATED non-empty
+// `bundle.exclude` — the exact matrix cell the issue predicted would be
+// broken. These two tests are therefore ordinary (non-`#[ignore]`d)
+// regression coverage locking in the CORRECT current behavior, not red
+// #1724 tests.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn h_sibling_raw_import_wildcard_alias_already_expands_under_unrelated_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared")).unwrap();
+    fs::write(
+        ws_root.join("lib/shared/payload-w.txt"),
+        "RAW_W_PAYLOAD_MARKER",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/raw-holder-w.ts"),
+        r#"
+            import payload from './payload-w.txt?raw';
+            export const rawMarker = payload;
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { rawMarker } from "@shared/raw-holder-w";
+            export default function Home() {
+              return rawMarker;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@shared/*".to_string(),
+        vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+    let out = bundle(input).expect(
+        "a sibling file's own terminal ?raw import reached via a WILDCARD \
+         alias must build green under an UNRELATED non-empty bundle.exclude",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("RAW_W_PAYLOAD_MARKER"),
+        "the ?raw target's inlined text must reach the bundle: {}",
+        truncate(&body)
+    );
+    // Only the source-name COMMENT esbuild banners each module with may
+    // still show the `?raw` suffix (cosmetic, from the original specifier)
+    // — the actual code must be a plain inlined string assignment, never a
+    // literal unresolved `import ... from "...?raw"` declaration.
+    assert!(
+        !body.contains("import payload from"),
+        "the ?raw import declaration itself must not survive verbatim: {}",
+        truncate(&body)
+    );
+}
+
+#[test]
+fn i_sibling_raw_import_concrete_alias_already_expands_under_unrelated_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared")).unwrap();
+    fs::write(
+        ws_root.join("lib/shared/payload-c.txt"),
+        "RAW_C_PAYLOAD_MARKER",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/raw-holder-c.ts"),
+        r#"
+            import payload from './payload-c.txt?raw';
+            export const rawMarker = payload;
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { rawMarker } from "@rawholder";
+            export default function Home() {
+              return rawMarker;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@rawholder".to_string(),
+        vec![ws_root
+            .join("lib/shared/raw-holder-c.ts")
+            .to_string_lossy()
+            .into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+    let out = bundle(input).expect(
+        "a sibling file's own terminal ?raw import reached via a CONCRETE \
+         alias must build green under an UNRELATED non-empty bundle.exclude",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("RAW_C_PAYLOAD_MARKER"),
+        "the ?raw target's inlined text must reach the bundle: {}",
+        truncate(&body)
+    );
+    assert!(
+        !body.contains("import payload from"),
+        "the ?raw import declaration itself must not survive verbatim: {}",
+        truncate(&body)
+    );
+}
+
+#[test]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1724 \
+            — same root cause as case (b): a sibling alias target's own \
+            module-worker `new Worker(new URL(...))` macro is staged raw and \
+            never rewritten, reached via a WILDCARD alias."]
+fn j_sibling_module_worker_wildcard_alias_expands_under_unrelated_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared")).unwrap();
+    fs::write(
+        ws_root.join("lib/shared/worker-w.worker.ts"),
+        "self.postMessage('WORKER_W_MARKER');\n",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/worker-holder-w.ts"),
+        r#"
+            export function makeWorker() {
+              return new Worker(new URL('./worker-w.worker.ts', import.meta.url), { type: 'module' });
+            }
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { makeWorker } from "@shared/worker-holder-w";
+            export default function Home() {
+              return typeof makeWorker;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@shared/*".to_string(),
+        vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+    let out = bundle(input).expect(
+        "issue #1724: a sibling file's own module-worker macro reached via a \
+         WILDCARD alias must be rewritten under an UNRELATED non-empty \
+         bundle.exclude",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        !body.contains("new URL(\"./worker-w.worker.ts\""),
+        "the sibling's own module-worker macro must be rewritten to a \
+         stable companion URL, not left pointing at the raw relative \
+         source path: {}",
+        truncate(&body)
+    );
+    assert!(
+        body.contains(".js?v="),
+        "the rewritten module-worker specifier must carry the stable \
+         `<slug>.js?v=<hash>` companion filename: {}",
+        truncate(&body)
+    );
+}
+
+#[test]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1724 \
+            — same root cause as case (b): a sibling alias target's own \
+            module-worker `new Worker(new URL(...))` macro is staged raw and \
+            never rewritten, reached via a CONCRETE alias."]
+fn k_sibling_module_worker_concrete_alias_expands_under_unrelated_exclude() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared")).unwrap();
+    fs::write(
+        ws_root.join("lib/shared/worker-c.worker.ts"),
+        "self.postMessage('WORKER_C_MARKER');\n",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/worker-holder-c.ts"),
+        r#"
+            export function makeWorker() {
+              return new Worker(new URL('./worker-c.worker.ts', import.meta.url), { type: 'module' });
+            }
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { makeWorker } from "@workerholder";
+            export default function Home() {
+              return typeof makeWorker;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@workerholder".to_string(),
+        vec![ws_root
+            .join("lib/shared/worker-holder-c.ts")
+            .to_string_lossy()
+            .into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+    let out = bundle(input).expect(
+        "issue #1724: a sibling file's own module-worker macro reached via a \
+         CONCRETE alias must be rewritten under an UNRELATED non-empty \
+         bundle.exclude",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        !body.contains("new URL(\"./worker-c.worker.ts\""),
+        "the sibling's own module-worker macro must be rewritten to a \
+         stable companion URL, not left pointing at the raw relative \
+         source path: {}",
+        truncate(&body)
+    );
+    assert!(
+        body.contains(".js?v="),
+        "the rewritten module-worker specifier must carry the stable \
+         `<slug>.js?v=<hash>` companion filename: {}",
+        truncate(&body)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // (c) sibling wildcard-alias leaf under unrelated exclusions.
 // ---------------------------------------------------------------------------
 
