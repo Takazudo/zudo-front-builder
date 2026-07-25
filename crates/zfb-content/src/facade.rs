@@ -383,16 +383,28 @@ pub fn parse_pipeline_options(config_json: &str) -> Result<PipelineOptions, Faca
 /// Returns [`FacadeError::ClassModeExcludesTheme`] when `code_highlight.mode`
 /// is `"class"` and `theme` is also set, and
 /// [`FacadeError::ClassHighlight`] when `code_highlight.classPrefix` /
-/// `roleClasses` fails validation.
+/// `roleClasses` fails validation — checked whenever `code_highlight` is
+/// present, regardless of `mode` (native parity, zfb#1865 / zfb#1978): the
+/// fields are inert in `"inline"` mode but must still reject malformed
+/// input exactly as native `config.rs` does.
 pub fn build_pipeline(options: &PipelineOptions) -> Result<Pipeline, FacadeError> {
     let resolved_gfm: ResolvedGfmConstructs = options.gfm.into();
+    // Native config.rs (crates/zfb/src/config.rs:2184-2236) validates
+    // classPrefix/roleClasses for ANY code_highlight present, not just
+    // mode "class" — those fields are inert in "inline" mode but still
+    // get parsed and must reject the same malformed input native does
+    // (zfb#1865 / zfb#1978). Validate before branching on mode so both
+    // arms share identical acceptance behavior.
+    if let Some(ch) = &options.code_highlight {
+        let role_classes = ch.role_classes.clone().unwrap_or_default();
+        validate_class_highlight_classes(&ch.class_prefix, &role_classes)?;
+    }
     match &options.code_highlight {
         Some(ch) if ch.mode == CodeHighlightMode::Class => {
             if options.theme.is_some() {
                 return Err(FacadeError::ClassModeExcludesTheme);
             }
             let role_classes = ch.role_classes.clone().unwrap_or_default();
-            validate_class_highlight_classes(&ch.class_prefix, &role_classes)?;
             Ok(Pipeline::with_defaults_and_full_config_class(
                 resolved_gfm,
                 None,
