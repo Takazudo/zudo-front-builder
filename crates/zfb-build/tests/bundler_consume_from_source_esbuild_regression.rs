@@ -34,6 +34,13 @@
 //!
 //! Do NOT change the audit, the case-2 classification, or any policy here —
 //! this file is tests only, per the epic's HARD STOP RULES.
+//!
+//! Unix-only: the consume-from-source fixture wires its workspace-hoisted
+//! `node_modules/@acme/ui` symlink via `std::os::unix::fs::symlink`, matching
+//! the same `#[cfg(unix)]` gate `sibling_css_module_command_layer_build.rs`
+//! and `css_modules_components_build.rs` use for their own symlink fixtures.
+
+#![cfg(unix)]
 
 use std::collections::BTreeMap;
 use std::fs;
