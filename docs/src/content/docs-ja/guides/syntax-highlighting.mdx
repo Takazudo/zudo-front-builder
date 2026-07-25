@@ -22,6 +22,35 @@ zfb には、色を焼き込む代わりに各トークンへ再テーマ可能�
 
 </Tip>
 
+## 認識される言語
+
+フェンス付きコードブロックの言語タグは、zfb のエイリアス表を経由して、syntect に同梱された Sublime Text 互換の文法か、zfb 自身が追加している 1 つの文法（`TOML` — syntect には同梱されていません）のいずれかに解決されます。マッピングされているタグは次のとおりです。
+
+| タグ | 文法 |
+|---|---|
+| `ts`、`typescript`、`tsx` | JavaScript（下記の注意を参照） |
+| `js`、`javascript`、`jsx` | JavaScript |
+| `rs`、`rust` | Rust |
+| `py`、`python` | Python |
+| `sh`、`bash`、`zsh` | Bash（Bourne Again Shell） |
+| `md`、`markdown`、`mdx` | Markdown |
+| `yaml`、`yml` | YAML |
+| `json` | JSON |
+| `c` | C |
+| `cpp`、`c++` | C++ |
+| `go` | Go |
+| `toml` | TOML |
+| `html` | HTML |
+| `css` | CSS |
+
+<Note>
+
+**`ts` / `tsx` は JavaScript の文法でハイライトされます。** syntect に同梱された syntax set には、読み込んで使える TypeScript / TSX の文法がありません。zfb が検討した再配布可能なソースはいずれも、syntect が対応していないファイル形式で提供されているか、syntect が実装していない `extends:` の継承機構に依存しています（調査の全容は `crates/zfb-content/assets/syntaxes/README.md` にあります）。そのため、どちらのタグもハイライトなしのフォールバックではなく、JavaScript のハイライトに流れます。
+
+</Note>
+
+この表にないタグは、上で説明したテーマ適用のハイライトなし経路にフォールバックします。コードは保持・エスケープされますが、トークンの着色は行われません。
+
 ## テーマのカスタマイズ（組み込みテーマ）
 
 配色を変更するもっとも単純な方法は、`zfb.config.ts` で syntect に同梱されたテーマのひとつを選ぶことです。

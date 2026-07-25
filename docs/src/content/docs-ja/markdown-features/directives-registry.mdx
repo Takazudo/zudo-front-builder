@@ -38,14 +38,38 @@ sidebar_position: 57
 レジストリは、登録された各ディレクティブに対して型付きの属性スキーマを
 受け付けます。未知の属性はビルド時の **警告** を出力します（属性自体は
 変更されずにそのまま通過します）。型強制の失敗（例えば `Boolean` 属性に
-非ブール値を渡した場合）は、解決不能な **エラー** を出力します。スキーマは
-`register` 呼び出しと並べて宣言します:
+非ブール値を渡した場合）は、警告ではなく **エラー** を出力します。各属性は
+`AttrSchema` として宣言します。
+
+| フィールド | 説明 |
+|---|---|
+| `name` | MDX ソースに書かれるとおりの属性名（例: `"tone"`、`"data-foo"`）。 |
+| `ty` | 期待される型 — 下記の `AttrType` を参照。 |
+| `default` | 属性が不在で、かつ `required` が `false` のときに適用される値。`None` はデフォルトなしを意味します。 |
+| `required` | `true` で、属性が不在かつデフォルトもない場合に診断を出力します。 |
+
+`AttrType` には 4 つのバリアントがあります。
+
+| バリアント | 受け付ける値 | 備考 |
+|---|---|---|
+| `String` | 任意の文字列値。そのまま通過します。 | 検証は行いません。 |
+| `Enum(Vec<String>)` | 宣言された許可値のいずれか（大文字小文字を区別）。 | リストにない値は診断を出力します。 |
+| `Boolean` | `"true"` / `"false"`（大文字小文字は区別しません）。 | `=value` を伴わない裸の属性も `true` として扱われます。JSX へは文字列 `"true"` / `"false"` として出力されます（v1 は文字列リテラル属性のみをサポートします）。 |
+| `Number` | `f64::from_str` でパースできる任意の値。 | パース後の数値ではなく元のソース文字列が保持されるため、JSX エミッタはそれをそのまま通過させます。パースできない値は診断を出力します。 |
+
+スキーマは `register` 呼び出しと並べて宣言します。
 
 ```rust
 registry.register(
     DirectiveDef::text("badge", "Badge")
         .with_attrs(vec![
             AttrSchema { name: "tone".into(), ty: AttrType::String, default: None, required: false },
+            AttrSchema {
+                name: "size".into(),
+                ty: AttrType::Enum(vec!["sm".into(), "md".into(), "lg".into()]),
+                default: Some("md".into()),
+                required: false,
+            },
         ]),
 );
 ```
