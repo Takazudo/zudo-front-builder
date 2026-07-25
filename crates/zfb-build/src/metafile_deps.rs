@@ -380,38 +380,52 @@ fn package_root_for_input(canonical: &Path, subpath: &[String]) -> Option<PathBu
 /// the first `*`: `./dist/index.js` -> `dist/`, `./src/*` -> `src/`,
 /// `./index.ts` -> `` (the package root). An empty prefix means the package
 /// declares an entry at its own root and therefore has no build-artifact
-/// directory to keep separate. Targets that are not package-relative (`./…`)
-/// or that climb out with `..` are ignored.
+/// directory to keep separate. Targets that are absolute or climb out with
+/// `..` are ignored.
+///
+/// The `./` prefix is **required** for `exports` targets — the spec mandates
+/// it, and a bare string there is a package name, not a location inside this
+/// package — but **optional** for `main` and `module`, where the bare form
+/// (`"main": "dist/index.js"`) is both valid and common.
 fn declared_entry_roots(manifest: &serde_json::Value) -> Vec<String> {
-    fn collect(value: &serde_json::Value, out: &mut Vec<String>) {
+    fn entry_root(target: &str, require_dot_slash: bool) -> Option<String> {
+        let target = match target.strip_prefix("./") {
+            Some(rest) => rest,
+            None if require_dot_slash => return None,
+            None => target,
+        };
+        if target.starts_with('/') || target.split('/').any(|segment| segment == "..") {
+            return None;
+        }
+        let up_to_wildcard = match target.find('*') {
+            Some(at) => &target[..at],
+            None => target,
+        };
+        Some(match up_to_wildcard.rfind('/') {
+            Some(at) => up_to_wildcard[..=at].to_string(),
+            None => String::new(),
+        })
+    }
+
+    fn collect(value: &serde_json::Value, require_dot_slash: bool, out: &mut Vec<String>) {
         match value {
             serde_json::Value::String(target) => {
-                let Some(target) = target.strip_prefix("./") else {
-                    return;
-                };
-                if target.split('/').any(|segment| segment == "..") {
-                    return;
-                }
-                let up_to_wildcard = match target.find('*') {
-                    Some(at) => &target[..at],
-                    None => target,
-                };
-                let dir = match up_to_wildcard.rfind('/') {
-                    Some(at) => &up_to_wildcard[..=at],
-                    None => "",
-                };
-                out.push(dir.to_string());
+                out.extend(entry_root(target, require_dot_slash));
             }
-            serde_json::Value::Array(items) => items.iter().for_each(|v| collect(v, out)),
-            serde_json::Value::Object(map) => map.values().for_each(|v| collect(v, out)),
+            serde_json::Value::Array(items) => items
+                .iter()
+                .for_each(|v| collect(v, require_dot_slash, out)),
+            serde_json::Value::Object(map) => map
+                .values()
+                .for_each(|v| collect(v, require_dot_slash, out)),
             _ => {}
         }
     }
 
     let mut roots = Vec::new();
-    for field in ["exports", "main", "module"] {
+    for (field, require_dot_slash) in [("exports", true), ("main", false), ("module", false)] {
         if let Some(value) = manifest.get(field) {
-            collect(value, &mut roots);
+            collect(value, require_dot_slash, &mut roots);
         }
     }
     roots
@@ -1300,7 +1314,9 @@ mod tests {
         let (stage, first_party) = write_workspace_sibling_stage(
             &base,
             "built",
-            r#"{ "name": "@acme/built", "main": "./dist/index.js" }"#,
+            // Bare (non-`./`) `main`, the form the spec allows and packages
+            // commonly use — its declared `dist/` root must still register.
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
             &[
                 ("dist/index.js", "built"),
                 ("src/internal.ts", "internal source"),
@@ -1410,11 +1426,12 @@ mod tests {
         // Unit-level proof of the declaration reader: nested conditional
         // exports and arrays are just nesting around target strings; a
         // wildcard contributes its prefix directory; a root-level entry
-        // contributes the package root (empty prefix); non-relative and
-        // `..`-climbing targets contribute nothing.
+        // contributes the package root (empty prefix); `..`-climbing targets
+        // contribute nothing, and a bare (non-`./`) string is a package name
+        // in `exports` but a valid path in `main`/`module`.
         let manifest: serde_json::Value = serde_json::from_str(
             r#"{
-                "main": "./dist/index.js",
+                "main": "dist/index.js",
                 "module": "./index.mjs",
                 "exports": {
                     "./*": "./src/*",
@@ -1427,6 +1444,11 @@ mod tests {
         let mut roots = declared_entry_roots(&manifest);
         roots.sort();
         assert_eq!(roots, vec!["", "dist/", "lib/", "src/"]);
+
+        // An absolute `main` names nothing inside the package.
+        let absolute: serde_json::Value =
+            serde_json::from_str(r#"{ "main": "/etc/passwd" }"#).unwrap();
+        assert!(declared_entry_roots(&absolute).is_empty());
     }
 
     #[test]
