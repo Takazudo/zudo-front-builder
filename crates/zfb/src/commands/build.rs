@@ -3435,22 +3435,31 @@ pub(crate) fn build_default_islands_payload(
 }
 
 /// Issue #1707 (Stage Escape Guards): build the guard (b) stage-escape audit
-/// policy for an islands / client-scripts esbuild config — but ONLY when the
-/// staging root widened past `project_root`, i.e. this is a pnpm-workspace
-/// first-party build where `first_party_root != project_root`.
+/// policy for an islands / client-scripts esbuild config — but ONLY when
+/// [`zfb_types::stage_escape_audit_eligibility`] (issue #1986) says a
+/// first-party stage escape is structurally possible for this build.
 ///
-/// Outside a workspace `first_party_root_for(project_root)` returns
-/// `normalize_path_lexical(project_root)` verbatim, so the widened check
-/// compares against the *normalized* project root — a raw `!= project_root`
-/// would false-positive whenever `project_root` carries a `.`, trailing
-/// slash, or `..` that normalization strips. When not widened, the wholesale
-/// `node_modules` symlink the stage sets up can only reach the project's OWN
-/// dependency tree (no first-party workspace-sibling to escape to), so the
-/// audit would be pure overhead — the dev loop is latency-sensitive
-/// (`dev_sibling_watch_1678_e2e` guards this pipeline) — and the policy stays
-/// `None`, leaving the argv byte-identical (no `--metafile`).
+/// Issue #1730/#1987: this used to gate on the widened-stage proxy alone
+/// (`first_party_root != normalize(project_root)`), which reads a workspace
+/// whose `pnpm-workspace.yaml` claims its own root (`packages: ['.',
+/// 'packages/*']`) as "not a workspace" — building FROM the workspace root
+/// makes `first_party_root_for` return `project_root` itself, so the stage
+/// never widens even though the wholesale `node_modules` symlink this stage
+/// sets up reaches first-party siblings exactly as it does from a nested
+/// member. The eligibility predicate is a strict superset of that proxy (see
+/// its module docs for the full decision table): every currently-armed build
+/// stays armed, and a root-claimed workspace with a reachable first-party
+/// `node_modules` link now arms too. `stage_root.join("node_modules")` is the
+/// wholesale symlink every call site below sets up (to `first_party_root`'s
+/// live install), so it is what the predicate scans.
 ///
-/// When widened, the audit is armed with `stage_root` as the sole stage
+/// Outside a workspace, or inside one with nothing first-party reachable
+/// under `node_modules`, the audit stays pure overhead — the dev loop is
+/// latency-sensitive (`dev_sibling_watch_1678_e2e` guards this pipeline) —
+/// and the policy stays `None`, leaving the argv byte-identical (no
+/// `--metafile`).
+///
+/// When eligible, the audit is armed with `stage_root` as the sole stage
 /// boundary (every legitimately staged input — the mirrored project plus the
 /// wholesale-mirrored siblings — lives under it) and `first_party_root` as the
 /// live-source boundary a package-name escape climbs to. `metafile_cwd` is not
@@ -3462,7 +3471,10 @@ fn stage_escape_audit_policy(
     first_party_root: &Path,
     stage_root: &Path,
 ) -> Option<StageAuditPolicy> {
-    if first_party_root == zfb_types::normalize_path_lexical(project_root) {
+    let node_modules_dir = stage_root.join("node_modules");
+    if !zfb_types::stage_escape_audit_eligibility(project_root, first_party_root, &node_modules_dir)
+        .is_eligible()
+    {
         return None;
     }
     Some(StageAuditPolicy {
@@ -3504,6 +3516,40 @@ mod stage_escape_audit_policy_tests {
             .expect("a stage widened past project_root must arm the audit");
         assert_eq!(policy.stage_roots, vec![stage_root.to_path_buf()]);
         assert_eq!(policy.first_party_root, first_party_root.to_path_buf());
+    }
+
+    /// Issue #1987 (Wave 5): the #1730 root-claimed-workspace case the old
+    /// widened-stage proxy read as "not a workspace". `project_root` IS the
+    /// workspace root (never widened), but a reachable first-party symlink
+    /// under `stage_root/node_modules` — the wholesale link every call site
+    /// sets up — now arms the audit via
+    /// `zfb_types::stage_escape_audit_eligibility`'s row 3, exactly the
+    /// eligibility fixture proven in `zfb-types`.
+    #[cfg(unix)]
+    #[test]
+    fn some_when_root_workspace_has_a_reachable_first_party_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages: ['.', 'packages/*']\n",
+        )
+        .unwrap();
+        let child = root.join("packages/child");
+        std::fs::create_dir_all(&child).unwrap();
+        let node_modules = root.join("node_modules");
+        std::fs::create_dir_all(node_modules.join("@scope")).unwrap();
+        std::os::unix::fs::symlink(&child, node_modules.join("@scope/child")).unwrap();
+
+        let stage_root = dir.path().join("stage/ws");
+        std::fs::create_dir_all(&stage_root).unwrap();
+        std::os::unix::fs::symlink(&node_modules, stage_root.join("node_modules")).unwrap();
+
+        let policy = stage_escape_audit_policy(&root, &root, &stage_root)
+            .expect("a reachable first-party link at a root-claimed workspace must arm the audit");
+        assert_eq!(policy.stage_roots, vec![stage_root.to_path_buf()]);
+        assert_eq!(policy.first_party_root, root);
     }
 }
 
@@ -11486,36 +11532,43 @@ mod tests {
         assert!(dev_client_dir.join(&plugin_worker_filename).is_file());
     }
 
-    /// Issue #1984 (epic #1982) — RED test for #1730's islands/client site.
+    /// Issue #1987 (Wave 5, epic #1982) — the islands/client half of #1984's
+    /// red test, now GREEN.
     ///
     /// When `project_root` is itself claimed by `pnpm-workspace.yaml`
     /// (`packages: ['.', 'packages/*']`), `first_party_root_for(project_root)`
     /// maps it to itself (see
     /// `zfb_types::first_party::project_root_that_is_the_workspace_root_maps_to_itself`),
-    /// so `stage_escape_audit_policy` reads that as "not a workspace" and
-    /// returns `None` — the islands/client metafile stage-escape audit never
-    /// arms. A first-party CHILD package still lives under `packages/*` and is
-    /// still linked into `node_modules` the way a real pnpm install would
-    /// (`node_modules/@scope/child` -> `packages/child`). A "use client"
-    /// island reaching it through a plain `require(...)` call — an edge shape
+    /// so the old widened-stage proxy read that as "not a workspace" and
+    /// `stage_escape_audit_policy` returned `None` — the islands/client
+    /// metafile stage-escape audit never armed (issue #1984 proved this
+    /// exact defect). Wave 5 swaps that proxy for
+    /// `zfb_types::stage_escape_audit_eligibility` (issue #1986), which reads
+    /// the reachable `node_modules/@scope/child -> packages/child` link as
+    /// eligible regardless of widening.
+    ///
+    /// The child package here declares neither `exports` nor `main` — an
+    /// UNDECLARED entry, deliberately distinct from #2040's "consume from
+    /// source" carve-out (a declared `exports`/`main` entry root, e.g. a
+    /// bare `main: "index.js"` declaring the package root itself, is
+    /// legitimate and stays accepted; see
+    /// `bundler_consume_from_source_esbuild_regression.rs`). A "use client"
+    /// island reaches it through a plain `require(...)` call — an edge shape
     /// guard (a)'s static `import`/`export` scanner (`collect_import_edges`,
     /// `zfb-islands/src/scanner.rs`) never records as a
-    /// `WorkspacePackageImportEdge` — resolves through that symlink straight
-    /// to the LIVE, unmirrored child source. Guard (b) (the metafile
-    /// stage-escape audit) would normally be the backstop for exactly this
-    /// kind of scanner-missed edge, but it never runs here, so today's build
-    /// succeeds with the live escape baked in, unflagged.
-    ///
-    /// Not fixed by this test — Wave 3 (#1986) and Wave 5 (#1987) own the
-    /// eligibility predicate and the wiring fix; this only proves today's
-    /// defect at both levels: the predicate (direct assertion) and the
-    /// resulting real-esbuild behavior (end-to-end bundle).
+    /// `WorkspacePackageImportEdge` — resolving through the symlink straight
+    /// to the LIVE, unmirrored child source, esbuild's case-2 shape with no
+    /// declared entry root. Now that guard (b) (the metafile stage-escape
+    /// audit) is armed here, it is exactly this scanner-missed edge's
+    /// backstop: the build must now FAIL with a stage-escape error instead
+    /// of silently succeeding.
     #[cfg(unix)]
     #[test]
     #[ignore = "env-gate: esbuild binary — cargo test -p zfb --lib \
-                commands::build::tests::root_workspace_islands_stage_escape_audit_is_disabled_and_child_escape_goes_unflagged \
+                commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected \
                 -- --ignored (ZFB_ESBUILD_BIN or staged workspace slot)"]
-    fn root_workspace_islands_stage_escape_audit_is_disabled_and_child_escape_goes_unflagged() {
+    fn root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected(
+    ) {
         if zfb_test_utils::locate_esbuild().is_none() {
             panic!(
                 "root-workspace islands stage-escape regression requires a pinned real esbuild \
@@ -11539,30 +11592,16 @@ mod tests {
         )
         .unwrap();
 
-        // Evidence #1 — the eligibility predicate is disabled at the root.
-        // `first_party_root_for` maps a root-claimed project_root to itself,
-        // so the widened check inside `stage_escape_audit_policy` never
-        // fires and the islands/client audit is never armed.
-        let first_party_root = zfb_types::first_party_root_for(root);
-        assert_eq!(
-            first_party_root,
-            zfb_types::normalize_path_lexical(root),
-            "a root-claimed workspace member must map first_party_root to itself"
-        );
-        assert!(
-            stage_escape_audit_policy(root, &first_party_root, &root.join(".stage")).is_none(),
-            "the widened-stage predicate must (today) return None for a root-workspace \
-             project, disabling the islands/client stage-escape audit"
-        );
-
-        // A first-party CHILD package under `packages/*`, reached only
-        // through a `node_modules` symlink the way a real pnpm install
-        // produces one.
+        // A first-party CHILD package under `packages/*`, undeclared
+        // (neither `exports` nor `main`) — the same "no staged spelling was
+        // ever declared as an entry root" shape #2040's negative test uses
+        // for its deep-import case — reached only through a `node_modules`
+        // symlink the way a real pnpm install produces one.
         let child_pkg = root.join("packages/child");
         std::fs::create_dir_all(&child_pkg).unwrap();
         std::fs::write(
             child_pkg.join("package.json"),
-            r#"{"name":"@scope/child","main":"index.js"}"#,
+            r#"{"name":"@scope/child","private":true}"#,
         )
         .unwrap();
         std::fs::write(
@@ -11603,6 +11642,27 @@ mod tests {
         let scope_dir = nm.join("@scope");
         std::fs::create_dir_all(&scope_dir).unwrap();
         std::os::unix::fs::symlink(&child_pkg, scope_dir.join("child")).unwrap();
+
+        // Evidence #1 — the eligibility predicate is now armed at the root.
+        // `first_party_root_for` still maps a root-claimed project_root to
+        // itself (the widened-stage proxy alone would still read this as
+        // "not a workspace"), but the reachable `node_modules/@scope/child`
+        // link now arms `stage_escape_audit_policy` via
+        // `zfb_types::stage_escape_audit_eligibility`'s row 3. `nm` stands in
+        // for the wholesale `<stage>/node_modules` symlink every real call
+        // site sets up (both point at the same live tree, and the predicate
+        // canonicalises before scanning).
+        let first_party_root = zfb_types::first_party_root_for(root);
+        assert_eq!(
+            first_party_root,
+            zfb_types::normalize_path_lexical(root),
+            "a root-claimed workspace member must map first_party_root to itself"
+        );
+        assert!(
+            stage_escape_audit_policy(root, &first_party_root, root).is_some(),
+            "a reachable first-party node_modules link at a root-claimed workspace must now \
+             arm the islands/client stage-escape audit"
+        );
 
         // The unrecorded edge: a plain `require(...)` call, which
         // `collect_import_edges` (guard (a)'s scanner) never visits — it
@@ -11646,7 +11706,7 @@ mod tests {
 
         let outdir = root.join("dist");
         let plugin_config = IslandsPluginConfig::default();
-        let (islands_payload, names) = build_default_islands_payload_with_bundle_options(
+        let error = build_default_islands_payload_with_bundle_options(
             root,
             &root.join("pages"),
             &[],
@@ -11658,25 +11718,19 @@ mod tests {
             IslandsGlobPolicy::HardError,
             None,
         )
-        .expect(
-            "today's build succeeds even though the require()-reached child package resolved \
-             through node_modules to LIVE, unmirrored source — the disabled audit never sees it",
+        .expect_err(
+            "the require()-reached child package resolves through node_modules to LIVE, \
+             unmirrored, UNDECLARED source — now that the islands/client audit is armed here, \
+             this must be rejected as a stage escape instead of silently succeeding",
         );
-        assert_eq!(
-            names,
-            std::collections::BTreeSet::from(["ChildIsland".to_string()])
-        );
-        let bytes = islands_payload.expect("islands payload").bytes;
-        let islands_js = String::from_utf8(bytes).unwrap();
+        let message = format!("{error:#}");
         assert!(
-            islands_js.contains("HARMLESS_RAW_PAYLOAD_MARKER"),
-            "the raw import must have been staged normally, proving a real shadow was \
-             materialised for this build (not the no-preprocessing fast path): {islands_js}"
+            message.contains("stage-escape audit"),
+            "expected a stage-escape audit rejection, got: {message}"
         );
         assert!(
-            islands_js.contains("CHILD_PACKAGE_ESCAPE_MARKER"),
-            "the require()-reached child package's LIVE source must have resolved into the \
-             bundle unflagged — this is the silent #1730 root-workspace stage escape: {islands_js}"
+            message.contains("@scope/child"),
+            "the offending package import must name the escaping child package: {message}"
         );
     }
 
