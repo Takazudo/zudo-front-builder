@@ -946,3 +946,93 @@ fn f_workspace_package_subpath_exports_resolve_only_from_real_staged_copies() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// (l) #1985's blast-radius guard: a mirror root is claimed WHOLESALE, so the
+// preprocessing enrolment that fixed cases (b)/(g)/(j)/(k) also reaches files
+// no import edge ever touches. Those must not become build failures they were
+// not before #1985 — the mirror's raw byte copy tolerated anything, and the
+// enrolment is deliberately best-effort so it still does.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared")).unwrap();
+    // The file the build actually reaches, carrying a real worker macro so
+    // the enrolment pass is genuinely exercised in this fixture.
+    fs::write(
+        ws_root.join("lib/shared/worker-l.worker.ts"),
+        "self.postMessage('WORKER_L_MARKER');\n",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/reached-l.ts"),
+        r#"
+            export function makeWorker() {
+              return new Worker(new URL('./worker-l.worker.ts', import.meta.url), { type: 'module' });
+            }
+        "#,
+    )
+    .unwrap();
+    // Two files in the SAME mirror root that nothing imports, each tripping
+    // one of `materialise_source_file`'s hard errors: an unsupported
+    // `SharedWorker` in the otherwise-supported literal URL shape, and a
+    // source carrying `new Worker` text that does not parse (which the
+    // module-worker pass refuses to skip rather than risk missing a real
+    // occurrence). Both were harmless raw mirror copies before #1985.
+    fs::write(
+        ws_root.join("lib/shared/unreachable-shared-worker.ts"),
+        r#"
+            export const w = new SharedWorker(new URL('./worker-l.worker.ts', import.meta.url), { type: 'module' });
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("lib/shared/unreachable-broken.ts"),
+        "const broken = ;\nnew Worker(new URL('./worker-l.worker.ts', import.meta.url));\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { makeWorker } from "@shared/reached-l";
+            export default function Home() {
+              return typeof makeWorker;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@shared/*".to_string(),
+        vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+    let out = bundle(input).expect(
+        "issue #1985: an unreachable file inside a wholesale-claimed sibling \
+         mirror root must never fail the build just because the preprocessing \
+         enrolment could not transform it",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    // The REACHED file's macro is still rewritten — the tolerance above must
+    // not have quietly disabled expansion for the whole region.
+    assert!(
+        !body.contains("new URL(\"./worker-l.worker.ts\""),
+        "the reached sibling's module-worker macro must still be rewritten: {}",
+        truncate(&body)
+    );
+    assert!(
+        body.contains(".js?v="),
+        "the rewritten module-worker specifier must still carry the stable \
+         companion filename: {}",
+        truncate(&body)
+    );
+}

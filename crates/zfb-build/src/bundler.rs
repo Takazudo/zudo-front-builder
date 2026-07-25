@@ -2432,6 +2432,20 @@ pub fn bundle_with_session(
     // comment): a wholesale mirror is a byte copy, so macro expansion has to
     // come from somewhere else. Non-source leaves (CSS/JSON/text) carry no
     // macros and keep the pure mirror copy.
+    //
+    // A mirror root is claimed WHOLESALE, so this set includes files no
+    // import edge ever reaches — an unused fixture carrying an unsupported
+    // `SharedWorker` form or an unparseable snippet that esbuild would never
+    // load. Those must not become build failures they were not before, so
+    // the enrolments recorded here are marked NON-FATAL: if
+    // `materialise_source_file` rejects one, the pass below keeps the
+    // mirror's raw copy (already on disk and already recorded visited) and
+    // moves on, which is byte-for-byte the pre-#1724 outcome for that file.
+    // Every other membership in `plugin_preprocessing_files` — a discovered
+    // graph file, an exact alias target, a virtual-module import — stays a
+    // hard error, because those ARE reached and a silent non-expansion there
+    // is the very defect this issue fixes.
+    let mut mirror_derived_preprocessing_files = BTreeSet::new();
     for mirror_root in sibling_mirror_plan.mirror_roots() {
         for src in enumerate_mirror_root_files(mirror_root) {
             // The mirror pass's own guards, so this set can never be wider
@@ -2444,7 +2458,9 @@ pub fn bundle_with_session(
             {
                 continue;
             }
-            plugin_preprocessing_files.insert(src);
+            if plugin_preprocessing_files.insert(src.clone()) {
+                mirror_derived_preprocessing_files.insert(src);
+            }
         }
     }
 
@@ -3650,7 +3666,7 @@ pub fn bundle_with_session(
                 )
             })?;
         }
-        materialise_source_file(
+        let materialised = materialise_source_file(
             physical,
             physical,
             &to,
@@ -3667,13 +3683,30 @@ pub fn bundle_with_session(
             &mat_ctx.module_worker_dependencies,
             mat_ctx.project_root,
             &mat_ctx.worker_build_context,
-        )
-        .with_context(|| {
-            format!(
-                "bundler: materialise plugin preprocessing file {}",
-                physical.display()
-            )
-        })?;
+        );
+        match materialised {
+            Ok(()) => {}
+            // Issue #1724: a WHOLESALE mirror enrolment is best-effort — see
+            // the enrolment loop's comment. The mirror's raw copy is already
+            // on disk and already recorded visited, so falling back to it is
+            // exactly the pre-#1724 outcome for a file no import edge reaches.
+            Err(error) if mirror_derived_preprocessing_files.contains(physical) => {
+                tracing::debug!(
+                    file = %physical.display(),
+                    error = %format!("{error:#}"),
+                    "bundler: keeping the wholesale sibling mirror's raw copy; \
+                     this file is not reached by any discovered import edge"
+                );
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "bundler: materialise plugin preprocessing file {}",
+                        physical.display()
+                    )
+                });
+            }
+        }
     }
 
     // 2f. Issue #1695: `import.meta.glob` matched-files fixed-point drain.
