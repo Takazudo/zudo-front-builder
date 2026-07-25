@@ -3691,12 +3691,29 @@ pub fn bundle_with_session(
             // on disk and already recorded visited, so falling back to it is
             // exactly the pre-#1724 outcome for a file no import edge reaches.
             Err(error) if mirror_derived_preprocessing_files.contains(physical) => {
-                tracing::debug!(
-                    file = %physical.display(),
-                    error = %format!("{error:#}"),
-                    "bundler: keeping the wholesale sibling mirror's raw copy; \
-                     this file is not reached by any discovered import edge"
+                // "Not reached by any import edge" is the JUSTIFICATION for
+                // the fallback, not something this code can verify — the
+                // wholesale mirror exists precisely because Rust discovery
+                // cannot predict what esbuild will reach. So if the file IS
+                // reached, #1724 silently reinstates: the raw copy ships with
+                // its macros unexpanded. Warn through both channels (the
+                // crate's `skip_dangling_symlink_or_fail` idiom: no
+                // `tracing_subscriber` is installed in the `zfb` binary, so
+                // `tracing::warn!` alone is invisible to real CLI users) so
+                // that reinstatement leaves a trace instead of nothing.
+                // Deliberately NOT fatal — a mirror root is claimed
+                // wholesale, and an unreached fixture must not become a build
+                // failure it was not before #1724.
+                let msg = format!(
+                    "keeping the wholesale sibling mirror's raw copy of {} — preprocessing it \
+                     failed ({}). This is only safe if no import edge reaches the file; if one \
+                     does, its `import.meta.glob` / `?raw` / module-worker macros ship \
+                     UNEXPANDED (issue #1724).",
+                    physical.display(),
+                    format_args!("{error:#}"),
                 );
+                tracing::warn!("{msg}");
+                eprintln!("zfb warn: {msg}");
             }
             Err(error) => {
                 return Err(error).with_context(|| {

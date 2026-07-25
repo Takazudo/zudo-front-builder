@@ -1888,7 +1888,24 @@ fn run_zfb_build_expect_stage_escape_rejection(root: &Path, esbuild: &Path, labe
          succeeded\nstatus: {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         output.status,
     );
-    format!("{stdout}\n{stderr}")
+    let logs = format!("{stdout}\n{stderr}");
+    // A bare non-zero exit proves nothing: with guard (b) disarmed, esbuild's
+    // own `Could not resolve "@scope/child"` would satisfy both `!success()`
+    // and the callers' package-name assertion while the audit never ran
+    // (verified by deleting this fixture's `node_modules/@scope/child`
+    // symlink — the old assertions stayed green). Pin the audit's own signal,
+    // matching every other negative in this epic
+    // (`bundler_root_workspace_stage_escape_audit_armed_regression.rs`,
+    // `bundler_consume_from_source_esbuild_regression.rs`,
+    // `bundler_workspace_root_alias_esbuild_regression.rs`).
+    assert!(
+        logs.contains("stage-escape audit"),
+        "`zfb build` for {label} failed, but NOT with a guard (b) stage-escape audit rejection — \
+         an incidental build failure does not prove the audit is armed\nstatus: {:?}\n--- logs \
+         ---\n{logs}",
+        output.status,
+    );
+    logs
 }
 
 #[tokio::test(flavor = "multi_thread")]
