@@ -4556,4 +4556,272 @@ mod tests {
             "zero headings, but the record itself must exist: {headings:?}"
         );
     }
+
+    // -----------------------------------------------------------------
+    // Footnote RED tests (issue #2023, epic #2021: GFM Footnotes And
+    // Task Lists) — the JSX converter path.
+    //
+    // The real production path for `.mdx` content always supplies a
+    // `Pipeline` (`compile_mdx_to_jsx_module_cached` / the bundler / dev
+    // loader), which takes the hast detour: `mdast_to_hast_with` (shared
+    // with `pipeline.rs`'s `Pipeline::run`, see the mirrored tests
+    // there) then this file's `emit_node(&HastNode)`. The no-pipeline
+    // legacy entry point (`mdx_to_jsx_module` with no pipeline) always
+    // forces `ResolvedGfmConstructs::CONSERVATIVE`
+    // (`footnote_definition: false`) with no way to override it, so
+    // footnote syntax never parses into `FootnoteReference`/
+    // `FootnoteDefinition` nodes on that path — its `emit_node(&MdastNode)`
+    // catch-all (~line 953) is unreachable for footnotes through the
+    // public API and is deliberately NOT exercised here.
+    //
+    // What IS reachable and broken in THIS file specifically:
+    // `jsx_render_child`'s own catch-all (~line 1795), fired when a
+    // footnote reference/definition is nested INSIDE an MDX JSX
+    // element's body (`<Note>…[^a]…</Note>`) — see the `jsx_nested_*`
+    // tests below, tagged for #2027. The ordinary (non-nested) cases
+    // mirror `pipeline.rs`'s test names/fixtures exactly and are tagged
+    // for #2026, since they exercise the SAME shared catch-all in
+    // `mdast_to_hast_inner`, just observed through the JSX string
+    // output instead of a `HastNode` tree.
+
+    /// Pipeline with every GFM construct on, including
+    /// `footnote_definition`.
+    fn footnote_pipeline() -> Pipeline {
+        Pipeline::with_resolved_gfm_constructs(ResolvedGfmConstructs::ALL_ON)
+    }
+
+    fn emit_with_footnotes(src: &str) -> String {
+        let mut p = footnote_pipeline();
+        mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p).expect("emit ok")
+    }
+
+    /// Extract every `key="VALUE"` occurrence's VALUE from a JSX source
+    /// string, in left-to-right (document) order. A tiny hand-rolled
+    /// scanner — this crate has no regex dependency, and the exact
+    /// id/href STRING scheme is #2025's policy call, not something
+    /// these tests should hardcode.
+    fn extract_attr_values(jsx: &str, key: &str) -> Vec<String> {
+        let needle = format!("{key}=\"");
+        let mut out = Vec::new();
+        let mut rest = jsx;
+        while let Some(idx) = rest.find(needle.as_str()) {
+            let after = &rest[idx + needle.len()..];
+            match after.find('"') {
+                Some(end) => {
+                    out.push(after[..end].to_string());
+                    rest = &after[end + 1..];
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    // 1. A single reference and its definition are ASSOCIATED — mirrors
+    // `pipeline::tests::footnote_reference_and_definition_are_associated`.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn jsx_footnote_reference_and_definition_are_associated() {
+        let jsx = emit_with_footnotes("Ref one[^a] end.\n\n[^a]: Definition body.\n");
+
+        assert!(
+            jsx.contains("{\"1\"}"),
+            "expected the visible footnote marker \"1\" in the emitted JSX: {jsx}"
+        );
+        assert!(
+            jsx.contains("{\"Definition body.\"}"),
+            "footnote definition body missing from emitted JSX: {jsx}"
+        );
+
+        let ids = extract_attr_values(&jsx, "id");
+        assert!(
+            !ids.is_empty(),
+            "expected at least one id= attribute (reference marker and/or \
+             backreference target): {jsx}"
+        );
+        let hrefs = extract_attr_values(&jsx, "href");
+        let fragment_hrefs: Vec<&str> = hrefs
+            .iter()
+            .map(String::as_str)
+            .filter(|h| h.starts_with('#'))
+            .collect();
+        assert!(
+            !fragment_hrefs.is_empty(),
+            "expected at least one fragment href= linking reference <-> \
+             definition: {jsx}"
+        );
+        for href in &fragment_hrefs {
+            let target = href.trim_start_matches('#');
+            assert!(
+                ids.iter().any(|id| id == target),
+                "href {href} does not resolve to any rendered id= — reference \
+                 and definition must link to each other: ids={ids:?} jsx={jsx}"
+            );
+        }
+    }
+
+    // 2. Repeated references to ONE definition need distinct
+    // backreference targets — mirrors
+    // `pipeline::tests::repeated_references_get_distinct_backreference_targets`.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn jsx_repeated_references_get_distinct_backreference_targets() {
+        let jsx = emit_with_footnotes("Ref one[^a] and ref again[^a] end.\n\n[^a]: Shared def.\n");
+
+        let ids = extract_attr_values(&jsx, "id");
+        let unique_ids: std::collections::HashSet<&String> = ids.iter().collect();
+        assert!(
+            unique_ids.len() >= 2,
+            "two repeated-reference occurrences need at least two distinct \
+             ids (one backreference target each), got {}: ids={ids:?} jsx={jsx}",
+            unique_ids.len()
+        );
+
+        let hrefs = extract_attr_values(&jsx, "href");
+        let fragment_hrefs: std::collections::HashSet<&str> = hrefs
+            .iter()
+            .map(String::as_str)
+            .filter(|h| h.starts_with('#'))
+            .collect();
+        assert!(
+            fragment_hrefs.len() >= 2,
+            "expected at least two distinct fragment hrefs (one per \
+             occurrence's backreference), got {}: hrefs={hrefs:?} jsx={jsx}",
+            fragment_hrefs.len()
+        );
+    }
+
+    // 3. Multiple definitions: numbering and order follow REFERENCE
+    // order — mirrors
+    // `pipeline::tests::multiple_definitions_are_numbered_and_ordered_by_first_reference`.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn jsx_multiple_definitions_are_numbered_and_ordered_by_first_reference() {
+        let jsx = emit_with_footnotes(
+            "First[^a] then second[^b] end.\n\n[^b]: Second body.\n\n[^a]: First body.\n",
+        );
+
+        let one_pos = jsx
+            .find("{\"1\"}")
+            .unwrap_or_else(|| panic!("marker \"1\" missing from emitted JSX: {jsx}"));
+        let two_pos = jsx
+            .find("{\"2\"}")
+            .unwrap_or_else(|| panic!("marker \"2\" missing from emitted JSX: {jsx}"));
+        assert!(
+            one_pos < two_pos,
+            "the FIRST-referenced footnote (`a`) must be numbered 1 and its \
+             marker must appear before the SECOND-referenced footnote's \
+             marker \"2\": jsx={jsx}"
+        );
+
+        let a_pos = jsx
+            .find("First body.")
+            .unwrap_or_else(|| panic!("First body. missing from emitted JSX: {jsx}"));
+        let b_pos = jsx
+            .find("Second body.")
+            .unwrap_or_else(|| panic!("Second body. missing from emitted JSX: {jsx}"));
+        assert!(
+            a_pos < b_pos,
+            "footnote definitions must render in REFERENCE order (a before \
+             b): jsx={jsx}"
+        );
+    }
+
+    // 4. Duplicate `[^a]` definitions collapse to exactly one entry —
+    // mirrors
+    // `pipeline::tests::duplicate_definitions_collapse_to_exactly_one_entry`.
+    // WHICH body wins is #2025's policy call; this test only pins the
+    // "exactly one, not two" structural fact.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn jsx_duplicate_definitions_collapse_to_exactly_one_entry() {
+        let jsx =
+            emit_with_footnotes("Dup label[^a] end.\n\n[^a]: First.\n\n[^a]: Second (dup).\n");
+
+        let has_first = jsx.contains("First.");
+        let has_second = jsx.contains("Second (dup).");
+        assert!(
+            has_first ^ has_second,
+            "exactly ONE of the duplicate definition bodies must survive \
+             (the tie-break is #2025's policy call) — got first={has_first} \
+             second={has_second}: {jsx}"
+        );
+
+        let marker_count = jsx.matches("{\"1\"}").count();
+        assert_eq!(
+            marker_count, 1,
+            "duplicate definitions must still yield exactly one reference \
+             marker \"1\", got {marker_count}: {jsx}"
+        );
+    }
+
+    // 5. A reference with NO matching definition stays literal text —
+    // parser-level fact (see the mirrored, non-ignored pin in
+    // `pipeline::tests::unmatched_reference_stays_literal_text` for the
+    // full rationale). Passing today; not a RED test.
+    #[test]
+    fn jsx_unmatched_reference_stays_literal_text() {
+        let jsx = emit_with_footnotes("Dangling ref[^missing] end.\n");
+        assert!(
+            jsx.contains("[^missing]"),
+            "unmatched footnote reference must stay literal text in the \
+             emitted JSX: {jsx}"
+        );
+    }
+
+    // 6. A footnote reference AND its definition nested inside an MDX
+    // JSX element's body (`<Note>…</Note>`) go through this file's OWN
+    // `jsx_render_child` catch-all (~line 1795), not the shared
+    // `mdast_to_hast_inner` one — confirmed via a throwaway
+    // `zfb-content` example during this issue's investigation: both
+    // `FootnoteReference` and `FootnoteDefinition` parse as direct
+    // children of the `MdxJsxFlowElement` node when nested this way.
+    // #2027's acceptance criteria calls this out by name ("a footnote
+    // reference inside JSX children").
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2027"]
+    fn jsx_nested_footnote_reference_and_definition_inside_jsx_element_are_not_dropped() {
+        let jsx = emit_with_footnotes("<Note>\n\nRef[^a] end.\n\n[^a]: Body text.\n\n</Note>\n");
+
+        assert!(
+            jsx.contains("{\"1\"}"),
+            "a footnote reference nested inside an MDX JSX element body must \
+             still render its visible marker \"1\" — jsx_render_child's \
+             catch-all drops it today: {jsx}"
+        );
+        assert!(
+            jsx.contains("Body text."),
+            "a footnote definition nested inside an MDX JSX element body \
+             must still render its content: {jsx}"
+        );
+    }
+
+    // 7. A footnote DEFINITION whose body contains JSX (`<Bold>…</Bold>`)
+    // — the reverse nesting #2027's acceptance criteria also calls out
+    // by name. The `FootnoteDefinition` itself is top-level here (so
+    // the emission fix mechanically lands via #2026's shared catch-all),
+    // but confirming the nested JSX content survives is explicitly
+    // #2027's stated scope, so it stays tagged for #2027's confirm pass
+    // rather than #2026's.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2027"]
+    fn jsx_footnote_definition_body_containing_jsx_is_not_dropped() {
+        let jsx =
+            emit_with_footnotes("Ref[^a] end.\n\n[^a]: Body with <Bold>emphasis</Bold> inside.\n");
+
+        assert!(
+            jsx.contains("Body with"),
+            "footnote definition body must survive: {jsx}"
+        );
+        assert!(
+            jsx.contains("emphasis"),
+            "JSX content nested inside a footnote definition body must \
+             survive: {jsx}"
+        );
+        assert!(
+            jsx.contains("Bold"),
+            "the JSX component name nested inside a footnote definition \
+             body must survive (not just its text content): {jsx}"
+        );
+    }
 }
