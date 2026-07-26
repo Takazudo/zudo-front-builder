@@ -404,6 +404,50 @@ mod tests {
         assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
     }
 
+    /// Issue #1826 (Dev Self Heal epic #1999) — unit-level proof of the gap
+    /// this outcome shape falls through. Both self-heal channels for the
+    /// deferred window (`mark_all_routes_stale`, called by the healthy
+    /// Cold-lazy deferred publish per #1182/#1808, AND by the
+    /// `recover_cold_bootstrap_after_publish` cold-bootstrap-recovery seam
+    /// per #1809) walk ONLY `routes_by_source` — the SSG route table.
+    /// `prerender = false` (SSR) routes live in a separate `ssr_routes`
+    /// table that neither call site ever touches. In a project whose
+    /// routes are ALL `prerender = false`, `routes_by_source` is empty, so
+    /// both channels drain a `pages_stale` set of exactly zero paths.
+    ///
+    /// This test pins that resulting `BuildOutcome` shape: nothing was
+    /// written eagerly (lazy dev-render default), nothing was marked stale
+    /// (no SSG routes exist to mark), nothing was pruned, and the SSR
+    /// route's OWN republish (`refresh_live_ssr_routes`) is a live-handle
+    /// swap that never touches `BuildOutcome` at all — so the outcome
+    /// reaching `outcome_to_events` after an SSR-only deferred publish (or
+    /// its cold-bootstrap recovery) is indistinguishable from a totally
+    /// empty tick, and correctly emits NO `ReloadEvent::Page`. The server
+    /// has already recovered (the SSR route renders per-request the moment
+    /// the live handle is published) — only the browser was never told.
+    /// Wave 2 (#2002) is expected to widen the shared stale-marking signal
+    /// to cover `ssr_routes` too, which will invert this assertion; do not
+    /// treat this test as self-graduating past that fix.
+    #[test]
+    fn ssr_only_deferred_publish_outcome_emits_no_page_event() {
+        // The exact shape both `mark_all_routes_stale` call sites produce
+        // for an SSR-only project: every `BuildOutcome` field the gate
+        // checks stays at its default (empty/false), because there is no
+        // SSG route for either self-heal channel to mark stale.
+        let outcome = BuildOutcome {
+            pages_written: Vec::new(),
+            pages_stale: Vec::new(),
+            pages_pruned: Vec::new(),
+            client_scripts_changed: false,
+            ..Default::default()
+        };
+        assert!(
+            outcome_to_events(&outcome).is_empty(),
+            "an SSR-only deferred-publish (or cold-bootstrap-recovery) outcome must not \
+             silently start emitting Page events without Wave 2's fix landing"
+        );
+    }
+
     /// Issue #1027 — stale marks combine with the other event kinds the
     /// same way written pages do: one Page, then Css.
     #[test]
