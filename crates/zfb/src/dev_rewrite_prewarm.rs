@@ -69,9 +69,17 @@
 //!   rule set names, each is a no-op when already fresh (the stale
 //!   pre-check returns before touching the renderer), and the edit that
 //!   triggers it is a human keystroke, not a hot loop.
+//! - **After a cold-bootstrap recovery: yes.** When the deferred Cold
+//!   bundle FAILS (#1809), the boot hook's pre-warm runs against the
+//!   empty scaffold route tables and warms nothing. The recovery's own
+//!   `mark_all_routes_stale` then makes each target *claimable* but
+//!   nothing ever claims it — a rewrite serves `/alias`, and `/target` is
+//!   never requested. So `recover_cold_bootstrap_after_publish` raises a
+//!   one-shot latch that `commands::dev`'s `on_outcome` drains to re-run
+//!   this pass against the freshly published tables.
 //!
-//! Both entry points funnel through [`prewarm_rewrite_targets_now`], so
-//! there is one implementation of "what pre-warming means" and the two
+//! All three entry points funnel through [`prewarm_rewrite_targets_now`],
+//! so there is one implementation of "what pre-warming means" and the
 //! lifecycle moments cannot drift.
 
 use zfb_server::{prewarm_rewrite_targets, PrewarmSkipReason, Redirects, RedirectsHandle};
@@ -133,23 +141,21 @@ pub(crate) fn prewarm_rewrite_targets_now(
     };
 
     for target in &plan.targets {
-        // Step 1 — stale-mark. A `None` here means the target is not an
-        // SSG route in this session (SSR route, unexpanded dynamic
-        // route, or a rule pointing at nothing). Step 2 would be a
-        // `NoRoute` no-op, so skip it and keep the log honest.
+        // Step 1 — stale-mark. Best-effort: `None` means the reverse URL
+        // index has no entry, which covers an SSR route and a rule
+        // pointing at nothing — but ALSO a dynamic injected route, which
+        // has no concrete URL at boot and is instead resolved by the
+        // adapter's own injected-pattern fallback in step 2 (that
+        // fallback marks such a route stale itself, by construction).
+        // So a miss here must NOT skip step 2 — doing so would leave
+        // `/alias /preset-docs/foo 200` at the very 404 this pass exists
+        // to prevent, even though a direct GET renders it fine.
         if session
             .mark_rewrite_target_stale(&target.request_path)
-            .is_none()
+            .is_some()
         {
-            tracing::debug!(
-                site = "rewrite_prewarm",
-                target = %target.raw_target,
-                request_path = %target.request_path,
-                "_redirects 200-rewrite target resolves to no SSG route; nothing to pre-warm",
-            );
-            continue;
+            report.marked += 1;
         }
-        report.marked += 1;
 
         // Step 2 — warm. Uses `request_path` verbatim: the enumerator
         // derives it from the encoded canonical form through the same
@@ -159,6 +165,13 @@ pub(crate) fn prewarm_rewrite_targets_now(
         // misses.
         match adapter.render_stale_route(&target.request_path) {
             LazyRenderOutcome::Rendered { .. } => report.rendered += 1,
+            LazyRenderOutcome::NoRoute => tracing::debug!(
+                site = "rewrite_prewarm",
+                target = %target.raw_target,
+                request_path = %target.request_path,
+                "_redirects 200-rewrite target matches no SSG route and no injected pattern; \
+                 nothing to pre-warm",
+            ),
             other => tracing::debug!(
                 site = "rewrite_prewarm",
                 target = %target.raw_target,
@@ -309,6 +322,66 @@ mod tests {
         assert_eq!(
             session.take_tick_stale_for_tests(),
             vec![PathBuf::from("posts/caf%C3%A9/index.html")],
+        );
+    }
+
+    /// Codex review finding on #2004: a step-1 miss must NOT skip step 2.
+    ///
+    /// A dynamic injected route (`/preset-docs/[slug]`) has no concrete
+    /// URL at boot, so `lookup_by_url` — and therefore
+    /// `mark_rewrite_target_stale` — misses by design; the adapter's own
+    /// injected-pattern fallback is what resolves it, and marks it stale
+    /// itself. Short-circuiting on the miss would leave
+    /// `/alias /preset-docs/foo 200` on exactly the 404 this pass exists
+    /// to prevent, even though a direct GET renders it fine.
+    ///
+    /// The evidence is the stale entry the fallback inserts for the
+    /// synthesized output path: it can only exist if step 2 ran.
+    #[test]
+    fn injected_route_target_still_reaches_the_adapter_after_a_step_one_miss() {
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+        use zfb_build::DevAssetPipeline;
+        use zfb_build::InjectedRoute;
+        use zfb_server::InjectedRouteSet;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let session = crate::commands::dev::stub_session_for_adapter_tests(
+            root.clone(),
+            // No SSG routes at all: the ONLY way to reach the target is
+            // the adapter's injected-pattern fallback.
+            Vec::new(),
+            Arc::new(Mutex::new(None)),
+            true,
+        );
+        let pipeline = DevAssetPipeline::new();
+        let adapter = LazyRenderAdapter::new(
+            session.clone(),
+            pipeline.request_writer(),
+            root.join("dev-pages"),
+            InjectedRouteSet::new(vec![InjectedRoute {
+                pattern: "/preset-docs/[slug]".into(),
+                entrypoint: PathBuf::from("/tmp/stub.tsx"),
+                plugin: "test-plugin".into(),
+                prerender: None,
+            }]),
+        );
+
+        let report = prewarm_rewrite_targets_now(
+            &Redirects::parse("/alias /preset-docs/foo 200\n"),
+            None,
+            &session,
+            &adapter,
+        );
+        assert_eq!(report.enumerated, 1);
+        assert_eq!(report.marked, 0, "the reverse index cannot know this route");
+        assert!(
+            session
+                .claim_stale(Path::new("preset-docs/foo/index.html"))
+                .is_some(),
+            "step 2 must still run: only the adapter's injected fallback can \
+             stale this synthesized output path",
         );
     }
 }
