@@ -1392,7 +1392,10 @@ fn redirects_match_path(trimmed: &str, base_prefix: Option<&str>) -> String {
 /// re-canonicalization reproduces the encoded `url_path`/`output_path` the
 /// renderer wrote (issue #1768). Without the decode the `%` would be
 /// re-encoded to `%25`, missing the target route.
-fn waterfall_trimmed_for_rewrite_target(target: &str, base_prefix: Option<&str>) -> String {
+pub(crate) fn waterfall_trimmed_for_rewrite_target(
+    target: &str,
+    base_prefix: Option<&str>,
+) -> String {
     let path = target
         .split_once('?')
         .map(|(path, _)| path)
@@ -1614,7 +1617,7 @@ const CANONICAL_UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
 ///
 /// Per-component encoding preserves the `/` separators; a component's own
 /// bytes never introduce a new `/` because `/` itself is always encoded.
-fn canonical_encode_path(decoded_path: &str) -> String {
+pub(crate) fn canonical_encode_path(decoded_path: &str) -> String {
     decoded_path
         .split('/')
         .map(|seg| utf8_percent_encode(seg, CANONICAL_UNRESERVED).to_string())
@@ -1911,7 +1914,7 @@ fn method_not_allowed_get_head() -> Response {
 /// - exact match (`/blog/foo` → `/blog/foo`)
 /// - directory-style with `index.html` (`/blog/foo` → `/blog/foo/index.html`)
 /// - directory-style with trailing slash (`/blog/foo` → `/blog/foo/`)
-fn lookup_keys(path: &str) -> Vec<String> {
+pub(crate) fn lookup_keys(path: &str) -> Vec<String> {
     if path.is_empty() {
         return vec!["/".to_string(), "/index.html".to_string()];
     }
@@ -3798,6 +3801,113 @@ mod tests {
         assert!(
             body.contains("<script src=\"/foo/__zfb/livereload.js\"></script>"),
             "expected prefixed livereload tag in 404, got: {body}"
+        );
+    }
+
+    /// Issue #2003 — the empirical half of the "canonical path form"
+    /// decision row.
+    ///
+    /// [`crate::rewrite_prewarm::prewarm_rewrite_targets`] reuses this
+    /// module's own normalization functions, which makes a spelling
+    /// divergence impossible *by construction*. This test proves the
+    /// consequence that actually matters, *behaviourally*: seed the page
+    /// cache using NOTHING but the keys that helper emits, then drive a real
+    /// `_redirects` `200` rewrite through the real router. A near-miss
+    /// spelling — the failure mode the whole sub-issue is about, because it
+    /// looks like it works — would 404 here instead of 200.
+    ///
+    /// `test_state`'s `html_root` / `public_root` point at paths that do not
+    /// exist, so the PageCache leg is the ONLY leg that can produce a 200:
+    /// a pass could not come from disk by accident.
+    ///
+    /// The percent-encoded case is the load-bearing one. A pure-ASCII target
+    /// cannot falsify this — decoded and canonical forms coincide there, so
+    /// almost any plausible spelling would pass.
+    #[tokio::test]
+    async fn prewarm_keys_are_what_the_live_rewrite_waterfall_serves_from() {
+        for (rules, alias_uri, marker) in [
+            ("/alias /target 200\n", "/alias", "PREWARM_PLAIN_MARKER"),
+            (
+                "/alias-encoded /posts/caf%C3%A9 200\n",
+                "/alias-encoded",
+                "PREWARM_ENCODED_MARKER",
+            ),
+            (
+                "/alias-query /queried?flavor=vanilla 200\n",
+                "/alias-query",
+                "PREWARM_QUERY_MARKER",
+            ),
+        ] {
+            let parsed = Redirects::parse(rules);
+            let plan = crate::rewrite_prewarm::prewarm_rewrite_targets(&parsed, None);
+            assert_eq!(plan.targets.len(), 1, "fixture enumerates one target");
+
+            let mut state = test_state();
+            state.redirects = Some(Arc::new(RwLock::new(parsed)));
+            // The ONLY thing seeded is the key the enumerator produced.
+            state
+                .pages
+                .insert(
+                    &plan.targets[0].lookup_keys[0],
+                    &format!("<html><body>{marker}</body></html>"),
+                )
+                .await;
+
+            let resp = test_router(state)
+                .oneshot(
+                    Request::builder()
+                        .uri(alias_uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "{alias_uri}: rewrite must resolve from the pre-warm key"
+            );
+            let body = body_string(resp).await;
+            assert!(
+                body.contains(marker),
+                "{alias_uri}: served body must be the pre-warmed target: {body}"
+            );
+        }
+    }
+
+    /// The base-prefixed counterpart of the test above: the emitted key must
+    /// be the prefix-STRIPPED spelling the waterfall probes, even though the
+    /// rule's target is authored in full-path spec form.
+    #[tokio::test]
+    async fn base_prefixed_prewarm_keys_are_what_the_live_rewrite_serves_from() {
+        let parsed = Redirects::parse("/pj/site/alias /pj/site/rewritten/ 200\n");
+        let plan = crate::rewrite_prewarm::prewarm_rewrite_targets(&parsed, Some("/pj/site"));
+        assert_eq!(plan.targets.len(), 1);
+
+        let mut state = test_state_with_base("/pj/site");
+        state.redirects = Some(Arc::new(RwLock::new(parsed)));
+        state
+            .pages
+            .insert(
+                &plan.targets[0].lookup_keys[0],
+                "<html><body>PREWARM_BASE_MARKER</body></html>",
+            )
+            .await;
+
+        let resp = test_router_with_base(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/pj/site/alias")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("PREWARM_BASE_MARKER"),
+            "base-prefixed rewrite must resolve from the pre-warm key: {body}"
         );
     }
 
