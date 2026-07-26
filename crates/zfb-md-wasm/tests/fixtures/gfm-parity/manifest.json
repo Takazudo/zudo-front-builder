@@ -1,0 +1,34 @@
+{
+  "$comment": "Wasm-vs-native parity corpus for GFM task lists and footnotes (zfb#2028, epic zfb#2021, wave 5). A SEPARATE tree from tests/fixtures/parity/manifest.json on purpose -- that corpus is frozen at 14 fixtures per the zfb#1578 epic's own bounded-finish-line decision, and task lists/footnotes are a later, unrelated feature. Read by BOTH the native oracle generator (crates/zfb-md-wasm/tests/bin/generate_parity_oracle.rs, invoked with the `gfm-parity` fixtures-dir argument) and the wasm-side vitest suite (crates/zfb-md-wasm/npm/test/gfm-parity.test.ts).",
+  "fixtures": [
+    {
+      "slug": "task-list",
+      "tier": "renderHtml",
+      "input": "input/task-list.md",
+      "options": {
+        "filename": "task-list.md",
+        "pipeline": { "gfm": { "taskListItem": true } }
+      }
+    },
+    {
+      "slug": "footnotes",
+      "tier": "renderHtml",
+      "input": "input/footnotes.md",
+      "options": {
+        "filename": "footnotes.md",
+        "pipeline": { "gfm": { "footnoteDefinition": true } }
+      }
+    },
+    {
+      "slug": "footnotes-jsx",
+      "tier": "compile",
+      "input": "input/footnotes-jsx.mdx",
+      "options": {
+        "filename": "footnotes-jsx.mdx",
+        "jsxRuntime": "react",
+        "development": true,
+        "pipeline": { "gfm": { "footnoteDefinition": true } }
+      }
+    }
+  ]
+}

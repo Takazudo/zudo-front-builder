@@ -79,12 +79,24 @@ struct FixtureEntry {
     options: Value,
 }
 
-fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parity")
+fn fixtures_dir(subdir: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(subdir)
 }
 
 fn main() {
-    let dir = fixtures_dir();
+    // Optional first CLI arg selects the fixtures subdir under
+    // tests/fixtures/ (default "parity", the frozen zfb#1578 corpus). Added
+    // for zfb#2028 so the GFM task-list/footnote parity corpus
+    // (tests/fixtures/gfm-parity/) -- a separate tree on purpose, since
+    // "parity" itself is frozen -- can reuse this same generator: `cargo run
+    // -p zfb-md-wasm --bin generate_parity_oracle --features parity-oracle
+    // -- gfm-parity`.
+    let subdir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "parity".to_string());
+    let dir = fixtures_dir(&subdir);
     let manifest_path = dir.join("manifest.json");
     let manifest_text = fs::read_to_string(&manifest_path)
         .unwrap_or_else(|e| panic!("reading {}: {e}", manifest_path.display()));
