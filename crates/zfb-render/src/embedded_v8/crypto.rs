@@ -1,10 +1,11 @@
 //! OS-entropy host primitive for the embedded V8 host (issue #2017,
 //! epic #2012 — #1751 part 1 of 2).
 //!
-//! This is the **Rust primitive only**. Nothing in
-//! `js/web_polyfills.js` calls [`op_zfb_random_bytes`] yet; sub-issue
-//! #2018 builds `crypto.getRandomValues` / `crypto.randomUUID` on top
-//! of it. There is deliberately no JS surface here.
+//! [`op_zfb_random_bytes`] is the entropy primitive; [`digest`] holds
+//! the SHA primitive behind `crypto.subtle.digest`. The JS surface that
+//! consumes both — `crypto.getRandomValues`, `crypto.randomUUID`, and
+//! the SubtleCrypto object — lives in `js/web_polyfills.js` (sub-issue
+//! #2018) and is exercised by `embedded_v8/js_crypto_tests.rs`.
 //!
 //! ## Why the op is SYNCHRONOUS (and why that is not a guardrail-1
 //! violation)
@@ -55,6 +56,8 @@ use deno_core::{op2, OpState};
 use deno_error::JsErrorBox;
 
 use super::limits;
+
+pub mod digest;
 
 /// [`EntropySource::kind`] of the production source. Tests assert this
 /// on the source the *production* extension installs, so "the op is
@@ -247,7 +250,10 @@ pub fn op_zfb_random_bytes(
 
 deno_core::extension!(
     zfb_crypto,
-    ops = [op_zfb_random_bytes],
+    // `op_zfb_digest` needs no state of its own — it is a pure function
+    // of (algorithm, bytes), so there is nothing to park in `OpState`
+    // and nothing that can be half-installed.
+    ops = [op_zfb_random_bytes, digest::op_zfb_digest],
     state = |state| {
         state.put(HostEntropySource(Rc::new(OsEntropy)));
     },

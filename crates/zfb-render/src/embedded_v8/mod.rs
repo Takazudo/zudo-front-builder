@@ -112,6 +112,8 @@ mod dispatch;
 pub mod extensions;
 pub mod fetch;
 #[cfg(test)]
+mod js_crypto_tests;
+#[cfg(test)]
 mod js_fetch_tests;
 pub mod limits;
 #[cfg(test)]
@@ -1041,12 +1043,14 @@ fn synthesise_specifier(name: &str) -> String {
 ///
 /// The OS CSPRNG is the other thing JS cannot reach, so
 /// [`crypto::zfb_crypto`] registers [`crypto::op_zfb_random_bytes`]
-/// (issue #2017). That one is **synchronous** on purpose —
-/// `crypto.getRandomValues` is synchronous by specification, and the
-/// kernel entropy syscall is neither network nor disk I/O; see the
-/// `crypto` module header. It is registered unconditionally, in both
-/// dispatch modes: unlike `fetch`, entropy is not mode-gated. No JS
-/// calls it yet either; sub-issue #2018 wires that side.
+/// (issue #2017) alongside [`crypto::digest::op_zfb_digest`] (issue
+/// #2018). Both are **synchronous** on purpose —
+/// `crypto.getRandomValues` is synchronous by specification, the kernel
+/// entropy syscall is neither network nor disk I/O, and hashing is
+/// CPU-bound over a buffer already in memory; see the `crypto` module
+/// header. They are registered unconditionally, in both dispatch modes:
+/// unlike `fetch`, neither entropy nor hashing is mode-gated — the SSG
+/// denial is about network access.
 ///
 /// Kept as a function so a future swap to `deno_web` / `deno_fetch`
 /// is a one-place change.

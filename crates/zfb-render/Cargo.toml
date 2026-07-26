@@ -15,7 +15,15 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 # `--no-default-features`.
 [features]
 default = ["embed_v8", "syntect-onig"]
-embed_v8 = ["dep:deno_core", "dep:deno_error", "dep:getrandom", "dep:reqwest", "dep:tokio"]
+embed_v8 = [
+    "dep:deno_core",
+    "dep:deno_error",
+    "dep:getrandom",
+    "dep:reqwest",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:tokio",
+]
 # Syntect regex-backend forwarding (zfb#1576, epic zfb#1572). The
 # `zfb-content` edge below is `default-features = false` so a wasm consumer
 # of this crate (`zfb-md-wasm`) can select the pure-Rust `syntect-fancy`
@@ -79,6 +87,16 @@ deno_error = { version = "0.7", optional = true }
 # transitive dep (via `deno_core`'s graph among others); this only adds
 # a direct edge, no new fetch.
 getrandom = { version = "0.3", optional = true }
+# SHA implementations behind `crypto.subtle.digest` (issue #2018).
+# Hashing is computed by a Rust host op rather than hand-rolled JS: the
+# JS host is a code path a developer's ETag / content-hash / request-id
+# depends on, and a subtly wrong hand-written SHA-256 would produce
+# plausible-looking digests that disagree with production Workers.
+# Both crates are already in `Cargo.lock` at these lines (sha2 is a
+# direct dep of eight sibling crates, sha1 arrives transitively), so
+# this only adds a direct edge — no new fetch.
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
 # Outbound HTTP for the request-time `fetch` transport (issue #2015).
 # The workspace already builds `reqwest 0.12` with `rustls-tls`
 # (zfb-build, zfb-binfetch, zfb, zfb-server, zfb-test-utils), so this
