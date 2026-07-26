@@ -221,79 +221,14 @@ impl ThreadedV8Host {
                     drop(boot_tx);
 
                     // Request loop: serve one request at a time.
-                    for host_req in rx {
-                        let req = match host_req {
-                            HostRequest::Dispatch(req) => req,
-                            HostRequest::DrainConsoleLogs { reply } => {
-                                // Runs on the isolate thread between
-                                // dispatches — the rendezvous channel
-                                // guarantees no render request is in
-                                // flight (issue #700's re-entrancy rule).
-                                let _ = reply.send(host.drain_console_logs());
-                                continue;
-                            }
-                        };
-                        // Construct the request shape expected by
-                        // dispatch_fetch. The legacy GET path keeps
-                        // method = "GET" + empty headers/body via
-                        // `DispatchRequest`'s defaults; the
-                        // `dispatch_fetch_full` path (issue #367)
-                        // forwards method/headers/body verbatim.
-                        let body_opt = if req.body.is_empty() {
-                            None
-                        } else {
-                            Some(req.body)
-                        };
-                        // Issue #367: lower-case headers on the way
-                        // into the V8 host so the JS `Headers` object
-                        // sees a canonical shape regardless of the
-                        // axum casing the caller passed in.
-                        let mut headers = std::collections::BTreeMap::new();
-                        for (k, v) in req.headers {
-                            headers.insert(k.to_ascii_lowercase(), v);
-                        }
-                        let http_req = HttpRequestLike {
-                            url: format!("http://localhost{}", req.url_path),
-                            method: req.method,
-                            headers,
-                            body: body_opt,
-                        };
-                        let result = host
-                            .dispatch_fetch(http_req)
-                            .await
-                            .map(|resp| {
-                                // Deep-review fix (PR #376): forward ALL
-                                // response headers (Cache-Control, Set-
-                                // Cookie, Location, CORS, X-Trace-Id, …)
-                                // so the dev SSR seam matches Cloudflare
-                                // prod parity. `content_type` is duplicated
-                                // out as the renderer's hot-path field;
-                                // `headers` retains everything else as an
-                                // ordered `Vec` so multi-valued headers
-                                // (e.g. Set-Cookie) survive the seam —
-                                // `zfb-render`'s own `HttpResponseLike` is
-                                // already `Vec<(String, String)>`-shaped
-                                // (sub-issue #1760), so this is a
-                                // pass-through, not a refold.
-                                let content_type = resp
-                                    .headers
-                                    .iter()
-                                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-                                    .map(|(_, v)| v.clone())
-                                    .unwrap_or_default();
-                                HttpResponseLike {
-                                    status: resp.status,
-                                    content_type,
-                                    headers: resp.headers,
-                                    body: resp.body,
-                                }
-                            })
-                            .map_err(|e| RendererError::EmbeddedV8(e.to_string()));
-                        // Best-effort: the caller may have already timed out;
-                        // ignore send errors.
-                        let _ = req.reply.send(result);
-                    }
-                    // rx is closed (ThreadedV8Host was dropped); exit cleanly.
+                    //
+                    // Issue #1735: this was a byte-identical inline copy of
+                    // `serve_v8_host_requests`, kept because epic #1712 froze
+                    // this production render path byte-for-byte to de-risk its
+                    // own refactor. That freeze was scoped to #1712 and is
+                    // lifted here on purpose — two copies of the render loop
+                    // drift, and drift here is expensive to find.
+                    serve_v8_host_requests(host, rx).await;
                 });
             })
             .map_err(|e| {
@@ -535,9 +470,10 @@ pub(crate) fn inner_bundle_specifier(bundle_path: &Path) -> String {
 /// time off the rendezvous channel until it closes, then return so the thread
 /// exits cleanly.
 ///
-/// Extracted so the dev content-trace constructor can reuse it verbatim.
-/// [`ThreadedV8Host::new_with_hooks`] keeps its own inline copy so the
-/// production path stays byte-for-byte frozen.
+/// The single implementation: both [`ThreadedV8Host::new_with_hooks`] and
+/// [`ThreadedV8Host::new_with_dev_content_trace_wrapper`] call it. `new_with_hooks`
+/// carried a byte-identical inline copy until issue #1735 folded it onto this
+/// helper — see the fold-site comment there for why that freeze was lifted.
 async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiver<HostRequest>) {
     for host_req in rx {
         let req = match host_req {
@@ -550,6 +486,10 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
                 continue;
             }
         };
+        // Construct the request shape expected by dispatch_fetch. The legacy
+        // GET path keeps method = "GET" + empty headers/body via
+        // `DispatchRequest`'s defaults; the `dispatch_fetch_full` path
+        // (issue #367) forwards method/headers/body verbatim.
         let body_opt = if req.body.is_empty() {
             None
         } else {
@@ -572,9 +512,15 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
             .dispatch_fetch(http_req)
             .await
             .map(|resp| {
-                // See the matching comment in `ThreadedV8Host::new_with_hooks`
-                // above: `resp.headers` is already `Vec<(String, String)>`
-                // (sub-issue #1760), so this is a pass-through.
+                // Deep-review fix (PR #376): forward ALL response headers
+                // (Cache-Control, Set-Cookie, Location, CORS, X-Trace-Id, …)
+                // so the dev SSR seam matches Cloudflare prod parity.
+                // `content_type` is duplicated out as the renderer's hot-path
+                // field; `headers` retains everything else as an ordered `Vec`
+                // so multi-valued headers (e.g. Set-Cookie) survive the seam —
+                // `zfb-render`'s own `HttpResponseLike` is already
+                // `Vec<(String, String)>`-shaped (sub-issue #1760), so this is
+                // a pass-through, not a refold.
                 let content_type = resp
                     .headers
                     .iter()
