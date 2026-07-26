@@ -7137,124 +7137,132 @@ fn boot_dev_renderer(
     // path this stays empty; the deferred `refresh_bundle_and_routes` seeds the
     // edges itself.
     let mut boot_route_module_deps: Vec<zfb_build::RouteModuleDeps> = Vec::new();
-    let (renderer, routes_by_source, ssr_routes, url_index, page_sources, content_trace_token) =
-        if defer_bundle {
-            (
-                // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
-                // swaps the first live host into this same `Arc` (which the render
-                // callback, SSR adapter, and render-on-request hook all already
-                // hold a clone of).
-                Arc::new(Mutex::new(None)),
-                HashMap::new(),
-                Vec::new(),
-                HashMap::new(),
-                // Empty alongside the empty tables: the deferred publish swaps in
-                // the scan's real page set with them (issue #2064).
-                HashSet::new(),
-                None,
-            )
-        } else {
-            // Test-only slow-step injection (issue #1182 falsifiability guard,
-            // EAGER half): `ZFB_DEV_TEST_SLOW_BUNDLE_MS` sleeps right before the
-            // EAGER pre-bind bundle. This is the co-located twin of the
-            // deferred-task seam in `run` — together they make the bind-before-bundle
-            // e2e falsifiable wherever the BOOT bundle runs. In the correct ordering
-            // a boot-lazy + servable-`dist/` boot takes the scaffold branch above,
-            // so this eager seam never fires and only the deferred-task seam does
-            // (after bind → banner stays fast). If the deferral is reverted — the
-            // boot bundle moved back here, before `TcpListener::bind` — THIS seam
-            // fires before bind and delays the ready banner past the e2e's deadline,
-            // failing the guard. Without a co-located eager seam, an un-defer revert
-            // would silently pass. Runs synchronously in `run` before bind, so the
-            // blocking sleep delays bind exactly as a real pre-bind bundle would.
-            if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BUNDLE_MS") {
-                if let Ok(ms) = raw.trim().parse::<u64>() {
-                    if ms > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(ms));
-                    }
+    let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
+        (
+            // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
+            // swaps the first live host into this same `Arc` (which the render
+            // callback, SSR adapter, and render-on-request hook all already
+            // hold a clone of).
+            Arc::new(Mutex::new(None)),
+            HashMap::new(),
+            Vec::new(),
+            HashMap::new(),
+            None,
+        )
+    } else {
+        // Test-only slow-step injection (issue #1182 falsifiability guard,
+        // EAGER half): `ZFB_DEV_TEST_SLOW_BUNDLE_MS` sleeps right before the
+        // EAGER pre-bind bundle. This is the co-located twin of the
+        // deferred-task seam in `run` — together they make the bind-before-bundle
+        // e2e falsifiable wherever the BOOT bundle runs. In the correct ordering
+        // a boot-lazy + servable-`dist/` boot takes the scaffold branch above,
+        // so this eager seam never fires and only the deferred-task seam does
+        // (after bind → banner stays fast). If the deferral is reverted — the
+        // boot bundle moved back here, before `TcpListener::bind` — THIS seam
+        // fires before bind and delays the ready banner past the e2e's deadline,
+        // failing the guard. Without a co-located eager seam, an un-defer revert
+        // would silently pass. Runs synchronously in `run` before bind, so the
+        // blocking sleep delays bind exactly as a real pre-bind bundle would.
+        if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BUNDLE_MS") {
+            if let Ok(ms) = raw.trim().parse::<u64>() {
+                if ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
                 }
             }
+        }
 
-            // Boot path — timing not collected here (one-shot at startup, not a
-            // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
-            let bundler_out: BundlerOutput = assemble_and_bundle_dev(
-                project_root,
-                cfg,
-                plugin_alias_entries,
-                plugin_virtual_modules,
-                false,
-                Some(&mut shadow_session),
-                rebuild_inputs.esbuild_path(),
-                rebuild_inputs.empty_user_pages_root(),
-                // S2 (#1230) — include the injected modules in the BOOT bundle from
-                // the staging dir materialised above. `None` on the parity path.
-                rebuild_inputs.injected_pages_root(),
-            )?
-            .output;
-            let (trace_token, trace_wrapper_source) =
-                wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
-            // #1284/#1287 — capture the boot bundle's per-route Module deps for
-            // post-graph seeding (the graph does not exist yet at this point).
-            boot_route_module_deps = bundler_out.route_module_deps.clone();
+        // Boot path — timing not collected here (one-shot at startup, not a
+        // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
+        let bundler_out: BundlerOutput = assemble_and_bundle_dev(
+            project_root,
+            cfg,
+            plugin_alias_entries,
+            plugin_virtual_modules,
+            false,
+            Some(&mut shadow_session),
+            rebuild_inputs.esbuild_path(),
+            rebuild_inputs.empty_user_pages_root(),
+            // S2 (#1230) — include the injected modules in the BOOT bundle from
+            // the staging dir materialised above. `None` on the parity path.
+            rebuild_inputs.injected_pages_root(),
+        )?
+        .output;
+        let (trace_token, trace_wrapper_source) =
+            wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
+        // #1284/#1287 — capture the boot bundle's per-route Module deps for
+        // post-graph seeding (the graph does not exist yet at this point).
+        boot_route_module_deps = bundler_out.route_module_deps.clone();
 
-            let state = start(RendererStartInput {
-                bundle_path: bundler_out.bundle_path.clone(),
-                sourcemap_path: bundler_out.sourcemap_path.clone(),
-                backend: Backend::EmbeddedV8 {
-                    host_factory:
-                        crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
-                            v8_plugin_hooks,
-                            trace_wrapper_source,
-                        ),
-                },
-                request_timeout: None,
-            })
-            .map_err(anyhow::Error::from)
-            .context("renderer start failed")?;
+        let state = start(RendererStartInput {
+            bundle_path: bundler_out.bundle_path.clone(),
+            sourcemap_path: bundler_out.sourcemap_path.clone(),
+            backend: Backend::EmbeddedV8 {
+                host_factory:
+                    crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
+                        v8_plugin_hooks,
+                        trace_wrapper_source,
+                    ),
+            },
+            request_timeout: None,
+        })
+        .map_err(anyhow::Error::from)
+        .context("renderer start failed")?;
 
-            // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
-            // front so the SSG `paths()` runtime-evaluation phase below can borrow
-            // the live embedded V8 host out of the same handle the SSG render
-            // callback and the SSR adapter use later (#502/#507). One host, shared
-            // across boot-time paths() eval, build-time SSG render, and request-time
-            // SSR.
-            let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
+        // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
+        // front so the SSG `paths()` runtime-evaluation phase below can borrow
+        // the live embedded V8 host out of the same handle the SSG render
+        // callback and the SSR adapter use later (#502/#507). One host, shared
+        // across boot-time paths() eval, build-time SSG render, and request-time
+        // SSR.
+        let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
 
-            // Issue #367 — extract `export const prerender = …` per page so
-            // we can keep SSG-eligible pages in `routes_by_source` (the SSG
-            // render callback's lookup table) while routing `prerender =
-            // false` pages into the request-time SSR set instead. Without this
-            // split the SSG callback would stamp a stale snapshot to disk on
-            // every watcher tick and the dist fallback would shadow the SSR
-            // handler.
-            // Build the route tables from the router scan + the live host (#659:
-            // extracted into `build_dev_route_tables` so the watch-ADD rebuild
-            // reproduces the boot tables exactly).
-            let (mut routes_by_source, ssr_routes, mut url_index) =
-                build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
+        // Issue #367 — extract `export const prerender = …` per page so
+        // we can keep SSG-eligible pages in `routes_by_source` (the SSG
+        // render callback's lookup table) while routing `prerender =
+        // false` pages into the request-time SSR set instead. Without this
+        // split the SSG callback would stamp a stale snapshot to disk on
+        // every watcher tick and the dist fallback would shadow the SSR
+        // handler.
+        // Build the route tables from the router scan + the live host (#659:
+        // extracted into `build_dev_route_tables` so the watch-ADD rebuild
+        // reproduces the boot tables exactly).
+        let (mut routes_by_source, ssr_routes, mut url_index) =
+            build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
 
-            // S3 (#1231) — seed the STATIC injected routes into the boot tables so
-            // `lookup_by_url` resolves their URLs (URL == pattern). The router scan
-            // above walks the real user-pages tree (or #1518's private empty root)
-            // only; staged injected modules live outside it, so they must be merged
-            // here (and on every swap, via `refresh_bundle_and_routes`). Rebuild
-            // `url_index` to cover the seeds.
-            // No-op on the parity path. (Boot stale-marking happens after the
-            // session is constructed — see `mark_injected_seeds_stale` below.)
-            if !injected_static_seeds.is_empty() {
-                seed_injected_static_routes(&mut routes_by_source, &injected_static_seeds);
-                url_index = build_url_index(&routes_by_source);
-            }
+        // S3 (#1231) — seed the STATIC injected routes into the boot tables so
+        // `lookup_by_url` resolves their URLs (URL == pattern). The router scan
+        // above walks the real user-pages tree (or #1518's private empty root)
+        // only; staged injected modules live outside it, so they must be merged
+        // here (and on every swap, via `refresh_bundle_and_routes`). Rebuild
+        // `url_index` to cover the seeds.
+        // No-op on the parity path. (Boot stale-marking happens after the
+        // session is constructed — see `mark_injected_seeds_stale` below.)
+        if !injected_static_seeds.is_empty() {
+            seed_injected_static_routes(&mut routes_by_source, &injected_static_seeds);
+            url_index = build_url_index(&routes_by_source);
+        }
 
-            (
-                renderer,
-                routes_by_source,
-                ssr_routes,
-                url_index,
-                collect_page_sources(&router),
-                Some(trace_token),
-            )
-        };
+        (
+            renderer,
+            routes_by_source,
+            ssr_routes,
+            url_index,
+            Some(trace_token),
+        )
+    };
+
+    // Issue #2064 — the page-module oracle content-provenance classification
+    // consults. Taken from the router scan, not from the tables above: the
+    // scan is what decides what IS a page module, and it is complete before
+    // `paths()` runs (a page whose `paths()` yields `[]` reaches neither
+    // table). Empty on the deferred-scaffold path alongside the empty tables
+    // — no worker exists to trace yet, and the deferred publish's P4 swap
+    // installs the real set with the real tables.
+    let page_sources = if defer_bundle {
+        HashSet::new()
+    } else {
+        collect_page_sources(&router)
+    };
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
     // edit of a pre-existing collection file can already narrow (G4 only
