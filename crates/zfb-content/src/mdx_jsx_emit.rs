@@ -4617,78 +4617,139 @@ mod tests {
         out
     }
 
+    /// Extract a `key="VALUE"` attribute value from the innermost JSX
+    /// opening tag that ENCLOSES byte offset `pos` in `jsx` — i.e. the
+    /// nearest `<tag …>` immediately before `pos` with no intervening
+    /// `>`. Used to tie a specific visible marker occurrence (e.g. the
+    /// SECOND `{"1"}`) to the `id`/`href` on the exact element that
+    /// renders it, rather than to "some id/href anywhere in the
+    /// document" (codex review flagged the weaker document-wide
+    /// version as unable to distinguish a correct per-occurrence
+    /// backreference wiring from a broken one that merely produces the
+    /// right COUNT of ids/hrefs).
+    fn enclosing_tag_attr(jsx: &str, pos: usize, key: &str) -> Option<String> {
+        let before = &jsx[..pos];
+        let tag_start = before.rfind('<')?;
+        let tag_end = jsx[tag_start..].find('>').map(|i| tag_start + i)?;
+        extract_attr_values(&jsx[tag_start..tag_end], key)
+            .into_iter()
+            .next()
+    }
+
     // 1. A single reference and its definition are ASSOCIATED — mirrors
     // `pipeline::tests::footnote_reference_and_definition_are_associated`.
+    // Strengthened per codex review: the ORIGINAL version only checked
+    // that "every fragment href resolves to SOME id anywhere in the
+    // document", which an implementation emitting only a
+    // marker-to-definition link (and no backreference at all) would
+    // satisfy. This version ties the marker's OWN id to a backreference
+    // href specifically targeting it, mirroring the pipeline.rs test's
+    // structure.
     #[test]
     #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn jsx_footnote_reference_and_definition_are_associated() {
         let jsx = emit_with_footnotes("Ref one[^a] end.\n\n[^a]: Definition body.\n");
 
-        assert!(
-            jsx.contains("{\"1\"}"),
-            "expected the visible footnote marker \"1\" in the emitted JSX: {jsx}"
-        );
+        let marker_pos = jsx
+            .find("{\"1\"}")
+            .unwrap_or_else(|| panic!("expected the visible footnote marker \"1\": {jsx}"));
         assert!(
             jsx.contains("{\"Definition body.\"}"),
             "footnote definition body missing from emitted JSX: {jsx}"
         );
 
+        let marker_id = enclosing_tag_attr(&jsx, marker_pos, "id").unwrap_or_else(|| {
+            panic!("reference marker's own enclosing tag must carry an id=: {jsx}")
+        });
+        let marker_href = enclosing_tag_attr(&jsx, marker_pos, "href").unwrap_or_else(|| {
+            panic!("reference marker's own enclosing tag must carry an href=: {jsx}")
+        });
+        assert!(
+            marker_href.starts_with('#'),
+            "reference marker href must be a fragment link, got {marker_href:?}: {jsx}"
+        );
+
+        // The marker's href must resolve to SOME rendered id= (the
+        // definition's target)…
         let ids = extract_attr_values(&jsx, "id");
+        let def_target = marker_href.trim_start_matches('#');
         assert!(
-            !ids.is_empty(),
-            "expected at least one id= attribute (reference marker and/or \
-             backreference target): {jsx}"
+            ids.iter().any(|id| id == def_target),
+            "the reference marker's href ({marker_href}) does not resolve to \
+             any rendered id= — it must point at the rendered definition: \
+             ids={ids:?} jsx={jsx}"
         );
+
+        // …AND a backreference href must exist SPECIFICALLY targeting
+        // the marker's OWN id (not just any id in the document) —
+        // proves the definition can link back to THIS occurrence.
+        let expected_backref = format!("#{marker_id}");
         let hrefs = extract_attr_values(&jsx, "href");
-        let fragment_hrefs: Vec<&str> = hrefs
-            .iter()
-            .map(String::as_str)
-            .filter(|h| h.starts_with('#'))
-            .collect();
         assert!(
-            !fragment_hrefs.is_empty(),
-            "expected at least one fragment href= linking reference <-> \
-             definition: {jsx}"
+            hrefs.iter().any(|h| h == &expected_backref),
+            "no backreference href={expected_backref} found pointing back at \
+             the marker's own id={marker_id} — reference and definition must \
+             link to EACH OTHER, not just one direction: hrefs={hrefs:?} jsx={jsx}"
         );
-        for href in &fragment_hrefs {
-            let target = href.trim_start_matches('#');
-            assert!(
-                ids.iter().any(|id| id == target),
-                "href {href} does not resolve to any rendered id= — reference \
-                 and definition must link to each other: ids={ids:?} jsx={jsx}"
-            );
-        }
     }
 
     // 2. Repeated references to ONE definition need distinct
     // backreference targets — mirrors
     // `pipeline::tests::repeated_references_get_distinct_backreference_targets`.
+    // Strengthened per codex review: the ORIGINAL version only counted
+    // ids/hrefs document-wide, which an implementation giving only the
+    // FIRST occurrence a working backreference (the second rendering
+    // unusable) could still satisfy by coincidence (definition id +
+    // first-marker id = 2 unique ids; def-to-first-marker link +
+    // marker-to-definition link = 2 unique hrefs). This version ties
+    // EACH of the two visible marker occurrences to its OWN id and its
+    // OWN backreference specifically.
     #[test]
     #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn jsx_repeated_references_get_distinct_backreference_targets() {
         let jsx = emit_with_footnotes("Ref one[^a] and ref again[^a] end.\n\n[^a]: Shared def.\n");
 
-        let ids = extract_attr_values(&jsx, "id");
-        let unique_ids: std::collections::HashSet<&String> = ids.iter().collect();
-        assert!(
-            unique_ids.len() >= 2,
-            "two repeated-reference occurrences need at least two distinct \
-             ids (one backreference target each), got {}: ids={ids:?} jsx={jsx}",
-            unique_ids.len()
+        let marker_count = jsx.matches("{\"1\"}").count();
+        assert_eq!(
+            marker_count, 2,
+            "expected exactly two visible footnote-1 markers (same number, \
+             two occurrences), got {marker_count}: {jsx}"
+        );
+
+        let mut marker_ids = Vec::new();
+        let mut rest = jsx.as_str();
+        let mut offset = 0usize;
+        while let Some(rel) = rest.find("{\"1\"}") {
+            let pos = offset + rel;
+            let id = enclosing_tag_attr(&jsx, pos, "id").unwrap_or_else(|| {
+                panic!("marker occurrence at byte {pos} must carry its own id=: {jsx}")
+            });
+            marker_ids.push(id);
+            offset = pos + "{\"1\"}".len();
+            rest = &jsx[offset..];
+        }
+        assert_eq!(
+            marker_ids.len(),
+            2,
+            "expected two marker ids, got {marker_ids:?}"
+        );
+        assert_ne!(
+            marker_ids[0], marker_ids[1],
+            "each repeated reference occurrence must get its own distinct \
+             backreference id, got the same id twice: {marker_ids:?}"
         );
 
         let hrefs = extract_attr_values(&jsx, "href");
-        let fragment_hrefs: std::collections::HashSet<&str> = hrefs
-            .iter()
-            .map(String::as_str)
-            .filter(|h| h.starts_with('#'))
-            .collect();
-        assert!(
-            fragment_hrefs.len() >= 2,
-            "expected at least two distinct fragment hrefs (one per \
-             occurrence's backreference), got {}: hrefs={hrefs:?} jsx={jsx}",
-            fragment_hrefs.len()
-        );
+        for id in &marker_ids {
+            let expected_backref = format!("#{id}");
+            assert!(
+                hrefs.iter().any(|h| h == &expected_backref),
+                "no backreference href={expected_backref} found for marker \
+                 id={id} — EACH occurrence needs its own working \
+                 backreference, not just a document-wide id/href count \
+                 match: hrefs={hrefs:?} jsx={jsx}"
+            );
+        }
     }
 
     // 3. Multiple definitions: numbering and order follow REFERENCE
