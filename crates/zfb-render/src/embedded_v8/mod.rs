@@ -46,7 +46,7 @@
 //!
 //! - Per-dispatch flow: the host stashes the bundle's `default`
 //!   export at boot, then for each call it invokes the JS-side
-//!   `__zfb.dispatch(url, method, headers, body)` (see
+//!   `__zfb.dispatch(url, method, headers, body, mode)` (see
 //!   `extensions::HOST_GLOBALS_SHIM_SRC`) which builds a JS
 //!   `Request`, awaits `default.fetch(req)`, materialises the
 //!   response body via `arrayBuffer()`, and returns
@@ -111,7 +111,7 @@ mod dispatch;
 pub mod extensions;
 mod module_loader;
 
-pub use dispatch::{HttpRequestLike, HttpResponseLike};
+pub use dispatch::{DispatchMode, HttpRequestLike, HttpResponseLike};
 pub use module_loader::{AliasHook, BundleModuleLoader, PluginRegistryHooks, VirtualModuleHook};
 
 /// Encode `bytes` as a standard base64 string (RFC 4648, alphabet A-Za-z0-9+/).
@@ -430,7 +430,7 @@ impl EmbeddedV8RenderHost {
             };
             return Err(RenderError::Runtime(msg));
         }
-        // Drive the JS-side `__zfb.dispatch(url, method, headers, body)`
+        // Drive the JS-side `__zfb.dispatch(url, method, headers, body, mode)`
         // helper. It returns a Promise; we wait for it via
         // `with_event_loop_promise` which polls the V8 event loop
         // CONCURRENTLY with the promise resolution future. Calling
@@ -527,12 +527,20 @@ impl EmbeddedV8RenderHost {
         let method_literal = serde_json::to_string(&method).map_err(|e| {
             RenderError::Runtime(format!("encoding request method as JSON failed: {e}"))
         })?;
+        // Issue #2014: the 5th argument is the per-dispatch mode. The
+        // shim sets `__zfb.mode` from it for the duration of the
+        // dispatch and restores the previous value in a `finally`, so a
+        // throwing request-time dispatch cannot leak request-time
+        // capability into the next build-time render.
+        let mode_literal = serde_json::to_string(request.mode.as_js_str())
+            .expect("dispatch mode spelling is always valid JSON");
         let script = format!(
-            "globalThis.__zfb.dispatch({url}, {method}, {headers}, {body})",
+            "globalThis.__zfb.dispatch({url}, {method}, {headers}, {body}, {mode})",
             url = url_literal,
             method = method_literal,
             headers = headers_literal,
             body = body_literal,
+            mode = mode_literal,
         );
         let result = self
             .runtime

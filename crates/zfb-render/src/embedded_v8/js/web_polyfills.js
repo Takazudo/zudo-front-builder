@@ -658,13 +658,45 @@
     return map[code] || "";
   }
 
+  // ---- dispatch mode --------------------------------------------
+  //
+  // Reads the per-dispatch signal `globals_shim.js` publishes as
+  // `__zfb.mode` for the duration of a dispatch (issue #2014).
+  //
+  // Fail-safe by construction: ONLY the exact string "request-time"
+  // selects the request-time branch. Absent (`__zfb` not installed yet,
+  // module evaluation, a caller that never passed a mode), null, or any
+  // unrecognised value all read as build-time — the denying default.
+  function dispatchMode() {
+    const bridge = globalThis.__zfb;
+    const mode = bridge ? bridge.mode : undefined;
+    return mode === "request-time" ? "request-time" : "build-time";
+  }
+
   // ---- fetch ----------------------------------------------------
   //
-  // SSG never makes outgoing requests. If a bundle calls `fetch(url)`
-  // we throw with a message that names the offending URL so the
-  // operator can find the call site.
+  // Build-time render never makes outgoing requests. If a bundle calls
+  // `fetch(url)` we throw with a message that names the offending URL
+  // so the operator can find the call site.
+  //
+  // Request-time SSR takes a DISTINCT branch. It still rejects today —
+  // issue #2014 plumbs the mode signal only and adds no capability;
+  // the actual outbound `fetch` lands in a later wave of epic #2012
+  // (contract: research/2013-request-time-capability-contract.md). The
+  // point of the split is that the build-time rejection is deliberate
+  // POLICY that survives the epic intact, while the request-time
+  // rejection is a not-yet-implemented feature.
   function fetch(input, _init) {
     const url = input instanceof Request ? input.url : String(input);
+    if (dispatchMode() === "request-time") {
+      return Promise.reject(
+        new Error(
+          "fetch() called from request-time SSR runtime (url=" +
+            url +
+            "). Outgoing network requests are not implemented yet in the zfb embedded runtime's request-time path — see research/2013-request-time-capability-contract.md. This is NOT the build-time SSG denial; production Cloudflare Workers DOES support fetch() here.",
+        ),
+      );
+    }
     return Promise.reject(
       new Error(
         "fetch() called from SSG runtime (url=" +

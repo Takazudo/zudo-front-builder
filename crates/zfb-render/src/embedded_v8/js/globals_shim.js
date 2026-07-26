@@ -7,12 +7,21 @@
 //   evaluates; stashes the bundle's `default` export so subsequent
 //   `dispatch` calls can reach `default.fetch`.
 //
-// - `__zfb.dispatch(urlStr, method, headersObj, bodyU8)` — builds a
-//   `Request`, awaits `default.fetch(request)`, awaits the response
+// - `__zfb.dispatch(urlStr, method, headersObj, bodyU8, mode)` — builds
+//   a `Request`, awaits `default.fetch(request)`, awaits the response
 //   body as a `Uint8Array`, and returns a Promise resolving to
 //   `{ status, headers, body }`. The Rust side drives the event
 //   loop until the Promise resolves, then unpacks the fields via v8
 //   property reads.
+//
+//   `mode` is the per-dispatch build-time/request-time signal (issue
+//   #2014): `"build-time"` or `"request-time"`. `dispatch` publishes it
+//   as `__zfb.mode` for the duration of the dispatch and restores the
+//   previous value in a `finally`, so a THROWING request-time dispatch
+//   cannot leak request-time capability into the next build-time
+//   render. `web_polyfills.js` reads `__zfb.mode`; when it is absent
+//   (module evaluation, or any caller that never passed one) the
+//   readers fall back to build-time, which is the denying default.
 //
 // - `__zfb.drainConsoleLogs()` — returns the worker console output
 //   buffered by the console capture below (joined with `\n`, each
@@ -27,6 +36,17 @@
 
 const __zfb_state = {
   bundle: null,
+};
+
+// Per-dispatch mode (issue #2014). `undefined` outside any dispatch —
+// module evaluation, boot scripts — which the polyfill readers treat as
+// build-time, the denying default.
+//
+// Kept in a module-scope cell rather than as a plain data property on
+// `__zfb` so `__zfb.mode` can be exposed as a getter with no setter:
+// bundle code cannot elevate itself to request-time by assigning to it.
+const __zfb_mode_state = {
+  current: undefined,
 };
 
 // Console capture (issue #700).
@@ -145,6 +165,12 @@ globalThis.__zfb = {
   // ssrDebug: present only in the embedded build/dev V8 host, never in the
   // production Cloudflare Workers runtime — gates verbose SSR error output.
   ssrDebug: true,
+  // Read-only view of the active dispatch's mode: "build-time",
+  // "request-time", or undefined outside any dispatch. Getter-only on
+  // purpose — see `__zfb_mode_state`.
+  get mode() {
+    return __zfb_mode_state.current;
+  },
   setBundle(defaultExport) {
     __zfb_state.bundle = defaultExport;
   },
@@ -159,7 +185,7 @@ globalThis.__zfb = {
     st.truncated = false;
     return out;
   },
-  async dispatch(urlStr, method, headersObj, bodyU8) {
+  async dispatch(urlStr, method, headersObj, bodyU8, mode) {
     if (!__zfb_state.bundle || typeof __zfb_state.bundle.fetch !== "function") {
       throw new Error("embedded V8 host: bundle has no callable `default.fetch`");
     }
@@ -170,26 +196,37 @@ globalThis.__zfb = {
     if (bodyU8 && bodyU8.byteLength > 0) {
       init.body = bodyU8;
     }
-    const req = new Request(urlStr, init);
-    const resp = await __zfb_state.bundle.fetch(req);
-    // Materialise the body up front so the host doesn't have to
-    // poke at ReadableStream.
-    const buf = await resp.arrayBuffer();
-    // Ordered `[name, value]` pairs, not a `Record` — `resp.headers.entries()`
-    // already applies the Fetch "sort and combine" view (duplicate
-    // `set-cookie` values kept as separate entries, everything else
-    // comma-joined), so a single-valued object here would silently
-    // collapse repeated headers back down to one.
-    const headers = [];
-    for (const [k, v] of resp.headers.entries()) {
-      // Headers iteration already lowercases keys per spec, but
-      // be defensive.
-      headers.push([k.toLowerCase(), v]);
+    // Publish the per-dispatch mode, remembering whatever was there
+    // before (normally `undefined`) so the `finally` below restores it
+    // EXACTLY — including on the throwing path. An unrestored
+    // "request-time" would silently grant request-time capability to
+    // every subsequent build-time render on this shared host.
+    const previousMode = __zfb_mode_state.current;
+    __zfb_mode_state.current = mode === undefined || mode === null ? undefined : String(mode);
+    try {
+      const req = new Request(urlStr, init);
+      const resp = await __zfb_state.bundle.fetch(req);
+      // Materialise the body up front so the host doesn't have to
+      // poke at ReadableStream.
+      const buf = await resp.arrayBuffer();
+      // Ordered `[name, value]` pairs, not a `Record` — `resp.headers.entries()`
+      // already applies the Fetch "sort and combine" view (duplicate
+      // `set-cookie` values kept as separate entries, everything else
+      // comma-joined), so a single-valued object here would silently
+      // collapse repeated headers back down to one.
+      const headers = [];
+      for (const [k, v] of resp.headers.entries()) {
+        // Headers iteration already lowercases keys per spec, but
+        // be defensive.
+        headers.push([k.toLowerCase(), v]);
+      }
+      return {
+        status: resp.status,
+        headers,
+        body: new Uint8Array(buf),
+      };
+    } finally {
+      __zfb_mode_state.current = previousMode;
     }
-    return {
-      status: resp.status,
-      headers,
-      body: new Uint8Array(buf),
-    };
   },
 };
