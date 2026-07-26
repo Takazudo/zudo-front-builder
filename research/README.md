@@ -14,6 +14,8 @@ findings are no longer load-bearing.
 | `344-v8-feature-gate.md`             | `referenced-from` | V8 feature-gate rationale; referenced from `crates/zfb/src/config.rs` and `crates/zfb/src/commands/build.rs`.                        |
 | `346-embed-as-library-api.md`        | `shipped-in`      | `zfb-server` embed API and middleware shape; referenced from `crates/zfb-server/README.md`, `src/embed.rs`, and `src/middleware.rs`. |
 | `1638-resource-delivery-decision.md` | `referenced-from` | Browser resource-delivery contract for md-wasm; implementation issues #1639, #1640, and #1641.                                       |
+| `1898-parse-to-ast-interoperability-contract.md` | `referenced-from` | Raw `parseToAst` tier contract; implementation issues #1902, #1904, #1906, #1907, and #1908.                             |
+| `2013-request-time-capability-contract.md` | `referenced-from` | Request-time `fetch` + Web Crypto contract for the embedded V8 host; locks epic #2012's sub-issues #2014-#2020. |
 
 ## Purgeable one-shots
 
