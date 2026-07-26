@@ -103,12 +103,18 @@ pub fn fetch_timeout_ms() -> u64 {
 /// `embedded_v8/js_fetch_tests.rs` reads them back out of a live
 /// isolate and compares against the constants themselves.
 ///
-/// The resolved-at-boot deadline ([`fetch_timeout_ms`]) is deliberately
-/// NOT included: it is an environment-dependent value, not a constant,
-/// and the JS layer never needs it — every wall-clock deadline is
-/// enforced in Rust.
+/// `fetchTimeoutMs` is the odd one out: it is the RESOLVED deadline
+/// ([`fetch_timeout_ms`], which may have been raised or lowered by
+/// `ZFB_SSR_FETCH_TIMEOUT_MS`), not a constant. The JS layer needs it
+/// to answer one question it cannot otherwise answer — when a fetch
+/// carrying an `AbortSignal.timeout(ms)` times out, was it the
+/// caller's deadline that fired or the host's? Reporting the host's
+/// ceiling as the caller's would throw away the URL, the effective
+/// deadline, and the production-divergence note. It is NOT used to
+/// enforce anything: every deadline is applied in Rust.
 pub fn limits_js_literal() -> String {
     serde_json::json!({
+        "fetchTimeoutMs": fetch_timeout_ms(),
         "allowedFetchSchemes": ALLOWED_FETCH_SCHEMES,
         "maxRedirects": MAX_REDIRECTS,
         "defaultFetchTimeoutMs": DEFAULT_FETCH_TIMEOUT_MS,

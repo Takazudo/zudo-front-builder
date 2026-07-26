@@ -527,6 +527,21 @@
       // `TypeError`, and the transport's `hasBody` flag decides whether
       // a request is framed with a body at all.
       this._bodyPresent = body != null;
+      // The BodyInit-derived default Content-Type, captured here rather
+      // than recomputed at send time. By the time `fetch` sees a
+      // `Request` the body is already `Uint8Array` bytes, and bytes
+      // carry no default type — so recomputing there would silently
+      // drop the header for `fetch(new Request(url, { body: "x" }))`
+      // while keeping it for the equivalent url-plus-init call.
+      this._bodyDefaultContentType = bodyInitContentType(body);
+      // A `ReadableStream`-shaped body, remembered because the
+      // conversion above has already coerced it beyond recognition.
+      // Construction still succeeds (that is the pre-existing
+      // behaviour); it is the request-time `fetch` that must refuse it,
+      // and it can only do so if the shape was recorded here — a stream
+      // handed to `new Request(...)` first would otherwise reach the
+      // wire as "[object Object]".
+      this._bodyIsStream = isReadableStreamLike(body);
       // Names this half of the interface in the not-implemented
       // messages below (`response.blob()`, `request.formData()`).
       // Subclasses overwrite it.
@@ -603,6 +618,14 @@
       const finalInit = Object.assign({}, baseInit, init || {});
       super(finalInit.body);
       this._bodyLabel = "request";
+      // When the body came from a source `Request` rather than from
+      // `init`, it arrived as bytes — so the two properties derived
+      // from the ORIGINAL BodyInit have to be carried across by hand or
+      // they are lost in the copy.
+      if (input instanceof Request && !(init && "body" in init)) {
+        this._bodyDefaultContentType = input._bodyDefaultContentType;
+        this._bodyIsStream = input._bodyIsStream;
+      }
       this.url = url;
       this.method = (finalInit.method || "GET").toUpperCase();
       this.headers =
@@ -642,7 +665,9 @@
       // `Headers` instance the caller still holds a reference to.
       this.headers = new Headers(i.headers);
       if (!this.headers.has("content-type")) {
-        const defaultType = bodyInitContentType(body);
+        // Captured by `_Body` from the original BodyInit — same table,
+        // one place.
+        const defaultType = this._bodyDefaultContentType;
         if (defaultType) {
           this.headers.set("content-type", defaultType);
         }
@@ -988,20 +1013,25 @@
     const i = init || {};
     const limits = hostLimits(url);
 
-    // Before `new Request(...)`, which would coerce a stream to text.
-    if (isReadableStreamLike(i.body)) {
+    // One `Request` is the single source of truth for method, headers,
+    // body, redirect mode and signal, whether the caller passed a URL
+    // string plus `init` or a `Request` they built earlier.
+    const request = new Request(input, i);
+    const signal = request.signal;
+
+    // Checked off the RECORDED shape (`_Body` sets `_bodyIsStream`)
+    // rather than off `i.body`, so a stream that arrived inside an
+    // already-constructed `Request` is refused too. Reading `i.body`
+    // alone would miss it: `new Request(url, { body: stream })` has by
+    // then coerced the stream to "[object Object]", which would reach
+    // the wire as a real payload instead of this diagnostic.
+    if (request._bodyIsStream) {
       throw new TypeError(
         "fetch(" +
           url +
           "): ReadableStream request bodies are not supported by the zfb embedded runtime",
       );
     }
-
-    // One `Request` is the single source of truth for method, headers,
-    // body, redirect mode and signal, whether the caller passed a URL
-    // string plus `init` or a `Request` they built earlier.
-    const request = new Request(input, i);
-    const signal = request.signal;
 
     // An already-aborted signal rejects WITHOUT opening a socket —
     // asserted by `an_already_aborted_signal_rejects_without_opening_a_socket`
@@ -1014,6 +1044,21 @@
     const hasBody = request._bodyPresent;
     if (hasBody && (method === "GET" || method === "HEAD")) {
       throw new TypeError("Request with GET/HEAD method cannot have body.");
+    }
+
+    // Per the Fetch standard, dispatching DISTURBS the request's body:
+    // a caller-supplied `Request` may be fetched once, and one whose
+    // body was already read is a `TypeError` rather than a silent
+    // resend. `new Request(input, init)` above copies the bytes, so
+    // without these two lines a body-bearing `Request` could be fetched
+    // in a loop — each pass a real network side effect — and a
+    // half-consumed one could still be sent.
+    const source = input instanceof Request ? input : request;
+    if (hasBody) {
+      if (source.bodyUsed) {
+        throw new TypeError("Body already consumed");
+      }
+      source.bodyUsed = true;
     }
 
     const bodyBytes = hasBody ? request._bodyBytes : new Uint8Array(0);
@@ -1038,9 +1083,11 @@
     const headers = request.headers._pairs.map((pair) => [pair[0], pair[1]]);
     if (hasBody && !request.headers.has("content-type")) {
       // WHATWG Fetch "extract a body" step 5 — a `string` or
-      // `URLSearchParams` body carries a default Content-Type. The
-      // `Response` constructor already applies the same table.
-      const defaultType = bodyInitContentType(i.body);
+      // `URLSearchParams` body carries a default Content-Type. Read off
+      // the `Request`, which recorded it from the ORIGINAL BodyInit:
+      // `i.body` is undefined when the caller passed a `Request`, and
+      // by then the body is bytes, which carry no default at all.
+      const defaultType = request._bodyDefaultContentType;
       if (defaultType) {
         headers.push(["content-type", defaultType]);
       }
@@ -1086,7 +1133,15 @@
       // A deadline the CALLER asked for is an abort, not a host limit,
       // so it reports itself the way the standard says rather than
       // quoting the host's own timeout diagnostic.
-      if (signalTimeoutMs != null && e && e.name === "TimeoutError") {
+      //
+      // Only when the caller's deadline is the one that actually fired,
+      // though: the transport applies `min(host, caller)`, so a signal
+      // LONGER than the host ceiling means the host's deadline won.
+      // Relabelling that one would discard the URL, the effective
+      // deadline and the production-divergence note, and tell the
+      // developer their own 60s timeout fired at 30s.
+      const callerDeadlineWon = signalTimeoutMs != null && signalTimeoutMs <= limits.fetchTimeoutMs;
+      if (callerDeadlineWon && e && e.name === "TimeoutError") {
         throw timeoutError();
       }
       throw e;

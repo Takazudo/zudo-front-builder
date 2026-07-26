@@ -552,6 +552,13 @@ async fn js_visible_limits_are_the_rust_constants() {
         parsed["maxRandomBytesPerCall"],
         serde_json::json!(limits::MAX_RANDOM_BYTES_PER_CALL)
     );
+    // The one non-constant in the object: the RESOLVED deadline, which
+    // `ZFB_SSR_FETCH_TIMEOUT_MS` may have moved. The JS layer uses it
+    // to tell a caller-fired deadline from a host-fired one.
+    assert_eq!(
+        parsed["fetchTimeoutMs"],
+        serde_json::json!(limits::fetch_timeout_ms())
+    );
 }
 
 /// The JS-side request-body cap is READ from the injected limits rather
@@ -667,6 +674,166 @@ async fn a_signal_timeout_bounds_the_request_and_reports_as_a_timeout_error() {
         server.request_count(),
         1,
         "the deadline is enforced by the transport, so the request did reach the server"
+    );
+}
+
+/// A stream body is refused even when it arrives INSIDE an
+/// already-constructed `Request`.
+///
+/// The dangerous shape, and the reason the check reads a recorded flag
+/// rather than `init.body`: by the time such a `Request` reaches
+/// `fetch`, the stream has been coerced to the string
+/// `"[object Object]"`, so a check that looked only at `init.body`
+/// would send that to the server as a real payload — silently wrong
+/// data instead of the documented `TypeError`.
+#[tokio::test]
+async fn a_stream_body_carried_inside_a_request_is_refused_too() {
+    let server = LoopbackServer::spawn_static(ok_response("must never be reached")).await;
+    let url = server.url("/upload");
+    let script = format!(
+        r#"{DESCRIBE}
+           const stream = {{ getReader() {{ throw new Error("never called"); }} }};
+           const carried = new Request({url:?}, {{ method: "POST", body: stream }});
+           return await expectReject(() => fetch(carried));"#
+    );
+
+    let got = probe(&script, DispatchMode::RequestTime).await;
+    assert_eq!(got, format!("TypeError|fetch({url}{STREAM_BODY_TAIL}"));
+    assert_eq!(
+        server.request_count(),
+        0,
+        "a coerced stream must never reach the wire as a payload"
+    );
+}
+
+/// The BodyInit default Content-Type survives a `Request` copy.
+///
+/// `fetch(new Request(url, { body: "x" }))` and the equivalent
+/// url-plus-init call must put the same request on the wire. They stop
+/// agreeing the moment the default type is recomputed at send time,
+/// because the copy's body is bytes by then and bytes carry no default.
+#[tokio::test]
+async fn the_body_init_default_content_type_survives_a_request_copy() {
+    let server = LoopbackServer::spawn_static(ok_response("ok")).await;
+    let via_init = server.url("/via-init");
+    let via_request = server.url("/via-request");
+    let script = format!(
+        r#"await fetch({via_init:?}, {{ method: "POST", body: "x" }});
+           await fetch(new Request({via_request:?}, {{ method: "POST", body: "y" }}));
+           return "sent";"#
+    );
+
+    let got = probe(&script, DispatchMode::RequestTime).await;
+    assert_eq!(got, "sent");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    let types: Vec<Option<&str>> = requests.iter().map(|r| r.header("content-type")).collect();
+    assert_eq!(
+        types,
+        vec![
+            Some("text/plain;charset=UTF-8"),
+            Some("text/plain;charset=UTF-8")
+        ],
+        "both spellings of the same request must put the same content-type on the wire"
+    );
+}
+
+/// Dispatching disturbs the request's body, exactly as the standard
+/// says: a body-bearing `Request` may be fetched once, and one whose
+/// body was already read is refused rather than silently resent.
+///
+/// Without this, a `Request` could be fetched in a loop with each pass
+/// a real network side effect — the request count below is what proves
+/// the second attempt never reached the wire.
+#[tokio::test]
+async fn dispatching_disturbs_the_request_body() {
+    let server = LoopbackServer::spawn_static(ok_response("ok")).await;
+    let url = server.url("/submit");
+    let script = format!(
+        r#"{DESCRIBE}
+           const once = new Request({url:?}, {{ method: "POST", body: "payload" }});
+           const first = await fetch(once);
+           const second = await expectReject(() => fetch(once));
+
+           // A body already read by hand cannot then be sent.
+           const read = new Request({url:?}, {{ method: "POST", body: "payload" }});
+           await read.text();
+           const afterRead = await expectReject(() => fetch(read));
+
+           // A body-LESS request is not disturbed, so it may be
+           // re-fetched — the rule is about bodies, not about requests.
+           const bodyless = new Request({url:?});
+           await fetch(bodyless);
+           const again = await fetch(bodyless);
+
+           return JSON.stringify({{
+             first: first.status,
+             second,
+             afterRead,
+             again: again.status,
+             bodyUsed: once.bodyUsed,
+           }});"#
+    );
+
+    let got = probe(&script, DispatchMode::RequestTime).await;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&got).unwrap_or_else(|e| panic!("expected JSON ({e}); got: {got}"));
+    assert_eq!(parsed["first"], 200);
+    assert_eq!(parsed["second"], "TypeError|Body already consumed");
+    assert_eq!(parsed["afterRead"], "TypeError|Body already consumed");
+    assert_eq!(parsed["again"], 200);
+    assert_eq!(
+        parsed["bodyUsed"], true,
+        "dispatching must mark the SOURCE request's body used, not just the internal copy"
+    );
+    assert_eq!(
+        server.request_count(),
+        3,
+        "one body-bearing send plus the two body-less ones — the refused attempts must not \
+         have reached the wire"
+    );
+}
+
+/// A signal timeout LONGER than the host ceiling means the host's
+/// deadline is the one that fires, and it must keep its own diagnostic.
+///
+/// Relabelling it would tell the developer their 60-second timeout
+/// fired at 30 seconds, and would throw away the URL, the effective
+/// deadline, and the note that production Workers has no such limit.
+#[tokio::test]
+async fn a_host_deadline_is_not_relabelled_as_the_callers() {
+    let server = LoopbackServer::spawn(|_req, stream| async move {
+        let _keep_the_socket_open = stream;
+        std::future::pending::<()>().await;
+    })
+    .await;
+    let url = server.url("/never");
+    // The JS-visible host ceiling is lowered to 100ms for this isolate
+    // so the caller's 250ms deadline EXCEEDS it — the exact condition
+    // the branch turns on — while the transport still ends the call in
+    // 250ms rather than the real 30s. (Lowering the genuine Rust
+    // ceiling would mean setting `ZFB_SSR_FETCH_TIMEOUT_MS`, which is
+    // process-wide and memoised at first use, so it would race every
+    // other test in this binary.) What is under test is which side's
+    // DIAGNOSTIC survives, which is decided here from this value.
+    let script = format!(
+        r#"{DESCRIBE}
+           globalThis.__zfb.limits.fetchTimeoutMs = 100;
+           return await expectReject(() =>
+             fetch({url:?}, {{ signal: AbortSignal.timeout(250) }}),
+           );"#
+    );
+
+    let got = probe(&script, DispatchMode::RequestTime).await;
+    assert!(
+        got.starts_with("TimeoutError|fetch(") && got.contains("timed out after"),
+        "the host's own deadline diagnostic must survive intact when it is the one that \
+         fired; got: {got}"
+    );
+    assert!(
+        !got.contains("aborted due to timeout"),
+        "the caller's deadline did not fire — 9000ms is longer than the host ceiling; got: {got}"
     );
 }
 
