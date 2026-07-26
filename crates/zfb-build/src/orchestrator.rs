@@ -394,17 +394,24 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// dev-loop cost on content-heavy sites. The mirror-root gate is what
     /// keeps in-root content edits as cheap as they are today.
     ///
-    /// `External` is included alongside `Content` because a mirror root can
-    /// hold files whose extension is not on the classifier's whitelist (an
-    /// out-of-root `.html`/`.vue`/`.svelte` classifies `External`) while
-    /// Tailwind's own scanner still reads them as `@source` candidates.
+    /// `Data` and `External` ride along with `Content` because Tailwind's
+    /// `@source` scan covers the WHOLE mirror-root subtree, not just the
+    /// extensions this classifier happens to whitelist: an out-of-root
+    /// `.json`/`.yaml` classifies `Data`, an out-of-root
+    /// `.html`/`.vue`/`.svelte` classifies `External`, and a class token in
+    /// either is real CSS input. Those three are the complete set that can
+    /// reach a CSS-inert arm from outside the project root — an out-of-root
+    /// path never classifies `Page`, while `Module` and `Style` already
+    /// `mark_css` unconditionally.
     ///
     /// This is a CSS-rerun signal and nothing else — it never touches page
     /// selection (see the `PageSelection::All` note in the
     /// `Page | Module | Content | Data` arm).
     fn content_under_css_mirror_root(&self, class: PathClass, path: &Path) -> bool {
-        matches!(class, PathClass::Content | PathClass::External)
-            && self.config.policy.is_under_css_mirror_root(path)
+        matches!(
+            class,
+            PathClass::Content | PathClass::Data | PathClass::External
+        ) && self.config.policy.is_under_css_mirror_root(path)
     }
 
     /// Build a plan from a list of changed paths. Pure: does not call
@@ -2761,6 +2768,43 @@ mod tests {
             "deleting a mirror-root .mdx must rerun the content scan so the classes it \
              was the sole source of stop being emitted"
         );
+    }
+
+    /// `PathClass::Data`: an out-of-root `.json`/`.yaml` inside a mirror
+    /// root is read by the same whole-subtree `@source` scan, so a class
+    /// token authored there is CSS input like any other. Raised by codex
+    /// review of the first #1997 pass, which covered only `Content` and
+    /// `External`.
+    #[test]
+    fn sibling_mirror_root_data_file_reruns_css() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, mirror_root, policy) = css_mirror_root_fixture(&ws);
+        let data = mirror_root.join("tokens.json");
+        std::fs::write(&data, "{\"cls\":\"bg-[#1a2b3c]\"}\n").unwrap();
+
+        assert_eq!(
+            classify_change_with_content_roots(
+                &data,
+                &project,
+                &[PathBuf::from("pages"), PathBuf::from("content")],
+                |_| false,
+            ),
+            PathClass::Data,
+            "fixture sanity: an out-of-root .json classifies Data"
+        );
+
+        let orch = orch_for_css_mirror_root(CountingPipeline::default(), &project, policy);
+        assert!(orch.plan_for_changes([data]).rerun_css);
+
+        // Discrimination: an in-root data file is untouched.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let ws2 = tmp2.path().canonicalize().unwrap();
+        let (project2, _mirror2, policy2) = css_mirror_root_fixture(&ws2);
+        let in_root_data = project2.join("content/tokens.json");
+        std::fs::write(&in_root_data, "{}\n").unwrap();
+        let orch2 = orch_for_css_mirror_root(CountingPipeline::default(), &project2, policy2);
+        assert!(!orch2.plan_for_changes([in_root_data]).rerun_css);
     }
 
     /// The `External` arm: a mirror root can hold files whose extension is
