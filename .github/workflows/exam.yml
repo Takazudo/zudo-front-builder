@@ -33,7 +33,7 @@
 #     exact-match filterset alone is sufficient scoping — no `-p`/package
 #     qualifier is needed for correctness. `test(=NAME)` matches nextest's
 #     FULL qualified test name (module path included), not just the bare fn
-#     name — the 23 top-level integration-test functions need no prefix, but
+#     name — the 38 top-level integration-test functions need no prefix, but
 #     three command-layer functions live inside `#[cfg(test)] mod tests` in
 #     crates/zfb/src/commands/build.rs (filtered as
 #     `commands::build::tests::<name>`) and
@@ -250,6 +250,9 @@ jobs:
               | test(=real_binary_build_and_dev_cover_pnpm_workspace_raw_hardening_contract)
               | test(=real_binary_build_and_dev_cover_workspace_reroot_host_contract)
               | test(=sibling_mdx_utility_class_reaches_dev_css_scan)
+              | test(=cold_redirects_rewrite_target_is_prewarmed_and_resolves)
+              | test(=ssr_only_healthy_deferred_publish_reloads_open_tab)
+              | test(=ssr_only_cold_bootstrap_recovery_reloads_open_tab)
           ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
           rc=${PIPESTATUS[0]}
           set -e
