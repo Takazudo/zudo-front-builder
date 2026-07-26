@@ -4003,6 +4003,25 @@ struct DevRouteTables {
     /// ([`crate::lazy_render_adapter`]) on every request-time
     /// stale-route render.
     url_index: HashMap<String, RouteUniverseEntry>,
+    /// Every page-module source path the router scan produced a route
+    /// for, SSG and SSR alike — the authoritative "is this a page module?"
+    /// oracle (issue #2064).
+    ///
+    /// A superset of `routes_by_source`'s keys: a `prerender = false` page
+    /// contributes only to `ssr_routes`, and a dynamic SSG page whose
+    /// `paths()` returned `[]` contributes to NEITHER table while still
+    /// being a perfectly valid page module the worker evaluates (and thus
+    /// enrols in the content trace). Content-provenance classification
+    /// consults this set to tell a benign zero-route page apart from a
+    /// source the router has never heard of; without it, a single empty
+    /// `paths()` collapsed provenance — and therefore incremental-rebuild
+    /// narrowing — for the entire site.
+    ///
+    /// Rebuilt atomically with the other tables at P4. Injected-route
+    /// seeds are deliberately absent: they are synthesized keys that
+    /// already live in `routes_by_source`, so classification resolves them
+    /// there and never consults this set.
+    page_sources: HashSet<PathBuf>,
 }
 
 /// Boot-time inputs stashed so a watch-ADD (#659) can re-bundle the SSR
@@ -4717,6 +4736,7 @@ impl DevRenderSession {
                 classify_content_trace_events(
                     payload.events,
                     &tables.routes_by_source,
+                    &tables.page_sources,
                     &membership,
                     &self.inner.project_root,
                 )?
@@ -5582,6 +5602,10 @@ impl DevRenderSession {
             tables.ssr_routes = new_ssr_routes;
             // Swap the url_index atomically with the other tables (issue #1019).
             tables.url_index = new_url_index;
+            // Issue #2064 — the page-module oracle moves with the tables it
+            // qualifies: a page added/removed by this scan must not be
+            // judged against the previous generation's set.
+            tables.page_sources = collect_page_sources(&router);
         }
         // Issue #1025 — the route tables just moved: advance the stale
         // tick generation and evict stale entries whose output routes
@@ -6409,6 +6433,23 @@ fn build_dev_route_tables(
     Ok((routes_by_source, ssr_routes, url_index))
 }
 
+/// Every page-module source path the router scan produced a route for —
+/// the value stored in [`DevRouteTables::page_sources`] (issue #2064).
+///
+/// Taken from the router scan rather than from the built tables on purpose:
+/// the scan is the layer that decides what IS a page module, and it is
+/// complete BEFORE `paths()` runs. `routes_by_source` and `ssr_routes` are
+/// both downstream of route expansion and each drop pages the other keeps —
+/// a page whose `paths()` yields `[]` is in neither.
+#[cfg(feature = "embed_v8")]
+fn collect_page_sources(router: &zfb_router::Router) -> HashSet<PathBuf> {
+    router
+        .routes()
+        .iter()
+        .map(|route| route.source_path.clone())
+        .collect()
+}
+
 /// Percent-decode a URL path segment, returning a borrowed `str` when the
 /// input has no percent-encoded sequences or an owned `String` when decoding
 /// produces a different value (issue #1019).
@@ -7096,119 +7137,124 @@ fn boot_dev_renderer(
     // path this stays empty; the deferred `refresh_bundle_and_routes` seeds the
     // edges itself.
     let mut boot_route_module_deps: Vec<zfb_build::RouteModuleDeps> = Vec::new();
-    let (renderer, routes_by_source, ssr_routes, url_index, content_trace_token) = if defer_bundle {
-        (
-            // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
-            // swaps the first live host into this same `Arc` (which the render
-            // callback, SSR adapter, and render-on-request hook all already
-            // hold a clone of).
-            Arc::new(Mutex::new(None)),
-            HashMap::new(),
-            Vec::new(),
-            HashMap::new(),
-            None,
-        )
-    } else {
-        // Test-only slow-step injection (issue #1182 falsifiability guard,
-        // EAGER half): `ZFB_DEV_TEST_SLOW_BUNDLE_MS` sleeps right before the
-        // EAGER pre-bind bundle. This is the co-located twin of the
-        // deferred-task seam in `run` — together they make the bind-before-bundle
-        // e2e falsifiable wherever the BOOT bundle runs. In the correct ordering
-        // a boot-lazy + servable-`dist/` boot takes the scaffold branch above,
-        // so this eager seam never fires and only the deferred-task seam does
-        // (after bind → banner stays fast). If the deferral is reverted — the
-        // boot bundle moved back here, before `TcpListener::bind` — THIS seam
-        // fires before bind and delays the ready banner past the e2e's deadline,
-        // failing the guard. Without a co-located eager seam, an un-defer revert
-        // would silently pass. Runs synchronously in `run` before bind, so the
-        // blocking sleep delays bind exactly as a real pre-bind bundle would.
-        if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BUNDLE_MS") {
-            if let Ok(ms) = raw.trim().parse::<u64>() {
-                if ms > 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(ms));
+    let (renderer, routes_by_source, ssr_routes, url_index, page_sources, content_trace_token) =
+        if defer_bundle {
+            (
+                // Scaffold renderer slot — the deferred `refresh_bundle_and_routes`
+                // swaps the first live host into this same `Arc` (which the render
+                // callback, SSR adapter, and render-on-request hook all already
+                // hold a clone of).
+                Arc::new(Mutex::new(None)),
+                HashMap::new(),
+                Vec::new(),
+                HashMap::new(),
+                // Empty alongside the empty tables: the deferred publish swaps in
+                // the scan's real page set with them (issue #2064).
+                HashSet::new(),
+                None,
+            )
+        } else {
+            // Test-only slow-step injection (issue #1182 falsifiability guard,
+            // EAGER half): `ZFB_DEV_TEST_SLOW_BUNDLE_MS` sleeps right before the
+            // EAGER pre-bind bundle. This is the co-located twin of the
+            // deferred-task seam in `run` — together they make the bind-before-bundle
+            // e2e falsifiable wherever the BOOT bundle runs. In the correct ordering
+            // a boot-lazy + servable-`dist/` boot takes the scaffold branch above,
+            // so this eager seam never fires and only the deferred-task seam does
+            // (after bind → banner stays fast). If the deferral is reverted — the
+            // boot bundle moved back here, before `TcpListener::bind` — THIS seam
+            // fires before bind and delays the ready banner past the e2e's deadline,
+            // failing the guard. Without a co-located eager seam, an un-defer revert
+            // would silently pass. Runs synchronously in `run` before bind, so the
+            // blocking sleep delays bind exactly as a real pre-bind bundle would.
+            if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_BUNDLE_MS") {
+                if let Ok(ms) = raw.trim().parse::<u64>() {
+                    if ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
                 }
             }
-        }
 
-        // Boot path — timing not collected here (one-shot at startup, not a
-        // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
-        let bundler_out: BundlerOutput = assemble_and_bundle_dev(
-            project_root,
-            cfg,
-            plugin_alias_entries,
-            plugin_virtual_modules,
-            false,
-            Some(&mut shadow_session),
-            rebuild_inputs.esbuild_path(),
-            rebuild_inputs.empty_user_pages_root(),
-            // S2 (#1230) — include the injected modules in the BOOT bundle from
-            // the staging dir materialised above. `None` on the parity path.
-            rebuild_inputs.injected_pages_root(),
-        )?
-        .output;
-        let (trace_token, trace_wrapper_source) =
-            wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
-        // #1284/#1287 — capture the boot bundle's per-route Module deps for
-        // post-graph seeding (the graph does not exist yet at this point).
-        boot_route_module_deps = bundler_out.route_module_deps.clone();
+            // Boot path — timing not collected here (one-shot at startup, not a
+            // hot-path tick). `timing_enabled = false` so no Instant::now() overhead.
+            let bundler_out: BundlerOutput = assemble_and_bundle_dev(
+                project_root,
+                cfg,
+                plugin_alias_entries,
+                plugin_virtual_modules,
+                false,
+                Some(&mut shadow_session),
+                rebuild_inputs.esbuild_path(),
+                rebuild_inputs.empty_user_pages_root(),
+                // S2 (#1230) — include the injected modules in the BOOT bundle from
+                // the staging dir materialised above. `None` on the parity path.
+                rebuild_inputs.injected_pages_root(),
+            )?
+            .output;
+            let (trace_token, trace_wrapper_source) =
+                wrap_dev_bundle_with_content_trace(&bundler_out, router.routes())?;
+            // #1284/#1287 — capture the boot bundle's per-route Module deps for
+            // post-graph seeding (the graph does not exist yet at this point).
+            boot_route_module_deps = bundler_out.route_module_deps.clone();
 
-        let state = start(RendererStartInput {
-            bundle_path: bundler_out.bundle_path.clone(),
-            sourcemap_path: bundler_out.sourcemap_path.clone(),
-            backend: Backend::EmbeddedV8 {
-                host_factory:
-                    crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
-                        v8_plugin_hooks,
-                        trace_wrapper_source,
-                    ),
-            },
-            request_timeout: None,
-        })
-        .map_err(anyhow::Error::from)
-        .context("renderer start failed")?;
+            let state = start(RendererStartInput {
+                bundle_path: bundler_out.bundle_path.clone(),
+                sourcemap_path: bundler_out.sourcemap_path.clone(),
+                backend: Backend::EmbeddedV8 {
+                    host_factory:
+                        crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
+                            v8_plugin_hooks,
+                            trace_wrapper_source,
+                        ),
+                },
+                request_timeout: None,
+            })
+            .map_err(anyhow::Error::from)
+            .context("renderer start failed")?;
 
-        // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
-        // front so the SSG `paths()` runtime-evaluation phase below can borrow
-        // the live embedded V8 host out of the same handle the SSG render
-        // callback and the SSR adapter use later (#502/#507). One host, shared
-        // across boot-time paths() eval, build-time SSG render, and request-time
-        // SSR.
-        let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
+            // Wrap the renderer state in the shared `Arc<Mutex<Option<...>>>` up
+            // front so the SSG `paths()` runtime-evaluation phase below can borrow
+            // the live embedded V8 host out of the same handle the SSG render
+            // callback and the SSR adapter use later (#502/#507). One host, shared
+            // across boot-time paths() eval, build-time SSG render, and request-time
+            // SSR.
+            let renderer: Arc<Mutex<Option<RendererState>>> = Arc::new(Mutex::new(Some(state)));
 
-        // Issue #367 — extract `export const prerender = …` per page so
-        // we can keep SSG-eligible pages in `routes_by_source` (the SSG
-        // render callback's lookup table) while routing `prerender =
-        // false` pages into the request-time SSR set instead. Without this
-        // split the SSG callback would stamp a stale snapshot to disk on
-        // every watcher tick and the dist fallback would shadow the SSR
-        // handler.
-        // Build the route tables from the router scan + the live host (#659:
-        // extracted into `build_dev_route_tables` so the watch-ADD rebuild
-        // reproduces the boot tables exactly).
-        let (mut routes_by_source, ssr_routes, mut url_index) =
-            build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
+            // Issue #367 — extract `export const prerender = …` per page so
+            // we can keep SSG-eligible pages in `routes_by_source` (the SSG
+            // render callback's lookup table) while routing `prerender =
+            // false` pages into the request-time SSR set instead. Without this
+            // split the SSG callback would stamp a stale snapshot to disk on
+            // every watcher tick and the dist fallback would shadow the SSR
+            // handler.
+            // Build the route tables from the router scan + the live host (#659:
+            // extracted into `build_dev_route_tables` so the watch-ADD rebuild
+            // reproduces the boot tables exactly).
+            let (mut routes_by_source, ssr_routes, mut url_index) =
+                build_dev_route_tables(&router, &plan, project_root, &renderer, &mut paths_cache)?;
 
-        // S3 (#1231) — seed the STATIC injected routes into the boot tables so
-        // `lookup_by_url` resolves their URLs (URL == pattern). The router scan
-        // above walks the real user-pages tree (or #1518's private empty root)
-        // only; staged injected modules live outside it, so they must be merged
-        // here (and on every swap, via `refresh_bundle_and_routes`). Rebuild
-        // `url_index` to cover the seeds.
-        // No-op on the parity path. (Boot stale-marking happens after the
-        // session is constructed — see `mark_injected_seeds_stale` below.)
-        if !injected_static_seeds.is_empty() {
-            seed_injected_static_routes(&mut routes_by_source, &injected_static_seeds);
-            url_index = build_url_index(&routes_by_source);
-        }
+            // S3 (#1231) — seed the STATIC injected routes into the boot tables so
+            // `lookup_by_url` resolves their URLs (URL == pattern). The router scan
+            // above walks the real user-pages tree (or #1518's private empty root)
+            // only; staged injected modules live outside it, so they must be merged
+            // here (and on every swap, via `refresh_bundle_and_routes`). Rebuild
+            // `url_index` to cover the seeds.
+            // No-op on the parity path. (Boot stale-marking happens after the
+            // session is constructed — see `mark_injected_seeds_stale` below.)
+            if !injected_static_seeds.is_empty() {
+                seed_injected_static_routes(&mut routes_by_source, &injected_static_seeds);
+                url_index = build_url_index(&routes_by_source);
+            }
 
-        (
-            renderer,
-            routes_by_source,
-            ssr_routes,
-            url_index,
-            Some(trace_token),
-        )
-    };
+            (
+                renderer,
+                routes_by_source,
+                ssr_routes,
+                url_index,
+                collect_page_sources(&router),
+                Some(trace_token),
+            )
+        };
 
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
     // edit of a pre-existing collection file can already narrow (G4 only
@@ -7222,6 +7268,7 @@ fn boot_dev_renderer(
                 routes_by_source,
                 ssr_routes,
                 url_index,
+                page_sources,
             }),
             renderer,
             project_root: project_root.to_path_buf(),
@@ -7478,6 +7525,7 @@ fn add_content_slug_candidate(candidates: &mut BTreeSet<String>, value: &str) {
 /// aggregate collection reads. This is deliberately narrow: an over-broad
 /// aggregate edge is safe; a guessed direct edge can under-render.
 #[cfg(feature = "embed_v8")]
+#[derive(Debug)]
 struct ClassifiedContentTrace {
     observed: BTreeSet<DevContentTraceObservation>,
     reads: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
@@ -7491,14 +7539,19 @@ struct ClassifiedContentTrace {
 fn classify_content_trace_events(
     events: impl IntoIterator<Item = DevContentTraceEvent>,
     routes_by_source: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+    page_sources: &HashSet<PathBuf>,
     membership: &DevContentMembershipSnapshot,
     project_root: &Path,
 ) -> Result<ClassifiedContentTrace> {
     let mut observed = BTreeSet::new();
     let mut reads = BTreeMap::new();
     for event in events {
-        let (consumer, entries) =
-            resolve_content_trace_consumer(&event.source, routes_by_source, project_root)?;
+        let (consumer, entries) = resolve_content_trace_consumer(
+            &event.source,
+            routes_by_source,
+            page_sources,
+            project_root,
+        )?;
         let observation = DevContentTraceObservation {
             consumer: consumer.clone(),
             phase: event.phase,
@@ -7507,6 +7560,22 @@ fn classify_content_trace_events(
             observed.insert(observation);
             continue;
         }
+        // Issue #2064 — a KNOWN page module that produced zero route
+        // entries (`paths()` legitimately returned `[]`, or the page is
+        // `prerender = false` and lives in `ssr_routes`). Nothing in the
+        // SSG route universe descends from it, so it carries no provenance
+        // obligation: its reads contribute no `Content` edge. The `Visit`
+        // arm above still ran, so any edge a PREVIOUS worker generation
+        // recorded for this page is still dropped — the page goes from
+        // "contributes X" to "contributes nothing", never to "stale X".
+        //
+        // Falling through here would push a collection-level read for a
+        // consumer with no routes, which `edge_groups` then expands into an
+        // edge from every entry in the collection to a page that renders
+        // nothing.
+        let Some(entries) = entries else {
+            continue;
+        };
         let collection = ContentCollectionId::new(event.collection.ok_or_else(|| {
             anyhow::anyhow!(
                 "worker content read from {} omitted its collection name",
@@ -7537,12 +7606,23 @@ fn classify_content_trace_events(
 
 /// Validate a worker-emitted route source and resolve it to the graph's page
 /// key plus the current route-table entries that prove a `paths()` read.
+///
+/// The returned entries are `None` when the source IS a page module the
+/// router scan knows about but it contributed no SSG route entries — a
+/// dynamic route whose `paths()` returned `[]`, or a `prerender = false`
+/// page (those live in `ssr_routes`, never in `routes_by_source`). Issue
+/// #2064: that is an ordinary, benign state and must NOT be conflated with
+/// a source the router has never heard of. The latter — a stale/renamed/
+/// moved module that the running worker still traces — is a genuine
+/// inconsistency between the live worker and the live route table, and
+/// stays a hard error so the caller keeps its conservative fallback.
 #[cfg(feature = "embed_v8")]
 fn resolve_content_trace_consumer<'a>(
     raw_source: &str,
     routes_by_source: &'a HashMap<PathBuf, Vec<DevRouteEntry>>,
+    page_sources: &HashSet<PathBuf>,
     project_root: &Path,
-) -> Result<(PageId, &'a [DevRouteEntry])> {
+) -> Result<(PageId, Option<&'a [DevRouteEntry]>)> {
     let raw_source = PathBuf::from(raw_source);
     let source = if raw_source.is_absolute() {
         if !raw_source.starts_with(project_root) {
@@ -7567,12 +7647,20 @@ fn resolve_content_trace_consumer<'a>(
         }
         project_root.join(raw_source)
     };
-    let entries = routes_by_source.get(&source).ok_or_else(|| {
-        anyhow::anyhow!(
-            "worker content trace source {} is absent from the current route table",
-            source.display()
-        )
-    })?;
+    let entries = match routes_by_source.get(&source) {
+        Some(entries) => Some(entries.as_slice()),
+        // Issue #2064 — not in the SSG route table. Ask the router scan
+        // (the authoritative page-module oracle) whether this is a page at
+        // all before collapsing provenance for the whole site.
+        None if page_sources.contains(&source) => None,
+        None => {
+            anyhow::bail!(
+                "worker content trace source {} is not a known page module \
+                 (the router scan has no record of it)",
+                source.display()
+            );
+        }
+    };
     Ok((PageId::new(source), entries))
 }
 
@@ -8506,6 +8594,7 @@ pub(crate) fn stub_session_for_adapter_tests(
     DevRenderSession {
         inner: Arc::new(DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
+                page_sources: routes_by_source.keys().cloned().collect(),
                 routes_by_source,
                 ssr_routes: Vec::new(),
                 url_index,
@@ -8935,6 +9024,7 @@ mod tests {
             .to_vec();
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
+                page_sources: routes_by_source.keys().cloned().collect(),
                 routes_by_source,
                 ssr_routes,
                 url_index,
@@ -8985,6 +9075,7 @@ mod tests {
         let url_index = build_url_index(&routes_by_source);
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
+                page_sources: routes_by_source.keys().cloned().collect(),
                 routes_by_source,
                 ssr_routes,
                 url_index,
@@ -12315,8 +12406,10 @@ mod tests {
             root: &Path,
             events: Vec<DevContentTraceEvent>,
         ) {
+            let page_sources: HashSet<PathBuf> = routes.keys().cloned().collect();
             let classified =
-                classify_content_trace_events(events, routes, membership, root).unwrap();
+                classify_content_trace_events(events, routes, &page_sources, membership, root)
+                    .unwrap();
             let groups = ContentProvenance::from_reads(classified.reads.into_values().flatten())
                 .edge_groups(&membership.membership)
                 .unwrap();
@@ -12499,6 +12592,204 @@ mod tests {
             );
         }
 
+        /// Issue #2064 — a dynamic route whose `paths()` legitimately
+        /// returned `[]` is a known page module that produced zero route
+        /// entries. It must not take the rest of the site's provenance down
+        /// with it: classification succeeds, the zero-route page contributes
+        /// no `Content` edge, and every other traced route keeps its edges.
+        ///
+        /// Before the fix `resolve_content_trace_consumer` hard-errored on
+        /// the zero-route source, and every caller turns that error into
+        /// "content provenance unavailable" + a wholesale `Content`-edge
+        /// wipe — narrowing off for the entire project.
+        #[test]
+        fn zero_route_page_module_is_benign_and_leaves_other_provenance_intact() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let alpha = write_post(root, "alpha");
+            let index_source = root.join("pages/posts/index.tsx");
+            // The zero-`paths()` route: a real page module the router scan
+            // saw, which expanded into no route entries at all.
+            let empty_source = root.join("pages/photos/tag/[tag].tsx");
+            let routes = HashMap::from([(
+                index_source.clone(),
+                vec![route_entry("/posts", "posts/index.html", "/posts", None)],
+            )]);
+            let page_sources: HashSet<PathBuf> =
+                HashSet::from([index_source.clone(), empty_source.clone()]);
+            let membership = content_membership(root, &cfg);
+
+            let classified = classify_content_trace_events(
+                vec![
+                    // The zero-route module ran `paths()` and read the
+                    // collection to decide it had nothing to emit.
+                    trace("pages/photos/tag/[tag].tsx", DevContentTracePhase::Paths),
+                    trace("pages/posts/index.tsx", DevContentTracePhase::Render),
+                ],
+                &routes,
+                &page_sources,
+                &membership,
+                root,
+            )
+            .expect("a known page module that produced zero routes is a benign, ordinary state");
+
+            assert!(
+                classified
+                    .reads
+                    .keys()
+                    .all(|observation| observation.consumer != PageId::new(empty_source.clone())),
+                "a page with no routes carries no provenance obligation, so it must contribute \
+                 no tracked read; got {:?}",
+                classified.reads.keys().collect::<Vec<_>>(),
+            );
+
+            let mut graph = DependencyGraph::new();
+            replace_content_edges(
+                &mut graph,
+                ContentProvenance::from_reads(classified.reads.into_values().flatten())
+                    .edge_groups(&membership.membership)
+                    .unwrap(),
+            );
+            assert_eq!(
+                graph.consumers_of(&alpha),
+                Some(vec![PageId::new(index_source)]),
+                "the unrelated aggregate route must keep its content edge — this is the \
+                 narrowing that the zero-route page used to destroy site-wide"
+            );
+        }
+
+        /// The oracle the two tests around this one are handed by argument
+        /// has to come from somewhere real (#2064). This pins the supplier:
+        /// the ROUTER SCAN lists a dynamic page module regardless of what
+        /// its `paths()` will later return, which is exactly why it — and
+        /// not either built route table — is what
+        /// [`resolve_content_trace_consumer`] consults.
+        #[test]
+        fn collect_page_sources_lists_a_dynamic_page_the_route_tables_may_never_hold() {
+            let tmp = tempfile::tempdir().unwrap();
+            let pages = tmp.path().join("pages");
+            std::fs::create_dir_all(pages.join("photos/tag")).unwrap();
+            std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+            std::fs::write(
+                pages.join("photos/tag/[tag].tsx"),
+                "export function paths() { return []; }\nexport default () => null;\n",
+            )
+            .unwrap();
+
+            let router = zfb_router::Router::scan(&pages).unwrap();
+            let sources = collect_page_sources(&router);
+            assert!(
+                sources.contains(&pages.join("photos/tag/[tag].tsx")),
+                "the scan knows a dynamic page module before `paths()` ever runs; got {sources:?}"
+            );
+            assert!(sources.contains(&pages.join("index.tsx")));
+        }
+
+        /// The other half of the #2064 discrimination: a traced source the
+        /// ROUTER SCAN has never heard of is a genuine inconsistency between
+        /// the live worker and the live route table (a stale/renamed/moved
+        /// module), and must still be surfaced so the caller keeps its
+        /// conservative fallback. Silencing this alongside the benign
+        /// zero-route case would be the wrong fix.
+        #[test]
+        fn traced_source_unknown_to_the_router_scan_is_still_surfaced() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let _alpha = write_post(root, "alpha");
+            let index_source = root.join("pages/posts/index.tsx");
+            let routes = HashMap::from([(
+                index_source.clone(),
+                vec![route_entry("/posts", "posts/index.html", "/posts", None)],
+            )]);
+            // Deliberately NOT a member: the scan produced no route for it.
+            let page_sources: HashSet<PathBuf> = HashSet::from([index_source]);
+            let membership = content_membership(root, &cfg);
+
+            let error = classify_content_trace_events(
+                vec![trace("pages/ghost/[slug].tsx", DevContentTracePhase::Paths)],
+                &routes,
+                &page_sources,
+                &membership,
+                root,
+            )
+            .expect_err("a source the router scan never produced a route for is a real problem");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("pages/ghost/[slug].tsx") && message.contains("known page module"),
+                "the error must name the offending source and say WHY it is unresolvable; got: \
+                 {message}"
+            );
+        }
+
+        /// A zero-route page module still gets its `Visit` observation
+        /// recorded (#2064). That is what drops the edges a PREVIOUS worker
+        /// generation recorded for it back when its `paths()` was non-empty:
+        /// the page must go from "contributes X" to "contributes nothing",
+        /// never to "still contributes the stale X".
+        #[test]
+        fn zero_route_page_visit_still_clears_its_previous_generation_edges() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let alpha = write_post(root, "alpha");
+            let empty_source = root.join("pages/photos/tag/[tag].tsx");
+            let routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+            let page_sources: HashSet<PathBuf> = HashSet::from([empty_source.clone()]);
+            let membership = content_membership(root, &cfg);
+
+            let classified = classify_content_trace_events(
+                vec![visit(
+                    "pages/photos/tag/[tag].tsx",
+                    DevContentTracePhase::Paths,
+                )],
+                &routes,
+                &page_sources,
+                &membership,
+                root,
+            )
+            .unwrap();
+
+            let observation = DevContentTraceObservation {
+                consumer: PageId::new(empty_source.clone()),
+                phase: DevContentTracePhase::Paths,
+            };
+            assert_eq!(
+                classified.observed,
+                BTreeSet::from([observation.clone()]),
+                "the visit is positive evidence that this worker executed the route phase"
+            );
+
+            // What the previous generation left behind, back when the same
+            // module's `paths()` still resolved entries.
+            let mut retained = BTreeMap::from([(
+                observation,
+                vec![TrackedContentRead::collection(
+                    PageId::new(empty_source),
+                    "posts",
+                )],
+            )]);
+            apply_content_trace_observations(&mut retained, classified.observed, classified.reads);
+            assert!(
+                retained.is_empty(),
+                "the visit must retire the stale evidence rather than leave it bridging forever"
+            );
+
+            let mut graph = DependencyGraph::new();
+            replace_content_edges(
+                &mut graph,
+                ContentProvenance::from_reads(retained.into_values().flatten())
+                    .edge_groups(&membership.membership)
+                    .unwrap(),
+            );
+            assert_eq!(
+                graph.consumers_of(&alpha),
+                None,
+                "a route that no longer exists must not keep pulling content edges"
+            );
+        }
+
         #[test]
         fn current_worker_visit_without_read_replaces_stale_route_provenance() {
             let tmp = tempfile::tempdir().unwrap();
@@ -12514,6 +12805,7 @@ mod tests {
             let classified = classify_content_trace_events(
                 vec![visit("pages/posts/index.tsx", DevContentTracePhase::Render)],
                 &routes,
+                &routes.keys().cloned().collect(),
                 &membership,
                 root,
             )
