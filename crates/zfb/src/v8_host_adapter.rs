@@ -986,31 +986,46 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Sub-issue #2009 (V8 Request Loop Dedup epic #2008, Wave 1):
-    // characterization tests pinning the CURRENT observable behavior of
-    // `ThreadedV8Host::new_with_hooks`'s frozen inline request loop
-    // (lines ~223-295 above) before Wave 2 (#2010) folds it onto the
-    // shared `serve_v8_host_requests` helper (line ~541 above). This
-    // sub-issue makes NO production code changes — see the doc comment
-    // and PR body for the per-test perturbation proving each test is
-    // falsifiable.
+    // V8 Request Loop Dedup epic #2008 — the dual-constructor guard.
     //
-    // Each behavioral test below is run against BOTH boot paths:
-    //   - `boot_inline_loop`  — the frozen inline copy under test.
-    //   - `boot_shared_helper` — `serve_v8_host_requests`, reached via the
-    //     dev content-trace boot path with a transparent passthrough
-    //     wrapper around the SAME bundle, so both paths serve identical
-    //     fetch behavior and are directly comparable.
+    // HISTORY (why these tests exist): sub-issue #2009 (Wave 1) wrote them
+    // as CHARACTERIZATION tests, pinning the observable behavior of the
+    // frozen inline request loop `ThreadedV8Host::new_with_hooks` then
+    // carried — a byte-identical copy of `serve_v8_host_requests` — so
+    // Wave 2 (#2010) could fold that copy away with the behavior already
+    // nailed down. Wave 1 itself made no production changes; the fold
+    // landed in Wave 2.
+    //
+    // WHAT IS TRUE NOW: the inline copy is GONE. `new_with_hooks` and
+    // `new_with_dev_content_trace_wrapper` are two CONSTRUCTORS that both
+    // hand their `EmbeddedV8RenderHost` to the one shared
+    // `serve_v8_host_requests` loop. These tests therefore no longer
+    // compare two loops — they compare two constructors over one loop, and
+    // that is still the point of running each behavioral test twice:
+    //   - the two constructors must stay observably EQUIVALENT, so a
+    //     future change that gives one of them its own request loop again
+    //     (or diverges its boot wiring) is caught here, not in production;
+    //   - each constructor's own pre-loop wiring (channel setup, hook
+    //     threading, boot handshake, thread/`Drop` plumbing) is exercised
+    //     end-to-end, and that part is genuinely NOT shared.
+    //
+    // The two boot helpers below name the constructor they drive:
+    //   - `boot_via_new_with_hooks` — `ThreadedV8Host::new` /
+    //     `new_with_hooks`.
+    //   - `boot_via_dev_content_trace_wrapper` —
+    //     `new_with_dev_content_trace_wrapper`, driven with a transparent
+    //     passthrough wrapper around the SAME bundle so both constructors
+    //     serve identical fetch behavior and are directly comparable.
     // Any observed difference between the two is reported as a finding,
     // not smoothed over.
     // -----------------------------------------------------------------
 
     /// Transparent wrapper that delegates every request verbatim to the
     /// inner worker registered under `file:///zfb/bundle.mjs`. Lets the
-    /// comparison tests below drive `serve_v8_host_requests` (via
-    /// [`ThreadedV8Host::new_with_dev_content_trace_wrapper`]) with fetch
+    /// comparison tests below drive
+    /// [`ThreadedV8Host::new_with_dev_content_trace_wrapper`] with fetch
     /// behavior indistinguishable, for these tests' purposes, from booting
-    /// the same bundle directly through the inline loop.
+    /// the same bundle through [`ThreadedV8Host::new_with_hooks`].
     const PASSTHROUGH_WRAPPER: &str = concat!(
         "import __zfb_inner_worker from \"file:///zfb/bundle.mjs\";\n",
         "export default {\n",
@@ -1020,37 +1035,44 @@ mod tests {
         "};\n",
     );
 
-    /// Boot via the frozen inline loop under test
-    /// (`ThreadedV8Host::new_with_hooks`, called through `new()`).
-    fn boot_inline_loop(bundle_path: &Path) -> Box<dyn EmbeddedV8Host> {
-        ThreadedV8Host::new(bundle_path).expect("inline-loop host boot")
+    /// Boot through the [`ThreadedV8Host::new_with_hooks`] constructor
+    /// (reached here via `new()`), which serves requests from the shared
+    /// [`serve_v8_host_requests`] loop.
+    fn boot_via_new_with_hooks(bundle_path: &Path) -> Box<dyn EmbeddedV8Host> {
+        ThreadedV8Host::new(bundle_path).expect("new_with_hooks host boot")
     }
 
-    /// Boot via the shared helper (`serve_v8_host_requests`), reached
-    /// through the dev content-trace wrapper path with a transparent
+    /// Boot through the [`ThreadedV8Host::new_with_dev_content_trace_wrapper`]
+    /// constructor — the other caller of the same
+    /// [`serve_v8_host_requests`] loop — driven with a transparent
     /// passthrough wrapper so it serves the SAME bundle behavior as
-    /// [`boot_inline_loop`] for direct comparison.
-    fn boot_shared_helper(bundle_path: &Path) -> Box<dyn EmbeddedV8Host> {
+    /// [`boot_via_new_with_hooks`] for direct comparison.
+    fn boot_via_dev_content_trace_wrapper(bundle_path: &Path) -> Box<dyn EmbeddedV8Host> {
         let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
             PluginRegistryHooks::default(),
             PASSTHROUGH_WRAPPER.to_string(),
         );
-        factory(bundle_path).expect("shared-helper host boot")
+        factory(bundle_path).expect("dev-content-trace-wrapper host boot")
     }
 
     /// Pin: a normal request produces the documented response shape —
     /// status, `content_type` extraction, full multi-header passthrough
     /// (including a duplicate-name header surviving in order), and body
-    /// bytes — identically through both boot paths.
+    /// bytes — identically through both constructors.
     ///
-    /// Falsification: temporarily changing the inline loop's
-    /// `content_type` lookup from `eq_ignore_ascii_case` to an exact
-    /// `==` comparison (so `"Content-Type"` no longer matches
-    /// `"content-type"`) made this test fail with
+    /// Falsification (run in #2009 against the then-existing inline copy,
+    /// which was byte-identical to the helper it has since been folded
+    /// onto): temporarily changing the loop's `content_type` lookup from
+    /// `eq_ignore_ascii_case` to an exact `==` comparison (so
+    /// `"Content-Type"` no longer matches `"content-type"`) made this test
+    /// fail with
     /// `assertion failed: resp.content_type == "text/plain; charset=utf-8"`
     /// (`resp.content_type` was empty instead). Reverted after confirming.
+    /// The same edit applies verbatim to [`serve_v8_host_requests`] today,
+    /// and would now fail BOTH constructor legs rather than one — the fold
+    /// strengthened this proof rather than weakening it.
     #[test]
-    fn normal_request_produces_documented_response_shape_on_both_loops() {
+    fn normal_request_produces_documented_response_shape_on_both_constructors() {
         let dir = tempfile::tempdir().unwrap();
         let bundle_path = write_bundle(
             &dir,
@@ -1069,8 +1091,8 @@ mod tests {
         );
 
         for boot in [
-            boot_inline_loop as fn(&Path) -> Box<dyn EmbeddedV8Host>,
-            boot_shared_helper,
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
         ] {
             let mut host = boot(&bundle_path);
             let resp = host.dispatch_fetch("/hello").expect("dispatch");
@@ -1099,31 +1121,34 @@ mod tests {
     }
 
     /// Pin: `dispatch_fetch_full` threads method/headers/body through to
-    /// the bundle, identically through both boot paths.
+    /// the bundle, identically through both constructors.
     ///
-    /// Falsification (actually run): temporarily hard-coding the inline
-    /// loop's `HttpRequestLike.method` to `"GET"` (ignoring `req.method`)
-    /// made this test fail with body
+    /// Falsification (actually run in #2009 against the then-existing
+    /// byte-identical inline copy; the same edit in
+    /// [`serve_v8_host_requests`] today would fail BOTH constructor legs):
+    /// temporarily hard-coding the loop's `HttpRequestLike.method` to
+    /// `"GET"` (ignoring `req.method`) made this test fail with body
     /// `{"method":"GET","echoed":"req-42","bodyText":"payload-bytes"}`
     /// instead of `"method":"POST"` — proving the test catches a
     /// method-threading regression. Reverted after confirming; `git diff`
     /// clean.
     ///
     /// FINDING (not a bug, a test-design note): a parallel perturbation —
-    /// skipping the inline loop's `k.to_ascii_lowercase()` request-header
+    /// skipping the loop's `k.to_ascii_lowercase()` request-header
     /// normalisation entirely — was ALSO tried and did **not** fail this
     /// test. JS's `Headers`/`Request` constructor already normalises
     /// header names to lower-case internally per the Fetch spec, so
     /// `request.headers.get("x-request-id")` finds `"X-Request-Id"`
     /// regardless of whether the Rust side pre-lowercases. The
-    /// pre-lowercasing is real code (both loops do it identically) but its
+    /// pre-lowercasing is real code (now written once, in
+    /// [`serve_v8_host_requests`]) but its
     /// only observable effect is on a BTreeMap key COLLISION between two
     /// differently-cased spellings of the same header name before they
     /// reach JS (e.g. `"X-Foo"` and `"x-foo"` both present) — an edge case
-    /// neither loop's existing behaviour depends on for anything this
-    /// sub-issue's scope covers, so no test was added for it.
+    /// the loop's existing behaviour does not depend on for anything epic
+    /// #2008's scope covers, so no test was added for it.
     #[test]
-    fn dispatch_fetch_full_threads_method_headers_and_body_on_both_loops() {
+    fn dispatch_fetch_full_threads_method_headers_and_body_on_both_constructors() {
         let dir = tempfile::tempdir().unwrap();
         let bundle_path = write_bundle(
             &dir,
@@ -1142,8 +1167,8 @@ mod tests {
         );
 
         for boot in [
-            boot_inline_loop as fn(&Path) -> Box<dyn EmbeddedV8Host>,
-            boot_shared_helper,
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
         ] {
             let mut host = boot(&bundle_path);
             let mut headers = std::collections::BTreeMap::new();
@@ -1169,15 +1194,17 @@ mod tests {
     /// send order (each response matches its own request; a fourth
     /// request never sees stale state from an earlier one).
     ///
-    /// Falsification (actually run, not just reasoned about): temporarily
-    /// making the inline loop `break` the `for host_req in rx` loop right
-    /// after replying to an errored request (simulating "poison on
-    /// error") made this test fail on the post-error dispatch with
+    /// Falsification (actually run in #2009, not just reasoned about,
+    /// against the then-existing byte-identical inline copy; the same edit
+    /// in [`serve_v8_host_requests`] today would fail BOTH constructor
+    /// legs): temporarily making the loop `break` its `for host_req in rx`
+    /// loop right after replying to an errored request (simulating "poison
+    /// on error") made this test fail on the post-error dispatch with
     /// `EmbeddedV8("V8 host thread closed reply channel")` instead of the
     /// expected `Ok` — proving the test catches a poisoning regression.
     /// Reverted after confirming; `git diff` clean.
     #[test]
-    fn error_propagates_host_survives_and_sequence_is_ordered_on_both_loops() {
+    fn error_propagates_host_survives_and_sequence_is_ordered_on_both_constructors() {
         let dir = tempfile::tempdir().unwrap();
         let bundle_path = write_bundle(
             &dir,
@@ -1197,8 +1224,8 @@ mod tests {
         );
 
         for boot in [
-            boot_inline_loop as fn(&Path) -> Box<dyn EmbeddedV8Host>,
-            boot_shared_helper,
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
         ] {
             let mut host = boot(&bundle_path);
 
@@ -1233,15 +1260,29 @@ mod tests {
     /// thread promptly (well under the `Drop` impl's 10s bounded-join
     /// deadline) — clean shutdown, not a hang.
     ///
-    /// Falsification (actually run): temporarily appending an infinite
-    /// `loop { sleep(50ms) }` after the inline loop's `for host_req in rx`
-    /// (so the thread never exits once `rx` closes) made this test fail
+    /// Falsification (actually run in #2009 against the then-existing
+    /// byte-identical inline copy; the same edit in
+    /// [`serve_v8_host_requests`] today would fail BOTH constructor legs):
+    /// temporarily appending an infinite `loop { sleep(50ms) }` after the
+    /// loop's `for host_req in rx` (so the thread never exits once `rx`
+    /// closes) made this test fail
     /// with `took 10.020870333s` against the `< 5s` assertion — the full
     /// bounded-join deadline elapsed before `Drop` gave up and detached —
     /// proving the test catches a shutdown regression. Reverted after
     /// confirming; `git diff` clean.
+    ///
+    /// TIMING / TIER NOTE: the `< 5s` bound is a wall-clock assertion, and
+    /// wall-clock assertions next to real V8 isolate boots are this repo's
+    /// documented primary flake class. It is NOT loosened here — the bound
+    /// is the only thing this test pins, and a bigger number would pin
+    /// less. Instead the whole `v8_host_adapter::tests` module is assigned
+    /// to nextest's `e2e-heavy` test-group (`.config/nextest.toml`,
+    /// `max-threads = 1`), so these isolate boots never contend with each
+    /// other or with the heavy e2e binaries. The 5s ceiling still sits far
+    /// below `Drop`'s own 10s bounded-join deadline, so a genuine
+    /// never-exiting loop is caught rather than waited out.
     #[test]
-    fn drop_closes_channel_and_joins_thread_promptly_on_both_loops() {
+    fn drop_closes_channel_and_joins_thread_promptly_on_both_constructors() {
         let dir = tempfile::tempdir().unwrap();
         let bundle_path = write_bundle(
             &dir,
@@ -1255,8 +1296,8 @@ mod tests {
         );
 
         for boot in [
-            boot_inline_loop as fn(&Path) -> Box<dyn EmbeddedV8Host>,
-            boot_shared_helper,
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
         ] {
             let mut host = boot(&bundle_path);
             // Exercise the host once so the thread is proven live, then
@@ -1288,10 +1329,11 @@ mod tests {
     /// (thread died WITHOUT going through `Drop`, e.g. mid-life panic)
     /// hits the same "no reachable genuine Rust panic without production
     /// changes" wall documented on
-    /// `catastrophic_js_recursion_fails_as_catchable_error_host_survives_on_both_loops`
+    /// `catastrophic_js_recursion_fails_as_catchable_error_host_survives_on_both_constructors`
     /// below. Exercising it would need a test-only seam to kill the
-    /// thread out-of-band, which is a production change outside this
-    /// sub-issue's "no production code changes" constraint.
+    /// thread out-of-band — a production change, which is outside what
+    /// this module's tests do (they have never changed production code)
+    /// and was never in epic #2008's scope. It remains an open blind spot.
     #[test]
     fn drain_console_logs_on_live_idle_host_is_empty() {
         let dir = tempfile::tempdir().unwrap();
@@ -1330,7 +1372,7 @@ mod tests {
     /// alias-drop perturbation above already exercises for the alias half
     /// of the pair.)
     #[test]
-    fn hooks_resolve_alias_and_virtual_module_across_multiple_requests_on_both_loops() {
+    fn hooks_resolve_alias_and_virtual_module_across_multiple_requests_on_both_constructors() {
         let dir = tempfile::tempdir().unwrap();
         let alias_target = dir.path().join("aliased.mjs");
         std::fs::write(&alias_target, "export const label = \"from-alias\";\n")
@@ -1359,7 +1401,7 @@ mod tests {
             "test-plugin",
         );
 
-        // Inline-loop path (production `new_with_hooks`).
+        // `new_with_hooks` constructor (the production build/dev path).
         {
             let mut host =
                 ThreadedV8Host::new_with_hooks(&bundle_path, hooks.clone()).expect("host boot");
@@ -1371,8 +1413,9 @@ mod tests {
             assert_eq!(r2.body, b"from-alias:from-virtual:2");
         }
 
-        // Shared-helper path (`serve_v8_host_requests` via the dev
-        // content-trace wrapper), same hooks, same bundle.
+        // `new_with_dev_content_trace_wrapper` constructor — the other
+        // caller of the same `serve_v8_host_requests` loop — with the same
+        // hooks and the same bundle.
         {
             let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
                 hooks,
@@ -1394,7 +1437,10 @@ mod tests {
     /// thread's. This is the concurrency contract the rendezvous channel +
     /// one-shot `reply` channel per request is designed to uphold.
     ///
-    /// Falsification (actually run): temporarily making the inline loop
+    /// Falsification (actually run in #2009 against the then-existing
+    /// byte-identical inline copy; the same edit in
+    /// [`serve_v8_host_requests`] today would fail BOTH constructor legs):
+    /// temporarily making the loop
     /// reply with the PREVIOUS request's body (a one-request-lagged
     /// static buffer) instead of the current one's — simulating a
     /// mixed-up reply/request pairing — made this test fail immediately
@@ -1402,7 +1448,7 @@ mod tests {
     /// `"token-1"`) — proving the test detects cross-talk. Reverted after
     /// confirming; `git diff` clean.
     #[test]
-    fn concurrent_callers_never_receive_a_cross_wired_reply_on_both_loops() {
+    fn concurrent_callers_never_receive_a_cross_wired_reply_on_both_constructors() {
         let dir = tempfile::tempdir().unwrap();
         let bundle_path = write_bundle(
             &dir,
@@ -1418,8 +1464,8 @@ mod tests {
         );
 
         for boot in [
-            boot_inline_loop as fn(&Path) -> Box<dyn EmbeddedV8Host>,
-            boot_shared_helper,
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
         ] {
             let host = std::sync::Arc::new(std::sync::Mutex::new(boot(&bundle_path)));
             let handles: Vec<_> = (0..16)
@@ -1461,11 +1507,33 @@ mod tests {
     /// was found reachable from crafted JS input on this dispatch path
     /// (see the sub-issue #2009 completion report for what was checked).
     /// A true Rust panic inside `host.dispatch_fetch(...).await` remains
-    /// an untested blind spot; if Wave 2 needs that guarantee pinned
-    /// precisely, it will need a test-only panic seam, which is a
-    /// production change out of this sub-issue's scope.
+    /// an untested blind spot; pinning it precisely would need a test-only
+    /// panic seam, i.e. a production change — out of epic #2008's scope,
+    /// and still open.
     ///
-    /// Falsification: temporarily wrapping the inline loop's per-request
+    /// LOAD-BEARING STACK MARGIN (documented because it is otherwise
+    /// invisible, and because inverting it does not fail this test — it
+    /// SIGSEGVs the whole test binary, taking unrelated tests with it):
+    /// this test only surfaces a catchable `RangeError` because V8's own
+    /// stack limit (~1 MiB by default) sits BELOW the OS stack of the
+    /// thread the isolate runs on. Neither constructor passes
+    /// `stack_size` to `thread::Builder`, so that thread inherits Rust's
+    /// default — 2 MiB, unless the `RUST_MIN_STACK` env var overrides it.
+    /// V8 therefore trips its own limit and throws before the OS stack is
+    /// exhausted. If the margin ever inverts (a much smaller
+    /// `RUST_MIN_STACK`, or a future production change raising V8's stack
+    /// limit), the recursion blows the real stack instead.
+    /// `RUST_MIN_STACK` is the one half of that margin a test can observe
+    /// without touching production code, so it is ASSERTED below rather
+    /// than merely inherited — a hostile value now fails loudly with an
+    /// explanation instead of segfaulting. The other half (V8's limit) is
+    /// set inside deno_core/V8 and is not reachable from here; guaranteeing
+    /// it would require pinning `stack_size` in the production
+    /// constructors, which this module deliberately does not do.
+    ///
+    /// Falsification (recorded in #2009 against the then-existing
+    /// byte-identical inline copy): temporarily wrapping the loop's
+    /// per-request
     /// body in `if req.url_path == "/recursive-boom-marker" { panic!() }`
     /// is unsafe to actually exercise (it kills the whole test binary /
     /// leaves the process in an undefined state) — dry-run reasoning was
@@ -1473,9 +1541,30 @@ mod tests {
     /// error and always reply `Ok(HttpResponseLike { status: 200, .. })`
     /// (simulating a masked failure) made this test fail with `expect_err`
     /// panicking on an `Ok` result — proving this test detects a failure
-    /// being silently swallowed. Reverted after confirming.
+    /// being silently swallowed. Reverted after confirming. The same edit
+    /// in [`serve_v8_host_requests`] today would fail BOTH constructor
+    /// legs.
     #[test]
-    fn catastrophic_js_recursion_fails_as_catchable_error_host_survives_on_both_loops() {
+    fn catastrophic_js_recursion_fails_as_catchable_error_host_survives_on_both_constructors() {
+        // Enforce the observable half of the stack margin documented above.
+        // V8's default stack limit is ~1 MiB; the V8 thread must have
+        // meaningfully more OS stack than that or the recursion below
+        // segfaults the test binary instead of throwing.
+        const MIN_V8_THREAD_STACK_BYTES: usize = 1_536 * 1024;
+        if let Ok(raw) = std::env::var("RUST_MIN_STACK") {
+            let requested: usize = raw.trim().parse().unwrap_or_else(|e| {
+                panic!("RUST_MIN_STACK={raw:?} is not a byte count: {e}");
+            });
+            assert!(
+                requested >= MIN_V8_THREAD_STACK_BYTES,
+                "RUST_MIN_STACK={requested} would give the V8 host thread less OS \
+                 stack than V8's own ~1 MiB limit, so the unbounded recursion below \
+                 would exhaust the real stack (SIGSEGV, killing the whole test \
+                 binary) instead of throwing a catchable RangeError. Unset \
+                 RUST_MIN_STACK or set it to at least {MIN_V8_THREAD_STACK_BYTES}."
+            );
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let bundle_path = write_bundle(
             &dir,
@@ -1494,8 +1583,8 @@ mod tests {
         );
 
         for boot in [
-            boot_inline_loop as fn(&Path) -> Box<dyn EmbeddedV8Host>,
-            boot_shared_helper,
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
         ] {
             let mut host = boot(&bundle_path);
             let err = host
