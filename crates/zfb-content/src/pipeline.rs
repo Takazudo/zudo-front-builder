@@ -3390,4 +3390,312 @@ mod tests {
         let diags = p.take_markdown_diagnostics();
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
+
+    // -----------------------------------------------------------------
+    // Footnote RED tests (issue #2023, epic #2021: GFM Footnotes And
+    // Task Lists).
+    //
+    // `FootnoteDefinition`/`FootnoteReference` currently fall into the
+    // catch-all at the bottom of `mdast_to_hast_inner` (`_ =>
+    // HastNode::Raw(String::new())`), so both the reference marker and
+    // the definition body vanish with no diagnostic. These tests pin
+    // the DOCUMENT-LEVEL behaviour the fix (#2026) must produce —
+    // reference/definition association, per-occurrence distinct
+    // backreference targets, and document-end ordering — not just
+    // "some text survives somewhere". They deliberately do NOT
+    // hardcode the exact id/href STRING scheme (e.g.
+    // `user-content-fn-1`): that escaping/allocation policy belongs to
+    // the document-level model in #2025. Structural helpers only.
+
+    /// Depth-first collection of every `HastNode::Element` in `node`
+    /// (pre-order, i.e. document order), including `node` itself when
+    /// it is an `Element`.
+    fn collect_elements<'a>(node: &'a HastNode, out: &mut Vec<&'a HastNode>) {
+        match node {
+            HastNode::Element { children, .. } => {
+                out.push(node);
+                for c in children {
+                    collect_elements(c, out);
+                }
+            }
+            HastNode::Root { children } => {
+                for c in children {
+                    collect_elements(c, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Flatten all `Text`/`Raw`/`JsxRaw` content under `node`, ignoring
+    /// markup structure — used to check that a definition's body text
+    /// (or a dropped literal reference) landed somewhere in the
+    /// output, and to compare document-order text positions.
+    fn flatten_text(node: &HastNode) -> String {
+        match node {
+            HastNode::Text(s) | HastNode::Raw(s) | HastNode::JsxRaw(s) => s.clone(),
+            HastNode::Element { children, .. } | HastNode::Root { children } => {
+                children.iter().map(flatten_text).collect()
+            }
+            HastNode::Comment(_) => String::new(),
+        }
+    }
+
+    /// Look up an attribute value on an `Element` node; `None` for any
+    /// other node kind or a missing attribute.
+    fn attr<'a>(node: &'a HastNode, key: &str) -> Option<&'a str> {
+        match node {
+            HastNode::Element { attrs, .. } => attrs
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Pipeline with every GFM construct on, including
+    /// `footnote_definition` (off in the `CONSERVATIVE` default the
+    /// rest of this module's tests use via the bare `run()` helper).
+    fn run_with_footnotes(input: &str) -> HastNode {
+        Pipeline::with_resolved_gfm_constructs(ResolvedGfmConstructs::ALL_ON)
+            .run(input)
+            .expect("parse ok")
+    }
+
+    // 1. A single reference and its definition are ASSOCIATED: the
+    // reference renders a visible marker element that links (by some
+    // id) to the definition's rendered location, and the definition's
+    // rendered location links back to the reference. Today both nodes
+    // fall into the catch-all, so no such elements exist at all —
+    // every `find`/`unwrap_or_else` below panics on the current code.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn footnote_reference_and_definition_are_associated() {
+        let h = run_with_footnotes("Ref one[^a] end.\n\n[^a]: Definition body.\n");
+
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+
+        // The reference renders as SOME element carrying the visible
+        // footnote number "1" and a fragment link into the document.
+        let marker = elements
+            .iter()
+            .find(|e| flatten_text(e) == "1" && attr(e, "href").is_some_and(|h| h.starts_with('#')))
+            .copied()
+            .unwrap_or_else(|| panic!("expected a footnote reference marker element in {h:#?}"));
+        let marker_href = attr(marker, "href")
+            .unwrap()
+            .trim_start_matches('#')
+            .to_string();
+
+        // The definition body text must appear SOMEWHERE in the
+        // document (not dropped)…
+        assert!(
+            flatten_text(&h).contains("Definition body."),
+            "footnote definition body missing from output: {h:#?}"
+        );
+
+        // …and specifically at an element carrying the id the marker's
+        // href points at (proves the reference resolves to ITS
+        // definition, not merely that the text exists somewhere).
+        let definition_target = elements
+            .iter()
+            .find(|e| attr(e, "id") == Some(marker_href.as_str()))
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no element with id=\"{marker_href}\" — the reference's href \
+                     must resolve to the rendered definition: {h:#?}"
+                )
+            });
+        assert!(
+            flatten_text(definition_target).contains("Definition body."),
+            "the id the reference points at must contain the definition body, got: {definition_target:#?}"
+        );
+
+        // The definition must carry a backreference link pointing back
+        // at the reference occurrence (some element within the
+        // definition's own subtree whose href targets the marker's
+        // own id — i.e. the two link to each other).
+        let marker_id = attr(marker, "id")
+            .unwrap_or_else(|| panic!("reference marker must carry its own id: {marker:#?}"));
+        let mut def_subtree = Vec::new();
+        collect_elements(definition_target, &mut def_subtree);
+        let expected_backref = format!("#{marker_id}");
+        assert!(
+            def_subtree
+                .iter()
+                .any(|e| attr(e, "href") == Some(expected_backref.as_str())),
+            "definition must contain a backreference link to {expected_backref}: {definition_target:#?}"
+        );
+    }
+
+    // 2. Repeated references to ONE definition: each occurrence needs
+    // its OWN backreference target (so the definition can link back to
+    // each usage individually), even though both display the SAME
+    // footnote number — this is called out explicitly in #2023's
+    // acceptance criteria.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn repeated_references_get_distinct_backreference_targets() {
+        let h = run_with_footnotes("Ref one[^a] and ref again[^a] end.\n\n[^a]: Shared def.\n");
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+
+        let markers: Vec<&&HastNode> = elements
+            .iter()
+            .filter(|e| {
+                flatten_text(e) == "1" && attr(e, "href").is_some_and(|h| h.starts_with('#'))
+            })
+            .collect();
+        assert_eq!(
+            markers.len(),
+            2,
+            "expected exactly two footnote-1 reference markers (same number, \
+             two occurrences), got {}: {h:#?}",
+            markers.len()
+        );
+
+        let ids: Vec<&str> = markers
+            .iter()
+            .map(|m| attr(m, "id").unwrap_or_else(|| panic!("marker missing id: {m:#?}")))
+            .collect();
+        assert_ne!(
+            ids[0], ids[1],
+            "each repeated reference occurrence must get its own distinct \
+             backreference id, got the same id twice: {ids:?}"
+        );
+
+        // Every marker id must have a corresponding backreference link
+        // SOMEWHERE in the document (proving the definition can return
+        // to each specific occurrence, not just to one of them).
+        for id in &ids {
+            let target_href = format!("#{id}");
+            assert!(
+                elements
+                    .iter()
+                    .any(|e| attr(e, "href") == Some(target_href.as_str())),
+                "no backreference link found pointing at {target_href}: {h:#?}"
+            );
+        }
+    }
+
+    // 3. Multiple definitions: numbering and document-end ORDER follow
+    // REFERENCE order (the convention every GFM/remark-based renderer
+    // follows), not source-definition order — this fixture deliberately
+    // declares `[^b]` before `[^a]` while the body references `a`
+    // first, so a definition-order implementation would fail this
+    // differently (numbers/order swapped) than today's total drop.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn multiple_definitions_are_numbered_and_ordered_by_first_reference() {
+        let h = run_with_footnotes(
+            "First[^a] then second[^b] end.\n\n[^b]: Second body.\n\n[^a]: First body.\n",
+        );
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+
+        // Document-order DFS visits the `a` reference (appears first
+        // in the body) before the `b` reference.
+        let markers: Vec<&&HastNode> = elements
+            .iter()
+            .filter(|e| attr(e, "href").is_some_and(|href| href.starts_with('#')))
+            .filter(|e| flatten_text(e) == "1" || flatten_text(e) == "2")
+            .collect();
+        assert_eq!(
+            markers.len(),
+            2,
+            "expected two distinct footnote reference markers, got {}: {h:#?}",
+            markers.len()
+        );
+        assert_eq!(
+            flatten_text(markers[0]),
+            "1",
+            "the FIRST-referenced footnote (`a`) must be numbered 1: {h:#?}"
+        );
+        assert_eq!(
+            flatten_text(markers[1]),
+            "2",
+            "the SECOND-referenced footnote (`b`) must be numbered 2: {h:#?}"
+        );
+
+        let full_text = flatten_text(&h);
+        let a_pos = full_text
+            .find("First body.")
+            .unwrap_or_else(|| panic!("First body. missing from output: {full_text:?}"));
+        let b_pos = full_text
+            .find("Second body.")
+            .unwrap_or_else(|| panic!("Second body. missing from output: {full_text:?}"));
+        assert!(
+            a_pos < b_pos,
+            "footnote definitions must render in REFERENCE order (a before b), \
+             got a@{a_pos} b@{b_pos}: {full_text:?}"
+        );
+    }
+
+    // 4. Duplicate `[^a]` definitions. WHICH body wins (first vs last)
+    // is an explicit POLICY CHOICE #2025 owns (see its issue body's
+    // "Duplicate definitions" bullet) — this test does NOT prescribe
+    // the tie-break. It only pins the one structural fact that must
+    // hold under ANY reasonable policy: duplicates COLLAPSE to exactly
+    // one rendered footnote, not two, and not neither.
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
+    fn duplicate_definitions_collapse_to_exactly_one_entry() {
+        let h = run_with_footnotes("Dup label[^a] end.\n\n[^a]: First.\n\n[^a]: Second (dup).\n");
+        let full_text = flatten_text(&h);
+        let has_first = full_text.contains("First.");
+        let has_second = full_text.contains("Second (dup).");
+        assert!(
+            has_first ^ has_second,
+            "exactly ONE of the duplicate definition bodies must survive \
+             (the exact tie-break is #2025's policy call) — got \
+             first={has_first} second={has_second}: {full_text:?}"
+        );
+
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+        let markers: Vec<&&HastNode> = elements
+            .iter()
+            .filter(|e| {
+                flatten_text(e) == "1" && attr(e, "href").is_some_and(|href| href.starts_with('#'))
+            })
+            .collect();
+        assert_eq!(
+            markers.len(),
+            1,
+            "duplicate definitions must still yield exactly one reference \
+             marker, got {}: {h:#?}",
+            markers.len()
+        );
+    }
+
+    // 5. A reference with NO matching definition is not even a
+    // `FootnoteReference` mdast node: markdown-rs's footnote constructs
+    // only recognise `[^label]` as a reference when a matching
+    // `[^label]: …` definition exists elsewhere in the document;
+    // otherwise the bracketed text parses as ordinary literal text (a
+    // parser-level fact, confirmed by inspecting the mdast tree
+    // directly — verified via a throwaway `zfb-content` example during
+    // this issue's investigation). The catch-all bug this epic is
+    // about therefore never runs for this case, so this is a passing
+    // (NOT `#[ignore]`d) characterization pin, not a RED test — it
+    // satisfies #2023's "do not leave [the missing-definition case]
+    // untested" instruction by pinning the already-correct behaviour.
+    #[test]
+    fn unmatched_reference_stays_literal_text() {
+        let h = run_with_footnotes("Dangling ref[^missing] end.\n");
+        let children = root_children(&h);
+        assert_eq!(
+            children.len(),
+            1,
+            "no phantom footnote section should be appended: {h:#?}"
+        );
+        let (_, p_children, _) = assert_element(&children[0], "p");
+        let text: String = p_children.iter().map(flatten_text).collect();
+        assert!(
+            text.contains("[^missing]"),
+            "unmatched footnote reference must stay literal text, got: {text:?}"
+        );
+    }
 }
