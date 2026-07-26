@@ -135,10 +135,17 @@ fn write_fixture(root: &Path) {
 
     // A repeated reference (`[^a]` cited twice) is the acceptance-critical
     // shape: it must share one number but mint two distinct occurrence ids.
+    // Definition B is written BEFORE definition A in source, deliberately
+    // the reverse of their first-reference order (a is referenced first,
+    // b second) — this is load-bearing: it makes the "definitions render
+    // in REFERENCE order" assertion below actually discriminate against a
+    // renderer that (incorrectly) emits definitions in source-declaration
+    // order, which a same-order fixture could not distinguish from the
+    // correct first-reference-order behavior.
     let footnotes_body = "First footnote[^a] and a second[^b], \
         then a repeat of the first[^a] again.\n\n\
-        [^a]: Definition A.\n\n\
-        [^b]: Definition B.\n";
+        [^b]: Definition B.\n\n\
+        [^a]: Definition A.\n";
     fs::write(root.join("content/notes/footnotes-md.md"), footnotes_body).unwrap();
     fs::write(root.join("content/notes/footnotes-mdx.mdx"), footnotes_body).unwrap();
 
