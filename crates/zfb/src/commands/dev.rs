@@ -479,6 +479,36 @@ fn reload_redirects(path: &Path) -> Redirects {
     }
 }
 
+/// Everything the `_redirects` 200-rewrite pre-warm needs, bundled so
+/// both of its lifecycle moments — the deferred boot task and the
+/// `_redirects` watch task — carry one value instead of four (issue
+/// #2004, Dev Self Heal epic #1999). See [`crate::dev_rewrite_prewarm`]
+/// for what the pass does and why it lives outside every request path.
+#[cfg(feature = "embed_v8")]
+#[derive(Clone)]
+pub(crate) struct RewritePrewarmWiring {
+    mode: BootLazyMode,
+    /// The dev server's mount prefix, taken from the SAME function
+    /// `zfb_server` derives `AppState::base_prefix` with — a divergence
+    /// here would emit lookup keys the waterfall never probes.
+    base_prefix: Option<String>,
+    session: DevRenderSession,
+    adapter: crate::lazy_render_adapter::LazyRenderAdapter,
+}
+
+#[cfg(feature = "embed_v8")]
+impl RewritePrewarmWiring {
+    fn run(&self, redirects: &RedirectsHandle) {
+        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev(
+            self.mode,
+            redirects,
+            self.base_prefix.as_deref(),
+            Some(&self.session),
+            Some(&self.adapter),
+        );
+    }
+}
+
 /// Start a targeted, dedicated watch for `public/_redirects` (issue
 /// #1546) and return the live [`RedirectsHandle`] the dev router reads
 /// from.
@@ -514,7 +544,24 @@ fn reload_redirects(path: &Path) -> Redirects {
 /// therefore the OS-level watch — stays alive for the lifetime of that
 /// task (i.e. the dev server process); dropping it would stop the
 /// watch immediately.
-fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHandle {
+///
+/// ## Rewrite pre-warm on a live edit (issue #2004, epic #1999)
+///
+/// `prewarm` carries everything
+/// [`crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev`] needs.
+/// After every reload that swaps a new ruleset in, the consumer loop
+/// re-runs the pre-warm against it — so **a live `_redirects` edit
+/// re-registers the 200-rewrite target set; no dev-server restart is
+/// required**, matching the no-restart promise this watch was built for
+/// in the first place. `None` disables it (non-Cold boot, renderer
+/// disabled, or the lazy switch off), and the pre-warm's own mode gate is
+/// a second line of defense.
+#[cfg(feature = "embed_v8")]
+fn spawn_redirects_watch(
+    project_root: &Path,
+    public_root: &Path,
+    prewarm: Option<RewritePrewarmWiring>,
+) -> RedirectsHandle {
     let redirects_path = public_root.join("_redirects");
     let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
         &redirects_path,
@@ -564,6 +611,22 @@ fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHa
             match handle_for_task.write() {
                 Ok(mut guard) => *guard = updated,
                 Err(poisoned) => *poisoned.into_inner() = updated,
+            }
+            // Issue #2004 — re-register the 200-rewrite target set
+            // against the ruleset just swapped in. `spawn_blocking`
+            // because the pass renders: it must never run on an async
+            // worker (the renderer mutex can be held for seconds by a
+            // tick's host swap), the same discipline the request-time
+            // hook follows.
+            if let Some(wiring) = prewarm.clone() {
+                let redirects = Arc::clone(&handle_for_task);
+                if let Err(join_err) =
+                    tokio::task::spawn_blocking(move || wiring.run(&redirects)).await
+                {
+                    output::error(format!(
+                        "_redirects rewrite pre-warm task panicked after a live edit: {join_err}"
+                    ));
+                }
             }
         }
     });
@@ -1498,9 +1561,40 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // 4. on_outcome — translate each tick into reload events.
     let tx_cb = tx.clone();
+    // Issue #2004 — the `_redirects` rewrite pre-warm's re-run seam for
+    // the cold-bootstrap recovery path (#1809).
+    //
+    // A slot rather than a captured value because of an ordering
+    // constraint that cannot be reshuffled cheaply: `on_outcome` is built
+    // here, hundreds of lines before the lazy render adapter and the
+    // `_redirects` handle exist. The slot is filled exactly once, below,
+    // strictly before `TcpListener::bind` — so it is always populated by
+    // the time any tick outcome can reach this closure. It stays empty
+    // for the whole session in every non-Cold mode and whenever the
+    // renderer/lazy switch is off, which makes the drain inert there.
+    let rewrite_prewarm_slot: Arc<std::sync::OnceLock<(RewritePrewarmWiring, RedirectsHandle)>> =
+        Arc::new(std::sync::OnceLock::new());
+    let rewrite_prewarm_for_outcome = Arc::clone(&rewrite_prewarm_slot);
     let on_outcome = move |outcome: &BuildOutcome| {
         for ev in outcome_to_events(outcome) {
             let _ = tx_cb.send(ev);
+        }
+        // Issue #2004 — a cold-bootstrap recovery (#1809) republished the
+        // route tables the failed deferred Cold bundle never produced. The
+        // boot hook's pre-warm ran against those empty scaffold tables and
+        // warmed nothing, so re-run it now against the real ones.
+        // One-shot: the latch is raised inside
+        // `recover_cold_bootstrap_after_publish` and swapped to `false`
+        // here, so a healthy session never pays for this.
+        //
+        // Blocking (it renders) on the orchestrator's tick thread, which
+        // is where the tick's own render fan-out already runs — the same
+        // posture, not a new one. It runs AFTER the broadcast above so a
+        // tab's reload is never delayed behind it.
+        if let Some((wiring, redirects)) = rewrite_prewarm_for_outcome.get() {
+            if wiring.session.inner.take_rewrite_prewarm_pending() {
+                wiring.run(redirects);
+            }
         }
     };
 
@@ -1591,7 +1685,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // literally hook-free (no per-GET handle snapshot/spawn; review
     // finding on #1026). The adapter's own early-return stays as
     // defense in depth.
-    let render_on_request_hook = dev_session
+    let hook_and_adapter = dev_session
         .as_ref()
         .filter(|session| session.lazy_render_enabled())
         .map(|session| {
@@ -1609,12 +1703,50 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 injected,
             )
         });
+    let (render_on_request_hook, lazy_render_adapter) = match hook_and_adapter {
+        Some((handle, adapter)) => (Some(handle), Some(adapter)),
+        None => (None, None),
+    };
+
+    // Issue #2004 (Dev Self Heal epic #1999) — the `_redirects`
+    // 200-rewrite pre-warm's shared wiring, built once and handed to both
+    // of its lifecycle moments: the deferred boot task below and the
+    // `_redirects` watch's live-edit re-registration. `None` in every
+    // non-Cold boot mode, or when there is no session/adapter to render
+    // through — see `crate::dev_rewrite_prewarm`.
+    let rewrite_prewarm = match (
+        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_decision(boot_lazy_mode_now),
+        dev_session.as_ref(),
+        lazy_render_adapter,
+    ) {
+        (true, Some(session), Some(adapter)) => Some(RewritePrewarmWiring {
+            mode: boot_lazy_mode_now,
+            // The SAME derivation `zfb_server::serve` uses for
+            // `AppState::base_prefix`, from the same `cfg.base` value
+            // threaded into `ServeOpts` below.
+            base_prefix: zfb_types::dev_mount_prefix(cfg.base.as_deref()),
+            session: session.clone(),
+            adapter,
+        }),
+        _ => None,
+    };
+    let rewrite_prewarm_for_boot = rewrite_prewarm.clone();
 
     // Issue #1546 — `_redirects` dev integration. Loads `public/_redirects`
     // (an empty ruleset when absent) and starts the targeted watch that
     // keeps it live for the rest of this session. Must run before
     // `project_root` / `public_root` are moved into `ServeOpts` below.
-    let redirects_handle = spawn_redirects_watch(&project_root, &public_root);
+    let redirects_handle =
+        spawn_redirects_watch(&project_root, &public_root, rewrite_prewarm.clone());
+    // Issue #2004 — the deferred boot task needs the same handle the
+    // server reads from; clone before `ServeOpts` consumes the original.
+    let redirects_handle_for_boot = Arc::clone(&redirects_handle);
+    // Issue #2004 — fill the cold-bootstrap re-run slot `on_outcome`
+    // captured far above. Done HERE, before `TcpListener::bind` below, so
+    // no tick outcome can ever observe an empty slot.
+    if let Some(wiring) = rewrite_prewarm {
+        let _ = rewrite_prewarm_slot.set((wiring, Arc::clone(&redirects_handle)));
+    }
 
     let opts = ServeOpts {
         project_root,
@@ -1962,6 +2094,27 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 dev_session_for_boot.as_ref(),
                 &dist_root_for_boot,
             );
+
+            // 4b. `_redirects` 200-rewrite pre-warm (issue #2004, Dev Self
+            //     Heal epic #1999 — the fix for #1825). Cold only.
+            //
+            //     Placed HERE deliberately, between the boot render and the
+            //     tick-stale drain below:
+            //       - AFTER step 0/4, so the route tables are published and
+            //         a target's reverse lookup can resolve. Run earlier, on
+            //         a deferred boot, every target would miss.
+            //       - BEFORE the drain, so the stale marks it lays down ride
+            //         the SAME single `run_with_boot` broadcast as every
+            //         other boot mark — one `ReloadEvent::Page`, not a
+            //         second one.
+            //
+            //     This is the one call site that closes #1825, and it is
+            //     nowhere near a request: `serve_from_waterfall` still
+            //     re-runs nothing for a rewrite. See
+            //     `crate::dev_rewrite_prewarm` for the rejected alternative.
+            if let Some(wiring) = rewrite_prewarm_for_boot.as_ref() {
+                wiring.run(&redirects_handle_for_boot);
+            }
 
             // 5. Eager islands bundle (issue #1170). This is the last
             //    size-bound step that used to run synchronously before
@@ -2932,7 +3085,7 @@ fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> b
 /// `run_boot_render`'s boot-lazy branch) now treats `Cold` as active with no
 /// reshaping at the call sites, exactly as Wave 1 set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BootLazyMode {
+pub(crate) enum BootLazyMode {
     /// Boot-lazy is off — the default `zfb dev` boot semantics ("every
     /// route exists on disk before the server is ready") are preserved
     /// exactly.
@@ -3361,6 +3514,23 @@ impl DevRenderInner {
     #[cfg(feature = "embed_v8")]
     fn take_cold_bootstrap_pending(&self) -> bool {
         self.cold_bootstrap_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Raise the one-shot "re-run the rewrite pre-warm" flag (issue
+    /// #2004). Stored, never swapped, so repeated raisings before a
+    /// drain are idempotent — the drain is what makes it one-shot.
+    #[cfg(feature = "embed_v8")]
+    fn set_rewrite_prewarm_pending(&self) {
+        self.rewrite_prewarm_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Consume the "re-run the rewrite pre-warm" flag (issue #2004):
+    /// `true` for exactly ONE caller per raising.
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn take_rewrite_prewarm_pending(&self) -> bool {
+        self.rewrite_prewarm_pending
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -3878,6 +4048,27 @@ struct DevRenderInner {
     /// later failure may re-arm it.
     #[cfg(feature = "embed_v8")]
     cold_bootstrap_pending: std::sync::atomic::AtomicBool,
+
+    /// One-shot flag: a cold-bootstrap recovery just republished the
+    /// route tables, so the `_redirects` 200-rewrite pre-warm must run
+    /// again (issue #2004, Dev Self Heal epic #1999).
+    ///
+    /// The boot hook's pre-warm ran against the EMPTY scaffold tables
+    /// that a failed deferred Cold bundle left behind, so every rewrite
+    /// target missed its reverse lookup and nothing was warmed. Without
+    /// this flag the recovery would republish everything and still leave
+    /// `/alias` on the indefinite 404 #1825 is about — the recovery's own
+    /// `mark_all_routes_stale` makes the target CLAIMABLE, but only a
+    /// request for the target itself would ever claim it, and the whole
+    /// point is that such a request never arrives.
+    ///
+    /// Raised inside
+    /// [`DevRenderSession::recover_cold_bootstrap_after_publish`] and
+    /// drained by `run`'s `on_outcome` (which holds the pre-warm wiring;
+    /// the session deliberately does not, to avoid an `Arc` cycle with
+    /// the adapter that holds the session).
+    #[cfg(feature = "embed_v8")]
+    rewrite_prewarm_pending: std::sync::atomic::AtomicBool,
 
     /// One-shot per-tick flag: this session published its live SSR
     /// (`prerender = false`) route handle (issue #1826, Dev Self Heal
@@ -4492,6 +4683,14 @@ impl DevRenderSession {
         self.inner.claim_is_current(claim)
     }
 
+    /// Test-only seam: drain the tick-stale buffer, so a test can assert
+    /// which output paths a stale-marking pass queued for the next
+    /// `BuildOutcome::pages_stale` broadcast.
+    #[cfg(test)]
+    pub(crate) fn take_tick_stale_for_tests(&self) -> Vec<PathBuf> {
+        self.inner.take_tick_stale()
+    }
+
     /// Test-only seam: mark routes stale so adapter tests can inject
     /// staleness state without driving a whole watcher tick.
     #[cfg(test)]
@@ -4708,6 +4907,33 @@ impl DevRenderSession {
         n
     }
 
+    /// Mark ONE `_redirects` 200-rewrite target stale by its hook-facing
+    /// request path (issue #2004, Dev Self Heal epic #1999).
+    ///
+    /// The stale-marking half of the rewrite pre-warm — see
+    /// [`crate::dev_rewrite_prewarm`] for the whole pass and why a
+    /// rewrite target needs one at all. Deliberately routed through
+    /// [`Self::lookup_by_url`], the SAME reverse index the request-time
+    /// hook resolves a URL with, so a target that is not an SSG route in
+    /// this session (an SSR route, an unexpanded dynamic route, a typo)
+    /// is a silent no-op rather than a phantom stale entry for an output
+    /// path nothing will ever render.
+    ///
+    /// Uses `mark_stale` (not `claim_or_mark_stale`) so the mark lands in
+    /// the tick-stale buffer like every other stale-marking pass: at boot
+    /// the deferred task's drain folds it into
+    /// `BuildOutcome::pages_stale`, so a tab sitting on the dev 404 body
+    /// for this target reloads through the normal `ReloadEvent::Page`
+    /// channel instead of a bespoke one.
+    ///
+    /// Returns the marked output path, or `None` when the target resolves
+    /// to no SSG route.
+    pub(crate) fn mark_rewrite_target_stale(&self, request_path: &str) -> Option<PathBuf> {
+        let entry = self.lookup_by_url(request_path)?;
+        self.inner.mark_stale([entry.output_path.clone()]);
+        Some(entry.output_path)
+    }
+
     /// Cold-bootstrap recovery (issue #1809, epic #1806): consume the
     /// pending latch and, for the single winning publish, re-run the boot
     /// seeding the FAILED deferred bundle skipped — now against the route
@@ -4764,6 +4990,13 @@ impl DevRenderSession {
         // told. Same seam, same bit as the healthy deferred publish, so
         // recovery heals a tab identically rather than better or worse.
         self.note_ssr_routes_published();
+        // Issue #2004 — the boot hook's `_redirects` rewrite pre-warm ran
+        // against the empty scaffold tables this recovery is fixing, so it
+        // warmed nothing. Ask `on_outcome` to run it again now the tables
+        // are real. `mark_all_routes_stale` below leaves the target
+        // claimable but nothing would ever claim it: a rewrite serves
+        // `/alias`, and `/target` is never requested.
+        self.inner.set_rewrite_prewarm_pending();
         Some(self.mark_all_routes_stale())
     }
 
@@ -6790,6 +7023,8 @@ fn boot_dev_renderer(
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — the static injected-route seeds + post-precedence
             // survivor set, both built from the same survivor list above.
             injected_static_seeds,
@@ -8077,6 +8312,8 @@ pub(crate) fn stub_session_for_adapter_tests(
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — adapter tests inject routes directly; no injected
             // package routes in the stub universe.
             injected_static_seeds: Vec::new(),
@@ -8503,6 +8740,8 @@ mod tests {
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
@@ -8531,6 +8770,8 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
@@ -10543,6 +10784,53 @@ mod tests {
                     deferred_bundle_failure_message(BootLazyMode::Off, "boom"),
                     auto_msg
                 );
+            }
+
+            /// Issue #2004 (Dev Self Heal epic #1999) — a cold-bootstrap
+            /// recovery must also re-run the `_redirects` rewrite
+            /// pre-warm.
+            ///
+            /// Codex review finding on #2004: the boot hook's pre-warm
+            /// ran against the EMPTY scaffold route tables a failed
+            /// deferred Cold bundle left behind, so every rewrite target
+            /// missed its reverse lookup and nothing was warmed. Recovery
+            /// republishes the real tables — but its `mark_all_routes_stale`
+            /// only makes the target CLAIMABLE, and the whole premise of
+            /// #1825 is that no request for the target ever arrives to
+            /// claim it. So recovery raises this latch, which `run`'s
+            /// `on_outcome` drains to re-run the pass.
+            ///
+            /// Asserted as a one-shot with the same discipline as the
+            /// recovery latch itself: never raised without a recovery,
+            /// raised by the winning publish, and consumed exactly once.
+            #[test]
+            fn cold_bootstrap_recovery_requests_a_rewrite_prewarm_rerun_exactly_once() {
+                let session = recovery_session();
+
+                assert!(
+                    !session.inner.take_rewrite_prewarm_pending(),
+                    "a fresh session must not request a pre-warm re-run"
+                );
+                // An unarmed publish recovers nothing, so it must not ask
+                // for a re-run either.
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), None);
+                assert!(!session.inner.take_rewrite_prewarm_pending());
+
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+                assert!(
+                    session.inner.take_rewrite_prewarm_pending(),
+                    "recovery must request a rewrite pre-warm re-run"
+                );
+                assert!(
+                    !session.inner.take_rewrite_prewarm_pending(),
+                    "the request is one-shot — a second drain sees nothing"
+                );
+
+                // A later failure + recovery re-arms cleanly.
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+                assert!(session.inner.take_rewrite_prewarm_pending());
             }
 
             /// Issue #1809 — the core exactly-once contract. A publish

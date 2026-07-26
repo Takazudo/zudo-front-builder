@@ -1,5 +1,5 @@
 // The unrelated, repeatedly-edited page used to prove genuine watcher
-// ticks occur during the test (see `cold_rewrite_red_e2e.rs`'s header
+// ticks occur during the test (see `cold_rewrite_prewarm_e2e.rs`'s header
 // comment). Never the `_redirects` rewrite target — that is
 // `pages/target.tsx`.
 export default function HomePage() {
@@ -7,10 +7,10 @@ export default function HomePage() {
     <html lang="en">
       <head>
         <meta charSet="utf-8" />
-        <title>cold-rewrite-red fixture</title>
+        <title>cold-rewrite-prewarm fixture</title>
       </head>
       <body>
-        <h1>COLD_REWRITE_RED_HOME_MARKER_V0</h1>
+        <h1>COLD_REWRITE_PREWARM_HOME_MARKER_V0</h1>
       </body>
     </html>
   );

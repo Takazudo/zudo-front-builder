@@ -16,6 +16,8 @@ pub mod render_pipeline;
 // `render_pipeline` fall back to feature-gated stubs that fail loudly
 // if a project unexpectedly hits an SSR-requiring path.
 #[cfg(feature = "embed_v8")]
+pub(crate) mod dev_rewrite_prewarm;
+#[cfg(feature = "embed_v8")]
 pub(crate) mod lazy_render_adapter;
 #[cfg(feature = "embed_v8")]
 pub(crate) mod ssr_adapter;

@@ -1,31 +1,40 @@
-//! RED test for issue #1825 (Dev Self Heal epic #1999, Wave 1 sub-issue
-//! #2001).
+//! Cold `_redirects` 200-rewrite pre-warm E2E (issue #1825; Dev Self
+//! Heal epic #1999 — written RED in Wave 1 as #2001, **inverted in Wave 4
+//! by #2004**, which landed the fix and renamed this file and its test).
 //!
-//! ## The bug
+//! ## The gap this covers
 //!
-//! `crates/zfb-server/src/routes.rs:1126` (`serve_from_waterfall`) resolves
-//! a `_redirects` `200` rewrite's target through the on-disk waterfall
+//! `crates/zfb-server/src/routes.rs` (`serve_from_waterfall`) resolves a
+//! `_redirects` `200` rewrite's target through the on-disk waterfall
 //! (`PageCache -> html_root -> public_root -> dist_root -> 404`)
-//! **without** re-running the render-on-request hook. That split is
-//! deliberate and correct (issue #1546): it matches the `_redirects`
-//! "resolve once, no chaining" contract and mirrors Cloudflare Workers'
-//! real Static Assets layer, which never hands a rewritten request back to
-//! the Worker either.
+//! **without** re-running plugin dev-middleware, embed handlers, SSR
+//! dispatch, or the render-on-request hook. That split is deliberate and
+//! correct (issue #1546): it matches the `_redirects` "resolve once, no
+//! chaining" contract and mirrors Cloudflare Workers' real Static Assets
+//! layer, which never hands a rewritten request back to the Worker
+//! either. **The fix did not change any of that** — `serve_from_waterfall`
+//! is untouched, and `zfb-server`'s
+//! `rewrite_reruns_no_middleware_embed_ssr_or_render_hook` pins it.
 //!
-//! It was harmless before Cold existed, because `ZFB_DEV_BOOT_LAZY=1` only
-//! took the boot-lazy path when a servable prebuilt `dist/` seed existed —
-//! so a rewrite target's HTML was already on disk (stale but real).
-//! Seedless `ZFB_DEV_BOOT_LAZY=cold` (issue #1808) removes that
-//! requirement: at a fresh Cold boot, no waterfall leg has real content
+//! It was harmless before Cold existed, because `ZFB_DEV_BOOT_LAZY=1`
+//! only took the boot-lazy path when a servable prebuilt `dist/` seed
+//! existed — so a rewrite target's HTML was already on disk (stale but
+//! real). Seedless `ZFB_DEV_BOOT_LAZY=cold` (issue #1808) removes that
+//! requirement: at a fresh Cold boot no waterfall leg has real content
 //! for ANY route yet — pages render lazily, on their own first request,
 //! via the render-on-request hook. But the hook is bypassed *by design*
-//! for a rewrite target (see the doc comment above), so nothing ever
-//! makes `/target`'s HTML exist unless `/target` is requested directly or
-//! an unrelated full re-render happens to write it. A request to
-//! `/alias` therefore 404s **indefinitely** — not "until the hook claims
-//! it" (the hook never runs for this path at all).
+//! for a rewrite target, so nothing ever made `/target`'s HTML exist
+//! unless `/target` was requested directly. `/alias` therefore 404'd
+//! **indefinitely** — not "until the hook claims it" (the hook never runs
+//! for this path at all).
 //!
-//! ## Fixture (`tests/fixtures/cold-rewrite-red/`)
+//! The fix (#2003 + #2004) enumerates the `200`-rewrite targets and
+//! pre-warms them from the dev boot task — outside every request path —
+//! marking each stale and rendering it through the same claim → render →
+//! guarded-write flow a direct GET would take. See
+//! `crates/zfb/src/dev_rewrite_prewarm.rs`.
+//!
+//! ## Fixture (`tests/fixtures/cold-rewrite-prewarm/`)
 //!
 //! - `pages/index.tsx` — an ordinary home route, repeatedly edited by this
 //!   test to produce genuine, SSE-confirmed watcher ticks. Never the
@@ -34,37 +43,31 @@
 //!   harness never requests it directly, by construction.
 //! - `public/_redirects` — one rule: `/alias /target 200`.
 //!
-//! ## What "indefinitely" means here, and how this test proves it
+//! ## Why the polling loop survives the inversion unchanged
 //!
-//! A single 404 response is consistent with "not yet rendered" (a false
-//! positive for this bug — cold-lazy is *expected* to 404 a route that
-//! genuinely has never been requested, until its own first request). The
-//! defect is that `/alias` NEVER resolves no matter how many *unrelated*
-//! things happen in the meantime, because the one mechanism that could
-//! fix it (the render-on-request hook) is architecturally never invoked
-//! for this path. So this test asserts the DESIRED (post-fix) outcome —
-//! `GET /alias` eventually resolves the rewrite target — via a loop that
-//! polls repeatedly and interleaves each poll with a genuine,
-//! SSE-confirmed watcher tick (an edit to `pages/index.tsx`, unrelated to
-//! `/target`), proving ticks are actually happening in the system, not
-//! just that time has passed. Today every poll in that loop still 404s,
-//! so the final assertion fails with a panic message enumerating every
-//! poll's observation — the "quote the failure text" proof that this is
-//! the persistent-404 bug, not a flake. `/target` is never requested
-//! directly at any point. Event/condition-keyed waits only (each tick is
-//! confirmed via its own SSE `page` event); no fixed sleeps gate any
-//! assertion.
+//! The assertion was written from the start as the DESIRED post-fix
+//! outcome — `GET /alias` eventually resolves the rewrite target — so
+//! Wave 4 flipped it green without touching a single assertion. The loop
+//! shape still earns its keep for the same reason it was chosen: a single
+//! 404 would be consistent with "not yet rendered" (cold-lazy legitimately
+//! 404s a route that has genuinely never been requested), so each poll is
+//! interleaved with a genuine, SSE-confirmed watcher tick (an edit to the
+//! unrelated `pages/index.tsx`) proving ticks are really happening in the
+//! system rather than that time merely passed. If the pre-warm regresses,
+//! the failure message enumerates every poll's observation instead of
+//! reporting a bare timeout. `/target` is never requested directly at any
+//! point — doing so would render it through the (legitimate, different)
+//! render-on-request hook path and prove nothing about the pre-warm.
+//! Event/condition-keyed waits only; no fixed sleeps gate any assertion.
 //!
 //! ## `#[ignore]`
 //!
 //! Tagged `heavy` per this repo's `#[ignore]` manifest convention
-//! (`CLAUDE.md`): a real `zfb dev --port 0` E2E, and RED (fails today by
-//! design). Fixing #1825 is Waves 3-4 of epic #1999 (rewrite-target
-//! enumeration + marking stale); this test only proves the gap exists
-//! today. It stays ignored until that fix lands, at which point it
-//! should flip green with its `#[ignore]` dropped, the way sibling red
-//! tests in this repo have been (see e.g.
-//! `bundler_root_workspace_stage_escape_audit_armed_regression.rs`).
+//! (`CLAUDE.md`): a real `zfb dev --port 0` E2E. It is no longer RED —
+//! it passes — but it stays out of the T1 gate on cost, like every other
+//! real-dev-server E2E in this crate. Epic #1999's Wave 6 central-gate
+//! pass (#2007) owns wiring it into `exam.yml`'s weekly filterset; it must
+//! not self-promote.
 
 #![cfg(unix)]
 
@@ -93,7 +96,7 @@ fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("cold-rewrite-red")
+        .join("cold-rewrite-prewarm")
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -253,7 +256,7 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
                 || combined.contains("tailwindcss") && combined.contains("not found")
             {
                 eprintln!(
-                    "[cold_rewrite_red_e2e] known unavailable dependency; skipping.\n{}",
+                    "[cold_rewrite_prewarm_e2e] known unavailable dependency; skipping.\n{}",
                     session.logs(),
                 );
                 return None;
@@ -292,7 +295,7 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
 
 fn home_page_source(revision: u32) -> String {
     format!(
-        "export default function HomePage() {{\n  return (\n    <html lang=\"en\">\n      <head>\n        <meta charSet=\"utf-8\" />\n        <title>cold-rewrite-red fixture</title>\n      </head>\n      <body>\n        <h1>COLD_REWRITE_RED_HOME_MARKER_V{revision}</h1>\n      </body>\n    </html>\n  );\n}}\n"
+        "export default function HomePage() {{\n  return (\n    <html lang=\"en\">\n      <head>\n        <meta charSet=\"utf-8\" />\n        <title>cold-rewrite-prewarm fixture</title>\n      </head>\n      <body>\n        <h1>COLD_REWRITE_PREWARM_HOME_MARKER_V{revision}</h1>\n      </body>\n    </html>\n  );\n}}\n"
     )
 }
 
@@ -365,7 +368,7 @@ impl std::fmt::Display for AliasObservation {
     }
 }
 
-const TARGET_MARKER: &str = "COLD_REWRITE_RED_TARGET_MARKER";
+const TARGET_MARKER: &str = "COLD_REWRITE_PREWARM_TARGET_MARKER";
 
 async fn observe_alias(client: &reqwest::Client, base: &str) -> AliasObservation {
     match client.get(format!("{base}/alias")).send().await {
@@ -388,32 +391,32 @@ fn alias_resolved(observation: &AliasObservation) -> bool {
     observation.status == Some(200) && observation.body_snippet.contains(TARGET_MARKER)
 }
 
-/// Proves issue #1825: at a fresh Cold boot, a `_redirects` 200-rewrite
-/// target with no on-disk content anywhere in the waterfall 404s
-/// indefinitely — not merely "not yet", but genuinely forever, since the
-/// one mechanism (the render-on-request hook) that could make it fresh is
-/// architecturally bypassed for this dispatch path. `/target` is never
-/// requested directly at any point in this test; every intervening
-/// watcher tick is unrelated (an edit to the unrelated home page) and
-/// independently SSE-confirmed.
-#[ignore = "heavy: run with --ignored — real `zfb dev` E2E proving issue #1825 (RED — remove/invert once Waves 3-4 of epic #1999 land the fix)"]
+/// Proves the fix for issue #1825: at a fresh Cold boot, a `_redirects`
+/// 200-rewrite target with no on-disk content anywhere in the waterfall
+/// nonetheless becomes servable through `/alias`, because the boot-time
+/// pre-warm (#2004) marked it stale and rendered it — the
+/// render-on-request hook stays architecturally bypassed for this
+/// dispatch path, by design. `/target` is never requested directly at any
+/// point in this test; every intervening watcher tick is unrelated (an
+/// edit to the unrelated home page) and independently SSE-confirmed.
+#[ignore = "heavy: run with --ignored — real `zfb dev` E2E for issue #1825's Cold rewrite pre-warm (epic #1999 Wave 4)"]
 #[tokio::test(flavor = "multi_thread")]
-async fn cold_redirects_rewrite_target_404s_indefinitely() {
+async fn cold_redirects_rewrite_target_is_prewarmed_and_resolves() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
-            "[cold_rewrite_red_e2e] no esbuild binary available; skipping. Set ZFB_ESBUILD_BIN \
+            "[cold_rewrite_prewarm_e2e] no esbuild binary available; skipping. Set ZFB_ESBUILD_BIN \
              or install esbuild on PATH."
         );
         return;
     };
 
-    let temp = tempfile::tempdir().expect("create tempdir for cold-rewrite-red fixture");
+    let temp = tempfile::tempdir().expect("create tempdir for cold-rewrite-prewarm fixture");
     let root = temp
         .path()
         .canonicalize()
         .expect("canonicalize fixture root");
-    copy_dir(&fixture_dir(), &root).expect("copy cold-rewrite-red fixture");
+    copy_dir(&fixture_dir(), &root).expect("copy cold-rewrite-prewarm fixture");
     assert!(
         !root.join(".zfb-build").exists(),
         "fixture must have no persisted dev graph or prior render output before cold boot"
@@ -452,19 +455,19 @@ async fn cold_redirects_rewrite_target_404s_indefinitely() {
         // the same unrelated-tick mechanism the rest of the test relies on.
         confirm_unrelated_tick(&session, &base, &client, 1).await;
 
-        // This test asserts the DESIRED (post-fix) behavior: `/alias`
-        // must eventually resolve the rewrite target. It polls
-        // repeatedly, interleaving each poll with a genuine,
-        // SSE-confirmed unrelated watcher tick (an edit to `pages/index.tsx`,
-        // never `/target`) — proof that ticks are demonstrably happening
-        // in the system, not just that time has passed. Today, issue
-        // #1825 means this loop exhausts every poll and the final assert
-        // below fails, with the panic message enumerating every 404
-        // observation. `/target` itself is NEVER requested directly here:
+        // `/alias` must resolve the rewrite target. It polls repeatedly,
+        // interleaving each poll with a genuine, SSE-confirmed unrelated
+        // watcher tick (an edit to `pages/index.tsx`, never `/target`) —
+        // proof that ticks are demonstrably happening in the system, not
+        // just that time has passed. With #2004's pre-warm in place the
+        // FIRST poll normally already resolves (the boot task warms the
+        // target before or shortly after the ready banner); the tick-keyed
+        // retries stay because the pre-warm runs on the deferred boot
+        // task, so a slow host can legitimately land the first poll before
+        // it completes. `/target` itself is NEVER requested directly here:
         // doing so would render it via the render-on-request hook (a
         // legitimate, different dispatch path — see `serve_page` in
-        // routes.rs) and prove nothing about the indefiniteness this test
-        // exists to demonstrate.
+        // routes.rs) and would pass even with the pre-warm removed.
         let mut observations: Vec<(u32, AliasObservation)> = Vec::new();
 
         let initial = observe_alias(&client, &base).await;
@@ -488,12 +491,15 @@ async fn cold_redirects_rewrite_target_404s_indefinitely() {
                 .collect::<Vec<_>>()
                 .join("\n");
             panic!(
-                "issue #1825: GET /alias never resolved the `_redirects` 200-rewrite target \
-                 across {} polls, despite {} confirmed unrelated watcher tick(s) occurring in \
-                 between (each an SSE-confirmed edit to the unrelated pages/index.tsx). The \
-                 target 404s indefinitely at a fresh Cold boot because `serve_from_waterfall` \
-                 deliberately bypasses the render-on-request hook for a rewrite target — see \
-                 this file's module doc comment. `/target` was never requested directly.\n\
+                "issue #1825 regression: GET /alias never resolved the `_redirects` \
+                 200-rewrite target across {} polls, despite {} confirmed unrelated watcher \
+                 tick(s) occurring in between (each an SSE-confirmed edit to the unrelated \
+                 pages/index.tsx). At a fresh Cold boot nothing but #2004's boot-time pre-warm \
+                 (`crates/zfb/src/dev_rewrite_prewarm.rs`) can make this target servable — \
+                 `serve_from_waterfall` deliberately bypasses the render-on-request hook for a \
+                 rewrite target — so the pre-warm did not run, did not resolve this target, or \
+                 emitted a spelling the waterfall does not probe. `/target` was never requested \
+                 directly.\n\
                  Poll history:\n{history}\n{}",
                 observations.len(),
                 UNRELATED_TICKS,
@@ -505,7 +511,7 @@ async fn cold_redirects_rewrite_target_404s_indefinitely() {
     match tokio::time::timeout(OVERALL_DEADLINE, body).await {
         Ok(()) => {}
         Err(_) => panic!(
-            "[watchdog] cold-rewrite-red E2E did not finish within {}s. Process group {pgid} \
+            "[watchdog] cold-rewrite-prewarm E2E did not finish within {}s. Process group {pgid} \
              will be killed.",
             OVERALL_DEADLINE.as_secs(),
         ),

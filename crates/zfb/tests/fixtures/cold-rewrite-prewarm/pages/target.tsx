@@ -11,7 +11,7 @@ export default function TargetPage() {
         <title>Target</title>
       </head>
       <body>
-        <h1>COLD_REWRITE_RED_TARGET_MARKER</h1>
+        <h1>COLD_REWRITE_PREWARM_TARGET_MARKER</h1>
       </body>
     </html>
   );
