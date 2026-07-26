@@ -249,6 +249,7 @@ jobs:
               | test(=stage_escape_audit_accepts_staged_symlink_through_symlink_aliased_working_dir)
               | test(=real_binary_build_and_dev_cover_pnpm_workspace_raw_hardening_contract)
               | test(=real_binary_build_and_dev_cover_workspace_reroot_host_contract)
+              | test(=sibling_mdx_utility_class_reaches_dev_css_scan)
           ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
           rc=${PIPESTATUS[0]}
           set -e
