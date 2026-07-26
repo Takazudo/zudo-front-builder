@@ -6,6 +6,7 @@ pub mod dep_manifest;
 pub mod diagnostics;
 pub mod directive_parser;
 pub mod facade;
+pub mod footnotes;
 pub mod frontmatter;
 pub mod heading_registry;
 pub mod hi_roles;
@@ -24,6 +25,16 @@ pub use content_bridge::{
     CollectionConfig, ContentSnapshot, EntrySnapshot,
 };
 pub use pipeline_spec::{CodeHighlightMode, PipelineSpec, PipelineSpecError};
+
+// Document-level GFM footnote model (#2025, epic #2021). Shared by BOTH emit
+// paths (`pipeline`'s hast bridge and `mdx_jsx_emit`'s JSX emitter) so the
+// numbering / id-allocation policy cannot drift between them — see the
+// `footnotes` module docs for every policy decision it encodes.
+pub use footnotes::{
+    FootnoteCursor, FootnoteEntry, FootnoteModel, FootnoteRef, IdAllocator,
+    FOOTNOTE_BACKREF_MARKER, FOOTNOTE_CLOBBER_PREFIX, FOOTNOTE_LABEL_ID, FOOTNOTE_LABEL_TEXT,
+    FOOTNOTE_SECTION_CLASS,
+};
 
 pub use pipeline::{
     constructs_for_jsx_emit, constructs_for_pipeline, Pipeline, PipelineError,
