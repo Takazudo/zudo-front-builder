@@ -44,7 +44,12 @@
 //!   dev's own intermediate SSR bundle under `.zfb-build/` would otherwise
 //!   leak the class string into auto-detection and mask whether the mirror
 //!   root's CSS scan did anything (same confound documented at
-//!   `sibling_css_module_command_layer_build.rs:649-662`).
+//!   `sibling_css_module_command_layer_build.rs:649-662`). The same
+//!   `.gitignore` excludes `.zfb-dev-*.log` for the identical reason: this
+//!   file's own `spawn_dev` writes the dev server's stdout/stderr INTO the
+//!   project root, i.e. inside that same auto-detection scan root, so a
+//!   utility class that ever appeared in a dev log line would be picked up
+//!   just as the bundle would.
 //! - Proof the FS event genuinely arrives (the whole point of #1819 is that
 //!   delivery already worked and only the CSS rerun was missing): this test
 //!   waits for a `[zfb-timing] tick(): kinds=[<mdx filename>:...]` line under
@@ -301,9 +306,14 @@ fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir)
     // `.zfb-build/` could leak the new utility class into Tailwind's
     // automatic content detection and mask whether the mirror-root scan
     // under test did anything.
+    //
+    // `.zfb-dev-*.log` is excluded for the identical reason: `spawn_dev`
+    // writes the dev server's stdout/stderr into the project root, inside
+    // the same auto-detection scan root, and a utility class echoed into a
+    // log line would be picked up exactly like the `.zfb-build/` bundle.
     fs::write(
         project.join(".gitignore"),
-        ".zfb-build/\ndist/\nnode_modules/\n",
+        ".zfb-build/\ndist/\nnode_modules/\n.zfb-dev-*.log\n",
     )
     .expect("write project .gitignore");
 

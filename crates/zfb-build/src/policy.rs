@@ -242,8 +242,10 @@ impl RawImportInvalidation {
             .unwrap_or_default()
     }
 
-    /// Whether `path` lies inside one of the registered CSS sibling-mirror
-    /// roots (issue #1819, epic #1995).
+    /// Locate `path` inside the registered CSS sibling-mirror roots (issue
+    /// #1819, epic #1995), returning `(matched root alias, path relative to
+    /// that root)` — `("", …)`-free and empty-relative when the path IS the
+    /// root.
     ///
     /// Containment, not exact membership — contrast with [`Self::contains`],
     /// which backs the file-shaped `is_*_target` predicates. These roots are
@@ -258,24 +260,51 @@ impl RawImportInvalidation {
     /// event path can be the canonical real path (macOS FSEvents reports
     /// `/private/var/...`) while the published root is the lexical one, or
     /// vice versa.
-    pub fn is_under_css_mirror_root(&self, path: &Path) -> bool {
-        let Ok(roots) = self.css_mirror_roots.read() else {
-            return false;
-        };
+    ///
+    /// Callers get the matched root and remainder rather than a bare bool so
+    /// they can apply their own containment-region rules (the orchestrator
+    /// uses both: a degeneracy guard against a root that would swallow the
+    /// project, and the `CSS_SIBLING_MIRROR_SKIP_DIRS` infra-dir filter that
+    /// the `@source` scan itself applies).
+    pub fn css_mirror_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
+        let roots = self.css_mirror_roots.read().ok()?;
         if roots.is_empty() {
-            return false;
+            return None;
         }
         let candidates: Vec<PathBuf> = Self::aliases(path.to_path_buf()).collect();
-        roots
-            .iter()
-            .filter(|root| !root.as_os_str().is_empty())
-            .any(|root| {
-                Self::aliases(root.clone()).any(|root_alias| {
-                    candidates
-                        .iter()
-                        .any(|candidate| candidate.starts_with(&root_alias))
-                })
-            })
+        for root in roots.iter() {
+            for root_alias in Self::aliases(root.clone()) {
+                // The emptiness guard must test the form we MATCH on, not the
+                // raw stored root: a root spelled `.` or `a/..` normalizes to
+                // an empty path, which `starts_with`/`strip_prefix` accept as
+                // a prefix of EVERY path — turning the gate into the rejected
+                // "rerun for every markdown edit" option (a).
+                if root_alias.as_os_str().is_empty() {
+                    continue;
+                }
+                for candidate in &candidates {
+                    if let Ok(rel) = candidate.strip_prefix(&root_alias) {
+                        return Some((root_alias, rel.to_path_buf()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether `path` lies inside one of the registered CSS sibling-mirror
+    /// roots — the bool-shaped view of [`Self::css_mirror_root_match`].
+    pub fn is_under_css_mirror_root(&self, path: &Path) -> bool {
+        self.css_mirror_root_match(path).is_some()
+    }
+
+    /// Expose the lexical/canonical alias expansion this registry applies to
+    /// every path it stores or tests, so callers comparing a path against a
+    /// matched mirror root use the SAME notion of path identity (macOS
+    /// FSEvents reports `/private/var/...` where the published root is
+    /// `/var/...`, or vice versa) instead of re-deriving a second one.
+    pub fn path_aliases(path: &Path) -> Vec<PathBuf> {
+        Self::aliases(path.to_path_buf()).collect()
     }
 }
 
@@ -730,6 +759,13 @@ impl GranularityPolicy {
         self.raw_import_invalidation.is_under_css_mirror_root(path)
     }
 
+    /// Locate `path` inside the registered CSS sibling-mirror roots,
+    /// returning `(matched root alias, path relative to that root)` — see
+    /// [`RawImportInvalidation::css_mirror_root_match`].
+    pub fn css_mirror_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
+        self.raw_import_invalidation.css_mirror_root_match(path)
+    }
+
     /// Decide whether a `Module` change is inside an islands root.
     ///
     /// We do not parse the file here to check for the `"use client"`
@@ -882,6 +918,44 @@ mod tests {
         );
         assert!(!policy.is_under_css_mirror_root(Path::new("/workspace/lib/notes.mdx")));
         assert!(!policy.is_under_css_mirror_root(Path::new("/elsewhere/notes.mdx")));
+    }
+
+    /// The empty-root guard must test the NORMALIZED form, because that is
+    /// the form containment matches on.
+    ///
+    /// A root spelled `.` or `a/..` is non-empty as stored but normalizes to
+    /// an empty path, and an empty path is a prefix of EVERY path — so a
+    /// guard that inspected only the raw spelling would let such a root
+    /// swallow the whole filesystem, silently converting the orchestrator's
+    /// option-(b) gate into the rejected option (a). Not reachable from
+    /// today's `SiblingMirrorPlan` (which publishes absolute, normalized
+    /// directories), which is exactly why the guard has to say what it means.
+    #[test]
+    fn root_normalizing_to_empty_never_matches_everything() {
+        let invalidation = RawImportInvalidation::default();
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+
+        for degenerate in [".", "a/..", "./."] {
+            invalidation.replace_css_mirror_roots([PathBuf::from(degenerate)]);
+            assert!(
+                !policy.css_mirror_root_paths().is_empty(),
+                "fixture sanity: `{degenerate}` IS stored — this is not the \
+                 empty-registry short-circuit"
+            );
+            assert!(
+                !policy.is_under_css_mirror_root(Path::new("/workspace/host/content/post.mdx")),
+                "a root spelled `{degenerate}` normalizes to an empty path and \
+                 must not be treated as containing every path"
+            );
+        }
+
+        // The guard must skip only the degenerate root, not the whole call: a
+        // real root published alongside one still matches.
+        let real = PathBuf::from("/workspace/lib/shared");
+        invalidation.replace_css_mirror_roots([PathBuf::from("."), real.clone()]);
+        assert!(policy.is_under_css_mirror_root(&real.join("notes.mdx")));
+        assert!(!policy.is_under_css_mirror_root(Path::new("/workspace/host/content/post.mdx")));
     }
 
     /// The registry stores roots WITHOUT alias expansion (unlike the
