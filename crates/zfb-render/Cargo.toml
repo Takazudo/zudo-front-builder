@@ -15,7 +15,7 @@ description = "zfb render: SWC TSX→JS pipeline + JS runtime + page render orch
 # `--no-default-features`.
 [features]
 default = ["embed_v8", "syntect-onig"]
-embed_v8 = ["dep:deno_core", "dep:tokio"]
+embed_v8 = ["dep:deno_core", "dep:deno_error", "dep:reqwest", "dep:tokio"]
 # Syntect regex-backend forwarding (zfb#1576, epic zfb#1572). The
 # `zfb-content` edge below is `default-features = false` so a wasm consumer
 # of this crate (`zfb-md-wasm`) can select the pure-Rust `syntect-fancy`
@@ -65,10 +65,27 @@ zfb-types = { path = "../zfb-types" }
 # `embedded_v8::build_extensions` and removing the polyfill from
 # `embedded_v8::HOST_GLOBALS_SHIM_SRC`.
 deno_core = { version = "=0.399.0", optional = true }
+# `deno_error::JsErrorBox` is how an op reports a failure with an explicit
+# JS error class (`TypeError` / `TimeoutError` — see
+# `embedded_v8/fetch.rs`). `deno_core` uses it internally but does not
+# re-export it, so it must be a direct edge. Already in `Cargo.lock` at
+# this line as a transitive dep of `deno_core`; no new fetch.
+deno_error = { version = "0.7", optional = true }
+# Outbound HTTP for the request-time `fetch` transport (issue #2015).
+# The workspace already builds `reqwest 0.12` with `rustls-tls`
+# (zfb-build, zfb-binfetch, zfb, zfb-server, zfb-test-utils), so this
+# adds no new HTTP or TLS stack — and deliberately NOT the `blocking`
+# feature: the op must never park the V8 isolate thread on a socket.
+# No compression feature is enabled anywhere in the workspace, which is
+# what makes reqwest send no `accept-encoding` of its own and surface
+# response bytes verbatim (contract divergence D6).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 # Tokio is needed for `deno_core`'s event loop. We use the `rt` +
 # `macros` features only (no multi-thread runtime — the host is
 # single-threaded by design, see module docstring).
-tokio = { version = "1", features = ["rt", "macros", "sync"], optional = true }
+# `time` is needed for the per-fetch wall-clock deadline
+# (`tokio::time::timeout` in `embedded_v8/fetch.rs`).
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"], optional = true }
 
 # Sibling crate: MDX → JSX-source emitter. The loader funnels `.mdx` and
 # `mdx://` specifiers through `mdx_to_jsx_module` before handing the
@@ -112,7 +129,9 @@ tempfile = { workspace = true }
 # Added `rt-multi-thread` and `time` for `config_eval` tests: the
 # `spawn_blocking` parallelism test (acceptance criterion) requires
 # `#[tokio::test(flavor = "multi_thread")]` and `tokio::time::sleep`.
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+# `net` + `io-util` drive the deterministic loopback HTTP server the
+# fetch-transport tests bind (guardrail 3: never the public internet).
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "net", "io-util"] }
 # Used by tests/integration_routing_rendering.rs to scan the routing
 # fixtures into a `Route` table. Lives in dev-deps because zfb-render
 # itself does not need to depend on zfb-router at runtime — the build
