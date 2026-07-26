@@ -479,6 +479,36 @@ fn reload_redirects(path: &Path) -> Redirects {
     }
 }
 
+/// Everything the `_redirects` 200-rewrite pre-warm needs, bundled so
+/// both of its lifecycle moments — the deferred boot task and the
+/// `_redirects` watch task — carry one value instead of four (issue
+/// #2004, Dev Self Heal epic #1999). See [`crate::dev_rewrite_prewarm`]
+/// for what the pass does and why it lives outside every request path.
+#[cfg(feature = "embed_v8")]
+#[derive(Clone)]
+pub(crate) struct RewritePrewarmWiring {
+    mode: BootLazyMode,
+    /// The dev server's mount prefix, taken from the SAME function
+    /// `zfb_server` derives `AppState::base_prefix` with — a divergence
+    /// here would emit lookup keys the waterfall never probes.
+    base_prefix: Option<String>,
+    session: DevRenderSession,
+    adapter: crate::lazy_render_adapter::LazyRenderAdapter,
+}
+
+#[cfg(feature = "embed_v8")]
+impl RewritePrewarmWiring {
+    fn run(&self, redirects: &RedirectsHandle) {
+        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev(
+            self.mode,
+            redirects,
+            self.base_prefix.as_deref(),
+            Some(&self.session),
+            Some(&self.adapter),
+        );
+    }
+}
+
 /// Start a targeted, dedicated watch for `public/_redirects` (issue
 /// #1546) and return the live [`RedirectsHandle`] the dev router reads
 /// from.
@@ -514,7 +544,24 @@ fn reload_redirects(path: &Path) -> Redirects {
 /// therefore the OS-level watch — stays alive for the lifetime of that
 /// task (i.e. the dev server process); dropping it would stop the
 /// watch immediately.
-fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHandle {
+///
+/// ## Rewrite pre-warm on a live edit (issue #2004, epic #1999)
+///
+/// `prewarm` carries everything
+/// [`crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev`] needs.
+/// After every reload that swaps a new ruleset in, the consumer loop
+/// re-runs the pre-warm against it — so **a live `_redirects` edit
+/// re-registers the 200-rewrite target set; no dev-server restart is
+/// required**, matching the no-restart promise this watch was built for
+/// in the first place. `None` disables it (non-Cold boot, renderer
+/// disabled, or the lazy switch off), and the pre-warm's own mode gate is
+/// a second line of defense.
+#[cfg(feature = "embed_v8")]
+fn spawn_redirects_watch(
+    project_root: &Path,
+    public_root: &Path,
+    prewarm: Option<RewritePrewarmWiring>,
+) -> RedirectsHandle {
     let redirects_path = public_root.join("_redirects");
     let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
         &redirects_path,
@@ -564,6 +611,22 @@ fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHa
             match handle_for_task.write() {
                 Ok(mut guard) => *guard = updated,
                 Err(poisoned) => *poisoned.into_inner() = updated,
+            }
+            // Issue #2004 — re-register the 200-rewrite target set
+            // against the ruleset just swapped in. `spawn_blocking`
+            // because the pass renders: it must never run on an async
+            // worker (the renderer mutex can be held for seconds by a
+            // tick's host swap), the same discipline the request-time
+            // hook follows.
+            if let Some(wiring) = prewarm.clone() {
+                let redirects = Arc::clone(&handle_for_task);
+                if let Err(join_err) =
+                    tokio::task::spawn_blocking(move || wiring.run(&redirects)).await
+                {
+                    output::error(format!(
+                        "_redirects rewrite pre-warm task panicked after a live edit: {join_err}"
+                    ));
+                }
             }
         }
     });
@@ -1591,7 +1654,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // literally hook-free (no per-GET handle snapshot/spawn; review
     // finding on #1026). The adapter's own early-return stays as
     // defense in depth.
-    let render_on_request_hook = dev_session
+    let hook_and_adapter = dev_session
         .as_ref()
         .filter(|session| session.lazy_render_enabled())
         .map(|session| {
@@ -1609,12 +1672,43 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 injected,
             )
         });
+    let (render_on_request_hook, lazy_render_adapter) = match hook_and_adapter {
+        Some((handle, adapter)) => (Some(handle), Some(adapter)),
+        None => (None, None),
+    };
+
+    // Issue #2004 (Dev Self Heal epic #1999) — the `_redirects`
+    // 200-rewrite pre-warm's shared wiring, built once and handed to both
+    // of its lifecycle moments: the deferred boot task below and the
+    // `_redirects` watch's live-edit re-registration. `None` in every
+    // non-Cold boot mode, or when there is no session/adapter to render
+    // through — see `crate::dev_rewrite_prewarm`.
+    let rewrite_prewarm = match (
+        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_decision(boot_lazy_mode_now),
+        dev_session.as_ref(),
+        lazy_render_adapter,
+    ) {
+        (true, Some(session), Some(adapter)) => Some(RewritePrewarmWiring {
+            mode: boot_lazy_mode_now,
+            // The SAME derivation `zfb_server::serve` uses for
+            // `AppState::base_prefix`, from the same `cfg.base` value
+            // threaded into `ServeOpts` below.
+            base_prefix: zfb_types::dev_mount_prefix(cfg.base.as_deref()),
+            session: session.clone(),
+            adapter,
+        }),
+        _ => None,
+    };
+    let rewrite_prewarm_for_boot = rewrite_prewarm.clone();
 
     // Issue #1546 — `_redirects` dev integration. Loads `public/_redirects`
     // (an empty ruleset when absent) and starts the targeted watch that
     // keeps it live for the rest of this session. Must run before
     // `project_root` / `public_root` are moved into `ServeOpts` below.
-    let redirects_handle = spawn_redirects_watch(&project_root, &public_root);
+    let redirects_handle = spawn_redirects_watch(&project_root, &public_root, rewrite_prewarm);
+    // Issue #2004 — the deferred boot task needs the same handle the
+    // server reads from; clone before `ServeOpts` consumes the original.
+    let redirects_handle_for_boot = Arc::clone(&redirects_handle);
 
     let opts = ServeOpts {
         project_root,
@@ -1962,6 +2056,27 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 dev_session_for_boot.as_ref(),
                 &dist_root_for_boot,
             );
+
+            // 4b. `_redirects` 200-rewrite pre-warm (issue #2004, Dev Self
+            //     Heal epic #1999 — the fix for #1825). Cold only.
+            //
+            //     Placed HERE deliberately, between the boot render and the
+            //     tick-stale drain below:
+            //       - AFTER step 0/4, so the route tables are published and
+            //         a target's reverse lookup can resolve. Run earlier, on
+            //         a deferred boot, every target would miss.
+            //       - BEFORE the drain, so the stale marks it lays down ride
+            //         the SAME single `run_with_boot` broadcast as every
+            //         other boot mark — one `ReloadEvent::Page`, not a
+            //         second one.
+            //
+            //     This is the one call site that closes #1825, and it is
+            //     nowhere near a request: `serve_from_waterfall` still
+            //     re-runs nothing for a rewrite. See
+            //     `crate::dev_rewrite_prewarm` for the rejected alternative.
+            if let Some(wiring) = rewrite_prewarm_for_boot.as_ref() {
+                wiring.run(&redirects_handle_for_boot);
+            }
 
             // 5. Eager islands bundle (issue #1170). This is the last
             //    size-bound step that used to run synchronously before
@@ -2932,7 +3047,7 @@ fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> b
 /// `run_boot_render`'s boot-lazy branch) now treats `Cold` as active with no
 /// reshaping at the call sites, exactly as Wave 1 set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BootLazyMode {
+pub(crate) enum BootLazyMode {
     /// Boot-lazy is off — the default `zfb dev` boot semantics ("every
     /// route exists on disk before the server is ready") are preserved
     /// exactly.
@@ -4492,6 +4607,14 @@ impl DevRenderSession {
         self.inner.claim_is_current(claim)
     }
 
+    /// Test-only seam: drain the tick-stale buffer, so a test can assert
+    /// which output paths a stale-marking pass queued for the next
+    /// `BuildOutcome::pages_stale` broadcast.
+    #[cfg(test)]
+    pub(crate) fn take_tick_stale_for_tests(&self) -> Vec<PathBuf> {
+        self.inner.take_tick_stale()
+    }
+
     /// Test-only seam: mark routes stale so adapter tests can inject
     /// staleness state without driving a whole watcher tick.
     #[cfg(test)]
@@ -4706,6 +4829,33 @@ impl DevRenderSession {
             self.inner.set_ssr_routes_published();
         }
         n
+    }
+
+    /// Mark ONE `_redirects` 200-rewrite target stale by its hook-facing
+    /// request path (issue #2004, Dev Self Heal epic #1999).
+    ///
+    /// The stale-marking half of the rewrite pre-warm — see
+    /// [`crate::dev_rewrite_prewarm`] for the whole pass and why a
+    /// rewrite target needs one at all. Deliberately routed through
+    /// [`Self::lookup_by_url`], the SAME reverse index the request-time
+    /// hook resolves a URL with, so a target that is not an SSG route in
+    /// this session (an SSR route, an unexpanded dynamic route, a typo)
+    /// is a silent no-op rather than a phantom stale entry for an output
+    /// path nothing will ever render.
+    ///
+    /// Uses `mark_stale` (not `claim_or_mark_stale`) so the mark lands in
+    /// the tick-stale buffer like every other stale-marking pass: at boot
+    /// the deferred task's drain folds it into
+    /// `BuildOutcome::pages_stale`, so a tab sitting on the dev 404 body
+    /// for this target reloads through the normal `ReloadEvent::Page`
+    /// channel instead of a bespoke one.
+    ///
+    /// Returns the marked output path, or `None` when the target resolves
+    /// to no SSG route.
+    pub(crate) fn mark_rewrite_target_stale(&self, request_path: &str) -> Option<PathBuf> {
+        let entry = self.lookup_by_url(request_path)?;
+        self.inner.mark_stale([entry.output_path.clone()]);
+        Some(entry.output_path)
     }
 
     /// Cold-bootstrap recovery (issue #1809, epic #1806): consume the

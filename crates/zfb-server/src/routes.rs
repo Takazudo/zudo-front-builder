@@ -3875,6 +3875,179 @@ mod tests {
         }
     }
 
+    /// Issue #2004 — the "resolve once, no chaining" contract, asserted
+    /// rather than assumed.
+    ///
+    /// The rewrite pre-warm this epic wires up deliberately runs OUTSIDE
+    /// every request (dev boot task + the `_redirects` watch task). The
+    /// rejected alternative was to give this function a Cold-mode
+    /// claim-and-render of its own, which would put dispatch machinery
+    /// back on a rewrite's request path. This test is the guard against
+    /// that being reintroduced — here or by a future refactor of
+    /// `serve_from_waterfall`'s callers.
+    ///
+    /// Every one of the four legs a normal request can reach — plugin
+    /// dev-middleware, embed handler, request-time SSR, render-on-request
+    /// hook — is registered for the rewrite TARGET path and counts its
+    /// own invocations. `GET /alias` must serve the page-cache bytes and
+    /// leave all four counters at zero.
+    ///
+    /// The registrations are proven live, not inert, by the second half:
+    /// the same router answering a DIRECT `GET /target` runs them (the
+    /// plugin leg wins first) — so a zero count above means "not
+    /// consulted for the rewrite", never "never wired up".
+    #[tokio::test]
+    async fn rewrite_reruns_no_middleware_embed_ssr_or_render_hook() {
+        use crate::embed_handlers::{erase_handler_for_test, EmbedHandler, EmbedHandlerSet};
+        use crate::plugin_middleware::{
+            DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError, PluginResponse,
+        };
+        use crate::render_hook::RenderOnRequestHook;
+        use crate::ssr::{
+            SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Default)]
+        struct Counters {
+            plugin: AtomicUsize,
+            embed: AtomicUsize,
+            ssr: AtomicUsize,
+            hook: AtomicUsize,
+        }
+
+        struct CountingPlugin(Arc<Counters>);
+        #[async_trait::async_trait]
+        impl DevMiddlewareDispatcher for CountingPlugin {
+            async fn dispatch(
+                &self,
+                _handler_id: &str,
+                _request: PluginRequest,
+            ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
+                self.0.plugin.fetch_add(1, Ordering::SeqCst);
+                Ok(PluginDispatchOutcome::Response(PluginResponse {
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/html".into())],
+                    body: "<html><body>PLUGIN_LEG</body></html>".into(),
+                    body_encoding: PluginResponseEncoding::Utf8,
+                }))
+            }
+        }
+
+        struct CountingSsr(Arc<Counters>);
+        #[async_trait::async_trait]
+        impl SsrDispatcher for CountingSsr {
+            async fn dispatch(
+                &self,
+                _request: SsrRequest,
+            ) -> Result<SsrResponse, SsrDispatchError> {
+                self.0.ssr.fetch_add(1, Ordering::SeqCst);
+                Ok(SsrResponse {
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/html".into())],
+                    body: b"<html><body>SSR_LEG</body></html>".to_vec(),
+                })
+            }
+        }
+
+        struct CountingHook(Arc<Counters>);
+        #[async_trait::async_trait]
+        impl RenderOnRequestHook for CountingHook {
+            async fn render_if_stale(&self, _url_path: &str) {
+                self.0.hook.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let counters = Arc::new(Counters::default());
+
+        let mut state = test_state();
+        state.redirects = Some(Arc::new(RwLock::new(Redirects::parse(
+            "/alias /target 200\n",
+        ))));
+        state.plugins = Some(DevMiddlewareSet {
+            registrations: Arc::new(vec![PluginRegistration {
+                path: "/target".to_string(),
+                handler_id: "h".to_string(),
+                plugin: "counting".to_string(),
+            }]),
+            dispatcher: Arc::new(CountingPlugin(Arc::clone(&counters))),
+        });
+        let embed_counters = Arc::clone(&counters);
+        state.embed_handlers = Some(EmbedHandlerSet::new(vec![EmbedHandler {
+            pattern: "/target".to_string(),
+            handler: erase_handler_for_test(move |_req, _params| {
+                let c = Arc::clone(&embed_counters);
+                async move {
+                    c.embed.fetch_add(1, Ordering::SeqCst);
+                    "<html><body>EMBED_LEG</body></html>"
+                }
+            }),
+        }]));
+        state.ssr_routes = Some(Arc::new(RwLock::new(Some(SsrRouteSet::new(
+            vec![SsrRouteRecord {
+                pattern: "/target".to_string(),
+            }],
+            Arc::new(CountingSsr(Arc::clone(&counters))),
+        )))));
+        let hook: Arc<dyn RenderOnRequestHook> = Arc::new(CountingHook(Arc::clone(&counters)));
+        state.render_on_request_hook = Some(Arc::new(RwLock::new(Some(hook))));
+        // What a completed pre-warm leaves behind: the target's bytes in
+        // the page cache, under the key the enumerator emits.
+        state
+            .pages
+            .insert("/target", "<html><body>PREWARMED_TARGET</body></html>")
+            .await;
+
+        let router = test_router(state);
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/alias")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("PREWARMED_TARGET"),
+            "the rewrite must serve the pre-warmed waterfall bytes, got: {body}"
+        );
+        assert_eq!(
+            (
+                counters.plugin.load(Ordering::SeqCst),
+                counters.embed.load(Ordering::SeqCst),
+                counters.ssr.load(Ordering::SeqCst),
+                counters.hook.load(Ordering::SeqCst),
+            ),
+            (0, 0, 0, 0),
+            "a `_redirects` 200 rewrite must re-run no plugin dev-middleware, embed handler, \
+             SSR dispatch, or render-on-request hook for its target",
+        );
+
+        // Control: the registrations above are genuinely live for a real
+        // request to the same path, so the zeroes are about the rewrite.
+        let direct = router
+            .oneshot(
+                Request::builder()
+                    .uri("/target")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(direct.status(), StatusCode::OK);
+        let direct_body = body_string(direct).await;
+        assert!(
+            direct_body.contains("PLUGIN_LEG"),
+            "a direct request must reach the dispatch legs, got: {direct_body}"
+        );
+        assert_eq!(counters.plugin.load(Ordering::SeqCst), 1);
+    }
+
     /// The base-prefixed counterpart of the test above: the emitted key must
     /// be the prefix-STRIPPED spelling the waterfall probes, even though the
     /// rule's target is authored in full-path spec form.
