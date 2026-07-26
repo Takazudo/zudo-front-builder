@@ -1327,23 +1327,27 @@ mod tests {
         }
     }
 
-    /// Pin: `drain_console_logs` on a host whose V8 thread has already
-    /// exited returns an empty string rather than hanging or erroring —
-    /// the "best-effort, host may already be gone" contract documented at
-    /// the call site.
+    /// Pin: `drain_console_logs` on a live, idle host (dispatched once,
+    /// nothing logged since) returns an empty string promptly.
     ///
-    /// Falsification: temporarily removing the `let Some(tx) = ... else`
-    /// early return (so a broken send falls through to
-    /// `reply_rx.recv().unwrap_or_default()` on a receiver that will
-    /// never get a reply) reproduced the exact hang this guard exists to
-    /// prevent — the test had to be interrupted rather than failing
-    /// cleanly, which is itself the strongest possible evidence the guard
-    /// is load-bearing. Reverted immediately after confirming (this
-    /// perturbation is UNSAFE to leave in place even briefly, so it was
-    /// tested in isolation with a hard process-level timeout, not via the
-    /// normal test run).
+    /// SCOPE NOTE (codex review finding on this sub-issue, corrected
+    /// rather than smoothed over): this test does **not** cover the
+    /// "V8 thread has already exited" half of `drain_console_logs`'s
+    /// best-effort contract (the `let Some(tx) = self.tx.as_ref() else`
+    /// early-return, and the `tx.send(...)`-fails arm right after it).
+    /// That half is a genuine untested blind spot: `self.tx` only ever
+    /// becomes `None` inside `ThreadedV8Host::Drop::drop`, by which point
+    /// the value is being destroyed and no further method call is
+    /// reachable through the safe public API — and the `send`-fails arm
+    /// (thread died WITHOUT going through `Drop`, e.g. mid-life panic)
+    /// hits the same "no reachable genuine Rust panic without production
+    /// changes" wall documented on
+    /// `catastrophic_js_recursion_fails_as_catchable_error_host_survives_on_both_loops`
+    /// below. Exercising it would need a test-only seam to kill the
+    /// thread out-of-band, which is a production change outside this
+    /// sub-issue's "no production code changes" constraint.
     #[test]
-    fn drain_console_logs_after_host_thread_exit_is_best_effort_empty() {
+    fn drain_console_logs_on_live_idle_host_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let bundle_path = write_bundle(
             &dir,
@@ -1357,12 +1361,6 @@ mod tests {
         );
         let mut host = ThreadedV8Host::new(&bundle_path).expect("host boot");
         host.dispatch_fetch("/").expect("dispatch");
-        // Force the underlying thread to exit by dropping... we can't drop
-        // `host` and keep using it, so instead prove the SAME contract via
-        // the public surface: draining logs on a live-but-idle host must
-        // never hang, and must return an empty string when nothing was
-        // logged. The thread-already-gone half of the contract is exercised
-        // implicitly by every other test's final `drop(host)` never hanging.
         assert_eq!(host.drain_console_logs(), "");
     }
 
