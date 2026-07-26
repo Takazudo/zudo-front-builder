@@ -39,6 +39,7 @@ fn get(url: &str) -> FetchRequestSpec {
         redirect: RedirectMode::Follow,
         has_body: false,
         timeout_ms: None,
+        cancel_id: None,
     }
 }
 
@@ -363,6 +364,7 @@ fn body_spec(url: &str, method: &str) -> FetchRequestSpec {
         redirect: RedirectMode::Follow,
         has_body: true,
         timeout_ms: None,
+        cancel_id: None,
     }
 }
 
@@ -526,6 +528,7 @@ fn credentialed_spec(url: &str) -> FetchRequestSpec {
         redirect: RedirectMode::Follow,
         has_body: false,
         timeout_ms: None,
+        cancel_id: None,
     }
 }
 
@@ -956,13 +959,18 @@ fn a_runtime_missing_only_the_counter_also_reports_host_unavailable() {
 }
 
 #[test]
-fn a_fully_installed_state_resolves_both_handles() {
+fn a_fully_installed_state_resolves_every_handle() {
     let state = Rc::new(std::cell::RefCell::new(OpState::new(None)));
     state.borrow_mut().put(FetchClient(client()));
     state.borrow_mut().put(Rc::new(SubrequestCounter::new()));
-    let (_client, counter) =
-        state_handles(&state, "http://127.0.0.1:1/").expect("both handles are present");
+    state.borrow_mut().put(Rc::new(CancelRegistry::default()));
+    let (_client, counter, cancels) =
+        state_handles(&state, "http://127.0.0.1:1/").expect("every handle is present");
     assert_eq!(counter.used(), 0);
+    assert!(
+        cancels.is_empty(),
+        "a freshly installed registry holds no in-flight cancellation handles"
+    );
 }
 
 // ---------------------------------------------------------------------

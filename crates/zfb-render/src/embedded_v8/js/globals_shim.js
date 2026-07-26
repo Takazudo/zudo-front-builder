@@ -72,13 +72,35 @@
   // hardcoded duplicate in JS is a rejected design (contract:
   // "Numeric constants — one source of truth").
   //
-  // Deliberately NOT frozen. Freezing would protect nothing — every
-  // limit is ALSO enforced in Rust, where bundle code cannot reach it,
-  // and the JS-side copy is defence in depth only — while making the
-  // one cheap way to exercise the JS-side cap impossible: a test that
-  // lowers `maxRequestBodyBytes` to a handful of bytes instead of
-  // allocating a 100 MB buffer to trip the real one.
-  const __ZFB_LIMITS = __ZFB_LIMITS_PLACEHOLDER__;
+  // FROZEN (epic #2012 review fix 5). An unfrozen object let bundle
+  // code RAISE `maxRequestBodyBytes`, after which the JS pre-check
+  // waved an oversized payload straight into the op — precisely the
+  // allocation that check exists to prevent. The array inside it is
+  // frozen too, since freezing the container leaves its members
+  // mutable. Tests that need a different cap boot the host with one
+  // (`EmbeddedV8RenderHost::with_limits_override`) rather than editing
+  // it from JS.
+  const __ZFB_LIMITS = Object.freeze(__ZFB_LIMITS_PLACEHOLDER__);
+  if (Array.isArray(__ZFB_LIMITS.allowedFetchSchemes)) {
+    Object.freeze(__ZFB_LIMITS.allowedFetchSchemes);
+  }
+
+  // Constant-time string comparison for the nonce check below.
+  //
+  // `===` on strings short-circuits at the first differing character,
+  // which leaks a prefix oracle. The nonce is 256 CSPRNG bits so the
+  // search is hopeless either way, but a timing-safe compare costs one
+  // loop and removes the question.
+  function __zfb_constantTimeEquals(a, b) {
+    if (typeof a !== "string" || typeof b !== "string") return false;
+    // Length is not secret — it is a fixed property of the format.
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) {
+      diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return diff === 0;
+  }
 
   const __zfb_state = {
     bundle: null,
@@ -94,6 +116,29 @@
   const __zfb_mode_state = {
     current: undefined,
   };
+
+  // Host-authorised dispatches that have STARTED and not yet settled,
+  // innermost last (epic #2012 review fix 3).
+  //
+  // The old code kept a single `previousMode` per call and restored it
+  // in a `finally`, which mis-tracked the mode in two ways:
+  //
+  //  - an UNAUTHORISED nested call (all bundle code can make) captured
+  //    the enclosing dispatch's mode and restored it in ITS `finally`,
+  //    which — for a floating promise — runs after the enclosing
+  //    dispatch has already ended, republishing "request-time" outside
+  //    any dispatch. Unauthorised calls now do not touch the mode at
+  //    all: they neither push a frame nor restore one.
+  //  - anything a request-time handler started but did not await saw
+  //    the mode fall back to `undefined` the moment its dispatch
+  //    settled, so a `fetch` from that continuation reported itself as
+  //    an SSG policy denial AT REQUEST TIME — the exact misdiagnosis
+  //    this epic exists to remove. When the last frame pops, the mode
+  //    therefore stays at that dispatch's own value rather than
+  //    reverting; the next dispatch overwrites it unconditionally, and
+  //    the host resets it to build-time before evaluating any module,
+  //    so nothing is widened by leaving it standing.
+  const __zfb_dispatch_frames = [];
 
   // Console capture (issue #700).
   //
@@ -247,20 +292,18 @@
       if (bodyU8 && bodyU8.byteLength > 0) {
         init.body = bodyU8;
       }
-      // Publish the per-dispatch mode, remembering whatever was there
-      // before (normally `undefined`) so the `finally` below restores it
-      // EXACTLY — including on the throwing path. An unrestored
-      // "request-time" would silently grant request-time capability to
-      // every subsequent build-time render on this shared host.
-      //
       // Only the host (which knows the nonce) may CHOOSE the mode. A
-      // call from bundle code inherits the enclosing dispatch's mode
-      // instead — at the top level that is `undefined`, which every
-      // reader treats as build-time.
-      const previousMode = __zfb_mode_state.current;
-      const hostAuthorised = nonce === __ZFB_MODE_NONCE;
+      // call from bundle code neither selects nor restores it — it
+      // simply runs at whatever mode the dispatch it is nested inside
+      // already established, so it can never widen capability, and it
+      // can never republish a stale one either (see
+      // `__zfb_dispatch_frames`).
+      const hostAuthorised = __zfb_constantTimeEquals(nonce, __ZFB_MODE_NONCE);
+      let frame = null;
       if (hostAuthorised) {
-        __zfb_mode_state.current = mode === undefined || mode === null ? undefined : String(mode);
+        frame = { mode: mode === undefined || mode === null ? undefined : String(mode) };
+        __zfb_dispatch_frames.push(frame);
+        __zfb_mode_state.current = frame.mode;
       }
       try {
         const req = new Request(urlStr, init);
@@ -285,8 +328,55 @@
           body: new Uint8Array(buf),
         };
       } finally {
-        __zfb_mode_state.current = previousMode;
+        if (frame) {
+          const at = __zfb_dispatch_frames.indexOf(frame);
+          if (at !== -1) {
+            __zfb_dispatch_frames.splice(at, 1);
+          }
+          // The innermost dispatch still running owns the mode. When
+          // none is left, THIS dispatch's mode stands — see
+          // `__zfb_dispatch_frames` for why that is not a leak.
+          __zfb_mode_state.current = __zfb_dispatch_frames.length
+            ? __zfb_dispatch_frames[__zfb_dispatch_frames.length - 1].mode
+            : frame.mode;
+        }
       }
     },
+    // Drop the ambient mode back to the denying default. The host calls
+    // this before evaluating a module, because module top-level code is
+    // bundle code running outside any dispatch and must not inherit the
+    // capability of the render that happened to run before it.
+    //
+    // Nonce-guarded for symmetry with `dispatch`, and a no-op while any
+    // dispatch is still on the stack — a reset there would be a
+    // de-escalation the running dispatch never asked for.
+    resetMode(nonce) {
+      if (!__zfb_constantTimeEquals(nonce, __ZFB_MODE_NONCE)) return false;
+      if (__zfb_dispatch_frames.length !== 0) return false;
+      __zfb_mode_state.current = undefined;
+      return true;
+    },
   };
+
+  // Hand the polyfill layer a DIRECT reader for the mode and the frozen
+  // limits (epic #2012 review fix 1b).
+  //
+  // `globalThis.__zfb` is a writable property — the emitted bundle
+  // prelude itself does `globalThis.__zfb = globalThis.__zfb ?? {}`, so
+  // it cannot be locked down — and the polyfill used to re-read it on
+  // every call. Replacing the object was therefore enough to make a
+  // build-time render take the request-time branch. The polyfill now
+  // captures these closures once, through a single-use channel
+  // `web_polyfills.js` deletes as it consumes it, so no later
+  // assignment to `globalThis.__zfb` can reach them.
+  //
+  // This is defence in depth for the DIAGNOSTIC, not the policy: the
+  // policy is enforced in `op_zfb_fetch` (`embedded_v8/fetch.rs`),
+  // where no JS value reaches at all.
+  if (typeof globalThis.__zfbInstallHostBridge === "function") {
+    globalThis.__zfbInstallHostBridge({
+      mode: () => __zfb_mode_state.current,
+      limits: () => __ZFB_LIMITS,
+    });
+  }
 })();
