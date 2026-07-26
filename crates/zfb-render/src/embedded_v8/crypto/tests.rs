@@ -100,6 +100,28 @@ impl EntropySource for RecordingEntropy {
 /// output, is caught the same way — the error must come back and the
 /// buffer must be left as the caller had it.
 #[test]
+fn the_production_os_entropy_mapping_propagates_failure_and_never_swallows_it() {
+    // Every OTHER fail-closed test in this file drives an injected
+    // double, because the OS CSPRNG cannot be made to fail on demand.
+    // That leaves `OsEntropy::fill`'s own error mapping — the code that
+    // actually runs in production — covered by nothing. Verified during
+    // the epic review: rewriting it to `let _ = getrandom::fill(dst);
+    // Ok(())` (the #1751 silent-degradation bug, exactly) failed NONE of
+    // the 13 crypto tests. This asserts the production mapping directly.
+    let failed = super::map_os_entropy_result(Err(getrandom::Error::UNEXPECTED));
+    assert!(
+        failed.is_err(),
+        "the production OS-entropy mapping must propagate a getrandom failure, \
+         never swallow it into Ok — silent degradation to predictable randomness \
+         is the bug this sub-issue exists to eliminate"
+    );
+    assert!(
+        super::map_os_entropy_result(Ok(())).is_ok(),
+        "a successful OS read must stay successful"
+    );
+}
+
+#[test]
 fn a_failing_entropy_source_errors_and_never_falls_back() {
     let source = FailingEntropy::new();
     const SENTINEL: u8 = 0x5A;

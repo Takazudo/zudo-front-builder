@@ -104,8 +104,24 @@ impl EntropySource for OsEntropy {
 
     fn fill(&self, dst: &mut [u8]) -> std::result::Result<(), String> {
         OS_ENTROPY_CALLS.fetch_add(1, Ordering::Relaxed);
-        getrandom::fill(dst).map_err(|e| e.to_string())
+        map_os_entropy_result(getrandom::fill(dst))
     }
+}
+
+/// Map a `getrandom` result onto [`EntropySource::fill`]'s contract.
+///
+/// Extracted from [`OsEntropy::fill`] so the PRODUCTION error path is
+/// itself testable. The trait above exists so the failure path can be
+/// driven through a double — but every fail-closed test then runs
+/// against that double, and none of them touch this mapping. Verified
+/// during the epic review: rewriting `OsEntropy::fill` to swallow the
+/// error and return `Ok(())` failed **no** test, which is precisely the
+/// #1751 silent-degradation bug reintroduced in the one place no test
+/// was looking. `map_os_entropy_result` is that missing seam.
+fn map_os_entropy_result(
+    result: std::result::Result<(), getrandom::Error>,
+) -> std::result::Result<(), String> {
+    result.map_err(|e| e.to_string())
 }
 
 /// Failure modes of [`fill_random_bytes`].
