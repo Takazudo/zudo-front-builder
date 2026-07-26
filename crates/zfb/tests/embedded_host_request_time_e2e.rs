@@ -187,22 +187,21 @@ impl LoopbackServer {
     }
 }
 
-/// Bind an ephemeral loopback port, read it back, then immediately drop
-/// the listener so nothing answers there. A deterministic ECONNREFUSED
-/// target with zero public-internet dependency — used by the host-op
-/// (transport) failure case. The OS will not reissue this exact port to
-/// another `bind(0)` call while our own process holds no reference to
-/// it, but even if it did briefly race another local process, the
-/// connection would still fail closed (refused or reset), never succeed
-/// against a server that could answer `HAPPY`/`EXHAUST` markers.
-async fn bind_and_release_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0")
+/// Bind an ephemeral loopback port and hold the listener open — do NOT
+/// drop it here. Codex review flagged an earlier version of this helper
+/// that bound-then-immediately-dropped the port at test start: `zfb dev`
+/// takes real wall-clock time to boot, and another local process could
+/// have claimed the freed port before `/api/refused` is ever requested,
+/// making the case flaky (a stray listener would turn "connection
+/// refused" into an unexpected 200). The caller keeps the returned
+/// listener alive through the whole boot, and drops it immediately
+/// before issuing the request that needs the connection refused — this
+/// shrinks the reuse window from "however long boot takes" to
+/// microseconds.
+async fn bind_released_port_listener() -> TcpListener {
+    TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("bind loopback listener for the refused-port case");
-    listener
-        .local_addr()
-        .expect("read assigned local port")
-        .port()
+        .expect("bind loopback listener for the refused-port case")
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +444,13 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
     };
 
     let loopback = LoopbackServer::spawn("loopback-ok").await;
-    let refused_port = bind_and_release_port().await;
+    // Kept alive (not dropped) until immediately before the refused-case
+    // request below — see `bind_released_port_listener`'s doc comment.
+    let refused_listener = bind_released_port_listener().await;
+    let refused_port = refused_listener
+        .local_addr()
+        .expect("read assigned refused-port listener address")
+        .port();
 
     let tmp = tempfile::tempdir().expect("create dev fixture tempdir");
     let root = tmp
@@ -544,6 +549,10 @@ async fn dev_serves_request_time_fetch_and_web_crypto() {
     );
 
     // ---- Case 3: host-side transport failure (connection refused) ----
+    // Drop the listener HERE, immediately before the request that needs
+    // the port unclaimed — not at test start — to minimize the window
+    // another local process could grab it first (Codex review finding).
+    drop(refused_listener);
     let refused_body =
         poll_for_marker(&client, &base_url, "/api/refused", "REFUSED_", &session).await;
     assert!(
