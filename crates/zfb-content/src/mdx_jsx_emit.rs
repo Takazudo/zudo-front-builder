@@ -53,9 +53,10 @@ use zfb_md_ast::{BuildContext, CrossFileLinkCandidate, FileHeadings};
 use zfb_types::normalize_path_lexical;
 
 use crate::dep_manifest::DependencyManifest;
+use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
-    constructs_for_jsx_emit, mdast_to_hast_with, HastNode, JsxEmitStrategy, Pipeline,
-    PipelineError, ResolvedGfmConstructs,
+    constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode, JsxEmitStrategy,
+    Pipeline, PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 use crate::plugins::BrokenLinkDiagnostic;
@@ -414,7 +415,9 @@ fn mdx_to_jsx_module_inner(
             nested_slugs: &nested_slugs,
             cursor: std::cell::Cell::new(0),
         };
-        let strategy_fn = |node: &MdastNode| -> String { jsx_raw_recursive(node, &slug_ctx) };
+        let strategy_fn = |node: &MdastNode, fc: &FootnoteRenderCtx<'_>| -> String {
+            jsx_raw_recursive(node, &slug_ctx, fc)
+        };
         let strategy = JsxEmitStrategy::JsxPath(&strategy_fn);
         let mut hast = mdast_to_hast_with(&mdast_root, &strategy);
         // The emitter must have consumed every nested-heading slug in
@@ -1638,13 +1641,13 @@ fn nested_heading_id_and_anchor(slug: &str, text: &str) -> (String, String) {
 /// recursion only on the JSX path is safe because the bridge already
 /// embeds the resulting JsxRaw payload verbatim — JSX accepts plain
 /// HTML tags inside MDX JSX bodies.
-fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx) -> String {
+fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>) -> String {
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
         MdastNode::MdxJsxTextElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
         MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
@@ -1652,7 +1655,7 @@ fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx) -> String {
         // fires for the JSX-shaped arms above, but if the contract
         // ever changes we fall back to the recursive child renderer
         // rather than dropping the node.
-        other => jsx_render_child(other, ctx),
+        other => jsx_render_child(other, ctx, fc),
     }
 }
 
@@ -1661,6 +1664,7 @@ fn jsx_element_text(
     attrs: &[AttributeContent],
     children: &[MdastNode],
     ctx: &SlugCtx,
+    fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let attrs_str = render_jsx_attrs(attrs);
     // Choose the open/close JSX tag name. `name == None` is the MDX
@@ -1681,7 +1685,10 @@ fn jsx_element_text(
         // matches `JsxEmitter::emit_jsx`'s output.
         return format!("<{open_name}{attrs_str} />");
     }
-    let inner: String = children.iter().map(|c| jsx_render_child(c, ctx)).collect();
+    let inner: String = children
+        .iter()
+        .map(|c| jsx_render_child(c, ctx, fc))
+        .collect();
     format!("<{open_name}{attrs_str}>{inner}</{close_name}>")
 }
 
@@ -1698,19 +1705,19 @@ fn jsx_element_text(
 /// `HastNode::JsxRaw` arm) harvests the `<_components.<tag>` references
 /// afterwards so the module preamble registers each tag's default
 /// fallback in the `_components` map.
-fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
+fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>) -> String {
     match node {
         MdastNode::Text(t) => jsx_text_escape(&t.value),
         MdastNode::Html(h) => h.value.clone(),
         MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxJsxFlowElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
         MdastNode::MdxJsxTextElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
-        MdastNode::Paragraph(p) => jsx_wrap_children("p", "", &p.children, ctx),
+        MdastNode::Paragraph(p) => jsx_wrap_children("p", "", &p.children, ctx, fc),
         MdastNode::Heading(h) => {
             let depth = h.depth.clamp(1, 6);
             // This heading lives inside an MDX JSX body, so
@@ -1726,12 +1733,16 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             let text = mdast_inline_text(&h.children);
             let (id_attr, anchor) = nested_heading_id_and_anchor(slug, &text);
             let tag = format!("h{depth}");
-            let inner: String = h.children.iter().map(|c| jsx_render_child(c, ctx)).collect();
+            let inner: String = h
+                .children
+                .iter()
+                .map(|c| jsx_render_child(c, ctx, fc))
+                .collect();
             format!("<_components.{tag}{id_attr}>{inner}{anchor}</_components.{tag}>")
         }
-        MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children, ctx),
-        MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children, ctx),
-        MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children, ctx),
+        MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children, ctx, fc),
+        MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children, ctx, fc),
+        MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children, ctx, fc),
         MdastNode::InlineCode(c) => format!(
             "<_components.code>{}</_components.code>",
             jsx_text_escape(&c.value),
@@ -1753,7 +1764,10 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             }
             format!(
                 "<_components.a{attrs}>{}</_components.a>",
-                l.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+                l.children
+                    .iter()
+                    .map(|c| jsx_render_child(c, ctx, fc))
+                    .collect::<String>(),
             )
         }
         MdastNode::Image(i) => {
@@ -1779,17 +1793,23 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             }
             format!(
                 "<_components.{tag}{attrs}>{}</_components.{tag}>",
-                l.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+                l.children
+                    .iter()
+                    .map(|c| jsx_render_child(c, ctx, fc))
+                    .collect::<String>(),
             )
         }
         MdastNode::ListItem(li) => {
             let checkbox = li.checked.map(task_list_checkbox_jsx).unwrap_or_default();
             format!(
                 "<_components.li>{checkbox}{}</_components.li>",
-                li.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+                li.children
+                    .iter()
+                    .map(|c| jsx_render_child(c, ctx, fc))
+                    .collect::<String>(),
             )
         }
-        MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children, ctx),
+        MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children, ctx, fc),
         MdastNode::ThematicBreak(_) => "<_components.hr />".to_string(),
         MdastNode::Break(_) => "<_components.br />".to_string(),
         MdastNode::Math(m) => format!(
@@ -1800,14 +1820,72 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             "<_components.code class=\"language-math math-inline\">{}</_components.code>",
             jsx_text_escape(&m.value),
         ),
-        MdastNode::Root(r) => r.children.iter().map(|c| jsx_render_child(c, ctx)).collect(),
+        MdastNode::Root(r) => r
+            .children
+            .iter()
+            .map(|c| jsx_render_child(c, ctx, fc))
+            .collect(),
         // GFM pipe-table inside MDX JSX body — routes table tags through
         // `_components.<tag>`, matching the non-pipeline `emit_table_jsx`.
-        MdastNode::Table(t) => jsx_render_table(t, ctx),
-        // Footnotes, references, ESM, frontmatter, etc. drop silently here
-        // — better than leaking a `Debug` repr.
+        MdastNode::Table(t) => jsx_render_table(t, ctx, fc),
+        // GFM footnotes (issue #2023/#2025/#2027) nested inside an MDX
+        // JSX element body. This is a SEPARATE recursive descent from
+        // `pipeline::mdast_to_hast_inner`'s (this one is only reached
+        // for nodes inside an `MdxJsxFlowElement`/`MdxJsxTextElement`
+        // body), but `FootnoteModel::collect` already walked the WHOLE
+        // document tree — including JSX element bodies — when building
+        // the shared model, so an identifier referenced only in here
+        // still has an entry. `fc` is the SAME `FootnoteRenderCtx` (and
+        // therefore the same cursor) `mdast_to_hast_with`'s main walk
+        // is using, threaded down through `JsxEmitStrategy::JsxPath`'s
+        // closure — see that type's doc comment — so occurrences claim
+        // in the correct combined document order rather than a second,
+        // independently-advancing count that could drift from the main
+        // walk's.
+        //
+        // A `FootnoteDefinition` never renders in place here either,
+        // matching `pipeline::mdast_to_hast_inner`'s arm — its body only
+        // appears once, in the collected section `mdast_to_hast_with`
+        // appends at the end of the document.
+        MdastNode::FootnoteDefinition(_) => String::new(),
+        // A `FootnoteReference` claims its next occurrence from the
+        // shared cursor, mirroring `pipeline::footnote_reference_marker`'s
+        // shape but as JSX text routed through `_components.<tag>`, and
+        // reusing the SAME `FootnoteEntry`/`FootnoteRef` data the model
+        // already computed (ids, numbering, escaping policy) rather than
+        // re-deriving any of it here. `next_reference` returning `None`
+        // is not reachable through the public parse API (see the
+        // pipeline.rs arm's comment for why), so this degrades to
+        // nothing rather than panicking.
+        MdastNode::FootnoteReference(r) => fc
+            .next_reference(&r.identifier)
+            .map(|(entry, footnote_ref)| jsx_footnote_reference_marker(entry, footnote_ref))
+            .unwrap_or_default(),
+        // ESM, frontmatter, reference-style link/image definitions,
+        // etc. drop silently here — better than leaking a `Debug` repr.
         _ => String::new(),
     }
+}
+
+/// `<sup><a href="#{definition id}" id="{occurrence id}" data-footnote-ref
+/// aria-describedby="footnote-label">{number}</a></sup>`, routed through
+/// `_components.<tag>` like every other synthesized HTML tag in this
+/// file — the JSX-child-renderer's counterpart to
+/// `pipeline::footnote_reference_marker`. The number renders via
+/// `js_string_literal_in_braces` (not plain text) so a document-level
+/// reference and one nested inside an MDX JSX element body produce the
+/// SAME `{"N"}` shape `HastJsxBridge::emit_node`'s `HastNode::Text` arm
+/// already produces for the top-level path — the acceptance criterion
+/// this file's tests pin is that `.md` and `.mdx` (and, here, JSX-nested
+/// vs. top-level within one `.mdx`) never visibly diverge.
+fn jsx_footnote_reference_marker(entry: &FootnoteEntry, footnote_ref: &FootnoteRef) -> String {
+    format!(
+        "<_components.sup><_components.a href=\"{}\" id=\"{}\" data-footnote-ref aria-describedby=\"{}\">{}</_components.a></_components.sup>",
+        jsx_attr_escape(&entry.href()),
+        jsx_attr_escape(&footnote_ref.id),
+        jsx_attr_escape(FOOTNOTE_LABEL_ID),
+        js_string_literal_in_braces(&footnote_ref.number.to_string()),
+    )
 }
 
 /// Render a GFM pipe-table as `_components.<tag>`-routed JSX.
@@ -1817,7 +1895,11 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
 /// callers can override them, matching the non-pipeline `emit_table_jsx`.
 /// The resulting string is embedded as a [`HastNode::JsxRaw`] payload;
 /// the bridge's `collect_components_tag_names` scan registers each tag.
-fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
+fn jsx_render_table(
+    t: &markdown::mdast::Table,
+    ctx: &SlugCtx,
+    fc: &FootnoteRenderCtx<'_>,
+) -> String {
     let style_attr = |col: usize| -> String {
         t.align
             .get(col)
@@ -1839,7 +1921,7 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
             let inner: String = tc
                 .children
                 .iter()
-                .map(|c| jsx_render_child(c, ctx))
+                .map(|c| jsx_render_child(c, ctx, fc))
                 .collect();
             out.push_str(&format!(
                 "<_components.{cell_tag}{style}>{inner}</_components.{cell_tag}>"
@@ -1888,12 +1970,18 @@ fn task_list_checkbox_jsx(checked: bool) -> String {
     }
 }
 
-fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode], ctx: &SlugCtx) -> String {
+fn jsx_wrap_children(
+    tag: &str,
+    attrs: &str,
+    children: &[MdastNode],
+    ctx: &SlugCtx,
+    fc: &FootnoteRenderCtx<'_>,
+) -> String {
     format!(
         "<_components.{tag}{attrs}>{}</_components.{tag}>",
         children
             .iter()
-            .map(|c| jsx_render_child(c, ctx))
+            .map(|c| jsx_render_child(c, ctx, fc))
             .collect::<String>(),
     )
 }
@@ -4782,7 +4870,6 @@ mod tests {
     // href specifically targeting it, mirroring the pipeline.rs test's
     // structure.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn jsx_footnote_reference_and_definition_are_associated() {
         let jsx = emit_with_footnotes("Ref one[^a] end.\n\n[^a]: Definition body.\n");
 
@@ -4841,7 +4928,6 @@ mod tests {
     // EACH of the two visible marker occurrences to its OWN id and its
     // OWN backreference specifically.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn jsx_repeated_references_get_distinct_backreference_targets() {
         let jsx = emit_with_footnotes("Ref one[^a] and ref again[^a] end.\n\n[^a]: Shared def.\n");
 
@@ -4892,7 +4978,6 @@ mod tests {
     // order — mirrors
     // `pipeline::tests::multiple_definitions_are_numbered_and_ordered_by_first_reference`.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn jsx_multiple_definitions_are_numbered_and_ordered_by_first_reference() {
         let jsx = emit_with_footnotes(
             "First[^a] then second[^b] end.\n\n[^b]: Second body.\n\n[^a]: First body.\n",
@@ -4930,7 +5015,6 @@ mod tests {
     // WHICH body wins is #2025's policy call; this test only pins the
     // "exactly one, not two" structural fact.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn jsx_duplicate_definitions_collapse_to_exactly_one_entry() {
         let jsx =
             emit_with_footnotes("Dup label[^a] end.\n\n[^a]: First.\n\n[^a]: Second (dup).\n");
@@ -4976,7 +5060,6 @@ mod tests {
     // #2027's acceptance criteria calls this out by name ("a footnote
     // reference inside JSX children").
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2027"]
     fn jsx_nested_footnote_reference_and_definition_inside_jsx_element_are_not_dropped() {
         let jsx = emit_with_footnotes("<Note>\n\nRef[^a] end.\n\n[^a]: Body text.\n\n</Note>\n");
 
@@ -5001,7 +5084,6 @@ mod tests {
     // #2027's stated scope, so it stays tagged for #2027's confirm pass
     // rather than #2026's.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2027"]
     fn jsx_footnote_definition_body_containing_jsx_is_not_dropped() {
         let jsx =
             emit_with_footnotes("Ref[^a] end.\n\n[^a]: Body with <Bold>emphasis</Bold> inside.\n");
@@ -5019,6 +5101,67 @@ mod tests {
             jsx.contains("Bold"),
             "the JSX component name nested inside a footnote definition \
              body must survive (not just its text content): {jsx}"
+        );
+    }
+
+    // 8. `jsx_render_child`'s catch-all still swallows what it legitimately
+    // should — mirrors `pipeline::tests::catch_all_still_swallows_reference_style_link_definitions`,
+    // but exercised through THIS file's own catch-all by nesting the
+    // reference-style link definition inside an MDX JSX element body
+    // (`<Note>…</Note>`), the one shape that routes through
+    // `jsx_render_child` rather than the shared `mdast_to_hast_inner`
+    // catch-all. Carving footnotes out of the catch-all (this wave)
+    // must not weaken or remove it for everything else it drops.
+    #[test]
+    fn jsx_catch_all_still_swallows_reference_style_link_definitions_nested_in_jsx() {
+        let jsx = emit_with_footnotes(
+            "<Note>\n\nPara text.\n\n[label]: /elsewhere \"Title\"\n\n</Note>\n",
+        );
+
+        assert!(
+            jsx.contains("Para text."),
+            "the surrounding paragraph must still render: {jsx}"
+        );
+        assert!(
+            !jsx.contains("/elsewhere") && !jsx.contains("Title"),
+            "a reference-style link definition nested inside an MDX JSX \
+             element body must still be silently dropped by \
+             jsx_render_child's catch-all, got: {jsx}"
+        );
+    }
+
+    // 9. `gfm: false` (footnote_definition off) leaves footnote syntax
+    // nested inside an MDX JSX element body as literal text, with no
+    // footnote-shaped markup anywhere — mirrors
+    // `pipeline::tests::gfm_false_leaves_footnote_syntax_as_literal_text_with_no_section_appended`,
+    // but through THIS file's `jsx_render_child` path (a `Pipeline`
+    // whose GFM constructs default to `CONSERVATIVE`, i.e.
+    // `Pipeline::new()`, never turns on `footnote_definition`, so
+    // markdown-rs never produces a `FootnoteReference`/
+    // `FootnoteDefinition` node at all — the same structural guarantee
+    // the task-list wave relied on for its own `gfm: false` byte-parity
+    // proof, not something this emitter has to re-derive).
+    #[test]
+    fn jsx_gfm_false_leaves_nested_footnote_syntax_as_literal_text() {
+        let mut p = Pipeline::new();
+        let jsx = mdx_to_jsx_module_with_pipeline(
+            "<Note>\n\nRef[^a] end.\n\n[^a]: Body text.\n\n</Note>\n",
+            MdxJsxOptions::default(),
+            &mut p,
+        )
+        .expect("emit ok");
+
+        assert!(
+            jsx.contains("[^a]") && jsx.contains("[^a]: Body text."),
+            "footnote syntax must survive as literal text nested inside an \
+             MDX JSX element body when footnote_definition is off, got: {jsx}"
+        );
+        assert!(
+            !jsx.contains("data-footnote-ref")
+                && !jsx.contains("data-footnote-backref")
+                && !jsx.contains("data-footnotes"),
+            "no footnote-shaped attribute may appear anywhere when the \
+             construct is off: {jsx}"
         );
     }
 }
