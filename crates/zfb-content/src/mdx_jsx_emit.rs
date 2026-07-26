@@ -889,7 +889,15 @@ impl JsxEmitter {
                 }
                 self.emit_html(tag, &attrs, &l.children)
             }
-            MdastNode::ListItem(li) => self.emit_html("li", &[], &li.children),
+            MdastNode::ListItem(li) => {
+                let checkbox = li.checked.map(task_list_checkbox_jsx).unwrap_or_default();
+                if li.checked.is_some() {
+                    self.html_tags.insert("input".to_string());
+                }
+                self.html_tags.insert("li".to_string());
+                let inner = self.emit_inline_children(&li.children);
+                format!("<_components.li>{checkbox}{inner}</_components.li>")
+            }
             MdastNode::Blockquote(b) => self.emit_html("blockquote", &[], &b.children),
             MdastNode::ThematicBreak(_) => self.emit_html_void("hr", &[]),
             MdastNode::Break(_) => self.emit_html_void("br", &[]),
@@ -1774,7 +1782,13 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
                 l.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
             )
         }
-        MdastNode::ListItem(li) => jsx_wrap_children("li", "", &li.children, ctx),
+        MdastNode::ListItem(li) => {
+            let checkbox = li.checked.map(task_list_checkbox_jsx).unwrap_or_default();
+            format!(
+                "<_components.li>{checkbox}{}</_components.li>",
+                li.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+            )
+        }
         MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children, ctx),
         MdastNode::ThematicBreak(_) => "<_components.hr />".to_string(),
         MdastNode::Break(_) => "<_components.br />".to_string(),
@@ -1855,6 +1869,23 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
     }
     out.push_str("</_components.table>");
     out
+}
+
+/// Render the (disabled) task-list checkbox JSX literal that precedes a
+/// `ListItem`'s own children when `ListItem.checked` is `Some(_)`
+/// (issue #2024, epic #2021). GFM task-list checkboxes are static,
+/// server-rendered markup with no client-side toggle handler — always
+/// `disabled`; `checked` (JSX boolean-attribute shorthand) is present
+/// only when the item itself is checked. Routes through
+/// `_components.input`, like every other synthesized HTML tag in this
+/// file. Shared by both JSX-emit `ListItem` arms (`JsxEmitter::emit_node`
+/// and `jsx_render_child`).
+fn task_list_checkbox_jsx(checked: bool) -> String {
+    if checked {
+        "<_components.input type=\"checkbox\" checked disabled /> ".to_string()
+    } else {
+        "<_components.input type=\"checkbox\" disabled /> ".to_string()
+    }
 }
 
 fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode], ctx: &SlugCtx) -> String {
@@ -4598,7 +4629,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
     fn emit_node_checked_task_list_item_emits_checked_checkbox() {
         let li = task_list_item_node(Some(true), "Buy milk");
         let mut emitter = JsxEmitter::new();
@@ -4622,7 +4652,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
     fn emit_node_unchecked_task_list_item_emits_unchecked_checkbox() {
         let li = task_list_item_node(Some(false), "Buy milk");
         let mut emitter = JsxEmitter::new();
