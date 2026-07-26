@@ -151,6 +151,30 @@ impl Redirects {
         self.rules.len()
     }
 
+    /// Raw `target` strings of every `200` rewrite rule, in file order
+    /// (issue #2003).
+    ///
+    /// "Raw" means exactly as authored: `:name` / `:splat` tokens are
+    /// NOT substituted (there is no request to capture from) and the
+    /// query string, if any, is still attached. Callers that want the
+    /// concrete, normalized pre-warmable subset should use
+    /// [`crate::rewrite_prewarm::prewarm_rewrite_targets`] rather than
+    /// filtering this list themselves.
+    ///
+    /// Non-200 rules (301/302/303/307/308) are excluded — a redirect
+    /// hands the browser a new URL, which then goes through the normal
+    /// request path, so it has nothing to pre-warm.
+    pub(crate) fn rewrite_targets(&self) -> Vec<RawRewriteTarget<'_>> {
+        self.rules
+            .iter()
+            .filter(|r| r.is_rewrite)
+            .map(|r| RawRewriteTarget {
+                target: r.target.as_str(),
+                is_concrete: !r.target_has_resolvable_token(),
+            })
+            .collect()
+    }
+
     /// Match `path` (leading `/`, no query string) plus an optional raw
     /// `query` (no leading `?`) against the rule set for an incoming
     /// `method`. Returns `None` when no rule matches, or immediately
@@ -170,6 +194,18 @@ impl Redirects {
             .iter()
             .find_map(|rule| rule.try_match(&url_segments, query))
     }
+}
+
+/// One `200` rewrite rule's target as authored, plus whether it names a
+/// single concrete route (issue #2003).
+///
+/// See [`Redirects::rewrite_targets`].
+pub(crate) struct RawRewriteTarget<'a> {
+    pub(crate) target: &'a str,
+    /// `false` when the target still carries a `:name` / `:splat` token
+    /// that THIS rule would substitute per-request — i.e. the target is
+    /// a family of routes, not one.
+    pub(crate) is_concrete: bool,
 }
 
 /// Captures produced by a successful [`match_segments`] call: named
@@ -205,6 +241,51 @@ impl Rule {
                 location,
             }
         })
+    }
+
+    /// `true` when this rule's target contains at least one token that
+    /// [`substitute_target`] would actually REPLACE for a matching
+    /// request — `:splat` when the source has a splat segment, or
+    /// `:name` for a placeholder this rule's source declares.
+    ///
+    /// Issue #2003: this is the concreteness test for pre-warming. It is
+    /// deliberately keyed on *resolvable* tokens rather than "does the
+    /// target contain a colon", because `substitute_target` leaves an
+    /// unmatched token as literal text — so `/docs/:8080/index` under a
+    /// splat-free, placeholder-free rule really is one concrete path and
+    /// must not be skipped. The lexer below is the same one
+    /// `substitute_target` uses (`:` followed by one or more
+    /// `[A-Za-z0-9_]`); keep the two in step.
+    fn target_has_resolvable_token(&self) -> bool {
+        let has_splat = self.source.contains(&SourceSegment::Splat);
+        let chars: Vec<char> = self.target.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == ':' {
+                let start = i + 1;
+                let mut j = start;
+                while j < chars.len() && (chars[j] == '_' || chars[j].is_ascii_alphanumeric()) {
+                    j += 1;
+                }
+                if j > start {
+                    let name: String = chars[start..j].iter().collect();
+                    let resolvable = if name == "splat" {
+                        has_splat
+                    } else {
+                        self.source
+                            .iter()
+                            .any(|s| matches!(s, SourceSegment::Placeholder(p) if *p == name))
+                    };
+                    if resolvable {
+                        return true;
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        false
     }
 }
 
@@ -429,7 +510,7 @@ fn is_valid_placeholder_name(name: &str) -> bool {
 /// A relative target always starts with `/`, which never matches a
 /// scheme (schemes must start with an ASCII letter), so this cannot
 /// misclassify placeholder-bearing relative targets like `/:lang/about`.
-fn is_external_target(target: &str) -> bool {
+pub(crate) fn is_external_target(target: &str) -> bool {
     let mut chars = target.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() => {}
