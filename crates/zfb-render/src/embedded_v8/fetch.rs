@@ -222,6 +222,43 @@ pub struct FetchRequestSpec {
     /// alone cannot.
     #[serde(default)]
     pub has_body: bool,
+    /// Caller-requested deadline in milliseconds, from
+    /// `AbortSignal.timeout(ms)` on the JS side (issue #2016).
+    ///
+    /// It can only ever **narrow** [`FetchConfig::timeout_ms`], never
+    /// widen it — see [`effective_timeout_ms`]. The host has no event
+    /// loop timers (`setTimeout` in `js/web_polyfills.js` is
+    /// microtask-backed and ignores its delay), so a JS-side timer
+    /// could not honour `AbortSignal.timeout` at all; routing it
+    /// through the Rust deadline is what makes the signal real, and it
+    /// takes the same cancellation path — the future is dropped, which
+    /// closes the socket.
+    ///
+    /// `u32` rather than `u64` on purpose: `serde_v8` decodes a `u64`
+    /// from a JS **BigInt**, not from an ordinary `Number`, so a `u64`
+    /// here would reject every value the JS layer can naturally send
+    /// with `invalid_argument`. `u32` milliseconds is ~49 days, far
+    /// past any deadline that could narrow the host's own — and the JS
+    /// side clamps to the range before sending.
+    #[serde(default)]
+    pub timeout_ms: Option<u32>,
+}
+
+/// The deadline actually applied to a call: the host's own, narrowed by
+/// any caller-requested one.
+///
+/// Deliberately a `min`, never an override. A bundle that asks for
+/// `AbortSignal.timeout(10 * 60 * 1000)` does **not** get to sit on the
+/// single SSR V8 thread for ten minutes — divergence D1 exists because
+/// one hung `fetch` wedges the whole dev server, and only the operator
+/// (via `ZFB_SSR_FETCH_TIMEOUT_MS`) may raise the ceiling. A requested
+/// `0` is treated as "as soon as possible" (1 ms) rather than
+/// "no deadline".
+pub(crate) fn effective_timeout_ms(config_ms: u64, requested_ms: Option<u64>) -> u64 {
+    match requested_ms {
+        Some(requested) => config_ms.min(requested.max(1)),
+        None => config_ms,
+    }
 }
 
 /// The materialised response handed back across the host boundary.
@@ -440,7 +477,8 @@ pub async fn perform_fetch(
     spec: &FetchRequestSpec,
     body: Vec<u8>,
 ) -> Result<FetchOutcome, FetchError> {
-    let deadline = Duration::from_millis(config.timeout_ms);
+    let timeout_ms = effective_timeout_ms(config.timeout_ms, spec.timeout_ms.map(u64::from));
+    let deadline = Duration::from_millis(timeout_ms);
     match tokio::time::timeout(
         deadline,
         perform_fetch_inner(client, counter, config, spec, body),
@@ -454,7 +492,7 @@ pub async fn perform_fetch(
         // drops the op's future first. Whichever fires first wins.
         Err(_elapsed) => Err(FetchError::Timeout {
             url: spec.url.clone(),
-            timeout_ms: config.timeout_ms,
+            timeout_ms,
         }),
     }
 }

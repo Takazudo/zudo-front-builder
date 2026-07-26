@@ -110,6 +110,8 @@ use crate::render_host::{ModuleHandle, RenderHost};
 mod dispatch;
 pub mod extensions;
 pub mod fetch;
+#[cfg(test)]
+mod js_fetch_tests;
 pub mod limits;
 #[cfg(test)]
 pub(crate) mod loopback_test_server;
@@ -305,11 +307,21 @@ impl EmbeddedV8RenderHost {
         // runs. The shim body is an IIFE, so the substituted value ends
         // up closure-private rather than in the global lexical
         // environment where bundle code could read it by name.
+        //
+        // The request-time limit constants (issue #2016) are baked in
+        // by the same pass: `web_polyfills.js` reads its request-body
+        // cap out of `__zfb.limits` rather than carrying a second copy
+        // of the numbers in `limits.rs`.
         let shim_src = extensions::HOST_GLOBALS_SHIM_SRC
-            .replace(extensions::MODE_NONCE_PLACEHOLDER, &self.mode_nonce);
+            .replace(extensions::MODE_NONCE_PLACEHOLDER, &self.mode_nonce)
+            .replace(extensions::LIMITS_PLACEHOLDER, &limits::limits_js_literal());
         debug_assert!(
             !shim_src.contains(extensions::MODE_NONCE_PLACEHOLDER),
             "host shim still carries the mode-nonce placeholder after substitution"
+        );
+        debug_assert!(
+            !shim_src.contains(extensions::LIMITS_PLACEHOLDER),
+            "host shim still carries the limits placeholder after substitution"
         );
         self.runtime
             .execute_script("zfb:host_shim", shim_src)
