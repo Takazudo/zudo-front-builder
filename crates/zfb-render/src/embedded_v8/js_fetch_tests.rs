@@ -76,7 +76,11 @@ const TRANSPORT_TIMEOUT_TAIL: &str = ": timed out after 200ms (zfb embedded-runt
 /// The handler catches, so a script that throws yields a readable
 /// `UNCAUGHT:<name>:<message>` rather than failing the dispatch with a
 /// stack trace.
-async fn probe(script: &str, mode: DispatchMode) -> String {
+///
+/// `pub(crate)` because `js_crypto_tests.rs` (issue #2018) drives the
+/// Web Crypto surface through the same seam; keeping one helper means
+/// both matrices exercise the identical production dispatch path.
+pub(crate) async fn probe(script: &str, mode: DispatchMode) -> String {
     let bundle = format!(
         r#"
         export default {{
@@ -112,7 +116,7 @@ async fn probe(script: &str, mode: DispatchMode) -> String {
 /// JS helper text, prepended to scripts that report an expected
 /// rejection: `describe(e)` renders `<name>|<message>`, which is what
 /// the assertions below compare against.
-const DESCRIBE: &str = r#"
+pub(crate) const DESCRIBE: &str = r#"
   const describe = (e) => String(e && e.name) + "|" + String(e && e.message);
   const expectReject = async (fn) => {
     try {

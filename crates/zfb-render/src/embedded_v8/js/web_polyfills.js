@@ -17,9 +17,11 @@
 // - `atob` / `btoa` for base64.
 // - `structuredClone` for object cloning (workerd ships it; some
 //   user libraries assume its presence).
-// - `crypto` with `randomUUID` and `subtle.digest` (Hono's request-id
-//   middleware probes them; we provide enough for the probe to not
-//   throw, but keep the surface small).
+// - `crypto` — `getRandomValues` / `randomUUID` backed by the OS
+//   CSPRNG (never `Math.random`, bug #1751), `subtle.digest` for
+//   SHA-1/256/384/512, `subtle.timingSafeEqual`, and the rest of
+//   SubtleCrypto present-and-failing-closed. See the `crypto` section
+//   below.
 // - `MessageChannel` / `MessagePort` — React 19's react-dom server
 //   bundle constructs a `MessageChannel` at module-load time
 //   (unguarded) for its Fizz `scheduleWork` scheduler. React 18 did
@@ -928,16 +930,28 @@
   function registerHostErrorClasses() {
     const core = globalThis.Deno && globalThis.Deno.core;
     if (!core || typeof core.registerErrorClass !== "function") return;
-    class TimeoutError extends Error {
-      constructor(message) {
-        super(message);
-        this.name = "TimeoutError";
+    // Every non-builtin error class a Rust op can raise MUST be listed
+    // here. deno_core rebuilds an op's error through its own
+    // `buildCustomError`, which can only construct classes in its
+    // `errorMap`; an unregistered class arrives in JS as a thrown
+    // `undefined` — no name, no message, no diagnostic at all.
+    //
+    // - `TimeoutError`: the fetch transport's deadline (#2015/#2016).
+    // - `QuotaExceededError`: `op_zfb_random_bytes`'s byte quota (#2017).
+    // - `NotSupportedError`: `op_zfb_digest`'s unsupported algorithm (#2018).
+    const classes = ["TimeoutError", "QuotaExceededError", "NotSupportedError"];
+    for (const name of classes) {
+      const cls = class extends Error {
+        constructor(message) {
+          super(message);
+          this.name = name;
+        }
+      };
+      try {
+        core.registerErrorClass(name, cls);
+      } catch (_) {
+        // Already registered on this runtime — nothing to do.
       }
-    }
-    try {
-      core.registerErrorClass("TimeoutError", TimeoutError);
-    } catch (_) {
-      // Already registered on this runtime — nothing to do.
     }
   }
 
@@ -1237,53 +1251,299 @@
 
   // ---- crypto ---------------------------------------------------
   //
-  // `crypto.randomUUID()` is the only thing zfb-runtime / Hono
-  // request-id middleware reaches for. We provide a deterministic-
-  // looking v4 UUID using `Math.random()` (good enough for SSG —
-  // the IDs are not cryptographically meaningful at build time,
-  // and using a real CSPRNG would require a Rust op).
-  const crypto = {
-    randomUUID() {
-      const hex = "0123456789abcdef";
-      let s = "";
-      for (let i = 0; i < 36; i++) {
-        if (i === 8 || i === 13 || i === 18 || i === 23) {
-          s += "-";
-        } else if (i === 14) {
-          s += "4";
-        } else if (i === 19) {
-          s += hex[(Math.random() * 4) | 8];
-        } else {
-          s += hex[(Math.random() * 16) | 0];
+  // Backed by the OS CSPRNG through `op_zfb_random_bytes` (issue #2017)
+  // and by `op_zfb_digest` for SHA hashing (issue #2018). Both ops are
+  // synchronous and available in BOTH dispatch modes: unlike `fetch`,
+  // neither entropy nor hashing is mode-gated — the SSG denial is about
+  // *network access*, and randomness whose quality depended on which
+  // pipeline rendered the page would be its own footgun.
+  //
+  // Until #2018 this section derived `randomUUID` and `getRandomValues`
+  // from `Math.random`. That is bug #1751: a session ID, CSRF token or
+  // nonce minted during local SSR was PREDICTABLE while the identical
+  // code on production Workers was not — and nothing about it looked
+  // broken, because the bytes still arrived and every functional test
+  // still passed. There is deliberately **no fallback path** anywhere
+  // below: if the host op is missing or the kernel CSPRNG errors, every
+  // entropy-consuming call THROWS. Weak bytes must never reach a
+  // caller.
+  //
+  // The unimplemented SubtleCrypto surface is PRESENT and throwing
+  // rather than absent, for the same reason: `typeof crypto.subtle.sign
+  // === "function"` is how libraries feature-detect, and silent absence
+  // would make them take a local fallback branch production never
+  // takes. See `research/2013-request-time-capability-contract.md`
+  // divergences D7 (no MD5) and D8 (key-bearing methods).
+
+  // Exactly Cloudflare's documented eligible-view list for
+  // `crypto.getRandomValues`. Floats and `DataView` are excluded by the
+  // WebCrypto spec itself (integer-typed views only).
+  const RANDOM_VALUES_ELIGIBLE_VIEW_NAMES = [
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "BigInt64Array",
+    "BigUint64Array",
+  ];
+
+  // The SubtleCrypto methods production Workers implements and this
+  // host does not (contract divergence D8). Present as callable
+  // methods; every one rejects.
+  const SUBTLE_UNIMPLEMENTED_METHODS = [
+    "encrypt",
+    "decrypt",
+    "sign",
+    "verify",
+    "generateKey",
+    "deriveKey",
+    "deriveBits",
+    "importKey",
+    "exportKey",
+    "wrapKey",
+    "unwrapKey",
+  ];
+
+  // `Error` with a spec-correct `.name`. No real `DOMException` exists
+  // in this host (contract divergence D4), so `err.name` checks — the
+  // common idiom — behave as they would against one, while
+  // `instanceof DOMException` does not.
+  function namedError(name, message) {
+    const err = new Error(message);
+    err.name = name;
+    return err;
+  }
+
+  function describeCtor(value) {
+    if (value === null || value === undefined) return String(value);
+    const ctor = value.constructor;
+    if (ctor && typeof ctor.name === "string" && ctor.name) return ctor.name;
+    return typeof value;
+  }
+
+  function isEligibleRandomValuesView(view) {
+    if (!ArrayBuffer.isView(view)) return false;
+    for (const name of RANDOM_VALUES_ELIGIBLE_VIEW_NAMES) {
+      const ctor = globalThis[name];
+      if (typeof ctor === "function" && view instanceof ctor) return true;
+    }
+    return false;
+  }
+
+  // The per-call byte quota, read out of the Rust-injected
+  // `__zfb.limits` (issue #2016). A second hardcoded copy of the number
+  // in JS is a REJECTED design — it drifts from `limits.rs` silently
+  // while every test still passes.
+  //
+  // `null` means the host published no limits at all, which happens
+  // only outside a booted host (these polyfills execute before the
+  // shim). That is not a hole: the identical ceiling is enforced in
+  // Rust, on the same byte count, where bundle code cannot reach it.
+  function randomBytesQuota() {
+    const bridge = globalThis.__zfb;
+    const limits = bridge ? bridge.limits : undefined;
+    const quota = limits ? limits.maxRandomBytesPerCall : undefined;
+    return typeof quota === "number" ? quota : null;
+  }
+
+  function hostOp(name) {
+    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
+    const op = ops ? ops[name] : undefined;
+    return typeof op === "function" ? op : null;
+  }
+
+  // Fill `u8` from the OS CSPRNG.
+  //
+  // FAIL CLOSED: every failure throws. There is no fallback source, no
+  // zero fill, and no retry against a weaker generator — that is the
+  // whole of bug #1751. `apiName` is the calling API, because the one
+  // op backs both `getRandomValues` and `randomUUID` and the contract
+  // gives each its own message prefix.
+  function fillFromHostEntropy(apiName, u8) {
+    const op = hostOp("op_zfb_random_bytes");
+    if (!op) {
+      throw new Error(
+        apiName + ": OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime",
+      );
+    }
+    try {
+      op(u8);
+    } catch (e) {
+      // The Rust quota rejection already carries its own
+      // `crypto.getRandomValues:` prefix and `QuotaExceededError` name;
+      // re-prefixing it would produce a doubled method name.
+      if (e && e.name === "QuotaExceededError") throw e;
+      throw new Error(apiName + ": " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  // A `Uint8Array` view over whatever bytes `value` holds, without
+  // copying. Accepts the WebCrypto `BufferSource` union.
+  function bufferSourceBytes(apiName, value) {
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    throw new TypeError(
+      apiName + ": expected an ArrayBuffer or ArrayBufferView, got " + describeCtor(value),
+    );
+  }
+
+  function subtleNotSupported(method) {
+    // Deliberately states that production SUCCEEDS here and names the
+    // contract document. Local diagnostics CANNOT match production for
+    // these calls (divergence D8) — production returns a key or a
+    // signature — so the honest alignment is to say so, rather than
+    // synthesise a workerd-shaped error workerd would never have
+    // raised.
+    return namedError(
+      "NotSupportedError",
+      "crypto.subtle." +
+        method +
+        " is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES " +
+        "implement this call — see research/2013-request-time-capability-contract.md. This host " +
+        "implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+    );
+  }
+
+  // workerd exposes `DigestStream` as a constructor. It is present here
+  // and throws on construction rather than being absent, for the same
+  // feature-detection reason as the methods above.
+  function DigestStream() {
+    throw subtleNotSupported("DigestStream");
+  }
+
+  const subtle = {
+    // Returns `Promise<ArrayBuffer>` as WebCrypto requires, even though
+    // the underlying op is synchronous (hashing is CPU-bound over a
+    // buffer already in memory — there is no socket to await).
+    // Algorithm validation lives in Rust so the supported set and the
+    // message advertising it cannot drift.
+    digest(algorithm, data) {
+      try {
+        const name =
+          typeof algorithm === "string" ? algorithm : String(algorithm && algorithm.name);
+        const bytes = bufferSourceBytes("crypto.subtle.digest", data);
+        const op = hostOp("op_zfb_digest");
+        if (!op) {
+          throw new Error(
+            "crypto.subtle.digest: embedded host transport unavailable: op_zfb_digest is not " +
+              "registered in this runtime",
+          );
         }
+        const out = op(name, bytes);
+        // Detach a standalone `ArrayBuffer`: the op's result may be a
+        // view over a larger backing store, and handing back
+        // `out.buffer` would leak whatever else lives in it.
+        return Promise.resolve(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength));
+      } catch (e) {
+        return Promise.reject(e);
       }
-      return s;
     },
-    getRandomValues(typedArray) {
-      for (let i = 0; i < typedArray.length; i++) {
-        typedArray[i] = (Math.random() * 256) | 0;
+    // A workerd extension, not WebCrypto: synchronous, returns a
+    // boolean. Constant-time in the length of the inputs — no early
+    // exit, and the whole buffer is always read, so the comparison's
+    // duration carries no information about WHERE the first difference
+    // is. The length check is deliberately NOT constant-time: byte
+    // lengths are not secret, and the spec throws on a mismatch.
+    timingSafeEqual(a, b) {
+      const left = bufferSourceBytes("crypto.subtle.timingSafeEqual", a);
+      const right = bufferSourceBytes("crypto.subtle.timingSafeEqual", b);
+      if (left.byteLength !== right.byteLength) {
+        throw new TypeError("crypto.subtle.timingSafeEqual: buffers must be the same byteLength");
       }
-      return typedArray;
+      let diff = 0;
+      for (let i = 0; i < left.length; i++) {
+        diff |= left[i] ^ right[i];
+      }
+      return diff === 0;
     },
-    subtle: {
-      // Stubs that throw — Hono's request-id middleware probes
-      // these but doesn't call them on the SSG path. If a real
-      // bundle calls `subtle.digest(...)`, fix it here with a
-      // pure-JS sha256 implementation (~80 lines).
-      //
-      // The wording names the RUNTIME, not the SSG policy: `digest` is
-      // unimplemented on the request-time path too, and telling a
-      // request-time caller their problem is a build-time policy sends
-      // them looking for a build-step fix that does not exist. Issue
-      // #2017 replaces this rejection with a real implementation on
-      // both paths.
-      digest() {
-        return Promise.reject(
-          new Error("crypto.subtle.digest is not implemented in the zfb embedded runtime"),
-        );
-      },
-    },
+    DigestStream,
   };
+
+  for (const method of SUBTLE_UNIMPLEMENTED_METHODS) {
+    // Rejected promises, not throws: every one of these is async in
+    // WebCrypto, so a caller's `.catch()` must be what sees the
+    // failure.
+    subtle[method] = () => Promise.reject(subtleNotSupported(method));
+  }
+
+  const crypto = {
+    getRandomValues(view) {
+      if (!isEligibleRandomValuesView(view)) {
+        throw namedError(
+          "TypeMismatchError",
+          "crypto.getRandomValues: " +
+            describeCtor(view) +
+            " is not an integer-typed ArrayBufferView",
+        );
+      }
+      const quota = randomBytesQuota();
+      // Measured on `byteLength`, NEVER on element count: a
+      // `Uint32Array(20000)` is 20,000 elements but 80,000 bytes, and
+      // an element-count reading would wave it through.
+      if (quota !== null && view.byteLength > quota) {
+        throw namedError(
+          "QuotaExceededError",
+          "crypto.getRandomValues: requested " +
+            view.byteLength +
+            " bytes, quota is " +
+            quota +
+            " bytes",
+        );
+      }
+      // A zero-length view is a valid no-op that returns the view, and
+      // must succeed even on a host whose CSPRNG is unavailable — zero
+      // bytes cannot be weak.
+      if (view.byteLength === 0) return view;
+      // A byte view over the SAME backing store, so the op writes
+      // through to `view` whatever its element type is (the op takes a
+      // `&mut [u8]`).
+      fillFromHostEntropy(
+        "crypto.getRandomValues",
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      );
+      return view;
+    },
+    randomUUID() {
+      const bytes = new Uint8Array(16);
+      fillFromHostEntropy("crypto.randomUUID", bytes);
+      // RFC 4122 §4.4: version 4 in the high nibble of octet 6, variant
+      // 10xx in the top two bits of octet 8. Set on the BYTES rather
+      // than spelled into the output string, so the invariants hold for
+      // anyone who parses the UUID back to bytes.
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      let hex = "";
+      for (let i = 0; i < bytes.length; i++) {
+        hex += bytes[i].toString(16).padStart(2, "0");
+      }
+      return (
+        hex.slice(0, 8) +
+        "-" +
+        hex.slice(8, 12) +
+        "-" +
+        hex.slice(12, 16) +
+        "-" +
+        hex.slice(16, 20) +
+        "-" +
+        hex.slice(20, 32)
+      );
+    },
+    subtle,
+    // workerd's own location for the constructor. Exposed here too so
+    // `typeof crypto.DigestStream === "function"` answers the same
+    // locally as in production — the absence, not the throw, is what
+    // would send feature detection down a branch production never
+    // takes.
+    DigestStream,
+  };
+  // `CryptoKey` is deliberately left undefined: nothing in the
+  // implemented set produces or consumes one, so referencing it is a
+  // plain `ReferenceError`.
 
   // ---- setTimeout / clearTimeout --------------------------------
   //
