@@ -93,16 +93,20 @@ impl DigestError {
 
 /// Hash `data` with `algorithm`, or fail closed.
 ///
-/// `algorithm` is matched case-insensitively after trimming, because
-/// WebCrypto normalises the algorithm name that way and callers write
-/// `"sha-256"` as often as `"SHA-256"`. The **original** spelling is
-/// what the rejection quotes back, so a typo is recognisable in the
-/// message rather than being echoed uppercased.
+/// `algorithm` is matched **ASCII-case-insensitively and nothing
+/// more** — that is exactly WebCrypto's "normalize an algorithm" step,
+/// and callers write `"sha-256"` as often as `"SHA-256"`. Surrounding
+/// whitespace is deliberately NOT trimmed: `" SHA-256 "` is not a
+/// registered algorithm name, production Workers rejects it, and
+/// accepting it here would manufacture the precise local/production
+/// divergence this sub-issue exists to remove. The **original**
+/// spelling is what the rejection quotes back, so a typo is
+/// recognisable in the message rather than being echoed uppercased.
 ///
 /// There is no default algorithm and no "closest match" fallback: an
 /// unrecognised name is an error, never a silent substitution.
 pub fn digest_bytes(algorithm: &str, data: &[u8]) -> std::result::Result<Vec<u8>, DigestError> {
-    match algorithm.trim().to_ascii_uppercase().as_str() {
+    match algorithm.to_ascii_uppercase().as_str() {
         "SHA-1" => Ok(Sha1::digest(data).to_vec()),
         "SHA-256" => Ok(Sha256::digest(data).to_vec()),
         "SHA-384" => Ok(Sha384::digest(data).to_vec()),
@@ -181,13 +185,27 @@ mod tests {
         );
     }
 
-    /// WebCrypto normalises the algorithm name case-insensitively.
+    /// WebCrypto's "normalize an algorithm" step is ASCII-case-folding
+    /// and nothing else.
     #[test]
-    fn the_algorithm_name_is_matched_case_insensitively_after_trimming() {
+    fn the_algorithm_name_is_matched_case_insensitively_and_not_trimmed() {
         let canonical = digest_bytes("SHA-256", b"abc").unwrap();
         assert_eq!(digest_bytes("sha-256", b"abc").unwrap(), canonical);
         assert_eq!(digest_bytes("Sha-256", b"abc").unwrap(), canonical);
-        assert_eq!(digest_bytes("  SHA-256  ", b"abc").unwrap(), canonical);
+        // Whitespace-padded names are NOT registered algorithm names.
+        // Production Workers rejects them; trimming here would let a
+        // bundle that only works locally ship — the exact divergence
+        // class #1751 is about.
+        for padded in [" SHA-256", "SHA-256 ", "  SHA-256  ", "\tSHA-256"] {
+            let err = digest_bytes(padded, b"abc")
+                .expect_err("a whitespace-padded algorithm name is not registered");
+            assert_eq!(
+                err,
+                DigestError::UnsupportedAlgorithm {
+                    requested: padded.to_string(),
+                }
+            );
+        }
     }
 
     /// Divergence **D7**: workerd implements MD5 as a legacy extension;
