@@ -107,6 +107,7 @@ use serde_json::Value as JsonValue;
 use crate::error::{RenderError, Result};
 use crate::render_host::{ModuleHandle, RenderHost};
 
+pub mod crypto;
 mod dispatch;
 pub mod extensions;
 pub mod fetch;
@@ -1038,10 +1039,19 @@ fn synthesise_specifier(name: &str) -> String {
 /// never park on a network read. Nothing in `web_polyfills.js` calls
 /// it yet; sub-issue #2016 wires the JS side.
 ///
+/// The OS CSPRNG is the other thing JS cannot reach, so
+/// [`crypto::zfb_crypto`] registers [`crypto::op_zfb_random_bytes`]
+/// (issue #2017). That one is **synchronous** on purpose —
+/// `crypto.getRandomValues` is synchronous by specification, and the
+/// kernel entropy syscall is neither network nor disk I/O; see the
+/// `crypto` module header. It is registered unconditionally, in both
+/// dispatch modes: unlike `fetch`, entropy is not mode-gated. No JS
+/// calls it yet either; sub-issue #2018 wires that side.
+///
 /// Kept as a function so a future swap to `deno_web` / `deno_fetch`
 /// is a one-place change.
 fn build_extensions() -> Vec<deno_core::Extension> {
-    vec![fetch::zfb_fetch::init()]
+    vec![fetch::zfb_fetch::init(), crypto::zfb_crypto::init()]
 }
 
 /// Format a `deno_core::error::CoreError` for inclusion in
