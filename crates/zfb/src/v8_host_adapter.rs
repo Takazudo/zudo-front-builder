@@ -26,7 +26,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
-use zfb_build::renderer::{EmbeddedV8Host, HttpResponseLike, RendererError};
+use zfb_build::renderer::{DispatchMode, EmbeddedV8Host, HttpResponseLike, RendererError};
 use zfb_render::{BundleModuleLoader, EmbeddedV8RenderHost, HttpRequestLike, PluginRegistryHooks};
 
 /// Message sent from the caller thread to the V8 host thread.
@@ -61,6 +61,12 @@ struct DispatchRequest {
     /// Request body. Empty for GET/HEAD; carries POST/PUT/PATCH
     /// payload bytes on the full-fidelity path.
     body: Vec<u8>,
+    /// Build-time SSG vs request-time SSR (issue #2014). Carried per
+    /// request because both modes share one host instance. Only
+    /// [`EmbeddedV8Host::dispatch_fetch_full_with_mode`] can set this to
+    /// [`DispatchMode::RequestTime`]; every other entry point on this
+    /// type is build-time.
+    mode: DispatchMode,
     /// One-shot reply channel.
     reply: mpsc::SyncSender<Result<HttpResponseLike, RendererError>>,
 }
@@ -507,6 +513,9 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
             method: req.method,
             headers,
             body: body_opt,
+            // Issue #2014: forwarded verbatim from the caller. The V8
+            // host publishes it as `__zfb.mode` for this dispatch only.
+            mode: req.mode,
         };
         let result = host
             .dispatch_fetch(http_req)
@@ -543,26 +552,36 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
 
 impl EmbeddedV8Host for ThreadedV8Host {
     fn dispatch_fetch(&mut self, url_path: &str) -> Result<HttpResponseLike, RendererError> {
+        // The SSG hot path: build-time by definition.
         self.send_request(
             url_path.to_string(),
             "GET".to_string(),
             std::collections::BTreeMap::new(),
             Vec::new(),
+            DispatchMode::BuildTime,
         )
     }
 
-    fn dispatch_fetch_full(
+    // NOTE (issue #2014): `dispatch_fetch_full` is deliberately NOT
+    // overridden here. The trait's default forwards it to
+    // `dispatch_fetch_full_with_mode` with `DispatchMode::BuildTime`,
+    // which is exactly what its existing callers (the dev content-trace
+    // endpoint in `commands::dev`) want. Overriding it would create a
+    // second, mode-less path into `send_request`.
+    fn dispatch_fetch_full_with_mode(
         &mut self,
         url_path: &str,
         method: &str,
         headers: &std::collections::BTreeMap<String, String>,
         body: &[u8],
+        mode: DispatchMode,
     ) -> Result<HttpResponseLike, RendererError> {
         self.send_request(
             url_path.to_string(),
             method.to_string(),
             headers.clone(),
             body.to_vec(),
+            mode,
         )
     }
 
@@ -586,16 +605,20 @@ impl EmbeddedV8Host for ThreadedV8Host {
 }
 
 impl ThreadedV8Host {
-    /// Shared transport for both [`Self::dispatch_fetch`] and
-    /// [`Self::dispatch_fetch_full`]. Builds the [`DispatchRequest`],
-    /// sends it across the channel to the V8 thread, and blocks on the
-    /// reply channel.
+    /// Shared transport for both [`EmbeddedV8Host::dispatch_fetch`] and
+    /// [`EmbeddedV8Host::dispatch_fetch_full_with_mode`]. Builds the
+    /// [`DispatchRequest`], sends it across the channel to the V8
+    /// thread, and blocks on the reply channel.
+    ///
+    /// `mode` is a required parameter rather than a defaulted field so
+    /// a new call site cannot forget it (issue #2014).
     fn send_request(
         &mut self,
         url_path: String,
         method: String,
         headers: std::collections::BTreeMap<String, String>,
         body: Vec<u8>,
+        mode: DispatchMode,
     ) -> Result<HttpResponseLike, RendererError> {
         let tx = self.tx.as_ref().ok_or_else(|| {
             RendererError::EmbeddedV8("V8 host has already been shut down".into())
@@ -606,6 +629,7 @@ impl ThreadedV8Host {
             method,
             headers,
             body,
+            mode,
             reply: reply_tx,
         };
         // Send the request; if the channel is broken the thread died.

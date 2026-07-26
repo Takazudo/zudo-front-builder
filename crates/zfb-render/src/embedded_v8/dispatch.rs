@@ -15,6 +15,12 @@
 
 use std::collections::BTreeMap;
 
+// Re-exported so `zfb_render::embedded_v8::dispatch::DispatchMode`
+// resolves (the spelling the #2013 contract names) even though the enum
+// itself must live outside the `embed_v8` gate — see
+// `crate::dispatch_mode` for why.
+pub use crate::dispatch_mode::DispatchMode;
+
 /// Inbound request shape for [`super::EmbeddedV8RenderHost::dispatch_fetch`].
 ///
 /// The host ignores fields that are absent from a typical SSG request
@@ -36,17 +42,32 @@ pub struct HttpRequestLike {
     pub headers: BTreeMap<String, String>,
     /// Optional body bytes. `None` for SSG GETs.
     pub body: Option<Vec<u8>>,
+    /// Whether this dispatch is a build-time SSG render or a
+    /// request-time SSR render (issue #2014).
+    ///
+    /// Carried per request — NOT per host — because request-time SSR
+    /// and build-time prerender share one `EmbeddedV8RenderHost`
+    /// instance (`RendererState::embedded_v8_host_mut`). The host
+    /// forwards this to `__zfb.dispatch(...)`, which sets `__zfb.mode`
+    /// for the duration of the dispatch and restores it in a `finally`.
+    ///
+    /// Defaults to [`DispatchMode::BuildTime`], so a call site that
+    /// does not set it keeps the existing build-time denials.
+    pub mode: DispatchMode,
 }
 
 impl HttpRequestLike {
     /// Build a GET request for `url` with no headers / body. The
-    /// hot path on the SSG renderer.
+    /// hot path on the SSG renderer, so the mode is
+    /// [`DispatchMode::BuildTime`] — callers that mean request-time SSR
+    /// set [`Self::mode`] explicitly.
     pub fn get(url: impl Into<String>) -> Self {
         Self {
             url: url.into(),
             method: "GET".to_string(),
             headers: BTreeMap::new(),
             body: None,
+            mode: DispatchMode::BuildTime,
         }
     }
 }
@@ -91,5 +112,18 @@ impl HttpResponseLike {
     /// body is not valid UTF-8 (binary asset routes).
     pub fn body_utf8(&self) -> Option<&str> {
         std::str::from_utf8(&self.body).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_is_build_time_so_the_ssg_hot_path_stays_denied() {
+        assert_eq!(
+            HttpRequestLike::get("http://zfb.local/").mode,
+            DispatchMode::BuildTime
+        );
     }
 }

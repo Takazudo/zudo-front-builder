@@ -13,9 +13,13 @@
 //! - [`paths_extract`] — static `paths()` literal extractor; the
 //!   build-time fast path that pairs with [`paths::resolve_paths`] when
 //!   the page's `paths()` return value is statically analyzable.
+//! - [`dispatch_mode`] — `DispatchMode` (build-time SSG vs request-time
+//!   SSR), carried per dispatch. Deliberately NOT behind `embed_v8`:
+//!   `zfb_build::renderer::EmbeddedV8Host` names it unconditionally.
 //! - [`error`] — crate-wide `RenderError`.
 
 pub mod adapters;
+pub mod dispatch_mode;
 pub mod error;
 pub mod loader;
 pub mod paths;
@@ -40,6 +44,7 @@ pub mod config_eval;
 #[cfg(feature = "embed_v8")]
 pub use config_eval::{ConfigEvalError, ThreadedConfigEvaluator};
 
+pub use dispatch_mode::DispatchMode;
 pub use error::{RenderError, Result};
 pub use loader::{read_to_string, ResolverError};
 pub use render::{RenderRequest, Renderer};

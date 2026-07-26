@@ -88,11 +88,17 @@ impl SsrDispatcher for EmbeddedV8SsrAdapter {
                     "renderer is not backed by an embedded V8 host".into(),
                 )
             })?;
-            host.dispatch_fetch_full(
+            // Issue #2014: the ONLY production call site that passes
+            // `RequestTime`. This host instance is shared with the dev
+            // tick's build-time prerender pass and with the build-time
+            // dev content-trace endpoint, so the mode travels with the
+            // dispatch rather than living on the host.
+            host.dispatch_fetch_full_with_mode(
                 &request.url_path,
                 &request.method,
                 &request.headers,
                 &request.body,
+                zfb_build::renderer::DispatchMode::RequestTime,
             )
         })
         .await
