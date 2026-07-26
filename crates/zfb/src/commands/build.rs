@@ -3617,6 +3617,12 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
             {
                 if entry.file_type().is_file()
                     && entry.path().extension().and_then(|s| s.to_str()) == Some(ext)
+                    // Conventional non-page sidecars (`*.d.ts`, `*.test.*`,
+                    // `*.spec.*`) are not pages, so they must not seed the
+                    // islands walk either — a test's unsupported import query
+                    // would otherwise become a hard `ScanError` under the
+                    // build policy for a file the router deliberately ignores.
+                    && !zfb_types::is_page_sidecar_file(entry.path())
                 {
                     entries.push(entry.into_path());
                 }
