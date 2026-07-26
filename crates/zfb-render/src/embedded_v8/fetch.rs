@@ -42,15 +42,17 @@
 //! surfaced verbatim — divergence D6, and what keeps `content-length`
 //! honest against the response cap.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use deno_core::{op2, OpState};
+use deno_core::{op2, CancelFuture, CancelHandle, JsBuffer, OpState};
 use deno_error::JsErrorBox;
 use serde::{Deserialize, Serialize};
 
 use super::limits;
+use crate::dispatch_mode::DispatchMode;
 
 /// Headers the transport owns: dropped from the caller's list and
 /// recomputed by the HTTP stack. Silently, not as an error — this
@@ -242,6 +244,119 @@ pub struct FetchRequestSpec {
     /// side clamps to the range before sending.
     #[serde(default)]
     pub timeout_ms: Option<u32>,
+    /// Token the JS side minted for this call so it can cancel it
+    /// later through [`op_zfb_fetch_cancel`] (epic #2012 review fix).
+    ///
+    /// Without it an abort could only settle the caller's promise: the
+    /// op's future is owned by `deno_core`'s event loop and JS cannot
+    /// drop it, so the transport ran on to the wall-clock deadline with
+    /// its subrequest slot spent and its response still buffering. The
+    /// id is registered against a [`CancelHandle`] on the op's first
+    /// poll — which `deno_core` performs eagerly, inside the `op(...)`
+    /// call itself — so any abort that arrives afterwards finds it.
+    ///
+    /// `None` means "no cancellation channel": the deadline is then the
+    /// only thing that can end the call, which is exactly the pre-fix
+    /// behaviour and is what a caller passing no `AbortSignal` gets.
+    #[serde(default)]
+    pub cancel_id: Option<u32>,
+}
+
+/// The mode of the dispatch currently running on this host.
+///
+/// **The trust boundary for guardrail 4 lives here.** `__zfb.mode` and
+/// the polyfill's reader are advisory: bundle code shares the realm
+/// with them and can reach the raw op regardless. This cell is in
+/// `OpState`, where no JS value can point at it, and
+/// [`op_zfb_fetch`] consults it before anything else.
+///
+/// Installed per dispatch by
+/// [`super::EmbeddedV8RenderHost::install_dispatch_mode`], and reset to
+/// [`DispatchMode::BuildTime`] before any module evaluation. Absent
+/// (a runtime built without this extension) reads as `BuildTime`, the
+/// denying default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DispatchModeState(pub DispatchMode);
+
+/// In-flight fetches that carry a cancellation token, keyed by the id
+/// the JS side minted for them.
+///
+/// `RefCell<HashMap<..>>` rather than anything atomic for the same
+/// reason [`SubrequestCounter`] uses `Cell`: the host is `!Send +
+/// !Sync` by construction.
+#[derive(Debug, Default)]
+pub struct CancelRegistry {
+    handles: RefCell<HashMap<u32, Rc<CancelHandle>>>,
+    /// Cancellations flagged but not yet observed by the op they were
+    /// aimed at.
+    ///
+    /// `CancelHandle::cancel()` only marks the handle and wakes its
+    /// waker — the transport is dropped when the cancelable future is
+    /// **polled again**. A handler that aborts and immediately returns
+    /// its `Response` resolves the dispatch promise first, and
+    /// `with_event_loop_promise` can return on that without polling the
+    /// event loop, leaving the socket open and the entry live while the
+    /// host sits idle. This counter is what lets
+    /// [`super::EmbeddedV8RenderHost::drain_cancelled_fetches`] know it
+    /// still owes the loop a poll.
+    pending: Cell<usize>,
+}
+
+impl CancelRegistry {
+    /// Register a fresh handle for `id` and hand it back. A duplicate
+    /// id replaces the older entry — the JS side mints ids from a
+    /// monotonic counter, so that can only happen after a wrap, by
+    /// which point the older call is long gone.
+    pub(crate) fn register(&self, id: u32) -> Rc<CancelHandle> {
+        let handle = Rc::new(CancelHandle::new());
+        self.handles.borrow_mut().insert(id, handle.clone());
+        handle
+    }
+
+    pub(crate) fn forget(&self, id: u32) {
+        self.handles.borrow_mut().remove(&id);
+    }
+
+    /// Cancel the in-flight fetch registered under `id`, if any. An
+    /// unknown id is a no-op: the call may have already finished, and a
+    /// late abort must never be an error.
+    pub(crate) fn cancel(&self, id: u32) {
+        if let Some(handle) = self.handles.borrow_mut().remove(&id) {
+            self.pending.set(self.pending.get() + 1);
+            handle.cancel();
+        }
+    }
+
+    /// The op saw its cancellation and dropped the transport.
+    pub(crate) fn note_cancel_observed(&self) {
+        self.pending.set(self.pending.get().saturating_sub(1));
+    }
+
+    /// Cancellations flagged but not yet observed. Drops to zero once
+    /// every cancelled op has been polled to completion.
+    pub fn pending_cancellations(&self) -> usize {
+        self.pending.get()
+    }
+
+    /// Forget the outstanding count without waiting for it.
+    ///
+    /// Called at the end of a drain pass so a cancellation that raced a
+    /// natural completion — the op returned `Ok` on the same turn the
+    /// abort fired, so nothing will ever observe the flag — cannot make
+    /// every later dispatch pay for the same phantom poll budget.
+    pub(crate) fn clear_pending(&self) {
+        self.pending.set(0);
+    }
+
+    /// Number of registered in-flight cancellable fetches. Tests use it
+    /// to prove the registry does not leak an entry per call.
+    pub fn len(&self) -> usize {
+        self.handles.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// The deadline actually applied to a call: the host's own, narrowed by
@@ -362,6 +477,32 @@ pub enum FetchError {
     /// message.
     #[error("fetch({url}): {cause}")]
     Transport { url: String, cause: String },
+    /// Build-time render asked for a socket. **This is the enforcement
+    /// point for guardrail 4 of epic #2012**, not the JS polyfill's
+    /// matching rejection: `globalThis.Deno.core.ops.op_zfb_fetch` is
+    /// reachable from bundle code, so a denial that lives only in
+    /// `js/web_polyfills.js` is a denial the bundle can walk around.
+    ///
+    /// The wording is byte-identical to the polyfill's own build-time
+    /// rejection on purpose — the developer sees one message for one
+    /// policy, whichever layer caught it.
+    #[error(
+        "fetch() called from SSG runtime (url={url}). The embedded V8 host does not support \
+         outgoing network requests during build-time render. Move the data fetch to a build \
+         step or a runtime-only branch."
+    )]
+    BuildTimeDenied { url: String },
+    /// The caller's `AbortSignal` fired while the request was in
+    /// flight, so the transport future was dropped and the socket
+    /// closed (contract row "Abort").
+    ///
+    /// The JS side has normally already rejected the caller's promise
+    /// with the signal's own reason by the time this arrives, and
+    /// discards it; the variant exists so the op resolves rather than
+    /// hanging, and so a cancellation is never mistaken for a
+    /// transport failure in a log.
+    #[error("fetch({url}): aborted by the caller's AbortSignal")]
+    Aborted { url: String },
     /// The op itself could not run — the shared client is missing from
     /// `OpState` because the runtime is shutting down or was built
     /// without the extension. **Never** resolved into a synthetic empty
@@ -746,7 +887,7 @@ pub struct FetchClient(pub reqwest::Client);
 fn state_handles(
     state: &Rc<std::cell::RefCell<OpState>>,
     url: &str,
-) -> Result<(reqwest::Client, Rc<SubrequestCounter>), FetchError> {
+) -> Result<(reqwest::Client, Rc<SubrequestCounter>, Rc<CancelRegistry>), FetchError> {
     let state = state.borrow();
     let client = state
         .try_borrow::<FetchClient>()
@@ -763,7 +904,26 @@ fn state_handles(
             detail: "subrequest counter is not installed in this runtime".to_string(),
         })?
         .clone();
-    Ok((client, counter))
+    let cancels = state
+        .try_borrow::<Rc<CancelRegistry>>()
+        .ok_or_else(|| FetchError::HostUnavailable {
+            url: url.to_string(),
+            detail: "cancellation registry is not installed in this runtime".to_string(),
+        })?
+        .clone();
+    Ok((client, counter, cancels))
+}
+
+/// The mode of the dispatch currently on the isolate, read out of
+/// `OpState`. Absent means [`DispatchMode::BuildTime`] — the denying
+/// default, so a runtime that never installed the state cannot become
+/// the one that grants network access.
+fn current_dispatch_mode(state: &Rc<std::cell::RefCell<OpState>>) -> DispatchMode {
+    state
+        .borrow()
+        .try_borrow::<DispatchModeState>()
+        .map(|m| m.0)
+        .unwrap_or_default()
 }
 
 /// Issue one outbound HTTP request. **Asynchronous by construction** —
@@ -771,25 +931,88 @@ fn state_handles(
 ///
 /// `body` is a `Uint8Array`; `spec.has_body` says whether it means
 /// anything (an empty payload and "no payload" are different requests).
+///
+/// ## This op — not the polyfill — is the trust boundary
+///
+/// `globalThis.Deno.core.ops.op_zfb_fetch` is reachable from bundle
+/// code, so every policy that matters is checked here, before the
+/// transport is entered:
+///
+/// 1. **Build-time denial** (guardrail 4). Consulted first, off
+///    [`DispatchModeState`] in `OpState`, which no JS value can reach.
+/// 2. **Request-body ceiling**, checked against the still-borrowed
+///    `JsBuffer` so an oversized payload is refused *before* it is
+///    copied into a `Vec` — `#[buffer(copy)]` would have performed that
+///    allocation during argument decoding, which is exactly the
+///    allocation the cap exists to prevent.
 #[op2]
 #[serde]
 pub async fn op_zfb_fetch(
     state: Rc<std::cell::RefCell<OpState>>,
     #[serde] spec: FetchRequestSpec,
-    #[buffer(copy)] body: Vec<u8>,
+    #[buffer] body: JsBuffer,
 ) -> Result<FetchResponseSpec, JsErrorBox> {
-    let (client, counter) =
+    if current_dispatch_mode(&state) != DispatchMode::RequestTime {
+        return Err(FetchError::BuildTimeDenied {
+            url: spec.url.clone(),
+        }
+        .into_js_error_box());
+    }
+    let (client, counter, cancels) =
         state_handles(&state, &spec.url).map_err(FetchError::into_js_error_box)?;
     let config = FetchConfig::default();
-    let outcome = perform_fetch(&client, &counter, &config, &spec, body)
-        .await
-        .map_err(FetchError::into_js_error_box)?;
-    Ok(outcome.into())
+    if spec.has_body && body.len() > config.max_request_body_bytes {
+        return Err(FetchError::RequestBodyTooLarge {
+            url: spec.url.clone(),
+            limit: config.max_request_body_bytes,
+        }
+        .into_js_error_box());
+    }
+    let body = body.to_vec();
+
+    // Registered on this first poll, which `deno_core` runs eagerly
+    // inside the JS `op(...)` call — so the id is live before the
+    // caller's `await` can yield, and any later abort finds it.
+    let handle = spec.cancel_id.map(|id| cancels.register(id));
+    let transport = perform_fetch(&client, &counter, &config, &spec, body);
+    let result = match handle {
+        Some(handle) => match transport.or_cancel(handle).await {
+            Ok(result) => result,
+            // Dropping `transport` here is the whole point: it closes
+            // the socket instead of letting the request run on to the
+            // wall-clock deadline with its result destined for the bin.
+            Err(_canceled) => {
+                cancels.note_cancel_observed();
+                Err(FetchError::Aborted {
+                    url: spec.url.clone(),
+                })
+            }
+        },
+        None => transport.await,
+    };
+    if let Some(id) = spec.cancel_id {
+        cancels.forget(id);
+    }
+    Ok(result.map_err(FetchError::into_js_error_box)?.into())
+}
+
+/// Cancel the in-flight [`op_zfb_fetch`] registered under `cancel_id`.
+///
+/// Synchronous and infallible: an abort must take effect on the turn it
+/// happens, and an id that has already completed is a no-op rather than
+/// an error. It grants no capability — the only thing it can do is stop
+/// a request the same isolate started — so it is deliberately NOT
+/// mode-gated.
+#[op2(fast)]
+pub fn op_zfb_fetch_cancel(state: &mut OpState, #[smi] cancel_id: u32) {
+    if let Some(cancels) = state.try_borrow::<Rc<CancelRegistry>>() {
+        cancels.cancel(cancel_id);
+    }
 }
 
 deno_core::extension!(
     zfb_fetch,
-    ops = [op_zfb_fetch],
+    ops = [op_zfb_fetch, op_zfb_fetch_cancel],
     state = |state| {
         // A client that cannot be built leaves `FetchClient` absent, so
         // every op call reports the host-op failure above rather than
@@ -798,6 +1021,11 @@ deno_core::extension!(
             state.put(FetchClient(client));
         }
         state.put(Rc::new(SubrequestCounter::new()));
+        state.put(Rc::new(CancelRegistry::default()));
+        // Build-time until a dispatch says otherwise. A host that only
+        // ever evaluates modules (config eval, `paths()`) therefore
+        // never leaves the denying default.
+        state.put(DispatchModeState(DispatchMode::BuildTime));
     },
 );
 

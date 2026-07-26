@@ -160,21 +160,29 @@ fn base64_encode(bytes: &[u8]) -> String {
 /// Generate a per-host nonce for the dispatch-mode authorisation check
 /// (issue #2014).
 ///
-/// Built from the process-wide monotonic counter, the host's creation
-/// timestamp, and the process id rather than a CSPRNG: no `rand`/
-/// `getrandom` edge exists in this crate's dependency list, and the
-/// nonce's job is to stop bundle code from *naming* a value it was
-/// never given — not to withstand a brute-force search by code that,
-/// being in the same realm, has cheaper attacks available anyway.
-fn generate_mode_nonce() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("zfb-mode-{:x}-{:x}-{:x}", std::process::id(), nanos, seq)
+/// 256 bits from the OS CSPRNG, hex-encoded. The earlier construction
+/// — process id, wall-clock nanoseconds, and a counter — was a value
+/// bundle code could *reconstruct* rather than having to guess, which
+/// is not the property a nonce needs. `getrandom` is already a
+/// dependency of this crate under the same `embed_v8` feature (it backs
+/// `crypto::OsEntropy`, issue #2017), so there is no cost to using it.
+///
+/// A CSPRNG failure is fatal rather than silently falling back to a
+/// predictable value: a host that cannot produce a nonce is a host
+/// whose mode authorisation would be forgeable.
+fn generate_mode_nonce() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| {
+        RenderError::Runtime(format!(
+            "embedded V8 host: could not read OS entropy for the dispatch-mode nonce: {e}"
+        ))
+    })?;
+    let mut out = String::with_capacity(2 * bytes.len() + 9);
+    out.push_str("zfb-mode-");
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    Ok(out)
 }
 
 /// Synthetic main-module specifier used when the caller calls
@@ -224,11 +232,20 @@ pub struct EmbeddedV8RenderHost {
     /// and lives in that script's closure — it is never reachable as a
     /// property of any global.
     ///
-    /// This guards against *selecting* the mode, not against a hostile
-    /// module in the same realm; the bundle is first-party code zfb
-    /// itself compiled, and no JS-visible bridge can be made proof
-    /// against that.
+    /// This guards against *selecting* the mode in JS, not against a
+    /// hostile module in the same realm; the bundle is first-party code
+    /// zfb itself compiled, and no JS-visible bridge can be made proof
+    /// against that. The enforcement that does not depend on JS at all
+    /// is [`fetch::DispatchModeState`], read inside the op.
     mode_nonce: String,
+    /// Request-time limits published to JS as `__zfb.limits`.
+    ///
+    /// Normally exactly [`limits::limits_js_literal`]. Tests boot a
+    /// host with individual caps overridden (see
+    /// [`Self::with_limits_override`]) because the JS-visible object is
+    /// frozen — bundle code can no longer lower a cap for the duration
+    /// of one probe, which is the point.
+    limits_json: String,
 }
 
 // SAFETY-of-shape note: explicitly `!Send + !Sync` via `*const ()`-style
@@ -262,6 +279,40 @@ impl EmbeddedV8RenderHost {
     /// Create a host with a caller-supplied loader. Tests use this
     /// to inject extra in-memory modules (e.g. a stub `hono`).
     pub fn with_loader(loader: BundleModuleLoader) -> Result<Self> {
+        Self::with_loader_and_limits(loader, limits::limits_js_literal())
+    }
+
+    /// Boot a host whose JS-visible `__zfb.limits` carries `overrides`
+    /// merged over the real constants.
+    ///
+    /// Exists because the limits object is **frozen** (epic #2012
+    /// review fix 5): bundle code used to be able to raise
+    /// `maxRequestBodyBytes` and wave an oversized payload past the JS
+    /// pre-check, and the same mutability was what let a test lower a
+    /// cap for one probe. The cap is now moved where a real deployment
+    /// would move it — at host boot, from Rust — so the tests that
+    /// exercise the JS-side checks keep their exact assertions without
+    /// the object having to stay writable.
+    #[cfg(test)]
+    pub(crate) fn with_limits_override(overrides: serde_json::Value) -> Result<Self> {
+        let mut merged: serde_json::Value = serde_json::from_str(&limits::limits_js_literal())
+            .expect("the rendered limits literal is valid JSON");
+        let (serde_json::Value::Object(base), serde_json::Value::Object(patch)) =
+            (&mut merged, overrides)
+        else {
+            panic!("limits overrides must be a JSON object");
+        };
+        for (key, value) in patch {
+            assert!(
+                base.contains_key(&key),
+                "`{key}` is not a published limit — a typo here would silently test nothing"
+            );
+            base.insert(key, value);
+        }
+        Self::with_loader_and_limits(BundleModuleLoader::new(), merged.to_string())
+    }
+
+    fn with_loader_and_limits(loader: BundleModuleLoader, limits_json: String) -> Result<Self> {
         let loader = Rc::new(loader);
         // The host runs on a bare `deno_core::JsRuntime` with no
         // extra extensions. Web Platform globals (Request / Response /
@@ -284,7 +335,8 @@ impl EmbeddedV8RenderHost {
             bundle_installed: RefCell::new(false),
             active_bundle_specifier: RefCell::new(None),
             last_install_error: RefCell::new(None),
-            mode_nonce: generate_mode_nonce(),
+            mode_nonce: generate_mode_nonce()?,
+            limits_json,
         };
         host.bootstrap_host_shim()?;
         Ok(host)
@@ -317,7 +369,7 @@ impl EmbeddedV8RenderHost {
         // of the numbers in `limits.rs`.
         let shim_src = extensions::HOST_GLOBALS_SHIM_SRC
             .replace(extensions::MODE_NONCE_PLACEHOLDER, &self.mode_nonce)
-            .replace(extensions::LIMITS_PLACEHOLDER, &limits::limits_js_literal());
+            .replace(extensions::LIMITS_PLACEHOLDER, &self.limits_json);
         debug_assert!(
             !shim_src.contains(extensions::MODE_NONCE_PLACEHOLDER),
             "host shim still carries the mode-nonce placeholder after substitution"
@@ -503,6 +555,13 @@ impl EmbeddedV8RenderHost {
         // in Rust — not JS — is what stops a `Promise.all` fan-out in
         // bundle code from evading the cap.
         self.begin_dispatch_subrequest_budget();
+        // Epic #2012 review fix 1: the mode reaches Rust as well as JS.
+        // `__zfb.mode` is advisory — bundle code can call
+        // `Deno.core.ops.op_zfb_fetch` without going near the polyfill,
+        // and could until this fix swap the whole `__zfb` object out —
+        // so the denial that actually holds is the one the op reads out
+        // of `OpState`.
+        self.install_dispatch_mode(request.mode);
         // Drive the JS-side `__zfb.dispatch(url, method, headers, body, mode)`
         // helper. It returns a Promise; we wait for it via
         // `with_event_loop_promise` which polls the V8 event loop
@@ -523,6 +582,7 @@ impl EmbeddedV8RenderHost {
             .with_event_loop_promise(Box::pin(resolve_future), PollEventLoopOptions::default())
             .await
             .map_err(|e| RenderError::Runtime(format_js_error(&e)))?;
+        self.drain_cancelled_fetches().await;
         // Pull the resolved JS object back out as a Rust struct.
         deno_core::scope!(scope, &mut self.runtime);
         let local = v8::Local::new(scope, resolved);
@@ -566,6 +626,108 @@ impl EmbeddedV8RenderHost {
     /// installing one there would be harmless but pointless, and the op
     /// itself reports the host-op failure if it is ever called in that
     /// state.
+    /// Poll the event loop until every cancellation flagged during this
+    /// dispatch has actually been observed by the op it was aimed at.
+    ///
+    /// `op_zfb_fetch_cancel` only marks the `CancelHandle` and wakes it;
+    /// the transport is dropped when the cancelable future is **polled
+    /// again**. A handler that aborts a fetch and immediately returns
+    /// its `Response` resolves the dispatch promise first, and
+    /// `with_event_loop_promise` is free to return on that without ever
+    /// polling the loop — which would leave the socket open, the
+    /// response still buffering, and the registry entry live until
+    /// something else happened to run the loop.
+    ///
+    /// **Honest status: defence in depth, not a repro.** With the
+    /// current bridge shape that window is not actually reachable —
+    /// `__zfb.dispatch` still has to `await bundle.fetch(req)` and
+    /// `await resp.arrayBuffer()` after the abort, and
+    /// `with_event_loop_promise` polls the loop across those, which
+    /// drives the cancelled op. `an_abort_mid_body_cancels_the_transport_and_closes_the_socket`
+    /// therefore passes with this call stubbed out; it is kept because
+    /// the guarantee should not depend on that coincidence, and a
+    /// future change to the shim's shape could remove it silently.
+    ///
+    /// Each pass is a **single non-blocking poll**: a cancelled future
+    /// resolves on the first one, and polling is deliberately not driven
+    /// to completion, since an unrelated in-flight fetch would otherwise
+    /// hold the dispatch open until its own deadline. The pass count is
+    /// bounded, and the counter is cleared afterwards, so a cancellation
+    /// that raced a natural completion cannot charge every later
+    /// dispatch for a poll budget nothing will ever consume.
+    async fn drain_cancelled_fetches(&mut self) {
+        const MAX_DRAIN_POLLS: usize = 16;
+        let Some(cancels) = self
+            .runtime
+            .op_state()
+            .borrow()
+            .try_borrow::<Rc<fetch::CancelRegistry>>()
+            .cloned()
+        else {
+            return;
+        };
+        let mut polls = 0;
+        while cancels.pending_cancellations() > 0 && polls < MAX_DRAIN_POLLS {
+            polls += 1;
+            let _ = deno_core::futures::future::poll_fn(|cx| {
+                let _ = self
+                    .runtime
+                    .poll_event_loop(cx, PollEventLoopOptions::default());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            // Let the tokio reactor deliver the socket close the dropped
+            // transport just triggered before the next pass looks again.
+            tokio::task::yield_now().await;
+        }
+        cancels.clear_pending();
+    }
+
+    /// Publish `mode` where [`fetch::op_zfb_fetch`] reads it, in
+    /// `OpState` (epic #2012 review fix 1).
+    ///
+    /// Deliberately **not** cleared when the dispatch settles. A
+    /// handler can start a `fetch` it never awaits and still return its
+    /// `Response`, at which point `with_event_loop_promise` returns
+    /// while that call is still in flight; clearing here would deny the
+    /// orphan a capability the dispatch it belongs to genuinely had.
+    /// Nothing leaks by leaving it: every dispatch sets the mode
+    /// unconditionally, and [`Self::reset_dispatch_mode_for_evaluation`]
+    /// puts it back to build-time before any module evaluates, which is
+    /// the only other place bundle code runs.
+    fn install_dispatch_mode(&mut self, mode: DispatchMode) {
+        let op_state = self.runtime.op_state();
+        let mut op_state = op_state.borrow_mut();
+        if op_state.try_borrow::<fetch::DispatchModeState>().is_some() {
+            op_state.put(fetch::DispatchModeState(mode));
+        }
+    }
+
+    /// Drop back to [`DispatchMode::BuildTime`] before evaluating a
+    /// module.
+    ///
+    /// Module top-level code is bundle code running outside any
+    /// dispatch. Since the mode installed by the previous dispatch is
+    /// deliberately left standing (see
+    /// [`Self::install_dispatch_mode`]), a bundle re-evaluated after a
+    /// request-time render would otherwise inherit request-time
+    /// capability at its top level. Also resets the JS-side view, so
+    /// the polyfill's diagnostics agree with the op's decision.
+    fn reset_dispatch_mode_for_evaluation(&mut self) {
+        self.install_dispatch_mode(DispatchMode::BuildTime);
+        let nonce = serde_json::to_string(&self.mode_nonce).expect("nonce is always valid JSON");
+        // Best-effort: a host whose shim failed to install has bigger
+        // problems, and the Rust-side reset above is the one that
+        // matters.
+        let _ = self.runtime.execute_script(
+            "zfb:reset_mode",
+            format!(
+                "globalThis.__zfb && typeof globalThis.__zfb.resetMode === \"function\" \
+                 && globalThis.__zfb.resetMode({nonce})"
+            ),
+        );
+    }
+
     fn begin_dispatch_subrequest_budget(&mut self) {
         let op_state = self.runtime.op_state();
         let mut op_state = op_state.borrow_mut();
@@ -708,6 +870,9 @@ impl EmbeddedV8RenderHost {
         name: &str,
         source: &str,
     ) -> Result<(ModuleHandle, ModuleId)> {
+        // Module top-level code runs outside any dispatch, so it gets
+        // the denying default however the previous dispatch left things.
+        self.reset_dispatch_mode_for_evaluation();
         // Pick a module URL — the caller's `name` is a display path
         // (e.g. `pages/index.tsx`) which isn't a valid `file://` URL
         // by itself. We synthesise a `file:///zfb/<name>` so v8 has
@@ -793,6 +958,9 @@ impl EmbeddedV8RenderHost {
         name: &str,
         source: &str,
     ) -> Result<ModuleId> {
+        // Same reason as `load_and_evaluate_main_module`: evaluation is
+        // not a dispatch, so it evaluates at build-time capability.
+        self.reset_dispatch_mode_for_evaluation();
         let specifier = synthesise_specifier(name);
         self.loader.register_module(specifier.as_str(), source);
         let module_specifier = ModuleSpecifier::parse(specifier.as_str()).map_err(|e| {
@@ -1174,6 +1342,13 @@ mod fetch_boundary_tests {
     async fn the_op_runs_on_the_event_loop_and_does_not_park_the_isolate_thread() {
         let server = concurrency_barrier_server().await;
         let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        // The op refuses a build-time caller outright (epic #2012
+        // review fix 1), and this test is about the op's SCHEDULING,
+        // not the policy. Establish the precondition a real
+        // request-time dispatch would have established; the denial
+        // itself is asserted by
+        // `a_build_time_dispatch_cannot_reach_the_network_through_the_raw_op`.
+        host.install_dispatch_mode(DispatchMode::RequestTime);
 
         let script = format!(
             r#"
@@ -1213,6 +1388,11 @@ mod fetch_boundary_tests {
         // indistinguishable from a real 200 with no content, which is
         // exactly the dev/prod divergence epic #2012 exists to remove.
         let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        // Same precondition as above: what is under test is that a
+        // TRANSPORT rejection crosses the boundary as a rejected
+        // promise, which is unreachable while the build-time denial
+        // fires first.
+        host.install_dispatch_mode(DispatchMode::RequestTime);
         let script = r#"
             Deno.core.ops.op_zfb_fetch(
               { url: "ftp://example.invalid/data", method: "GET", headers: [], redirect: "follow", hasBody: false },
@@ -1242,6 +1422,18 @@ mod fetch_boundary_tests {
         assert!(
             op_state.try_borrow::<fetch::FetchClient>().is_some(),
             "build_extensions() must install the shared outbound client"
+        );
+        assert!(
+            op_state.try_borrow::<Rc<fetch::CancelRegistry>>().is_some(),
+            "build_extensions() must install the fetch cancellation registry"
+        );
+        assert_eq!(
+            op_state
+                .try_borrow::<fetch::DispatchModeState>()
+                .map(|m| m.0),
+            Some(DispatchMode::BuildTime),
+            "a freshly booted host must sit at the DENYING default until a dispatch says \
+             otherwise — this cell, not `__zfb.mode`, is what `op_zfb_fetch` reads"
         );
         assert!(
             op_state

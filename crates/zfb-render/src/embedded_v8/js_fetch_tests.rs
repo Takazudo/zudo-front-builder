@@ -28,10 +28,13 @@
 //! - Nothing here exercises the Rust call site that chooses
 //!   `RequestTime` in production (`crates/zfb/src/ssr_adapter.rs`);
 //!   that lives in `zfb`'s own tests.
-//! - A mid-flight abort settles the caller's promise but does not close
-//!   the socket (the op's future is owned by the Rust event loop and
-//!   cannot be dropped from JS). The test below asserts the caller-side
-//!   half only; it deliberately does not claim the socket closed.
+//! - A mid-flight abort now genuinely cancels the transport (epic
+//!   #2012 review fix 2): the JS abort listener calls
+//!   `op_zfb_fetch_cancel`, which drops the op's future and closes the
+//!   socket. `an_abort_mid_body_cancels_the_transport_and_closes_the_socket`
+//!   asserts BOTH halves — the caller-side rejection and the server
+//!   seeing the connection go — with the host deliberately held alive,
+//!   since dropping it would close the socket regardless.
 //! - `AbortSignal.timeout(ms)` is enforced by the Rust deadline, whose
 //!   own coverage is in `fetch/tests.rs`
 //!   (`a_caller_requested_deadline_is_the_one_the_transport_enforces`).
@@ -81,6 +84,24 @@ const TRANSPORT_TIMEOUT_TAIL: &str = ": timed out after 200ms (zfb embedded-runt
 /// Web Crypto surface through the same seam; keeping one helper means
 /// both matrices exercise the identical production dispatch path.
 pub(crate) async fn probe(script: &str, mode: DispatchMode) -> String {
+    probe_with_limits(script, mode, serde_json::json!({})).await
+}
+
+/// [`probe`], but with the host's JS-visible limits booted with
+/// `overrides` merged over the real constants.
+///
+/// Exists because `__zfb.limits` is frozen (epic #2012 review fix 5):
+/// bundle code used to be able to raise a cap and wave an oversized
+/// payload past the JS pre-check, and the same mutability was what let
+/// these tests lower one from inside the probe script. The cap now
+/// moves where a real deployment would move it — at host boot, from
+/// Rust — so the assertions below are unchanged; only where the number
+/// comes from is.
+pub(crate) async fn probe_with_limits(
+    script: &str,
+    mode: DispatchMode,
+    overrides: serde_json::Value,
+) -> String {
     let bundle = format!(
         r#"
         export default {{
@@ -96,7 +117,7 @@ pub(crate) async fn probe(script: &str, mode: DispatchMode) -> String {
         }};
         "#
     );
-    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let mut host = EmbeddedV8RenderHost::with_limits_override(overrides).expect("host boot");
     host.execute_module("bundle.mjs", &bundle)
         .await
         .expect("execute the probe bundle");
@@ -580,23 +601,27 @@ async fn the_request_body_cap_is_read_from_the_injected_limits() {
     let url = server.url("/upload");
     let script = format!(
         r#"{DESCRIBE}
-           const before = globalThis.__zfb.limits.maxRequestBodyBytes;
-           globalThis.__zfb.limits.maxRequestBodyBytes = 8;
+           const injected = globalThis.__zfb.limits.maxRequestBodyBytes;
            return JSON.stringify({{
-             before,
+             injected,
              message: await expectReject(() =>
                fetch({url:?}, {{ method: "POST", body: "123456789" }}),
              ),
            }});"#
     );
 
-    let got = probe(&script, DispatchMode::RequestTime).await;
+    let got = probe_with_limits(
+        &script,
+        DispatchMode::RequestTime,
+        serde_json::json!({ "maxRequestBodyBytes": 8 }),
+    )
+    .await;
     let parsed: serde_json::Value =
         serde_json::from_str(&got).unwrap_or_else(|e| panic!("expected JSON ({e}); got: {got}"));
     assert_eq!(
-        parsed["before"],
-        serde_json::json!(limits::MAX_REQUEST_BODY_BYTES),
-        "the injected value must be the Rust constant before the test lowers it"
+        parsed["injected"],
+        serde_json::json!(8),
+        "the polyfill must read the cap the host injected, not a literal of its own"
     );
     assert_eq!(
         parsed["message"],
@@ -823,13 +848,17 @@ async fn a_host_deadline_is_not_relabelled_as_the_callers() {
     // DIAGNOSTIC survives, which is decided here from this value.
     let script = format!(
         r#"{DESCRIBE}
-           globalThis.__zfb.limits.fetchTimeoutMs = 100;
            return await expectReject(() =>
              fetch({url:?}, {{ signal: AbortSignal.timeout(250) }}),
            );"#
     );
 
-    let got = probe(&script, DispatchMode::RequestTime).await;
+    let got = probe_with_limits(
+        &script,
+        DispatchMode::RequestTime,
+        serde_json::json!({ "fetchTimeoutMs": 100 }),
+    )
+    .await;
     assert!(
         got.starts_with("TimeoutError|fetch(") && got.contains("timed out after"),
         "the host's own deadline diagnostic must survive intact when it is the one that \
@@ -907,5 +936,569 @@ async fn the_transport_deadline_reaches_js_as_a_timeout_error_with_its_message()
         got,
         format!("TimeoutError|fetch({url}){TRANSPORT_TIMEOUT_TAIL}"),
         "the deadline's class AND message must both survive the op boundary"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Epic-review fixes (epic #2012 review pass). Each test below was
+// written RED against the pre-fix code and its observed failure is
+// recorded in the PR description.
+// ---------------------------------------------------------------------
+
+/// Guardrail 4 is enforced **in Rust**, not only in the JS polyfill.
+///
+/// `Deno.core.ops.op_zfb_fetch` is reachable from bundle code — the
+/// polyfill is one caller of it, not a gate in front of it. Before this
+/// fix the op consulted no [`DispatchMode`] at all, so a build-time
+/// render that skipped `fetch()` and called the op directly opened a
+/// real socket. A policy enforced only in the layer the bundle controls
+/// is not enforced.
+#[tokio::test]
+async fn a_build_time_dispatch_cannot_reach_the_network_through_the_raw_op() {
+    let server = LoopbackServer::spawn_static(ok_response("must never be reached")).await;
+    let url = server.url("/raw-op");
+    let script = format!(
+        r#"{DESCRIBE}
+           return await expectReject(() =>
+             Deno.core.ops.op_zfb_fetch(
+               {{
+                 url: {url:?},
+                 method: "GET",
+                 headers: [],
+                 redirect: "follow",
+                 hasBody: false,
+               }},
+               new Uint8Array(0),
+             ),
+           );"#
+    );
+
+    let got = probe(&script, DispatchMode::BuildTime).await;
+    assert_eq!(
+        got,
+        format!("TypeError|{}", expected_ssg_denial(&url)),
+        "the op itself must refuse a build-time caller, with the same policy wording the \
+         polyfill uses"
+    );
+    assert_eq!(
+        server.request_count(),
+        0,
+        "the build-time denial must happen before any socket is opened, however the op was \
+         reached"
+    );
+}
+
+/// The polyfill's view of the host bridge cannot be swapped out.
+///
+/// `globalThis.__zfb` is a writable data property and the polyfill used
+/// to re-read it on every `fetch`, so replacing the object with
+/// `{ mode: "request-time" }` made a build-time render take the
+/// request-time branch. The polyfill now captures the host's own mode
+/// reader once, through a single-use channel the shim consumes at boot.
+#[tokio::test]
+async fn replacing_the_zfb_bridge_cannot_select_the_request_time_branch() {
+    let server = LoopbackServer::spawn_static(ok_response("must never be reached")).await;
+    let url = server.url("/swapped-bridge");
+    let script = format!(
+        r#"{DESCRIBE}
+           const realLimits = globalThis.__zfb.limits;
+           globalThis.__zfb = {{ mode: "request-time", limits: realLimits }};
+           return await expectReject(() => fetch({url:?}));"#
+    );
+
+    let got = probe(&script, DispatchMode::BuildTime).await;
+    // `Error`, not `TypeError`: this is the polyfill's own build-time
+    // rejection, whose class and wording predate the epic and are
+    // deliberately untouched. (The op's identically-worded refusal —
+    // the enforcement that does not depend on JS — arrives as a
+    // `TypeError`; see the raw-op test above.)
+    assert_eq!(
+        got,
+        format!("Error|{}", expected_ssg_denial(&url)),
+        "a forged bridge must not move the polyfill off the build-time branch"
+    );
+    assert_eq!(
+        server.request_count(),
+        0,
+        "and no socket may be opened along the way"
+    );
+}
+
+/// Bundle code cannot move the JS-side caps.
+///
+/// `__zfb.limits` used to be an ordinary mutable object, so a bundle
+/// could **raise** `maxRequestBodyBytes` and wave an oversized payload
+/// past the JS pre-check into the op. The object (and the array inside
+/// it) is now frozen, and — because the polyfill reads its captured
+/// copy rather than the global — even replacing the whole bridge
+/// changes nothing.
+///
+/// Proved by attempting to LOWER the cap, which is the cheap direction:
+/// a 9-byte body against a cap the bundle set to 8 must still be sent,
+/// because the mutation did not take.
+#[tokio::test]
+async fn bundle_code_cannot_move_the_js_side_request_body_cap() {
+    let server = LoopbackServer::spawn_static(ok_response("delivered")).await;
+    let url = server.url("/upload");
+    let script = format!(
+        r#"{DESCRIBE}
+           let threw = "none";
+           try {{
+             globalThis.__zfb.limits.maxRequestBodyBytes = 8;
+           }} catch (e) {{
+             threw = String(e && e.name);
+           }}
+           return JSON.stringify({{
+             threw,
+             after: globalThis.__zfb.limits.maxRequestBodyBytes,
+             result: await expectReject(() =>
+               fetch({url:?}, {{ method: "POST", body: "123456789" }}),
+             ),
+           }});"#
+    );
+
+    let got = probe(&script, DispatchMode::RequestTime).await;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&got).unwrap_or_else(|e| panic!("expected JSON ({e}); got: {got}"));
+    assert_eq!(
+        parsed["threw"], "TypeError",
+        "writing to a frozen limits object must throw in the bundle's strict-mode module scope"
+    );
+    assert_eq!(
+        parsed["after"],
+        serde_json::json!(limits::MAX_REQUEST_BODY_BYTES),
+        "the cap must still read as the Rust constant after the attempted mutation"
+    );
+    assert_eq!(
+        parsed["result"], "RESOLVED|200",
+        "the 9-byte body must still be sent — the bundle's lowered cap must have no effect"
+    );
+    assert_eq!(
+        server.request_count(),
+        1,
+        "and it must have reached the wire exactly once"
+    );
+}
+
+/// An abort arriving MID-BODY genuinely cancels the transport.
+///
+/// The #2013 contract's "Abort" row says the Rust future is dropped and
+/// the socket closed. Before this fix `raceWithAbort` settled the
+/// caller's promise while the transport ran on to the 30-second
+/// deadline — the subrequest slot stayed spent and up to 100 MB kept
+/// buffering — so an abort freed nothing. This is also the
+/// `cancellation mid-body` case wave 3's own test matrix required and
+/// never landed.
+///
+/// Deliberately NOT driven through [`probe`]: that helper drops the
+/// host when it returns, and dropping the `JsRuntime` tears down every
+/// pending op, which would close the socket with or without the fix.
+/// The host is held alive here for exactly that reason.
+#[tokio::test]
+async fn an_abort_mid_body_cancels_the_transport_and_closes_the_socket() {
+    use tokio::io::AsyncReadExt;
+    use tokio::sync::Semaphore;
+
+    // `/slow` promises 64 bytes, writes 8, signals `body_started`, then
+    // parks holding the socket — the transport is now mid-body. `/gate`
+    // answers only after that signal, which is how the bundle learns the
+    // transport reached that point without a sleep.
+    //
+    // The handler aborts and returns its `Response` IMMEDIATELY, with
+    // nothing afterwards to keep the event loop turning. That is
+    // load-bearing: `CancelHandle::cancel()` only marks and wakes the
+    // handle, so without `drain_cancelled_fetches` the dispatch promise
+    // would settle first and the host would go idle with the socket
+    // still open. Do not add a trailing fetch here to "help it along" —
+    // that is exactly the crutch this case exists to remove.
+    let body_started = Arc::new(Semaphore::new(0));
+    let socket_closed = Arc::new(Semaphore::new(0));
+    let started = body_started.clone();
+    let closed = socket_closed.clone();
+    let server = LoopbackServer::spawn(move |req, mut stream| {
+        let started = started.clone();
+        let closed = closed.clone();
+        async move {
+            match req.target.as_str() {
+                "/slow" => {
+                    let head = "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\
+                                content-length: 64\r\n\r\n";
+                    if stream.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if stream.write_all(b"01234567").await.is_err() {
+                        return;
+                    }
+                    let _ = stream.flush().await;
+                    started.add_permits(1);
+                    // The remaining 56 bytes are never written. A genuine
+                    // cancellation closes the socket, and this read then
+                    // reports EOF.
+                    let mut buf = [0u8; 64];
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => {
+                                closed.add_permits(1);
+                                return;
+                            }
+                            Ok(_) => {}
+                        }
+                    }
+                }
+                "/gate" => {
+                    if let Ok(permit) = started.acquire().await {
+                        permit.forget();
+                    }
+                    let _ = stream.write_all(&ok_response("go")).await;
+                    let _ = stream.shutdown().await;
+                }
+                other => panic!("unexpected request target {other:?}"),
+            }
+        }
+    })
+    .await;
+
+    let slow = server.url("/slow");
+    let gate = server.url("/gate");
+    let bundle = format!(
+        r#"
+        export default {{
+          async fetch(request) {{
+            const controller = new AbortController();
+            const pending = fetch({slow:?}, {{ signal: controller.signal }});
+            pending.catch(() => {{}});
+            await fetch({gate:?});
+            controller.abort();
+            let out;
+            try {{
+              await pending;
+              out = "RESOLVED";
+            }} catch (e) {{
+              out = String(e && e.name);
+            }}
+            return new Response(out, {{ status: 200 }});
+          }},
+        }};
+        "#
+    );
+
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute the abort bundle");
+    let mut request = HttpRequestLike::get("http://zfb.local/");
+    request.mode = DispatchMode::RequestTime;
+    let response = tokio::time::timeout(BOUND, host.dispatch_fetch(request))
+        .await
+        .expect("the abort dispatch settles within 30s")
+        .expect("dispatch");
+    assert_eq!(
+        response.body_utf8(),
+        Some("AbortError"),
+        "the caller's promise must reject with an AbortError"
+    );
+
+    // The host is still alive here, so nothing but a genuine
+    // cancellation can have closed the connection.
+    tokio::time::timeout(BOUND, socket_closed.acquire())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the mid-body connection was never closed: the abort settled the caller's \
+                 promise but left the transport running, so the subrequest slot stays spent \
+                 and the response keeps buffering"
+            )
+        })
+        .expect("socket-closed semaphore")
+        .forget();
+
+    drop(host);
+}
+
+/// Evaluate `script` (which must produce a Promise) with the event loop
+/// running, and return the settled value stringified.
+///
+/// A private twin of `fetch_boundary_tests::eval_await_string`: the mode
+/// tests below need to observe host state BETWEEN dispatches, which
+/// [`probe`] cannot show because it drops the host as it returns.
+async fn eval_await_string(host: &mut EmbeddedV8RenderHost, script: String) -> String {
+    let promise = host
+        .runtime
+        .execute_script("zfb:mode_tracking_test", script)
+        .expect("test script evaluates");
+    let resolve = host.runtime.resolve(promise);
+    let resolved = host
+        .runtime
+        .with_event_loop_promise(Box::pin(resolve), PollEventLoopOptions::default())
+        .await
+        .expect("the test promise settles");
+    deno_core::scope!(scope, &mut host.runtime);
+    let local = v8::Local::new(scope, resolved);
+    local.to_rust_string_lossy(scope)
+}
+
+fn read_js_mode(host: &mut EmbeddedV8RenderHost) -> String {
+    let value = host
+        .runtime
+        .execute_script("zfb:read_mode", "String(globalThis.__zfb.mode)")
+        .expect("the mode read evaluates");
+    deno_core::scope!(scope, &mut host.runtime);
+    let local = v8::Local::new(scope, value);
+    local.to_rust_string_lossy(scope)
+}
+
+/// The mode belongs to the dispatch that set it, not to the last
+/// `finally` that happened to run.
+///
+/// `dispatch`'s `finally` used to restore `undefined` the instant the
+/// dispatch settled, so anything a request-time handler started without
+/// awaiting — which returns a `Response` and leaves the call in flight —
+/// reported itself as an SSG policy denial **at request time**: exactly
+/// the misdiagnosis this epic exists to remove. The settled dispatch's
+/// mode now stands until the next dispatch replaces it or the host
+/// resets it for a module evaluation.
+#[tokio::test]
+async fn the_mode_outlives_its_dispatch_for_the_calls_that_dispatch_orphaned() {
+    let bundle = r#"
+        export default {
+          async fetch(request) {
+            return new Response("ok", { status: 200 });
+          },
+        };
+    "#;
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    host.execute_module("bundle.mjs", bundle)
+        .await
+        .expect("execute the bundle");
+    assert_eq!(
+        read_js_mode(&mut host),
+        "undefined",
+        "module evaluation is not a dispatch, so it runs at the denying default"
+    );
+
+    let mut request = HttpRequestLike::get("http://zfb.local/");
+    request.mode = DispatchMode::RequestTime;
+    host.dispatch_fetch(request).await.expect("dispatch");
+    assert_eq!(
+        read_js_mode(&mut host),
+        "request-time",
+        "a continuation the request-time dispatch orphaned must still read as request-time"
+    );
+
+    let mut request = HttpRequestLike::get("http://zfb.local/");
+    request.mode = DispatchMode::BuildTime;
+    host.dispatch_fetch(request).await.expect("dispatch");
+    assert_eq!(
+        read_js_mode(&mut host),
+        "build-time",
+        "and the next dispatch replaces it unconditionally — nothing is inherited"
+    );
+
+    host.reset_dispatch_mode_for_evaluation();
+    assert_eq!(
+        read_js_mode(&mut host),
+        "undefined",
+        "the host drops back to the denying default before evaluating a module"
+    );
+}
+
+/// A forged nested `dispatch` cannot republish a stale mode after the
+/// host has moved on.
+///
+/// Bundle code can reach `globalThis.__zfb.dispatch` but not the nonce,
+/// so it cannot SELECT a mode — but the old code still captured and
+/// restored the ambient mode in the forged call's `finally`. For a
+/// floating call that `finally` runs long after the enclosing dispatch
+/// ended, republishing whatever was current when it started. An
+/// unauthorised call now touches the mode neither on entry nor on exit.
+#[tokio::test]
+async fn a_floating_unauthorised_dispatch_cannot_republish_a_stale_mode() {
+    let bundle = r#"
+        let release;
+        globalThis.__release = () => release && release();
+        export default {
+          async fetch(request) {
+            const url = new URL(request.url);
+            if (url.pathname === "/nested") {
+              // Parks until the test releases it, so it is guaranteed
+              // to settle AFTER the outer dispatch and after the host
+              // reset below.
+              await new Promise((r) => { release = r; });
+              return new Response("nested", { status: 200 });
+            }
+            // A forged re-entry: the right shape, the wrong nonce.
+            globalThis.__nested = globalThis.__zfb.dispatch(
+              "http://zfb.local/nested", "GET", null, undefined, "request-time", "not-the-nonce",
+            );
+            globalThis.__nested.catch(() => {});
+            return new Response("outer", { status: 200 });
+          },
+        };
+    "#;
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    host.execute_module("bundle.mjs", bundle)
+        .await
+        .expect("execute the bundle");
+
+    let mut request = HttpRequestLike::get("http://zfb.local/outer");
+    request.mode = DispatchMode::RequestTime;
+    let response = host.dispatch_fetch(request).await.expect("dispatch");
+    assert_eq!(
+        response.body_utf8(),
+        Some("outer"),
+        "the outer dispatch must settle while the forged nested one is still parked"
+    );
+
+    host.reset_dispatch_mode_for_evaluation();
+    assert_eq!(
+        read_js_mode(&mut host),
+        "undefined",
+        "the reset took effect"
+    );
+
+    let after = eval_await_string(
+        &mut host,
+        "(async () => { globalThis.__release(); await globalThis.__nested; \
+         return String(globalThis.__zfb.mode); })()"
+            .to_string(),
+    )
+    .await;
+    assert_eq!(
+        after, "undefined",
+        "the forged nested dispatch settling must not put the mode back to what it was when \
+         that call started"
+    );
+}
+
+/// The mode nonce is CSPRNG-derived and per host.
+///
+/// It used to be `pid | wall-clock nanos | counter` — a value bundle
+/// code could RECONSTRUCT rather than having to guess — justified by a
+/// comment claiming no `getrandom` edge existed in this crate. Wave 5
+/// wired `getrandom::fill` in `crypto.rs`, so that rationale was stale
+/// as well as wrong.
+#[test]
+fn the_mode_nonce_is_256_csprng_bits_and_differs_per_host() {
+    let a = EmbeddedV8RenderHost::new().expect("host boot");
+    let b = EmbeddedV8RenderHost::new().expect("host boot");
+    assert_eq!(
+        a.mode_nonce.len(),
+        "zfb-mode-".len() + 64,
+        "32 bytes, hex-encoded, behind the fixed prefix"
+    );
+    assert!(
+        a.mode_nonce
+            .strip_prefix("zfb-mode-")
+            .expect("the prefix is part of the format")
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()),
+        "the body must be hex, so it carries no structure to reconstruct: {}",
+        a.mode_nonce
+    );
+    assert_ne!(
+        a.mode_nonce, b.mode_nonce,
+        "two hosts must not share a nonce"
+    );
+    assert!(
+        !a.mode_nonce.contains(&format!("{:x}", std::process::id())),
+        "the pid must not be recoverable from the nonce: {}",
+        a.mode_nonce
+    );
+}
+
+/// The nonce comparison is constant-time, and nothing reintroduces the
+/// short-circuiting one.
+///
+/// A source check because it is the only way to prove the absence of a
+/// `===` across every branch, including ones no test drives.
+#[test]
+fn the_nonce_is_compared_in_constant_time() {
+    let src = extensions::HOST_GLOBALS_SHIM_SRC;
+    assert!(
+        src.contains("__zfb_constantTimeEquals"),
+        "the shim must carry a constant-time comparison for the mode nonce"
+    );
+    assert!(
+        !src.contains("nonce === __ZFB_MODE_NONCE") && !src.contains("__ZFB_MODE_NONCE === nonce"),
+        "a short-circuiting `===` on the nonce leaks a prefix oracle — compare in constant time"
+    );
+}
+
+/// The op must not COPY the request body before it has checked the cap.
+///
+/// `#[buffer(copy)]` performs the allocation during argument decoding,
+/// i.e. before a single line of the op body runs — so the ceiling would
+/// be enforced only after the very allocation it exists to prevent. A
+/// source check, because the ordering is a property of the attribute
+/// rather than of any value a test could read back.
+#[test]
+fn the_request_body_cap_is_checked_before_the_buffer_is_copied() {
+    // Comments stripped first, so the doc-comment that EXPLAINS why
+    // `#[buffer(copy)]` is wrong cannot itself trip the check.
+    let src: String = include_str!("fetch.rs")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !src.contains("#[buffer(copy)]"),
+        "op_zfb_fetch must take a borrowed `#[buffer]` and copy only after the cap check"
+    );
+    let op_body = src
+        .split_once("pub async fn op_zfb_fetch(")
+        .expect("the op is declared in this file")
+        .1;
+    let check_at = op_body
+        .find("FetchError::RequestBodyTooLarge")
+        .expect("the op checks the request-body cap itself");
+    let copy_at = op_body
+        .find("body.to_vec()")
+        .expect("the op copies the buffer");
+    assert!(
+        check_at < copy_at,
+        "the cap check must precede the copy in op_zfb_fetch"
+    );
+}
+
+/// A completed fetch leaves no cancellation handle behind.
+///
+/// The registry is keyed by an id the JS side mints per call, so an
+/// entry that is never removed is a per-fetch leak for the life of the
+/// host — and the ids would eventually collide with a live one.
+#[tokio::test]
+async fn a_settled_fetch_unregisters_its_cancellation_handle() {
+    let server = LoopbackServer::spawn_static(ok_response("ok")).await;
+    let url = server.url("/ok");
+    let bundle = format!(
+        r#"
+        export default {{
+          async fetch(request) {{
+            const r = await fetch({url:?}, {{ signal: AbortSignal.timeout(10000) }});
+            return new Response(String(r.status), {{ status: 200 }});
+          }},
+        }};
+        "#
+    );
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute the bundle");
+    let mut request = HttpRequestLike::get("http://zfb.local/");
+    request.mode = DispatchMode::RequestTime;
+    let response = tokio::time::timeout(BOUND, host.dispatch_fetch(request))
+        .await
+        .expect("the dispatch settles within 30s")
+        .expect("dispatch");
+    assert_eq!(response.body_utf8(), Some("200"));
+
+    let op_state = host.runtime.op_state();
+    let op_state = op_state.borrow();
+    let cancels = op_state
+        .try_borrow::<Rc<fetch::CancelRegistry>>()
+        .expect("the registry is installed");
+    assert!(
+        cancels.is_empty(),
+        "a settled fetch must remove its own handle; {} left behind",
+        cancels.len()
     );
 }

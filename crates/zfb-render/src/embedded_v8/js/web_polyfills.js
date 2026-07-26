@@ -754,11 +754,50 @@
   // selects the request-time branch. Absent (`__zfb` not installed yet,
   // module evaluation, a caller that never passed a mode), null, or any
   // unrecognised value all read as build-time — the denying default.
+  //
+  // Read through `__zfb_hostBridge`, NOT off `globalThis.__zfb`. The
+  // bridge object is a writable global — the emitted bundle prelude
+  // assigns to it — so re-reading it here let bundle code hand the
+  // polyfill a forged `{ mode: "request-time" }` and take the
+  // request-time branch during a build-time render (epic #2012 review
+  // fix 1b). The real reader arrives once, through the single-use
+  // installer below, and lands in this closure where nothing can
+  // replace it.
   function dispatchMode() {
-    const bridge = globalThis.__zfb;
-    const mode = bridge ? bridge.mode : undefined;
+    if (!__zfb_hostBridge) return "build-time";
+    let mode;
+    try {
+      mode = __zfb_hostBridge.mode();
+    } catch (_) {
+      return "build-time";
+    }
     return mode === "request-time" ? "request-time" : "build-time";
   }
+
+  // The host's own view of the dispatch mode and the request-time
+  // limits, captured once at boot.
+  //
+  // `globals_shim.js` runs AFTER this file and calls the installer
+  // below with closures over its private state. The installer deletes
+  // itself as it runs, so a bundle cannot re-register a reader of its
+  // own — and a host that never installs one (the config-eval runtime
+  // in `config_eval/runtime.rs` ships these polyfills without the shim)
+  // simply keeps the denying default.
+  let __zfb_hostBridge = null;
+  Object.defineProperty(globalThis, "__zfbInstallHostBridge", {
+    configurable: true,
+    enumerable: false,
+    writable: false,
+    value: function installHostBridge(bridge) {
+      delete globalThis.__zfbInstallHostBridge;
+      if (__zfb_hostBridge) return false;
+      if (!bridge || typeof bridge.mode !== "function" || typeof bridge.limits !== "function") {
+        return false;
+      }
+      __zfb_hostBridge = bridge;
+      return true;
+    },
+  });
 
   // ---- AbortController / AbortSignal ----------------------------
   //
@@ -955,12 +994,15 @@
     }
   }
 
-  // The Rust-injected limit constants (`globals_shim.js`, issue #2016).
-  // Read lazily rather than captured at install time: the polyfills are
-  // executed BEFORE the host shim, so `__zfb` does not exist yet here.
+  // The Rust-injected limit constants (`globals_shim.js`, issue #2016),
+  // read through the captured host bridge rather than off
+  // `globalThis.__zfb` — the object is frozen, but the GLOBAL POINTING
+  // AT IT is not, so re-reading the global would let bundle code
+  // substitute a limits object of its own choosing (epic #2012 review
+  // fix 5). Reached through a closure because the polyfills execute
+  // BEFORE the shim that supplies it.
   function hostLimits(url) {
-    const bridge = globalThis.__zfb;
-    const limits = bridge ? bridge.limits : undefined;
+    const limits = __zfb_hostBridge ? __zfb_hostBridge.limits() : undefined;
     if (!limits) {
       throw new TypeError(
         "fetch(" +
@@ -987,22 +1029,49 @@
     return typeof value.getReader === "function";
   }
 
-  // Settle as soon as EITHER the transport finishes or `signal` aborts.
+  // Monotonic token per cancellable fetch, handed to the transport so
+  // an abort can name the request it is cancelling. Kept well inside
+  // the `#[smi]` range the op decodes it as; the wrap is unreachable in
+  // any realistic render (it would take 2^30 fetches on one host) and
+  // is harmless if reached, since ids are unregistered as they finish.
+  let __zfb_nextCancelId = 1;
+  function nextCancelId() {
+    const id = __zfb_nextCancelId;
+    __zfb_nextCancelId = id >= 0x3fffffff ? 1 : id + 1;
+    return id;
+  }
+
+  // Settle as soon as EITHER the transport finishes or `signal` aborts —
+  // and, on abort, actually CANCEL the transport (epic #2012 review
+  // fix 2).
   //
-  // Known limitation, stated rather than hidden: the op's future is
-  // owned by the Rust event loop and cannot be dropped from JS, so an
-  // abort arriving MID-FLIGHT settles the caller's promise immediately
-  // while the transport runs to its own conclusion and its result is
-  // discarded — the socket closes on the Rust deadline, not on the
-  // abort. The common case (a signal that is already aborted when
-  // `fetch` is called) never opens a socket at all, and the wall-clock
-  // deadline does drop the future.
-  function raceWithAbort(promise, signal) {
+  // Settling the caller's promise alone used to leave the request
+  // running to the host's 30-second deadline: the subrequest slot
+  // stayed spent and up to 100 MB kept buffering, so an abort freed
+  // nothing. `op_zfb_fetch_cancel` reaches the `CancelHandle` the op
+  // registered under `cancelId` and drops the transport future, which
+  // closes the socket — the behaviour the #2013 contract's "Abort" row
+  // has always described.
+  function cancelTransport(cancelId) {
+    if (cancelId == null) return;
+    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
+    const cancel = ops ? ops.op_zfb_fetch_cancel : undefined;
+    if (typeof cancel !== "function") return;
+    try {
+      cancel(cancelId);
+    } catch (_) {
+      // A cancel that cannot be delivered must never replace the
+      // caller's abort reason with a diagnostic about cancelling.
+    }
+  }
+
+  function raceWithAbort(promise, signal, cancelId) {
     return new Promise((resolve, reject) => {
       let settled = false;
       const onAbort = () => {
         if (settled) return;
         settled = true;
+        cancelTransport(cancelId);
         reject(signal.reason !== undefined ? signal.reason : abortError());
       };
       signal.addEventListener("abort", onAbort);
@@ -1130,6 +1199,12 @@
         request.redirect === "manual" || request.redirect === "error" ? request.redirect : "follow",
       hasBody,
     };
+    // A cancellation token is minted only when there IS a signal —
+    // nothing else can cancel, and an unused token would just leave an
+    // entry in the Rust registry for the life of the call.
+    if (signal) {
+      spec.cancelId = nextCancelId();
+    }
     const signalTimeoutMs = signal ? signal._timeoutMs : null;
     if (signalTimeoutMs != null) {
       // Clamped to a whole number in `u32` range: the op decodes this
@@ -1142,7 +1217,7 @@
     let outcome;
     try {
       const dispatched = op(spec, bodyBytes);
-      outcome = signal ? await raceWithAbort(dispatched, signal) : await dispatched;
+      outcome = signal ? await raceWithAbort(dispatched, signal, spec.cancelId) : await dispatched;
     } catch (e) {
       // A deadline the CALLER asked for is an abort, not a host limit,
       // so it reports itself the way the standard says rather than
@@ -1343,8 +1418,9 @@
   // shim). That is not a hole: the identical ceiling is enforced in
   // Rust, on the same byte count, where bundle code cannot reach it.
   function randomBytesQuota() {
-    const bridge = globalThis.__zfb;
-    const limits = bridge ? bridge.limits : undefined;
+    // Same captured-bridge rule as `hostLimits`: never re-read
+    // `globalThis.__zfb`, which bundle code can replace.
+    const limits = __zfb_hostBridge ? __zfb_hostBridge.limits() : undefined;
     const quota = limits ? limits.maxRandomBytesPerCall : undefined;
     return typeof quota === "number" ? quota : null;
   }

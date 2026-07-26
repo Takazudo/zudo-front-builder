@@ -256,8 +256,12 @@ async fn the_quota_boundary_is_measured_on_byte_length_not_element_count() {
 /// enforces the identical ceiling on the identical byte count, so an
 /// element-count check in JS would simply let the call through to a
 /// Rust rejection carrying the same name and message. Lowering
-/// `__zfb.limits.maxRandomBytesPerCall` — the Rust-injected value the
-/// JS check is supposed to read — separates them. With the limit at 8:
+/// Booting the host with `maxRandomBytesPerCall` at 8 — the
+/// Rust-injected value the JS check is supposed to read — separates
+/// them. (The limit used to be lowered from inside the probe script;
+/// the object is frozen as of epic #2012's review fix 5, so the value
+/// now moves where a real deployment would move it, at host boot.)
+/// With the limit at 8:
 ///
 /// - `Uint8Array(8)` (8 bytes, 8 elements) is accepted either way.
 /// - `Uint8Array(9)` (9 bytes, 9 elements) is rejected either way, and
@@ -271,24 +275,22 @@ async fn the_quota_boundary_is_measured_on_byte_length_not_element_count() {
 async fn the_js_quota_check_reads_the_injected_limit_and_measures_bytes() {
     let script = format!(
         r#"{HELPERS}
-        const limits = globalThis.__zfb.limits;
-        const original = limits.maxRandomBytesPerCall;
-        limits.maxRandomBytesPerCall = 8;
-        try {{
-          const at = (ctor, n) =>
-            expectThrow(() => {{ crypto.getRandomValues(new ctor(n)); return "accepted"; }});
-          return [
-            "u8x8:" + at(Uint8Array, 8),
-            "u8x9:" + at(Uint8Array, 9),
-            "u32x3:" + at(Uint32Array, 3),
-          ].join("\n");
-        }} finally {{
-          limits.maxRandomBytesPerCall = original;
-        }}
+        const at = (ctor, n) =>
+          expectThrow(() => {{ crypto.getRandomValues(new ctor(n)); return "accepted"; }});
+        return [
+          "u8x8:" + at(Uint8Array, 8),
+          "u8x9:" + at(Uint8Array, 9),
+          "u32x3:" + at(Uint32Array, 3),
+        ].join("\n");
         "#
     );
     assert_eq!(
-        probe(&script, DispatchMode::RequestTime).await,
+        crate::embedded_v8::js_fetch_tests::probe_with_limits(
+            &script,
+            DispatchMode::RequestTime,
+            serde_json::json!({ "maxRandomBytesPerCall": 8 }),
+        )
+        .await,
         "u8x8:NO-THROW|accepted\n\
          u8x9:QuotaExceededError|crypto.getRandomValues: requested 9 bytes, quota is 8 bytes\n\
          u32x3:QuotaExceededError|crypto.getRandomValues: requested 12 bytes, quota is 8 bytes"
