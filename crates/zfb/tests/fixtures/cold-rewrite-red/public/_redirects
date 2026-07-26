@@ -1,0 +1,5 @@
+# Red-test fixture for issue #1825 (epic #1999). One 200 rewrite whose
+# target (`/target`) this test's harness deliberately never requests
+# directly and never otherwise causes to be rendered.
+
+/alias /target 200
