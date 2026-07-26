@@ -129,18 +129,22 @@ literal, converted to `serde_json::Value`, with `extension` and
 `content_type` populated only if you also declared the sibling
 exports.
 
-## Output extension precedence (TSX only)
+## Output extension precedence (script pages)
 
-`.tsx` pages can produce non-HTML output. Two mechanisms decide the
-output extension, with a fixed precedence:
+Script pages — `.tsx`, `.ts`, `.jsx`, and `.js` — can produce non-HTML
+output. Two mechanisms decide the output extension, with a fixed
+precedence:
 
 1. `export const extension = "..."` — a sibling literal next to
    `frontmatter`. **Wins** if present.
 2. The filename convention — the second-to-last `.`-separated segment
    in the source path. `pages/sitemap.xml.tsx` → `xml`,
-   `pages/feed.rss.tsx` → `rss`, `pages/about.tsx` → no convention
-   hint.
+   `pages/feed.rss.ts` → `rss`, `pages/llms.txt.js` → `txt`,
+   `pages/about.tsx` → no convention hint.
 3. Default — `html`.
+
+`.mdx`, `.md`, and `.html` pages are excluded from both mechanisms —
+they always emit directory-index HTML.
 
 ```tsx
 // pages/sitemap.xml.tsx

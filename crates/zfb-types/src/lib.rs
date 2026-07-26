@@ -10,6 +10,7 @@ pub mod client_scripts;
 pub mod first_party;
 pub mod helpers;
 pub mod module_workers;
+pub mod page_extensions;
 pub mod segment;
 
 pub use asset_urls::{
@@ -30,4 +31,5 @@ pub use module_workers::{
     module_worker_url_specifier, module_worker_url_specifier_scoped, ModuleWorkerPathError,
     MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
 };
+pub use page_extensions::{is_page_sidecar_file, ROUTABLE_PAGE_EXTENSIONS, SCRIPT_PAGE_EXTENSIONS};
 pub use segment::Segment;

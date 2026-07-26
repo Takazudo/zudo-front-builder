@@ -283,8 +283,10 @@ pub struct BundlerInput {
     /// Project root. All other paths are interpreted relative to this if
     /// they are relative; absolute paths pass through.
     pub project_root: PathBuf,
-    /// Directory of route source files. Every `.tsx`/`.ts`/`.jsx`/`.js`/
-    /// `.mdx` file under this directory becomes a route in the bundle.
+    /// Directory of route source files. Every file whose extension is in
+    /// [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] (`.tsx`/`.ts`/`.jsx`/`.js`/
+    /// `.mdx`/`.md`/`.html`) under this directory becomes a route in the
+    /// bundle — see [`derive_route`].
     pub pages_dir: PathBuf,
     /// ADDITIVE second pages root for the dev server's package-owned
     /// **injected** routes (epic #1228, S2 #1230 — the B1 multi-root
@@ -5774,6 +5776,9 @@ fn logical_importer_for_walk(src: &Path, dest: &Path, from: &Path, project_root:
 fn raw_source_extension(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
+        // page-extension-drift-guard: allow — the JS-family SOURCE extensions
+        // a `?raw` import may name (incl. mjs/cjs/mts/cts), not the routable
+        // page allowlist.
         Some("ts")
             | Some("tsx")
             | Some("js")
@@ -7439,6 +7444,8 @@ fn materialise_collection(
         // from the walker's coverage.
         let is_content_ext = matches!(
             from.extension().and_then(|s| s.to_str()),
+            // page-extension-drift-guard: allow — CONTENT-collection extensions
+            // for the shadow-tree glob filter, not the routable page allowlist.
             Some("md") | Some("mdx") | Some("tsx")
         );
         if is_content_ext && has_glob_filter {
@@ -8124,12 +8131,21 @@ impl BundleExcludeMatcher {
 /// Derive a URL route from a path **relative to** `pages_dir`.
 ///
 /// Returns `None` for non-page files (e.g. an accidental `.txt` inside
-/// `pages/`). Recognised page extensions: `.tsx`, `.ts`, `.jsx`, `.js`,
-/// `.mdx`, `.md`, `.html`. Files starting with `_` are treated as private
-/// (skipped) to match the conventional Next/Astro/Remix behaviour.
+/// `pages/`). Recognised page extensions are
+/// [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] (`.tsx`, `.ts`, `.jsx`, `.js`,
+/// `.mdx`, `.md`, `.html`) — the same constant `zfb-router`'s `scan_pages`
+/// reads, so the two layers cannot silently drift apart again (issue #1742
+/// / epic #1990). Files starting with `_` are treated as private (skipped)
+/// to match the conventional Next/Astro/Remix behaviour, and the
+/// conventional non-page sidecars ([`zfb_types::is_page_sidecar_file`] —
+/// `*.d.ts`, `*.test.*`, `*.spec.*`) are skipped too, matching
+/// `scan_pages`. Skipping them in only one of the two layers would put the
+/// bundler back in the drifted state #1742 describes, from the other side:
+/// the sidecar would be bundled as a production route the router never
+/// emitted, and fail on its missing default export.
 fn derive_route(rel: &Path) -> Option<String> {
     let ext = rel.extension().and_then(|s| s.to_str())?;
-    if !matches!(ext, "tsx" | "ts" | "jsx" | "js" | "mdx" | "md" | "html") {
+    if !zfb_types::ROUTABLE_PAGE_EXTENSIONS.contains(&ext) {
         return None;
     }
     // Skip `_private.tsx` style.
@@ -8139,6 +8155,9 @@ fn derive_route(rel: &Path) -> Option<String> {
         .map(|s| s.starts_with('_'))
         .unwrap_or(false)
     {
+        return None;
+    }
+    if zfb_types::is_page_sidecar_file(rel) {
         return None;
     }
     // Strip extension.
@@ -8210,6 +8229,8 @@ fn rebase_tsconfig_paths_to_shadow(
     )
 }
 
+// page-extension-drift-guard: allow — esbuild's extensionless-import RESOLVE
+// order (includes css/json, excludes md/mdx/html), not the page allowlist.
 const SSR_RESOLVE_EXTENSIONS: [&str; 6] = ["tsx", "ts", "jsx", "js", "css", "json"];
 
 fn has_trailing_path_separator(value: &str) -> bool {
@@ -8283,6 +8304,8 @@ fn collect_ssr_file_candidates(candidate: &Path, candidates: &mut BTreeSet<PathB
         .extension()
         .and_then(|extension| extension.to_str())
     {
+        // page-extension-drift-guard: allow — the compiled-to-source rewrite
+        // table (`.js` may really be `.ts` on disk), not the page allowlist.
         Some("js") | Some("jsx") => &["ts", "tsx"],
         Some("mjs") => &["mts"],
         Some("cjs") => &["cts"],
@@ -12095,6 +12118,35 @@ mod tests {
             Some("/about")
         );
         assert_eq!(derive_route(Path::new("index.html")).as_deref(), Some("/"));
+    }
+
+    /// The bundler is the SECOND page-extension consumer (issue #1742's
+    /// original drift). Skipping the conventional non-page sidecars in
+    /// `zfb-router`'s `scan_pages` but not here would bundle them as
+    /// production routes the router never emitted — the same drift from
+    /// the other side.
+    #[test]
+    fn route_derivation_skips_conventional_non_page_sidecars() {
+        for sidecar in [
+            "index.test.ts",
+            "about.spec.tsx",
+            "widget.test.jsx",
+            "helpers.spec.js",
+            "env.d.ts",
+            "blog/[slug].test.ts",
+        ] {
+            assert!(
+                derive_route(Path::new(sidecar)).is_none(),
+                "{sidecar} must not derive a route"
+            );
+        }
+        // Not over-excluded: genuine pages with similar names still route.
+        assert_eq!(
+            derive_route(Path::new("plain.ts")).as_deref(),
+            Some("/plain")
+        );
+        assert_eq!(derive_route(Path::new("test.md")).as_deref(), Some("/test"));
+        assert_eq!(derive_route(Path::new("d.ts")).as_deref(), Some("/d"));
     }
 
     #[test]

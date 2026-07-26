@@ -1,13 +1,14 @@
 ---
 title: Non-HTML Pages
-description: Emit XML, RSS, JSON, and plain-text pages alongside your HTML — same TSX page model, different output extension and Content-Type.
+description: Emit XML, RSS, JSON, and plain-text pages alongside your HTML — same script-page model, different output extension and Content-Type.
 sidebar_position: 5.5
 category: Concepts
 ---
 
 <Info title="What this page covers">
 
-How TSX pages can emit non-HTML output (XML sitemaps, RSS feeds,
+How script pages (`.tsx`, `.ts`, `.jsx`, `.js`) can emit non-HTML output
+(XML sitemaps, RSS feeds,
 `llms.txt`, JSON manifests). Covers the filename convention, the
 frontmatter override, the precedence rule between them, per-page
 `Content-Type` metadata, and what the engine does about stale outputs
@@ -15,7 +16,7 @@ when the extension changes.
 
 </Info>
 
-zfb's page model isn't HTML-only. The same TSX file format that
+zfb's page model isn't HTML-only. The same script-page file format that
 renders pages can also produce `.xml`, `.rss`, `.txt`, `.json`, or
 anything else you can stringify. The engine picks the output
 extension, sets the `Content-Type` for the dev server, and writes the
@@ -42,10 +43,22 @@ pages/llms.txt.tsx      → /llms.txt
 pages/about.tsx         → /about/index.html
 ```
 
-The last segment before `.tsx` is the output extension; earlier dots
-are part of the page name. `pages/api.v2.json.tsx` becomes
+The last segment before the source extension is the output extension;
+earlier dots are part of the page name. `pages/api.v2.json.tsx` becomes
 `/api.v2.json`. `pages/about.tsx` has no convention hint and
 defaults to `.html`.
+
+The convention applies to every **script** page extension, not just
+`.tsx` — `.ts`, `.jsx`, and `.js` behave identically:
+
+```text
+pages/sitemap.xml.js    → /sitemap.xml
+pages/feed.rss.ts       → /feed.rss
+pages/llms.txt.jsx      → /llms.txt
+```
+
+`.mdx`, `.md`, and `.html` pages are **not** covered: they always use the
+directory-index HTML layout, and a filename hint on them has no effect.
 
 ### Frontmatter override
 
