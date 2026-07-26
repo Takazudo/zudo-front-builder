@@ -2514,7 +2514,19 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
             element(tag, attrs, convert_children_with(&l.children, strategy))
         }
         MdastNode::ListItem(li) => {
-            element("li", vec![], convert_children_with(&li.children, strategy))
+            let mut children = convert_children_with(&li.children, strategy);
+            // GFM task-list checkbox (issue #2024, epic #2021): the
+            // `markdown` crate's task-list tokenizer sets `checked` on
+            // `ListItem` when `taskListItem` is enabled. Minimal
+            // compatible rendering (Option B — see #2028): a disabled
+            // `<input type="checkbox">` prefixed before the item's own
+            // content, `checked` present only when the item is checked.
+            // Static server-rendered output has no toggle handler, so
+            // the checkbox is always `disabled`.
+            if let Some(checked) = li.checked {
+                children.insert(0, task_list_checkbox_hast(checked));
+            }
+            element("li", vec![], children)
         }
         MdastNode::Blockquote(b) => element(
             "blockquote",
@@ -2694,6 +2706,30 @@ fn element(tag: &str, attrs: Vec<(String, String)>, children: Vec<HastNode>) -> 
         attrs,
         children,
         void: false,
+    }
+}
+
+/// Build the (disabled) task-list checkbox hast node that precedes a
+/// `ListItem`'s own children when `ListItem.checked` is `Some(_)`.
+/// Mirrors `mdx_jsx_emit`'s JSX-emit counterpart of the same fix
+/// (issue #2024): always `disabled` (static, server-rendered output,
+/// never interactive), and carries a `checked` attribute only when the
+/// item itself is checked. The serializer always writes `attr="value"`
+/// (no bare-boolean HTML shorthand), so both attributes get an empty
+/// string value here.
+fn task_list_checkbox_hast(checked: bool) -> HastNode {
+    let mut attrs = vec![
+        ("type".to_string(), "checkbox".to_string()),
+        ("disabled".to_string(), String::new()),
+    ];
+    if checked {
+        attrs.push(("checked".to_string(), String::new()));
+    }
+    HastNode::Element {
+        tag: "input".to_string(),
+        attrs,
+        children: vec![],
+        void: true,
     }
 }
 

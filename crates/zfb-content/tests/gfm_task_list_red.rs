@@ -66,7 +66,6 @@ const TASK_LIST_ON: ResolvedGfmConstructs = ResolvedGfmConstructs {
 // ───────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
 fn html_checked_task_list_item_emits_checked_checkbox() {
     let mut pipeline = Pipeline::with_defaults_and_theme_and_gfm(None, TASK_LIST_ON);
     let html = render_html(&mut pipeline, "- [x] Buy milk\n").expect("render must succeed");
@@ -89,7 +88,6 @@ fn html_checked_task_list_item_emits_checked_checkbox() {
 }
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
 fn html_unchecked_task_list_item_emits_unchecked_checkbox() {
     let mut pipeline = Pipeline::with_defaults_and_theme_and_gfm(None, TASK_LIST_ON);
     let html = render_html(&mut pipeline, "- [ ] Buy milk\n").expect("render must succeed");
@@ -139,7 +137,6 @@ fn html_control_task_list_flag_off_keeps_literal_marker_text() {
 // ───────────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
 fn jsx_nested_checked_task_list_item_emits_checked_checkbox() {
     let mut pipeline = Pipeline::with_defaults_and_theme_and_gfm(None, TASK_LIST_ON);
     let out = render_mdx_jsx_module(
@@ -167,7 +164,6 @@ fn jsx_nested_checked_task_list_item_emits_checked_checkbox() {
 }
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
 fn jsx_nested_unchecked_task_list_item_emits_unchecked_checkbox() {
     let mut pipeline = Pipeline::with_defaults_and_theme_and_gfm(None, TASK_LIST_ON);
     let out = render_mdx_jsx_module(
