@@ -5,8 +5,9 @@
 //! (`research/2013-request-time-capability-contract.md`, "Numeric
 //! constants — one source of truth") requires the JS polyfill to read
 //! these values back out of Rust via `globalThis.__zfb.limits` rather
-//! than hardcoding a second copy that can drift. Sub-issue #2016 wires
-//! that injection; nothing in JS reads them yet.
+//! than hardcoding a second copy that can drift. [`limits_js_literal`]
+//! (issue #2016) renders them for that injection; `js/globals_shim.js`
+//! publishes the result and `js/web_polyfills.js` reads it.
 //!
 //! Every value here is a *decision*, not an inherited default — see the
 //! contract's "Deliberate divergences from production workerd" table
@@ -90,6 +91,35 @@ pub fn fetch_timeout_ms() -> u64 {
     })
 }
 
+/// Render every constant above as a JSON object literal, for
+/// substitution into `js/globals_shim.js` at host boot (issue #2016).
+///
+/// This function exists so the JS side never carries a second copy of
+/// these numbers — a hardcoded duplicate in JS is a **rejected design**
+/// (contract, "Numeric constants — one source of truth"), because it
+/// can drift from Rust silently while every test still passes. Keys are
+/// the camelCase spellings of the constant names;
+/// `js_visible_limits_match_the_rust_constants` in
+/// `embedded_v8/js_fetch_tests.rs` reads them back out of a live
+/// isolate and compares against the constants themselves.
+///
+/// The resolved-at-boot deadline ([`fetch_timeout_ms`]) is deliberately
+/// NOT included: it is an environment-dependent value, not a constant,
+/// and the JS layer never needs it — every wall-clock deadline is
+/// enforced in Rust.
+pub fn limits_js_literal() -> String {
+    serde_json::json!({
+        "allowedFetchSchemes": ALLOWED_FETCH_SCHEMES,
+        "maxRedirects": MAX_REDIRECTS,
+        "defaultFetchTimeoutMs": DEFAULT_FETCH_TIMEOUT_MS,
+        "maxRequestBodyBytes": MAX_REQUEST_BODY_BYTES,
+        "maxResponseBodyBytes": MAX_RESPONSE_BODY_BYTES,
+        "maxSubrequestsPerDispatch": MAX_SUBREQUESTS_PER_DISPATCH,
+        "maxRandomBytesPerCall": MAX_RANDOM_BYTES_PER_CALL,
+    })
+    .to_string()
+}
+
 /// Pure core of [`fetch_timeout_ms`], split out so the parse and
 /// rejection rules are testable without mutating the process
 /// environment (which would race every other test in the binary).
@@ -127,6 +157,41 @@ mod tests {
         assert_eq!(MAX_RESPONSE_BODY_BYTES, 104_857_600);
         assert_eq!(MAX_SUBREQUESTS_PER_DISPATCH, 50);
         assert_eq!(MAX_RANDOM_BYTES_PER_CALL, 65_536);
+    }
+
+    /// The injected literal must carry every constant, under the exact
+    /// key `web_polyfills.js` reads. A missing key would surface in JS
+    /// as `undefined`, which compares false against every numeric
+    /// limit — i.e. a silently disabled JS-side check.
+    #[test]
+    fn the_js_literal_carries_every_constant_under_its_camel_case_key() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&limits_js_literal()).expect("the literal is valid JSON");
+        assert_eq!(
+            parsed["allowedFetchSchemes"],
+            serde_json::json!(["http", "https"])
+        );
+        assert_eq!(parsed["maxRedirects"], serde_json::json!(MAX_REDIRECTS));
+        assert_eq!(
+            parsed["defaultFetchTimeoutMs"],
+            serde_json::json!(DEFAULT_FETCH_TIMEOUT_MS)
+        );
+        assert_eq!(
+            parsed["maxRequestBodyBytes"],
+            serde_json::json!(MAX_REQUEST_BODY_BYTES)
+        );
+        assert_eq!(
+            parsed["maxResponseBodyBytes"],
+            serde_json::json!(MAX_RESPONSE_BODY_BYTES)
+        );
+        assert_eq!(
+            parsed["maxSubrequestsPerDispatch"],
+            serde_json::json!(MAX_SUBREQUESTS_PER_DISPATCH)
+        );
+        assert_eq!(
+            parsed["maxRandomBytesPerCall"],
+            serde_json::json!(MAX_RANDOM_BYTES_PER_CALL)
+        );
     }
 
     #[test]

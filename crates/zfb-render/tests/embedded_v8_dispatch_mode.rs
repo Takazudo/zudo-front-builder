@@ -45,10 +45,24 @@ fn expected_ssg_denial(url: &str) -> String {
     format!("fetch() called from SSG runtime (url={url}{SSG_DENIAL_TAIL}")
 }
 
-/// The URL the probe bundle's in-handler `fetch()` targets. `.invalid`
-/// is reserved by RFC 2606 and is never resolvable — but nothing here
-/// opens a socket anyway: both branches reject before any transport.
-const PROBE_URL: &str = "http://upstream.invalid/data";
+/// The URL the probe bundle's in-handler `fetch()` targets.
+///
+/// The scheme is deliberately one the transport's allowlist rejects
+/// (issue #2015), and `.invalid` is reserved by RFC 2606. Since #2016
+/// the request-time branch performs a REAL outbound request, so this
+/// file needs a target that settles deterministically without a socket
+/// — or even a DNS lookup — on BOTH branches: build-time rejects in JS
+/// before any op call, and request-time rejects in Rust before any
+/// socket is opened. Guardrail 3 (loopback only, never the public
+/// internet) is thereby satisfied by opening nothing at all. The
+/// request-time transport's own behaviour is covered against real
+/// loopback servers in `embedded_v8/js_fetch_tests.rs`.
+const PROBE_URL: &str = "ftp://upstream.invalid/data";
+
+/// What the request-time branch now rejects with for [`PROBE_URL`] —
+/// the transport's disallowed-scheme network error, surfaced as a
+/// `TypeError`.
+const REQUEST_TIME_SCHEME_DENIAL: &str = "Fetch API cannot load: ftp://upstream.invalid/data";
 
 /// A bundle that reports, per route, what `fetch()` did and what
 /// `__zfb.mode` said while the handler ran.
@@ -158,10 +172,11 @@ async fn request_time_dispatch_reaches_a_distinct_branch() {
         got.mode, "request-time",
         "a request-time dispatch must publish `__zfb.mode = \"request-time\"`"
     );
-    assert!(
-        got.caught.contains("request-time SSR runtime"),
-        "request-time fetch must reject AS a request-time branch, got: {}",
-        got.caught
+    assert_eq!(
+        got.caught, REQUEST_TIME_SCHEME_DENIAL,
+        "request-time fetch must reach the transport and be rejected on ITS terms — since \
+         issue #2016 that branch performs a real outbound request, so the only thing stopping \
+         this one is the Rust-side scheme allowlist"
     );
     assert!(
         !got.caught.contains("SSG runtime"),

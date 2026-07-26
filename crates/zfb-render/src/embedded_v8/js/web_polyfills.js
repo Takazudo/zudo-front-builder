@@ -1,8 +1,12 @@
 // Minimal Web Platform API polyfills for the embedded V8 host.
 //
-// The SSG path never makes outgoing network requests, so we don't
-// need a real `fetch`. Hono and similar workerd-style routers only
-// need:
+// The SSG path never makes outgoing network requests, so the build-time
+// `fetch` is a loud denial rather than a transport. The REQUEST-TIME
+// path does make them, through the Rust op `op_zfb_fetch` (epic #2012,
+// contract: research/2013-request-time-capability-contract.md) — see
+// the `fetch` section below for which side enforces what.
+//
+// Hono and similar workerd-style routers only need:
 //
 // - `Request` / `Response` / `Headers` constructible from the shapes
 //   they document.
@@ -24,6 +28,8 @@
 //   re-throws SSR errors via `setTimeout`; without it the error is
 //   masked by `ReferenceError: setTimeout is not defined`.
 //   queueMicrotask-backed, no real delay (see the impl docblock).
+// - `AbortController` / `AbortSignal` — added by issue #2016 for the
+//   request-time `fetch` branch; neither existed here before.
 //
 // All polyfills live in the global object so module-shape detection
 // (`typeof Request === "function"`) reports as you'd expect on
@@ -31,12 +37,15 @@
 //
 // What we deliberately DO NOT polyfill:
 //
-// - Outgoing `fetch(url)` to a network — we install a `fetch` that
-//   throws so user code that accidentally tries to make a network
-//   call during SSG fails loudly instead of silently hanging.
+// - Outgoing `fetch(url)` during BUILD-TIME render — that `fetch`
+//   rejects so user code accidentally making a network call during SSG
+//   fails loudly instead of silently hanging. Request-time SSR is a
+//   separate branch and does reach the network.
 // - `WebSocket`, `EventSource`, `Worker` — none are sensible in a
 //   build-time renderer.
-// - `ReadableStream` beyond what `Response.arrayBuffer()` needs.
+// - `ReadableStream` — no stream type exists here at all (divergence
+//   D3): `response.body` is `null`, and a `ReadableStream` request body
+//   is rejected rather than coerced.
 //
 // If a real zfb project bundle surfaces a missing API,
 // fix it here, not at the call site.
@@ -511,6 +520,17 @@
   class _Body {
     constructor(body) {
       this._bodyBytes = bodyToUint8Array(body);
+      // Whether a payload was supplied AT ALL, which `_bodyBytes` alone
+      // cannot say — `null` and a zero-length body both encode to an
+      // empty `Uint8Array`, and the request-time `fetch` has to tell
+      // them apart twice over: `GET`/`HEAD` with a *present* body is a
+      // `TypeError`, and the transport's `hasBody` flag decides whether
+      // a request is framed with a body at all.
+      this._bodyPresent = body != null;
+      // Names this half of the interface in the not-implemented
+      // messages below (`response.blob()`, `request.formData()`).
+      // Subclasses overwrite it.
+      this._bodyLabel = "body";
       this.bodyUsed = false;
     }
     async arrayBuffer() {
@@ -534,11 +554,19 @@
       const t = await this.text();
       return JSON.parse(t);
     }
+    // `blob()` / `formData()` are unimplemented on BOTH paths, so their
+    // message must name neither. The old wording ("… in the SSG
+    // runtime") told a request-time caller their problem was a
+    // build-time policy — exactly the misdiagnosis epic #2012 exists to
+    // remove. The one message that may still say "SSG runtime" is the
+    // build-time `fetch()` denial below, which genuinely IS that policy.
     async blob() {
-      throw new Error("Blob is not implemented in the SSG runtime");
+      throw new Error(this._bodyLabel + ".blob() is not implemented in the zfb embedded runtime");
     }
     async formData() {
-      throw new Error("FormData is not implemented in the SSG runtime");
+      throw new Error(
+        this._bodyLabel + ".formData() is not implemented in the zfb embedded runtime",
+      );
     }
   }
 
@@ -549,16 +577,32 @@
       let baseInit = {};
       if (input instanceof Request) {
         url = input.url;
+        // A faithful copy, not just url/method/headers/body: `fetch`
+        // must honour a `signal` and a `redirect` mode carried by a
+        // `Request` the caller built earlier (contract row "Abort":
+        // *both* `init.signal` and `Request.signal` are honoured), and
+        // `new Request(req)` is how that request reaches it.
         baseInit = {
           method: input.method,
           headers: input.headers,
-          body: input._bodyBytes,
+          // `_bodyBytes` is an empty `Uint8Array` for a body-less
+          // request, which is NOT the same as a zero-length body — pass
+          // `null` through so the copy keeps the distinction.
+          body: input._bodyPresent ? input._bodyBytes : null,
+          signal: input.signal,
+          redirect: input.redirect,
+          cache: input.cache,
+          credentials: input.credentials,
+          mode: input.mode,
+          referrer: input.referrer,
+          integrity: input.integrity,
         };
       } else {
         url = String(input);
       }
       const finalInit = Object.assign({}, baseInit, init || {});
       super(finalInit.body);
+      this._bodyLabel = "request";
       this.url = url;
       this.method = (finalInit.method || "GET").toUpperCase();
       this.headers =
@@ -575,7 +619,9 @@
       return new Request(this.url, {
         method: this.method,
         headers: this.headers,
-        body: this._bodyBytes,
+        body: this._bodyPresent ? this._bodyBytes : null,
+        signal: this.signal,
+        redirect: this.redirect,
       });
     }
   }
@@ -584,6 +630,7 @@
   class Response extends _Body {
     constructor(body, init) {
       super(body);
+      this._bodyLabel = "response";
       const i = init || {};
       this.status = i.status == null ? 200 : Number(i.status);
       this.statusText = i.statusText || statusText(this.status);
@@ -603,13 +650,26 @@
       this.type = "default";
       this.url = i.url || "";
       this.redirected = false;
+      // ALWAYS `null` — this host has no `ReadableStream` (contract
+      // divergence D3), and every body is materialised as bytes before
+      // a `Response` exists. Present as an own property rather than
+      // absent so `response.body === null` reads as it does in
+      // production instead of `undefined`; `text()` / `arrayBuffer()` /
+      // `json()` are the ways to reach the bytes.
+      this.body = null;
     }
     clone() {
-      return new Response(this._bodyBytes, {
+      const copy = new Response(this._bodyPresent ? this._bodyBytes : null, {
         status: this.status,
         statusText: this.statusText,
         headers: this.headers,
+        url: this.url,
       });
+      // Not `init` members, so they are carried across by hand — a
+      // clone of a redirected response is still redirected.
+      copy.redirected = this.redirected;
+      copy.type = this.type;
+      return copy;
     }
     static error() {
       const r = new Response(null, { status: 0 });
@@ -673,29 +733,149 @@
     return mode === "request-time" ? "request-time" : "build-time";
   }
 
+  // ---- AbortController / AbortSignal ----------------------------
+  //
+  // Neither existed in this host before issue #2016; the request-time
+  // `fetch` branch below needs them (contract row "Abort"). Deliberately
+  // minimal — enough of the `EventTarget` surface for the `abort` event,
+  // plus the two static constructors the Fetch standard defines.
+  //
+  // Divergence D4: the abort reason is an `Error` carrying a
+  // spec-correct `.name` (`AbortError` / `TimeoutError`), NOT a real
+  // `DOMException` — none exists in this host, and inventing a partial
+  // one is a rejected design. Code that checks `err.name` (the common
+  // idiom) behaves exactly as in production; code that checks
+  // `instanceof DOMException` does not.
+  function abortError() {
+    const e = new Error("The operation was aborted.");
+    e.name = "AbortError";
+    return e;
+  }
+  function timeoutError() {
+    const e = new Error("The operation was aborted due to timeout.");
+    e.name = "TimeoutError";
+    return e;
+  }
+
+  class AbortSignal {
+    constructor() {
+      this.aborted = false;
+      this.reason = undefined;
+      this.onabort = null;
+      this._listeners = [];
+      // Set only by `AbortSignal.timeout(ms)`. The host has NO event
+      // loop timers — `setTimeout` below is microtask-backed and
+      // ignores its delay — so a JS-side timer could not honour this
+      // signal; firing one would abort every fetch instantly, which is
+      // worse than not having it. Instead `fetch` forwards the value to
+      // the Rust transport, which owns every wall-clock deadline and
+      // can only NARROW its own with it. Consequence, stated plainly:
+      // the deadline is real and closes the socket, but this signal
+      // object itself never flips to `aborted` when it elapses.
+      this._timeoutMs = null;
+    }
+    addEventListener(type, listener) {
+      if (type === "abort" && listener != null) {
+        this._listeners.push(listener);
+      }
+    }
+    removeEventListener(type, listener) {
+      if (type === "abort") {
+        this._listeners = this._listeners.filter((l) => l !== listener);
+      }
+    }
+    throwIfAborted() {
+      if (this.aborted) {
+        throw this.reason;
+      }
+    }
+    // Internal: the only way `aborted` becomes true. Not part of the
+    // public interface — `AbortController.abort()` is.
+    _abort(reason) {
+      if (this.aborted) return;
+      this.aborted = true;
+      this.reason = reason;
+      const evt = { type: "abort", target: this };
+      if (typeof this.onabort === "function") {
+        this.onabort(evt);
+      }
+      for (const listener of this._listeners.slice()) {
+        if (typeof listener === "function") {
+          listener(evt);
+        } else if (listener && typeof listener.handleEvent === "function") {
+          listener.handleEvent(evt);
+        }
+      }
+    }
+    static abort(reason) {
+      const signal = new AbortSignal();
+      signal._abort(reason === undefined ? abortError() : reason);
+      return signal;
+    }
+    static timeout(milliseconds) {
+      const signal = new AbortSignal();
+      const ms = Number(milliseconds);
+      if (!Number.isFinite(ms) || ms < 0) {
+        throw new TypeError(
+          "AbortSignal.timeout: milliseconds must be a non-negative finite number",
+        );
+      }
+      if (ms === 0) {
+        // A zero deadline has already elapsed, so this one CAN be
+        // honoured here — and an already-aborted signal never opens a
+        // socket.
+        signal._abort(timeoutError());
+        return signal;
+      }
+      signal._timeoutMs = ms;
+      return signal;
+    }
+  }
+
+  class AbortController {
+    constructor() {
+      this.signal = new AbortSignal();
+    }
+    abort(reason) {
+      this.signal._abort(reason === undefined ? abortError() : reason);
+    }
+  }
+
   // ---- fetch ----------------------------------------------------
   //
   // Build-time render never makes outgoing requests. If a bundle calls
-  // `fetch(url)` we throw with a message that names the offending URL
-  // so the operator can find the call site.
+  // `fetch(url)` we reject with a message that names the offending URL
+  // so the operator can find the call site. That rejection is deliberate
+  // POLICY (guardrail 4 of epic #2012) and its wording is asserted
+  // byte-for-byte by `js_fetch_tests.rs` — do not reword it.
   //
-  // Request-time SSR takes a DISTINCT branch. It still rejects today —
-  // issue #2014 plumbs the mode signal only and adds no capability;
-  // the actual outbound `fetch` lands in a later wave of epic #2012
-  // (contract: research/2013-request-time-capability-contract.md). The
-  // point of the split is that the build-time rejection is deliberate
-  // POLICY that survives the epic intact, while the request-time
-  // rejection is a not-yet-implemented feature.
-  function fetch(input, _init) {
+  // Request-time SSR takes a DISTINCT branch, which since issue #2016
+  // performs a real outbound request through the Rust transport op
+  // (`op_zfb_fetch`, issue #2015).
+  //
+  // ## The one rule this whole surface exists for
+  //
+  // Everything that is still unsupported at request time fails with a
+  // REQUEST-TIME-SPECIFIC diagnostic. The "fetch() called from SSG
+  // runtime" wording appears on exactly one path — a genuine build-time
+  // render — because reporting a request-time failure as an SSG policy
+  // denial is precisely the defect epic #2012 is fixing.
+  //
+  // ## What is enforced where
+  //
+  // The scheme allowlist, the redirect rules and hop limit, the response
+  // cap, the wall-clock deadline, cancellation, and the per-dispatch
+  // subrequest budget are ALL enforced in Rust, where bundle code cannot
+  // reach them. This layer does not re-implement any of them. The one
+  // deliberate exception is the request-body cap, checked here as well
+  // as in Rust — defence in depth, per the contract.
+  function fetch(input, init) {
     const url = input instanceof Request ? input.url : String(input);
     if (dispatchMode() === "request-time") {
-      return Promise.reject(
-        new Error(
-          "fetch() called from request-time SSR runtime (url=" +
-            url +
-            "). Outgoing network requests are not implemented yet in the zfb embedded runtime's request-time path — see research/2013-request-time-capability-contract.md. This is NOT the build-time SSG denial; production Cloudflare Workers DOES support fetch() here.",
-        ),
-      );
+      // `requestTimeFetch` is `async`, so everything it throws —
+      // including the pre-dispatch rejections that must never open a
+      // socket — surfaces as a rejected promise, as `fetch` requires.
+      return requestTimeFetch(input, init, url);
     }
     return Promise.reject(
       new Error(
@@ -704,6 +884,226 @@
           "). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
       ),
     );
+  }
+
+  // deno_core rebuilds an op's Rust-side error in JS through its own
+  // `buildCustomError` (`00_infra.js`), which can only construct classes
+  // present in its `errorMap` — the six ECMAScript builtins. A
+  // `JsErrorBox` carrying ANY other class is rebuilt as
+  // `TypeError: invalid_argument`, losing BOTH the name and the
+  // message. The transport's deadline uses `TimeoutError` (contract row
+  // "Timeout", divergence D4), so without this registration the entire
+  // timeout diagnostic — deadline, the note that production Workers has
+  // no per-subrequest limit — is unreachable from JS, and a timed-out
+  // fetch is indistinguishable from a malformed argument.
+  //
+  // Registered once at install time; `registerErrorBuilder` throws on a
+  // duplicate class, and a host that predates the API simply keeps the
+  // lossy behaviour rather than failing to boot.
+  function registerHostErrorClasses() {
+    const core = globalThis.Deno && globalThis.Deno.core;
+    if (!core || typeof core.registerErrorClass !== "function") return;
+    class TimeoutError extends Error {
+      constructor(message) {
+        super(message);
+        this.name = "TimeoutError";
+      }
+    }
+    try {
+      core.registerErrorClass("TimeoutError", TimeoutError);
+    } catch (_) {
+      // Already registered on this runtime — nothing to do.
+    }
+  }
+
+  // The Rust-injected limit constants (`globals_shim.js`, issue #2016).
+  // Read lazily rather than captured at install time: the polyfills are
+  // executed BEFORE the host shim, so `__zfb` does not exist yet here.
+  function hostLimits(url) {
+    const bridge = globalThis.__zfb;
+    const limits = bridge ? bridge.limits : undefined;
+    if (!limits) {
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): embedded host transport unavailable: the host did not publish __zfb.limits",
+      );
+    }
+    return limits;
+  }
+
+  // A `ReadableStream` body. The type does not exist in this host
+  // (divergence D3), so a duck-typed check is the only one available —
+  // and it must run BEFORE `Request` coerces the value, since
+  // `bodyToUint8Array` would otherwise silently `String()` the stream
+  // into a body reading "[object ReadableStream]".
+  function isReadableStreamLike(value) {
+    if (value == null || typeof value !== "object") return false;
+    if (
+      typeof globalThis.ReadableStream === "function" &&
+      value instanceof globalThis.ReadableStream
+    ) {
+      return true;
+    }
+    return typeof value.getReader === "function";
+  }
+
+  // Settle as soon as EITHER the transport finishes or `signal` aborts.
+  //
+  // Known limitation, stated rather than hidden: the op's future is
+  // owned by the Rust event loop and cannot be dropped from JS, so an
+  // abort arriving MID-FLIGHT settles the caller's promise immediately
+  // while the transport runs to its own conclusion and its result is
+  // discarded — the socket closes on the Rust deadline, not on the
+  // abort. The common case (a signal that is already aborted when
+  // `fetch` is called) never opens a socket at all, and the wall-clock
+  // deadline does drop the future.
+  function raceWithAbort(promise, signal) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        reject(signal.reason !== undefined ? signal.reason : abortError());
+      };
+      signal.addEventListener("abort", onAbort);
+      promise.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  async function requestTimeFetch(input, init, url) {
+    const i = init || {};
+    const limits = hostLimits(url);
+
+    // Before `new Request(...)`, which would coerce a stream to text.
+    if (isReadableStreamLike(i.body)) {
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): ReadableStream request bodies are not supported by the zfb embedded runtime",
+      );
+    }
+
+    // One `Request` is the single source of truth for method, headers,
+    // body, redirect mode and signal, whether the caller passed a URL
+    // string plus `init` or a `Request` they built earlier.
+    const request = new Request(input, i);
+    const signal = request.signal;
+
+    // An already-aborted signal rejects WITHOUT opening a socket —
+    // asserted by `an_already_aborted_signal_rejects_without_opening_a_socket`
+    // against a loopback server's request count, not just by the error.
+    if (signal && signal.aborted) {
+      throw signal.reason !== undefined ? signal.reason : abortError();
+    }
+
+    const method = request.method;
+    const hasBody = request._bodyPresent;
+    if (hasBody && (method === "GET" || method === "HEAD")) {
+      throw new TypeError("Request with GET/HEAD method cannot have body.");
+    }
+
+    const bodyBytes = hasBody ? request._bodyBytes : new Uint8Array(0);
+    // Defence in depth: Rust rejects this too (and is the enforcement
+    // that matters, since bundle code cannot reach it), but catching it
+    // here keeps a 100 MB payload from crossing the op boundary at all.
+    // The message is byte-identical to the transport's own.
+    if (bodyBytes.byteLength > limits.maxRequestBodyBytes) {
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): request body exceeds the " +
+          limits.maxRequestBodyBytes +
+          "-byte limit",
+      );
+    }
+
+    // The RAW ordered pairs, not `entries()`: the latter applies the
+    // Fetch "sort and combine" view, which comma-joins duplicates. The
+    // outbound direction must carry repeated request headers verbatim,
+    // exactly as the response direction does.
+    const headers = request.headers._pairs.map((pair) => [pair[0], pair[1]]);
+    if (hasBody && !request.headers.has("content-type")) {
+      // WHATWG Fetch "extract a body" step 5 — a `string` or
+      // `URLSearchParams` body carries a default Content-Type. The
+      // `Response` constructor already applies the same table.
+      const defaultType = bodyInitContentType(i.body);
+      if (defaultType) {
+        headers.push(["content-type", defaultType]);
+      }
+    }
+
+    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
+    const op = ops ? ops.op_zfb_fetch : undefined;
+    if (typeof op !== "function") {
+      // Never a synthetic empty `Response`: a silent empty body is
+      // indistinguishable from a real 200 with no content.
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): embedded host transport unavailable: op_zfb_fetch is not registered in this runtime",
+      );
+    }
+
+    const spec = {
+      url: request.url,
+      method,
+      headers,
+      // Anything the caller did not spell as a Fetch redirect mode
+      // falls back to the standard's default rather than reaching Rust
+      // as an unparseable value.
+      redirect:
+        request.redirect === "manual" || request.redirect === "error" ? request.redirect : "follow",
+      hasBody,
+    };
+    const signalTimeoutMs = signal ? signal._timeoutMs : null;
+    if (signalTimeoutMs != null) {
+      // Clamped to a whole number in `u32` range: the op decodes this
+      // field as a `u32` (a `u64` would require a BigInt on this side),
+      // and since the value can only NARROW the host's own 30s deadline,
+      // clamping the top end costs nothing.
+      spec.timeoutMs = Math.min(Math.floor(signalTimeoutMs), 4294967295);
+    }
+
+    let outcome;
+    try {
+      const dispatched = op(spec, bodyBytes);
+      outcome = signal ? await raceWithAbort(dispatched, signal) : await dispatched;
+    } catch (e) {
+      // A deadline the CALLER asked for is an abort, not a host limit,
+      // so it reports itself the way the standard says rather than
+      // quoting the host's own timeout diagnostic.
+      if (signalTimeoutMs != null && e && e.name === "TimeoutError") {
+        throw timeoutError();
+      }
+      throw e;
+    }
+
+    const response = new Response(outcome.body, {
+      status: outcome.status,
+      statusText: outcome.statusText,
+      // An ordered `[name, value]` array, never an object: repeated
+      // `set-cookie` values must survive the boundary, and an object
+      // would collapse them to the last one.
+      headers: outcome.headers,
+      // The FINAL url, after any redirect the transport followed.
+      url: outcome.url,
+    });
+    response.redirected = outcome.redirected === true;
+    return response;
   }
 
   // ---- atob / btoa ----------------------------------------------
@@ -815,9 +1215,16 @@
       // these but doesn't call them on the SSG path. If a real
       // bundle calls `subtle.digest(...)`, fix it here with a
       // pure-JS sha256 implementation (~80 lines).
+      //
+      // The wording names the RUNTIME, not the SSG policy: `digest` is
+      // unimplemented on the request-time path too, and telling a
+      // request-time caller their problem is a build-time policy sends
+      // them looking for a build-step fix that does not exist. Issue
+      // #2017 replaces this rejection with a real implementation on
+      // both paths.
       digest() {
         return Promise.reject(
-          new Error("crypto.subtle.digest is not implemented in the SSG runtime"),
+          new Error("crypto.subtle.digest is not implemented in the zfb embedded runtime"),
         );
       },
     },
@@ -940,6 +1347,9 @@
   globalThis.Request = Request;
   globalThis.Response = Response;
   globalThis.fetch = fetch;
+  registerHostErrorClasses();
+  globalThis.AbortController = AbortController;
+  globalThis.AbortSignal = AbortSignal;
   globalThis.atob = atob;
   globalThis.btoa = btoa;
   globalThis.structuredClone = structuredClone;

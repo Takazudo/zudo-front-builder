@@ -23,6 +23,11 @@
 //   (module evaluation, or any caller that never passed one) the
 //   readers fall back to build-time, which is the denying default.
 //
+// - `__zfb.limits` — the request-time numeric limits, injected from
+//   `embedded_v8/limits.rs` at host boot (issue #2016). Getter-only.
+//   `web_polyfills.js`'s request-time `fetch` reads its request-body
+//   cap from here rather than hardcoding a copy of the Rust constant.
+//
 // - `__zfb.drainConsoleLogs()` — returns the worker console output
 //   buffered by the console capture below (joined with `\n`, each
 //   line prefixed with its level) and clears the buffer. Called by
@@ -58,6 +63,22 @@
   // is first-party code zfb itself compiled, and no JS-visible bridge can
   // be made proof against a hostile module in the same realm.
   const __ZFB_MODE_NONCE = "__ZFB_MODE_NONCE_PLACEHOLDER__";
+
+  // Request-time numeric limits (issue #2016). The Rust side
+  // substitutes a JSON object literal rendered by
+  // `embedded_v8::limits::limits_js_literal()` for this placeholder at
+  // host boot, so `web_polyfills.js` can read the caps out of Rust
+  // instead of carrying a second, drift-prone copy of them — a
+  // hardcoded duplicate in JS is a rejected design (contract:
+  // "Numeric constants — one source of truth").
+  //
+  // Deliberately NOT frozen. Freezing would protect nothing — every
+  // limit is ALSO enforced in Rust, where bundle code cannot reach it,
+  // and the JS-side copy is defence in depth only — while making the
+  // one cheap way to exercise the JS-side cap impossible: a test that
+  // lowers `maxRequestBodyBytes` to a handful of bytes instead of
+  // allocating a 100 MB buffer to trip the real one.
+  const __ZFB_LIMITS = __ZFB_LIMITS_PLACEHOLDER__;
 
   const __zfb_state = {
     bundle: null,
@@ -195,6 +216,11 @@
     // purpose — see `__zfb_mode_state`.
     get mode() {
       return __zfb_mode_state.current;
+    },
+    // Read-only view of the Rust-side request-time limit constants
+    // (issue #2016). Getter-only for the same reason `mode` is.
+    get limits() {
+      return __ZFB_LIMITS;
     },
     setBundle(defaultExport) {
       __zfb_state.bundle = defaultExport;

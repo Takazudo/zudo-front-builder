@@ -38,6 +38,7 @@ fn get(url: &str) -> FetchRequestSpec {
         headers: Vec::new(),
         redirect: RedirectMode::Follow,
         has_body: false,
+        timeout_ms: None,
     }
 }
 
@@ -138,6 +139,60 @@ async fn timeout_rejects_with_a_timeout_error_naming_the_deadline() {
         err.js_error_class(),
         "TimeoutError",
         "the contract gives the deadline its own error name"
+    );
+}
+
+/// `AbortSignal.timeout(ms)` reaches the transport as
+/// `spec.timeout_ms` (issue #2016) and must NARROW the deadline only.
+///
+/// A `min` rather than an override is the whole point: divergence D1
+/// exists because one hung `fetch` wedges the single SSR V8 thread, so
+/// a bundle asking for a ten-minute deadline must not get one. Only the
+/// operator may raise the ceiling, via `ZFB_SSR_FETCH_TIMEOUT_MS`.
+#[test]
+fn a_caller_requested_deadline_can_only_narrow_the_hosts_own() {
+    // Narrower wins.
+    assert_eq!(effective_timeout_ms(30_000, Some(250)), 250);
+    // Wider is ignored — the host's ceiling stands.
+    assert_eq!(effective_timeout_ms(30_000, Some(600_000)), 30_000);
+    // Absent leaves the host's deadline untouched.
+    assert_eq!(effective_timeout_ms(30_000, None), 30_000);
+    // `0` means "as soon as possible", never "no deadline at all" —
+    // a zero-duration `tokio::time::timeout` would still be honoured,
+    // but 1ms keeps the value non-degenerate.
+    assert_eq!(effective_timeout_ms(30_000, Some(0)), 1);
+}
+
+/// The narrowed deadline is the one the transport actually applies, and
+/// the one the error message quotes — proved against a real socket, not
+/// just the pure helper above.
+#[tokio::test]
+async fn a_caller_requested_deadline_is_the_one_the_transport_enforces() {
+    let server = LoopbackServer::spawn(|_req, stream| async move {
+        let _keep_the_socket_open = stream;
+        std::future::pending::<()>().await;
+    })
+    .await;
+    let url = server.url("/never");
+
+    // The host's own deadline is deliberately far too long to be what
+    // ends this call, so only the caller-requested one can.
+    let config = FetchConfig {
+        timeout_ms: 60_000,
+        ..config()
+    };
+    let mut spec = get(&url);
+    spec.timeout_ms = Some(250);
+
+    let err = run(&config, &spec, Vec::new())
+        .await
+        .expect_err("the caller-requested deadline must trip");
+    assert_eq!(
+        err,
+        FetchError::Timeout {
+            url,
+            timeout_ms: 250
+        }
     );
 }
 
@@ -307,6 +362,7 @@ fn body_spec(url: &str, method: &str) -> FetchRequestSpec {
         ],
         redirect: RedirectMode::Follow,
         has_body: true,
+        timeout_ms: None,
     }
 }
 
@@ -469,6 +525,7 @@ fn credentialed_spec(url: &str) -> FetchRequestSpec {
         ],
         redirect: RedirectMode::Follow,
         has_body: false,
+        timeout_ms: None,
     }
 }
 

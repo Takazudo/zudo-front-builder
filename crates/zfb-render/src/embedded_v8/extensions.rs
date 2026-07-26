@@ -83,6 +83,17 @@ pub const HOST_GLOBALS_SHIM_SRC: &str = include_str!("js/globals_shim.js");
 /// shim's IIFE closure) — cannot select request-time capability.
 pub const MODE_NONCE_PLACEHOLDER: &str = "__ZFB_MODE_NONCE_PLACEHOLDER__";
 
+/// Placeholder token in [`HOST_GLOBALS_SHIM_SRC`] that
+/// `EmbeddedV8RenderHost::bootstrap_host_shim` replaces with the JSON
+/// object literal [`super::limits::limits_js_literal`] renders (issue
+/// #2016), publishing the Rust-side request-time limits as
+/// `globalThis.__zfb.limits`.
+///
+/// Unlike the nonce this is not a secret — it is here so
+/// `js/web_polyfills.js` can read the caps out of Rust instead of
+/// carrying a second copy that drifts silently.
+pub const LIMITS_PLACEHOLDER: &str = "__ZFB_LIMITS_PLACEHOLDER__";
+
 /// Web Platform API polyfills for the embedded V8 host: `Request`,
 /// `Response`, `Headers`, `URL`, `URLSearchParams`, `fetch`,
 /// `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `structuredClone`,
