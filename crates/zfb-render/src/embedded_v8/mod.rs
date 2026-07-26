@@ -109,6 +109,10 @@ use crate::render_host::{ModuleHandle, RenderHost};
 
 mod dispatch;
 pub mod extensions;
+pub mod fetch;
+pub mod limits;
+#[cfg(test)]
+pub(crate) mod loopback_test_server;
 mod module_loader;
 
 pub use dispatch::{DispatchMode, HttpRequestLike, HttpResponseLike};
@@ -479,6 +483,11 @@ impl EmbeddedV8RenderHost {
             };
             return Err(RenderError::Runtime(msg));
         }
+        // Issue #2015: the outbound-subrequest budget is per DISPATCH,
+        // so it is zeroed here rather than anywhere in the op. Doing it
+        // in Rust — not JS — is what stops a `Promise.all` fan-out in
+        // bundle code from evading the cap.
+        self.reset_subrequest_counter();
         // Drive the JS-side `__zfb.dispatch(url, method, headers, body, mode)`
         // helper. It returns a Promise; we wait for it via
         // `with_event_loop_promise` which polls the V8 event loop
@@ -524,6 +533,19 @@ impl EmbeddedV8RenderHost {
             // backing store via GC).
             body: parsed.body.as_ref().to_vec(),
         })
+    }
+
+    /// Zero the per-dispatch outbound-subrequest budget (issue #2015).
+    ///
+    /// A missing counter is not an error: a host built without the
+    /// fetch extension simply has no budget to reset, and the op itself
+    /// reports the host-op failure if it is ever called in that state.
+    fn reset_subrequest_counter(&mut self) {
+        let op_state = self.runtime.op_state();
+        let op_state = op_state.borrow();
+        if let Some(counter) = op_state.try_borrow::<Rc<fetch::SubrequestCounter>>() {
+            counter.reset();
+        }
     }
 
     /// Invoke `__zfb.dispatch(...)` for `request` and return the
@@ -976,18 +998,24 @@ fn synthesise_specifier(name: &str) -> String {
     out
 }
 
-/// Build the deno_core extension list. We currently ship NO extra
-/// extensions — Request / Response / Headers / URL / fetch live in
-/// the JS polyfill (`extensions::WEB_POLYFILLS_SRC`) instead of the
-/// `deno_fetch` / `deno_web` extensions. See `Cargo.toml`'s comment
-/// "Why a polyfill instead of deno_fetch/deno_web" for the trade-off
-/// (heavy compile + tricky lazy-load bootstrap vs. ~250 lines of
-/// hermetic JS).
+/// Build the deno_core extension list.
+///
+/// Request / Response / Headers / URL live in the JS polyfill
+/// (`extensions::WEB_POLYFILLS_SRC`) rather than `deno_fetch` /
+/// `deno_web` — see `Cargo.toml`'s comment "Why a polyfill instead of
+/// deno_fetch/deno_web" for the trade-off (heavy compile + tricky
+/// lazy-load bootstrap vs. ~250 lines of hermetic JS).
+///
+/// What is NOT expressible in JS is the outbound socket, so
+/// [`fetch::zfb_fetch`] registers the one Rust op that owns it
+/// (issue #2015). It is an **async** op — the isolate thread must
+/// never park on a network read. Nothing in `web_polyfills.js` calls
+/// it yet; sub-issue #2016 wires the JS side.
 ///
 /// Kept as a function so a future swap to `deno_web` / `deno_fetch`
 /// is a one-place change.
 fn build_extensions() -> Vec<deno_core::Extension> {
-    vec![]
+    vec![fetch::zfb_fetch::init()]
 }
 
 /// Format a `deno_core::error::CoreError` for inclusion in
@@ -1035,4 +1063,186 @@ struct DispatchResult {
     status: u16,
     headers: Vec<(String, String)>,
     body: deno_core::JsBuffer,
+}
+
+/// V8-boundary tests for the request-time fetch transport (issue #2015).
+///
+/// These live here, not in `tests/`, because the properties under test
+/// need the host's private `runtime` handle and its `OpState`. The
+/// transport's own 18-case behaviour matrix lives in
+/// `embedded_v8/fetch/tests.rs`; what is proved here is the part only a
+/// real isolate can show:
+///
+/// - the op really is driven by `deno_core`'s event loop rather than
+///   parking the isolate thread (guardrail 1), and
+/// - a host-op rejection surfaces to JS as a **rejected promise**, never
+///   as a resolved synthetic empty response.
+#[cfg(test)]
+mod fetch_boundary_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+    use crate::embedded_v8::loopback_test_server::{ok_response, LoopbackServer};
+
+    /// Everything in this module is bounded, so a regression that makes
+    /// the op block reports a clear failure instead of hanging the test
+    /// binary until nextest's `terminate-after`.
+    const BOUND: Duration = Duration::from_secs(30);
+
+    /// A server that answers **only once two requests are in flight at
+    /// the same time**.
+    ///
+    /// This is the falsifier for guardrail 1: if `op_zfb_fetch` parked
+    /// the isolate thread, the second `op_zfb_fetch(...)` call in
+    /// `Promise.all([...])` would never be reached, the barrier would
+    /// never release, and the dispatch would never resolve.
+    async fn concurrency_barrier_server() -> LoopbackServer {
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        LoopbackServer::spawn(move |req, mut stream| {
+            let barrier = barrier.clone();
+            async move {
+                barrier.wait().await;
+                let _ = stream.write_all(&ok_response(&req.target)).await;
+                let _ = stream.shutdown().await;
+            }
+        })
+        .await
+    }
+
+    /// Run `script` in the host, await the promise it evaluates to, and
+    /// return it stringified.
+    async fn eval_await_string(host: &mut EmbeddedV8RenderHost, script: String) -> String {
+        let promise = host
+            .runtime
+            .execute_script("zfb:fetch_boundary_test", script)
+            .expect("test script evaluates");
+        let resolve = host.runtime.resolve(promise);
+        let resolved = host
+            .runtime
+            .with_event_loop_promise(Box::pin(resolve), PollEventLoopOptions::default())
+            .await
+            .expect("the test promise settles");
+        deno_core::scope!(scope, &mut host.runtime);
+        let local = v8::Local::new(scope, resolved);
+        local.to_rust_string_lossy(scope)
+    }
+
+    #[tokio::test]
+    async fn the_op_runs_on_the_event_loop_and_does_not_park_the_isolate_thread() {
+        let server = concurrency_barrier_server().await;
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+
+        let script = format!(
+            r#"
+            (async () => {{
+              const call = (path) => Deno.core.ops.op_zfb_fetch(
+                {{ url: {base:?} + path, method: "GET", headers: [], redirect: "follow", hasBody: false }},
+                new Uint8Array(0),
+              );
+              // Both ops are invoked before either is awaited. The
+              // server will not answer until BOTH connections exist, so
+              // this can only settle if the first call handed control
+              // back to the event loop instead of blocking.
+              const results = await Promise.all([call("/one"), call("/two")]);
+              const decoder = new TextDecoder();
+              return results
+                .map((r) => r.status + ":" + decoder.decode(r.body))
+                .join("|");
+            }})()
+            "#,
+            base = server.base_url(),
+        );
+
+        let got = tokio::time::timeout(BOUND, eval_await_string(&mut host, script))
+            .await
+            .expect(
+                "two concurrent op_zfb_fetch calls never both reached the server within 30s — \
+                 the op is blocking the isolate thread",
+            );
+
+        assert_eq!(got, "200:/one|200:/two");
+        assert_eq!(server.request_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_transport_rejection_reaches_js_as_a_rejected_promise() {
+        // Never a synthetic empty `Response`: a silent empty body is
+        // indistinguishable from a real 200 with no content, which is
+        // exactly the dev/prod divergence epic #2012 exists to remove.
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        let script = r#"
+            Deno.core.ops.op_zfb_fetch(
+              { url: "ftp://example.invalid/data", method: "GET", headers: [], redirect: "follow", hasBody: false },
+              new Uint8Array(0),
+            ).then(
+              (r) => "RESOLVED:" + r.status,
+              (e) => "REJECTED:" + e.name + ":" + e.message,
+            )
+        "#
+        .to_string();
+
+        let got = tokio::time::timeout(BOUND, eval_await_string(&mut host, script))
+            .await
+            .expect("the rejection settles");
+
+        assert_eq!(
+            got,
+            "REJECTED:TypeError:Fetch API cannot load: ftp://example.invalid/data"
+        );
+    }
+
+    #[test]
+    fn the_extension_installs_the_client_and_the_subrequest_counter() {
+        let host = EmbeddedV8RenderHost::new().expect("host boot");
+        let op_state = host.runtime.op_state();
+        let op_state = op_state.borrow();
+        assert!(
+            op_state.try_borrow::<fetch::FetchClient>().is_some(),
+            "build_extensions() must install the shared outbound client"
+        );
+        assert!(
+            op_state
+                .try_borrow::<Rc<fetch::SubrequestCounter>>()
+                .is_some(),
+            "build_extensions() must install the per-dispatch subrequest counter"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_fetch_resets_the_subrequest_budget() {
+        let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+        host.execute_module(
+            "bundle.mjs",
+            "export default { async fetch() { return new Response(\"ok\"); } };",
+        )
+        .await
+        .expect("execute the probe bundle");
+
+        // Spend the budget as a previous dispatch would have.
+        let counter = {
+            let op_state = host.runtime.op_state();
+            let op_state = op_state.borrow();
+            op_state.borrow::<Rc<fetch::SubrequestCounter>>().clone()
+        };
+        for _ in 0..5 {
+            counter
+                .claim("http://zfb.local/", 50)
+                .expect("within budget");
+        }
+        assert_eq!(counter.used(), 5);
+
+        let response = host
+            .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
+            .await
+            .expect("dispatch");
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            counter.used(),
+            0,
+            "the budget is per dispatch, so dispatch_fetch must zero it"
+        );
+    }
 }
