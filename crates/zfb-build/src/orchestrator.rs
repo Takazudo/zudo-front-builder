@@ -407,11 +407,52 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// This is a CSS-rerun signal and nothing else — it never touches page
     /// selection (see the `PageSelection::All` note in the
     /// `Page | Module | Content | Data` arm).
+    ///
+    /// Two containment rules ride on top of the bare subtree test, both
+    /// keeping this gate equivalent to "the `@source` scan would have read
+    /// this file":
+    ///
+    /// - **Non-degeneracy.** A root that CONTAINS `project_root` would match
+    ///   every path in the project and silently convert this into the
+    ///   rejected option (a). `SiblingMirrorPlan`'s `resolve_mirror_root`
+    ///   never publishes such a root (pinned by
+    ///   `bundler::tests::resolve_mirror_root_never_returns_an_ancestor_of_project_root`),
+    ///   so this is defense in depth against a future claim-policy change —
+    ///   not a live condition.
+    /// - **Infra skip-dirs.** Tailwind's `@source` globs exclude the
+    ///   `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs (`dist/`,
+    ///   `node_modules/`, …) at any depth under a mirror root, so an event
+    ///   from one cannot change the emitted CSS. The list is the command
+    ///   layer's, threaded down through
+    ///   [`OrchestratorConfig::css_mirror_skip_dir_names`] — the SAME value
+    ///   the recursive-directory watch already suppresses on — rather than
+    ///   re-spelled here, so the two can never drift into two different
+    ///   definitions of "inside a claimed mirror region".
     fn content_under_css_mirror_root(&self, class: PathClass, path: &Path) -> bool {
-        matches!(
+        if !matches!(
             class,
             PathClass::Content | PathClass::Data | PathClass::External
-        ) && self.config.policy.is_under_css_mirror_root(path)
+        ) {
+            return false;
+        }
+        let Some((root, relative)) = self.config.policy.css_mirror_root_match(path) else {
+            return false;
+        };
+        let root_swallows_the_project =
+            crate::policy::RawImportInvalidation::path_aliases(&self.config.project_root)
+                .iter()
+                .any(|project_alias| project_alias.starts_with(&root));
+        if root_swallows_the_project {
+            return false;
+        }
+        !relative.components().any(|component| match component {
+            std::path::Component::Normal(name) => self
+                .config
+                .css_mirror_skip_dir_names
+                .iter()
+                .any(|skip| name == std::ffi::OsStr::new(skip)),
+            _ => false,
+        })
     }
 
     /// Build a plan from a list of changed paths. Pure: does not call
@@ -984,7 +1025,18 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     }
                     // #1819 (epic #1995) — DELETING a mirror-root markdown
                     // file also changes the Tailwind content set: its classes
-                    // must stop being emitted. Same rule as the live arm.
+                    // must stop being emitted.
+                    //
+                    // This applies the SAME predicate as the live arm, which
+                    // means it covers exactly the classes that predicate
+                    // covers: `Content`/`Data` here, `External` below. It is
+                    // NOT full deletion symmetry — a deleted `Module`
+                    // (`.tsx`) still does not rerun the scan, so in dev its
+                    // utility classes stay emitted until the next
+                    // CSS-triggering tick. That gap is PRE-EXISTING (deleted
+                    // in-root modules have always behaved this way) and
+                    // deliberately out of scope here; closing it is a broader
+                    // behaviour change tracked separately.
                     if self.content_under_css_mirror_root(class, path) {
                         plan.mark_css();
                     }
@@ -2627,6 +2679,26 @@ mod tests {
         (project, mirror_root, policy)
     }
 
+    /// The infra dir names the `zfb` command layer threads down in dev
+    /// (`CSS_SIBLING_MIRROR_SKIP_DIRS`, via
+    /// `OrchestratorConfig::with_css_mirror_skip_dir_names`). Spelled here
+    /// only to give these unit fixtures the production wiring — the gate
+    /// itself never carries a list of its own.
+    fn css_mirror_skip_dir_names() -> Vec<String> {
+        [
+            "node_modules",
+            "dist",
+            ".git",
+            "target",
+            ".turbo",
+            ".next",
+            ".vercel",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
     fn orch_for_css_mirror_root<P: AssetPipeline>(
         pipeline: P,
         project: &std::path::Path,
@@ -2637,7 +2709,8 @@ mod tests {
                 project,
                 vec![PathBuf::from("pages"), PathBuf::from("content")],
             )
-            .with_policy(policy),
+            .with_policy(policy)
+            .with_css_mirror_skip_dir_names(css_mirror_skip_dir_names()),
             make_graph(),
             pipeline,
         )
@@ -2734,6 +2807,89 @@ mod tests {
             "an ordinary in-root markdown edit must NOT rerun the Tailwind content \
              scan — that is the whole reason option (b) was chosen over the \
              unconditional option (a)"
+        );
+    }
+
+    /// The gate's NON-DEGENERACY, asserted directly.
+    ///
+    /// `is_under_css_mirror_root` is a subtree test, so a root that CONTAINS
+    /// `project_root` matches every path in the project — silently turning
+    /// option (b) into the rejected option (a) (every ordinary markdown edit
+    /// reruns the Tailwind scan) with no other test failing. Today the
+    /// registry cannot hold such a root, because `resolve_mirror_root`
+    /// rejects project-containing claims
+    /// (`bundler::tests::resolve_mirror_root_never_returns_an_ancestor_of_project_root`);
+    /// this pins the gate's own defensive re-check so a future claim-policy
+    /// change cannot quietly widen it.
+    #[test]
+    fn degenerate_project_containing_mirror_root_does_not_rerun_css() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, _mirror_root, _policy) = css_mirror_root_fixture(&ws);
+        let in_root_mdx = project.join("content/post.mdx");
+        std::fs::write(&in_root_mdx, "# ordinary post\n").unwrap();
+
+        // Publish a root that swallows the project — the exact shape
+        // `resolve_mirror_root` refuses to produce.
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_css_mirror_roots([ws.join("sub-packages")]);
+        let policy = GranularityPolicy::default().with_raw_import_invalidation(invalidation);
+        assert!(
+            policy.is_under_css_mirror_root(&in_root_mdx),
+            "fixture sanity: the bare subtree test DOES match here — that is \
+             precisely why the gate needs its own guard"
+        );
+
+        let orch = orch_for_css_mirror_root(CountingPipeline::default(), &project, policy);
+        assert!(
+            !orch.plan_for_changes([in_root_mdx]).rerun_css,
+            "a mirror root containing the project must not make every in-root \
+             markdown edit rerun the Tailwind scan — that is option (a), which \
+             this epic rejected"
+        );
+    }
+
+    /// The gate must apply the SAME infra-dir exclusions the `@source` scan
+    /// applies (`CSS_SIBLING_MIRROR_SKIP_DIRS`, threaded down as
+    /// `OrchestratorConfig::css_mirror_skip_dir_names`). A build artifact
+    /// under a sibling's `dist/` cannot change the emitted CSS — the
+    /// exclusion globs guarantee Tailwind never reads it — so rerunning the
+    /// scan for it is pure cost, and a gate that disagreed with the scan
+    /// would be a second, drifting definition of "inside a claimed mirror
+    /// region".
+    #[test]
+    fn mirror_root_infra_dir_event_does_not_rerun_css() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, mirror_root, policy) = css_mirror_root_fixture(&ws);
+
+        let generated = mirror_root.join("dist/generated.mdx");
+        std::fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        std::fs::write(&generated, "# generated\n").unwrap();
+        let nested = mirror_root.join("pkg/node_modules/dep/readme.md");
+        std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        std::fs::write(&nested, "# vendored\n").unwrap();
+        let source = mirror_root.join("docs/notes.mdx");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "# real source\n").unwrap();
+
+        let orch = orch_for_css_mirror_root(CountingPipeline::default(), &project, policy);
+
+        assert!(
+            !orch.plan_for_changes([generated]).rerun_css,
+            "a file under a mirror root's `dist/` is excluded from the @source \
+             scan, so it can never change the emitted CSS"
+        );
+        assert!(
+            !orch.plan_for_changes([nested]).rerun_css,
+            "the skip-dir filter must apply at ANY depth, not just directly \
+             under the mirror root"
+        );
+        assert!(
+            orch.plan_for_changes([source]).rerun_css,
+            "a genuine source file elsewhere under the same root must still \
+             rerun the scan — the filter must not break sibling scanning \
+             wholesale"
         );
     }
 

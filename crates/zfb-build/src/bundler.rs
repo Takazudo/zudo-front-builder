@@ -18834,6 +18834,57 @@ mod tests {
         assert_eq!(resolve_mirror_root(&container_claim, &project, ws), None);
     }
 
+    /// Epic #1995 depends on this invariant far from here, so pin it by
+    /// name rather than leaving it as one assertion inside the general
+    /// rejection sweep above.
+    ///
+    /// `orchestrator.rs`'s `content_under_css_mirror_root` gate is only
+    /// meaningfully NARROW because no published mirror root can be an
+    /// ancestor of `project_root`: such a root would make
+    /// `is_under_css_mirror_root` true for every path in the project, and the
+    /// gate would silently become the option (a) the epic REJECTED — every
+    /// ordinary markdown edit rerunning the Tailwind scan — with no test
+    /// failing anywhere. (The gate carries its own defensive re-check, pinned
+    /// by `orchestrator::tests::degenerate_project_containing_mirror_root_does_not_rerun_css`;
+    /// this test is the primary guard, at the source that publishes roots.)
+    #[test]
+    fn resolve_mirror_root_never_returns_an_ancestor_of_project_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("sub-packages/host");
+        fs::create_dir_all(&project).unwrap();
+
+        // (1) A file claim sitting directly in the project's parent.
+        let file_claim = ws.join("sub-packages/thing.ts");
+        fs::write(&file_claim, "x").unwrap();
+        assert_eq!(resolve_mirror_root(&file_claim, &project, ws), None);
+
+        // (2) The project's parent DIRECTORY itself as the claim (an alias
+        // target's directory component resolves to exactly this shape).
+        let dir_claim = ws.join("sub-packages");
+        assert_eq!(resolve_mirror_root(&dir_claim, &project, ws), None);
+
+        // (3) The same, with a `package.json` present — the nearest-ancestor
+        // search must never be able to RETURN a project-containing directory
+        // just because it looks like a package.
+        fs::write(dir_claim.join("package.json"), "{}").unwrap();
+        assert_eq!(resolve_mirror_root(&file_claim, &project, ws), None);
+        assert_eq!(resolve_mirror_root(&dir_claim, &project, ws), None);
+
+        // (4) A deeper claim whose nearest `package.json` ancestor is the
+        // project-containing directory from (3): the search must break out
+        // rather than climb into it.
+        let nested = ws.join("sub-packages/host-tools/util.ts");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, "x").unwrap();
+        assert_eq!(
+            resolve_mirror_root(&nested, &project, ws),
+            Some(ws.join("sub-packages/host-tools")),
+            "a genuine sibling must still resolve — this test must not pass by \
+             rejecting everything"
+        );
+    }
+
     #[test]
     fn sibling_mirror_plan_empty_for_standalone_project() {
         let tmp = tempfile::tempdir().unwrap();
