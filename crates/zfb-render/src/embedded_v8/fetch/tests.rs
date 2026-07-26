@@ -808,13 +808,20 @@ async fn the_subrequest_budget_is_per_dispatch_and_counts_every_request() {
         }
     );
 
-    // A dispatch boundary — `EmbeddedV8RenderHost::dispatch_fetch` calls
-    // exactly this — restores the budget.
-    counter.reset();
-    assert_eq!(counter.used(), 0);
-    perform_fetch(&client, &counter, &config, &get(&url), Vec::new())
+    // A dispatch boundary allocates a NEW counter — which is what
+    // `EmbeddedV8RenderHost::begin_dispatch_subrequest_budget` does, and
+    // why an op orphaned by the previous dispatch cannot spend this
+    // budget. The exhausted counter above stays exhausted.
+    let next_dispatch = SubrequestCounter::new();
+    perform_fetch(&client, &next_dispatch, &config, &get(&url), Vec::new())
         .await
-        .expect("the budget is restored per dispatch");
+        .expect("a new dispatch starts with a full budget");
+    assert_eq!(next_dispatch.used(), 1);
+    assert_eq!(
+        counter.used(),
+        3,
+        "the previous dispatch's spend is not rewritten"
+    );
 }
 
 #[tokio::test]

@@ -143,12 +143,27 @@ impl Default for FetchConfig {
 
 /// Per-dispatch subrequest budget.
 ///
-/// Lives in Rust — inside the host's `OpState` in production — and is
-/// reset at the start of every
-/// [`super::EmbeddedV8RenderHost::dispatch_fetch`], so a `Promise.all`
-/// fan-out in bundle code cannot evade it by never yielding to a JS-side
-/// counter. **Every redirect hop claims a slot**, matching Cloudflare,
-/// where each hop in a chain is its own subrequest.
+/// Lives in Rust — inside the host's `OpState` in production — so a
+/// `Promise.all` fan-out in bundle code cannot evade it by never
+/// yielding to a JS-side counter. **Every redirect hop claims a slot**,
+/// matching Cloudflare, where each hop in a chain is its own subrequest.
+///
+/// ## One counter per dispatch, allocated fresh — never zeroed in place
+///
+/// [`super::EmbeddedV8RenderHost::begin_dispatch_subrequest_budget`]
+/// installs a **brand-new** counter in `OpState` at the start of each
+/// dispatch rather than resetting the existing one, and
+/// [`state_handles`] clones the `Rc` at op entry.
+///
+/// That distinction is load-bearing. A handler can start a `fetch`
+/// without awaiting it and still return a `Response`, at which point
+/// `with_event_loop_promise` finishes while the op is still pending.
+/// With a single zeroed-in-place counter, that orphan's remaining
+/// redirect hops would spend the **next** dispatch's budget — and its
+/// own overspend would be forgiven by the reset. Allocating instead
+/// means the orphan keeps charging the counter it started on, which is
+/// exactly the dispatch it belongs to, and the incoming dispatch gets a
+/// budget nothing else holds a handle to.
 ///
 /// `Cell` rather than `AtomicU32`: the host is `!Send + !Sync` by
 /// construction (V8 isolates are thread-pinned), so there is no
@@ -163,12 +178,7 @@ impl SubrequestCounter {
         Self::default()
     }
 
-    /// Drop the budget back to zero. Called once per dispatch.
-    pub fn reset(&self) {
-        self.used.set(0);
-    }
-
-    /// Subrequests consumed since the last [`Self::reset`].
+    /// Subrequests consumed against this counter.
     pub fn used(&self) -> u32 {
         self.used.get()
     }
@@ -618,6 +628,18 @@ async fn read_response(
     config: &FetchConfig,
 ) -> Result<FetchOutcome, FetchError> {
     let status = response.status();
+    // Known limitation, deliberately not worked around: this is the
+    // CANONICAL reason phrase for the status code, not the bytes the
+    // server actually sent. hyper discards the HTTP/1 reason phrase
+    // during parsing and reqwest exposes no accessor for it, so a
+    // custom `200 Wibble` surfaces as `"OK"`, and an HTTP/2 response —
+    // which carries no reason phrase at all — surfaces as `"OK"` rather
+    // than the empty string a browser reports. Recovering the real
+    // phrase would mean replacing the HTTP stack, which #2015
+    // explicitly forbids; emitting `""` for everything instead would
+    // lose the correct value in the overwhelmingly common case. The
+    // #2013 contract's response row asks for `statusText` to be
+    // surfaced and does not specify reason-phrase fidelity.
     let status_text = status.canonical_reason().unwrap_or("").to_string();
     let headers: Vec<(String, String)> = response
         .headers()

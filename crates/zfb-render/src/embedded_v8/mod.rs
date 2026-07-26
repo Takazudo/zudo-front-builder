@@ -484,10 +484,10 @@ impl EmbeddedV8RenderHost {
             return Err(RenderError::Runtime(msg));
         }
         // Issue #2015: the outbound-subrequest budget is per DISPATCH,
-        // so it is zeroed here rather than anywhere in the op. Doing it
+        // so it is opened here rather than anywhere in the op. Doing it
         // in Rust — not JS — is what stops a `Promise.all` fan-out in
         // bundle code from evading the cap.
-        self.reset_subrequest_counter();
+        self.begin_dispatch_subrequest_budget();
         // Drive the JS-side `__zfb.dispatch(url, method, headers, body, mode)`
         // helper. It returns a Promise; we wait for it via
         // `with_event_loop_promise` which polls the V8 event loop
@@ -535,16 +535,30 @@ impl EmbeddedV8RenderHost {
         })
     }
 
-    /// Zero the per-dispatch outbound-subrequest budget (issue #2015).
+    /// Open a fresh outbound-subrequest budget for the dispatch that is
+    /// about to run (issue #2015).
     ///
-    /// A missing counter is not an error: a host built without the
-    /// fetch extension simply has no budget to reset, and the op itself
-    /// reports the host-op failure if it is ever called in that state.
-    fn reset_subrequest_counter(&mut self) {
+    /// A **new counter is installed**, never the existing one zeroed.
+    /// `with_event_loop_promise` can return while a `fetch` the handler
+    /// started but never awaited is still pending; that orphan holds an
+    /// `Rc` to the counter it began on, so zeroing in place would let it
+    /// spend this dispatch's budget (and would forgive its own
+    /// overspend). Replacing the entry leaves the orphan charging the
+    /// dispatch it belongs to and hands the incoming dispatch a budget
+    /// no one else can touch. See [`fetch::SubrequestCounter`].
+    ///
+    /// A host built without the fetch extension has no budget to open;
+    /// installing one there would be harmless but pointless, and the op
+    /// itself reports the host-op failure if it is ever called in that
+    /// state.
+    fn begin_dispatch_subrequest_budget(&mut self) {
         let op_state = self.runtime.op_state();
-        let op_state = op_state.borrow();
-        if let Some(counter) = op_state.try_borrow::<Rc<fetch::SubrequestCounter>>() {
-            counter.reset();
+        let mut op_state = op_state.borrow_mut();
+        if op_state
+            .try_borrow::<Rc<fetch::SubrequestCounter>>()
+            .is_some()
+        {
+            op_state.put(Rc::new(fetch::SubrequestCounter::new()));
         }
     }
 
@@ -1212,7 +1226,7 @@ mod fetch_boundary_tests {
     }
 
     #[tokio::test]
-    async fn dispatch_fetch_resets_the_subrequest_budget() {
+    async fn dispatch_fetch_opens_a_fresh_budget_and_leaves_the_previous_one_alone() {
         let mut host = EmbeddedV8RenderHost::new().expect("host boot");
         host.execute_module(
             "bundle.mjs",
@@ -1221,28 +1235,41 @@ mod fetch_boundary_tests {
         .await
         .expect("execute the probe bundle");
 
-        // Spend the budget as a previous dispatch would have.
-        let counter = {
+        let read_counter = |host: &EmbeddedV8RenderHost| {
             let op_state = host.runtime.op_state();
             let op_state = op_state.borrow();
             op_state.borrow::<Rc<fetch::SubrequestCounter>>().clone()
         };
+
+        // Spend the budget as the previous dispatch would have. An op
+        // that outlived that dispatch would still be holding this `Rc`.
+        let previous = read_counter(&host);
         for _ in 0..5 {
-            counter
+            previous
                 .claim("http://zfb.local/", 50)
                 .expect("within budget");
         }
-        assert_eq!(counter.used(), 5);
+        assert_eq!(previous.used(), 5);
 
         let response = host
             .dispatch_fetch(HttpRequestLike::get("http://zfb.local/"))
             .await
             .expect("dispatch");
         assert_eq!(response.status, 200);
+
+        let current = read_counter(&host);
+        assert!(
+            !Rc::ptr_eq(&previous, &current),
+            "each dispatch must get its OWN counter — zeroing the shared one in \
+             place would let a fetch orphaned by the previous dispatch spend this \
+             dispatch's budget"
+        );
+        assert_eq!(current.used(), 0, "the new dispatch starts at zero");
         assert_eq!(
-            counter.used(),
-            0,
-            "the budget is per dispatch, so dispatch_fetch must zero it"
+            previous.used(),
+            5,
+            "and the orphan keeps charging the dispatch it belongs to, rather than \
+             having its overspend forgiven"
         );
     }
 }
