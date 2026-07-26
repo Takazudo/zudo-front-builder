@@ -52,6 +52,24 @@
 //!   never arrived, that wait times out first, and the test fails for THAT
 //!   reason instead of attributing a delivery regression to the CSS-rerun
 //!   rule under test.
+//!
+//! ## Revert-proof (issue #1998, Wave 3 confirm pass)
+//!
+//! Per `l-lessons-dev-watcher-narrowing`'s "a second dynamic-watch registry"
+//! entry, a confirm test for one dynamic-watch channel can pass for the wrong
+//! reason if its sibling is also claimed by the OTHER channel. This fixture's
+//! sibling is claimed only via a tsconfig alias, but that guards delivery, not
+//! the CSS-rerun rule itself — so `content_under_css_mirror_root`
+//! (`crates/zfb-build/src/orchestrator.rs`) was temporarily forced to
+//! `return false` unconditionally and the test was rerun. Observed failure:
+//! the delivery proof still passed (`tick(): kinds=[notes.mdx:Created]`
+//! appeared, unaffected by the revert), but the final polling loop then timed
+//! out with `/assets/styles.css never picked up the sibling-.mdx-only utility
+//! class within 60s of the edit, even though the tick line above proves the
+//! event reached the orchestrator — the mirror-root CSS rerun (#1819 / #1997)
+//! regressed.` This confirms the test actually exercises the CSS-rerun gate
+//! and not merely event delivery. The revert was restored immediately after
+//! (`git diff` on the file came back empty).
 
 #![cfg(unix)]
 
