@@ -370,6 +370,29 @@ pub enum RefreshOutcome {
 /// and behaviour is unchanged.
 pub type StaleProbe = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync + 'static>;
 
+/// Function the dev pipeline calls alongside [`StaleProbe`] to collect
+/// the "SSR routes were (re)published this tick" bit (issue #1826, Dev
+/// Self Heal epic #1999).
+///
+/// SSR (`prerender = false`) routes have no `dist/` output path, so they
+/// can never appear in [`BuildOutcome::pages_stale`] — the staleness map
+/// is keyed on output paths and only SSG routes have one. That is
+/// precisely why an SSR-only project's self-heal channels drained an
+/// empty stale set and broadcast nothing. This probe carries the
+/// separate, boolean signal instead: it drains a one-shot flag the dev
+/// session sets when it publishes the live SSR route handle, so
+/// [`BuildOutcome::ssr_routes_published`] reaches
+/// `zfb_server::outcome_to_events` and a tab sitting on the dev 404 body
+/// is told to reload. Draining is one-shot, exactly like
+/// [`StaleProbe`]: calling it twice for one tick yields `true` once,
+/// then `false`.
+///
+/// This is a **signalling** channel only — it deliberately adds NO
+/// server-side staleness machinery for SSR routes, which need none (an
+/// SSR route renders per-request the instant its live handle is
+/// published).
+pub type SsrPublishProbe = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
+
 /// Function the dev pipeline calls before re-rendering pages, when
 /// the SSR worker bundle on disk may have changed (a `.tsx` page edit,
 /// layout edit, or exported-handler change).
@@ -639,6 +662,28 @@ pub struct BuildOutcome {
     /// nothing eagerly still tells the browser to reload — the stale
     /// route then re-renders on request.
     pub pages_stale: Vec<PathBuf>,
+
+    /// Whether this tick published the dev server's live SSR
+    /// (`prerender = false`) route handle (issue #1826, Dev Self Heal
+    /// epic #1999).
+    ///
+    /// The ONE shared signal both deferred-window self-heal channels in
+    /// `zfb dev` set — the healthy deferred boot publish (#1182 / Cold
+    /// premark #1808) and the cold-bootstrap recovery seam (#1809) — so
+    /// the two paths self-heal an open tab identically. Populated by
+    /// [`DevAssetPipeline`] from its [`SsrPublishProbe`] (watcher ticks)
+    /// and by the dev command's boot hook (boot), and left `false` by
+    /// every other pipeline.
+    ///
+    /// Exists because SSR routes have no `dist/` output path and so can
+    /// never appear in [`Self::pages_stale`]: without this bit an
+    /// SSR-only project's `BuildOutcome` is indistinguishable from an
+    /// empty tick and `zfb_server::outcome_to_events` emits nothing,
+    /// leaving a tab stuck on the dev 404 body even though the very next
+    /// GET is already a 200. It folds into the SAME `ReloadEvent::Page`
+    /// gate as `pages_stale`, so a mixed SSG/SSR project that sets both
+    /// still emits exactly one `Page` event.
+    pub ssr_routes_published: bool,
 }
 
 /// The contract every asset pipeline implementation must satisfy.

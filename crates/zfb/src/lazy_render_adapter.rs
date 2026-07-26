@@ -121,19 +121,26 @@ use crate::render_pipeline::build_output_path_for_resolved_url;
 /// patterns are already absent (sharp edges 4/7 of the design record).
 /// Pass `InjectedRouteSet::default()` (empty) on the parity path (no
 /// injected routes); the fallback is a no-op in that case.
+///
+/// Returns the handle installed into `ServeOpts` AND a typed clone of the
+/// adapter behind it. The typed clone exists for the `_redirects`
+/// rewrite pre-warm (issue #2004, epic #1999), which drives
+/// [`LazyRenderAdapter::render_stale_route`] — the adapter's SYNCHRONOUS
+/// core — directly from the dev boot task and the `_redirects` watch
+/// task. Both callers are already off the request path, so going through
+/// the `dyn RenderOnRequestHook` trait object (whose `render_if_stale`
+/// exists to hop off an async worker onto `spawn_blocking`) would buy
+/// nothing and, in the boot hook's case, is not even possible — that hook
+/// is a synchronous closure.
 pub(crate) fn make_render_on_request_handle(
     session: DevRenderSession,
     writer: RequestWriter,
     html_root: PathBuf,
     injected_routes: InjectedRouteSet,
-) -> RenderOnRequestHandle {
-    let hook: Arc<dyn RenderOnRequestHook> = Arc::new(LazyRenderAdapter::new(
-        session,
-        writer,
-        html_root,
-        injected_routes,
-    ));
-    Arc::new(std::sync::RwLock::new(Some(hook)))
+) -> (RenderOnRequestHandle, LazyRenderAdapter) {
+    let adapter = LazyRenderAdapter::new(session, writer, html_root, injected_routes);
+    let hook: Arc<dyn RenderOnRequestHook> = Arc::new(adapter.clone());
+    (Arc::new(std::sync::RwLock::new(Some(hook))), adapter)
 }
 
 /// Adapter that fulfils [`RenderOnRequestHook`] by rendering a claimed
@@ -209,7 +216,13 @@ impl LazyRenderAdapter {
     /// dispatch flow. Runs on a blocking thread; see the lock-ordering
     /// section above for why the renderer mutex is released before the
     /// `request_write` call.
-    fn render_stale_route(&self, url_path: &str) -> LazyRenderOutcome {
+    ///
+    /// `pub(crate)` so the `_redirects` rewrite pre-warm
+    /// ([`crate::dev_rewrite_prewarm`]) can drive exactly this — the same
+    /// claim → render → guarded-write flow a direct GET for the target
+    /// would take — from the boot task, without a request and without
+    /// going anywhere near `serve_from_waterfall`.
+    pub(crate) fn render_stale_route(&self, url_path: &str) -> LazyRenderOutcome {
         // Reverse lookup (#1019) — clones the entry OUT of the routes
         // RwLock; no lock is held past this line.
         //
