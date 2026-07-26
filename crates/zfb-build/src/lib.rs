@@ -104,7 +104,7 @@ pub use pipeline::{
     BuildOutcome, ClientScriptsRunner, CssRunner, DevAssetPipeline, DevBuildContext, EmittedAsset,
     IslandsBundleInfo, IslandsRunner, PageRenderer, ProdAssetEmitterInputs, ProdBuildContext,
     ProdRenderedFile, ProductionAssetPipeline, ProductionEmitters, RefreshOutcome, RelDistPath,
-    RenderedPage, RendererReloader, StaleProbe,
+    RenderedPage, RendererReloader, SsrPublishProbe, StaleProbe,
 };
 pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
 pub use plugin_registries::{
