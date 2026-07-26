@@ -484,9 +484,10 @@ fn reload_redirects(path: &Path) -> Redirects {
 #[cfg(feature = "embed_v8")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RewriteTargetMark {
-    /// Resolved to an SSG route that was NOT fresh; its output path is
-    /// now marked stale and queued in the tick-stale buffer.
-    MarkedStale(PathBuf),
+    /// Resolved to an SSG route the stale map already holds an entry
+    /// for — so it is claimable and the pre-warm's render will proceed.
+    /// Nothing was inserted: an entry existing IS the stale state.
+    Stale(PathBuf),
     /// Resolved to an SSG route the stale map says is already current —
     /// a direct `GET` would not re-render it either, so neither does the
     /// pre-warm. The whole reason the freshness check runs first.
@@ -521,8 +522,8 @@ pub(crate) struct RewritePrewarmWiring {
 
 #[cfg(feature = "embed_v8")]
 impl RewritePrewarmWiring {
-    /// Run one pass and leave the stale marks in the tick-stale buffer
-    /// for the CALLER to drain.
+    /// Run one pass and announce its targets through the tick-stale
+    /// buffer, for the CALLER to drain.
     ///
     /// Exactly one call site may use this: the deferred boot hook, which
     /// drains `take_tick_stale()` a few steps later and folds the result
@@ -533,17 +534,18 @@ impl RewritePrewarmWiring {
     /// their own. Every other call site uses
     /// [`Self::run_and_broadcast`].
     fn run_for_caller_drain(&self, redirects: &RedirectsHandle) {
-        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev(
-            self.mode,
-            redirects,
-            self.base_prefix.as_deref(),
-            Some(&self.session),
-            Some(&self.adapter),
-        );
+        let report = self.run_pass(redirects);
+        // The pass itself never writes to the shared tick-stale buffer
+        // (see `run_and_broadcast` for why). This call site is the one
+        // that wants the announcement, and it names exactly the paths
+        // this pass touched.
+        if let Some(report) = report {
+            self.session.inner.mark_stale(report.stale_targets);
+        }
     }
 
-    /// Run one pass, drain the marks it laid down, and broadcast them —
-    /// together with `pending`, any events the caller had not sent yet.
+    /// Run one pass and broadcast for it directly — together with
+    /// `pending`, any events the caller had not sent yet.
     ///
     /// **Blocking: it renders.** Both callers run it inside
     /// `spawn_blocking` (the `_redirects` watch task and `on_outcome`'s
@@ -557,6 +559,17 @@ impl RewritePrewarmWiring {
     /// warm reloads straight onto the dev 404 — the exact symptom #1825
     /// is about. This mirrors the boot hook, which likewise pre-warms
     /// before its drain so both sets of marks ride one broadcast.
+    ///
+    /// **It reads the pass's OWN report, never the shared tick-stale
+    /// buffer** (codex review of this fix pass). Both of these call sites
+    /// run on a blocking thread CONCURRENTLY with the orchestrator's tick
+    /// loop, so a `take_tick_stale()` here would happily swallow marks an
+    /// in-flight rebuild laid down and had not drained yet: this pass
+    /// would announce them early and that rebuild's own outcome would
+    /// then carry an empty `pages_stale`. The report names exactly the
+    /// targets this pass resolved, so there is nothing shared to race on
+    /// — and correspondingly the pass writes nothing into that buffer
+    /// either.
     ///
     /// `pending` is sent even if the pass panics (a `Drop`-time flush),
     /// so a broken pre-warm can never swallow a reload the tick had
@@ -580,21 +593,45 @@ impl RewritePrewarmWiring {
             tx: self.reload_tx.clone(),
             events: pending,
         };
-        self.run_for_caller_drain(redirects);
-        // The pass's own marks. Folded through `outcome_to_events` rather
-        // than pushing `ReloadEvent::Page` by hand so the "when does a
-        // stale set warrant a reload?" rule stays in one place.
-        let stale = self.session.inner.take_tick_stale();
-        if !stale.is_empty() {
-            for ev in outcome_to_events(&BuildOutcome {
-                pages_stale: stale,
-                ..BuildOutcome::default()
-            }) {
-                if !flush.events.contains(&ev) {
-                    flush.events.push(ev);
-                }
+        let Some(report) = self.run_pass(redirects) else {
+            return;
+        };
+        // A target this pass resolved as stale is a page a tab may be
+        // sitting on the dev 404 for. Folded through `outcome_to_events`
+        // rather than pushing `ReloadEvent::Page` by hand so the "when
+        // does a stale set warrant a reload?" rule stays in one place.
+        let rendered = report.rendered;
+        let mut own = outcome_to_events(&BuildOutcome {
+            pages_stale: report.stale_targets,
+            ..BuildOutcome::default()
+        });
+        // A DYNAMIC injected target resolves inside the adapter, which
+        // marks it stale under a path synthesized there — so it never
+        // reaches `stale_targets` and the fold above cannot see it. Its
+        // render is still a page that just became servable, and there is
+        // no `BuildOutcome` field that carries it (`pages_written` is
+        // `PageId`s, which this pass does not have), so say it directly.
+        if own.is_empty() && rendered > 0 {
+            own.push(ReloadEvent::Page);
+        }
+        for ev in own {
+            if !flush.events.contains(&ev) {
+                flush.events.push(ev);
             }
         }
+    }
+
+    fn run_pass(
+        &self,
+        redirects: &RedirectsHandle,
+    ) -> Option<crate::dev_rewrite_prewarm::PrewarmPassReport> {
+        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev(
+            self.mode,
+            redirects,
+            self.base_prefix.as_deref(),
+            Some(&self.session),
+            Some(&self.adapter),
+        )
     }
 }
 
@@ -715,10 +752,17 @@ fn spawn_redirects_watch(
             // edit, leaving a tab on the old 404 until something
             // unrelated happened, and (b) leave the marks to surface as
             // spurious `pages_stale` inside whatever tick drained next.
+            //
+            // The unconditional `Page`: a `_redirects` edit is a ROUTING
+            // change, and the pass can only infer a reload from a target
+            // becoming warm. Adding `/alias /already-warm-target 200`
+            // renders nothing — yet a tab on `/alias`'s old 404 is now
+            // wrong and must come back. Dedupe inside `run_and_broadcast`
+            // keeps this to one event when the pass warmed something too.
             if let Some(wiring) = prewarm.clone() {
                 let redirects = Arc::clone(&handle_for_task);
                 if let Err(join_err) = tokio::task::spawn_blocking(move || {
-                    wiring.run_and_broadcast(&redirects, Vec::new())
+                    wiring.run_and_broadcast(&redirects, vec![ReloadEvent::Page])
                 })
                 .await
                 {
@@ -5036,10 +5080,10 @@ impl DevRenderSession {
     }
 
     /// Resolve ONE `_redirects` 200-rewrite target by its hook-facing
-    /// request path and mark it stale **only if it is not already fresh**
-    /// (issue #2004, Dev Self Heal epic #1999).
+    /// request path and report whether it needs warming (issue #2004,
+    /// Dev Self Heal epic #1999).
     ///
-    /// The stale-marking half of the rewrite pre-warm — see
+    /// The lookup half of the rewrite pre-warm — see
     /// [`crate::dev_rewrite_prewarm`] for the whole pass and why a
     /// rewrite target needs one at all. Deliberately routed through
     /// [`Self::lookup_by_url`], the SAME reverse index the request-time
@@ -5048,35 +5092,30 @@ impl DevRenderSession {
     /// is a silent no-op rather than a phantom stale entry for an output
     /// path nothing will ever render.
     ///
-    /// **The freshness check comes FIRST, and it is load-bearing.**
-    /// `mark_stale` unconditionally re-inserts a stale entry, so marking
-    /// before asking would make every later "is it fresh?" question
-    /// answer itself — the pass would re-render every target of every
-    /// rule on every run. Asking first is also the only reading that
-    /// matches a real request: `LazyRenderAdapter::render_stale_route`
-    /// consults the SAME stale map through the SAME [`Self::claim_stale`]
-    /// (a non-consuming read) and serves the on-disk bytes when it finds
-    /// nothing. So a target this returns [`RewriteTargetMark::Fresh`] for
-    /// is exactly a target a direct `GET` would not re-render either.
+    /// **Read-only, and the freshness question is the whole point.** The
+    /// pre-#1999-review version called `mark_stale` first and asked
+    /// afterwards, which made the answer self-fulfilling: every boot and
+    /// every live `_redirects` edit re-rendered every target. Asking
+    /// without writing is also the only reading that matches a real
+    /// request — `LazyRenderAdapter::render_stale_route` consults the
+    /// SAME stale map through the SAME non-consuming [`Self::claim_stale`]
+    /// and serves the on-disk bytes when it finds nothing. So a target
+    /// this reports [`RewriteTargetMark::Fresh`] for is exactly a target
+    /// a direct `GET` would not re-render either.
     ///
-    /// When it does mark, it uses `mark_stale` (not
-    /// `claim_or_mark_stale`) so the mark lands in the tick-stale buffer
-    /// like every other stale-marking pass, and a tab sitting on the dev
-    /// 404 body for this target reloads through the normal
-    /// `ReloadEvent::Page` channel instead of a bespoke one.
+    /// Nothing needs inserting in the [`RewriteTargetMark::Stale`] case:
+    /// an entry being present IS the stale state, so the adapter's own
+    /// claim already succeeds. Announcing the target to livereload is a
+    /// separate decision, made per call site by `RewritePrewarmWiring`.
     #[cfg(feature = "embed_v8")]
-    pub(crate) fn mark_rewrite_target_stale_if_needed(
-        &self,
-        request_path: &str,
-    ) -> RewriteTargetMark {
+    pub(crate) fn rewrite_target_stale_state(&self, request_path: &str) -> RewriteTargetMark {
         let Some(entry) = self.lookup_by_url(request_path) else {
             return RewriteTargetMark::Unresolved;
         };
         if self.inner.claim(&entry.output_path).is_none() {
             return RewriteTargetMark::Fresh;
         }
-        self.inner.mark_stale([entry.output_path.clone()]);
-        RewriteTargetMark::MarkedStale(entry.output_path)
+        RewriteTargetMark::Stale(entry.output_path)
     }
 
     /// Cold-bootstrap recovery (issue #1809, epic #1806): consume the
@@ -11008,6 +11047,14 @@ mod tests {
             /// renders, and `on_outcome` runs on an async worker). The
             /// boot path already had this ordering by construction: it
             /// pre-warms at step 4b, ahead of its own tick-stale drain.
+            ///
+            /// The third assertion is the codex finding on that fix: this
+            /// call site runs on a blocking thread while the orchestrator
+            /// keeps ticking, so it must broadcast from its own report and
+            /// leave the SHARED tick-stale buffer alone. An unrelated
+            /// mark seeded below stands in for an in-flight rebuild's;
+            /// consuming it would announce that rebuild's page early and
+            /// leave its own outcome empty.
             #[test]
             fn recovery_rerun_broadcasts_its_marks_with_the_ticks_own_events() {
                 use crate::lazy_render_adapter::LazyRenderAdapter;
@@ -11022,9 +11069,12 @@ mod tests {
                     .inner
                     .mark_stale([PathBuf::from("about/index.html")]);
                 // ...and that mark was already drained by THIS tick's
-                // stale probe, so only what the pass itself queues can
+                // stale probe, so only what the pass itself produces can
                 // reach the assertions below.
                 let _ = session.inner.take_tick_stale();
+                // A CONCURRENT rebuild's mark, not yet drained by its own
+                // tick. Nothing in this pass may consume it.
+                session.inner.mark_stale([PathBuf::from("index.html")]);
 
                 let temp = tempfile::tempdir().expect("tempdir");
                 let pipeline = DevAssetPipeline::new();
@@ -11063,10 +11113,84 @@ mod tests {
                     "the pre-warm's own marks must produce a reload of their own — \
                      without one the tab is left on the dev 404 forever, got {seen:?}"
                 );
-                assert!(
-                    session.inner.take_tick_stale().is_empty(),
-                    "the pass must not strand marks for an unrelated later tick to \
-                     drain as spurious pages_stale"
+                assert_eq!(
+                    session.inner.take_tick_stale(),
+                    vec![PathBuf::from("index.html")],
+                    "the concurrent rebuild's mark must survive untouched, and the pass \
+                     must have stranded none of its own beside it",
+                );
+            }
+
+            /// Codex review of the #1999 fix pass — a live `_redirects`
+            /// edit must reload tabs even when the pre-warm renders
+            /// nothing.
+            ///
+            /// Adding `/alias /already-warm 200` changes ROUTING, not
+            /// page content: the pass correctly reports `Fresh` and does
+            /// no work, so inferring the reload from staleness would emit
+            /// nothing at all and leave a tab on `/alias`'s old 404 (or
+            /// on whatever the previous rule rewrote it to) until
+            /// something unrelated happened. The watch task therefore
+            /// supplies the `Page` event itself — and the dedupe must
+            /// keep it to exactly one when the pass DID warm something.
+            #[test]
+            fn live_redirects_edit_reloads_even_when_the_target_is_already_warm() {
+                use crate::lazy_render_adapter::LazyRenderAdapter;
+                use zfb_build::DevAssetPipeline;
+                use zfb_server::ReloadEvent;
+
+                let session = recovery_session();
+                let temp = tempfile::tempdir().expect("tempdir");
+                let pipeline = DevAssetPipeline::new();
+                let (tx, mut rx) = broadcast::channel::<ReloadEvent>(16);
+                let wiring = RewritePrewarmWiring {
+                    mode: BootLazyMode::Cold,
+                    base_prefix: None,
+                    session: session.clone(),
+                    adapter: LazyRenderAdapter::new(
+                        session.clone(),
+                        pipeline.request_writer(),
+                        temp.path().join("dev-pages"),
+                        Default::default(),
+                    ),
+                    reload_tx: tx.clone(),
+                };
+                let redirects: RedirectsHandle = Arc::new(std::sync::RwLock::new(
+                    Redirects::parse("/alias /about 200\n"),
+                ));
+
+                // Nothing is stale: `/about` is already warm, so the pass
+                // renders nothing and reports no targets.
+                assert!(session.claim_stale(Path::new("about/index.html")).is_none());
+                // The watch task's own event, verbatim.
+                wiring.run_and_broadcast(&redirects, vec![ReloadEvent::Page]);
+
+                let mut seen = Vec::new();
+                while let Ok(ev) = rx.try_recv() {
+                    seen.push(ev);
+                }
+                assert_eq!(
+                    seen,
+                    vec![ReloadEvent::Page],
+                    "a routing-only edit must still reload the tab, exactly once",
+                );
+
+                // And with a target that IS cold, the pass's own reload
+                // folds into that same single event rather than doubling
+                // it.
+                session
+                    .inner
+                    .mark_stale([PathBuf::from("about/index.html")]);
+                let _ = session.inner.take_tick_stale();
+                wiring.run_and_broadcast(&redirects, vec![ReloadEvent::Page]);
+                let mut seen = Vec::new();
+                while let Ok(ev) = rx.try_recv() {
+                    seen.push(ev);
+                }
+                assert_eq!(
+                    seen,
+                    vec![ReloadEvent::Page],
+                    "the pass's own reload must dedupe against the edit's, got {seen:?}",
                 );
             }
 

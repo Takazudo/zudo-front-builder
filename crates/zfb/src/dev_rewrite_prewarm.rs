@@ -27,17 +27,17 @@
 //!
 //! For every enumerated target, in `_redirects` file order:
 //!
-//! 1. **Ask whether it is already fresh, and mark it stale only if it is
-//!    not** ([`DevRenderSession::mark_rewrite_target_stale_if_needed`]).
-//!    The order is load-bearing: `mark_stale` re-inserts a stale entry
-//!    unconditionally, so marking first would make the freshness question
-//!    answer itself and the pass would re-render every target of every
-//!    rule on every run. Asking first is also the only reading that
-//!    matches production — the adapter consults the same stale map
-//!    through the same `claim_stale` and serves the on-disk bytes when it
-//!    finds nothing. When it does mark, the mark rides the normal
-//!    tick-stale → `pages_stale` → `ReloadEvent::Page` channel a tab
-//!    already listens on.
+//! 1. **Ask whether it is already fresh**
+//!    ([`DevRenderSession::rewrite_target_stale_state`]). A read, not a
+//!    write: the pre-review version marked the target stale and only then
+//!    asked, which made the answer self-fulfilling and re-rendered every
+//!    target of every rule on every run. Asking without writing is also
+//!    the only reading that matches production — the adapter consults the
+//!    same stale map through the same `claim_stale` and serves the
+//!    on-disk bytes when it finds nothing. A target that is already stale
+//!    needs no mark either: the entry existing IS the stale state, so the
+//!    adapter's claim already succeeds. Announcing the warmed targets to
+//!    livereload is the CALLER's decision — see the drain section below.
 //! 2. **Warm it** through [`LazyRenderAdapter::render_stale_route`] — the
 //!    adapter's synchronous core, i.e. the exact claim → render →
 //!    guarded-write flow a direct `GET /target` would take.
@@ -88,6 +88,13 @@
 //!   rule set names, each is genuinely a no-op when already fresh (step 1
 //!   returns `Fresh` before the renderer is touched at all), and the edit
 //!   that triggers it is a human keystroke, not a hot loop.
+//!   **The edit always broadcasts a reload, warm or not** (codex review
+//!   of the #1999 fix pass): a rule set change is a ROUTING change, so a
+//!   tab sitting on `/alias`'s old 404 — or on what the previous rule
+//!   rewrote it to — must come back even when the new target was already
+//!   warm and this pass therefore rendered nothing. The watch task
+//!   supplies that `ReloadEvent::Page` itself rather than inferring one
+//!   from staleness, which cannot see a routing-only change.
 //! - **After a cold-bootstrap recovery: yes.** When the deferred Cold
 //!   bundle FAILS (#1809), the boot hook's pre-warm runs against the
 //!   empty scaffold route tables and warms nothing. The recovery's own
@@ -101,27 +108,36 @@
 //! so there is one implementation of "what pre-warming means" and the
 //! lifecycle moments cannot drift.
 //!
-//! ## Who drains the marks — the other half of the lifecycle
+//! ## Who announces the warmed targets — the other half of the lifecycle
 //!
-//! Step 1 writes into the per-tick stale buffer, which is drained
-//! elsewhere and turned into one `ReloadEvent::Page`. A registration
-//! point that runs the pass without arranging for that drain leaks the
-//! marks: they surface later as spurious `pages_stale` in an unrelated
-//! tick, and the run that earned them broadcasts nothing. So exactly one
-//! of the three has a caller-side drain, and the other two do their own:
+//! Warming a target is useless if no tab is told to come back for it, so
+//! every registration point has to say who broadcasts. The pass itself
+//! deliberately does neither: it does not write to the session's
+//! per-tick stale buffer and it does not drain it. Both of the
+//! self-broadcasting call sites below run on a blocking thread
+//! CONCURRENTLY with the orchestrator's tick loop, and that buffer is
+//! shared session state — touching it from here would let this pass
+//! swallow an in-flight rebuild's marks and announce them early, leaving
+//! that rebuild's own outcome empty. So the pass returns
+//! [`PrewarmPassReport::stale_targets`] and the caller decides:
 //!
-//! - **Boot** — the deferred hook drains `take_tick_stale()` a few steps
-//!   after the pass and folds it into the single `run_with_boot`
-//!   broadcast (`RewritePrewarmWiring::run_for_caller_drain`).
+//! - **Boot** — `RewritePrewarmWiring::run_for_caller_drain` marks those
+//!   exact paths into the tick-stale buffer, which the deferred hook
+//!   drains a few steps later and folds into the single `run_with_boot`
+//!   broadcast. Safe here precisely because the boot hook is not racing
+//!   a tick; it IS the boot.
 //! - **Live `_redirects` edit** and **cold-bootstrap recovery** — no
 //!   drain follows either, so both use
-//!   `RewritePrewarmWiring::run_and_broadcast`, which drains and sends.
-//!   The recovery case additionally hands its tick's OWN events to that
-//!   call rather than sending them first: a tab reloaded before the
-//!   target is warm lands straight back on the dev 404, and the pass's
-//!   marks would then arrive in an already-drained buffer. Deferring the
-//!   send gives the recovery path the same "one broadcast, after the
-//!   warm" ordering the boot path gets for free.
+//!   `RewritePrewarmWiring::run_and_broadcast`, which sends for the
+//!   report directly. The recovery case additionally hands its tick's
+//!   OWN events to that call rather than sending them first: a tab
+//!   reloaded before the target is warm lands straight back on the dev
+//!   404. Deferring the send gives the recovery path the same "one
+//!   broadcast, after the warm" ordering the boot path gets for free.
+//!   The live-edit case passes a `Page` event of its own for a different
+//!   reason — see the lifecycle list above.
+
+use std::path::PathBuf;
 
 use zfb_server::{prewarm_rewrite_targets, PrewarmSkipReason, Redirects, RedirectsHandle};
 
@@ -134,11 +150,19 @@ use crate::lazy_render_adapter::{LazyRenderAdapter, LazyRenderOutcome};
 pub(crate) struct PrewarmPassReport {
     /// Targets the enumerator produced.
     pub enumerated: usize,
-    /// Targets that resolved to a live SSG route which was NOT fresh, and
-    /// were therefore marked stale.
-    pub marked: usize,
-    /// Targets the stale map reported as already current — neither marked
-    /// nor rendered. The pass's genuine no-op class; see the `Fresh` arm.
+    /// Output paths of the targets that resolved to a live SSG route the
+    /// stale map was still holding an entry for — i.e. the ones this pass
+    /// warmed.
+    ///
+    /// Returned rather than pushed into the session's shared tick-stale
+    /// buffer, because two of the three call sites run CONCURRENTLY with
+    /// the orchestrator's tick loop and must neither write to nor drain
+    /// that buffer (codex review of the #1999 fix pass). The caller
+    /// decides how to announce these; see `RewritePrewarmWiring`.
+    pub stale_targets: Vec<PathBuf>,
+    /// Targets the stale map reported as already current — neither
+    /// announced nor rendered. The pass's genuine no-op class; see the
+    /// `Fresh` arm.
     pub already_fresh: usize,
     /// Targets whose warm render actually wrote (or byte-deduped) HTML.
     pub rendered: usize,
@@ -204,8 +228,8 @@ pub(crate) fn prewarm_rewrite_targets_now(
         //   exists to prevent, even though a direct GET renders it fine.
         // - `MarkedStale` is the #1825 case: the target has no servable
         //   bytes yet, so step 2 must render it.
-        match session.mark_rewrite_target_stale_if_needed(&target.request_path) {
-            RewriteTargetMark::MarkedStale(_) => report.marked += 1,
+        match session.rewrite_target_stale_state(&target.request_path) {
+            RewriteTargetMark::Stale(output_path) => report.stale_targets.push(output_path),
             RewriteTargetMark::Fresh => {
                 report.already_fresh += 1;
                 continue;
@@ -318,6 +342,11 @@ mod tests {
     /// The encoded target is the load-bearing one — a pure-ASCII target
     /// cannot falsify this, since its decoded and canonical forms
     /// coincide.
+    ///
+    /// It also pins that the pass leaves the SESSION-WIDE tick-stale
+    /// buffer alone in both directions — see
+    /// `PrewarmPassReport::stale_targets` for why that isolation matters
+    /// when two of the three call sites run concurrently with a tick.
     #[test]
     fn pass_marks_and_warms_exactly_the_targets_that_resolve() {
         use std::path::PathBuf;
@@ -351,6 +380,10 @@ mod tests {
         // FRESH and the pass would correctly decline to do anything — see
         // the sibling test below.
         session.mark_routes_stale([PathBuf::from("posts/caf%C3%A9/index.html")]);
+        // `mark_routes_stale` also ANNOUNCES, which is not what is under
+        // test here — drain it so the buffer assertion below can only be
+        // satisfied by the pass itself staying out of that buffer.
+        let _ = session.take_tick_stale_for_tests();
         let pipeline = DevAssetPipeline::new();
         let adapter = LazyRenderAdapter::new(
             session.clone(),
@@ -375,16 +408,17 @@ mod tests {
                 // The splat target is non-concrete and the 301 is out of
                 // scope, so two rules enumerate.
                 enumerated: 2,
-                marked: 1,
+                // Reported against the route's real output path — the
+                // caller announces these, the pass does not.
+                stale_targets: vec![PathBuf::from("posts/caf%C3%A9/index.html")],
                 already_fresh: 0,
                 rendered: 0,
             },
         );
-        // The mark landed on the route's real output path, in the
-        // tick-stale buffer every other stale-marking pass feeds.
-        assert_eq!(
-            session.take_tick_stale_for_tests(),
-            vec![PathBuf::from("posts/caf%C3%A9/index.html")],
+        assert!(
+            session.take_tick_stale_for_tests().is_empty(),
+            "the pass must not touch the session-wide tick-stale buffer: a concurrent \
+             rebuild's marks live there and are not this pass's to announce",
         );
     }
 
@@ -403,7 +437,8 @@ mod tests {
     /// ways, because `rendered: 0` alone is satisfied by the old
     /// behaviour too (the stub has no renderer):
     ///
-    /// - `already_fresh: 1, marked: 0` — the check ran and answered.
+    /// - `already_fresh: 1`, empty `stale_targets` — the check ran and
+    ///   answered.
     /// - the stale map is still EMPTY — the pass did not re-stale the
     ///   route, which is what would force a pointless re-render on the
     ///   next real request.
@@ -454,7 +489,7 @@ mod tests {
             report,
             PrewarmPassReport {
                 enumerated: 1,
-                marked: 0,
+                stale_targets: Vec::new(),
                 already_fresh: 1,
                 rendered: 0,
             },
@@ -521,7 +556,10 @@ mod tests {
             &adapter,
         );
         assert_eq!(report.enumerated, 1);
-        assert_eq!(report.marked, 0, "the reverse index cannot know this route");
+        assert!(
+            report.stale_targets.is_empty(),
+            "the reverse index cannot know this route"
+        );
         assert!(
             session
                 .claim_stale(Path::new("preset-docs/foo/index.html"))
