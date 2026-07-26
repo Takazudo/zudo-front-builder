@@ -1069,12 +1069,14 @@ fn align_style(align: &AlignKind) -> Option<&'static str> {
 fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKind]) -> String {
     let mut out = String::new();
 
-    // Build a style attr string for column index `col`.
+    // Build a style attr string for column index `col`. Object-valued,
+    // matching the other two emit paths — a string `style` prop makes
+    // React throw. See `jsx_style_attr`.
     let style_attr = |col: usize| -> String {
         align
             .get(col)
             .and_then(align_style)
-            .map(|v| format!(" style=\"text-align: {v}\""))
+            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -1411,6 +1413,10 @@ fn render_hast_attrs(attrs: &[(String, String)]) -> String {
     }
     let mut out = String::new();
     for (k, v) in attrs {
+        if k == "style" {
+            out.push_str(&jsx_style_attr(v));
+            continue;
+        }
         out.push(' ');
         out.push_str(k);
         if v.is_empty() && is_html_boolean_attr(k) {
@@ -1418,6 +1424,78 @@ fn render_hast_attrs(attrs: &[(String, String)]) -> String {
         }
         out.push('=');
         out.push_str(&jsx_string_attr(v));
+    }
+    out
+}
+
+/// Render a CSS declaration string as a JSX `style` **object** prop:
+/// ` style={{"position": "absolute", …}}`. Returns the empty string when
+/// nothing parses, so the attribute is omitted entirely.
+///
+/// React throws outright on a string-valued `style` prop ("The `style`
+/// prop expects a mapping from style properties to values, not a string"),
+/// which would take down every page carrying one. hast stores attribute
+/// values as plain `String`s, so the CSS text has to be converted here, at
+/// the JSX boundary — the HTML serializer keeps writing the string form
+/// untouched.
+///
+/// Hyphenated property names are camelCased (`white-space` → `whiteSpace`)
+/// because React ignores the hyphenated spelling with a warning. Custom
+/// properties (`--shiki-dark-bg`, emitted by `SyntectPlugin`'s dual-theme
+/// mode) keep their exact name — both React and Preact read those verbatim.
+///
+/// Splitting is deliberately simple: `;` separates declarations and the
+/// FIRST `:` separates name from value. That is sufficient for every
+/// declaration this crate emits (footnote label hiding, table
+/// `text-align`, syntect colors) and for ordinary author CSS. A value
+/// containing a literal `;` — a `url(data:…;base64,…)` — would split
+/// wrongly; no producer here emits one.
+fn jsx_style_attr(css: &str) -> String {
+    let mut props: Vec<String> = Vec::new();
+    for decl in css.split(';') {
+        let decl = decl.trim();
+        if decl.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        let key = if name.starts_with("--") {
+            name.to_string()
+        } else {
+            camel_case_css_property(name)
+        };
+        props.push(format!(
+            "{}: {}",
+            js_string_literal(&key),
+            js_string_literal(value)
+        ));
+    }
+    if props.is_empty() {
+        return String::new();
+    }
+    format!(" style={{{{{}}}}}", props.join(", "))
+}
+
+/// `white-space` → `whiteSpace`. Leaves an already-camelCase or
+/// single-word name untouched.
+fn camel_case_css_property(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut upper_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(ch);
+        }
     }
     out
 }
@@ -1949,10 +2027,12 @@ fn jsx_render_table(
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let style_attr = |col: usize| -> String {
+        // Object-valued, matching the hast bridge's own `style` handling —
+        // a string `style` prop makes React throw. See `jsx_style_attr`.
         t.align
             .get(col)
             .and_then(align_style)
-            .map(|v| format!(" style=\"text-align: {v}\""))
+            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -4265,9 +4345,15 @@ mod tests {
         );
     }
 
-    /// Per-column alignment is emitted as `style="text-align: …"` on
-    /// `<th>` and `<td>` elements. `:---` = left, `---:` = right,
-    /// `:---:` = center.
+    /// Per-column alignment is emitted as a `style` OBJECT prop
+    /// (`style={{"textAlign": "left"}}`) on `<th>` and `<td>` elements.
+    /// `:---` = left, `---:` = right, `:---:` = center.
+    ///
+    /// The spelling changed from the string form `style="text-align: left"`
+    /// during epic #2021's review pass: React throws on a string-valued
+    /// `style` prop, so every JSX emit site now goes through
+    /// `jsx_style_attr`. The alignment semantics asserted here are
+    /// unchanged — only how the declaration is spelled in JSX.
     #[test]
     fn pipe_table_alignment_emits_style_attr() {
         // Columns: left | right | center | none
@@ -4276,26 +4362,31 @@ mod tests {
 
         // Header cells carry the alignment.
         assert!(
-            out.contains("style=\"text-align: left\""),
+            out.contains("style={{\"textAlign\": \"left\"}}"),
             "left alignment missing: {out}"
         );
         assert!(
-            out.contains("style=\"text-align: right\""),
+            out.contains("style={{\"textAlign\": \"right\"}}"),
             "right alignment missing: {out}"
         );
         assert!(
-            out.contains("style=\"text-align: center\""),
+            out.contains("style={{\"textAlign\": \"center\"}}"),
             "center alignment missing: {out}"
         );
         // The fourth column has no alignment → no style attr on that cell.
         // A loose check: the output must not have a 4th `style=` that
         // would indicate the None column sprouted one.
-        let style_count = out.matches("style=\"text-align:").count();
+        let style_count = out.matches("style={{\"textAlign\":").count();
         // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
         // have alignment → 3 × 2 = 6 `style=` occurrences.
         assert_eq!(
             style_count, 6,
             "expected 6 style attrs (3 cols × 2 rows): {out}"
+        );
+        assert!(
+            !out.contains("style=\""),
+            "no JSX emit site may produce a STRING style prop — React \
+             throws on one: {out}"
         );
     }
 
@@ -5337,6 +5428,31 @@ mod tests {
     }
 
     #[test]
+    fn jsx_style_attr_emits_a_react_compatible_object_prop() {
+        assert_eq!(
+            jsx_style_attr("text-align: center"),
+            " style={{\"textAlign\": \"center\"}}"
+        );
+        // Custom properties keep their exact name — React and Preact both
+        // read `--x` verbatim, and camelCasing would break them.
+        assert_eq!(
+            jsx_style_attr("--shiki-dark-bg:#111;color:#eee"),
+            " style={{\"--shiki-dark-bg\": \"#111\", \"color\": \"#eee\"}}"
+        );
+        // A value may contain `:` and `,` (`clip: rect(0,0,0,0)`); only the
+        // FIRST `:` separates name from value.
+        assert_eq!(
+            jsx_style_attr("clip:rect(0,0,0,0)"),
+            " style={{\"clip\": \"rect(0,0,0,0)\"}}"
+        );
+        // Nothing parseable → the attribute is omitted entirely rather
+        // than emitted empty.
+        assert_eq!(jsx_style_attr(""), "");
+        assert_eq!(jsx_style_attr(";  ;"), "");
+        assert_eq!(jsx_style_attr("novalue"), "");
+    }
+
+    #[test]
     fn the_footnote_label_is_hidden_by_an_inline_style_not_a_project_css_class() {
         // `sr-only` is a Tailwind utility, and this class is emitted from
         // Rust — Tailwind's content scan never sees the string, so the
@@ -5344,9 +5460,16 @@ mod tests {
         // either. The inline style is what actually makes the documented
         // "visually hidden" landmark true.
         let jsx = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        // Emitted as a style OBJECT, never a string — React throws on a
+        // string `style` prop. `jsx_style_attr` camelCases the hyphenated
+        // property names on the way through.
         assert!(
-            jsx.contains(&format!("style=\"{FOOTNOTE_LABEL_STYLE}\"")),
+            jsx.contains(&jsx_style_attr(FOOTNOTE_LABEL_STYLE)),
             "the footnote label must carry the visually-hidden inline style: {jsx}"
+        );
+        assert!(
+            jsx.contains("\"whiteSpace\": \"nowrap\"") && !jsx.contains("white-space"),
+            "hyphenated CSS property names must be camelCased for React: {jsx}"
         );
         assert!(
             jsx.contains("class=\"sr-only\""),
