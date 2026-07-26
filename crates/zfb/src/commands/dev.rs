@@ -4685,6 +4685,12 @@ impl DevRenderSession {
                         "renderer is not backed by embedded V8 while draining content trace"
                     )
                 })?;
+                // Build-time: `dispatch_fetch_full` forwards to
+                // `dispatch_fetch_full_with_mode` with
+                // `DispatchMode::BuildTime` (issue #2014). This drains a
+                // trace the build-time render pass recorded — it is not
+                // a request-time SSR dispatch, even though it shares the
+                // host instance with one.
                 host.dispatch_fetch_full(DEV_CONTENT_TRACE_ENDPOINT, "GET", &headers, &[])
                     .map_err(anyhow::Error::from)?
             };

@@ -79,6 +79,12 @@ use thiserror::Error;
 
 use crate::bundler::BundleManifest;
 
+/// Re-exported so consumers of [`EmbeddedV8Host`] can name the
+/// per-dispatch mode without depending on `zfb-render` directly.
+/// Deliberately from `zfb_render`'s ungated `dispatch_mode` module — the
+/// trait below is compiled with and without the `embed_v8` feature.
+pub use zfb_render::DispatchMode;
+
 // ---------------------------------------------------------------------------
 // Public types — input
 // ---------------------------------------------------------------------------
@@ -196,11 +202,13 @@ pub trait EmbeddedV8Host: Send {
     /// is the raw bytes the client sent — empty for GET/HEAD, the
     /// POST/PUT payload for write methods.
     ///
-    /// Default implementation forwards to [`Self::dispatch_fetch`]
-    /// for backwards compatibility — implementers that can carry the
-    /// full request shape (the production `ThreadedV8Host`) override
-    /// it. The default lets `Backend::Stub` and test doubles keep
-    /// working unchanged.
+    /// **This method is build-time by definition** — it forwards to
+    /// [`Self::dispatch_fetch_full_with_mode`] with
+    /// [`DispatchMode::BuildTime`] and is deliberately NOT overridable
+    /// as a mode-bearing seam (issue #2014). Request-time SSR must call
+    /// [`Self::dispatch_fetch_full_with_mode`] explicitly; see that
+    /// method's docs for why `dispatch_fetch_full` cannot serve as the
+    /// seam on its own.
     fn dispatch_fetch_full(
         &mut self,
         url_path: &str,
@@ -208,9 +216,43 @@ pub trait EmbeddedV8Host: Send {
         headers: &std::collections::BTreeMap<String, String>,
         body: &[u8],
     ) -> Result<HttpResponseLike, RendererError> {
+        self.dispatch_fetch_full_with_mode(url_path, method, headers, body, DispatchMode::BuildTime)
+    }
+
+    /// [`Self::dispatch_fetch_full`] plus the per-dispatch
+    /// [`DispatchMode`] (issue #2014, epic #2012).
+    ///
+    /// This — not `dispatch_fetch_full` — is the mode-bearing entry
+    /// point, and it is the method production implementers override.
+    ///
+    /// Why `dispatch_fetch_full` is not a usable seam on its own:
+    /// `crates/zfb/src/commands/dev.rs` calls it for the **build-time**
+    /// dev content-trace endpoint against the very same host instance
+    /// that `crates/zfb/src/ssr_adapter.rs` uses for request-time SSR.
+    /// Hard-coding `RequestTime` inside the `ThreadedV8Host` override
+    /// would hand build-time capability to that caller; leaving the
+    /// build-time default would deny legitimate SSR. Mode is therefore
+    /// a caller-supplied argument, and it is never inferred from the
+    /// endpoint, the URL, or the presence of a body.
+    ///
+    /// Exactly one production call site passes
+    /// [`DispatchMode::RequestTime`]: `crates/zfb/src/ssr_adapter.rs`.
+    ///
+    /// Default implementation forwards to [`Self::dispatch_fetch`] for
+    /// backwards compatibility — `Backend::Stub` and test doubles keep
+    /// working unchanged, and a host that cannot carry the full request
+    /// shape cannot carry a mode either.
+    fn dispatch_fetch_full_with_mode(
+        &mut self,
+        url_path: &str,
+        method: &str,
+        headers: &std::collections::BTreeMap<String, String>,
+        body: &[u8],
+        mode: DispatchMode,
+    ) -> Result<HttpResponseLike, RendererError> {
         // Silence unused warnings on the default path — the override
         // in `ThreadedV8Host` is the load-bearing implementation.
-        let _ = (method, headers, body);
+        let _ = (method, headers, body, mode);
         self.dispatch_fetch(url_path)
     }
 
@@ -1446,6 +1488,70 @@ mod tests {
         Backend::Stub {
             handler: Arc::new(f),
         }
+    }
+
+    /// Records the [`DispatchMode`] every mode-bearing call arrives with,
+    /// so the trait's fail-safe default can be asserted rather than
+    /// assumed (issue #2014).
+    #[derive(Default)]
+    struct ModeRecordingHost {
+        seen: Vec<DispatchMode>,
+    }
+
+    impl EmbeddedV8Host for ModeRecordingHost {
+        fn dispatch_fetch(&mut self, _url_path: &str) -> Result<HttpResponseLike, RendererError> {
+            // Reached only if a caller bypasses the mode-bearing seam
+            // entirely; the tests below assert `seen`, so a silent
+            // fall-through here shows up as an empty recording.
+            Ok(HttpResponseLike::default())
+        }
+
+        fn dispatch_fetch_full_with_mode(
+            &mut self,
+            _url_path: &str,
+            _method: &str,
+            _headers: &BTreeMap<String, String>,
+            _body: &[u8],
+            mode: DispatchMode,
+        ) -> Result<HttpResponseLike, RendererError> {
+            self.seen.push(mode);
+            Ok(HttpResponseLike::default())
+        }
+    }
+
+    /// Guardrail 4 at the Rust seam: `dispatch_fetch_full` — the method
+    /// the build-time dev content-trace endpoint calls — must arrive at
+    /// the mode-bearing override as `BuildTime`, so no existing call
+    /// site silently gains request-time capability.
+    #[test]
+    fn dispatch_fetch_full_delegates_as_build_time() {
+        let mut host = ModeRecordingHost::default();
+        host.dispatch_fetch_full("/__zfb_content_trace", "GET", &BTreeMap::new(), &[])
+            .expect("dispatch");
+        assert_eq!(host.seen, vec![DispatchMode::BuildTime]);
+    }
+
+    /// The one shape `ssr_adapter.rs` uses: an explicit `RequestTime`
+    /// reaches the override unchanged. Paired with the test above so a
+    /// seam stuck on either value fails one of the two.
+    #[test]
+    fn explicit_request_time_reaches_the_mode_bearing_override() {
+        let mut host = ModeRecordingHost::default();
+        host.dispatch_fetch_full_with_mode(
+            "/api/submit",
+            "POST",
+            &BTreeMap::new(),
+            b"payload",
+            DispatchMode::RequestTime,
+        )
+        .expect("dispatch");
+        host.dispatch_fetch_full("/about", "GET", &BTreeMap::new(), &[])
+            .expect("dispatch");
+        assert_eq!(
+            host.seen,
+            vec![DispatchMode::RequestTime, DispatchMode::BuildTime],
+            "mode must be per-call, not sticky on the host"
+        );
     }
 
     /// Build a stub response with status 200 and `text/html` content type.

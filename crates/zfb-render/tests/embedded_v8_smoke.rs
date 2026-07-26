@@ -725,6 +725,9 @@ async fn dispatch_post_with_binary_body_round_trips() {
         method: "POST".to_string(),
         headers: std::collections::BTreeMap::new(),
         body: Some(body.clone()),
+        // Body round-tripping is mode-independent; the SSG default
+        // keeps this test on the pre-#2014 path.
+        mode: zfb_render::DispatchMode::BuildTime,
     };
     let resp = host.dispatch_fetch(req).await.expect("dispatch POST");
     assert_eq!(resp.status, 200);

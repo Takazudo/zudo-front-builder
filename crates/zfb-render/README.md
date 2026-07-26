@@ -82,6 +82,8 @@ The trait is `?Send` by design: the embedded V8 isolate is pinned to the thread 
 
 Per-dispatch flow: `dispatch_fetch` builds a small JS expression that calls `__zfb.dispatch(...)`, which constructs a JS `Request`, awaits `default.fetch(req)`, and returns `{ status, headers, body }`. The Rust side deserialises the result via `serde_v8`.
 
+What `fetch` and Web Crypto are allowed to do inside this host — and how build-time SSG is distinguished from request-time SSR so the deliberate build-time network denial survives — is locked by [`research/2013-request-time-capability-contract.md`](../../research/2013-request-time-capability-contract.md).
+
 `node:fs`, `node:fs/promises`, `node:path`, `node:url`, and `node:buffer` resolve to throwing-proxy stubs so Workers-targeted user code that imports Node namespaces for code paths that only fire in production continues to *load* under SSG; only actual invocation fails.
 
 ### `Cargo.toml` feature gate

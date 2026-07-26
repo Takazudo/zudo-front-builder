@@ -1,0 +1,5 @@
+{
+  "name": "embedded-host-request-time-ssg-fixture",
+  "private": true,
+  "type": "module"
+}

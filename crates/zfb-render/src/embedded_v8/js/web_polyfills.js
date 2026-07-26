@@ -1,8 +1,12 @@
 // Minimal Web Platform API polyfills for the embedded V8 host.
 //
-// The SSG path never makes outgoing network requests, so we don't
-// need a real `fetch`. Hono and similar workerd-style routers only
-// need:
+// The SSG path never makes outgoing network requests, so the build-time
+// `fetch` is a loud denial rather than a transport. The REQUEST-TIME
+// path does make them, through the Rust op `op_zfb_fetch` (epic #2012,
+// contract: research/2013-request-time-capability-contract.md) — see
+// the `fetch` section below for which side enforces what.
+//
+// Hono and similar workerd-style routers only need:
 //
 // - `Request` / `Response` / `Headers` constructible from the shapes
 //   they document.
@@ -13,9 +17,11 @@
 // - `atob` / `btoa` for base64.
 // - `structuredClone` for object cloning (workerd ships it; some
 //   user libraries assume its presence).
-// - `crypto` with `randomUUID` and `subtle.digest` (Hono's request-id
-//   middleware probes them; we provide enough for the probe to not
-//   throw, but keep the surface small).
+// - `crypto` — `getRandomValues` / `randomUUID` backed by the OS
+//   CSPRNG (never `Math.random`, bug #1751), `subtle.digest` for
+//   SHA-1/256/384/512, `subtle.timingSafeEqual`, and the rest of
+//   SubtleCrypto present-and-failing-closed. See the `crypto` section
+//   below.
 // - `MessageChannel` / `MessagePort` — React 19's react-dom server
 //   bundle constructs a `MessageChannel` at module-load time
 //   (unguarded) for its Fizz `scheduleWork` scheduler. React 18 did
@@ -24,6 +30,8 @@
 //   re-throws SSR errors via `setTimeout`; without it the error is
 //   masked by `ReferenceError: setTimeout is not defined`.
 //   queueMicrotask-backed, no real delay (see the impl docblock).
+// - `AbortController` / `AbortSignal` — added by issue #2016 for the
+//   request-time `fetch` branch; neither existed here before.
 //
 // All polyfills live in the global object so module-shape detection
 // (`typeof Request === "function"`) reports as you'd expect on
@@ -31,12 +39,15 @@
 //
 // What we deliberately DO NOT polyfill:
 //
-// - Outgoing `fetch(url)` to a network — we install a `fetch` that
-//   throws so user code that accidentally tries to make a network
-//   call during SSG fails loudly instead of silently hanging.
+// - Outgoing `fetch(url)` during BUILD-TIME render — that `fetch`
+//   rejects so user code accidentally making a network call during SSG
+//   fails loudly instead of silently hanging. Request-time SSR is a
+//   separate branch and does reach the network.
 // - `WebSocket`, `EventSource`, `Worker` — none are sensible in a
 //   build-time renderer.
-// - `ReadableStream` beyond what `Response.arrayBuffer()` needs.
+// - `ReadableStream` — no stream type exists here at all (divergence
+//   D3): `response.body` is `null`, and a `ReadableStream` request body
+//   is rejected rather than coerced.
 //
 // If a real zfb project bundle surfaces a missing API,
 // fix it here, not at the call site.
@@ -511,6 +522,32 @@
   class _Body {
     constructor(body) {
       this._bodyBytes = bodyToUint8Array(body);
+      // Whether a payload was supplied AT ALL, which `_bodyBytes` alone
+      // cannot say — `null` and a zero-length body both encode to an
+      // empty `Uint8Array`, and the request-time `fetch` has to tell
+      // them apart twice over: `GET`/`HEAD` with a *present* body is a
+      // `TypeError`, and the transport's `hasBody` flag decides whether
+      // a request is framed with a body at all.
+      this._bodyPresent = body != null;
+      // The BodyInit-derived default Content-Type, captured here rather
+      // than recomputed at send time. By the time `fetch` sees a
+      // `Request` the body is already `Uint8Array` bytes, and bytes
+      // carry no default type — so recomputing there would silently
+      // drop the header for `fetch(new Request(url, { body: "x" }))`
+      // while keeping it for the equivalent url-plus-init call.
+      this._bodyDefaultContentType = bodyInitContentType(body);
+      // A `ReadableStream`-shaped body, remembered because the
+      // conversion above has already coerced it beyond recognition.
+      // Construction still succeeds (that is the pre-existing
+      // behaviour); it is the request-time `fetch` that must refuse it,
+      // and it can only do so if the shape was recorded here — a stream
+      // handed to `new Request(...)` first would otherwise reach the
+      // wire as "[object Object]".
+      this._bodyIsStream = isReadableStreamLike(body);
+      // Names this half of the interface in the not-implemented
+      // messages below (`response.blob()`, `request.formData()`).
+      // Subclasses overwrite it.
+      this._bodyLabel = "body";
       this.bodyUsed = false;
     }
     async arrayBuffer() {
@@ -534,11 +571,19 @@
       const t = await this.text();
       return JSON.parse(t);
     }
+    // `blob()` / `formData()` are unimplemented on BOTH paths, so their
+    // message must name neither. The old wording ("… in the SSG
+    // runtime") told a request-time caller their problem was a
+    // build-time policy — exactly the misdiagnosis epic #2012 exists to
+    // remove. The one message that may still say "SSG runtime" is the
+    // build-time `fetch()` denial below, which genuinely IS that policy.
     async blob() {
-      throw new Error("Blob is not implemented in the SSG runtime");
+      throw new Error(this._bodyLabel + ".blob() is not implemented in the zfb embedded runtime");
     }
     async formData() {
-      throw new Error("FormData is not implemented in the SSG runtime");
+      throw new Error(
+        this._bodyLabel + ".formData() is not implemented in the zfb embedded runtime",
+      );
     }
   }
 
@@ -549,16 +594,40 @@
       let baseInit = {};
       if (input instanceof Request) {
         url = input.url;
+        // A faithful copy, not just url/method/headers/body: `fetch`
+        // must honour a `signal` and a `redirect` mode carried by a
+        // `Request` the caller built earlier (contract row "Abort":
+        // *both* `init.signal` and `Request.signal` are honoured), and
+        // `new Request(req)` is how that request reaches it.
         baseInit = {
           method: input.method,
           headers: input.headers,
-          body: input._bodyBytes,
+          // `_bodyBytes` is an empty `Uint8Array` for a body-less
+          // request, which is NOT the same as a zero-length body — pass
+          // `null` through so the copy keeps the distinction.
+          body: input._bodyPresent ? input._bodyBytes : null,
+          signal: input.signal,
+          redirect: input.redirect,
+          cache: input.cache,
+          credentials: input.credentials,
+          mode: input.mode,
+          referrer: input.referrer,
+          integrity: input.integrity,
         };
       } else {
         url = String(input);
       }
       const finalInit = Object.assign({}, baseInit, init || {});
       super(finalInit.body);
+      this._bodyLabel = "request";
+      // When the body came from a source `Request` rather than from
+      // `init`, it arrived as bytes — so the two properties derived
+      // from the ORIGINAL BodyInit have to be carried across by hand or
+      // they are lost in the copy.
+      if (input instanceof Request && !(init && "body" in init)) {
+        this._bodyDefaultContentType = input._bodyDefaultContentType;
+        this._bodyIsStream = input._bodyIsStream;
+      }
       this.url = url;
       this.method = (finalInit.method || "GET").toUpperCase();
       this.headers =
@@ -575,7 +644,9 @@
       return new Request(this.url, {
         method: this.method,
         headers: this.headers,
-        body: this._bodyBytes,
+        body: this._bodyPresent ? this._bodyBytes : null,
+        signal: this.signal,
+        redirect: this.redirect,
       });
     }
   }
@@ -584,6 +655,7 @@
   class Response extends _Body {
     constructor(body, init) {
       super(body);
+      this._bodyLabel = "response";
       const i = init || {};
       this.status = i.status == null ? 200 : Number(i.status);
       this.statusText = i.statusText || statusText(this.status);
@@ -595,7 +667,9 @@
       // `Headers` instance the caller still holds a reference to.
       this.headers = new Headers(i.headers);
       if (!this.headers.has("content-type")) {
-        const defaultType = bodyInitContentType(body);
+        // Captured by `_Body` from the original BodyInit — same table,
+        // one place.
+        const defaultType = this._bodyDefaultContentType;
         if (defaultType) {
           this.headers.set("content-type", defaultType);
         }
@@ -603,13 +677,26 @@
       this.type = "default";
       this.url = i.url || "";
       this.redirected = false;
+      // ALWAYS `null` — this host has no `ReadableStream` (contract
+      // divergence D3), and every body is materialised as bytes before
+      // a `Response` exists. Present as an own property rather than
+      // absent so `response.body === null` reads as it does in
+      // production instead of `undefined`; `text()` / `arrayBuffer()` /
+      // `json()` are the ways to reach the bytes.
+      this.body = null;
     }
     clone() {
-      return new Response(this._bodyBytes, {
+      const copy = new Response(this._bodyPresent ? this._bodyBytes : null, {
         status: this.status,
         statusText: this.statusText,
         headers: this.headers,
+        url: this.url,
       });
+      // Not `init` members, so they are carried across by hand — a
+      // clone of a redirected response is still redirected.
+      copy.redirected = this.redirected;
+      copy.type = this.type;
+      return copy;
     }
     static error() {
       const r = new Response(null, { status: 0 });
@@ -658,13 +745,204 @@
     return map[code] || "";
   }
 
+  // ---- dispatch mode --------------------------------------------
+  //
+  // Reads the per-dispatch signal `globals_shim.js` publishes as
+  // `__zfb.mode` for the duration of a dispatch (issue #2014).
+  //
+  // Fail-safe by construction: ONLY the exact string "request-time"
+  // selects the request-time branch. Absent (`__zfb` not installed yet,
+  // module evaluation, a caller that never passed a mode), null, or any
+  // unrecognised value all read as build-time — the denying default.
+  //
+  // Read through `__zfb_hostBridge`, NOT off `globalThis.__zfb`. The
+  // bridge object is a writable global — the emitted bundle prelude
+  // assigns to it — so re-reading it here let bundle code hand the
+  // polyfill a forged `{ mode: "request-time" }` and take the
+  // request-time branch during a build-time render (epic #2012 review
+  // fix 1b). The real reader arrives once, through the single-use
+  // installer below, and lands in this closure where nothing can
+  // replace it.
+  function dispatchMode() {
+    if (!__zfb_hostBridge) return "build-time";
+    let mode;
+    try {
+      mode = __zfb_hostBridge.mode();
+    } catch (_) {
+      return "build-time";
+    }
+    return mode === "request-time" ? "request-time" : "build-time";
+  }
+
+  // The host's own view of the dispatch mode and the request-time
+  // limits, captured once at boot.
+  //
+  // `globals_shim.js` runs AFTER this file and calls the installer
+  // below with closures over its private state. The installer deletes
+  // itself as it runs, so a bundle cannot re-register a reader of its
+  // own — and a host that never installs one (the config-eval runtime
+  // in `config_eval/runtime.rs` ships these polyfills without the shim)
+  // simply keeps the denying default.
+  let __zfb_hostBridge = null;
+  Object.defineProperty(globalThis, "__zfbInstallHostBridge", {
+    configurable: true,
+    enumerable: false,
+    writable: false,
+    value: function installHostBridge(bridge) {
+      delete globalThis.__zfbInstallHostBridge;
+      if (__zfb_hostBridge) return false;
+      if (!bridge || typeof bridge.mode !== "function" || typeof bridge.limits !== "function") {
+        return false;
+      }
+      __zfb_hostBridge = bridge;
+      return true;
+    },
+  });
+
+  // ---- AbortController / AbortSignal ----------------------------
+  //
+  // Neither existed in this host before issue #2016; the request-time
+  // `fetch` branch below needs them (contract row "Abort"). Deliberately
+  // minimal — enough of the `EventTarget` surface for the `abort` event,
+  // plus the two static constructors the Fetch standard defines.
+  //
+  // Divergence D4: the abort reason is an `Error` carrying a
+  // spec-correct `.name` (`AbortError` / `TimeoutError`), NOT a real
+  // `DOMException` — none exists in this host, and inventing a partial
+  // one is a rejected design. Code that checks `err.name` (the common
+  // idiom) behaves exactly as in production; code that checks
+  // `instanceof DOMException` does not.
+  function abortError() {
+    const e = new Error("The operation was aborted.");
+    e.name = "AbortError";
+    return e;
+  }
+  function timeoutError() {
+    const e = new Error("The operation was aborted due to timeout.");
+    e.name = "TimeoutError";
+    return e;
+  }
+
+  class AbortSignal {
+    constructor() {
+      this.aborted = false;
+      this.reason = undefined;
+      this.onabort = null;
+      this._listeners = [];
+      // Set only by `AbortSignal.timeout(ms)`. The host has NO event
+      // loop timers — `setTimeout` below is microtask-backed and
+      // ignores its delay — so a JS-side timer could not honour this
+      // signal; firing one would abort every fetch instantly, which is
+      // worse than not having it. Instead `fetch` forwards the value to
+      // the Rust transport, which owns every wall-clock deadline and
+      // can only NARROW its own with it. Consequence, stated plainly:
+      // the deadline is real and closes the socket, but this signal
+      // object itself never flips to `aborted` when it elapses.
+      this._timeoutMs = null;
+    }
+    addEventListener(type, listener) {
+      if (type === "abort" && listener != null) {
+        this._listeners.push(listener);
+      }
+    }
+    removeEventListener(type, listener) {
+      if (type === "abort") {
+        this._listeners = this._listeners.filter((l) => l !== listener);
+      }
+    }
+    throwIfAborted() {
+      if (this.aborted) {
+        throw this.reason;
+      }
+    }
+    // Internal: the only way `aborted` becomes true. Not part of the
+    // public interface — `AbortController.abort()` is.
+    _abort(reason) {
+      if (this.aborted) return;
+      this.aborted = true;
+      this.reason = reason;
+      const evt = { type: "abort", target: this };
+      if (typeof this.onabort === "function") {
+        this.onabort(evt);
+      }
+      for (const listener of this._listeners.slice()) {
+        if (typeof listener === "function") {
+          listener(evt);
+        } else if (listener && typeof listener.handleEvent === "function") {
+          listener.handleEvent(evt);
+        }
+      }
+    }
+    static abort(reason) {
+      const signal = new AbortSignal();
+      signal._abort(reason === undefined ? abortError() : reason);
+      return signal;
+    }
+    static timeout(milliseconds) {
+      const signal = new AbortSignal();
+      const ms = Number(milliseconds);
+      if (!Number.isFinite(ms) || ms < 0) {
+        throw new TypeError(
+          "AbortSignal.timeout: milliseconds must be a non-negative finite number",
+        );
+      }
+      if (ms === 0) {
+        // A zero deadline has already elapsed, so this one CAN be
+        // honoured here — and an already-aborted signal never opens a
+        // socket.
+        signal._abort(timeoutError());
+        return signal;
+      }
+      signal._timeoutMs = ms;
+      return signal;
+    }
+  }
+
+  class AbortController {
+    constructor() {
+      this.signal = new AbortSignal();
+    }
+    abort(reason) {
+      this.signal._abort(reason === undefined ? abortError() : reason);
+    }
+  }
+
   // ---- fetch ----------------------------------------------------
   //
-  // SSG never makes outgoing requests. If a bundle calls `fetch(url)`
-  // we throw with a message that names the offending URL so the
-  // operator can find the call site.
-  function fetch(input, _init) {
+  // Build-time render never makes outgoing requests. If a bundle calls
+  // `fetch(url)` we reject with a message that names the offending URL
+  // so the operator can find the call site. That rejection is deliberate
+  // POLICY (guardrail 4 of epic #2012) and its wording is asserted
+  // byte-for-byte by `js_fetch_tests.rs` — do not reword it.
+  //
+  // Request-time SSR takes a DISTINCT branch, which since issue #2016
+  // performs a real outbound request through the Rust transport op
+  // (`op_zfb_fetch`, issue #2015).
+  //
+  // ## The one rule this whole surface exists for
+  //
+  // Everything that is still unsupported at request time fails with a
+  // REQUEST-TIME-SPECIFIC diagnostic. The "fetch() called from SSG
+  // runtime" wording appears on exactly one path — a genuine build-time
+  // render — because reporting a request-time failure as an SSG policy
+  // denial is precisely the defect epic #2012 is fixing.
+  //
+  // ## What is enforced where
+  //
+  // The scheme allowlist, the redirect rules and hop limit, the response
+  // cap, the wall-clock deadline, cancellation, and the per-dispatch
+  // subrequest budget are ALL enforced in Rust, where bundle code cannot
+  // reach them. This layer does not re-implement any of them. The one
+  // deliberate exception is the request-body cap, checked here as well
+  // as in Rust — defence in depth, per the contract.
+  function fetch(input, init) {
     const url = input instanceof Request ? input.url : String(input);
+    if (dispatchMode() === "request-time") {
+      // `requestTimeFetch` is `async`, so everything it throws —
+      // including the pre-dispatch rejections that must never open a
+      // socket — surfaces as a rejected promise, as `fetch` requires.
+      return requestTimeFetch(input, init, url);
+    }
     return Promise.reject(
       new Error(
         "fetch() called from SSG runtime (url=" +
@@ -672,6 +950,304 @@
           "). The embedded V8 host does not support outgoing network requests during build-time render. Move the data fetch to a build step or a runtime-only branch.",
       ),
     );
+  }
+
+  // deno_core rebuilds an op's Rust-side error in JS through its own
+  // `buildCustomError` (`00_infra.js`), which can only construct classes
+  // present in its `errorMap` — the six ECMAScript builtins. A
+  // `JsErrorBox` carrying ANY other class is rebuilt as
+  // `TypeError: invalid_argument`, losing BOTH the name and the
+  // message. The transport's deadline uses `TimeoutError` (contract row
+  // "Timeout", divergence D4), so without this registration the entire
+  // timeout diagnostic — deadline, the note that production Workers has
+  // no per-subrequest limit — is unreachable from JS, and a timed-out
+  // fetch is indistinguishable from a malformed argument.
+  //
+  // Registered once at install time; `registerErrorBuilder` throws on a
+  // duplicate class, and a host that predates the API simply keeps the
+  // lossy behaviour rather than failing to boot.
+  function registerHostErrorClasses() {
+    const core = globalThis.Deno && globalThis.Deno.core;
+    if (!core || typeof core.registerErrorClass !== "function") return;
+    // Every non-builtin error class a Rust op can raise MUST be listed
+    // here. deno_core rebuilds an op's error through its own
+    // `buildCustomError`, which can only construct classes in its
+    // `errorMap`; an unregistered class arrives in JS as a thrown
+    // `undefined` — no name, no message, no diagnostic at all.
+    //
+    // - `TimeoutError`: the fetch transport's deadline (#2015/#2016).
+    // - `QuotaExceededError`: `op_zfb_random_bytes`'s byte quota (#2017).
+    // - `NotSupportedError`: `op_zfb_digest`'s unsupported algorithm (#2018).
+    const classes = ["TimeoutError", "QuotaExceededError", "NotSupportedError"];
+    for (const name of classes) {
+      const cls = class extends Error {
+        constructor(message) {
+          super(message);
+          this.name = name;
+        }
+      };
+      try {
+        core.registerErrorClass(name, cls);
+      } catch (_) {
+        // Already registered on this runtime — nothing to do.
+      }
+    }
+  }
+
+  // The Rust-injected limit constants (`globals_shim.js`, issue #2016),
+  // read through the captured host bridge rather than off
+  // `globalThis.__zfb` — the object is frozen, but the GLOBAL POINTING
+  // AT IT is not, so re-reading the global would let bundle code
+  // substitute a limits object of its own choosing (epic #2012 review
+  // fix 5). Reached through a closure because the polyfills execute
+  // BEFORE the shim that supplies it.
+  function hostLimits(url) {
+    const limits = __zfb_hostBridge ? __zfb_hostBridge.limits() : undefined;
+    if (!limits) {
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): embedded host transport unavailable: the host did not publish __zfb.limits",
+      );
+    }
+    return limits;
+  }
+
+  // A `ReadableStream` body. The type does not exist in this host
+  // (divergence D3), so a duck-typed check is the only one available —
+  // and it must run BEFORE `Request` coerces the value, since
+  // `bodyToUint8Array` would otherwise silently `String()` the stream
+  // into a body reading "[object ReadableStream]".
+  function isReadableStreamLike(value) {
+    if (value == null || typeof value !== "object") return false;
+    if (
+      typeof globalThis.ReadableStream === "function" &&
+      value instanceof globalThis.ReadableStream
+    ) {
+      return true;
+    }
+    return typeof value.getReader === "function";
+  }
+
+  // Monotonic token per cancellable fetch, handed to the transport so
+  // an abort can name the request it is cancelling. Kept well inside
+  // the `#[smi]` range the op decodes it as; the wrap is unreachable in
+  // any realistic render (it would take 2^30 fetches on one host) and
+  // is harmless if reached, since ids are unregistered as they finish.
+  let __zfb_nextCancelId = 1;
+  function nextCancelId() {
+    const id = __zfb_nextCancelId;
+    __zfb_nextCancelId = id >= 0x3fffffff ? 1 : id + 1;
+    return id;
+  }
+
+  // Settle as soon as EITHER the transport finishes or `signal` aborts —
+  // and, on abort, actually CANCEL the transport (epic #2012 review
+  // fix 2).
+  //
+  // Settling the caller's promise alone used to leave the request
+  // running to the host's 30-second deadline: the subrequest slot
+  // stayed spent and up to 100 MB kept buffering, so an abort freed
+  // nothing. `op_zfb_fetch_cancel` reaches the `CancelHandle` the op
+  // registered under `cancelId` and drops the transport future, which
+  // closes the socket — the behaviour the #2013 contract's "Abort" row
+  // has always described.
+  function cancelTransport(cancelId) {
+    if (cancelId == null) return;
+    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
+    const cancel = ops ? ops.op_zfb_fetch_cancel : undefined;
+    if (typeof cancel !== "function") return;
+    try {
+      cancel(cancelId);
+    } catch (_) {
+      // A cancel that cannot be delivered must never replace the
+      // caller's abort reason with a diagnostic about cancelling.
+    }
+  }
+
+  function raceWithAbort(promise, signal, cancelId) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        cancelTransport(cancelId);
+        reject(signal.reason !== undefined ? signal.reason : abortError());
+      };
+      signal.addEventListener("abort", onAbort);
+      promise.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
+    });
+  }
+
+  async function requestTimeFetch(input, init, url) {
+    const i = init || {};
+    const limits = hostLimits(url);
+
+    // One `Request` is the single source of truth for method, headers,
+    // body, redirect mode and signal, whether the caller passed a URL
+    // string plus `init` or a `Request` they built earlier.
+    const request = new Request(input, i);
+    const signal = request.signal;
+
+    // Checked off the RECORDED shape (`_Body` sets `_bodyIsStream`)
+    // rather than off `i.body`, so a stream that arrived inside an
+    // already-constructed `Request` is refused too. Reading `i.body`
+    // alone would miss it: `new Request(url, { body: stream })` has by
+    // then coerced the stream to "[object Object]", which would reach
+    // the wire as a real payload instead of this diagnostic.
+    if (request._bodyIsStream) {
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): ReadableStream request bodies are not supported by the zfb embedded runtime",
+      );
+    }
+
+    // An already-aborted signal rejects WITHOUT opening a socket —
+    // asserted by `an_already_aborted_signal_rejects_without_opening_a_socket`
+    // against a loopback server's request count, not just by the error.
+    if (signal && signal.aborted) {
+      throw signal.reason !== undefined ? signal.reason : abortError();
+    }
+
+    const method = request.method;
+    const hasBody = request._bodyPresent;
+    if (hasBody && (method === "GET" || method === "HEAD")) {
+      throw new TypeError("Request with GET/HEAD method cannot have body.");
+    }
+
+    // Per the Fetch standard, dispatching DISTURBS the request's body:
+    // a caller-supplied `Request` may be fetched once, and one whose
+    // body was already read is a `TypeError` rather than a silent
+    // resend. `new Request(input, init)` above copies the bytes, so
+    // without these two lines a body-bearing `Request` could be fetched
+    // in a loop — each pass a real network side effect — and a
+    // half-consumed one could still be sent.
+    const source = input instanceof Request ? input : request;
+    if (hasBody) {
+      if (source.bodyUsed) {
+        throw new TypeError("Body already consumed");
+      }
+      source.bodyUsed = true;
+    }
+
+    const bodyBytes = hasBody ? request._bodyBytes : new Uint8Array(0);
+    // Defence in depth: Rust rejects this too (and is the enforcement
+    // that matters, since bundle code cannot reach it), but catching it
+    // here keeps a 100 MB payload from crossing the op boundary at all.
+    // The message is byte-identical to the transport's own.
+    if (bodyBytes.byteLength > limits.maxRequestBodyBytes) {
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): request body exceeds the " +
+          limits.maxRequestBodyBytes +
+          "-byte limit",
+      );
+    }
+
+    // The RAW ordered pairs, not `entries()`: the latter applies the
+    // Fetch "sort and combine" view, which comma-joins duplicates. The
+    // outbound direction must carry repeated request headers verbatim,
+    // exactly as the response direction does.
+    const headers = request.headers._pairs.map((pair) => [pair[0], pair[1]]);
+    if (hasBody && !request.headers.has("content-type")) {
+      // WHATWG Fetch "extract a body" step 5 — a `string` or
+      // `URLSearchParams` body carries a default Content-Type. Read off
+      // the `Request`, which recorded it from the ORIGINAL BodyInit:
+      // `i.body` is undefined when the caller passed a `Request`, and
+      // by then the body is bytes, which carry no default at all.
+      const defaultType = request._bodyDefaultContentType;
+      if (defaultType) {
+        headers.push(["content-type", defaultType]);
+      }
+    }
+
+    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
+    const op = ops ? ops.op_zfb_fetch : undefined;
+    if (typeof op !== "function") {
+      // Never a synthetic empty `Response`: a silent empty body is
+      // indistinguishable from a real 200 with no content.
+      throw new TypeError(
+        "fetch(" +
+          url +
+          "): embedded host transport unavailable: op_zfb_fetch is not registered in this runtime",
+      );
+    }
+
+    const spec = {
+      url: request.url,
+      method,
+      headers,
+      // Anything the caller did not spell as a Fetch redirect mode
+      // falls back to the standard's default rather than reaching Rust
+      // as an unparseable value.
+      redirect:
+        request.redirect === "manual" || request.redirect === "error" ? request.redirect : "follow",
+      hasBody,
+    };
+    // A cancellation token is minted only when there IS a signal —
+    // nothing else can cancel, and an unused token would just leave an
+    // entry in the Rust registry for the life of the call.
+    if (signal) {
+      spec.cancelId = nextCancelId();
+    }
+    const signalTimeoutMs = signal ? signal._timeoutMs : null;
+    if (signalTimeoutMs != null) {
+      // Clamped to a whole number in `u32` range: the op decodes this
+      // field as a `u32` (a `u64` would require a BigInt on this side),
+      // and since the value can only NARROW the host's own 30s deadline,
+      // clamping the top end costs nothing.
+      spec.timeoutMs = Math.min(Math.floor(signalTimeoutMs), 4294967295);
+    }
+
+    let outcome;
+    try {
+      const dispatched = op(spec, bodyBytes);
+      outcome = signal ? await raceWithAbort(dispatched, signal, spec.cancelId) : await dispatched;
+    } catch (e) {
+      // A deadline the CALLER asked for is an abort, not a host limit,
+      // so it reports itself the way the standard says rather than
+      // quoting the host's own timeout diagnostic.
+      //
+      // Only when the caller's deadline is the one that actually fired,
+      // though: the transport applies `min(host, caller)`, so a signal
+      // LONGER than the host ceiling means the host's deadline won.
+      // Relabelling that one would discard the URL, the effective
+      // deadline and the production-divergence note, and tell the
+      // developer their own 60s timeout fired at 30s.
+      const callerDeadlineWon = signalTimeoutMs != null && signalTimeoutMs <= limits.fetchTimeoutMs;
+      if (callerDeadlineWon && e && e.name === "TimeoutError") {
+        throw timeoutError();
+      }
+      throw e;
+    }
+
+    const response = new Response(outcome.body, {
+      status: outcome.status,
+      statusText: outcome.statusText,
+      // An ordered `[name, value]` array, never an object: repeated
+      // `set-cookie` values must survive the boundary, and an object
+      // would collapse them to the last one.
+      headers: outcome.headers,
+      // The FINAL url, after any redirect the transport followed.
+      url: outcome.url,
+    });
+    response.redirected = outcome.redirected === true;
+    return response;
   }
 
   // ---- atob / btoa ----------------------------------------------
@@ -750,46 +1326,300 @@
 
   // ---- crypto ---------------------------------------------------
   //
-  // `crypto.randomUUID()` is the only thing zfb-runtime / Hono
-  // request-id middleware reaches for. We provide a deterministic-
-  // looking v4 UUID using `Math.random()` (good enough for SSG —
-  // the IDs are not cryptographically meaningful at build time,
-  // and using a real CSPRNG would require a Rust op).
-  const crypto = {
-    randomUUID() {
-      const hex = "0123456789abcdef";
-      let s = "";
-      for (let i = 0; i < 36; i++) {
-        if (i === 8 || i === 13 || i === 18 || i === 23) {
-          s += "-";
-        } else if (i === 14) {
-          s += "4";
-        } else if (i === 19) {
-          s += hex[(Math.random() * 4) | 8];
-        } else {
-          s += hex[(Math.random() * 16) | 0];
+  // Backed by the OS CSPRNG through `op_zfb_random_bytes` (issue #2017)
+  // and by `op_zfb_digest` for SHA hashing (issue #2018). Both ops are
+  // synchronous and available in BOTH dispatch modes: unlike `fetch`,
+  // neither entropy nor hashing is mode-gated — the SSG denial is about
+  // *network access*, and randomness whose quality depended on which
+  // pipeline rendered the page would be its own footgun.
+  //
+  // Until #2018 this section derived `randomUUID` and `getRandomValues`
+  // from `Math.random`. That is bug #1751: a session ID, CSRF token or
+  // nonce minted during local SSR was PREDICTABLE while the identical
+  // code on production Workers was not — and nothing about it looked
+  // broken, because the bytes still arrived and every functional test
+  // still passed. There is deliberately **no fallback path** anywhere
+  // below: if the host op is missing or the kernel CSPRNG errors, every
+  // entropy-consuming call THROWS. Weak bytes must never reach a
+  // caller.
+  //
+  // The unimplemented SubtleCrypto surface is PRESENT and throwing
+  // rather than absent, for the same reason: `typeof crypto.subtle.sign
+  // === "function"` is how libraries feature-detect, and silent absence
+  // would make them take a local fallback branch production never
+  // takes. See `research/2013-request-time-capability-contract.md`
+  // divergences D7 (no MD5) and D8 (key-bearing methods).
+
+  // Exactly Cloudflare's documented eligible-view list for
+  // `crypto.getRandomValues`. Floats and `DataView` are excluded by the
+  // WebCrypto spec itself (integer-typed views only).
+  const RANDOM_VALUES_ELIGIBLE_VIEW_NAMES = [
+    "Int8Array",
+    "Uint8Array",
+    "Uint8ClampedArray",
+    "Int16Array",
+    "Uint16Array",
+    "Int32Array",
+    "Uint32Array",
+    "BigInt64Array",
+    "BigUint64Array",
+  ];
+
+  // The SubtleCrypto methods production Workers implements and this
+  // host does not (contract divergence D8). Present as callable
+  // methods; every one rejects.
+  const SUBTLE_UNIMPLEMENTED_METHODS = [
+    "encrypt",
+    "decrypt",
+    "sign",
+    "verify",
+    "generateKey",
+    "deriveKey",
+    "deriveBits",
+    "importKey",
+    "exportKey",
+    "wrapKey",
+    "unwrapKey",
+  ];
+
+  // `Error` with a spec-correct `.name`. No real `DOMException` exists
+  // in this host (contract divergence D4), so `err.name` checks — the
+  // common idiom — behave as they would against one, while
+  // `instanceof DOMException` does not.
+  function namedError(name, message) {
+    const err = new Error(message);
+    err.name = name;
+    return err;
+  }
+
+  function describeCtor(value) {
+    if (value === null || value === undefined) return String(value);
+    const ctor = value.constructor;
+    if (ctor && typeof ctor.name === "string" && ctor.name) return ctor.name;
+    return typeof value;
+  }
+
+  function isEligibleRandomValuesView(view) {
+    if (!ArrayBuffer.isView(view)) return false;
+    for (const name of RANDOM_VALUES_ELIGIBLE_VIEW_NAMES) {
+      const ctor = globalThis[name];
+      if (typeof ctor === "function" && view instanceof ctor) return true;
+    }
+    return false;
+  }
+
+  // The per-call byte quota, read out of the Rust-injected
+  // `__zfb.limits` (issue #2016). A second hardcoded copy of the number
+  // in JS is a REJECTED design — it drifts from `limits.rs` silently
+  // while every test still passes.
+  //
+  // `null` means the host published no limits at all, which happens
+  // only outside a booted host (these polyfills execute before the
+  // shim). That is not a hole: the identical ceiling is enforced in
+  // Rust, on the same byte count, where bundle code cannot reach it.
+  function randomBytesQuota() {
+    // Same captured-bridge rule as `hostLimits`: never re-read
+    // `globalThis.__zfb`, which bundle code can replace.
+    const limits = __zfb_hostBridge ? __zfb_hostBridge.limits() : undefined;
+    const quota = limits ? limits.maxRandomBytesPerCall : undefined;
+    return typeof quota === "number" ? quota : null;
+  }
+
+  function hostOp(name) {
+    const ops = globalThis.Deno && globalThis.Deno.core ? globalThis.Deno.core.ops : undefined;
+    const op = ops ? ops[name] : undefined;
+    return typeof op === "function" ? op : null;
+  }
+
+  // Fill `u8` from the OS CSPRNG.
+  //
+  // FAIL CLOSED: every failure throws. There is no fallback source, no
+  // zero fill, and no retry against a weaker generator — that is the
+  // whole of bug #1751. `apiName` is the calling API, because the one
+  // op backs both `getRandomValues` and `randomUUID` and the contract
+  // gives each its own message prefix.
+  function fillFromHostEntropy(apiName, u8) {
+    const op = hostOp("op_zfb_random_bytes");
+    if (!op) {
+      throw new Error(
+        apiName + ": OS entropy unavailable: op_zfb_random_bytes is not registered in this runtime",
+      );
+    }
+    try {
+      op(u8);
+    } catch (e) {
+      // The Rust quota rejection already carries its own
+      // `crypto.getRandomValues:` prefix and `QuotaExceededError` name;
+      // re-prefixing it would produce a doubled method name.
+      if (e && e.name === "QuotaExceededError") throw e;
+      throw new Error(apiName + ": " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  // A `Uint8Array` view over whatever bytes `value` holds, without
+  // copying. Accepts the WebCrypto `BufferSource` union.
+  function bufferSourceBytes(apiName, value) {
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    throw new TypeError(
+      apiName + ": expected an ArrayBuffer or ArrayBufferView, got " + describeCtor(value),
+    );
+  }
+
+  function subtleNotSupported(method) {
+    // Deliberately states that production SUCCEEDS here and names the
+    // contract document. Local diagnostics CANNOT match production for
+    // these calls (divergence D8) — production returns a key or a
+    // signature — so the honest alignment is to say so, rather than
+    // synthesise a workerd-shaped error workerd would never have
+    // raised.
+    return namedError(
+      "NotSupportedError",
+      "crypto.subtle." +
+        method +
+        " is not implemented in the zfb embedded runtime. Production Cloudflare Workers DOES " +
+        "implement this call — see research/2013-request-time-capability-contract.md. This host " +
+        "implements digest (SHA-1/256/384/512) and timingSafeEqual only.",
+    );
+  }
+
+  // workerd exposes `DigestStream` as a constructor. It is present here
+  // and throws on construction rather than being absent, for the same
+  // feature-detection reason as the methods above.
+  function DigestStream() {
+    throw subtleNotSupported("DigestStream");
+  }
+
+  const subtle = {
+    // Returns `Promise<ArrayBuffer>` as WebCrypto requires, even though
+    // the underlying op is synchronous (hashing is CPU-bound over a
+    // buffer already in memory — there is no socket to await).
+    // Algorithm validation lives in Rust so the supported set and the
+    // message advertising it cannot drift.
+    digest(algorithm, data) {
+      try {
+        const name =
+          typeof algorithm === "string" ? algorithm : String(algorithm && algorithm.name);
+        const bytes = bufferSourceBytes("crypto.subtle.digest", data);
+        const op = hostOp("op_zfb_digest");
+        if (!op) {
+          throw new Error(
+            "crypto.subtle.digest: embedded host transport unavailable: op_zfb_digest is not " +
+              "registered in this runtime",
+          );
         }
+        const out = op(name, bytes);
+        // Detach a standalone `ArrayBuffer`: the op's result may be a
+        // view over a larger backing store, and handing back
+        // `out.buffer` would leak whatever else lives in it.
+        return Promise.resolve(out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength));
+      } catch (e) {
+        return Promise.reject(e);
       }
-      return s;
     },
-    getRandomValues(typedArray) {
-      for (let i = 0; i < typedArray.length; i++) {
-        typedArray[i] = (Math.random() * 256) | 0;
+    // A workerd extension, not WebCrypto: synchronous, returns a
+    // boolean. Constant-time in the length of the inputs — no early
+    // exit, and the whole buffer is always read, so the comparison's
+    // duration carries no information about WHERE the first difference
+    // is. The length check is deliberately NOT constant-time: byte
+    // lengths are not secret, and the spec throws on a mismatch.
+    timingSafeEqual(a, b) {
+      const left = bufferSourceBytes("crypto.subtle.timingSafeEqual", a);
+      const right = bufferSourceBytes("crypto.subtle.timingSafeEqual", b);
+      if (left.byteLength !== right.byteLength) {
+        throw new TypeError("crypto.subtle.timingSafeEqual: buffers must be the same byteLength");
       }
-      return typedArray;
+      let diff = 0;
+      for (let i = 0; i < left.length; i++) {
+        diff |= left[i] ^ right[i];
+      }
+      return diff === 0;
     },
-    subtle: {
-      // Stubs that throw — Hono's request-id middleware probes
-      // these but doesn't call them on the SSG path. If a real
-      // bundle calls `subtle.digest(...)`, fix it here with a
-      // pure-JS sha256 implementation (~80 lines).
-      digest() {
-        return Promise.reject(
-          new Error("crypto.subtle.digest is not implemented in the SSG runtime"),
-        );
-      },
-    },
+    DigestStream,
   };
+
+  for (const method of SUBTLE_UNIMPLEMENTED_METHODS) {
+    // Rejected promises, not throws: every one of these is async in
+    // WebCrypto, so a caller's `.catch()` must be what sees the
+    // failure.
+    subtle[method] = () => Promise.reject(subtleNotSupported(method));
+  }
+
+  const crypto = {
+    getRandomValues(view) {
+      if (!isEligibleRandomValuesView(view)) {
+        throw namedError(
+          "TypeMismatchError",
+          "crypto.getRandomValues: " +
+            describeCtor(view) +
+            " is not an integer-typed ArrayBufferView",
+        );
+      }
+      const quota = randomBytesQuota();
+      // Measured on `byteLength`, NEVER on element count: a
+      // `Uint32Array(20000)` is 20,000 elements but 80,000 bytes, and
+      // an element-count reading would wave it through.
+      if (quota !== null && view.byteLength > quota) {
+        throw namedError(
+          "QuotaExceededError",
+          "crypto.getRandomValues: requested " +
+            view.byteLength +
+            " bytes, quota is " +
+            quota +
+            " bytes",
+        );
+      }
+      // A zero-length view is a valid no-op that returns the view, and
+      // must succeed even on a host whose CSPRNG is unavailable — zero
+      // bytes cannot be weak.
+      if (view.byteLength === 0) return view;
+      // A byte view over the SAME backing store, so the op writes
+      // through to `view` whatever its element type is (the op takes a
+      // `&mut [u8]`).
+      fillFromHostEntropy(
+        "crypto.getRandomValues",
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      );
+      return view;
+    },
+    randomUUID() {
+      const bytes = new Uint8Array(16);
+      fillFromHostEntropy("crypto.randomUUID", bytes);
+      // RFC 4122 §4.4: version 4 in the high nibble of octet 6, variant
+      // 10xx in the top two bits of octet 8. Set on the BYTES rather
+      // than spelled into the output string, so the invariants hold for
+      // anyone who parses the UUID back to bytes.
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      let hex = "";
+      for (let i = 0; i < bytes.length; i++) {
+        hex += bytes[i].toString(16).padStart(2, "0");
+      }
+      return (
+        hex.slice(0, 8) +
+        "-" +
+        hex.slice(8, 12) +
+        "-" +
+        hex.slice(12, 16) +
+        "-" +
+        hex.slice(16, 20) +
+        "-" +
+        hex.slice(20, 32)
+      );
+    },
+    subtle,
+    // workerd's own location for the constructor. Exposed here too so
+    // `typeof crypto.DigestStream === "function"` answers the same
+    // locally as in production — the absence, not the throw, is what
+    // would send feature detection down a branch production never
+    // takes.
+    DigestStream,
+  };
+  // `CryptoKey` is deliberately left undefined: nothing in the
+  // implemented set produces or consumes one, so referencing it is a
+  // plain `ReferenceError`.
 
   // ---- setTimeout / clearTimeout --------------------------------
   //
@@ -908,6 +1738,9 @@
   globalThis.Request = Request;
   globalThis.Response = Response;
   globalThis.fetch = fetch;
+  registerHostErrorClasses();
+  globalThis.AbortController = AbortController;
+  globalThis.AbortSignal = AbortSignal;
   globalThis.atob = atob;
   globalThis.btoa = btoa;
   globalThis.structuredClone = structuredClone;
