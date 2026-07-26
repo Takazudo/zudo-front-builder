@@ -2801,9 +2801,22 @@ fn render_footnote_section(
     strategy: &JsxEmitStrategy<'_>,
     fc: &FootnoteRenderCtx<'_>,
 ) -> HastNode {
+    // `role="heading" aria-level="2"` on a `div`, not a real `<h2>`
+    // element (issue #2026 review fix). `HeadingLinksPlugin` and
+    // `TocPlugin` both key on the literal tag name (`heading_depth` /
+    // `is_heading_tag` match `"h1"`..`"h6"` only) with no opt-out for a
+    // synthetic heading, so an actual `<h2>` here would get its
+    // `id="footnote-label"` silently overwritten with a content slug
+    // and a permalink anchor appended — breaking every reference's
+    // `aria-describedby="footnote-label"` and potentially leaking into
+    // a page's TOC. The ARIA `role="heading"` pattern announces the
+    // same landmark to assistive tech without being a tag those
+    // visitors recognise.
     let heading = HastNode::Element {
-        tag: "h2".to_string(),
+        tag: "div".to_string(),
         attrs: vec![
+            ("role".to_string(), "heading".to_string()),
+            ("aria-level".to_string(), "2".to_string()),
             ("class".to_string(), "sr-only".to_string()),
             ("id".to_string(), FOOTNOTE_LABEL_ID.to_string()),
         ],
@@ -4003,6 +4016,62 @@ mod tests {
             elements.iter().all(|e| attr(e, "href").is_none()),
             "a reference-style link definition must not render as any \
              element carrying an href: {h:#?}"
+        );
+    }
+
+    // ---- the footnote label survives the real hast visitor chain ----
+    //
+    // `/codex-review` (issue #2026 self-review) caught this: the four
+    // tests above all use `run_with_footnotes`, which builds a bare
+    // `Pipeline::with_resolved_gfm_constructs` with NO hast visitors
+    // registered — so none of them would have caught
+    // `HeadingLinksPlugin` (always wired by `Pipeline::with_defaults*`,
+    // which every real project uses) silently overwriting the footnote
+    // label's `id="footnote-label"` with a content-derived slug and
+    // appending a permalink anchor, since it treats any `<h2>`–`<h6>`
+    // element as a document heading with no opt-out. That would break
+    // every reference's `aria-describedby="footnote-label"` binding.
+    // The fix renders the label as `<div role="heading"
+    // aria-level="2">` — a real tag `HeadingLinksPlugin`/`TocPlugin`
+    // never match — instead of an actual `<h2>`. This test runs the
+    // FULL default plugin chain (`Pipeline::with_defaults_and_gfm`) to
+    // prove the id survives untouched and no permalink anchor leaks in.
+    #[test]
+    fn footnote_label_id_survives_the_default_heading_links_plugin() {
+        let mut p = Pipeline::with_defaults_and_gfm(ResolvedGfmConstructs::ALL_ON);
+        let h = p
+            .run("Ref one[^a] end.\n\n[^a]: Definition body.\n")
+            .expect("parse ok");
+
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+
+        let label = elements
+            .iter()
+            .find(|e| attr(e, "id") == Some(FOOTNOTE_LABEL_ID))
+            .copied()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no element with id=\"{FOOTNOTE_LABEL_ID}\" survived the \
+                     default hast visitor chain: {h:#?}"
+                )
+            });
+        assert_eq!(
+            flatten_text(label),
+            FOOTNOTE_LABEL_TEXT,
+            "HeadingLinksPlugin must not have rewritten the label's text: {label:#?}"
+        );
+
+        let marker = elements
+            .iter()
+            .find(|e| flatten_text(e) == "1" && attr(e, "href").is_some_and(|h| h.starts_with('#')))
+            .copied()
+            .unwrap_or_else(|| panic!("expected a footnote reference marker element in {h:#?}"));
+        assert_eq!(
+            attr(marker, "aria-describedby"),
+            Some(FOOTNOTE_LABEL_ID),
+            "the reference's aria-describedby must still resolve to the \
+             unmodified label id: {marker:#?}"
         );
     }
 }
