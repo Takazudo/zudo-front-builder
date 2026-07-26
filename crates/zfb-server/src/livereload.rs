@@ -36,7 +36,8 @@
 //!
 //! - `outcome.pages_written.len() > 0` **or** `outcome.pages_stale.len() > 0`
 //!   **or** `outcome.pages_pruned.len() > 0` **or**
-//!   `outcome.client_scripts_changed`
+//!   `outcome.client_scripts_changed` **or**
+//!   `outcome.ssr_routes_published`
 //!   ⇒  emit one [`ReloadEvent::Page`] (deduplicated — at most one per tick).
 //!   `pages_stale` (issue #1027) covers the lazy dev-render default: a tick
 //!   that rendered nothing eagerly but marked routes stale must still tell
@@ -46,6 +47,13 @@
 //!   FSEvents directory delete, with no page written or marked stale) — a
 //!   tab still sitting on that now-deleted route must reload so it hits
 //!   the dev server's 404 path instead of showing stale content forever.
+//!   `ssr_routes_published` (issue #1826) covers the SSR (`prerender =
+//!   false`) case the other four structurally cannot: an SSR route has
+//!   no `dist/` output path, so it never appears in any of those path
+//!   lists. It is the ONE shared bit both of `zfb dev`'s deferred-window
+//!   self-heal channels set — the healthy deferred boot publish and the
+//!   cold-bootstrap recovery seam — so the two paths heal an open tab
+//!   identically instead of one healing better than the other.
 //! - `outcome.css_changed`              ⇒  emit one [`ReloadEvent::Css`].
 //! - `outcome.islands_bundle.is_some()` ⇒  emit one
 //!   [`ReloadEvent::Islands`] per re-bundled component, carrying the
@@ -159,11 +167,21 @@ pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     // hits the dev 404 path instead of rendering deleted content
     // forever), OR the client-scripts bundle changed (a changed
     // `dist/assets/client/<name>.js` file is only picked up on a full
-    // document reload — v1 has no hot-swap event for client scripts).
+    // document reload — v1 has no hot-swap event for client scripts), OR
+    // the dev server published its live SSR route handle this tick
+    // (issue #1826, Dev Self Heal epic #1999 — SSR routes have no
+    // `dist/` output path and so can never reach `pages_stale`, which is
+    // why an SSR-only project's self-heal never told the tab anything;
+    // this is the shared bit BOTH deferred-window channels set, so the
+    // healthy publish and the cold-bootstrap recovery heal identically).
+    // All five conditions feed ONE `push`, so a mixed SSG/SSR tick that
+    // sets `pages_stale` AND `ssr_routes_published` still emits exactly
+    // one `Page` event.
     if !outcome.pages_written.is_empty()
         || !outcome.pages_stale.is_empty()
         || !outcome.pages_pruned.is_empty()
         || outcome.client_scripts_changed
+        || outcome.ssr_routes_published
     {
         events.push(ReloadEvent::Page);
     }
@@ -404,48 +422,96 @@ mod tests {
         assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
     }
 
-    /// Issue #1826 (Dev Self Heal epic #1999) — unit-level proof of the gap
-    /// this outcome shape falls through. Both self-heal channels for the
+    /// Issue #1826 (Dev Self Heal epic #1999, Wave 2 #2002) — the
+    /// INVERSION of Wave 1's red pin. Both self-heal channels for the
     /// deferred window (`mark_all_routes_stale`, called by the healthy
     /// Cold-lazy deferred publish per #1182/#1808, AND by the
     /// `recover_cold_bootstrap_after_publish` cold-bootstrap-recovery seam
     /// per #1809) walk ONLY `routes_by_source` — the SSG route table.
     /// `prerender = false` (SSR) routes live in a separate `ssr_routes`
-    /// table that neither call site ever touches. In a project whose
-    /// routes are ALL `prerender = false`, `routes_by_source` is empty, so
-    /// both channels drain a `pages_stale` set of exactly zero paths.
+    /// table with no `dist/` output path, so they can never be marked
+    /// stale: in a project whose routes are ALL `prerender = false`, both
+    /// channels drain a `pages_stale` set of exactly zero paths and the
+    /// pre-fix outcome was indistinguishable from a totally empty tick.
+    /// The server had already recovered — only the browser was never told.
     ///
-    /// This test pins that resulting `BuildOutcome` shape: nothing was
-    /// written eagerly (lazy dev-render default), nothing was marked stale
-    /// (no SSG routes exist to mark), nothing was pruned, and the SSR
-    /// route's OWN republish (`refresh_live_ssr_routes`) is a live-handle
-    /// swap that never touches `BuildOutcome` at all — so the outcome
-    /// reaching `outcome_to_events` after an SSR-only deferred publish (or
-    /// its cold-bootstrap recovery) is indistinguishable from a totally
-    /// empty tick, and correctly emits NO `ReloadEvent::Page`. The server
-    /// has already recovered (the SSR route renders per-request the moment
-    /// the live handle is published) — only the browser was never told.
-    /// Wave 2 (#2002) is expected to widen the shared stale-marking signal
-    /// to cover `ssr_routes` too, which will invert this assertion; do not
-    /// treat this test as self-graduating past that fix.
+    /// `ssr_routes_published` is the shared bit that closes that gap. This
+    /// test pins the exact `BuildOutcome` shape BOTH channels now produce
+    /// for an SSR-only project — every path list empty, no client scripts,
+    /// only the new bit — and asserts it emits exactly one
+    /// `ReloadEvent::Page`. Note the bit alone is sufficient: nothing else
+    /// in this outcome is non-default.
     #[test]
-    fn ssr_only_deferred_publish_outcome_emits_no_page_event() {
-        // The exact shape both `mark_all_routes_stale` call sites produce
-        // for an SSR-only project: every `BuildOutcome` field the gate
-        // checks stays at its default (empty/false), because there is no
-        // SSG route for either self-heal channel to mark stale.
+    fn ssr_only_deferred_publish_outcome_emits_single_page_event() {
         let outcome = BuildOutcome {
             pages_written: Vec::new(),
             pages_stale: Vec::new(),
             pages_pruned: Vec::new(),
             client_scripts_changed: false,
+            ssr_routes_published: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_to_events(&outcome),
+            vec![ReloadEvent::Page],
+            "an SSR-only deferred-publish (or cold-bootstrap-recovery) outcome must tell \
+             the open tab to reload — the whole point of issue #1826"
+        );
+    }
+
+    /// Issue #1826 — the no-regression half. An SSG-only project never
+    /// raises `ssr_routes_published` at all (`note_ssr_routes_published`
+    /// is a no-op when `ssr_routes` is empty), so its outcomes are
+    /// byte-identical to before the fix: a stale-marking tick still emits
+    /// exactly one `Page`, and a genuinely empty tick still emits nothing.
+    /// Pinned here so a future change that raises the bit unconditionally
+    /// (e.g. on every publish regardless of SSR route count) is caught.
+    #[test]
+    fn ssg_only_outcomes_are_unchanged_without_the_ssr_bit() {
+        let stale_tick = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            ssr_routes_published: false,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&stale_tick), vec![ReloadEvent::Page]);
+
+        let empty_tick = BuildOutcome {
+            ssr_routes_published: false,
             ..Default::default()
         };
         assert!(
-            outcome_to_events(&outcome).is_empty(),
-            "an SSR-only deferred-publish (or cold-bootstrap-recovery) outcome must not \
-             silently start emitting Page events without Wave 2's fix landing"
+            outcome_to_events(&empty_tick).is_empty(),
+            "a tick that published no SSR routes and changed nothing must stay silent"
         );
+    }
+
+    /// Issue #1826 — a MIXED SSG/SSR project sets BOTH `pages_stale` (its
+    /// SSG routes) and `ssr_routes_published` (its SSR routes) from the
+    /// same self-heal channel. Both feed the SAME single `push`, so the
+    /// tab must receive exactly ONE `Page` event, never two — the
+    /// "no duplicate events" acceptance criterion, and the reason the fix
+    /// widened the existing gate instead of adding a second emit site.
+    #[test]
+    fn mixed_ssg_and_ssr_signals_dedupe_to_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            ssr_routes_published: true,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+
+        // Same for every other member of the Page gate — no combination
+        // of them can produce a second Page event.
+        let everything = BuildOutcome {
+            pages_written: vec![pid("pages/index.tsx")],
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            pages_pruned: vec![std::path::PathBuf::from("dist/old/index.html")],
+            client_scripts_rerun: true,
+            client_scripts_changed: true,
+            ssr_routes_published: true,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&everything), vec![ReloadEvent::Page]);
     }
 
     /// Issue #1027 — stale marks combine with the other event kinds the

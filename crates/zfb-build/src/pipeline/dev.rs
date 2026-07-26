@@ -25,7 +25,9 @@ use anyhow::{Context, Result};
 use zfb_graph::PageId;
 
 use crate::atomic::{atomic_write, validate_output_path};
-use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome, StaleProbe};
+use crate::pipeline::{
+    AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome, SsrPublishProbe, StaleProbe,
+};
 use crate::plan::{PageSelection, RebuildPlan};
 
 // ── Internal write/dedup component ──────────────────────────────────────────
@@ -400,6 +402,11 @@ pub struct DevAssetPipeline {
     /// [`BuildOutcome::pages_stale`]. `None` (tests, production-shaped
     /// callers) leaves the field empty.
     stale_probe: Option<StaleProbe>,
+    /// Issue #1826 (Dev Self Heal epic #1999): optional probe draining
+    /// the "SSR routes were published this tick" one-shot flag into
+    /// [`BuildOutcome::ssr_routes_published`]. `None` (tests,
+    /// production-shaped callers) leaves the field `false`.
+    ssr_publish_probe: Option<SsrPublishProbe>,
 }
 
 impl std::fmt::Debug for DevAssetPipeline {
@@ -409,6 +416,10 @@ impl std::fmt::Debug for DevAssetPipeline {
             .field(
                 "stale_probe",
                 &self.stale_probe.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "ssr_publish_probe",
+                &self.ssr_publish_probe.as_ref().map(|_| "<callback>"),
             )
             .finish()
     }
@@ -426,7 +437,18 @@ impl DevAssetPipeline {
         Self {
             shared: Arc::default(),
             stale_probe: Some(probe),
+            ssr_publish_probe: None,
         }
+    }
+
+    /// Attach the probe that fills
+    /// [`BuildOutcome::ssr_routes_published`] after every tick (issue
+    /// #1826 — SSR-only reload self-heal). Chainable onto
+    /// [`Self::with_stale_probe`]; the two probes are independent
+    /// signals drained side by side.
+    pub fn with_ssr_publish_probe(mut self, probe: SsrPublishProbe) -> Self {
+        self.ssr_publish_probe = Some(probe);
+        self
     }
 
     /// Forget the last-bytes and last-output caches. Useful when the
@@ -911,6 +933,17 @@ impl AssetPipeline for DevAssetPipeline {
         // `on_outcome`. Empty on every tick while the lazy switch is off.
         if let Some(probe) = &self.stale_probe {
             outcome.pages_stale = probe();
+        }
+
+        // 6. SSR route publication (issue #1826 — Dev Self Heal epic
+        // #1999). Drained beside the stale buffer for the same reason and
+        // at the same point: an SSR route has no `dist/` output path, so
+        // it can never show up in `pages_stale`, and without this bit an
+        // SSR-only project's outcome is indistinguishable from an empty
+        // tick. `false` on every tick that did not publish SSR routes, and
+        // on every caller that wired no probe.
+        if let Some(probe) = &self.ssr_publish_probe {
+            outcome.ssr_routes_published = probe();
         }
 
         Ok(outcome)

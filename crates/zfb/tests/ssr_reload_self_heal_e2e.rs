@@ -1,40 +1,56 @@
-//! RED repro for issue #1826 (Dev Self Heal epic #1999, sub-issue #2000):
-//! an SSR-only project (every route `prerender = false`) never tells an
-//! already-open browser tab to reload after the deferred dev bundle
-//! publishes — neither on the healthy Cold-lazy boot path (#1182 / Cold
-//! premark #1808) nor on the cold-bootstrap recovery path (#1809).
+//! Issue #1826 (Dev Self Heal epic #1999, sub-issue #2002): an SSR-only
+//! project (every route `prerender = false`) DOES tell an already-open
+//! browser tab to reload after the deferred dev bundle publishes — on the
+//! healthy Cold-lazy boot path (#1182 / Cold premark #1808) and on the
+//! cold-bootstrap recovery path (#1809) alike.
+//!
+//! Written RED in Wave 1 (#2000, then `ssr_reload_self_heal_red_e2e.rs` /
+//! `red_ssr_only_*_never_reloads_open_tab`) and **inverted here in Wave 2**
+//! (#2002), which landed the shared `ssr_routes_published` signal.
 //!
 //! ## The mechanism under test
 //!
-//! `outcome_to_events` (`crates/zfb-server/src/livereload.rs:148-169`) gates
+//! `outcome_to_events` (`crates/zfb-server/src/livereload.rs`) gates
 //! `ReloadEvent::Page` on `pages_written` / `pages_stale` / `pages_pruned`
-//! being non-empty, or `client_scripts_changed`. Both self-heal channels for
-//! the deferred window feed `pages_stale` from `mark_all_routes_stale`
+//! being non-empty, `client_scripts_changed`, or — since #2002 —
+//! `ssr_routes_published`. Both self-heal channels for the deferred window
+//! feed `pages_stale` from `mark_all_routes_stale`
 //! (`crates/zfb/src/commands/dev.rs`), which walks `routes_by_source` — the
 //! SSG route table. `prerender = false` routes live in the separate
-//! `ssr_routes` table and are never marked, so an SSR-only project drains an
-//! empty stale set and broadcasts nothing, on EITHER path:
+//! `ssr_routes` table and have no `dist/` output path to mark, so an
+//! SSR-only project drains an empty stale set on EITHER path. The fix is
+//! the ONE shared bit both channels now raise via
+//! `DevRenderSession::note_ssr_routes_published`:
 //!
 //! - **healthy** — the Cold-lazy deferred bundle publishes cleanly on its
-//!   first attempt; `premark_stale_after_deferred_publish_decision` calls
-//!   `mark_all_routes_stale()`, marking zero routes.
+//!   first attempt; the boot hook's step-0 success arm raises the bit right
+//!   after `refresh_live_ssr_routes` publishes the live handle, and the
+//!   boot drain folds it into the single `run_with_boot` broadcast.
 //! - **cold-bootstrap recovery** — the deferred bundle FAILS once (arming
 //!   `arm_cold_bootstrap_recovery`), then a later successful publish (a
 //!   watcher-triggered `reload_renderer` tick after the source is fixed)
-//!   calls `recover_cold_bootstrap_after_publish`, which reuses the same
-//!   `mark_all_routes_stale`, marking zero routes again.
+//!   calls `recover_cold_bootstrap_after_publish`, which raises the SAME
+//!   bit through the SAME method; the tick pipeline's SSR-publish probe
+//!   drains it.
 //!
-//! Serving recovers correctly on both paths — the SSR route renders
-//! per-request the instant `refresh_live_ssr_routes` publishes the live
-//! handle — but the open tab, sitting on the controlled dev 404 body, is
-//! never told to reload.
+//! Serving already recovered on both paths before this fix — the SSR route
+//! renders per-request the instant `refresh_live_ssr_routes` publishes the
+//! live handle. What was missing was telling the open tab, which is what
+//! these tests now assert.
+//!
+//! The two paths are asserted to be SYMMETRIC at the `BuildOutcome` level
+//! by the unit tests in `crates/zfb/src/commands/dev.rs`
+//! (`healthy_publish_and_cold_bootstrap_recovery_heal_an_ssr_only_tab_identically`);
+//! these two e2e tests are the Level-4 confirmation that the same symmetry
+//! survives the real dev server, real esbuild, and a real SSE stream.
 //!
 //! ## Fixture discipline
 //!
 //! Both scenarios use a project with a SINGLE page, `prerender = false`,
 //! and NO collections / SSG routes at all — `routes_by_source` is
 //! unconditionally empty for the whole session, so `mark_all_routes_stale`
-//! marks nothing on every call, matching the epic's "all routes
+//! marks nothing on every call and the reload can ONLY come from the shared
+//! `ssr_routes_published` bit. That matches the epic's "all routes
 //! `prerender = false`" acceptance shape exactly. No `node_modules` is
 //! provisioned; the project falls back to the binary-embedded vendor
 //! snapshot for `preact` (the same fallback `wasm_ssr_dev_smoke_e2e.rs`
@@ -62,9 +78,10 @@
 //!
 //! Both tests assert the TAB-FACING signal: after the deterministic
 //! completion/recovery signal, a fresh manual GET returns 200 with the
-//! page's marker (server-side recovery), while the SSE stream subscribed
-//! before that point yields no event within a bounded, condition-anchored
-//! observation window (no reload signal ever reached the browser).
+//! page's marker (server-side recovery) AND the SSE stream subscribed
+//! before that point delivers a `page` event (the browser was told). Each
+//! test pins BOTH halves, so a regression that breaks only the broadcast
+//! (leaving serving intact) is still caught.
 //!
 //! No sleeps are used to detect completion or recovery — both are observed
 //! via distinct, unambiguous log lines emitted by the exact code paths
@@ -72,13 +89,9 @@
 //!
 //! ## Status
 //!
-//! THESE TESTS ARE EXPECTED TO PASS TODAY (i.e. they successfully
-//! reproduce the bug: no reload event, GET already 200). They are
-//! deliberately `#[ignore]`d so they don't block the T1 gate — Wave 2
-//! (#2002) implements the shared `ssr_routes_published` signal fix, after
-//! which these assertions invert (or are superseded by the Wave 5 e2e
-//! confirm passes, #2005) per the epic's wave plan. Do not self-promote
-//! them past that point.
+//! GREEN as of #2002. Kept `#[ignore]`d as `env-gate: esbuild` (they spawn
+//! a real `zfb dev` and need the pinned native binary); wiring them into a
+//! CI lane is Wave 5/6's call (#2005, #2007), not theirs to self-promote.
 
 #![cfg(unix)]
 
@@ -93,10 +106,10 @@ use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinar
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(60);
 const CONTENT_DEADLINE: Duration = Duration::from_secs(60);
-// The RED assertion needs to prove no SSE event arrives across a bounded
-// window, not merely at one instant — mirrors
-// `mirror_css_scan_mdx_red_e2e.rs`'s `RED_OBSERVATION_WINDOW`.
-const RED_OBSERVATION_WINDOW: Duration = Duration::from_secs(15);
+// How long to wait for the tab-facing reload event after the deterministic
+// publish/recovery log line. Bounded, and NOT a sleep: `next_sse_event_name`
+// returns the instant an event arrives and only uses this as its deadline.
+const RELOAD_DEADLINE: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 const HEALTHY_MARKER: &str = "SSR_HEALTHY_SELF_HEAL_MARKER";
@@ -260,7 +273,7 @@ async fn wait_for_ready(session: &mut DevSession) -> Option<u16> {
             let combined = session.combined();
             if combined.contains("embed_v8") || combined.contains("no esbuild") {
                 eprintln!(
-                    "[ssr_reload_self_heal_red] `zfb dev` exited with a known-skip indicator \
+                    "[ssr_reload_self_heal] `zfb dev` exited with a known-skip indicator \
                      (V8/esbuild unavailable); skipping test.\n{}",
                     session.logs(),
                 );
@@ -310,7 +323,7 @@ async fn wait_for_log_line(session: &DevSession, needle: &str, phase: &str) {
 /// timeout (only `connect_timeout`). The shared `client` used for ordinary
 /// GETs sets a 10s total-request timeout, which reqwest applies across the
 /// whole streamed response body — fatal for a connection meant to stay open
-/// across a `RED_OBSERVATION_WINDOW`-sized wait (it would sever the stream
+/// across a `RELOAD_DEADLINE`-sized wait (it would sever the stream
 /// mid-observation and surface as a spurious `Err`, not the `Ok(None)` a
 /// genuinely quiet stream produces).
 fn sse_client() -> reqwest::Client {
@@ -376,26 +389,29 @@ async fn poll_until_contains(
 // SCENARIO 1 — healthy Cold-lazy deferred publish (#1182 / Cold premark #1808)
 // ---------------------------------------------------------------------------
 
-/// RED — an SSR-only project's healthy (never-failed) Cold-lazy deferred
-/// boot publish never tells an already-open tab to reload, even though the
-/// SSR route is servable the instant the publish completes.
+/// An SSR-only project's healthy (never-failed) Cold-lazy deferred boot
+/// publish tells an already-open tab to reload, at the same moment the SSR
+/// route becomes servable.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — cargo test -p zfb --test ssr_reload_self_heal_red_e2e \
-            -- --ignored --exact red_ssr_only_healthy_deferred_publish_never_reloads_open_tab \
-            (ZFB_ESBUILD_BIN or the staged crates/zfb/binaries/esbuild slot). RED as of \
-            issue #2000 — see epic #1999 / issue #1826."]
-async fn red_ssr_only_healthy_deferred_publish_never_reloads_open_tab() {
+#[ignore = "env-gate: esbuild — cargo test -p zfb --test ssr_reload_self_heal_e2e \
+            -- --ignored --exact ssr_only_healthy_deferred_publish_reloads_open_tab \
+            (ZFB_ESBUILD_BIN or the staged crates/zfb/binaries/esbuild slot). GREEN as \
+            of issue #2002 — see epic #1999 / issue #1826."]
+async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
-            "[ssr_reload_self_heal_red] no esbuild binary available; skipping. \
+            "[ssr_reload_self_heal] no esbuild binary available; skipping. \
              Set ZFB_ESBUILD_BIN to the pinned native binary."
         );
         return;
     };
 
     let tmp = tempfile::tempdir().expect("ssr-reload-self-heal healthy fixture tempdir");
-    let root = tmp.path().canonicalize().expect("canonicalize fixture root");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
     write_ssr_only_fixture(&root, &healthy_page_source());
 
     // A generous slow-bundle window: long enough to reliably subscribe SSE
@@ -471,17 +487,25 @@ async fn red_ssr_only_healthy_deferred_publish_never_reloads_open_tab() {
     )
     .await;
 
-    // THE RED ASSERTION — despite the server already serving 200, the tab
-    // subscribed BEFORE the publish never received a reload signal. Bounded
-    // observation window, no event expected.
-    match next_sse_event_name(sse, RED_OBSERVATION_WINDOW).await {
-        Ok(None) => {}
-        Ok(Some(name)) => panic!(
-            "RED REPRO FAILED TO REPRODUCE (this is progress, not a test bug): an SSE \
-             {name:?} event unexpectedly reached the tab subscribed before the healthy \
-             deferred publish — issue #1826 appears to be already fixed on this path. If \
-             Wave 2 (#2002) has landed, invert or retire this test per the epic's wave \
-             plan instead of leaving it ignored.\n{}",
+    // THE TAB-FACING ASSERTION (issue #1826) — the tab subscribed BEFORE
+    // the publish receives a `page` reload event. Without the shared
+    // `ssr_routes_published` bit this stream stays silent forever: the
+    // SSR-only project has zero SSG routes for `mark_all_routes_stale` to
+    // put in `pages_stale`, so `outcome_to_events` had nothing to gate on.
+    match next_sse_event_name(sse, RELOAD_DEADLINE).await {
+        Ok(Some(name)) => assert_eq!(
+            name,
+            "page",
+            "the healthy deferred publish must broadcast a full-page reload, not \
+             {name:?}\n{}",
+            session.logs(),
+        ),
+        Ok(None) => panic!(
+            "no SSE event reached the tab subscribed before the healthy deferred publish \
+             within {}s, even though the server already serves 200 — issue #1826 has \
+             regressed on the healthy path (the shared ssr_routes_published signal is not \
+             reaching outcome_to_events).\n{}",
+            RELOAD_DEADLINE.as_secs(),
             session.logs(),
         ),
         Err(e) => panic!("reading the SSE stream failed: {e:#}\n{}", session.logs()),
@@ -492,28 +516,33 @@ async fn red_ssr_only_healthy_deferred_publish_never_reloads_open_tab() {
 // SCENARIO 2 — cold-bootstrap recovery (#1809)
 // ---------------------------------------------------------------------------
 
-/// RED — an SSR-only project whose deferred boot bundle genuinely FAILS
-/// once, then recovers on a later successful publish, never tells an
-/// already-open tab to reload — the gap #1809's recovery mechanism was
-/// supposed to close, but couldn't, because it reuses the same
-/// SSG-table-only `mark_all_routes_stale`.
+/// An SSR-only project whose deferred boot bundle genuinely FAILS once,
+/// then recovers on a later successful publish, tells an already-open tab
+/// to reload — the gap #1809's recovery mechanism was supposed to close but
+/// couldn't, because it reuses the same SSG-table-only
+/// `mark_all_routes_stale`. It now raises the shared
+/// `ssr_routes_published` bit through the same seam the healthy path uses,
+/// so the two heal identically rather than one healing better.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — cargo test -p zfb --test ssr_reload_self_heal_red_e2e \
-            -- --ignored --exact red_ssr_only_cold_bootstrap_recovery_never_reloads_open_tab \
-            (ZFB_ESBUILD_BIN or the staged crates/zfb/binaries/esbuild slot). RED as of \
-            issue #2000 — see epic #1999 / issue #1826 / issue #1809."]
-async fn red_ssr_only_cold_bootstrap_recovery_never_reloads_open_tab() {
+#[ignore = "env-gate: esbuild — cargo test -p zfb --test ssr_reload_self_heal_e2e \
+            -- --ignored --exact ssr_only_cold_bootstrap_recovery_reloads_open_tab \
+            (ZFB_ESBUILD_BIN or the staged crates/zfb/binaries/esbuild slot). GREEN as \
+            of issue #2002 — see epic #1999 / issue #1826 / issue #1809."]
+async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
-            "[ssr_reload_self_heal_red] no esbuild binary available; skipping. \
+            "[ssr_reload_self_heal] no esbuild binary available; skipping. \
              Set ZFB_ESBUILD_BIN to the pinned native binary."
         );
         return;
     };
 
     let tmp = tempfile::tempdir().expect("ssr-reload-self-heal recovery fixture tempdir");
-    let root = tmp.path().canonicalize().expect("canonicalize fixture root");
+    let root = tmp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
     // Genuinely broken JSX so the boot's deferred bundle fails for real.
     write_ssr_only_fixture(&root, &recovery_broken_page_source());
     let page_path = root.join("pages/index.tsx");
@@ -580,18 +609,24 @@ async fn red_ssr_only_cold_bootstrap_recovery_never_reloads_open_tab() {
     )
     .await;
 
-    // THE RED ASSERTION — despite the server already serving 200 and the
-    // recovery latch having fired, the tab subscribed before the fix never
-    // received a reload signal. Bounded observation window, no event
-    // expected.
-    match next_sse_event_name(sse, RED_OBSERVATION_WINDOW).await {
-        Ok(None) => {}
-        Ok(Some(name)) => panic!(
-            "RED REPRO FAILED TO REPRODUCE (this is progress, not a test bug): an SSE \
-             {name:?} event unexpectedly reached the tab subscribed before the \
-             cold-bootstrap-recovery publish — issue #1826 appears to be already fixed on \
-             this path. If Wave 2 (#2002) has landed, invert or retire this test per the \
-             epic's wave plan instead of leaving it ignored.\n{}",
+    // THE TAB-FACING ASSERTION (issue #1826) — the tab subscribed before
+    // the fix, which has been sitting on the dev 404 body since boot,
+    // receives a `page` reload event once the recovery latch fires. This is
+    // the SAME assertion the healthy scenario above makes, against the SAME
+    // shared signal: the two recovery paths are not allowed to diverge.
+    match next_sse_event_name(sse, RELOAD_DEADLINE).await {
+        Ok(Some(name)) => assert_eq!(
+            name,
+            "page",
+            "the cold-bootstrap recovery must broadcast a full-page reload, not \
+             {name:?}\n{}",
+            session.logs(),
+        ),
+        Ok(None) => panic!(
+            "no SSE event reached the tab subscribed before the cold-bootstrap-recovery \
+             publish within {}s, even though the recovery latch fired and the server \
+             already serves 200 — issue #1826 has regressed on the recovery path.\n{}",
+            RELOAD_DEADLINE.as_secs(),
             session.logs(),
         ),
         Err(e) => panic!("reading the SSE stream failed: {e:#}\n{}", session.logs()),

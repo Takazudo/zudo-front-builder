@@ -928,8 +928,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let pipeline = match dev_session.as_ref() {
         Some(session) => {
             let probe_session = session.clone();
+            let ssr_probe_session = session.clone();
+            // Issue #1826 — the SSR-publication signal rides the same
+            // per-tick drain discipline as `pages_stale`, on its own
+            // probe because SSR routes have no output path to report.
             DevAssetPipeline::with_stale_probe(Arc::new(move || {
                 probe_session.inner.take_tick_stale()
+            }))
+            .with_ssr_publish_probe(Arc::new(move || {
+                ssr_probe_session.inner.take_ssr_routes_published()
             }))
         }
         None => DevAssetPipeline::new(),
@@ -1817,6 +1824,25 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             if let Some(handle) = &ssr_route_set_for_boot {
                                 refresh_live_ssr_routes(session, handle);
                             }
+                            // Issue #1826 (Dev Self Heal epic #1999) —
+                            // the live SSR handle was just published, so
+                            // every `prerender = false` route is servable
+                            // from here on. Raise the shared signal (the
+                            // same seam `recover_cold_bootstrap_after_publish`
+                            // uses) so the boot drain below folds it into
+                            // `BuildOutcome::ssr_routes_published` and a tab
+                            // that has been sitting on the dev 404 body
+                            // through this deferred window reloads. The
+                            // premark below cannot carry this: it walks
+                            // `routes_by_source` (SSG), and SSR routes have
+                            // no `dist/` output path to mark. Ungated on
+                            // `boot_lazy_mode_now` — unlike the premark,
+                            // which is a Cold-only staleness concern, the
+                            // browser is equally uninformed in Auto (an SSR
+                            // route has no prebuilt `dist/` bytes for Auto's
+                            // seed to serve in the meantime). No-op when the
+                            // project has no SSR routes.
+                            session.note_ssr_routes_published();
                             // Issue #1808 (post-implementation review finding):
                             // Cold has no `dist/` seed to serve during the gap
                             // between this publish and `run_boot_render`'s
@@ -2034,6 +2060,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .as_ref()
                 .map(|s| s.inner.take_tick_stale())
                 .unwrap_or_default();
+            // Issue #1826 (Dev Self Heal epic #1999) — drain the shared
+            // SSR-publication bit the same way and at the same point.
+            // Boot-lazy returns from `run_boot_render` without running a
+            // pipeline `apply`, so the tick probe never sees this bit at
+            // boot; this drain is what carries it into the single
+            // `run_with_boot` broadcast. Whichever drain runs first for a
+            // tick wins and the other sees `false` — exactly the
+            // `take_tick_stale` contract.
+            let boot_ssr_published: bool = dev_session_for_boot
+                .as_ref()
+                .map(|s| s.inner.take_ssr_routes_published())
+                .unwrap_or(false);
 
             let mut outcome = match (render_outcome, islands_info) {
                 (Some(mut outcome), Some(info)) => {
@@ -2057,6 +2095,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     None => {
                         outcome = Some(BuildOutcome {
                             pages_stale: boot_stale,
+                            ..BuildOutcome::default()
+                        })
+                    }
+                }
+            }
+            if boot_ssr_published {
+                match &mut outcome {
+                    Some(o) => o.ssr_routes_published = true,
+                    None => {
+                        outcome = Some(BuildOutcome {
+                            ssr_routes_published: true,
                             ..BuildOutcome::default()
                         })
                     }
@@ -3315,6 +3364,25 @@ impl DevRenderInner {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Raise the one-shot "SSR routes were published" flag (issue
+    /// #1826). Stored (never swapped) so repeated publishes before a
+    /// drain are idempotent — the drain is what makes it one-shot.
+    fn set_ssr_routes_published(&self) {
+        self.ssr_routes_published
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Drain the "SSR routes were published this tick" flag into
+    /// [`zfb_build::BuildOutcome::ssr_routes_published`] (consumed by
+    /// the dev pipeline's SSR-publish probe on a watcher tick, or by the
+    /// boot hook's own drain at boot — whichever runs first for the
+    /// tick, exactly like `take_tick_stale`). One-shot: `true` once per
+    /// raising, then `false`.
+    fn take_ssr_routes_published(&self) -> bool {
+        self.ssr_routes_published
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Mark `output_paths` stale at the current generation and queue
     /// them for this tick's [`zfb_build::BuildOutcome::pages_stale`]
     /// signal. Re-marking an already-stale route bumps its recorded
@@ -3810,6 +3878,30 @@ struct DevRenderInner {
     /// later failure may re-arm it.
     #[cfg(feature = "embed_v8")]
     cold_bootstrap_pending: std::sync::atomic::AtomicBool,
+
+    /// One-shot per-tick flag: this session published its live SSR
+    /// (`prerender = false`) route handle (issue #1826, Dev Self Heal
+    /// epic #1999).
+    ///
+    /// The SSR counterpart of `StaleRoutes::tick_stale`, and for the
+    /// same reason: an SSR route has NO `dist/` output path, so it can
+    /// never be marked in the staleness map and never reaches
+    /// [`zfb_build::BuildOutcome::pages_stale`]. It needs no staleness
+    /// machinery either — it renders per-request the instant its live
+    /// handle is published. What it needed was a way to SAY so, which
+    /// this bit is: drained into
+    /// [`zfb_build::BuildOutcome::ssr_routes_published`] (by the dev
+    /// pipeline's SSR-publish probe on a watcher tick, or by the boot
+    /// hook's own drain at boot) so `zfb_server::outcome_to_events`
+    /// emits a `ReloadEvent::Page`.
+    ///
+    /// Set through the single shared seam
+    /// `DevRenderSession::note_ssr_routes_published`, which BOTH
+    /// deferred-window self-heal channels call — the healthy deferred
+    /// boot publish and
+    /// `DevRenderSession::recover_cold_bootstrap_after_publish` — so
+    /// neither path self-heals better than the other.
+    ssr_routes_published: std::sync::atomic::AtomicBool,
 
     /// Static injected-route seeds (epic #1228, S3 #1231). One
     /// [`RouteUniverseEntry`] per **static, SSG** package-owned injected
@@ -4571,6 +4663,51 @@ impl DevRenderSession {
         n
     }
 
+    /// Number of SSR (`prerender = false`) routes the renderer knows
+    /// about. The SSR mirror of [`Self::route_count`], which counts only
+    /// the SSG table.
+    fn ssr_route_count(&self) -> usize {
+        self.inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .ssr_routes
+            .len()
+    }
+
+    /// THE shared SSR self-heal signal (issue #1826, Dev Self Heal epic
+    /// #1999). Both deferred-window self-heal channels call exactly this
+    /// method after publishing the live SSR route handle:
+    ///
+    /// - the healthy deferred boot publish (the boot hook's step-0
+    ///   success arm, beside the #1808 premark), and
+    /// - [`Self::recover_cold_bootstrap_after_publish`] (the #1809
+    ///   cold-bootstrap recovery seam).
+    ///
+    /// One method, one bit, so the two paths produce the SAME tab-facing
+    /// outcome — the design constraint that ruled out the alternative of
+    /// synthesising a reload event from the recovery path alone (which
+    /// would have made recovery self-heal *better* than a healthy boot).
+    ///
+    /// **No-op when the project has no SSR routes.** An SSG-only project
+    /// never raises the bit at all, so its `BuildOutcome` is
+    /// byte-identical to before this fix; a mixed SSG/SSR project raises
+    /// it alongside a non-empty `pages_stale`, which
+    /// `zfb_server::outcome_to_events` folds into the SAME single
+    /// `ReloadEvent::Page` — no extra and no duplicate events either way.
+    ///
+    /// Returns the number of SSR routes the signal covers (`0` = not
+    /// raised). Deliberately adds NO staleness machinery for SSR routes:
+    /// they need none — an SSR route renders per-request the instant its
+    /// live handle is published. This is a signalling fix only.
+    fn note_ssr_routes_published(&self) -> usize {
+        let n = self.ssr_route_count();
+        if n > 0 {
+            self.inner.set_ssr_routes_published();
+        }
+        n
+    }
+
     /// Cold-bootstrap recovery (issue #1809, epic #1806): consume the
     /// pending latch and, for the single winning publish, re-run the boot
     /// seeding the FAILED deferred bundle skipped — now against the route
@@ -4597,6 +4734,11 @@ impl DevRenderSession {
     ///    drains into `BuildOutcome::pages_stale` — the #1390 broadcast —
     ///    so livereload tabs showing the dev 404 body reload and
     ///    re-render to a 200.
+    /// 3. Raise the shared SSR-publication signal
+    ///    ([`Self::note_ssr_routes_published`], issue #1826) so an
+    ///    SSR-only project — where step 2 has zero SSG routes to mark
+    ///    and therefore broadcasts nothing — still reloads the tab.
+    ///    Deliberately the SAME seam the healthy deferred publish uses.
     ///
     /// Called from [`Self::refresh_bundle_and_routes`]'s success path,
     /// AFTER the P4 table swap, so the tables it seeds and marks against
@@ -4614,6 +4756,14 @@ impl DevRenderSession {
                 assemble_boot_graph(&mut g, None, self.page_ids());
             }
         }
+        // Issue #1826 (Dev Self Heal epic #1999) — step 3: raise the
+        // shared SSR-publication signal. `mark_all_routes_stale` below
+        // walks `routes_by_source` (SSG) only, so in an SSR-only project
+        // it marks ZERO routes and this recovery drained an empty
+        // `pages_stale` — the server had recovered but the tab was never
+        // told. Same seam, same bit as the healthy deferred publish, so
+        // recovery heals a tab identically rather than better or worse.
+        self.note_ssr_routes_published();
         Some(self.mark_all_routes_stale())
     }
 
@@ -6638,6 +6788,8 @@ fn boot_dev_renderer(
             boot_render_done: std::sync::atomic::AtomicBool::new(false),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — the static injected-route seeds + post-precedence
             // survivor set, both built from the same survivor list above.
             injected_static_seeds,
@@ -7923,6 +8075,8 @@ pub(crate) fn stub_session_for_adapter_tests(
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — adapter tests inject routes directly; no injected
             // package routes in the stub universe.
             injected_static_seeds: Vec::new(),
@@ -8347,6 +8501,8 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
@@ -8373,6 +8529,8 @@ mod tests {
             lazy_render: false,
             // Stubs model a session mid-flight: boot already rendered.
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
@@ -10537,6 +10695,227 @@ mod tests {
                             && *kind == zfb_graph::DepKind::Module),
                     "recovery's seed must not clobber edges already populated \
                      by the recovering publish"
+                );
+            }
+
+            // ── shared ssr_routes_published signal (issue #1826, epic
+            //    #1999) ──────────────────────────────────────────────────
+
+            /// SSR-ONLY fixture: `routes_by_source` (the SSG table both
+            /// self-heal channels' `mark_all_routes_stale` walks) is
+            /// EMPTY, and two `prerender = false` routes live in
+            /// `ssr_routes`. Matches the epic's acceptance shape exactly —
+            /// the project where `pages_stale` can only ever drain empty.
+            fn ssr_only_session() -> DevRenderSession {
+                DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(
+                        HashMap::new(),
+                        vec![ssr_entry("/"), ssr_entry("/api/hello")],
+                    )),
+                }
+            }
+
+            fn ssr_entry(url: &str) -> RouteUniverseEntry {
+                RouteUniverseEntry {
+                    url_path: url.into(),
+                    // SSR routes have NO dist output path — the exact
+                    // reason they can never reach `pages_stale`.
+                    output_path: PathBuf::new(),
+                    route_key: url.into(),
+                    static_html: false,
+                    source_path: None,
+                }
+            }
+
+            /// MIXED fixture: [`recovery_session`]'s two SSG routes PLUS
+            /// one SSR route, so both signals fire from one channel.
+            fn mixed_session() -> DevRenderSession {
+                let mk = |url: &str, out_path: &str| RouteUniverseEntry {
+                    url_path: url.into(),
+                    output_path: PathBuf::from(out_path),
+                    route_key: url.into(),
+                    static_html: false,
+                    source_path: None,
+                };
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                routes.insert(
+                    PathBuf::from("pages/index.tsx"),
+                    vec![DevRouteEntry {
+                        entry: mk("/", "index.html"),
+                        params: None,
+                    }],
+                );
+                DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(routes, vec![ssr_entry("/api/hello")])),
+                }
+            }
+
+            /// Reproduce the TAB-FACING outcome both drain sites build:
+            /// the boot hook's `take_tick_stale` + `take_ssr_routes_published`
+            /// fold, and the watcher tick's stale probe +
+            /// `with_ssr_publish_probe` pair. Same two drains either way,
+            /// which is what lets one helper stand in for both.
+            fn drain_tab_facing_outcome(session: &DevRenderSession) -> BuildOutcome {
+                BuildOutcome {
+                    pages_stale: session.inner.take_tick_stale(),
+                    ssr_routes_published: session.inner.take_ssr_routes_published(),
+                    ..BuildOutcome::default()
+                }
+            }
+
+            /// Simulate the HEALTHY deferred boot publish's step-0 success
+            /// arm exactly as `run`'s boot hook does it: publish the live
+            /// SSR handle (→ the shared signal), then Cold's #1808
+            /// premark.
+            fn simulate_healthy_deferred_publish(session: &DevRenderSession) {
+                session.note_ssr_routes_published();
+                assert!(premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Cold
+                ));
+                session.mark_all_routes_stale();
+            }
+
+            /// Issue #1826 — THE symmetry assertion, and the whole reason
+            /// this fix is a shared `BuildOutcome` bit rather than a
+            /// synthetic reload event emitted from the recovery path.
+            ///
+            /// For an SSR-only project, the healthy Cold-lazy deferred
+            /// publish and the cold-bootstrap recovery must produce the
+            /// *same* tab-facing outcome — byte-identical `BuildOutcome`,
+            /// and therefore the identical `ReloadEvent` list. A
+            /// recovery-only fix would have made recovery self-heal
+            /// BETTER than a healthy boot; this test is what would catch
+            /// that regression.
+            #[test]
+            fn healthy_publish_and_cold_bootstrap_recovery_heal_an_ssr_only_tab_identically() {
+                let healthy = ssr_only_session();
+                simulate_healthy_deferred_publish(&healthy);
+                let healthy_outcome = drain_tab_facing_outcome(&healthy);
+
+                let recovering = ssr_only_session();
+                recovering.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(
+                    recovering.recover_cold_bootstrap_after_publish(),
+                    Some(0),
+                    "an SSR-only project has ZERO SSG routes for recovery to mark stale — \
+                     that is precisely the gap the shared signal closes"
+                );
+                let recovery_outcome = drain_tab_facing_outcome(&recovering);
+
+                assert_eq!(
+                    healthy_outcome, recovery_outcome,
+                    "the healthy deferred publish and the cold-bootstrap recovery must \
+                     produce the SAME BuildOutcome — neither path may self-heal better \
+                     than the other"
+                );
+                assert!(
+                    healthy_outcome.pages_stale.is_empty(),
+                    "no SSG route exists to mark: the reload can only come from the \
+                     shared ssr_routes_published bit"
+                );
+                assert!(healthy_outcome.ssr_routes_published);
+
+                for (label, outcome) in [
+                    ("healthy deferred publish", &healthy_outcome),
+                    ("cold-bootstrap recovery", &recovery_outcome),
+                ] {
+                    assert_eq!(
+                        zfb_server::livereload::outcome_to_events(outcome),
+                        vec![zfb_server::livereload::ReloadEvent::Page],
+                        "{label} must tell the open tab to reload, exactly once"
+                    );
+                }
+            }
+
+            /// Issue #1826 — the same symmetry holds for a MIXED SSG/SSR
+            /// project, and both paths still emit exactly ONE `Page`
+            /// event even though `pages_stale` AND `ssr_routes_published`
+            /// are both set: the two signals feed one gate, so no
+            /// duplicate reload ever reaches the tab.
+            #[test]
+            fn healthy_publish_and_recovery_agree_on_mixed_projects_without_duplicate_events() {
+                let healthy = mixed_session();
+                simulate_healthy_deferred_publish(&healthy);
+                let healthy_outcome = drain_tab_facing_outcome(&healthy);
+
+                let recovering = mixed_session();
+                recovering.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(
+                    recovering.recover_cold_bootstrap_after_publish(),
+                    Some(1),
+                    "the mixed project's single SSG route is still marked stale"
+                );
+                let recovery_outcome = drain_tab_facing_outcome(&recovering);
+
+                assert_eq!(healthy_outcome, recovery_outcome);
+                assert_eq!(
+                    healthy_outcome.pages_stale,
+                    vec![PathBuf::from("index.html")]
+                );
+                assert!(healthy_outcome.ssr_routes_published);
+                assert_eq!(
+                    zfb_server::livereload::outcome_to_events(&healthy_outcome),
+                    vec![zfb_server::livereload::ReloadEvent::Page],
+                    "a mixed project setting BOTH signals must still see exactly one \
+                     Page event, never two"
+                );
+            }
+
+            /// Issue #1826 — the no-behavior-change half. An SSG-ONLY
+            /// project (`ssr_routes` empty) must never raise the bit on
+            /// EITHER path, so its outcome is byte-identical to what both
+            /// channels produced before this fix: `pages_stale` only, one
+            /// `Page` event, no extra and no duplicate.
+            #[test]
+            fn ssg_only_projects_never_raise_the_ssr_signal_on_either_path() {
+                let healthy = recovery_session();
+                assert_eq!(
+                    healthy.note_ssr_routes_published(),
+                    0,
+                    "a project with no SSR routes must not raise the signal"
+                );
+                healthy.mark_all_routes_stale();
+                let healthy_outcome = drain_tab_facing_outcome(&healthy);
+
+                let recovering = recovery_session();
+                recovering.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(recovering.recover_cold_bootstrap_after_publish(), Some(2));
+                let recovery_outcome = drain_tab_facing_outcome(&recovering);
+
+                assert_eq!(healthy_outcome, recovery_outcome);
+                assert!(
+                    !healthy_outcome.ssr_routes_published,
+                    "an SSG-only project's BuildOutcome must be unchanged by this fix"
+                );
+                assert_eq!(healthy_outcome.pages_stale.len(), 2);
+                assert_eq!(
+                    zfb_server::livereload::outcome_to_events(&healthy_outcome),
+                    vec![zfb_server::livereload::ReloadEvent::Page],
+                );
+            }
+
+            /// Issue #1826 — the signal is drained ONCE per tick, exactly
+            /// like `take_tick_stale`. Whichever drain site runs first for
+            /// a tick (the boot hook's fold, or the pipeline's
+            /// SSR-publish probe) consumes it; the other sees `false`, so
+            /// a single publish can never broadcast two reloads. Also
+            /// pins that a later publish re-raises it.
+            #[test]
+            fn ssr_publish_signal_drains_once_per_publish_and_re_raises() {
+                let session = ssr_only_session();
+                session.note_ssr_routes_published();
+
+                assert!(session.inner.take_ssr_routes_published());
+                assert!(
+                    !session.inner.take_ssr_routes_published(),
+                    "a second drain for the same tick must see nothing — otherwise the \
+                     boot fold and the tick probe would each broadcast a reload"
+                );
+
+                session.note_ssr_routes_published();
+                assert!(
+                    session.inner.take_ssr_routes_published(),
+                    "a later publish must raise the signal again"
                 );
             }
 
