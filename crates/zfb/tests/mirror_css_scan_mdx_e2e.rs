@@ -1,22 +1,30 @@
-//! RED repro for issue #1819 (Mirror Root CSS Scan epic #1995, sub-issue
-//! #1996): after epic #1799, a sibling mirror-root edit correctly *delivers*
-//! a filesystem event to a real `zfb dev` session — but for a `.md`/`.mdx`
-//! file that event does NOT rerun the Tailwind content scan, so a utility
-//! class authored only in a sibling markdown file never reaches the served
-//! dev CSS without a restart. Dev-loop only; prod builds are unaffected
-//! (`discover_css_source_files`, `crates/zfb/src/commands/build.rs:1474`,
-//! already walks `.md`/`.mdx` inside a claimed mirror root on every build).
+//! Level-4 dev e2e for issue #1819 (Mirror Root CSS Scan epic #1995).
+//!
+//! Written RED in Wave 1 (#1996) — it asserted the BROKEN behaviour and
+//! passed — and inverted here in Wave 2 (#1997), which implemented the fix.
+//! After epic #1799 a sibling mirror-root edit correctly *delivers* a
+//! filesystem event to a real `zfb dev` session; what #1819 was about is
+//! that for a `.md`/`.mdx` file the event did not rerun the Tailwind content
+//! scan, so a utility class authored only in a sibling markdown file never
+//! reached the served dev CSS without a restart. Dev-loop only; prod builds
+//! were never affected (`discover_css_source_files`,
+//! `crates/zfb/src/commands/build.rs`, already walks `.md`/`.mdx` inside a
+//! claimed mirror root on every build).
 //!
 //! ## The mechanism under test
 //!
 //! `discover_css_source_files` scans `.md`/`.mdx` inside a claimed sibling
 //! mirror root. But an out-of-root `.md`/`.mdx` classifies as
-//! `PathClass::Content` (`crates/zfb-build/src/policy.rs:460`), and the
-//! #1288 `mark_css` rule in the dev orchestrator is gated on
-//! `PathClass::Module` ONLY (`crates/zfb-build/src/orchestrator.rs:561`) —
-//! not in the live arm, the removed-path fold, or the `External` arm. So a
-//! `Content`-classified sibling edit never sets `rerun_css`, and the served
-//! stylesheet goes stale.
+//! `PathClass::Content` (`crates/zfb-build/src/policy.rs`), and the #1288
+//! `mark_css` rule in the dev orchestrator was gated on `PathClass::Module`
+//! ONLY (`crates/zfb-build/src/orchestrator.rs`) — in the live arm, the
+//! removed-path fold, and the `External` arm alike. #1997 implements option
+//! (b): `Content` (and `External`) reruns the CSS scan when — and only when
+//! — the changed path lies under a registered `css_mirror_root`
+//! (`GranularityPolicy::is_under_css_mirror_root`, the #1802 registry). An
+//! ordinary in-root markdown edit is deliberately left alone; that negative
+//! is pinned by
+//! `zfb_build::orchestrator::tests::in_root_content_edit_outside_mirror_roots_does_not_rerun_css`.
 //!
 //! ## Fixture discipline (modeled on
 //! `dev_sibling_watch_1678_e2e.rs::e2e_dev_sibling_tailwind_utility_class_refreshes_served_css`)
@@ -38,12 +46,12 @@
 //!   root's CSS scan did anything (same confound documented at
 //!   `sibling_css_module_command_layer_build.rs:649-662`).
 //! - Proof the FS event genuinely arrives (the whole point of #1819 is that
-//!   delivery works but the CSS rerun does not): this test waits for a
-//!   `[zfb-timing] tick(): kinds=[<mdx filename>:...]` line under
-//!   `ZFB_DEV_TIMING=1` before asserting the served CSS stays stale. If the
-//!   event never arrived, that wait times out first, and the test fails for
-//!   THAT reason instead of silently mis-attributing a delivery gap to the
-//!   CSS-rerun gap this issue is actually about.
+//!   delivery already worked and only the CSS rerun was missing): this test
+//!   waits for a `[zfb-timing] tick(): kinds=[<mdx filename>:...]` line under
+//!   `ZFB_DEV_TIMING=1` before asserting on the served CSS. If the event
+//!   never arrived, that wait times out first, and the test fails for THAT
+//!   reason instead of attributing a delivery regression to the CSS-rerun
+//!   rule under test.
 
 #![cfg(unix)]
 
@@ -74,11 +82,10 @@ fn locate_tailwind() -> Option<PathBuf> {
 const BOOT_DEADLINE: Duration = Duration::from_secs(120);
 const BOOT_CONTENT_DEADLINE: Duration = Duration::from_secs(60);
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(30);
-// The RED assertion needs to prove the served CSS *stays* stale across a
-// bounded observation window, not merely at one instant — a wider window
-// than the affirmative `edit_until_served` pattern elsewhere in this repo
-// uses, since here "nothing happens" is exactly the behavior under test.
-const RED_OBSERVATION_WINDOW: Duration = Duration::from_secs(20);
+// The affirmative assertion polls until the recompiled stylesheet carries
+// the new class. Generous: the tick has to rerun the Tailwind subprocess
+// over the whole content set before the served bytes change.
+const CSS_REFRESH_DEADLINE: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 struct DevServerGuard {
@@ -179,7 +186,7 @@ async fn wait_for_ready(session: &mut DevSession) -> Option<u16> {
             let logs = session.logs();
             if logs.contains("embed_v8") || logs.contains("no esbuild") {
                 eprintln!(
-                    "[mirror_css_scan_mdx_red] `zfb dev` exited with a known-skip indicator \
+                    "[mirror_css_scan_mdx] `zfb dev` exited with a known-skip indicator \
                      (V8/esbuild unavailable); skipping test.\n{logs}"
                 );
                 return None;
@@ -322,45 +329,40 @@ fn write_sibling_mdx_dev_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir)
     (project, nm_handle)
 }
 
-/// RED repro for issue #1819: editing a sibling-mirror-root `.mdx` file to
-/// introduce a brand-new Tailwind utility class does NOT refresh the served
-/// `/assets/styles.css`, even though the filesystem event for that edit
-/// demonstrably reaches the dev orchestrator (proven via the `tick():`
-/// timing line before the negative assertion).
+/// Issue #1819 (epic #1995, fix landed in #1997): editing a
+/// sibling-mirror-root `.mdx` file to introduce a brand-new Tailwind utility
+/// class refreshes the served `/assets/styles.css` without a `zfb dev`
+/// restart. The filesystem event for that edit is separately proven to reach
+/// the dev orchestrator (the `tick():` timing line) so a delivery regression
+/// can never be misread as a CSS-rerun regression.
 ///
 /// Needs the Tailwind binary in addition to esbuild — skips cleanly when
 /// unavailable.
-///
-/// THIS TEST IS EXPECTED TO FAIL TODAY. It is deliberately `#[ignore]`d so
-/// it does not block the T1 gate; #1997 (Wave 2) implements the fix, after
-/// which this test's assertion inverts (or is superseded by #1998's
-/// confirm e2e) and the `#[ignore]` is expected to be lifted / the test
-/// retired in favor of the confirm pass, per the epic's wave plan.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "env-gate: tailwindcss v4 + esbuild — cargo test -p zfb --test \
-            mirror_css_scan_mdx_red_e2e -- --ignored --exact \
-            red_sibling_mdx_utility_class_never_reaches_dev_css_scan \
+            mirror_css_scan_mdx_e2e -- --ignored --exact \
+            sibling_mdx_utility_class_reaches_dev_css_scan \
             (ZFB_TAILWIND_BIN or the staged crates/zfb/binaries/tailwindcss-v4 \
-            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH). RED as of \
-            issue #1996 — see epic #1995 / issue #1819."]
-async fn red_sibling_mdx_utility_class_never_reaches_dev_css_scan() {
+            slot; also needs ZFB_ESBUILD_BIN or an esbuild on PATH). Written RED \
+            in #1996, inverted in #1997 — see epic #1995 / issue #1819."]
+async fn sibling_mdx_utility_class_reaches_dev_css_scan() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
-            "[mirror_css_scan_mdx_red] no esbuild binary available; skipping. \
+            "[mirror_css_scan_mdx] no esbuild binary available; skipping. \
              Set ZFB_ESBUILD_BIN or install esbuild on PATH."
         );
         return;
     };
     let Some(tailwind) = locate_tailwind() else {
         eprintln!(
-            "[mirror_css_scan_mdx_red] no tailwindcss v4 binary available; skipping. \
+            "[mirror_css_scan_mdx] no tailwindcss v4 binary available; skipping. \
              Set ZFB_TAILWIND_BIN or stage crates/zfb/binaries/tailwindcss-v4."
         );
         return;
     };
 
-    let workspace = tempfile::tempdir().expect("mirror-css-scan-mdx-red fixture tempdir");
+    let workspace = tempfile::tempdir().expect("mirror-css-scan-mdx fixture tempdir");
     let (project, _nm_handle) = write_sibling_mdx_dev_fixture(workspace.path());
     let sibling_mdx = workspace.path().join("lib/ushared-mdx/notes.mdx");
 
@@ -409,8 +411,8 @@ async fn red_sibling_mdx_utility_class_never_reaches_dev_css_scan() {
         session.logs(),
     );
 
-    // THE EDIT — a sibling `.mdx` file (`PathClass::Content`; the #1288
-    // `mark_css` rule never fires for this classification) gains a NEW
+    // THE EDIT — a sibling `.mdx` file (`PathClass::Content`, the
+    // classification the #1288 `mark_css` rule skipped) gains a NEW
     // Tailwind-shaped utility-class token, used nowhere else in the
     // fixture. MDX content doesn't need to be real JSX for the Tailwind
     // automatic content scanner to pick up an arbitrary-value class token —
@@ -427,7 +429,7 @@ async fn red_sibling_mdx_utility_class_never_reaches_dev_css_scan() {
     // delivery-channel gap — if this line never appears, the fixture itself
     // is wrong, not the product.
     let tick_line = wait_for_tick_mentioning(&session, "notes.mdx").await;
-    eprintln!("[mirror_css_scan_mdx_red] observed delivery: {tick_line}");
+    eprintln!("[mirror_css_scan_mdx] observed delivery: {tick_line}");
     assert!(
         tick_line.contains("Modified") || tick_line.contains("Created"),
         "expected the tick() line for notes.mdx to report a Modified/Created kind, got: \
@@ -435,28 +437,27 @@ async fn red_sibling_mdx_utility_class_never_reaches_dev_css_scan() {
         session.logs(),
     );
 
-    // THE RED ASSERTION — despite the event demonstrably reaching the
-    // orchestrator, the served stylesheet must NOT pick up the new class
-    // within a generous observation window: `PathClass::Content` never
-    // sets `rerun_css`, so the Tailwind content scan never reruns and
-    // `/assets/styles.css` stays byte-identical to boot. This is the bug
-    // #1997 (Wave 2) fixes.
+    // THE ASSERTION (inverted from #1996's RED form by #1997) — the tick
+    // now marks CSS for a `PathClass::Content` path under a registered
+    // `css_mirror_root`, so the Tailwind content scan reruns and the served
+    // stylesheet picks up the sibling-only utility class, restart-free.
     let started = Instant::now();
-    while started.elapsed() < RED_OBSERVATION_WINDOW {
+    loop {
         if let Ok(response) = client.get(&css_url).send().await {
-            if response.status().as_u16() == 200 {
-                let body = response.text().await.unwrap_or_default();
-                assert!(
-                    !body.contains("3c9a7b"),
-                    "RED REPRO FAILED TO REPRODUCE (this is progress, not a test bug): \
-                     /assets/styles.css UNEXPECTEDLY already contains the sibling-.mdx-only \
-                     utility class after the edit — issue #1819 appears to be already fixed. \
-                     If #1997 has landed, retire or invert this test per the epic's wave \
-                     plan instead of leaving it ignored.\n{}",
-                    session.logs(),
-                );
+            if response.status().as_u16() == 200
+                && response.text().await.unwrap_or_default().contains("3c9a7b")
+            {
+                break;
             }
         }
+        assert!(
+            started.elapsed() < CSS_REFRESH_DEADLINE,
+            "/assets/styles.css never picked up the sibling-.mdx-only utility class within \
+             {}s of the edit, even though the tick line above proves the event reached the \
+             orchestrator — the mirror-root CSS rerun (#1819 / #1997) regressed.\n{}",
+            CSS_REFRESH_DEADLINE.as_secs(),
+            session.logs(),
+        );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 

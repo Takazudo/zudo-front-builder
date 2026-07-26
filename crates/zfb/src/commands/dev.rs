@@ -12664,4 +12664,72 @@ mod tests {
              registry: {roots:?}"
         );
     }
+
+    /// Issue #1819 (Mirror Root CSS Scan epic #1995) — the END-TO-END half
+    /// of the mandatory registry-population assertion for option (b)'s gate.
+    ///
+    /// The orchestrator now reruns the Tailwind content scan for a
+    /// `PathClass::Content` (`.md`/`.mdx`) change when
+    /// `GranularityPolicy::is_under_css_mirror_root` says the path lies
+    /// inside a published mirror root. The unit tests in `zfb-build`
+    /// (`orchestrator::tests::sibling_mirror_root_mdx_edit_reruns_css`) drive
+    /// that predicate against a HAND-POPULATED registry — which proves the
+    /// gate's logic but NOT that the real dev boot pass ever populates a
+    /// root containing a sibling markdown file. That gap is exactly how
+    /// #1058's guard stayed dead in practice for two releases
+    /// (`l-lessons-dev-watcher-narrowing`), so it is closed here: the real
+    /// `build_dev_css_and_publish_mirror_roots` seam runs against a real
+    /// workspace fixture whose sibling holds ONLY an `.mdx` file, and the
+    /// predicate is asserted against that exact file.
+    ///
+    /// Deliberately does not require a Tailwind binary: the seam publishes
+    /// mirror roots BEFORE the Tailwind subprocess runs (see the test above).
+    #[test]
+    fn dev_boot_css_mirror_roots_cover_a_sibling_mdx_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let project = ws.join("sub-packages/mdxhost");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@ushared-mdx/*":["../../lib/ushared-mdx/*"]}}}"#,
+        )
+        .unwrap();
+        // The sibling holds ONLY markdown — no `.tsx`/`.ts` module — which
+        // is the shape #1819 is about.
+        std::fs::create_dir_all(ws.join("lib/ushared-mdx")).unwrap();
+        let sibling_mdx = ws.join("lib/ushared-mdx/notes.mdx");
+        std::fs::write(&sibling_mdx, "# Sibling notes\n").unwrap();
+
+        let cfg = config::Config::default();
+        let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+        let _ = build_dev_css_and_publish_mirror_roots(
+            &project,
+            &project.join(".zfb-dev-assets"),
+            &cfg,
+            &[],
+            &[],
+            &raw_import_invalidation,
+        );
+
+        let policy = zfb_build::GranularityPolicy::default()
+            .with_raw_import_invalidation(raw_import_invalidation);
+        let roots = policy.css_mirror_root_paths();
+        assert!(
+            !roots.is_empty(),
+            "the boot CSS pass must publish a non-empty mirror-root set: {roots:?}"
+        );
+        assert!(
+            policy.is_under_css_mirror_root(&sibling_mdx),
+            "the option-(b) gate is keyed on this predicate — a published root set that \
+             does not actually CONTAIN the sibling .mdx would make the orchestrator gate \
+             dead code in the very scenario #1819 is about. roots={roots:?}, path={}",
+            sibling_mdx.display()
+        );
+    }
 }
