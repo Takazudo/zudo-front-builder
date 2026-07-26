@@ -168,14 +168,22 @@ impl EntropyError {
 /// 16_385 elements) is rejected by both layers rather than slipping
 /// past one of them.
 ///
-/// A zero-length `dst` is a valid no-op that succeeds, per spec. It is
-/// not special-cased away from the source call: an OS CSPRNG that is
-/// erroring should be reported as erroring, and `getrandom` on an empty
-/// slice is itself a no-op.
+/// A zero-length `dst` is a valid no-op that **succeeds unconditionally**
+/// — the contract's `crypto.getRandomValues` row: "a zero-length view is
+/// a no-op that returns the view `[spec]`". It short-circuits *before*
+/// the source is consulted, so `getRandomValues(new Uint8Array(0))`
+/// returns its view even on a host whose CSPRNG is unavailable.
+///
+/// That is not a hole in fail-closed: fail-closed exists to stop weak
+/// bytes reaching a caller, and zero bytes cannot be weak. Every request
+/// for one byte or more still fails closed.
 pub fn fill_random_bytes(
     source: &dyn EntropySource,
     dst: &mut [u8],
 ) -> std::result::Result<(), EntropyError> {
+    if dst.is_empty() {
+        return Ok(());
+    }
     if dst.len() > limits::MAX_RANDOM_BYTES_PER_CALL {
         return Err(EntropyError::QuotaExceeded {
             requested: dst.len(),
@@ -204,6 +212,12 @@ pub fn op_zfb_random_bytes(
     state: &mut OpState,
     #[buffer] out: &mut [u8],
 ) -> std::result::Result<(), JsErrorBox> {
+    // The zero-length no-op succeeds before the source is even looked
+    // up, so it cannot fail on a host missing the extension either —
+    // see [`fill_random_bytes`] for why this is not a fail-closed hole.
+    if out.is_empty() {
+        return Ok(());
+    }
     let source = state
         .try_borrow::<HostEntropySource>()
         .ok_or_else(|| EntropyError::Unavailable {

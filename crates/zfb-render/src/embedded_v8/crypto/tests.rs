@@ -129,15 +129,38 @@ fn a_failing_entropy_source_errors_and_never_falls_back() {
     );
 }
 
-/// The zero-length no-op is not a hole in fail-closed. A caller asking
-/// for 0 bytes from a broken CSPRNG still learns the CSPRNG is broken,
-/// because the length check never short-circuits the source call.
+/// The zero-length request succeeds **even against a broken CSPRNG**,
+/// and never consults it — the contract's "a zero-length view is a
+/// no-op that returns the view `[spec]`". #2018's
+/// `getRandomValues(new Uint8Array(0))` must therefore return its view
+/// on a host with no working entropy at all.
+///
+/// This is not a fail-closed hole: fail-closed exists to stop weak
+/// bytes reaching a caller, and zero bytes cannot be weak. The
+/// one-byte case immediately below is the boundary that proves the
+/// short-circuit is exactly one element wide.
 #[test]
-fn a_failing_source_errors_even_for_a_zero_length_request() {
+fn a_zero_length_request_is_a_no_op_that_never_consults_the_source() {
     let source = FailingEntropy::new();
     let mut buf: [u8; 0] = [];
+    assert_eq!(fill_random_bytes(&source, &mut buf), Ok(()));
+    assert_eq!(
+        source.calls.get(),
+        0,
+        "a zero-length no-op must not reach the entropy source at all"
+    );
+}
+
+/// One byte — the smallest request that carries entropy — still fails
+/// closed. Without this, widening the zero-length short-circuit into
+/// "small requests are fine" would go unnoticed.
+#[test]
+fn a_one_byte_request_still_fails_closed() {
+    let source = FailingEntropy::new();
+    let mut buf = [0x5Au8; 1];
     assert!(fill_random_bytes(&source, &mut buf).is_err());
     assert_eq!(source.calls.get(), 1);
+    assert_eq!(buf, [0x5A], "no fallback may write the byte");
 }
 
 /// The unavailable error is a plain `Error` and carries no
@@ -166,7 +189,9 @@ fn zero_one_and_the_maximum_are_accepted_and_one_over_is_rejected() {
 
     let mut empty: [u8; 0] = [];
     assert_eq!(fill_random_bytes(&source, &mut empty), Ok(()));
-    assert_eq!(source.last_len.get(), 0);
+    // No `last_len` assertion here: the zero-length case short-circuits
+    // before the source, which its own test above pins.
+    assert_eq!(source.calls.get(), 0);
 
     let mut one = [0u8; 1];
     assert_eq!(fill_random_bytes(&source, &mut one), Ok(()));
