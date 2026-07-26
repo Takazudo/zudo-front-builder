@@ -283,8 +283,10 @@ pub struct BundlerInput {
     /// Project root. All other paths are interpreted relative to this if
     /// they are relative; absolute paths pass through.
     pub project_root: PathBuf,
-    /// Directory of route source files. Every `.tsx`/`.ts`/`.jsx`/`.js`/
-    /// `.mdx` file under this directory becomes a route in the bundle.
+    /// Directory of route source files. Every file whose extension is in
+    /// [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] (`.tsx`/`.ts`/`.jsx`/`.js`/
+    /// `.mdx`/`.md`/`.html`) under this directory becomes a route in the
+    /// bundle — see [`derive_route`].
     pub pages_dir: PathBuf,
     /// ADDITIVE second pages root for the dev server's package-owned
     /// **injected** routes (epic #1228, S2 #1230 — the B1 multi-root
@@ -8124,12 +8126,15 @@ impl BundleExcludeMatcher {
 /// Derive a URL route from a path **relative to** `pages_dir`.
 ///
 /// Returns `None` for non-page files (e.g. an accidental `.txt` inside
-/// `pages/`). Recognised page extensions: `.tsx`, `.ts`, `.jsx`, `.js`,
-/// `.mdx`, `.md`, `.html`. Files starting with `_` are treated as private
-/// (skipped) to match the conventional Next/Astro/Remix behaviour.
+/// `pages/`). Recognised page extensions are
+/// [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] (`.tsx`, `.ts`, `.jsx`, `.js`,
+/// `.mdx`, `.md`, `.html`) — the same constant `zfb-router`'s `scan_pages`
+/// reads, so the two layers cannot silently drift apart again (issue #1742
+/// / epic #1990). Files starting with `_` are treated as private (skipped)
+/// to match the conventional Next/Astro/Remix behaviour.
 fn derive_route(rel: &Path) -> Option<String> {
     let ext = rel.extension().and_then(|s| s.to_str())?;
-    if !matches!(ext, "tsx" | "ts" | "jsx" | "js" | "mdx" | "md" | "html") {
+    if !zfb_types::ROUTABLE_PAGE_EXTENSIONS.contains(&ext) {
         return None;
     }
     // Skip `_private.tsx` style.

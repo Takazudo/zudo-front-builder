@@ -16,8 +16,10 @@
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug`     |                                |
 //!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) are ignored.
-//! Accepted page extensions: `.tsx`, `.mdx`, `.md`, `.html`. Files with any other
-//! extension are skipped with a `tracing::warn!` so authors notice accidental
+//! Accepted page extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`,
+//! `.html` (see [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`], the single source of
+//! truth shared with the bundler). Files with any other extension are
+//! skipped with a `tracing::warn!` so authors notice accidental
 //! mis-placements.
 //!
 //! ## `.md` page contract (v1)
@@ -51,12 +53,16 @@ use crate::route::{Route, RouteKind, Segment};
 
 /// Extensions accepted as page source files.
 ///
-/// `mdx` is included for parity with existing zfb projects that author MDX
-/// pages directly in `pages/`. The bundler routes `.mdx` and `.md` through
-/// the same MDX-compile pipeline, but the router must accept both shapes so
-/// `pages/about.mdx` continues to produce `/about` (zfb#404 regression fix
-/// — earlier diff briefly dropped `.mdx` while extending the allowlist).
-const ACCEPTED_PAGE_EXTENSIONS: &[&str] = &["tsx", "mdx", "md", "html"];
+/// Re-exported from [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] — the single
+/// source of truth shared with the bundler (`zfb-build`'s `derive_route`),
+/// so the two layers cannot silently drift apart again (issue #1742 / epic
+/// #1990). `mdx` is included for parity with existing zfb projects that
+/// author MDX pages directly in `pages/`. The bundler routes `.mdx` and
+/// `.md` through the same MDX-compile pipeline, but the router must accept
+/// both shapes so `pages/about.mdx` continues to produce `/about` (zfb#404
+/// regression fix — earlier diff briefly dropped `.mdx` while extending the
+/// allowlist).
+const ACCEPTED_PAGE_EXTENSIONS: &[&str] = zfb_types::ROUTABLE_PAGE_EXTENSIONS;
 
 /// Maximum specificity points awarded per route segment. The exact value is an
 /// implementation detail; only relative ordering matters.
@@ -173,15 +179,16 @@ fn scan_pages_inner(pages_dir: &Path) -> Result<(Vec<Route>, Vec<String>), Route
             continue;
         }
 
-        // Accept .tsx, .mdx, .md, .html as page sources. Warn on any other
-        // extension so authors notice accidental mis-placements in pages/.
+        // Accept .tsx, .ts, .jsx, .js, .mdx, .md, .html as page sources. Warn
+        // on any other extension so authors notice accidental mis-placements
+        // in pages/.
         match ext {
             Some(e) if ACCEPTED_PAGE_EXTENSIONS.contains(&e) => {}
             _ => {
                 tracing::warn!(
                     path = %rel.display(),
                     "pages/ file has an unrecognised extension and will be skipped; \
-                     accepted extensions are: tsx, mdx, md, html"
+                     accepted extensions are: tsx, ts, jsx, js, mdx, md, html"
                 );
                 continue;
             }
@@ -276,9 +283,18 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
             // `output_extension = None` (directory-index HTML layout).
             // Frontmatter extension overrides are not supported for
             // these source types (out of scope for v1).
-            let is_tsx_or_ts = comp.ends_with(".tsx") || comp.ends_with(".ts");
+            //
+            // Applies to every script page source (`.tsx`/`.ts`/`.jsx`/
+            // `.js` — `zfb_types::SCRIPT_PAGE_EXTENSIONS`), not just
+            // `.tsx`/`.ts`: a `.js`/`.jsx` page must get the same
+            // `sitemap.xml.js` → `output_extension = Some("xml")`
+            // convention as its `.tsx`/`.ts` equivalent now that both are
+            // routable (epic #1990).
+            let is_script_page = zfb_types::SCRIPT_PAGE_EXTENSIONS
+                .iter()
+                .any(|ext| comp.ends_with(&format!(".{ext}")));
             let stem_is_param = stem.starts_with('[');
-            if is_tsx_or_ts && !stem_is_param {
+            if is_script_page && !stem_is_param {
                 if let Some((before_dot, after_dot)) = stem.rsplit_once('.') {
                     if !before_dot.is_empty() && !after_dot.is_empty() {
                         output_extension = Some(after_dot.to_string());
@@ -350,6 +366,12 @@ fn strip_source_extension(component: &str) -> &str {
         return stem;
     }
     if let Some(stem) = component.strip_suffix(".ts") {
+        return stem;
+    }
+    if let Some(stem) = component.strip_suffix(".jsx") {
+        return stem;
+    }
+    if let Some(stem) = component.strip_suffix(".js") {
         return stem;
     }
     if let Some(stem) = component.strip_suffix(".md") {
@@ -1330,6 +1352,25 @@ mod tests {
     }
 
     #[test]
+    fn output_filename_sitemap_xml_js_matches_tsx_convention() {
+        // codex review (page-ext-centralize self-review): `.js`/`.jsx` page
+        // sources must follow the same `sitemap.xml.<ext>` ->
+        // `output_extension = Some("xml")` convention as `.tsx`/`.ts` now
+        // that both are routable (epic #1990) — a widened router that only
+        // widened the routing gate but not this convention would silently
+        // regress JS/JSX sitemap-style pages to `sitemap.xml/index.html`.
+        for src in ["sitemap.xml.js", "sitemap.xml.jsx"] {
+            let r = route_from(src);
+            assert_eq!(r.output_extension.as_deref(), Some("xml"), "{src}");
+            assert_eq!(
+                r.output_filename(None),
+                PathBuf::from("sitemap.xml"),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
     fn output_filename_nested_index_xml_preserves_extension() {
         // Regression: `blog/index.xml.tsx` previously wrote to a file
         // literally named `blog`. It should write to `blog/index.xml`.
@@ -1568,24 +1609,17 @@ mod tests {
 
     // ---- Page Extension Contract characterization (epic #1990, #1991) ------
     //
-    // Pins today's router-vs-bundler extension divergence: the bundler
-    // treats `.tsx`/`.ts`/`.jsx`/`.js`/`.mdx` as page-capable script sources
-    // (plus `.md`/`.html` as non-script page sources — see
-    // `crates/zfb-build/src/bundler.rs:281-287` and `:7052-7061`), but
-    // `scan_pages` only accepts `ACCEPTED_PAGE_EXTENSIONS` above
-    // (`tsx`/`mdx`/`md`/`html`) — so `pages/index.ts`, `.js`, `.jsx` are
-    // bundle-capable yet never routed. These are BEHAVIORAL tests (observed
-    // routing outcome), deliberately not an equality check against the
-    // bundler's own extension list — that would become tautological the
-    // moment both layers share one constant.
-    //
-    // The `*_is_routed_after_epic_1990` trio below is RED today and
-    // `#[ignore]`d (`pending-feature: #1990`); Wave 2 (#1992) widens the
-    // router to make them pass — flip by dropping the `#[ignore]`, do not
-    // delete. Their `*_is_skipped_and_warned_today` siblings are green now
-    // and pin the CURRENT skip+warn contract; those must be deleted (not
-    // left green-and-stale) once Wave 2 lands, since a widened router will
-    // no longer skip these extensions.
+    // Pinned the router-vs-bundler extension divergence in #1991: the
+    // bundler treated `.tsx`/`.ts`/`.jsx`/`.js`/`.mdx` as page-capable script
+    // sources (plus `.md`/`.html` as non-script page sources — see
+    // `crates/zfb-build/src/bundler.rs`'s `derive_route`), but `scan_pages`
+    // only accepted `tsx`/`mdx`/`md`/`html` — so `pages/index.ts`, `.js`,
+    // `.jsx` were bundle-capable yet never routed. #1992 (Wave 2) widened
+    // `ACCEPTED_PAGE_EXTENSIONS` to the shared `zfb_types::
+    // ROUTABLE_PAGE_EXTENSIONS` constant, so the trio below is now green.
+    // These are BEHAVIORAL tests (observed routing outcome), deliberately
+    // not an equality check against the bundler's own extension list — that
+    // would be tautological now that both layers share one constant.
 
     #[test]
     fn tsx_page_is_routed_today() {
@@ -1620,7 +1654,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1990"]
     fn ts_page_is_routed_after_epic_1990() {
         let routes = scan_tree(&["d.ts"]).expect("scan");
         let templates: Vec<String> = routes.iter().map(Route::template).collect();
@@ -1628,7 +1661,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1990"]
     fn js_page_is_routed_after_epic_1990() {
         let routes = scan_tree(&["e.js"]).expect("scan");
         let templates: Vec<String> = routes.iter().map(Route::template).collect();
@@ -1636,53 +1668,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/1990"]
     fn jsx_page_is_routed_after_epic_1990() {
         let routes = scan_tree(&["f.jsx"]).expect("scan");
         let templates: Vec<String> = routes.iter().map(Route::template).collect();
         assert_eq!(templates, vec!["/f".to_string()]);
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn ts_page_is_skipped_and_warned_today() {
-        let routes = scan_tree(&["d.ts"]).expect("scan");
-        assert!(
-            routes.is_empty(),
-            ".ts page must be skipped today: {routes:?}"
-        );
-        assert!(
-            logs_contain("unrecognised extension"),
-            "expected a warning about the unrecognised .ts extension"
-        );
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn js_page_is_skipped_and_warned_today() {
-        let routes = scan_tree(&["e.js"]).expect("scan");
-        assert!(
-            routes.is_empty(),
-            ".js page must be skipped today: {routes:?}"
-        );
-        assert!(
-            logs_contain("unrecognised extension"),
-            "expected a warning about the unrecognised .js extension"
-        );
-    }
-
-    #[test]
-    #[tracing_test::traced_test]
-    fn jsx_page_is_skipped_and_warned_today() {
-        let routes = scan_tree(&["f.jsx"]).expect("scan");
-        assert!(
-            routes.is_empty(),
-            ".jsx page must be skipped today: {routes:?}"
-        );
-        assert!(
-            logs_contain("unrecognised extension"),
-            "expected a warning about the unrecognised .jsx extension"
-        );
     }
 
     #[test]
@@ -1732,5 +1721,40 @@ mod tests {
             logs_contain("dynamic .md / .html page routes are not supported"),
             "expected the dynamic .md/.html v1 warning"
         );
+    }
+
+    #[test]
+    fn dynamic_ts_route_is_routed_like_tsx() {
+        // `.ts`/`.js`/`.jsx` CAN carry a top-level `paths()` export (unlike a
+        // pure `.md`/`.html` file), so the dynamic/catchall carve-out above
+        // must NOT extend to them — they stay eligible for dynamic and
+        // catchall routes exactly like `.tsx` (epic #1990's explicit
+        // decision: do not over-apply the `.md`/`.html` restriction).
+        let routes = scan_tree(&["blog/[slug].ts"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/blog/:slug".to_string()]);
+        assert_eq!(routes[0].kind, RouteKind::Dynamic);
+    }
+
+    #[test]
+    fn ts_page_behaves_exactly_like_tsx_page() {
+        // `pages/[slug].ts` must behave exactly like `pages/[slug].tsx`
+        // (epic #1990 acceptance criterion): same template, same route
+        // kind, for both a static and a dynamic shape.
+        let tsx_static = scan_tree(&["about.tsx"]).expect("scan");
+        let ts_static = scan_tree(&["about.ts"]).expect("scan");
+        assert_eq!(
+            tsx_static.iter().map(Route::template).collect::<Vec<_>>(),
+            ts_static.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert_eq!(tsx_static[0].kind, ts_static[0].kind);
+
+        let tsx_dynamic = scan_tree(&["blog/[slug].tsx"]).expect("scan");
+        let ts_dynamic = scan_tree(&["blog/[slug].ts"]).expect("scan");
+        assert_eq!(
+            tsx_dynamic.iter().map(Route::template).collect::<Vec<_>>(),
+            ts_dynamic.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert_eq!(tsx_dynamic[0].kind, ts_dynamic[0].kind);
     }
 }
