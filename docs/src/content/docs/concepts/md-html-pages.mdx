@@ -14,12 +14,14 @@ shared by both.
 
 </Info>
 
-zfb accepts four page source extensions: `.tsx`, `.mdx`, `.md`, and `.html`.
-All four follow the same file-system routing conventions under
-`pages/` — `pages/about.md` and `pages/about.tsx` both produce the
-route `/about`. What differs is the render path each extension takes.
-`.mdx` shares the MDX pipeline with `.md` and accepts the same frontmatter
-keys (see the `.md` pages section below).
+zfb accepts seven page source extensions in total — `.tsx`, `.ts`, `.jsx`,
+`.js` (script pages, all bundled the same way) plus `.mdx`, `.md`, and
+`.html` (covered on this page). All seven follow the same file-system
+routing conventions under `pages/` — `pages/about.md` and `pages/about.tsx`
+both produce the route `/about`. What differs is the render path each
+extension takes. `.mdx` shares the MDX pipeline with `.md` and accepts the
+same frontmatter keys (see the `.md` pages section below). See
+[Routing](./routing.mdx) for the full accepted-extensions list.
 
 ## `.md` pages
 

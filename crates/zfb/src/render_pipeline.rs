@@ -1139,28 +1139,28 @@ fn hex_nibble(n: u8) -> char {
     }
 }
 
-/// Read every TSX page's frontmatter and fold the
-/// `export const prerender = …` flag into a map keyed on the route
-/// template (matching [`RouteUniverseEntry::route_key`]).
+/// Read every script page's (`.tsx`/`.ts`/`.jsx`/`.js`) frontmatter and
+/// fold the `export const prerender = …` flag into a map keyed on the
+/// route template (matching [`RouteUniverseEntry::route_key`]).
 ///
-/// `warn_unreadable` is invoked once per TSX page whose source can't be
-/// read or whose frontmatter extraction fails. The closure exists so
+/// `warn_unreadable` is invoked once per script page whose source can't
+/// be read or whose frontmatter extraction fails. The closure exists so
 /// callers can route the message through their own logging surface
 /// (e.g. `crate::output::warn`) instead of forcing this helper to
 /// know about CLI-side I/O.
 ///
 /// Behaviour notes:
 ///
-/// - Non-TSX pages (e.g. `.mdx`) are skipped silently — TSX
+/// - Non-script pages (e.g. `.mdx`) are skipped silently — TSX-style
 ///   frontmatter extraction does not apply to them. The renderer
 ///   treats a missing prerender entry as `true` (SSG), which is the
 ///   documented default for MDX too.
-/// - TSX pages with **malformed** frontmatter (present but unparseable /
+/// - Script pages with **malformed** frontmatter (present but unparseable /
 ///   computed / wrong-shape) are skipped from the map (so the renderer's
 ///   missing-key default of `true` applies) and the failure is reported
 ///   through `warn_unreadable` so the user can fix the mistake instead of
 ///   staring at a silent default.
-/// - TSX pages with **no** `export const frontmatter` are NOT a failure —
+/// - Script pages with **no** `export const frontmatter` are NOT a failure —
 ///   the export is optional and absence means "use the SSG default". These
 ///   are skipped silently (no warning). Warning on every frontmatter-less
 ///   page was misleading noise — see #505.
@@ -1197,9 +1197,13 @@ pub fn build_prerender_map(
         let Some(ext) = abs.extension().and_then(|s| s.to_str()) else {
             continue;
         };
-        // Only TSX (and TS) carries the `export const prerender = …`
-        // shape this extractor understands. MDX is left at the default.
-        if !matches!(ext, "tsx" | "ts") {
+        // The four script-page extensions (issue #1993 / epic #1990:
+        // `.js`/`.jsx` widened alongside `.tsx`/`.ts`) all carry the
+        // `export const prerender = …` shape this extractor understands
+        // — `extract_tsx_frontmatter`'s SWC parser is a TS/JSX superset,
+        // so it reads plain JS/JSX sources identically. MDX (and any
+        // other non-script page extension) is left at the default.
+        if !matches!(ext, "tsx" | "ts" | "jsx" | "js") {
             continue;
         }
         let source = match std::fs::read_to_string(&abs) {
@@ -1628,6 +1632,49 @@ mod tests {
             "MDX should be left to the default-true path"
         );
         // Non-TSX files are skipped silently (no warning).
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+    }
+
+    /// Issue #1993 (Page Extension Contract epic #1990, Wave 3) — codex
+    /// review finding: the router widening made `.js`/`.jsx` pages route
+    /// exactly like `.tsx`, but `build_prerender_map`'s extension gate
+    /// still only matched `tsx`/`ts`, so a `.js`/`.jsx` page's
+    /// `export const prerender = false` was silently ignored and the page
+    /// stayed SSG. Proves all four script extensions extract the SSR flag
+    /// identically.
+    #[test]
+    fn build_prerender_map_reads_prerender_from_js_and_jsx_sources() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        std::fs::write(
+            pages.join("preview.js"),
+            "export const frontmatter = { title: 'P' };\nexport const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("preview2.jsx"),
+            "export const frontmatter = { title: 'P2' };\nexport const prerender = false;\nexport default function() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec!["preview"], "pages/preview.js"),
+            static_route(vec!["preview2"], "pages/preview2.jsx"),
+        ];
+        let mut warnings: Vec<String> = Vec::new();
+        let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.into()));
+        assert_eq!(
+            map.get("/preview"),
+            Some(&false),
+            ".js pages must extract `prerender = false` exactly like .tsx"
+        );
+        assert_eq!(
+            map.get("/preview2"),
+            Some(&false),
+            ".jsx pages must extract `prerender = false` exactly like .tsx"
+        );
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
     }
 
