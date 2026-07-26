@@ -499,6 +499,55 @@ pub(crate) enum RewriteTargetMark {
     Unresolved,
 }
 
+/// Route one tick's reload events, deciding whether the cold-bootstrap
+/// recovery pre-warm has to run first (issue #2004, Dev Self Heal epic
+/// #1999).
+///
+/// This is a named function rather than a `match` inlined in
+/// `on_outcome` so the ordering it encodes is reachable from a test.
+/// The epic review found the recovery arm sending the tick's events
+/// BEFORE the pre-warm ran — the tab reloaded onto the dev 404 and the
+/// pass's marks then landed in an already-drained tick-stale buffer, so
+/// no second reload was guaranteed. `run_and_broadcast` is what fixes
+/// that, but a test driving `run_and_broadcast` directly cannot tell
+/// whether this call site still USES it: restoring the old ordering
+/// here left every such test green. Keeping the decision in one
+/// addressable place closes that gap.
+///
+/// Two things this must not do, both load-bearing:
+/// - **Never send `events` itself on the recovery path.** They are
+///   handed to the pass so they leave together with its own marks.
+/// - **Never render inline.** The pass blocks on V8 and `on_outcome`
+///   runs on the async worker that awaited the tick's `spawn_blocking`,
+///   not on the blocking pool — rendering here would stall a runtime
+///   worker serving HTTP and SSE. Hence the pass's own `spawn_blocking`.
+///
+/// The healthy path (no latch) is the untouched inline send.
+///
+/// Returns the spawned task on the recovery path so a test can await
+/// it; production ignores it (the pass is fire-and-forget by design).
+#[cfg(feature = "embed_v8")]
+fn dispatch_outcome_events(
+    recovery: Option<&(RewritePrewarmWiring, RedirectsHandle)>,
+    events: Vec<ReloadEvent>,
+    tx: &broadcast::Sender<ReloadEvent>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    match recovery {
+        Some((wiring, redirects)) => {
+            let (wiring, redirects) = (wiring.clone(), Arc::clone(redirects));
+            Some(tokio::task::spawn_blocking(move || {
+                wiring.run_and_broadcast(&redirects, events);
+            }))
+        }
+        None => {
+            for ev in events {
+                let _ = tx.send(ev);
+            }
+            None
+        }
+    }
+}
+
 /// Everything the `_redirects` 200-rewrite pre-warm needs, bundled so
 /// both of its lifecycle moments — the deferred boot task and the
 /// `_redirects` watch task — carry one value instead of four (issue
@@ -1751,19 +1800,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let recovery = rewrite_prewarm_for_outcome
             .get()
             .filter(|(wiring, _)| wiring.session.inner.take_rewrite_prewarm_pending());
-        match recovery {
-            Some((wiring, redirects)) => {
-                let (wiring, redirects) = (wiring.clone(), Arc::clone(redirects));
-                tokio::task::spawn_blocking(move || {
-                    wiring.run_and_broadcast(&redirects, events);
-                });
-            }
-            None => {
-                for ev in events {
-                    let _ = tx_cb.send(ev);
-                }
-            }
-        }
+        let _ = dispatch_outcome_events(recovery, events, &tx_cb);
     };
 
     // 5. Build the watch-ADD discovery hook (issue #659).
@@ -11055,8 +11092,8 @@ mod tests {
             /// mark seeded below stands in for an in-flight rebuild's;
             /// consuming it would announce that rebuild's page early and
             /// leave its own outcome empty.
-            #[test]
-            fn recovery_rerun_broadcasts_its_marks_with_the_ticks_own_events() {
+            #[tokio::test]
+            async fn recovery_rerun_broadcasts_its_marks_with_the_ticks_own_events() {
                 use crate::lazy_render_adapter::LazyRenderAdapter;
                 use zfb_build::DevAssetPipeline;
                 use zfb_server::ReloadEvent;
@@ -11098,7 +11135,35 @@ mod tests {
                 // `Css` stands in for whatever the recovery tick itself
                 // produced: it must survive the deferral, not be dropped
                 // on the floor by the new code path.
-                wiring.run_and_broadcast(&redirects, vec![ReloadEvent::Css]);
+                //
+                // Driven through `dispatch_outcome_events` — the actual
+                // `on_outcome` call site — rather than calling
+                // `run_and_broadcast` directly. Driving the seam alone
+                // proves the seam and nothing about whether production
+                // still routes through it: restoring the pre-fix
+                // ordering at the call site left a seam-only test green.
+                //
+                // The call site is handed a DIFFERENT channel from the
+                // one the wiring broadcasts on. That is what makes the
+                // ordering falsifiable without timing: the fix is "hand
+                // the events to the pass, never send them here", so
+                // `direct` must stay silent. The pre-fix code sent them
+                // itself, which shows up as a `Css` on `direct` — an
+                // assertion no sleep or scheduling luck can flip.
+                let (direct_tx, mut direct_rx) = broadcast::channel::<ReloadEvent>(16);
+                let handle = dispatch_outcome_events(
+                    Some(&(wiring.clone(), Arc::clone(&redirects))),
+                    vec![ReloadEvent::Css],
+                    &direct_tx,
+                )
+                .expect("the recovery arm must defer to the pre-warm pass");
+                handle.await.expect("pre-warm task panicked");
+                assert!(
+                    direct_rx.try_recv().is_err(),
+                    "the call site must hand the tick's events to the pre-warm pass, \
+                     never broadcast them itself — sending here is what reloaded the \
+                     tab onto the dev 404 before the target was warm",
+                );
 
                 let mut seen = Vec::new();
                 while let Ok(ev) = rx.try_recv() {
