@@ -24,7 +24,7 @@
 #   • 15 flock-adopting binaries (client_bundling_cross_pipeline,
 #     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set,
 #     wasm_ssr_dev_smoke_e2e, page_extension_full_matrix_e2e, and
-#     mirror_css_scan_mdx_red_e2e) — spawn
+#     mirror_css_scan_mdx_e2e) — spawn
 #     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
 #     #1339's OS advisory flock (crates/zfb-test-utils/src/cross_binary_lock.rs),
 #     so for them the test-group is defense in depth (runner-level) on top of
@@ -44,11 +44,12 @@
 #     page-extension shapes (`.tsx`/`.ts`/`.jsx`/`.js`/`.mdx`/`.md`/`.html`)
 #     plus a dynamic `.ts` page, proving both the production route table and
 #     the dev server agree with Wave 3's build-only proof.
-#     `mirror_css_scan_mdx_red_e2e` (issue #1996, Mirror Root CSS Scan epic
-#     #1995 Wave 1) is the newest member: a `#[ignore]`d RED repro spawning a
-#     real `zfb dev` session, proving a sibling-mirror-root `.mdx` edit is
-#     delivered to the orchestrator but does not rerun the Tailwind content
-#     scan (issue #1819).
+#     `mirror_css_scan_mdx_e2e` (Mirror Root CSS Scan epic #1995; written
+#     RED in Wave 1 / #1996, assertion inverted in Wave 2 / #1997) is the
+#     newest member: it spawns a real `zfb dev` session and proves a
+#     sibling-mirror-root `.mdx` edit both reaches the orchestrator AND
+#     reruns the Tailwind content scan, so the new utility class lands in
+#     the served stylesheet restart-free (issue #1819).
 #   • 11 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
@@ -116,7 +117,7 @@ max-threads = 1
 # for consistency with the render_pipeline entry and to stay exact-name-scoped
 # if the file ever grows a second test.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=end_to_end_basic_blog_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_red_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=end_to_end_basic_blog_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy
