@@ -19,6 +19,7 @@
 //! minimal hast representation here. This mirrors the
 //! `remark` (mdast) → `rehype` (hast) split in the unified ecosystem.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +30,10 @@ use zfb_md_ast::diagnostics::MarkdownDiagnostic;
 use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings, HeadingIdStrategy, ReadRecorder};
 
 use crate::dep_manifest::DependencyManifest;
+use crate::footnotes::{
+    FootnoteCursor, FootnoteEntry, FootnoteModel, FootnoteRef, FOOTNOTE_BACKREF_MARKER,
+    FOOTNOTE_LABEL_ID, FOOTNOTE_LABEL_TEXT, FOOTNOTE_SECTION_CLASS,
+};
 use crate::path_norm::normalize_path_lexically;
 use crate::plugins::{
     BrokenLinkDiagnostic, CjkAutolinkBoundaryPlugin, CjkFriendlyPlugin, CodeTitlePlugin,
@@ -2421,43 +2426,106 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
 /// output.
 #[must_use]
 pub fn mdast_to_hast_with(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> HastNode {
+    // Footnotes are the one construct that cannot be rendered from an
+    // independent per-node match arm in `mdast_to_hast_inner` below:
+    // the rendered footnote section collects at the END of the
+    // document, and repeated references to one definition each need a
+    // distinct backreference target. `FootnoteModel` (issue #2025)
+    // owns that document-level collection/numbering/id-allocation
+    // policy; this function's job is only to build the model ONCE per
+    // document, thread a cursor through the recursive walk so each
+    // `FootnoteReference` node can claim its next occurrence in
+    // document order, and append the rendered section as the Root's
+    // last child. See `FootnoteRenderCtx` below for why a `RefCell` is
+    // needed here despite the walk otherwise taking only shared
+    // references.
+    let model = FootnoteModel::collect(node);
+    let fc = FootnoteRenderCtx::new(&model);
     match node {
-        MdastNode::Root(r) => HastNode::Root {
-            children: r
+        MdastNode::Root(r) => {
+            let mut children: Vec<HastNode> = r
                 .children
                 .iter()
-                .map(|c| mdast_to_hast_with(c, strategy))
-                .collect(),
-        },
-        _ => mdast_to_hast_inner(node, strategy),
+                .map(|c| mdast_to_hast_inner(c, strategy, &fc))
+                .collect();
+            if !model.is_empty() {
+                children.push(render_footnote_section(&model, strategy, &fc));
+            }
+            HastNode::Root { children }
+        }
+        _ => mdast_to_hast_inner(node, strategy, &fc),
     }
 }
 
-fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> HastNode {
+/// Per-document footnote render state threaded through the recursive
+/// [`mdast_to_hast_inner`] walk.
+///
+/// The walk is otherwise a plain shared-reference recursive descent
+/// (no `&mut` anywhere), but claiming "the next occurrence of this
+/// footnote identifier" from a [`FootnoteCursor`] needs `&mut self`.
+/// Wrapping the cursor in a `RefCell` avoids widening every recursive
+/// helper in this module to take `&mut` just to thread one piece of
+/// state through — the interior mutability is confined to this one
+/// struct.
+///
+/// Correctness depends on the hast walk visiting `FootnoteReference`
+/// nodes in EXACTLY the order [`FootnoteModel::collect`] did when it
+/// built the model: main-body nodes in document order (skipping
+/// `FootnoteDefinition` subtrees — see the arm below), then each
+/// rendered entry's own body, in the model's final entry order. Both
+/// walks are plain depth-first traversals over the same
+/// `Node::children()`, so they agree.
+struct FootnoteRenderCtx<'a> {
+    cursor: RefCell<FootnoteCursor<'a>>,
+}
+
+impl<'a> FootnoteRenderCtx<'a> {
+    fn new(model: &'a FootnoteModel) -> Self {
+        Self {
+            cursor: RefCell::new(model.cursor()),
+        }
+    }
+}
+
+fn mdast_to_hast_inner(
+    node: &MdastNode,
+    strategy: &JsxEmitStrategy<'_>,
+    fc: &FootnoteRenderCtx<'_>,
+) -> HastNode {
     match node {
         MdastNode::Root(r) => HastNode::Root {
-            children: convert_children_with(&r.children, strategy),
+            children: convert_children_with(&r.children, strategy, fc),
         },
-        MdastNode::Paragraph(p) => {
-            element("p", vec![], convert_children_with(&p.children, strategy))
-        }
+        MdastNode::Paragraph(p) => element(
+            "p",
+            vec![],
+            convert_children_with(&p.children, strategy, fc),
+        ),
         MdastNode::Heading(h) => {
             let depth = h.depth.clamp(1, 6);
             let tag = format!("h{depth}");
-            element(&tag, vec![], convert_children_with(&h.children, strategy))
+            element(
+                &tag,
+                vec![],
+                convert_children_with(&h.children, strategy, fc),
+            )
         }
         MdastNode::Text(t) => HastNode::Text(t.value.clone()),
-        MdastNode::Emphasis(e) => {
-            element("em", vec![], convert_children_with(&e.children, strategy))
-        }
+        MdastNode::Emphasis(e) => element(
+            "em",
+            vec![],
+            convert_children_with(&e.children, strategy, fc),
+        ),
         MdastNode::Strong(s) => element(
             "strong",
             vec![],
-            convert_children_with(&s.children, strategy),
+            convert_children_with(&s.children, strategy, fc),
         ),
-        MdastNode::Delete(d) => {
-            element("del", vec![], convert_children_with(&d.children, strategy))
-        }
+        MdastNode::Delete(d) => element(
+            "del",
+            vec![],
+            convert_children_with(&d.children, strategy, fc),
+        ),
         MdastNode::InlineCode(c) => element("code", vec![], vec![HastNode::Text(c.value.clone())]),
         MdastNode::Code(c) => {
             // Fenced code block. Wrap raw text in <pre><code>; expose
@@ -2484,7 +2552,7 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
             if let Some(title) = &l.title {
                 attrs.push(("title".to_string(), title.clone()));
             }
-            element("a", attrs, convert_children_with(&l.children, strategy))
+            element("a", attrs, convert_children_with(&l.children, strategy, fc))
         }
         MdastNode::Image(i) => {
             let mut attrs = vec![
@@ -2511,10 +2579,10 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
                     }
                 }
             }
-            element(tag, attrs, convert_children_with(&l.children, strategy))
+            element(tag, attrs, convert_children_with(&l.children, strategy, fc))
         }
         MdastNode::ListItem(li) => {
-            let mut children = convert_children_with(&li.children, strategy);
+            let mut children = convert_children_with(&li.children, strategy, fc);
             // GFM task-list checkbox (issue #2024, epic #2021): the
             // `markdown` crate's task-list tokenizer sets `checked` on
             // `ListItem` when `taskListItem` is enabled. Minimal
@@ -2531,7 +2599,7 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
         MdastNode::Blockquote(b) => element(
             "blockquote",
             vec![],
-            convert_children_with(&b.children, strategy),
+            convert_children_with(&b.children, strategy, fc),
         ),
         MdastNode::ThematicBreak(_) => HastNode::Element {
             tag: "hr".to_string(),
@@ -2626,7 +2694,7 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
                         Some(element(
                             tag,
                             attrs,
-                            convert_children_with(&tc.children, strategy),
+                            convert_children_with(&tc.children, strategy, fc),
                         ))
                     })
                     .collect()
@@ -2655,21 +2723,138 @@ fn mdast_to_hast_inner(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> Hast
         // they appear standalone (malformed input) emit nothing rather
         // than panicking.
         MdastNode::TableRow(_) | MdastNode::TableCell(_) => HastNode::Raw(String::new()),
+        // GFM footnotes (issue #2023/#2025/#2026, epic #2021). A
+        // `FootnoteDefinition` never renders in place — its body only
+        // appears once, in the collected section
+        // `mdast_to_hast_with` appends at the end of the document — so
+        // encountering one here (main body, or nested inside another
+        // rendered entry's body, which structurally never happens but
+        // is handled uniformly regardless) always renders nothing.
+        // Duplicate definitions for the same identifier all hit this
+        // arm too; `FootnoteModel` already decided which one's body is
+        // the winning entry.
+        MdastNode::FootnoteDefinition(_) => HastNode::Raw(String::new()),
+        // A `FootnoteReference` claims its next occurrence from the
+        // shared cursor — see `FootnoteRenderCtx`'s ordering guarantee.
+        // `FootnoteModel::collect` only ever creates an entry for an
+        // identifier that has a matching definition, and markdown-rs
+        // itself never parses an unmatched `[^label]` into this node
+        // (it stays literal text), so `next_reference` returning `None`
+        // here is not reachable through the public parse API — the
+        // fallback exists only so a hand-built mdast tree degrades to
+        // nothing instead of panicking.
+        MdastNode::FootnoteReference(r) => fc
+            .cursor
+            .borrow_mut()
+            .next_reference(&r.identifier)
+            .map(|(entry, footnote_ref)| footnote_reference_marker(entry, footnote_ref))
+            .unwrap_or_else(|| HastNode::Raw(String::new())),
         // Unhandled: degrade to empty Raw so we never crash on
-        // unsupported input. Footnotes, definitions, reference
-        // links/images, ESM, frontmatter, etc. fall here. They become
-        // passthrough holes that Sub 4 plugins can later fill in.
+        // unsupported input. Reference-style link/image definitions
+        // (`[label]: /url`) and their `[label]`/`![label]` references,
+        // ESM, frontmatter, etc. fall here. They become passthrough
+        // holes that Sub 4 plugins can later fill in.
         _ => HastNode::Raw(String::new()),
     }
 }
 
 /// Convert a slice of mdast children into a vec of hast children
 /// using the given strategy for the JSX-shaped arms.
-fn convert_children_with(children: &[MdastNode], strategy: &JsxEmitStrategy<'_>) -> Vec<HastNode> {
+fn convert_children_with(
+    children: &[MdastNode],
+    strategy: &JsxEmitStrategy<'_>,
+    fc: &FootnoteRenderCtx<'_>,
+) -> Vec<HastNode> {
     children
         .iter()
-        .map(|c| mdast_to_hast_inner(c, strategy))
+        .map(|c| mdast_to_hast_inner(c, strategy, fc))
         .collect()
+}
+
+/// `<sup><a href="#{definition id}" id="{occurrence id}" data-footnote-ref
+/// aria-describedby="footnote-label">{number}</a></sup>` — the reference
+/// marker shape pinned by `footnotes` module docs' "Backreference
+/// markup" / "Accessibility attributes" sections.
+fn footnote_reference_marker(entry: &FootnoteEntry, footnote_ref: &FootnoteRef) -> HastNode {
+    let marker = HastNode::Element {
+        tag: "a".to_string(),
+        attrs: vec![
+            ("href".to_string(), entry.href()),
+            ("id".to_string(), footnote_ref.id.clone()),
+            ("data-footnote-ref".to_string(), String::new()),
+            (
+                "aria-describedby".to_string(),
+                FOOTNOTE_LABEL_ID.to_string(),
+            ),
+        ],
+        children: vec![HastNode::Text(footnote_ref.number.to_string())],
+        void: false,
+    };
+    element("sup", vec![], vec![marker])
+}
+
+/// The collected `<section data-footnotes>` appended at document end —
+/// empty when [`FootnoteModel::is_empty`], so callers must check that
+/// first (mirrors `footnotes` module docs' rendered-shape sketch).
+fn render_footnote_section(
+    model: &FootnoteModel,
+    strategy: &JsxEmitStrategy<'_>,
+    fc: &FootnoteRenderCtx<'_>,
+) -> HastNode {
+    let heading = HastNode::Element {
+        tag: "h2".to_string(),
+        attrs: vec![
+            ("class".to_string(), "sr-only".to_string()),
+            ("id".to_string(), FOOTNOTE_LABEL_ID.to_string()),
+        ],
+        children: vec![HastNode::Text(FOOTNOTE_LABEL_TEXT.to_string())],
+        void: false,
+    };
+    let items: Vec<HastNode> = model
+        .entries()
+        .iter()
+        .map(|entry| render_footnote_item(entry, strategy, fc))
+        .collect();
+    HastNode::Element {
+        tag: "section".to_string(),
+        attrs: vec![
+            ("data-footnotes".to_string(), String::new()),
+            ("class".to_string(), FOOTNOTE_SECTION_CLASS.to_string()),
+        ],
+        children: vec![heading, element("ol", vec![], items)],
+        void: false,
+    }
+}
+
+/// One `<li id="{definition id}">{body}{backref}…</li>` — the
+/// definition's own children, converted through the SAME shared
+/// `FootnoteRenderCtx` (so nested references inside a definition body
+/// claim their occurrences from the same cursor), followed by one
+/// backreference link per [`FootnoteEntry::references`] occurrence.
+fn render_footnote_item(
+    entry: &FootnoteEntry,
+    strategy: &JsxEmitStrategy<'_>,
+    fc: &FootnoteRenderCtx<'_>,
+) -> HastNode {
+    let mut children = convert_children_with(&entry.body, strategy, fc);
+    for footnote_ref in &entry.references {
+        children.push(HastNode::Element {
+            tag: "a".to_string(),
+            attrs: vec![
+                ("href".to_string(), footnote_ref.backref_href()),
+                ("data-footnote-backref".to_string(), String::new()),
+                ("aria-label".to_string(), footnote_ref.backref_aria_label()),
+            ],
+            children: vec![HastNode::Text(FOOTNOTE_BACKREF_MARKER.to_string())],
+            void: false,
+        });
+    }
+    HastNode::Element {
+        tag: "li".to_string(),
+        attrs: vec![("id".to_string(), entry.id.clone())],
+        children,
+        void: false,
+    }
 }
 
 /// Pick the right JSX-text producer for the supplied strategy and
@@ -3505,7 +3690,6 @@ mod tests {
     // fall into the catch-all, so no such elements exist at all —
     // every `find`/`unwrap_or_else` below panics on the current code.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn footnote_reference_and_definition_are_associated() {
         let h = run_with_footnotes("Ref one[^a] end.\n\n[^a]: Definition body.\n");
 
@@ -3572,7 +3756,6 @@ mod tests {
     // footnote number — this is called out explicitly in #2023's
     // acceptance criteria.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn repeated_references_get_distinct_backreference_targets() {
         let h = run_with_footnotes("Ref one[^a] and ref again[^a] end.\n\n[^a]: Shared def.\n");
         let mut elements = Vec::new();
@@ -3623,7 +3806,6 @@ mod tests {
     // first, so a definition-order implementation would fail this
     // differently (numbers/order swapped) than today's total drop.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn multiple_definitions_are_numbered_and_ordered_by_first_reference() {
         let h = run_with_footnotes(
             "First[^a] then second[^b] end.\n\n[^b]: Second body.\n\n[^a]: First body.\n",
@@ -3676,7 +3858,6 @@ mod tests {
     // hold under ANY reasonable policy: duplicates COLLAPSE to exactly
     // one rendered footnote, not two, and not neither.
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2026"]
     fn duplicate_definitions_collapse_to_exactly_one_entry() {
         let h = run_with_footnotes("Dup label[^a] end.\n\n[^a]: First.\n\n[^a]: Second (dup).\n");
         let full_text = flatten_text(&h);
@@ -3732,6 +3913,96 @@ mod tests {
         assert!(
             text.contains("[^missing]"),
             "unmatched footnote reference must stay literal text, got: {text:?}"
+        );
+    }
+
+    // ---- gfm: false must render byte-identically to before this fix ----
+    //
+    // The task-list wave (#2024) achieved this by construction: emission
+    // is gated on a field only the GFM tokenizer populates, so the flag-
+    // off path never sees it. Footnotes get the same property from
+    // markdown-rs itself: with `footnote_definition` off,
+    // `[^a]`/`[^a]: …` never parse into `FootnoteReference`/
+    // `FootnoteDefinition` mdast nodes at all (they stay literal bracket
+    // text — same parser fact `unmatched_reference_stays_literal_text`
+    // above pins for the on-but-unmatched case), so `FootnoteModel::
+    // collect` walks a tree with zero footnote nodes, produces an empty
+    // model, and `mdast_to_hast_with`'s `if !model.is_empty()` guard
+    // never appends a section. The new match arms in
+    // `mdast_to_hast_inner` are therefore unreachable on this path,
+    // proven here rather than assumed: no footnote section, no
+    // `data-footnote-*` attribute anywhere, and the literal bracket
+    // syntax survives verbatim — exactly pre-fix behaviour.
+    #[test]
+    fn gfm_false_leaves_footnote_syntax_as_literal_text_with_no_section_appended() {
+        let h = run("Ref[^a] end.\n\n[^a]: Definition body.\n");
+        let children = root_children(&h);
+        // Two ordinary paragraphs (`footnote_definition` off means
+        // `[^a]: Definition body.` is not even recognised as a
+        // footnote-definition block — it stays a plain paragraph).
+        // Neither is a `<section data-footnotes>`.
+        assert_eq!(
+            children.len(),
+            2,
+            "no footnote section may be appended when footnote_definition \
+             is off: {h:#?}"
+        );
+        assert!(
+            children.iter().all(|c| assert_element(c, "p").1.len() == 1),
+            "both lines must stay ordinary paragraphs, no footnote \
+             section: {h:#?}"
+        );
+
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+        assert!(
+            elements.iter().all(|e| {
+                attr(e, "data-footnote-ref").is_none()
+                    && attr(e, "data-footnote-backref").is_none()
+                    && attr(e, "data-footnotes").is_none()
+            }),
+            "no footnote-shaped attribute may appear anywhere when the \
+             construct is off: {h:#?}"
+        );
+
+        let text = flatten_text(&h);
+        assert!(
+            text.contains("[^a]") && text.contains("[^a]: Definition body."),
+            "footnote syntax must survive as literal text when \
+             footnote_definition is off, got: {text:?}"
+        );
+    }
+
+    // ---- the catch-all still swallows what it always has ----
+    //
+    // Taking footnotes OUT of `_ => HastNode::Raw(String::new())` must
+    // not weaken it for the node kinds it legitimately still owns. A
+    // reference-style link definition (`[label]: /url "title"`,
+    // `MdastNode::Definition`) is one such kind: unlike footnotes,
+    // nothing in this module has ever rendered it, and that has not
+    // changed here — it still degrades to an empty `Raw` node, same as
+    // before this fix.
+    #[test]
+    fn catch_all_still_swallows_reference_style_link_definitions() {
+        let h = run("Para text.\n\n[label]: /elsewhere \"Title\"\n");
+
+        let text = flatten_text(&h);
+        assert!(
+            text.contains("Para text."),
+            "the surrounding paragraph must still render: {text:?}"
+        );
+        assert!(
+            !text.contains("/elsewhere") && !text.contains("Title"),
+            "the definition's url/title must not leak into rendered text \
+             (still silently dropped by the catch-all), got: {text:?}"
+        );
+
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+        assert!(
+            elements.iter().all(|e| attr(e, "href").is_none()),
+            "a reference-style link definition must not render as any \
+             element carrying an href: {h:#?}"
         );
     }
 }
