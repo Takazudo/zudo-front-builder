@@ -256,9 +256,20 @@ impl Rule {
     /// must not be skipped. The lexer below is the same one
     /// `substitute_target` uses (`:` followed by one or more
     /// `[A-Za-z0-9_]`); keep the two in step.
+    ///
+    /// Only the PATH portion is scanned. Pre-warming discards the query
+    /// string (it is not part of a page-cache / filesystem lookup), so a
+    /// rule like `/:id /fallback?from=:id 200` serves the single concrete
+    /// path `/fallback` for every request — a token that survives only in
+    /// the discarded query must not disqualify it.
     fn target_has_resolvable_token(&self) -> bool {
         let has_splat = self.source.contains(&SourceSegment::Splat);
-        let chars: Vec<char> = self.target.chars().collect();
+        let path = self
+            .target
+            .split_once('?')
+            .map(|(path, _)| path)
+            .unwrap_or(&self.target);
+        let chars: Vec<char> = path.chars().collect();
         let mut i = 0;
         while i < chars.len() {
             if chars[i] == ':' {

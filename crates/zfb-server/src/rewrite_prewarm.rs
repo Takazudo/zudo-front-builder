@@ -33,11 +33,11 @@
 //!
 //! | Case | Decision | Reasoning |
 //! |---|---|---|
-//! | Canonical path form | Reuse the production pipeline verbatim: [`waterfall_trimmed_for_rewrite_target`] → [`canonical_encode_path`] → [`lookup_keys`], the exact functions `routes.rs` calls at the rewrite call site and inside `serve_from_waterfall`. | The page cache and rendered-output dirs key on the **encoded canonical** path (#1768). A near-miss spelling would produce a pre-warm that silently misses while appearing to work. Sharing the functions makes divergence impossible by construction rather than by review. |
+//! | Canonical path form | Reuse the production pipeline verbatim: [`waterfall_trimmed_for_rewrite_target`] → [`canonical_encode_path`] → [`lookup_keys`], the exact functions `routes.rs` calls at the rewrite call site and inside `serve_from_waterfall`. Every emitted spelling — including [`PrewarmTarget::request_path`] — is derived from the ENCODED canonical form, never from the intermediate decoded one. | The page cache and rendered-output dirs key on the **encoded canonical** path (#1768). A near-miss spelling would produce a pre-warm that silently misses while appearing to work. Sharing the functions makes divergence impossible by construction rather than by review. Emitting the decoded form for the hook-facing path would double-decode at that boundary (`/blog/a%3Fb` → `/blog/a?b`, whose `?b` is then stripped as a query string). |
 //! | Splat rules (`/old/* /new/:splat 200`) | **Skip** — but keyed on the **target**, not the source. A splat SOURCE with a concrete target (`/old/* /fallback 200`) IS enumerated; only a target still carrying a `:splat` this rule would substitute is skipped. | A `:splat`/`:name` target is a family of routes, not one route; resolving it needs a concrete request that has not happened yet. Expanding against the route table was rejected: it would make this function impure, couple it to a snapshot that changes across the dev session, and (at a Cold boot, the case being fixed) the route table is exactly what has not settled yet. Skipping costs nothing beyond the existing behaviour — such a target is no worse off than today. |
 //! | Placeholders in the target (`/:lang/about`) | **Disqualifying**, same rule and reasoning as `:splat`. A `:` token the rule cannot resolve (no such placeholder in its source, no splat) is NOT disqualifying — `substitute_target` leaves it literal, so the target really is one concrete path. | Concreteness is about what production would substitute, not about the presence of a colon. |
-//! | Query string on the target (`/target?x=1`) | **Stripped**, by delegating to [`waterfall_trimmed_for_rewrite_target`]. | Query strings are not part of a filesystem / page-cache lookup, and that is already what the live rewrite does — preview splits the query before its static waterfall and dev mirrors it. Stripping here keeps pre-warm and serve on the same key. |
-//! | Fragment on the target (`/target#a`) | **Not stripped** — deliberately, because production does not strip it either. | Fidelity beats cleverness: the pre-warm key must equal the serve key. If a fragment-bearing target is wrong, it is wrong identically on both sides, and pre-warm still hits whatever the waterfall probes. |
+//! | Query string on the target (`/target?x=1`) | **Stripped**, by delegating to [`waterfall_trimmed_for_rewrite_target`]. Because it is discarded, a `:name` / `:splat` token appearing ONLY in the query does not make the target non-concrete — `/:id /fallback?from=:id 200` serves the single path `/fallback` and IS enumerated. | Query strings are not part of a filesystem / page-cache lookup, and that is already what the live rewrite does — preview splits the query before its static waterfall and dev mirrors it. Stripping here keeps pre-warm and serve on the same key. |
+//! | Fragment on the target (`/target#a`) | **Not stripped** — deliberately, because production does not strip it either (it splits only on `?`). The surviving `#` is then canonically encoded like any other reserved character, giving `/target%23a`. | Fidelity beats cleverness: the pre-warm key must equal the serve key. If a fragment-bearing target is wrong, it is wrong identically on both sides, and pre-warm still hits whatever the waterfall probes. |
 //! | Base-path prefix | Targets are authored in **full-path spec form including the base** (e.g. `/pj/site/rewritten/`); the prefix is stripped via the same `strip_prefix_from_path` boundary rule production uses. A target that does NOT carry the prefix passes through unchanged — again matching production. | The dev route universe, the render-on-request hook, and the waterfall all work in prefix-STRIPPED space. Emitting anything else would miss. |
 //! | External / absolute-URL targets | **Excluded.** Already rejected at parse time ([`Redirects::parse`] drops a `200` rule with a `scheme:` target, per the Cloudflare spec's "cannot proxy external domains"), and re-checked here as defense in depth. **Protocol-relative** targets (`//example.com/x`) are excluded here too — parse does not catch those, since they start with `/`. | There is nothing local to pre-warm. A protocol-relative target would otherwise normalize to the nonsense lookup path `example.com/x`. |
 //! | Targets that are not absolute paths (`foo/bar`) | **Excluded.** | Not a same-site absolute path. Production would still probe some trimmed form of it, but pre-warming a path the author never meant risks a spurious render; declining to pre-warm only leaves the status quo. |
@@ -59,11 +59,19 @@ pub struct PrewarmTarget {
     /// query string still attached). Diagnostics only — never a lookup key.
     pub raw_target: String,
     /// The path a normal GET for this target would hand the dev layers:
-    /// base-prefix-stripped, query-stripped, percent-DECODED, with a
-    /// leading `/` (`/` for the site root).
+    /// base-prefix-stripped, query-stripped, percent-ENCODED canonical, with
+    /// a leading `/` (`/` for the site root).
     ///
     /// This is the shape `RenderOnRequestHook::render_if_stale` and the dev
-    /// route universe's URL index take.
+    /// route universe's URL index take. **Encoded, not decoded** — in
+    /// production the hook receives `strip_prefix_from_full_uri(uri, …)`,
+    /// i.e. the raw URI path, and `DevRenderSession::lookup_by_url`
+    /// documents its input as "may be percent-encoded (decoded once, then
+    /// re-canonicalized)". Handing it the decoded form would double-decode:
+    /// a target of `/blog/a%3Fb` would arrive as `/blog/a?b` and have `?b`
+    /// stripped as a query string, and `/blog/a%252Fb` would decay to a real
+    /// separator. The canonical spelling survives that round trip
+    /// unchanged.
     pub request_path: String,
     /// `request_path` re-encoded per component into the canonical form the
     /// renderer wrote to disk (#1768), WITHOUT a leading slash — byte-identical
@@ -141,10 +149,13 @@ pub fn prewarm_rewrite_targets(redirects: &Redirects, base_prefix: Option<&str>)
         // near-miss spelling waiting to happen.
         let trimmed = waterfall_trimmed_for_rewrite_target(raw.target, base_prefix);
         let canonical_path = canonical_encode_path(&trimmed);
-        let request_path = if trimmed.is_empty() {
+        // Built from the CANONICAL (encoded) form, not `trimmed` — see
+        // `PrewarmTarget::request_path` for why the decoded form would
+        // double-decode at the hook / URL-index boundary.
+        let request_path = if canonical_path.is_empty() {
             "/".to_string()
         } else {
-            format!("/{trimmed}")
+            format!("/{canonical_path}")
         };
 
         if plan.targets.iter().any(|t| t.request_path == request_path) {
@@ -196,6 +207,8 @@ mod tests {
 /dup-one /shared-target 200
 /dup-two /shared-target 200
 /encoded /posts/caf%C3%A9 200
+/reserved-encoded /blog/a%3Fb 200
+/:id /fallback?from=:id 200
 /moved /moved-to 301
 /temp /temp-to
 ";
@@ -273,8 +286,52 @@ mod tests {
         assert_eq!(production_canonical, "posts/caf%C3%A9", "re-encoded");
         assert_eq!(t.canonical_path, production_canonical);
         assert_eq!(t.lookup_keys, production_keys);
-        // And the hook-facing shape stays DECODED, like a real request's.
-        assert_eq!(t.request_path, "/posts/café");
+        // The hook-facing shape is the ENCODED canonical, like the raw URI
+        // path production hands the hook — not the decoded intermediate.
+        assert_eq!(t.request_path, "/posts/caf%C3%A9");
+    }
+
+    /// A target carrying an ENCODED reserved character is the case that
+    /// falsifies emitting the decoded form: decoded, `/blog/a%3Fb` becomes
+    /// `/blog/a?b`, and `DevRenderSession::lookup_by_url` (like every other
+    /// dev URL consumer) splits at the first `?` — so the pre-warm would
+    /// silently register `/blog/a` and miss the real route.
+    #[test]
+    fn hook_facing_path_keeps_encoded_reserved_characters() {
+        let p = plan(None);
+        let t = p
+            .targets
+            .iter()
+            .find(|t| t.raw_target == "/blog/a%3Fb")
+            .expect("reserved-encoded target enumerated");
+        assert_eq!(t.request_path, "/blog/a%3Fb");
+        assert!(
+            !t.request_path.contains('?'),
+            "a decoded `?` would be stripped as a query string downstream"
+        );
+        assert_eq!(t.lookup_keys[0], "/blog/a%3Fb");
+    }
+
+    /// `request_path` must survive the decode-then-re-canonicalize round
+    /// trip every dev URL consumer performs (`lookup_by_url`'s documented
+    /// contract), landing back on itself. The decoded form does not.
+    #[test]
+    fn hook_facing_path_is_idempotent_under_the_consumer_round_trip() {
+        for t in &plan(None).targets {
+            let path_only = t.request_path.split('?').next().unwrap_or(&t.request_path);
+            let decoded = percent_encoding::percent_decode_str(path_only)
+                .decode_utf8()
+                .expect("valid utf-8");
+            let round_tripped = format!(
+                "/{}",
+                canonical_encode_path(decoded.trim_start_matches('/'))
+            );
+            assert_eq!(
+                round_tripped, t.request_path,
+                "consumer round trip must be a no-op for {}",
+                t.raw_target
+            );
+        }
     }
 
     #[test]
@@ -313,15 +370,20 @@ mod tests {
             .iter()
             .find(|t| t.raw_target == "/fragmented#section")
             .expect("fragment target enumerated");
-        // Not a cleverness decision — this asserts parity with production.
+        // Not a cleverness decision — this asserts parity with production,
+        // which keeps the `#` (it splits only on `?`) and then canonically
+        // encodes it like any other reserved character.
         assert_eq!(
             t.request_path,
             format!(
                 "/{}",
-                waterfall_trimmed_for_rewrite_target("/fragmented#section", None)
+                canonical_encode_path(&waterfall_trimmed_for_rewrite_target(
+                    "/fragmented#section",
+                    None
+                ))
             )
         );
-        assert_eq!(t.request_path, "/fragmented#section");
+        assert_eq!(t.request_path, "/fragmented%23section");
     }
 
     // --- row: splat / placeholder targets --------------------------------
@@ -335,6 +397,22 @@ mod tests {
         );
         // A splat SOURCE is fine — only the target's concreteness matters.
         assert!(request_paths(&p).contains(&"/concrete-fallback".to_string()));
+    }
+
+    /// A `:name` surviving only in the DISCARDED query string does not make
+    /// the target non-concrete — every request for `/:id /fallback?from=:id`
+    /// serves the single path `/fallback`. Skipping it would leave exactly
+    /// the cold-boot 404 this epic exists to fix.
+    #[test]
+    fn query_only_substitution_still_yields_a_concrete_target() {
+        let p = plan(None);
+        assert_eq!(
+            p.targets
+                .iter()
+                .find(|t| t.raw_target == "/fallback?from=:id")
+                .map(|t| t.request_path.as_str()),
+            Some("/fallback")
+        );
     }
 
     #[test]
@@ -357,7 +435,9 @@ mod tests {
             .iter()
             .find(|t| t.raw_target == "/docs/:8080/index")
             .expect("literal-colon target enumerated");
-        assert_eq!(t.request_path, "/docs/:8080/index");
+        // Enumerated (the point of the test); the surviving literal `:` is
+        // then canonically encoded, exactly as the waterfall encodes it.
+        assert_eq!(t.request_path, "/docs/%3A8080/index");
     }
 
     // --- row: external / protocol-relative / non-absolute -----------------
