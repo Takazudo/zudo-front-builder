@@ -27,10 +27,17 @@
 //!
 //! For every enumerated target, in `_redirects` file order:
 //!
-//! 1. **Mark it stale** ([`DevRenderSession::mark_rewrite_target_stale`])
-//!    — alongside the other stale-marking passes, so it is claimable and
-//!    so the mark rides the normal tick-stale → `pages_stale` →
-//!    `ReloadEvent::Page` channel a tab already listens on.
+//! 1. **Ask whether it is already fresh, and mark it stale only if it is
+//!    not** ([`DevRenderSession::mark_rewrite_target_stale_if_needed`]).
+//!    The order is load-bearing: `mark_stale` re-inserts a stale entry
+//!    unconditionally, so marking first would make the freshness question
+//!    answer itself and the pass would re-render every target of every
+//!    rule on every run. Asking first is also the only reading that
+//!    matches production — the adapter consults the same stale map
+//!    through the same `claim_stale` and serves the on-disk bytes when it
+//!    finds nothing. When it does mark, the mark rides the normal
+//!    tick-stale → `pages_stale` → `ReloadEvent::Page` channel a tab
+//!    already listens on.
 //! 2. **Warm it** through [`LazyRenderAdapter::render_stale_route`] — the
 //!    adapter's synchronous core, i.e. the exact claim → render →
 //!    guarded-write flow a direct `GET /target` would take.
@@ -39,6 +46,18 @@
 //! a stale entry is only ever consumed by a request for that same path,
 //! and the whole point of #1825 is that such a request never arrives —
 //! the rewrite serves `/alias`, not `/target`.
+//!
+//! ### What this costs, stated plainly
+//!
+//! At a fresh Cold boot the boot render's own `mark_all_routes_stale`
+//! has just marked EVERY route stale, so every enumerated target really
+//! does get rendered — uncapped, on the boot task. That is the fix, not
+//! an accident: a target nobody renders is a permanent 404. The bound is
+//! the number of concrete `200`-rule targets a project authors, and the
+//! work is the same work a direct `GET` for each would do. What the
+//! freshness check buys is every LATER run: a live `_redirects` edit
+//! re-runs the pass and, for every target already warmed, does nothing
+//! at all — no render, no stale mark, no reload.
 //!
 //! **Where this runs is the entire design.** The rejected alternative
 //! (see #1825 and this epic's decision list) was to give
@@ -66,9 +85,9 @@
 //!   the no-restart promise the `_redirects` watch was built for. The
 //!   alternative (boot-only registration) was rejected as a worse
 //!   surprise than the pass's cost: a re-warm renders only the targets a
-//!   rule set names, each is a no-op when already fresh (the stale
-//!   pre-check returns before touching the renderer), and the edit that
-//!   triggers it is a human keystroke, not a hot loop.
+//!   rule set names, each is genuinely a no-op when already fresh (step 1
+//!   returns `Fresh` before the renderer is touched at all), and the edit
+//!   that triggers it is a human keystroke, not a hot loop.
 //! - **After a cold-bootstrap recovery: yes.** When the deferred Cold
 //!   bundle FAILS (#1809), the boot hook's pre-warm runs against the
 //!   empty scaffold route tables and warms nothing. The recovery's own
@@ -81,10 +100,32 @@
 //! All three entry points funnel through [`prewarm_rewrite_targets_now`],
 //! so there is one implementation of "what pre-warming means" and the
 //! lifecycle moments cannot drift.
+//!
+//! ## Who drains the marks — the other half of the lifecycle
+//!
+//! Step 1 writes into the per-tick stale buffer, which is drained
+//! elsewhere and turned into one `ReloadEvent::Page`. A registration
+//! point that runs the pass without arranging for that drain leaks the
+//! marks: they surface later as spurious `pages_stale` in an unrelated
+//! tick, and the run that earned them broadcasts nothing. So exactly one
+//! of the three has a caller-side drain, and the other two do their own:
+//!
+//! - **Boot** — the deferred hook drains `take_tick_stale()` a few steps
+//!   after the pass and folds it into the single `run_with_boot`
+//!   broadcast (`RewritePrewarmWiring::run_for_caller_drain`).
+//! - **Live `_redirects` edit** and **cold-bootstrap recovery** — no
+//!   drain follows either, so both use
+//!   `RewritePrewarmWiring::run_and_broadcast`, which drains and sends.
+//!   The recovery case additionally hands its tick's OWN events to that
+//!   call rather than sending them first: a tab reloaded before the
+//!   target is warm lands straight back on the dev 404, and the pass's
+//!   marks would then arrive in an already-drained buffer. Deferring the
+//!   send gives the recovery path the same "one broadcast, after the
+//!   warm" ordering the boot path gets for free.
 
 use zfb_server::{prewarm_rewrite_targets, PrewarmSkipReason, Redirects, RedirectsHandle};
 
-use crate::commands::dev::{BootLazyMode, DevRenderSession};
+use crate::commands::dev::{BootLazyMode, DevRenderSession, RewriteTargetMark};
 use crate::lazy_render_adapter::{LazyRenderAdapter, LazyRenderOutcome};
 
 /// What one pre-warm pass did. Diagnostics + tests only — no caller
@@ -93,8 +134,12 @@ use crate::lazy_render_adapter::{LazyRenderAdapter, LazyRenderOutcome};
 pub(crate) struct PrewarmPassReport {
     /// Targets the enumerator produced.
     pub enumerated: usize,
-    /// Targets that resolved to a live SSG route and were marked stale.
+    /// Targets that resolved to a live SSG route which was NOT fresh, and
+    /// were therefore marked stale.
     pub marked: usize,
+    /// Targets the stale map reported as already current — neither marked
+    /// nor rendered. The pass's genuine no-op class; see the `Fresh` arm.
+    pub already_fresh: usize,
     /// Targets whose warm render actually wrote (or byte-deduped) HTML.
     pub rendered: usize,
 }
@@ -141,20 +186,31 @@ pub(crate) fn prewarm_rewrite_targets_now(
     };
 
     for target in &plan.targets {
-        // Step 1 — stale-mark. Best-effort: `None` means the reverse URL
-        // index has no entry, which covers an SSR route and a rule
-        // pointing at nothing — but ALSO a dynamic injected route, which
-        // has no concrete URL at boot and is instead resolved by the
-        // adapter's own injected-pattern fallback in step 2 (that
-        // fallback marks such a route stale itself, by construction).
-        // So a miss here must NOT skip step 2 — doing so would leave
-        // `/alias /preset-docs/foo 200` at the very 404 this pass exists
-        // to prevent, even though a direct GET renders it fine.
-        if session
-            .mark_rewrite_target_stale(&target.request_path)
-            .is_some()
-        {
-            report.marked += 1;
+        // Step 1 — resolve, and stale-mark only what is not already
+        // fresh. The three outcomes are deliberately NOT interchangeable:
+        //
+        // - `Fresh` is the pass's real no-op. The stale map says a direct
+        //   `GET` for this target would serve the on-disk bytes without
+        //   re-rendering, so neither does this pass, and it does not
+        //   queue a `pages_stale` mark that would bounce a tab for
+        //   nothing. This is what keeps a live `_redirects` edit from
+        //   re-rendering every target of every rule.
+        // - `Unresolved` must NOT skip step 2. The reverse URL index also
+        //   misses for a DYNAMIC injected route, which has no concrete
+        //   URL at boot and is instead resolved by the adapter's own
+        //   injected-pattern fallback in step 2 (that fallback marks such
+        //   a route stale itself, by construction). Skipping would leave
+        //   `/alias /preset-docs/foo 200` at the very 404 this pass
+        //   exists to prevent, even though a direct GET renders it fine.
+        // - `MarkedStale` is the #1825 case: the target has no servable
+        //   bytes yet, so step 2 must render it.
+        match session.mark_rewrite_target_stale_if_needed(&target.request_path) {
+            RewriteTargetMark::MarkedStale(_) => report.marked += 1,
+            RewriteTargetMark::Fresh => {
+                report.already_fresh += 1;
+                continue;
+            }
+            RewriteTargetMark::Unresolved => {}
         }
 
         // Step 2 — warm. Uses `request_path` verbatim: the enumerator
@@ -289,6 +345,12 @@ mod tests {
             Arc::new(Mutex::new(None)),
             true,
         );
+        // What a Cold boot looks like when the pass runs: `run_boot_render`'s
+        // boot-lazy branch has just called `mark_all_routes_stale`, so no
+        // route has servable bytes yet. Without this the route would be
+        // FRESH and the pass would correctly decline to do anything — see
+        // the sibling test below.
+        session.mark_routes_stale([PathBuf::from("posts/caf%C3%A9/index.html")]);
         let pipeline = DevAssetPipeline::new();
         let adapter = LazyRenderAdapter::new(
             session.clone(),
@@ -314,6 +376,7 @@ mod tests {
                 // scope, so two rules enumerate.
                 enumerated: 2,
                 marked: 1,
+                already_fresh: 0,
                 rendered: 0,
             },
         );
@@ -322,6 +385,89 @@ mod tests {
         assert_eq!(
             session.take_tick_stale_for_tests(),
             vec![PathBuf::from("posts/caf%C3%A9/index.html")],
+        );
+    }
+
+    /// Epic-review finding on #1999: the freshness check must be
+    /// REACHABLE, not decorative.
+    ///
+    /// The pre-fix pass called `mark_stale` and only then asked the
+    /// adapter whether the route was stale — so the answer was always
+    /// "yes, because I just said so", and every boot and every live
+    /// `_redirects` edit re-rendered every 200-rewrite target. The
+    /// module docs claimed the opposite ("a no-op when already fresh").
+    ///
+    /// Same fixture as the test above with ONE difference: nothing has
+    /// marked the route stale, i.e. it has already been warmed. The pass
+    /// must then do nothing at all — and "nothing" is asserted three
+    /// ways, because `rendered: 0` alone is satisfied by the old
+    /// behaviour too (the stub has no renderer):
+    ///
+    /// - `already_fresh: 1, marked: 0` — the check ran and answered.
+    /// - the stale map is still EMPTY — the pass did not re-stale the
+    ///   route, which is what would force a pointless re-render on the
+    ///   next real request.
+    /// - the tick-stale buffer is EMPTY — no spurious `pages_stale`, so
+    ///   no `ReloadEvent::Page` bounces a tab for a page that did not
+    ///   change. Restoring the unconditional `mark_stale` fails all
+    ///   three.
+    #[test]
+    fn already_fresh_target_is_neither_marked_nor_rendered() {
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+        use zfb_build::renderer::RouteUniverseEntry;
+        use zfb_build::DevAssetPipeline;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let session = crate::commands::dev::stub_session_for_adapter_tests(
+            root.clone(),
+            vec![(
+                root.join("pages/posts/cafe.tsx"),
+                vec![RouteUniverseEntry {
+                    url_path: "/posts/caf%C3%A9".to_string(),
+                    output_path: PathBuf::from("posts/caf%C3%A9/index.html"),
+                    route_key: "/posts/café".to_string(),
+                    static_html: false,
+                    source_path: None,
+                }],
+            )],
+            Arc::new(Mutex::new(None)),
+            true,
+        );
+        let pipeline = DevAssetPipeline::new();
+        let adapter = LazyRenderAdapter::new(
+            session.clone(),
+            pipeline.request_writer(),
+            root.join("dev-pages"),
+            Default::default(),
+        );
+
+        let report = prewarm_rewrite_targets_now(
+            &Redirects::parse("/alias /posts/caf%C3%A9 200\n"),
+            None,
+            &session,
+            &adapter,
+        );
+
+        assert_eq!(
+            report,
+            PrewarmPassReport {
+                enumerated: 1,
+                marked: 0,
+                already_fresh: 1,
+                rendered: 0,
+            },
+        );
+        assert!(
+            session
+                .claim_stale(Path::new("posts/caf%C3%A9/index.html"))
+                .is_none(),
+            "a fresh target must not be re-staled by the pre-warm",
+        );
+        assert!(
+            session.take_tick_stale_for_tests().is_empty(),
+            "a fresh target must queue no `pages_stale` mark, so no tab is bounced",
         );
     }
 
