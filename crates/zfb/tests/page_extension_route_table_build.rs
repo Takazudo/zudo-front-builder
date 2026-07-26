@@ -18,9 +18,51 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use zfb_test_utils::{locate_esbuild, zfb_binary};
+
+/// Wall-clock deadline for the `zfb build` subprocess. Generous enough for
+/// a cold V8 + esbuild boot, far under the nextest `e2e-heavy` group's 600s
+/// `terminate-after`, so a hang surfaces as this test's own diagnostic
+/// panic rather than a runner-level kill.
+const BUILD_DEADLINE: Duration = Duration::from_secs(180);
+
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Owns the spawned `zfb build` process. Drop kills the whole process
+/// group (on unix) so a hung build — or an esbuild child that outlives it —
+/// can never outlive this test, whether the deadline loop below catches it
+/// or the test unwinds for any other reason.
+///
+/// This mirrors `page_extension_full_matrix_e2e.rs`'s `BuildGuard`. Wave
+/// 4's header documents why the plain `Command::output()` this test used
+/// originally is unsafe here: it blocks unbounded and keeps the child alive
+/// with no deadline and no group cleanup, in a non-`#[ignore]`d T1 test
+/// that boots real V8 + esbuild.
+struct BuildGuard {
+    child: std::process::Child,
+    #[cfg(unix)]
+    pgid: libc::pid_t,
+}
+
+impl Drop for BuildGuard {
+    fn drop(&mut self) {
+        // Best-effort: ESRCH (already gone) is harmless.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-self.pgid, libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn read_log(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_default()
+}
 
 fn write_project(root: &Path) {
     fs::write(
@@ -110,18 +152,57 @@ fn widened_script_page_extensions_render_end_to_end_via_real_build() {
     let root = tmp.path();
     write_project(root);
 
-    let output = Command::new(zfb_binary!())
-        .arg("build")
+    // Own process group, output captured to files (never pipes — a full
+    // pipe buffer is its own deadlock), and a bounded poll loop so this
+    // test always returns and the child is always killed.
+    let stdout_path = root.join(".zfb-build-stdout.log");
+    let stderr_path = root.join(".zfb-build-stderr.log");
+    let stdout_file = fs::File::create(&stdout_path).expect("create build stdout log file");
+    let stderr_file = fs::File::create(&stderr_path).expect("create build stderr log file");
+
+    let mut cmd = Command::new(zfb_binary!());
+    cmd.arg("build")
         .current_dir(root)
         .env("ZFB_ESBUILD_BIN", &esbuild)
-        .output()
-        .expect("spawn `zfb build`");
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let child = cmd.spawn().expect("spawn `zfb build`");
+    #[cfg(unix)]
+    let pgid = child.id() as libc::pid_t;
+    let mut guard = BuildGuard {
+        child,
+        #[cfg(unix)]
+        pgid,
+    };
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = guard.child.try_wait().expect("try_wait on `zfb build`") {
+            break status;
+        }
+        if start.elapsed() >= BUILD_DEADLINE {
+            panic!(
+                "`zfb build` did not exit within {}s — treating as a hang; process group \
+                 killed by BuildGuard's Drop.\nstdout: {}\nstderr: {}",
+                BUILD_DEADLINE.as_secs(),
+                read_log(&stdout_path),
+                read_log(&stderr_path),
+            );
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+
+    let stdout = read_log(&stdout_path);
+    let stderr = read_log(&stderr_path);
     let combined = format!("{stdout}{stderr}");
 
-    if !output.status.success() {
+    if !status.success() {
         if combined.contains("embed_v8")
             || combined.contains("no esbuild")
             || combined.contains("no tailwind")
@@ -136,8 +217,7 @@ fn widened_script_page_extensions_render_end_to_end_via_real_build() {
         }
         panic!(
             "zfb build failed unexpectedly for the .ts/.js/.jsx page fixture.\n\
-             status: {:?}\nstdout: {stdout}\nstderr: {stderr}",
-            output.status,
+             status: {status:?}\nstdout: {stdout}\nstderr: {stderr}",
         );
     }
 

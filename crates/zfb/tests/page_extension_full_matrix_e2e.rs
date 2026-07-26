@@ -32,13 +32,19 @@
 //! - No `pages/ file has an unrecognised extension and will be skipped`
 //!   warning fires for any of the seven, in either mode — the absence of
 //!   the warning is as load-bearing as the presence of the route.
-//! - `crates/zfb-router/src/scan.rs` and `crates/zfb-build/src/bundler.rs`
-//!   both read the shared `zfb_types::ROUTABLE_PAGE_EXTENSIONS` /
-//!   `SCRIPT_PAGE_EXTENSIONS` subsets rather than carrying an independent
-//!   literal allowlist — this is #1742's third expected outcome ("add a
-//!   cross-layer command test so the two allowlists cannot drift again")
-//!   and proving it landed is this sub-issue's job. That check needs no
-//!   esbuild/V8 and runs as an ordinary (non-`#[ignore]`d) test.
+//! - EVERY production site that gates on page extensions (`GATE_SITES`:
+//!   `zfb-router/src/scan.rs`, `zfb-build/src/bundler.rs`,
+//!   `zfb/src/render_pipeline.rs`, `zfb/src/commands/build.rs`) reads the
+//!   shared `zfb_types::ROUTABLE_PAGE_EXTENSIONS` / `SCRIPT_PAGE_EXTENSIONS`
+//!   subset it means — checked in CODE, after comments are stripped, so a
+//!   doc-comment mention cannot satisfy it — and none of them carries a
+//!   hand-spelled extension list in ANY spelling (array literal, `matches!`
+//!   arm chain, `||` if-chain, slice). This is #1742's third expected
+//!   outcome ("add a cross-layer command test so the two allowlists cannot
+//!   drift again"). A second test (`drift_detector_fires_on_every_hand_\
+//!   spelled_spelling`) is the guard's own self-test, so the detector cannot
+//!   be silently neutered. Both need no esbuild/V8 and run as ordinary
+//!   (non-`#[ignore]`d) tests.
 //!
 //! ## CI conventions
 //!
@@ -754,51 +760,405 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// #1742's third expected outcome: "add a cross-layer command test so
-/// the two allowlists cannot drift again". Asserts both the router
-/// (`zfb-router/src/scan.rs`) and the bundler
-/// (`zfb-build/src/bundler.rs`) source reference the shared
-/// `zfb_types::ROUTABLE_PAGE_EXTENSIONS` constant rather than each
-/// carrying its own independent literal allowlist. This is a
-/// source-text check (not a runtime behavior check — the heavy test
-/// above already proves runtime behavior), but it is exactly the kind
-/// of guard that catches a future edit that reintroduces a second,
-/// independently-drifting literal in either crate.
+/// The seven routable page extensions, spelled out here on purpose: this
+/// guard must know the vocabulary independently of the constant it is
+/// guarding, or an edit that rewrote both would pass trivially.
+const PAGE_EXTENSION_VOCABULARY: &[&str] = &["tsx", "ts", "jsx", "js", "mdx", "md", "html"];
+
+/// Every production site that gates on page extensions, and the shared
+/// `zfb-types` constant each one is required to consume.
+///
+/// Adding a new gate site to the product means adding it here — a site
+/// missing from this list is exactly how #1742 happened (the bundler and
+/// the router each grew their own list, and nothing compared them).
+const GATE_SITES: &[(&str, &[&str])] = &[
+    // "can this be routed" — the ROUTABLE subset (the extension gate in
+    // `scan_pages_inner`, plus `strip_source_extension`) — AND the SCRIPT
+    // subset, for the `sitemap.xml.<ext>` output-extension convention that
+    // applies to script pages only.
+    (
+        "crates/zfb-router/src/scan.rs",
+        &["ROUTABLE_PAGE_EXTENSIONS", "SCRIPT_PAGE_EXTENSIONS"],
+    ),
+    // "is this a page source the bundler can derive a route for" — ROUTABLE.
+    (
+        "crates/zfb-build/src/bundler.rs",
+        &["ROUTABLE_PAGE_EXTENSIONS"],
+    ),
+    // "is this a script page whose frontmatter/prerender export SWC can
+    // read" — the SCRIPT subset (`build_prerender_map`).
+    (
+        "crates/zfb/src/render_pipeline.rs",
+        &["SCRIPT_PAGE_EXTENSIONS"],
+    ),
+    // "which page sources seed the islands import walk" — SCRIPT.
+    (
+        "crates/zfb/src/commands/build.rs",
+        &["SCRIPT_PAGE_EXTENSIONS"],
+    ),
+];
+
+/// Escape hatch for a legitimate cluster of extension-shaped string
+/// literals that is NOT a page-extension allowlist (e.g. an esbuild loader
+/// table). Put this marker on the same line as the cluster's opening.
+const DRIFT_GUARD_ALLOW_MARKER: &str = "page-extension-drift-guard: allow";
+
+/// A string literal found in a Rust source, with its byte span in the
+/// comment-stripped text.
+struct Literal {
+    start: usize,
+    end: usize,
+    value: String,
+}
+
+/// Blank out comments (line, block, nested block) and collect every string
+/// literal, so the drift scan below can never be satisfied — or tripped —
+/// by prose in a doc comment.
+///
+/// Handles `//`, `/* */` (nested), normal `"…"` strings with `\` escapes,
+/// raw strings (`r"…"`, `r#"…"#`), and char literals / lifetimes well
+/// enough for the Rust sources in this workspace.
+fn strip_comments_and_collect_literals(src: &str) -> (String, Vec<Literal>) {
+    let b = src.as_bytes();
+    let mut sanitized: Vec<u8> = b.to_vec();
+    let mut literals = Vec::new();
+    let mut i = 0usize;
+
+    // Replace a byte range with spaces, preserving newlines so line
+    // structure (and therefore the allow-marker lookup) stays intact.
+    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for byte in out.iter_mut().take(to).skip(from) {
+            if *byte != b'\n' {
+                *byte = b' ';
+            }
+        }
+    };
+
+    while i < b.len() {
+        // Line comment.
+        if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            let end = b[i..]
+                .iter()
+                .position(|c| *c == b'\n')
+                .map_or(b.len(), |p| i + p);
+            blank(&mut sanitized, i, end);
+            i = end;
+            continue;
+        }
+        // Block comment (Rust nests them).
+        if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            let start = i;
+            let mut depth = 1usize;
+            i += 2;
+            while i < b.len() && depth > 0 {
+                if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == b'*' && i + 1 < b.len() && b[i + 1] == b'/' {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            blank(&mut sanitized, start, i);
+            continue;
+        }
+        // Raw string: `r"…"` / `r#"…"#` / `br"…"`.
+        let raw_prefix = if b[i] == b'r' {
+            Some(i + 1)
+        } else if b[i] == b'b' && i + 1 < b.len() && b[i + 1] == b'r' {
+            Some(i + 2)
+        } else {
+            None
+        };
+        if let Some(mut j) = raw_prefix {
+            // Only a raw string if the previous byte cannot continue an
+            // identifier (otherwise `for` / `bar` would false-match).
+            let prev_is_ident =
+                i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_' || b[i - 1] == b'.');
+            let hashes_start = j;
+            while j < b.len() && b[j] == b'#' {
+                j += 1;
+            }
+            if !prev_is_ident && j < b.len() && b[j] == b'"' {
+                let hashes = j - hashes_start;
+                let content_start = j + 1;
+                let terminator = format!("\"{}", "#".repeat(hashes));
+                let rest = &src[content_start..];
+                let end_rel = rest.find(&terminator).unwrap_or(rest.len());
+                let content_end = content_start + end_rel;
+                literals.push(Literal {
+                    start: content_start,
+                    end: content_end,
+                    value: src[content_start..content_end].to_string(),
+                });
+                i = content_end + terminator.len();
+                continue;
+            }
+        }
+        // Normal string literal.
+        if b[i] == b'"' {
+            let content_start = i + 1;
+            let mut j = content_start;
+            let mut value = String::new();
+            while j < b.len() {
+                if b[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                if b[j] == b'"' {
+                    break;
+                }
+                value.push(b[j] as char);
+                j += 1;
+            }
+            literals.push(Literal {
+                start: content_start,
+                end: j.min(b.len()),
+                value,
+            });
+            i = (j + 1).min(b.len());
+            continue;
+        }
+        // Char literal vs lifetime.
+        if b[i] == b'\'' {
+            if i + 1 < b.len() && b[i + 1] == b'\\' {
+                // `'\n'`, `'\''` …
+                let mut j = i + 2;
+                while j < b.len() && b[j] != b'\'' {
+                    j += 1;
+                }
+                i = (j + 1).min(b.len());
+                continue;
+            }
+            if i + 2 < b.len() && b[i + 2] == b'\'' {
+                i += 3;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+
+    (String::from_utf8_lossy(&sanitized).into_owned(), literals)
+}
+
+/// Largest gap (in bytes of intervening source) still considered "the same
+/// list". Comfortably covers `", "`, `" | "`, and an if-chain's
+/// `" || ext == "` — but not two unrelated statements.
+const MAX_CLUSTER_GAP: usize = 24;
+
+/// The number of page extensions that, appearing together as separate
+/// string literals, constitutes a hand-spelled allowlist. Three is low
+/// enough to catch a partial re-spelling and high enough that an ordinary
+/// `matches!(e, "md" | "html")` special case (which is about behavior, not
+/// about the allowlist) does not trip it.
+const CLUSTER_THRESHOLD: usize = 3;
+
+/// Find hand-spelled page-extension lists in `src`, in ANY spelling — an
+/// array literal, a `matches!` arm chain, a slice, or an `||` if-chain —
+/// because those are what real drift looks like. Returns a description of
+/// each offending cluster.
+fn find_hand_spelled_extension_lists(src: &str) -> Vec<String> {
+    let (sanitized, literals) = strip_comments_and_collect_literals(src);
+
+    let mut hits: Vec<&Literal> = literals
+        .iter()
+        .filter(|l| PAGE_EXTENSION_VOCABULARY.contains(&l.value.as_str()))
+        .collect();
+    hits.sort_by_key(|l| l.start);
+
+    let mut offenders = Vec::new();
+    let mut cluster: Vec<&Literal> = Vec::new();
+
+    let flush = |cluster: &Vec<&Literal>, offenders: &mut Vec<String>| {
+        let distinct: std::collections::BTreeSet<&str> =
+            cluster.iter().map(|l| l.value.as_str()).collect();
+        if distinct.len() < CLUSTER_THRESHOLD {
+            return;
+        }
+        let start = cluster[0].start;
+        // Line number + the allow-marker check, both against the ORIGINAL
+        // source (the marker lives in a comment, which is blanked out).
+        let line_no = src[..start].matches('\n').count() + 1;
+        let lines: Vec<&str> = src.lines().collect();
+        let line = lines.get(line_no - 1).copied().unwrap_or("");
+
+        // The marker may sit on the cluster's own line, or anywhere in the
+        // contiguous run of `//` comment lines directly above it (a real
+        // justification is usually a sentence or three, and it must stay
+        // attached to the code it excuses).
+        let mut allowed = line.contains(DRIFT_GUARD_ALLOW_MARKER);
+        let mut i = line_no - 1; // 1-based line number of the line ABOVE
+        while !allowed && i >= 1 {
+            let prev = lines.get(i - 1).copied().unwrap_or("").trim_start();
+            if !prev.starts_with("//") {
+                break;
+            }
+            allowed = prev.contains(DRIFT_GUARD_ALLOW_MARKER);
+            i -= 1;
+        }
+        if allowed {
+            return;
+        }
+        offenders.push(format!(
+            "line {line_no}: hand-spelled page-extension list {:?} — {}",
+            distinct.iter().copied().collect::<Vec<_>>(),
+            line.trim()
+        ));
+    };
+
+    for lit in hits {
+        match cluster.last() {
+            Some(prev) if lit.start >= prev.end && lit.start - prev.end <= MAX_CLUSTER_GAP => {
+                // Same statement? A `;` between them ends the cluster.
+                let gap = &sanitized[prev.end..lit.start];
+                if gap.contains(';') {
+                    flush(&cluster, &mut offenders);
+                    cluster.clear();
+                }
+            }
+            Some(_) => {
+                flush(&cluster, &mut offenders);
+                cluster.clear();
+            }
+            None => {}
+        }
+        cluster.push(lit);
+    }
+    flush(&cluster, &mut offenders);
+
+    offenders
+}
+
+/// #1742's third expected outcome: "add a cross-layer command test so the
+/// two allowlists cannot drift again".
+///
+/// The guard has two halves, and BOTH must be able to fail:
+///
+/// 1. **Positive** — every file in [`GATE_SITES`] must reference the shared
+///    `zfb_types` constant it is supposed to consume, *in code*. The
+///    reference is counted only after comments are stripped, so a
+///    doc-comment mention of the constant name (of which these files have
+///    several) can never satisfy the assertion on its own. Both subsets are
+///    covered — `SCRIPT_PAGE_EXTENSIONS` sites included, which the original
+///    version of this test claimed but never checked.
+/// 2. **Negative** — no gate site may contain a hand-spelled cluster of
+///    page-extension string literals, *in any spelling*: an array literal,
+///    a `matches!(ext, "tsx" | "ts" | …)` arm chain, an `||` if-chain, or a
+///    slice. The original version only matched one byte-exact, CORRECT
+///    seven-element array literal — the one spelling that, by construction,
+///    is never what drift looks like.
+///
+/// Verified red-then-green: reintroducing `matches!(ext, "tsx" | "ts" |
+/// "jsx" | "js")` at the `render_pipeline.rs` gate makes this test fail on
+/// the negative half; reverting makes it pass.
+///
+/// It is a source-text check, not a runtime behavior check — the heavy test
+/// above already proves runtime behavior. Its job is to fail the moment a
+/// second, independently-drifting list appears anywhere in the product.
 #[test]
-fn router_and_bundler_share_the_zfb_types_page_extension_allowlist() {
+fn every_page_extension_gate_consumes_the_shared_zfb_types_contract() {
     let ws = workspace_root();
-    let scan_rs = fs::read_to_string(ws.join("crates/zfb-router/src/scan.rs"))
-        .expect("read crates/zfb-router/src/scan.rs");
-    let bundler_rs = fs::read_to_string(ws.join("crates/zfb-build/src/bundler.rs"))
-        .expect("read crates/zfb-build/src/bundler.rs");
+    let mut failures: Vec<String> = Vec::new();
+
+    for (rel, required_constants) in GATE_SITES {
+        let path = ws.join(rel);
+        let src = fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "read {rel}: {e} — if this gate site moved, update GATE_SITES \
+                 rather than deleting the entry"
+            )
+        });
+        let (code_only, _) = strip_comments_and_collect_literals(&src);
+
+        for constant in *required_constants {
+            let needle = format!("zfb_types::{constant}");
+            if !code_only.contains(&needle) {
+                failures.push(format!(
+                    "{rel}: must consume `{needle}` in CODE (doc-comment mentions do not \
+                     count) instead of gating on its own extension list"
+                ));
+            }
+        }
+
+        for offender in find_hand_spelled_extension_lists(&src) {
+            failures.push(format!(
+                "{rel}: {offender}\n    -> replace it with the shared \
+                 `zfb_types::ROUTABLE_PAGE_EXTENSIONS` / `SCRIPT_PAGE_EXTENSIONS` constant, \
+                 or (if it genuinely is not a page allowlist) annotate that line — or the \
+                 line above it — with a comment containing \
+                 `{DRIFT_GUARD_ALLOW_MARKER} — <why it is not a page-extension allowlist>`"
+            ));
+        }
+    }
 
     assert!(
-        scan_rs.contains("zfb_types::ROUTABLE_PAGE_EXTENSIONS"),
-        "crates/zfb-router/src/scan.rs must consume `zfb_types::ROUTABLE_PAGE_EXTENSIONS` \
-         instead of carrying its own independent extension allowlist"
+        failures.is_empty(),
+        "page-extension contract has drifted out of `zfb-types` \
+         ({} finding(s)):\n{}",
+        failures.len(),
+        failures.join("\n")
     );
-    assert!(
-        bundler_rs.contains("zfb_types::ROUTABLE_PAGE_EXTENSIONS"),
-        "crates/zfb-build/src/bundler.rs must consume `zfb_types::ROUTABLE_PAGE_EXTENSIONS` \
-         instead of carrying its own independent extension allowlist"
-    );
+}
 
-    // No independent literal copy of the full seven-extension list
-    // survives outside `zfb-types` in either crate (in either array
-    // literal spelling — with or without inter-element spaces).
-    for needle in [
-        r#"["tsx", "ts", "jsx", "js", "mdx", "md", "html"]"#,
-        r#"["tsx","ts","jsx","js","mdx","md","html"]"#,
-    ] {
+/// Self-test for the guard's negative half: the detector must fire on every
+/// spelling drift realistically takes, and stay quiet on code that merely
+/// mentions one or two extensions.
+///
+/// Without this, a refactor could silently neuter
+/// `find_hand_spelled_extension_lists` and the guard above would keep
+/// passing — the exact failure mode this rewrite exists to fix.
+#[test]
+fn drift_detector_fires_on_every_hand_spelled_spelling() {
+    let drifted = [
+        r#"const EXTS: &[&str] = &["tsx", "ts", "jsx", "js", "mdx", "md", "html"];"#,
+        r#"const EXTS: &[&str] = &["tsx","ts","jsx","js"];"#,
+        r#"if !matches!(ext, "tsx" | "ts" | "jsx" | "js") { continue; }"#,
+        r#"for ext in ["tsx", "ts", "jsx", "js"] { seed(ext); }"#,
+        r#"if ext == "tsx" || ext == "ts" || ext == "jsx" { route(); }"#,
+        "fn f(e: &str) -> bool {\n    e.ends_with(\".mdx\")\n}\nfn g() { let a = [\"tsx\", \"ts\", \"mdx\"]; }",
+        // An ordinary comment above is not an allow marker.
+        "// the page source extensions\nlet a = [\"tsx\", \"ts\", \"js\"];",
+        // The marker must stay ATTACHED — a non-comment line breaks the run.
+        "// page-extension-drift-guard: allow (something else entirely)\n\
+         let unrelated = 1;\n\
+         let a = [\"tsx\", \"ts\", \"js\"];",
+    ];
+    for src in drifted {
         assert!(
-            !scan_rs.contains(needle),
-            "crates/zfb-router/src/scan.rs must not carry its own literal copy of the \
-             page-extension list — found: {needle}"
+            !find_hand_spelled_extension_lists(src).is_empty(),
+            "detector missed a hand-spelled list:\n{src}"
         );
+    }
+
+    let clean = [
+        // Doc-comment prose naming every extension must NOT count.
+        "//! Accepted page extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`, `.html`.\n\
+         const A: &[&str] = zfb_types::ROUTABLE_PAGE_EXTENSIONS;",
+        // A single human-readable message listing them is one literal.
+        r#"tracing::warn!("accepted extensions are: tsx, ts, jsx, js, mdx, md, html");"#,
+        // Legitimate two-extension behavior special case.
+        r#"if matches!(ext, Some("md") | Some("html")) { skip(); }"#,
+        // Consuming the shared constant.
+        "for ext in zfb_types::SCRIPT_PAGE_EXTENSIONS { seed(ext); }",
+        // Explicitly annotated non-allowlist cluster.
+        "// page-extension-drift-guard: allow (esbuild loader table, not a page allowlist)\n\
+         let loaders = [(\"ts\", \"ts\"), (\"tsx\", \"tsx\"), (\"js\", \"js\")];",
+        // Marker several comment lines up, still contiguous.
+        "// page-extension-drift-guard: allow — the JS-family source extensions\n\
+         // a `?raw` import may name, not the routable page allowlist.\n\
+         const RAW: &[&str] = &[\"ts\", \"tsx\", \"js\", \"mjs\"];",
+        // Marker on the cluster's own line.
+        "const RAW: &[&str] = &[\"ts\", \"tsx\", \"js\"]; // page-extension-drift-guard: allow (x)",
+    ];
+    for src in clean {
         assert!(
-            !bundler_rs.contains(needle),
-            "crates/zfb-build/src/bundler.rs must not carry its own literal copy of the \
-             page-extension list — found: {needle}"
+            find_hand_spelled_extension_lists(src).is_empty(),
+            "detector produced a false positive:\n{src}\n-> {:?}",
+            find_hand_spelled_extension_lists(src)
         );
     }
 }

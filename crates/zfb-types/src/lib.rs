@@ -31,5 +31,5 @@ pub use module_workers::{
     module_worker_url_specifier, module_worker_url_specifier_scoped, ModuleWorkerPathError,
     MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
 };
-pub use page_extensions::{ROUTABLE_PAGE_EXTENSIONS, SCRIPT_PAGE_EXTENSIONS};
+pub use page_extensions::{is_page_sidecar_file, ROUTABLE_PAGE_EXTENSIONS, SCRIPT_PAGE_EXTENSIONS};
 pub use segment::Segment;

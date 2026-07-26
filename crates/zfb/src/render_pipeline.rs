@@ -1197,13 +1197,17 @@ pub fn build_prerender_map(
         let Some(ext) = abs.extension().and_then(|s| s.to_str()) else {
             continue;
         };
-        // The four script-page extensions (issue #1993 / epic #1990:
+        // The script-page extensions (issue #1993 / epic #1990:
         // `.js`/`.jsx` widened alongside `.tsx`/`.ts`) all carry the
         // `export const prerender = …` shape this extractor understands
         // — `extract_tsx_frontmatter`'s SWC parser is a TS/JSX superset,
         // so it reads plain JS/JSX sources identically. MDX (and any
-        // other non-script page extension) is left at the default.
-        if !matches!(ext, "tsx" | "ts" | "jsx" | "js") {
+        // other non-script page extension) is left at the default, so
+        // this gate reads the SCRIPT subset, not the routable one.
+        // Consuming the shared constant is load-bearing: this exact
+        // function already drifted once in this epic by ignoring the SSR
+        // opt-out on the newly-widened `.js`/`.jsx` pages.
+        if !zfb_types::SCRIPT_PAGE_EXTENSIONS.contains(&ext) {
             continue;
         }
         let source = match std::fs::read_to_string(&abs) {
