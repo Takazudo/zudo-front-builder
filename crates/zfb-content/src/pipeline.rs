@@ -32,7 +32,7 @@ use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings, HeadingIdStrategy, ReadRe
 use crate::dep_manifest::DependencyManifest;
 use crate::footnotes::{
     FootnoteCursor, FootnoteEntry, FootnoteModel, FootnoteRef, FOOTNOTE_BACKREF_MARKER,
-    FOOTNOTE_LABEL_ID, FOOTNOTE_LABEL_TEXT, FOOTNOTE_SECTION_CLASS,
+    FOOTNOTE_LABEL_ID, FOOTNOTE_LABEL_STYLE, FOOTNOTE_LABEL_TEXT, FOOTNOTE_SECTION_CLASS,
 };
 use crate::path_norm::normalize_path_lexically;
 use crate::plugins::{
@@ -2460,6 +2460,33 @@ pub fn mdast_to_hast_with(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> H
             if !model.is_empty() {
                 children.push(render_footnote_section(&model, strategy, &fc));
             }
+            // Walk-parity guard (epic #2021 review fix), the footnote
+            // counterpart of `mdx_jsx_emit`'s nested-heading-slug
+            // `debug_assert_eq!`. `FootnoteModel::collect` recurses
+            // through EVERY `Node::children()`, whereas the emit walk
+            // above drops whole subtrees through its catch-all arm
+            // (`LinkReference` is the concrete one). A reference
+            // stranded in a dropped subtree would still be numbered and
+            // would still get a definition whose backreference anchor
+            // points at a marker that was never emitted — so assert the
+            // two walks covered the same set.
+            //
+            // JSX path only. `JsxEmitStrategy::HtmlPath`'s
+            // `reconstruct_jsx` is a documented lossy fallback that
+            // stringifies an MDX JSX element's children instead of
+            // recursing, so a footnote inside a JSX body legitimately
+            // goes unclaimed there; asserting would fire on valid input.
+            if matches!(strategy, JsxEmitStrategy::JsxPath(_)) {
+                debug_assert_eq!(
+                    fc.consumed_total(),
+                    model.total_references(),
+                    "the hast emit walk claimed {} footnote reference occurrences \
+                     but FootnoteModel::collect recorded {} — a reference is \
+                     reachable by the model's walk but dropped by an emitter arm",
+                    fc.consumed_total(),
+                    model.total_references(),
+                );
+            }
             HastNode::Root { children }
         }
         _ => mdast_to_hast_inner(node, strategy, &fc),
@@ -2511,6 +2538,14 @@ impl<'a> FootnoteRenderCtx<'a> {
     #[must_use]
     pub fn next_reference(&self, identifier: &str) -> Option<(&'a FootnoteEntry, &'a FootnoteRef)> {
         self.cursor.borrow_mut().next_reference(identifier)
+    }
+
+    /// How many occurrences the shared cursor has handed out — see
+    /// [`FootnoteCursor::consumed_total`] and the walk-parity
+    /// `debug_assert_eq!` in [`mdast_to_hast_with`].
+    #[must_use]
+    pub fn consumed_total(&self) -> usize {
+        self.cursor.borrow().consumed_total()
     }
 }
 
@@ -2614,12 +2649,12 @@ fn mdast_to_hast_inner(
             // `markdown` crate's task-list tokenizer sets `checked` on
             // `ListItem` when `taskListItem` is enabled. Minimal
             // compatible rendering (Option B — see #2028): a disabled
-            // `<input type="checkbox">` prefixed before the item's own
-            // content, `checked` present only when the item is checked.
-            // Static server-rendered output has no toggle handler, so
-            // the checkbox is always `disabled`.
+            // `<input type="checkbox">` before the item's own content,
+            // `checked` present only when the item is checked. Static
+            // server-rendered output has no toggle handler, so the
+            // checkbox is always `disabled`.
             if let Some(checked) = li.checked {
-                children.insert(0, task_list_checkbox_hast(checked));
+                prepend_task_list_checkbox(&mut children, checked);
             }
             element("li", vec![], children)
         }
@@ -2845,6 +2880,14 @@ fn render_footnote_section(
             ("role".to_string(), "heading".to_string()),
             ("aria-level".to_string(), "2".to_string()),
             ("class".to_string(), "sr-only".to_string()),
+            // Hiding is carried by the INLINE style, not by the class:
+            // zfb ships no stylesheet defining `.sr-only`, and because
+            // the class is emitted from Rust, Tailwind's content scan
+            // never sees it and so never generates the utility either.
+            // Without this the "visually hidden" landmark documented in
+            // `footnotes`' module docs would render as plain visible
+            // body text in essentially every project.
+            ("style".to_string(), FOOTNOTE_LABEL_STYLE.to_string()),
             ("id".to_string(), FOOTNOTE_LABEL_ID.to_string()),
         ],
         children: vec![HastNode::Text(FOOTNOTE_LABEL_TEXT.to_string())],
@@ -2946,6 +2989,43 @@ fn element(tag: &str, attrs: Vec<(String, String)>, children: Vec<HastNode>) -> 
 /// item itself is checked. The serializer always writes `attr="value"`
 /// (no bare-boolean HTML shorthand), so both attributes get an empty
 /// string value here.
+/// Place a task-list item's checkbox so it reads as a checkbox BESIDE its
+/// label, the way GitHub renders one.
+///
+/// This pipeline never unwraps tight-list paragraphs, so a task item's
+/// converted children are `[<p>label</p>, …]`. Inserting the checkbox as a
+/// SIBLING before that `<p>` would put it on its own line above the label
+/// (`<li><input/><p>label</p></li>`), which is what the epic originally
+/// shipped. So the checkbox goes INSIDE the item's leading paragraph
+/// instead, followed by a single space — no general tight-list unwrapping
+/// (which would rewrite every list in every existing snapshot), just the
+/// one placement this construct needs.
+///
+/// An item that does not start with a paragraph (a task item whose body
+/// begins with a nested list or a code block) keeps the sibling-prefix
+/// placement; there is no inline context to join in that case.
+///
+/// The JSX-emit counterparts in `mdx_jsx_emit` apply the same rule — see
+/// `task_list_checkbox_jsx`.
+fn prepend_task_list_checkbox(children: &mut Vec<HastNode>, checked: bool) {
+    let checkbox = task_list_checkbox_hast(checked);
+    let spacer = HastNode::Text(" ".to_string());
+    match children.first_mut() {
+        Some(HastNode::Element {
+            tag,
+            children: paragraph_children,
+            ..
+        }) if tag == "p" => {
+            paragraph_children.insert(0, spacer);
+            paragraph_children.insert(0, checkbox);
+        }
+        _ => {
+            children.insert(0, spacer);
+            children.insert(0, checkbox);
+        }
+    }
+}
+
 fn task_list_checkbox_hast(checked: bool) -> HastNode {
     let mut attrs = vec![
         ("type".to_string(), "checkbox".to_string()),
@@ -4104,5 +4184,182 @@ mod tests {
             "the reference's aria-describedby must still resolve to the \
              unmodified label id: {marker:#?}"
         );
+    }
+
+    // ---- epic #2021 review fixes ----
+
+    #[test]
+    fn the_task_list_checkbox_opens_the_items_own_paragraph() {
+        // This pipeline never unwraps tight-list paragraphs, so a task
+        // item's children are `[<p>label</p>]`. A checkbox inserted as a
+        // SIBLING before that `<p>` renders on its own line above the
+        // label; it must open the paragraph instead so the checkbox sits
+        // beside its text, the way GitHub renders one.
+        let h = run_with_footnotes("- [ ] Todo\n- [x] Done\n");
+
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+        let items: Vec<&&HastNode> = elements
+            .iter()
+            .filter(|e| matches!(e, HastNode::Element { tag, .. } if tag == "li"))
+            .collect();
+        assert_eq!(items.len(), 2, "expected two list items: {h:#?}");
+
+        for item in items {
+            let HastNode::Element { children, .. } = item else {
+                unreachable!("filtered to elements above");
+            };
+            assert_eq!(
+                children.len(),
+                1,
+                "a task item's only child must be its own paragraph — the \
+                 checkbox belongs INSIDE it, not beside it: {item:#?}"
+            );
+            let HastNode::Element {
+                tag,
+                children: paragraph_children,
+                ..
+            } = &children[0]
+            else {
+                panic!("expected the item's paragraph element: {item:#?}");
+            };
+            assert_eq!(tag, "p", "expected a paragraph, got <{tag}>: {item:#?}");
+            let checkbox = &paragraph_children[0];
+            let HastNode::Element { tag: first_tag, .. } = checkbox else {
+                panic!("expected the checkbox to open the paragraph: {item:#?}");
+            };
+            assert_eq!(first_tag, "input", "expected the checkbox: {item:#?}");
+            assert_eq!(
+                attr(checkbox, "type"),
+                Some("checkbox"),
+                "expected a checkbox input: {item:#?}"
+            );
+            assert!(
+                matches!(&paragraph_children[1], HastNode::Text(t) if t == " "),
+                "a single space must separate the checkbox from its label: {item:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_footnote_label_is_hidden_by_an_inline_style_not_a_project_css_class() {
+        // `sr-only` is a Tailwind utility and this class is emitted from
+        // Rust, so Tailwind's content scan never sees the string and never
+        // generates the utility; zfb ships no stylesheet defining it
+        // either. The inline style is what makes the documented "visually
+        // hidden" landmark actually true.
+        let h = run_with_footnotes("Ref[^a].\n\n[^a]: Body.\n");
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+        let label = elements
+            .iter()
+            .find(|e| attr(e, "id") == Some(FOOTNOTE_LABEL_ID))
+            .unwrap_or_else(|| panic!("expected the footnote label: {h:#?}"));
+        assert_eq!(
+            attr(label, "style"),
+            Some(FOOTNOTE_LABEL_STYLE),
+            "the footnote label must carry the visually-hidden inline \
+             style: {label:#?}"
+        );
+        assert_eq!(
+            attr(label, "class"),
+            Some("sr-only"),
+            "the sr-only class stays as a styling hook alongside the \
+             inline style: {label:#?}"
+        );
+    }
+
+    #[test]
+    fn the_model_and_the_emit_walk_cover_the_same_reference_set() {
+        // The positive half of the walk-parity `debug_assert_eq!` in
+        // `mdast_to_hast_with`: for a document mixing a top-level
+        // reference, a repeated one, and one nested inside a definition
+        // body, the model's total and the cursor's consumed count agree —
+        // so the guard is meaningful rather than vacuously true.
+        let src = "Top[^a] and again[^a], plus[^b].\n\n\
+                   [^a]: A body citing[^c].\n\n[^b]: B body.\n\n[^c]: C body.\n";
+        let options = markdown::ParseOptions {
+            constructs: constructs_for_pipeline(ResolvedGfmConstructs::ALL_ON),
+            ..markdown::ParseOptions::mdx()
+        };
+        let root = markdown::to_mdast(src, &options).expect("parse ok");
+        let model = FootnoteModel::collect(&root);
+        assert_eq!(
+            model.total_references(),
+            4,
+            "expected 4 reference occurrences (a×2, b, c): {model:#?}"
+        );
+
+        let fc = FootnoteRenderCtx::new(&model);
+        let strategy_fn = |_: &MdastNode, _: &FootnoteRenderCtx<'_>| -> String { String::new() };
+        let strategy = JsxEmitStrategy::JsxPath(&strategy_fn);
+        // Re-runs the same walk `mdast_to_hast_with` does (including the
+        // footnote section, where the nested reference is claimed).
+        let MdastNode::Root(r) = &root else {
+            panic!("expected a Root node");
+        };
+        for child in &r.children {
+            let _ = mdast_to_hast_inner(child, &strategy, &fc);
+        }
+        let _ = render_footnote_section(&model, &strategy, &fc);
+        assert_eq!(
+            fc.consumed_total(),
+            model.total_references(),
+            "the emit walk must claim every occurrence the model recorded"
+        );
+    }
+
+    /// A reference stranded in a subtree the emitter drops through its
+    /// catch-all trips the walk-parity guard. `LinkReference` is the
+    /// concrete gap: `collect_reference_order` recurses into it, while
+    /// `mdast_to_hast_inner` drops it whole.
+    ///
+    /// Debug-only: `debug_assert_eq!` compiles out in release, so this
+    /// `should_panic` expectation only holds with debug assertions on.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "footnote reference occurrences")]
+    fn a_reference_in_a_dropped_subtree_trips_the_walk_parity_guard() {
+        use markdown::mdast;
+
+        // Hand-built, because markdown-rs cannot currently produce this
+        // shape — which is exactly why it needs a guard rather than a
+        // rendering test.
+        let stranded = MdastNode::LinkReference(mdast::LinkReference {
+            children: vec![MdastNode::FootnoteReference(mdast::FootnoteReference {
+                identifier: "a".to_string(),
+                label: Some("a".to_string()),
+                position: None,
+            })],
+            position: None,
+            reference_kind: mdast::ReferenceKind::Full,
+            identifier: "l".to_string(),
+            label: Some("l".to_string()),
+        });
+        let definition = MdastNode::FootnoteDefinition(mdast::FootnoteDefinition {
+            children: vec![MdastNode::Paragraph(mdast::Paragraph {
+                children: vec![MdastNode::Text(mdast::Text {
+                    value: "Body.".to_string(),
+                    position: None,
+                })],
+                position: None,
+            })],
+            position: None,
+            identifier: "a".to_string(),
+            label: Some("a".to_string()),
+        });
+        let root = MdastNode::Root(mdast::Root {
+            children: vec![
+                MdastNode::Paragraph(mdast::Paragraph {
+                    children: vec![stranded],
+                    position: None,
+                }),
+                definition,
+            ],
+            position: None,
+        });
+
+        let strategy_fn = |_: &MdastNode, _: &FootnoteRenderCtx<'_>| -> String { String::new() };
+        let _ = mdast_to_hast_with(&root, &JsxEmitStrategy::JsxPath(&strategy_fn));
     }
 }

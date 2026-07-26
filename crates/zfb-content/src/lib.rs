@@ -32,8 +32,8 @@ pub use pipeline_spec::{CodeHighlightMode, PipelineSpec, PipelineSpecError};
 // `footnotes` module docs for every policy decision it encodes.
 pub use footnotes::{
     FootnoteCursor, FootnoteEntry, FootnoteModel, FootnoteRef, IdAllocator,
-    FOOTNOTE_BACKREF_MARKER, FOOTNOTE_CLOBBER_PREFIX, FOOTNOTE_LABEL_ID, FOOTNOTE_LABEL_TEXT,
-    FOOTNOTE_SECTION_CLASS,
+    FOOTNOTE_BACKREF_MARKER, FOOTNOTE_CLOBBER_PREFIX, FOOTNOTE_LABEL_ID, FOOTNOTE_LABEL_STYLE,
+    FOOTNOTE_LABEL_TEXT, FOOTNOTE_SECTION_CLASS,
 };
 
 pub use pipeline::{
