@@ -4556,4 +4556,111 @@ mod tests {
             "zero headings, but the record itself must exist: {headings:?}"
         );
     }
+
+    // ───────────────────────────────────────────────────────────────
+    // RED characterization tests for GFM task-list checkbox emission,
+    // Site 2 (#2022, Wave 1 of epic #2021 — superseding #1950):
+    // `JsxEmitter::emit_node`'s `ListItem` arm (~line 892,
+    // `self.emit_html("li", &[], &li.children)`) never reads
+    // `ListItem.checked`.
+    //
+    // This site is unit-tested directly (constructing the mdast node
+    // and calling `JsxEmitter::emit_node` by hand) rather than through
+    // the crate's public API, because it is structurally unreachable
+    // with `checked: Some(_)` through any public entry point today:
+    // `JsxEmitter::emit_node` is only reached by `mdx_to_jsx_module_inner`
+    // when NO pipeline is supplied (`take_hast_detour = pipeline_mut.is_some()`
+    // — see that function), and the no-pipeline branch always resolves
+    // GFM constructs to `ResolvedGfmConstructs::CONSERVATIVE`
+    // (`task_list_item: false`, hard-coded a few lines above). Supplying
+    // ANY pipeline — the only way to turn `task_list_item` on — forces
+    // the hast detour instead, which routes a top-level list through
+    // `pipeline::mdast_to_hast_inner`'s `ListItem` arm (Site 1), never
+    // through this one. See `tests/gfm_task_list_red.rs` for Sites 1 and 3.
+    //
+    // Desired post-fix contract mirrors the other two sites: a checked
+    // item's checkbox carries a `checked` marker, an unchecked item's
+    // does not, both are `disabled` (static, server-rendered output),
+    // and item text survives alongside the checkbox.
+    fn task_list_item_node(checked: Option<bool>, text: &str) -> MdastNode {
+        MdastNode::ListItem(markdown::mdast::ListItem {
+            children: vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
+                children: vec![MdastNode::Text(markdown::mdast::Text {
+                    value: text.to_string(),
+                    position: None,
+                })],
+                position: None,
+            })],
+            position: None,
+            spread: false,
+            checked,
+        })
+    }
+
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
+    fn emit_node_checked_task_list_item_emits_checked_checkbox() {
+        let li = task_list_item_node(Some(true), "Buy milk");
+        let mut emitter = JsxEmitter::new();
+        let out = emitter.emit_node(&li);
+        assert!(
+            out.contains("type=\"checkbox\""),
+            "checked task-list item must emit a checkbox input; got:\n{out}"
+        );
+        assert!(
+            out.contains("checked"),
+            "checked task-list item's checkbox must carry a checked marker; got:\n{out}"
+        );
+        assert!(
+            out.contains("disabled"),
+            "the emitted checkbox is static (server-rendered) and must be disabled; got:\n{out}"
+        );
+        assert!(
+            out.contains("Buy milk"),
+            "item text must still be present alongside the checkbox; got:\n{out}"
+        );
+    }
+
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2024"]
+    fn emit_node_unchecked_task_list_item_emits_unchecked_checkbox() {
+        let li = task_list_item_node(Some(false), "Buy milk");
+        let mut emitter = JsxEmitter::new();
+        let out = emitter.emit_node(&li);
+        assert!(
+            out.contains("type=\"checkbox\""),
+            "unchecked task-list item must still emit a checkbox input; got:\n{out}"
+        );
+        assert!(
+            !out.contains("checked"),
+            "unchecked task-list item's checkbox must NOT carry a checked marker; got:\n{out}"
+        );
+        assert!(
+            out.contains("disabled"),
+            "the emitted checkbox is static (server-rendered) and must be disabled; got:\n{out}"
+        );
+        assert!(
+            out.contains("Buy milk"),
+            "item text must still be present alongside the checkbox; got:\n{out}"
+        );
+    }
+
+    /// Control (NOT ignored — must pass today and after the fix): an
+    /// ordinary list item (`checked: None`, i.e. not part of a task
+    /// list at all) must never grow a checkbox. Pins that the fix is
+    /// scoped to `checked.is_some()` and does not regress plain lists.
+    #[test]
+    fn emit_node_plain_list_item_never_emits_a_checkbox() {
+        let li = task_list_item_node(None, "Buy milk");
+        let mut emitter = JsxEmitter::new();
+        let out = emitter.emit_node(&li);
+        assert!(
+            !out.contains("type=\"checkbox\""),
+            "a plain (non-task-list) list item must never emit a checkbox; got:\n{out}"
+        );
+        assert!(
+            out.contains("Buy milk"),
+            "item text must still be present; got:\n{out}"
+        );
+    }
 }
