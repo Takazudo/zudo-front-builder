@@ -221,79 +221,14 @@ impl ThreadedV8Host {
                     drop(boot_tx);
 
                     // Request loop: serve one request at a time.
-                    for host_req in rx {
-                        let req = match host_req {
-                            HostRequest::Dispatch(req) => req,
-                            HostRequest::DrainConsoleLogs { reply } => {
-                                // Runs on the isolate thread between
-                                // dispatches — the rendezvous channel
-                                // guarantees no render request is in
-                                // flight (issue #700's re-entrancy rule).
-                                let _ = reply.send(host.drain_console_logs());
-                                continue;
-                            }
-                        };
-                        // Construct the request shape expected by
-                        // dispatch_fetch. The legacy GET path keeps
-                        // method = "GET" + empty headers/body via
-                        // `DispatchRequest`'s defaults; the
-                        // `dispatch_fetch_full` path (issue #367)
-                        // forwards method/headers/body verbatim.
-                        let body_opt = if req.body.is_empty() {
-                            None
-                        } else {
-                            Some(req.body)
-                        };
-                        // Issue #367: lower-case headers on the way
-                        // into the V8 host so the JS `Headers` object
-                        // sees a canonical shape regardless of the
-                        // axum casing the caller passed in.
-                        let mut headers = std::collections::BTreeMap::new();
-                        for (k, v) in req.headers {
-                            headers.insert(k.to_ascii_lowercase(), v);
-                        }
-                        let http_req = HttpRequestLike {
-                            url: format!("http://localhost{}", req.url_path),
-                            method: req.method,
-                            headers,
-                            body: body_opt,
-                        };
-                        let result = host
-                            .dispatch_fetch(http_req)
-                            .await
-                            .map(|resp| {
-                                // Deep-review fix (PR #376): forward ALL
-                                // response headers (Cache-Control, Set-
-                                // Cookie, Location, CORS, X-Trace-Id, …)
-                                // so the dev SSR seam matches Cloudflare
-                                // prod parity. `content_type` is duplicated
-                                // out as the renderer's hot-path field;
-                                // `headers` retains everything else as an
-                                // ordered `Vec` so multi-valued headers
-                                // (e.g. Set-Cookie) survive the seam —
-                                // `zfb-render`'s own `HttpResponseLike` is
-                                // already `Vec<(String, String)>`-shaped
-                                // (sub-issue #1760), so this is a
-                                // pass-through, not a refold.
-                                let content_type = resp
-                                    .headers
-                                    .iter()
-                                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-                                    .map(|(_, v)| v.clone())
-                                    .unwrap_or_default();
-                                HttpResponseLike {
-                                    status: resp.status,
-                                    content_type,
-                                    headers: resp.headers,
-                                    body: resp.body,
-                                }
-                            })
-                            .map_err(|e| RendererError::EmbeddedV8(e.to_string()));
-                        // Best-effort: the caller may have already timed out;
-                        // ignore send errors.
-                        let _ = req.reply.send(result);
-                    }
-                    // rx is closed (ThreadedV8Host was dropped); exit cleanly.
+                    //
+                    // Issue #1735: this was a byte-identical inline copy of
+                    // `serve_v8_host_requests`, kept because epic #1712 froze
+                    // this production render path byte-for-byte to de-risk its
+                    // own refactor. That freeze was scoped to #1712 and is
+                    // lifted here on purpose — two copies of the render loop
+                    // drift, and drift here is expensive to find.
+                    serve_v8_host_requests(host, rx).await;
                 });
             })
             .map_err(|e| {
@@ -535,9 +470,10 @@ pub(crate) fn inner_bundle_specifier(bundle_path: &Path) -> String {
 /// time off the rendezvous channel until it closes, then return so the thread
 /// exits cleanly.
 ///
-/// Extracted so the dev content-trace constructor can reuse it verbatim.
-/// [`ThreadedV8Host::new_with_hooks`] keeps its own inline copy so the
-/// production path stays byte-for-byte frozen.
+/// The single implementation: both [`ThreadedV8Host::new_with_hooks`] and
+/// [`ThreadedV8Host::new_with_dev_content_trace_wrapper`] call it. `new_with_hooks`
+/// carried a byte-identical inline copy until issue #1735 folded it onto this
+/// helper — see the fold-site comment there for why that freeze was lifted.
 async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiver<HostRequest>) {
     for host_req in rx {
         let req = match host_req {
@@ -550,6 +486,10 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
                 continue;
             }
         };
+        // Construct the request shape expected by dispatch_fetch. The legacy
+        // GET path keeps method = "GET" + empty headers/body via
+        // `DispatchRequest`'s defaults; the `dispatch_fetch_full` path
+        // (issue #367) forwards method/headers/body verbatim.
         let body_opt = if req.body.is_empty() {
             None
         } else {
@@ -572,9 +512,15 @@ async fn serve_v8_host_requests(mut host: EmbeddedV8RenderHost, rx: mpsc::Receiv
             .dispatch_fetch(http_req)
             .await
             .map(|resp| {
-                // See the matching comment in `ThreadedV8Host::new_with_hooks`
-                // above: `resp.headers` is already `Vec<(String, String)>`
-                // (sub-issue #1760), so this is a pass-through.
+                // Deep-review fix (PR #376): forward ALL response headers
+                // (Cache-Control, Set-Cookie, Location, CORS, X-Trace-Id, …)
+                // so the dev SSR seam matches Cloudflare prod parity.
+                // `content_type` is duplicated out as the renderer's hot-path
+                // field; `headers` retains everything else as an ordered `Vec`
+                // so multi-valued headers (e.g. Set-Cookie) survive the seam —
+                // `zfb-render`'s own `HttpResponseLike` is already
+                // `Vec<(String, String)>`-shaped (sub-issue #1760), so this is
+                // a pass-through, not a refold.
                 let content_type = resp
                     .headers
                     .iter()
@@ -1037,5 +983,622 @@ mod tests {
             "boot error must carry the inner worker's ORIGINAL shape-validation \
              diagnostic, not a generic failure or a wrapper-shape complaint: {msg}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // V8 Request Loop Dedup epic #2008 — the dual-constructor guard.
+    //
+    // HISTORY (why these tests exist): sub-issue #2009 (Wave 1) wrote them
+    // as CHARACTERIZATION tests, pinning the observable behavior of the
+    // frozen inline request loop `ThreadedV8Host::new_with_hooks` then
+    // carried — a byte-identical copy of `serve_v8_host_requests` — so
+    // Wave 2 (#2010) could fold that copy away with the behavior already
+    // nailed down. Wave 1 itself made no production changes; the fold
+    // landed in Wave 2.
+    //
+    // WHAT IS TRUE NOW: the inline copy is GONE. `new_with_hooks` and
+    // `new_with_dev_content_trace_wrapper` are two CONSTRUCTORS that both
+    // hand their `EmbeddedV8RenderHost` to the one shared
+    // `serve_v8_host_requests` loop. These tests therefore no longer
+    // compare two loops — they compare two constructors over one loop, and
+    // that is still the point of running each behavioral test twice:
+    //   - the two constructors must stay observably EQUIVALENT, so a
+    //     future change that gives one of them its own request loop again
+    //     (or diverges its boot wiring) is caught here, not in production;
+    //   - each constructor's own pre-loop wiring (channel setup, hook
+    //     threading, boot handshake, thread/`Drop` plumbing) is exercised
+    //     end-to-end, and that part is genuinely NOT shared.
+    //
+    // The two boot helpers below name the constructor they drive:
+    //   - `boot_via_new_with_hooks` — `ThreadedV8Host::new` /
+    //     `new_with_hooks`.
+    //   - `boot_via_dev_content_trace_wrapper` —
+    //     `new_with_dev_content_trace_wrapper`, driven with a transparent
+    //     passthrough wrapper around the SAME bundle so both constructors
+    //     serve identical fetch behavior and are directly comparable.
+    // Any observed difference between the two is reported as a finding,
+    // not smoothed over.
+    // -----------------------------------------------------------------
+
+    /// Transparent wrapper that delegates every request verbatim to the
+    /// inner worker registered under `file:///zfb/bundle.mjs`. Lets the
+    /// comparison tests below drive
+    /// [`ThreadedV8Host::new_with_dev_content_trace_wrapper`] with fetch
+    /// behavior indistinguishable, for these tests' purposes, from booting
+    /// the same bundle through [`ThreadedV8Host::new_with_hooks`].
+    const PASSTHROUGH_WRAPPER: &str = concat!(
+        "import __zfb_inner_worker from \"file:///zfb/bundle.mjs\";\n",
+        "export default {\n",
+        "  async fetch(request) {\n",
+        "    return __zfb_inner_worker.fetch(request);\n",
+        "  },\n",
+        "};\n",
+    );
+
+    /// Boot through the [`ThreadedV8Host::new_with_hooks`] constructor
+    /// (reached here via `new()`), which serves requests from the shared
+    /// [`serve_v8_host_requests`] loop.
+    fn boot_via_new_with_hooks(bundle_path: &Path) -> Box<dyn EmbeddedV8Host> {
+        ThreadedV8Host::new(bundle_path).expect("new_with_hooks host boot")
+    }
+
+    /// Boot through the [`ThreadedV8Host::new_with_dev_content_trace_wrapper`]
+    /// constructor — the other caller of the same
+    /// [`serve_v8_host_requests`] loop — driven with a transparent
+    /// passthrough wrapper so it serves the SAME bundle behavior as
+    /// [`boot_via_new_with_hooks`] for direct comparison.
+    fn boot_via_dev_content_trace_wrapper(bundle_path: &Path) -> Box<dyn EmbeddedV8Host> {
+        let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+            PluginRegistryHooks::default(),
+            PASSTHROUGH_WRAPPER.to_string(),
+        );
+        factory(bundle_path).expect("dev-content-trace-wrapper host boot")
+    }
+
+    /// Pin: a normal request produces the documented response shape —
+    /// status, `content_type` extraction, full multi-header passthrough
+    /// (including a duplicate-name header surviving in order), and body
+    /// bytes — identically through both constructors.
+    ///
+    /// Falsification (run in #2009 against the then-existing inline copy,
+    /// which was byte-identical to the helper it has since been folded
+    /// onto): temporarily changing the loop's `content_type` lookup from
+    /// `eq_ignore_ascii_case` to an exact `==` comparison (so
+    /// `"Content-Type"` no longer matches `"content-type"`) made this test
+    /// fail with
+    /// `assertion failed: resp.content_type == "text/plain; charset=utf-8"`
+    /// (`resp.content_type` was empty instead). Reverted after confirming.
+    /// The same edit applies verbatim to [`serve_v8_host_requests`] today,
+    /// and would now fail BOTH constructor legs rather than one — the fold
+    /// strengthened this proof rather than weakening it.
+    #[test]
+    fn normal_request_produces_documented_response_shape_on_both_constructors() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            export default {
+              fetch(request) {
+                const headers = new Headers();
+                headers.append("Content-Type", "text/plain; charset=utf-8");
+                headers.append("X-Trace-Id", "abc123");
+                headers.append("Set-Cookie", "a=1");
+                headers.append("Set-Cookie", "b=2");
+                return new Response("hello world", { status: 201, headers });
+              },
+            };
+            "#,
+        );
+
+        for boot in [
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
+        ] {
+            let mut host = boot(&bundle_path);
+            let resp = host.dispatch_fetch("/hello").expect("dispatch");
+            assert_eq!(resp.status, 201);
+            assert_eq!(resp.body, b"hello world");
+            assert_eq!(resp.content_type, "text/plain; charset=utf-8");
+            let has = |k: &str, v: &str| {
+                resp.headers
+                    .iter()
+                    .any(|(hk, hv)| hk.eq_ignore_ascii_case(k) && hv == v)
+            };
+            assert!(has("x-trace-id", "abc123"), "headers: {:?}", resp.headers);
+            let cookies: Vec<&str> = resp
+                .headers
+                .iter()
+                .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+                .map(|(_, v)| v.as_str())
+                .collect();
+            assert_eq!(
+                cookies,
+                vec!["a=1", "b=2"],
+                "duplicate-named headers must survive, in order: {:?}",
+                resp.headers
+            );
+        }
+    }
+
+    /// Pin: `dispatch_fetch_full` threads method/headers/body through to
+    /// the bundle, identically through both constructors.
+    ///
+    /// Falsification (actually run in #2009 against the then-existing
+    /// byte-identical inline copy; the same edit in
+    /// [`serve_v8_host_requests`] today would fail BOTH constructor legs):
+    /// temporarily hard-coding the loop's `HttpRequestLike.method` to
+    /// `"GET"` (ignoring `req.method`) made this test fail with body
+    /// `{"method":"GET","echoed":"req-42","bodyText":"payload-bytes"}`
+    /// instead of `"method":"POST"` — proving the test catches a
+    /// method-threading regression. Reverted after confirming; `git diff`
+    /// clean.
+    ///
+    /// FINDING (not a bug, a test-design note): a parallel perturbation —
+    /// skipping the loop's `k.to_ascii_lowercase()` request-header
+    /// normalisation entirely — was ALSO tried and did **not** fail this
+    /// test. JS's `Headers`/`Request` constructor already normalises
+    /// header names to lower-case internally per the Fetch spec, so
+    /// `request.headers.get("x-request-id")` finds `"X-Request-Id"`
+    /// regardless of whether the Rust side pre-lowercases. The
+    /// pre-lowercasing is real code (now written once, in
+    /// [`serve_v8_host_requests`]) but its
+    /// only observable effect is on a BTreeMap key COLLISION between two
+    /// differently-cased spellings of the same header name before they
+    /// reach JS (e.g. `"X-Foo"` and `"x-foo"` both present) — an edge case
+    /// the loop's existing behaviour does not depend on for anything epic
+    /// #2008's scope covers, so no test was added for it.
+    #[test]
+    fn dispatch_fetch_full_threads_method_headers_and_body_on_both_constructors() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            export default {
+              async fetch(request) {
+                const bodyText = await request.text();
+                const echoed = request.headers.get("x-request-id") ?? "missing";
+                return new Response(
+                  JSON.stringify({ method: request.method, echoed, bodyText }),
+                  { status: 200, headers: { "Content-Type": "application/json" } },
+                );
+              },
+            };
+            "#,
+        );
+
+        for boot in [
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
+        ] {
+            let mut host = boot(&bundle_path);
+            let mut headers = std::collections::BTreeMap::new();
+            headers.insert("X-Request-Id".to_string(), "req-42".to_string());
+            let resp = host
+                .dispatch_fetch_full("/echo", "POST", &headers, b"payload-bytes")
+                .expect("dispatch_fetch_full");
+            assert_eq!(resp.status, 200);
+            let body = String::from_utf8(resp.body).expect("utf8 body");
+            assert!(body.contains("\"method\":\"POST\""), "body: {body}");
+            assert!(body.contains("\"echoed\":\"req-42\""), "body: {body}");
+            assert!(
+                body.contains("\"bodyText\":\"payload-bytes\""),
+                "body: {body}"
+            );
+        }
+    }
+
+    /// Pin: a request that fails (bundle throws) surfaces as `Err`, and the
+    /// host thread SURVIVES the failure — a subsequent request on the SAME
+    /// host still succeeds. Also pins ordering across a queued sequence of
+    /// requests on one host: three dispatches in a row are served in
+    /// send order (each response matches its own request; a fourth
+    /// request never sees stale state from an earlier one).
+    ///
+    /// Falsification (actually run in #2009, not just reasoned about,
+    /// against the then-existing byte-identical inline copy; the same edit
+    /// in [`serve_v8_host_requests`] today would fail BOTH constructor
+    /// legs): temporarily making the loop `break` its `for host_req in rx`
+    /// loop right after replying to an errored request (simulating "poison
+    /// on error") made this test fail on the post-error dispatch with
+    /// `EmbeddedV8("V8 host thread closed reply channel")` instead of the
+    /// expected `Ok` — proving the test catches a poisoning regression.
+    /// Reverted after confirming; `git diff` clean.
+    #[test]
+    fn error_propagates_host_survives_and_sequence_is_ordered_on_both_constructors() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            let counter = 0;
+            export default {
+              fetch(request) {
+                const url = new URL(request.url);
+                if (url.pathname === "/boom") {
+                  throw new Error("deliberate failure");
+                }
+                counter += 1;
+                return new Response(`${url.pathname}:${counter}`, { status: 200 });
+              },
+            };
+            "#,
+        );
+
+        for boot in [
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
+        ] {
+            let mut host = boot(&bundle_path);
+
+            // Ordered sequence: three distinct requests in a row, each
+            // response must match its own request (no cross-talk) and the
+            // shared counter must advance monotonically in send order.
+            let r1 = host.dispatch_fetch("/a").expect("dispatch a");
+            let r2 = host.dispatch_fetch("/b").expect("dispatch b");
+            let r3 = host.dispatch_fetch("/c").expect("dispatch c");
+            assert_eq!(r1.body, b"/a:1");
+            assert_eq!(r2.body, b"/b:2");
+            assert_eq!(r3.body, b"/c:3");
+
+            // Failure: surfaces as Err with the thrown message.
+            let err = host
+                .dispatch_fetch("/boom")
+                .expect_err("dispatch must fail when fetch throws");
+            assert!(
+                err.to_string().contains("deliberate failure"),
+                "error must carry the thrown message: {err}"
+            );
+
+            // Host survives: a request AFTER the failure still succeeds,
+            // continuing the same counter sequence (proving the loop kept
+            // running, not just that the process didn't crash).
+            let r4 = host.dispatch_fetch("/d").expect("dispatch d after error");
+            assert_eq!(r4.body, b"/d:4");
+        }
+    }
+
+    /// Pin: dropping the host closes the request channel and joins the V8
+    /// thread promptly (well under the `Drop` impl's 10s bounded-join
+    /// deadline) — clean shutdown, not a hang.
+    ///
+    /// Falsification (actually run in #2009 against the then-existing
+    /// byte-identical inline copy; the same edit in
+    /// [`serve_v8_host_requests`] today would fail BOTH constructor legs):
+    /// temporarily appending an infinite `loop { sleep(50ms) }` after the
+    /// loop's `for host_req in rx` (so the thread never exits once `rx`
+    /// closes) made this test fail
+    /// with `took 10.020870333s` against the `< 5s` assertion — the full
+    /// bounded-join deadline elapsed before `Drop` gave up and detached —
+    /// proving the test catches a shutdown regression. Reverted after
+    /// confirming; `git diff` clean.
+    ///
+    /// TIMING / TIER NOTE: the `< 5s` bound is a wall-clock assertion, and
+    /// wall-clock assertions next to real V8 isolate boots are this repo's
+    /// documented primary flake class. It is NOT loosened here — the bound
+    /// is the only thing this test pins, and a bigger number would pin
+    /// less. Instead the whole `v8_host_adapter::tests` module is assigned
+    /// to nextest's `e2e-heavy` test-group (`.config/nextest.toml`,
+    /// `max-threads = 1`), so these isolate boots never contend with each
+    /// other or with the heavy e2e binaries. The 5s ceiling still sits far
+    /// below `Drop`'s own 10s bounded-join deadline, so a genuine
+    /// never-exiting loop is caught rather than waited out.
+    #[test]
+    fn drop_closes_channel_and_joins_thread_promptly_on_both_constructors() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            export default {
+              fetch() {
+                return new Response("ok", { status: 200 });
+              },
+            };
+            "#,
+        );
+
+        for boot in [
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
+        ] {
+            let mut host = boot(&bundle_path);
+            // Exercise the host once so the thread is proven live, then
+            // measure how long a clean shutdown takes.
+            host.dispatch_fetch("/").expect("dispatch before drop");
+            let start = std::time::Instant::now();
+            drop(host);
+            let elapsed = start.elapsed();
+            assert!(
+                elapsed < std::time::Duration::from_secs(5),
+                "Drop must join the V8 thread promptly on a healthy host \
+                 (well under the 10s bounded-join deadline), took {elapsed:?}"
+            );
+        }
+    }
+
+    /// Pin: `drain_console_logs` on a live, idle host (dispatched once,
+    /// nothing logged since) returns an empty string promptly.
+    ///
+    /// SCOPE NOTE (codex review finding on this sub-issue, corrected
+    /// rather than smoothed over): this test does **not** cover the
+    /// "V8 thread has already exited" half of `drain_console_logs`'s
+    /// best-effort contract (the `let Some(tx) = self.tx.as_ref() else`
+    /// early-return, and the `tx.send(...)`-fails arm right after it).
+    /// That half is a genuine untested blind spot: `self.tx` only ever
+    /// becomes `None` inside `ThreadedV8Host::Drop::drop`, by which point
+    /// the value is being destroyed and no further method call is
+    /// reachable through the safe public API — and the `send`-fails arm
+    /// (thread died WITHOUT going through `Drop`, e.g. mid-life panic)
+    /// hits the same "no reachable genuine Rust panic without production
+    /// changes" wall documented on
+    /// `catastrophic_js_recursion_fails_as_catchable_error_host_survives_on_both_constructors`
+    /// below. Exercising it would need a test-only seam to kill the
+    /// thread out-of-band — a production change, which is outside what
+    /// this module's tests do (they have never changed production code)
+    /// and was never in epic #2008's scope. It remains an open blind spot.
+    #[test]
+    fn drain_console_logs_on_live_idle_host_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            export default {
+              fetch() {
+                return new Response("ok", { status: 200 });
+              },
+            };
+            "#,
+        );
+        let mut host = ThreadedV8Host::new(&bundle_path).expect("host boot");
+        host.dispatch_fetch("/").expect("dispatch");
+        assert_eq!(host.drain_console_logs(), "");
+    }
+
+    /// Pin: plugin-registry hooks (an alias AND a virtual module) are
+    /// threaded into the module loader and remain resolvable across
+    /// MULTIPLE separate requests on the same host — not just the first
+    /// one — since `new_with_hooks` exists precisely to thread hooks for
+    /// the lifetime of the host.
+    ///
+    /// Falsification (actually run): temporarily passing
+    /// `PluginRegistryHooks::default()` instead of `hooks.clone()` at this
+    /// test's `new_with_hooks(...)` call (simulating hooks not being
+    /// threaded at all) made this test fail at boot with
+    /// `EmbeddedV8("bundle load failed: … failed to resolve
+    /// \`@aliased/thing\` from \`file:///zfb/bundle.mjs\`: …")` — the
+    /// exact unregistered specifier named in the error. Reverted after
+    /// confirming; `git diff` clean. (Separately reasoned, not re-run:
+    /// hard-coding the virtual module's `add_virtual_module` source to a
+    /// different literal than `"from-virtual"` would fail the body
+    /// assertion on both dispatches — this is the same mechanism the
+    /// alias-drop perturbation above already exercises for the alias half
+    /// of the pair.)
+    #[test]
+    fn hooks_resolve_alias_and_virtual_module_across_multiple_requests_on_both_constructors() {
+        let dir = tempfile::tempdir().unwrap();
+        let alias_target = dir.path().join("aliased.mjs");
+        std::fs::write(&alias_target, "export const label = \"from-alias\";\n")
+            .expect("write alias target");
+
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            import { label } from "@aliased/thing";
+            import { value } from "virtual:my-data";
+            let hits = 0;
+            export default {
+              fetch(request) {
+                hits += 1;
+                return new Response(`${label}:${value}:${hits}`, { status: 200 });
+              },
+            };
+            "#,
+        );
+
+        let mut hooks = PluginRegistryHooks::new();
+        hooks.add_alias("@aliased/thing", alias_target.clone(), "test-plugin");
+        hooks.add_virtual_module(
+            "virtual:my-data",
+            "export const value = \"from-virtual\";\n",
+            "test-plugin",
+        );
+
+        // `new_with_hooks` constructor (the production build/dev path).
+        {
+            let mut host =
+                ThreadedV8Host::new_with_hooks(&bundle_path, hooks.clone()).expect("host boot");
+            let r1 = host.dispatch_fetch("/one").expect("dispatch one");
+            assert_eq!(r1.body, b"from-alias:from-virtual:1");
+            // Second, separate request on the SAME host: hooks must still
+            // be resolvable (not a one-shot boot-time-only wiring).
+            let r2 = host.dispatch_fetch("/two").expect("dispatch two");
+            assert_eq!(r2.body, b"from-alias:from-virtual:2");
+        }
+
+        // `new_with_dev_content_trace_wrapper` constructor — the other
+        // caller of the same `serve_v8_host_requests` loop — with the same
+        // hooks and the same bundle.
+        {
+            let factory = make_v8_host_factory_with_dev_content_trace_wrapper(
+                hooks,
+                PASSTHROUGH_WRAPPER.to_string(),
+            );
+            let mut host = factory(&bundle_path).expect("host boot");
+            let r1 = host.dispatch_fetch("/one").expect("dispatch one");
+            assert_eq!(r1.body, b"from-alias:from-virtual:1");
+            let r2 = host.dispatch_fetch("/two").expect("dispatch two");
+            assert_eq!(r2.body, b"from-alias:from-virtual:2");
+        }
+    }
+
+    /// Pin: dispatching from MULTIPLE concurrent caller threads against the
+    /// SAME host (guarded by an external `Mutex`, exactly as the dev-mode
+    /// production caller wraps `Box<dyn EmbeddedV8Host + Send>` — see this
+    /// file's module doc comment) never cross-wires a reply: every caller
+    /// thread's response always carries ITS OWN token, never another
+    /// thread's. This is the concurrency contract the rendezvous channel +
+    /// one-shot `reply` channel per request is designed to uphold.
+    ///
+    /// Falsification (actually run in #2009 against the then-existing
+    /// byte-identical inline copy; the same edit in
+    /// [`serve_v8_host_requests`] today would fail BOTH constructor legs):
+    /// temporarily making the loop
+    /// reply with the PREVIOUS request's body (a one-request-lagged
+    /// static buffer) instead of the current one's — simulating a
+    /// mixed-up reply/request pairing — made this test fail immediately
+    /// (`left: [.., 50], right: [.., 49]`, i.e. `"token-2"` vs.
+    /// `"token-1"`) — proving the test detects cross-talk. Reverted after
+    /// confirming; `git diff` clean.
+    #[test]
+    fn concurrent_callers_never_receive_a_cross_wired_reply_on_both_constructors() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            export default {
+              fetch(request) {
+                const url = new URL(request.url);
+                const token = url.searchParams.get("token");
+                return new Response(token, { status: 200 });
+              },
+            };
+            "#,
+        );
+
+        for boot in [
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
+        ] {
+            let host = std::sync::Arc::new(std::sync::Mutex::new(boot(&bundle_path)));
+            let handles: Vec<_> = (0..16)
+                .map(|i| {
+                    let host = std::sync::Arc::clone(&host);
+                    std::thread::spawn(move || {
+                        let token = format!("token-{i}");
+                        let path = format!("/echo?token={token}");
+                        let resp = host
+                            .lock()
+                            .expect("lock host")
+                            .dispatch_fetch(&path)
+                            .expect("dispatch");
+                        (token, resp.body)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                let (token, body) = handle.join().expect("caller thread panicked");
+                assert_eq!(
+                    body,
+                    token.as_bytes(),
+                    "reply must carry the SAME token the caller sent, never another \
+                     thread's token"
+                );
+            }
+        }
+    }
+
+    /// Pin (proxy for "panic behavior inside a request"): a catastrophic
+    /// in-JS failure (stack overflow via unbounded recursion) is caught by
+    /// V8/deno_core as an ordinary catchable exception — surfaced as `Err`
+    /// — and does NOT crash or poison the host thread. A subsequent
+    /// request on the same host still succeeds.
+    ///
+    /// NOTE on scope: this is the closest reachable proxy for "does the
+    /// host survive a panic inside a request" available WITHOUT touching
+    /// production code — no genuine Rust-level `panic!`/`.unwrap()` path
+    /// was found reachable from crafted JS input on this dispatch path
+    /// (see the sub-issue #2009 completion report for what was checked).
+    /// A true Rust panic inside `host.dispatch_fetch(...).await` remains
+    /// an untested blind spot; pinning it precisely would need a test-only
+    /// panic seam, i.e. a production change — out of epic #2008's scope,
+    /// and still open.
+    ///
+    /// LOAD-BEARING STACK MARGIN (documented because it is otherwise
+    /// invisible, and because inverting it does not fail this test — it
+    /// SIGSEGVs the whole test binary, taking unrelated tests with it):
+    /// this test only surfaces a catchable `RangeError` because V8's own
+    /// stack limit (~1 MiB by default) sits BELOW the OS stack of the
+    /// thread the isolate runs on. Neither constructor passes
+    /// `stack_size` to `thread::Builder`, so that thread inherits Rust's
+    /// default — 2 MiB, unless the `RUST_MIN_STACK` env var overrides it.
+    /// V8 therefore trips its own limit and throws before the OS stack is
+    /// exhausted. If the margin ever inverts (a much smaller
+    /// `RUST_MIN_STACK`, or a future production change raising V8's stack
+    /// limit), the recursion blows the real stack instead.
+    /// `RUST_MIN_STACK` is the one half of that margin a test can observe
+    /// without touching production code, so it is ASSERTED below rather
+    /// than merely inherited — a hostile value now fails loudly with an
+    /// explanation instead of segfaulting. The other half (V8's limit) is
+    /// set inside deno_core/V8 and is not reachable from here; guaranteeing
+    /// it would require pinning `stack_size` in the production
+    /// constructors, which this module deliberately does not do.
+    ///
+    /// Falsification (recorded in #2009 against the then-existing
+    /// byte-identical inline copy): temporarily wrapping the loop's
+    /// per-request
+    /// body in `if req.url_path == "/recursive-boom-marker" { panic!() }`
+    /// is unsafe to actually exercise (it kills the whole test binary /
+    /// leaves the process in an undefined state) — dry-run reasoning was
+    /// used instead. Prior to that, changing the loop to swallow the JS
+    /// error and always reply `Ok(HttpResponseLike { status: 200, .. })`
+    /// (simulating a masked failure) made this test fail with `expect_err`
+    /// panicking on an `Ok` result — proving this test detects a failure
+    /// being silently swallowed. Reverted after confirming. The same edit
+    /// in [`serve_v8_host_requests`] today would fail BOTH constructor
+    /// legs.
+    #[test]
+    fn catastrophic_js_recursion_fails_as_catchable_error_host_survives_on_both_constructors() {
+        // Enforce the observable half of the stack margin documented above.
+        // V8's default stack limit is ~1 MiB; the V8 thread must have
+        // meaningfully more OS stack than that or the recursion below
+        // segfaults the test binary instead of throwing.
+        const MIN_V8_THREAD_STACK_BYTES: usize = 1_536 * 1024;
+        if let Ok(raw) = std::env::var("RUST_MIN_STACK") {
+            let requested: usize = raw.trim().parse().unwrap_or_else(|e| {
+                panic!("RUST_MIN_STACK={raw:?} is not a byte count: {e}");
+            });
+            assert!(
+                requested >= MIN_V8_THREAD_STACK_BYTES,
+                "RUST_MIN_STACK={requested} would give the V8 host thread less OS \
+                 stack than V8's own ~1 MiB limit, so the unbounded recursion below \
+                 would exhaust the real stack (SIGSEGV, killing the whole test \
+                 binary) instead of throwing a catchable RangeError. Unset \
+                 RUST_MIN_STACK or set it to at least {MIN_V8_THREAD_STACK_BYTES}."
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let bundle_path = write_bundle(
+            &dir,
+            r#"
+            function recurse(n) { return recurse(n + 1); }
+            export default {
+              fetch(request) {
+                const url = new URL(request.url);
+                if (url.pathname === "/boom") {
+                  return recurse(0);
+                }
+                return new Response("ok", { status: 200 });
+              },
+            };
+            "#,
+        );
+
+        for boot in [
+            boot_via_new_with_hooks as fn(&Path) -> Box<dyn EmbeddedV8Host>,
+            boot_via_dev_content_trace_wrapper,
+        ] {
+            let mut host = boot(&bundle_path);
+            let err = host
+                .dispatch_fetch("/boom")
+                .expect_err("unbounded recursion must surface as a catchable Err");
+            let msg = err.to_string().to_ascii_lowercase();
+            assert!(
+                msg.contains("stack") || msg.contains("recursion") || msg.contains("call stack"),
+                "error should describe a stack/recursion failure: {err}"
+            );
+            let ok = host
+                .dispatch_fetch("/fine")
+                .expect("host must survive the recursion failure");
+            assert_eq!(ok.body, b"ok");
+        }
     }
 }
