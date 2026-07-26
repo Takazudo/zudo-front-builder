@@ -148,6 +148,26 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// Generate a per-host nonce for the dispatch-mode authorisation check
+/// (issue #2014).
+///
+/// Built from the process-wide monotonic counter, the host's creation
+/// timestamp, and the process id rather than a CSPRNG: no `rand`/
+/// `getrandom` edge exists in this crate's dependency list, and the
+/// nonce's job is to stop bundle code from *naming* a value it was
+/// never given — not to withstand a brute-force search by code that,
+/// being in the same realm, has cheaper attacks available anyway.
+fn generate_mode_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("zfb-mode-{:x}-{:x}-{:x}", std::process::id(), nanos, seq)
+}
+
 /// Synthetic main-module specifier used when the caller calls
 /// [`EmbeddedV8RenderHost::execute_module`] without supplying a URL.
 /// Bundles are self-contained, so the URL only affects diagnostic
@@ -182,6 +202,24 @@ pub struct EmbeddedV8RenderHost {
     /// failure, cleared on success.  Surfaced in [`Self::dispatch_fetch`]'s
     /// "no bundle loaded" error so operators can see why the install failed.
     last_install_error: RefCell<Option<String>>,
+    /// Per-host nonce that authorises CHOOSING a [`DispatchMode`]
+    /// (issue #2014).
+    ///
+    /// `globalThis.__zfb.dispatch` is necessarily reachable from the
+    /// evaluated bundle, so without this a build-time handler could
+    /// re-enter it with `"request-time"` and hand its nested handler the
+    /// request-time branch. The shim honours the `mode` argument only
+    /// when the caller presents this value; anything else INHERITS the
+    /// enclosing dispatch's mode, so a forged call can never widen
+    /// capability. The nonce is substituted into the shim source at boot
+    /// and lives in that script's closure — it is never reachable as a
+    /// property of any global.
+    ///
+    /// This guards against *selecting* the mode, not against a hostile
+    /// module in the same realm; the bundle is first-party code zfb
+    /// itself compiled, and no JS-visible bridge can be made proof
+    /// against that.
+    mode_nonce: String,
 }
 
 // SAFETY-of-shape note: explicitly `!Send + !Sync` via `*const ()`-style
@@ -237,6 +275,7 @@ impl EmbeddedV8RenderHost {
             bundle_installed: RefCell::new(false),
             active_bundle_specifier: RefCell::new(None),
             last_install_error: RefCell::new(None),
+            mode_nonce: generate_mode_nonce(),
         };
         host.bootstrap_host_shim()?;
         Ok(host)
@@ -258,8 +297,18 @@ impl EmbeddedV8RenderHost {
         self.runtime
             .execute_script("zfb:browser_event", extensions::BROWSER_EVENT_SRC)
             .map_err(|e| RenderError::Runtime(format!("browser-event globals init failed: {e}")))?;
+        // Bake this host's mode nonce into the shim source before it
+        // runs. The shim body is an IIFE, so the substituted value ends
+        // up closure-private rather than in the global lexical
+        // environment where bundle code could read it by name.
+        let shim_src = extensions::HOST_GLOBALS_SHIM_SRC
+            .replace(extensions::MODE_NONCE_PLACEHOLDER, &self.mode_nonce);
+        debug_assert!(
+            !shim_src.contains(extensions::MODE_NONCE_PLACEHOLDER),
+            "host shim still carries the mode-nonce placeholder after substitution"
+        );
         self.runtime
-            .execute_script("zfb:host_shim", extensions::HOST_GLOBALS_SHIM_SRC)
+            .execute_script("zfb:host_shim", shim_src)
             .map_err(|e| RenderError::Runtime(format!("host shim init failed: {e}")))?;
         Ok(())
     }
@@ -534,13 +583,18 @@ impl EmbeddedV8RenderHost {
         // capability into the next build-time render.
         let mode_literal = serde_json::to_string(request.mode.as_js_str())
             .expect("dispatch mode spelling is always valid JSON");
+        // The 6th argument is this host's mode nonce — without it the
+        // shim ignores `mode` and inherits instead (see `mode_nonce`).
+        let nonce_literal =
+            serde_json::to_string(&self.mode_nonce).expect("nonce is always valid JSON");
         let script = format!(
-            "globalThis.__zfb.dispatch({url}, {method}, {headers}, {body}, {mode})",
+            "globalThis.__zfb.dispatch({url}, {method}, {headers}, {body}, {mode}, {nonce})",
             url = url_literal,
             method = method_literal,
             headers = headers_literal,
             body = body_literal,
             mode = mode_literal,
+            nonce = nonce_literal,
         );
         let result = self
             .runtime

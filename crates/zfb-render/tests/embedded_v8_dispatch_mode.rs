@@ -343,3 +343,115 @@ async fn http_request_like_get_defaults_to_build_time_end_to_end() {
     assert_eq!(got.mode, "build-time");
     assert_eq!(got.caught, expected_ssg_denial(PROBE_URL));
 }
+
+/// Bundle code cannot forge request-time capability.
+///
+/// `globalThis.__zfb.dispatch` is necessarily reachable from the
+/// evaluated bundle, so a build-time handler can re-enter it. Without
+/// the per-host nonce (`extensions::MODE_NONCE_PLACEHOLDER`) a nested
+/// call passing `"request-time"` would hand its nested handler the
+/// request-time `fetch` branch — an escalation, and once a later wave
+/// implements outbound fetch, live network access during SSG.
+///
+/// A forged call must not fail; it must INHERIT the enclosing
+/// dispatch's mode, so the nested handler still gets the byte-identical
+/// SSG denial.
+#[tokio::test]
+async fn bundle_code_cannot_forge_request_time_by_re_entering_dispatch() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = format!(
+        r#"
+        let depth = 0;
+        export default {{
+          async fetch(request) {{
+            const url = new URL(request.url);
+            if (url.pathname === "/inner") {{
+              let caught = "(fetch did not reject)";
+              try {{
+                await fetch({probe_url:?});
+              }} catch (e) {{
+                caught = String(e.message);
+              }}
+              return new Response(
+                JSON.stringify({{ mode: String(globalThis.__zfb.mode), caught }}),
+                {{ status: 200, headers: {{ "content-type": "application/json" }} }},
+              );
+            }}
+            // Outer, build-time handler re-enters the bridge and asks
+            // for request-time WITHOUT the host nonce.
+            depth++;
+            const inner = await globalThis.__zfb.dispatch(
+              "http://zfb.local/inner",
+              "GET",
+              {{}},
+              undefined,
+              "request-time",
+            );
+            return new Response(inner.body, {{
+              status: 200,
+              headers: {{ "content-type": "application/json" }},
+            }});
+          }},
+        }};
+        "#,
+        probe_url = PROBE_URL,
+    );
+    host.execute_module("bundle.mjs", &bundle)
+        .await
+        .expect("execute forging bundle");
+
+    let got = probe(&mut host, "/", DispatchMode::BuildTime).await;
+    assert_eq!(
+        got.mode, "build-time",
+        "a bundle-initiated nested dispatch must inherit the enclosing build-time mode, \
+         not the mode it asked for"
+    );
+    assert_eq!(
+        got.caught,
+        expected_ssg_denial(PROBE_URL),
+        "the forged nested handler must still hit the SSG denial"
+    );
+}
+
+/// The same forge, but the OUTER dispatch is genuinely request-time:
+/// inheriting means the nested handler stays request-time. This pins
+/// that the nonce check narrows nothing legitimate — it only stops
+/// widening.
+#[tokio::test]
+async fn nested_dispatch_inherits_a_genuine_request_time_mode() {
+    let mut host = EmbeddedV8RenderHost::new().expect("host boot");
+    let bundle = r#"
+        export default {
+          async fetch(request) {
+            const url = new URL(request.url);
+            if (url.pathname === "/inner") {
+              return new Response(
+                JSON.stringify({ mode: String(globalThis.__zfb.mode), caught: "n/a" }),
+                { status: 200, headers: { "content-type": "application/json" } },
+              );
+            }
+            const inner = await globalThis.__zfb.dispatch(
+              "http://zfb.local/inner",
+              "GET",
+              {},
+              undefined,
+              "build-time",
+            );
+            return new Response(inner.body, {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            });
+          },
+        };
+    "#;
+    host.execute_module("bundle.mjs", bundle)
+        .await
+        .expect("execute bundle");
+
+    let got = probe(&mut host, "/", DispatchMode::RequestTime).await;
+    assert_eq!(
+        got.mode, "request-time",
+        "a nested dispatch must inherit the enclosing mode verbatim — the nonce check must \
+         not let bundle code NARROW the mode either, since that is not its job"
+    );
+}
