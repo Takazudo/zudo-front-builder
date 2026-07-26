@@ -1,0 +1,5 @@
+- [x] Write the parity test
+- [ ] Ship the release
+  - [x] Nested checked item
+  - [ ] Nested unchecked item
+- Plain item with no checkbox

@@ -75,31 +75,83 @@ export default defineConfig({
 | 打ち消し線 (`~~text~~`) | `strikethrough` | 有効 | `<del>text</del>` |
 | パイプテーブル | `table` | 有効 | `<table>` |
 | autolink literal（素の `https://example.com`） | `autolinkLiteral` | 無効 | `<a href="...">` |
-| タスクリスト項目 (`- [x]` / `- [ ]`) | `taskListItem` | 無効 | パースのみ — 後述 |
-| 脚注定義 (`[^ref]: ...`) | `footnoteDefinition` | 無効 | パースのみ — 後述 |
+| タスクリスト項目 (`- [x]` / `- [ ]`) | `taskListItem` | 無効 | チェックボックス — 後述 |
+| 脚注定義 (`[^ref]: ...`) | `footnoteDefinition` | 無効 | 脚注セクション — 後述 |
 
-<Warning title="taskListItem と footnoteDefinition はパースされるがレンダリングされない">
+## タスクリストのチェックボックス
 
-`taskListItem` や `footnoteDefinition` を有効にすると、パーサーは構文を認識して
-対応する mdast ノードを構築しますが、zfb の mdast-to-output コンバーターは、まだ
-どちらのノード形状に対する出力アームも持っていません:
+`taskListItem` を有効にすると、各 `- [x]` / `- [ ]` 項目のチェック状態がチェック
+ボックスとしてレンダリングされます。項目自身のコンテンツの前に `disabled` な
+`<input type="checkbox">` が挿入され、項目がチェック済みの場合のみ `checked`
+属性が付きます。`[x]`/`[ ]` マーカーのない通常のリスト項目には影響しません。
 
-- **`taskListItem`** — `- [x]` / `- [ ]` マーカーはパース時に消費されますが、その
-  結果のチェック済み／未チェックの状態は下流のレンダラーから一切読み取られません。
-  タスクリスト項目は通常の `<li>` の箇条書きとしてレンダリングされ、チェックボックス
-  は付かず、チェック済み項目と未チェック項目に見た目の違いはありません。
-- **`footnoteDefinition`** — 脚注定義ブロックとインラインの `[^ref]` 参照マーカーは、
-  どちらも zfb の未処理ノードのキャッチオールに落ち、何もレンダリングされません。
-  脚注のテキストとその参照マーカーは出力から黙って消えます — ビルド警告もエラーも
-  出ません。
+```md title="input"
+- [x] Done
+- [ ] Not done
+```
 
-どちらのフラグを有効にしてもエラーにはなりませんが、GitHub で見られるような
-チェックボックスや脚注の UI も生成されません。これはコードのバグの可能性が高い
-ものとして起票済みです — 
-[issue #1950](https://github.com/Takazudo/zudo-front-builder/issues/1950) を参照して
-ください。
+```html title="output"
+<ul>
+  <li><input type="checkbox" checked disabled /> Done</li>
+  <li><input type="checkbox" disabled /> Not done</li>
+</ul>
+```
 
-</Warning>
+これは **最小限の、GitHub 互換のチェックボックスレンダリング** であり、GitHub の
+完全なリファレンスマークアップではありません — `<ul>`/`<li>` に
+`contains-task-list`/`task-list-item` クラスは付与されず、チェックボックスは常に
+`disabled` です（クライアント側のトグルハンドラを持たない静的なサーバーサイド
+レンダリング出力のためです）。github.com 自身のレンダリング結果と差分を取る場合、
+チェックボックス自体は一致しますが、周辺のマークアップはよりシンプルになる点に
+注意してください。
+
+## 脚注
+
+`footnoteDefinition` を有効にすると、`[^ref]` 参照とその `[^ref]: ...` 定義が、
+GitHub 自身の脚注の挙動と同様に、ドキュメント末尾に集約された脚注セクションとして
+レンダリングされます:
+
+- **番号付け** は **最初に参照された順** で行われ、定義のソース順ではありません
+  — 先に書かれた定義でも、2 番目に参照されれば大きい番号が付きます。
+- **ID** は、定義には `user-content-fn-{slug}`、参照には
+  `user-content-fnref-{slug}` が使われます。`{slug}` は見出しアンカーと同じ方法で
+  脚注ラベルをスラグ化したものです（ASCII のケースフォールディング、句読点の除去、
+  CJK などの非 ASCII 文字はそのまま保持）。ラベルが空文字列にスラグ化される場合
+  （例: `[^!!!]`）は、代わりに脚注の 1 始まりの番号にフォールバックします
+  （`user-content-fn-1`）。
+- **繰り返し参照** される同じ定義は 1 つの番号を共有しますが、それぞれが独自の
+  バックリファレンス ID を持つため、定義側からクリックされた特定の出現箇所へ
+  リンクバックできます。
+- **重複した定義** は同じラベルであれば 1 つに集約されます — 最初の定義が採用され、
+  以降の定義は黙って破棄されます（CommonMark の重複リンク参照定義のルールと同じ
+  です）。
+- **参照されない定義** は何もレンダリングされません — 番号付けは参照順に基づくため、
+  誰も参照しない定義には並び順における居場所がありません。
+- セクションには `data-footnotes` が付与され、"Footnotes" と読み上げられる
+  視覚的に非表示の `role="heading"` ランドマーク（実際の `<h2>` ではなく `<div>`
+  — 本物の見出しタグだと zfb 自身の見出しアンカー/TOC プラグインに検出されて
+  書き換えられてしまうため）が含まれます。参照リンクとバックリファレンスリンクは
+  どちらも GitHub のマークアップと同様のアクセシビリティ属性
+  （`aria-describedby`/`aria-label`）を持ちます。
+
+```md title="input"
+Footnotes[^note] keep reading order.
+
+[^note]: The footnote text.
+```
+
+```html title="output"
+<p>Footnotes<sup><a href="#user-content-fn-note" id="user-content-fnref-note" data-footnote-ref aria-describedby="footnote-label">1</a></sup> keep reading order.</p>
+<section data-footnotes class="footnotes">
+  <div role="heading" aria-level="2" class="sr-only" id="footnote-label">Footnotes</div>
+  <ol>
+    <li id="user-content-fn-note">
+      <p>The footnote text.</p>
+      <a href="#user-content-fnref-note" data-footnote-backref aria-label="Back to reference 1">↩</a>
+    </li>
+  </ol>
+</section>
+```
 
 ## CJK フレンドリー処理との関係
 

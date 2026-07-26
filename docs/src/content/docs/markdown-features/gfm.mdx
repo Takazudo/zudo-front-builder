@@ -77,32 +77,82 @@ that construct (`strikethrough: true`, `table: true`, the other three
 | Strikethrough (`~~text~~`) | `strikethrough` | On | `<del>text</del>` |
 | Pipe tables | `table` | On | `<table>` |
 | Autolink literal (bare `https://example.com`) | `autolinkLiteral` | Off | `<a href="...">` |
-| Task list items (`- [x]` / `- [ ]`) | `taskListItem` | Off | Parsed only — see below |
-| Footnote definitions (`[^ref]: ...`) | `footnoteDefinition` | Off | Parsed only — see below |
+| Task list items (`- [x]` / `- [ ]`) | `taskListItem` | Off | Checkbox — see below |
+| Footnote definitions (`[^ref]: ...`) | `footnoteDefinition` | Off | Footnote section — see below |
 
-<Warning title="taskListItem and footnoteDefinition are parsed but not rendered">
+## Task list checkboxes
 
-Enabling `taskListItem` or `footnoteDefinition` makes the parser recognize
-the syntax and build the corresponding mdast nodes, but zfb's
-mdast-to-output converters have no output arm for either node shape yet:
+Enabling `taskListItem` renders each `- [x]` / `- [ ]` item's checked state as
+a checkbox: a `disabled` `<input type="checkbox">` is prefixed before the
+item's own content, carrying a `checked` attribute only when the item is
+checked. A plain list item with no `[x]`/`[ ]` marker is unaffected.
 
-- **`taskListItem`** — the `- [x]` / `- [ ]` marker is consumed during
-  parsing and the resulting checked/unchecked state is never read by any
-  downstream renderer. A task list item renders as an ordinary `<li>`
-  bullet, with no checkbox and no visual difference between a checked and
-  an unchecked item.
-- **`footnoteDefinition`** — both the footnote definition block and the
-  inline `[^ref]` reference marker fall through to zfb's
-  unhandled-node catch-all and render as nothing. The footnote text and
-  its reference marker disappear from the output silently — no build
-  warning, no error.
+```md title="input"
+- [x] Done
+- [ ] Not done
+```
 
-Turning either flag on will not error, but it also will not produce the
-checkbox or footnote UI you'd see on GitHub. This has been filed as a
-likely code bug — see
-[issue #1950](https://github.com/Takazudo/zudo-front-builder/issues/1950).
+```html title="output"
+<ul>
+  <li><input type="checkbox" checked disabled /> Done</li>
+  <li><input type="checkbox" disabled /> Not done</li>
+</ul>
+```
 
-</Warning>
+This is **minimal, GitHub-compatible checkbox rendering**, not GitHub's full
+reference markup — there is no `contains-task-list`/`task-list-item` class on
+the `<ul>`/`<li>`, and the checkbox is always `disabled` (this is static,
+server-rendered output with no client-side toggle handler). If you are
+diffing zfb's output against github.com's own rendering, expect the checkbox
+itself to match but the surrounding markup to be plainer.
+
+## Footnotes
+
+Enabling `footnoteDefinition` renders `[^ref]` references and their
+`[^ref]: ...` definitions as a collected footnote section at the end of the
+document, matching GitHub's own footnote behavior:
+
+- **Numbering** is by **first-reference order**, not definition source
+  order — a definition written first but referenced second gets the higher
+  number.
+- **IDs** are `user-content-fn-{slug}` for a definition and
+  `user-content-fnref-{slug}` for a reference, where `{slug}` is the
+  footnote label slugified the same way heading anchors are (case-folded
+  ASCII, punctuation stripped, non-ASCII such as CJK passed through
+  unchanged). A label that slugifies to an empty string (e.g. `[^!!!]`)
+  falls back to the footnote's 1-based number instead (`user-content-fn-1`).
+- **Repeated references** to the same definition share one number but each
+  get their own backreference id, so the definition can link back to the
+  specific occurrence that was clicked.
+- **Duplicate definitions** for the same label collapse to one — the first
+  definition wins, later ones are discarded silently (matching CommonMark's
+  rule for duplicate link reference definitions).
+- **Unreferenced definitions** render nothing — numbering follows reference
+  order, so a definition nobody points at has no place in the sequence.
+- The section carries `data-footnotes`, a visually-hidden `role="heading"`
+  landmark reading "Footnotes" (a `<div>`, not a real `<h2>` — a real heading
+  tag would be picked up and rewritten by zfb's own heading-anchor/TOC
+  plugins), and both reference and backreference links carry accessibility
+  attributes (`aria-describedby`/`aria-label`) matching GitHub's markup.
+
+```md title="input"
+Footnotes[^note] keep reading order.
+
+[^note]: The footnote text.
+```
+
+```html title="output"
+<p>Footnotes<sup><a href="#user-content-fn-note" id="user-content-fnref-note" data-footnote-ref aria-describedby="footnote-label">1</a></sup> keep reading order.</p>
+<section data-footnotes class="footnotes">
+  <div role="heading" aria-level="2" class="sr-only" id="footnote-label">Footnotes</div>
+  <ol>
+    <li id="user-content-fn-note">
+      <p>The footnote text.</p>
+      <a href="#user-content-fnref-note" data-footnote-backref aria-label="Back to reference 1">↩</a>
+    </li>
+  </ol>
+</section>
+```
 
 ## Interaction with CJK-friendly handling
 
