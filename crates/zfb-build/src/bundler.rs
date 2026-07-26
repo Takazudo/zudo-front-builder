@@ -5776,6 +5776,9 @@ fn logical_importer_for_walk(src: &Path, dest: &Path, from: &Path, project_root:
 fn raw_source_extension(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|s| s.to_str()),
+        // page-extension-drift-guard: allow — the JS-family SOURCE extensions
+        // a `?raw` import may name (incl. mjs/cjs/mts/cts), not the routable
+        // page allowlist.
         Some("ts")
             | Some("tsx")
             | Some("js")
@@ -7441,6 +7444,8 @@ fn materialise_collection(
         // from the walker's coverage.
         let is_content_ext = matches!(
             from.extension().and_then(|s| s.to_str()),
+            // page-extension-drift-guard: allow — CONTENT-collection extensions
+            // for the shadow-tree glob filter, not the routable page allowlist.
             Some("md") | Some("mdx") | Some("tsx")
         );
         if is_content_ext && has_glob_filter {
@@ -8215,6 +8220,8 @@ fn rebase_tsconfig_paths_to_shadow(
     )
 }
 
+// page-extension-drift-guard: allow — esbuild's extensionless-import RESOLVE
+// order (includes css/json, excludes md/mdx/html), not the page allowlist.
 const SSR_RESOLVE_EXTENSIONS: [&str; 6] = ["tsx", "ts", "jsx", "js", "css", "json"];
 
 fn has_trailing_path_separator(value: &str) -> bool {
@@ -8288,6 +8295,8 @@ fn collect_ssr_file_candidates(candidate: &Path, candidates: &mut BTreeSet<PathB
         .extension()
         .and_then(|extension| extension.to_str())
     {
+        // page-extension-drift-guard: allow — the compiled-to-source rewrite
+        // table (`.js` may really be `.ts` on disk), not the page allowlist.
         Some("js") | Some("jsx") => &["ts", "tsx"],
         Some("mjs") => &["mts"],
         Some("cjs") => &["cts"],

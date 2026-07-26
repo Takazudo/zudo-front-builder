@@ -1485,6 +1485,9 @@ fn discover_css_source_files(
     discovered_graph_files: &std::collections::BTreeSet<PathBuf>,
 ) -> Vec<std::path::PathBuf> {
     let mut out: Vec<std::path::PathBuf> = Vec::new();
+    // page-extension-drift-guard: allow — the CSS/Tailwind source-scan
+    // extension set (any file that may contain class names, at any depth,
+    // page or not), not the routable page allowlist.
     let extensions = ["tsx", "ts", "jsx", "js", "mdx", "md"];
     for root in zfb_css::engine::DEFAULT_CONTENT_ROOTS {
         let dir = project_root.join(root);
@@ -2054,6 +2057,8 @@ fn is_islands_shadow_js_like_file(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
         return false;
     };
+    // page-extension-drift-guard: allow — every JS-LIKE module extension in
+    // the islands shadow tree (incl. mjs/cjs/mts/cts), not the page allowlist.
     ["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"]
         .iter()
         .any(|candidate| ext.eq_ignore_ascii_case(candidate))
@@ -3599,7 +3604,13 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // page → component import chain gets found.
     let mut entries: Vec<std::path::PathBuf> = Vec::new();
     if user_pages_dir.is_dir() {
-        for ext in ["tsx", "ts", "jsx", "js"] {
+        // The islands scanner DFS-walks *imports*, so the seed set is
+        // exactly the page sources esbuild can parse — the SCRIPT subset
+        // (`zfb_types::SCRIPT_PAGE_EXTENSIONS`), not the routable one.
+        // `.mdx`/`.md`/`.html` pages reach their islands through their own
+        // pipelines and would not be valid entry points here.
+        for ext in zfb_types::SCRIPT_PAGE_EXTENSIONS {
+            let ext = *ext;
             for entry in walkdir::WalkDir::new(user_pages_dir)
                 .into_iter()
                 .filter_map(|r| r.ok())
