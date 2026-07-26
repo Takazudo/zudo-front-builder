@@ -32,9 +32,20 @@
 //! are stored in [`FootnoteModel::entries`] in first-reference order, which is
 //! the order the rendered footnote section must use.
 //!
-//! Both passes recurse through [`markdown::mdast::Node::children`], so
-//! footnotes nested inside an MDX JSX element body (`<Note>…[^a]…</Note>`) are
-//! collected exactly like top-level ones.
+//! A definition body may itself reference another footnote. Those nested
+//! references are ordered by **where the containing definition renders** (in
+//! the footer), not by where it was written — so the reference walk skips
+//! definition subtrees on its first pass and revisits them afterwards, entry
+//! by entry, in footer order. Two consequences worth stating: a nested
+//! reference can never be numbered ahead of a main-body reference that renders
+//! before it, and a definition that never renders (unreferenced, or a
+//! discarded duplicate) contributes nothing at all — its body is never walked,
+//! so it cannot mint a phantom entry or a backreference to an element that
+//! does not exist.
+//!
+//! The walks recurse through [`markdown::mdast::Node::children`], so footnotes
+//! nested inside an MDX JSX element body (`<Note>…[^a]…</Note>`) are collected
+//! exactly like top-level ones.
 //!
 //! ## 2. Numbering
 //!
@@ -314,67 +325,104 @@ pub struct FootnoteModel {
 }
 
 impl FootnoteModel {
-    /// Build the model for one document by walking `root` in document order.
+    /// Build the model for one document.
     ///
-    /// Pass 1 indexes definitions by identifier (first wins). Pass 2 walks
-    /// references in document order, creating an entry the first time an
-    /// identifier is referenced and appending a per-occurrence
-    /// [`FootnoteRef`] every time.
+    /// Pass 1 indexes definitions by identifier (first wins). Pass 2 walks the
+    /// **main body** — every reference *outside* a definition subtree, in
+    /// document order — creating an entry the first time an identifier is
+    /// referenced and appending a per-occurrence [`FootnoteRef`] every time.
+    /// Pass 3 then walks the bodies of the entries created so far, in
+    /// **rendered footer order**, picking up nested references; entries it
+    /// creates join the end of the list and are themselves walked in turn.
+    ///
+    /// Pass 3 is what makes a reference nested inside a definition body number
+    /// by where it *renders* rather than where it was *written*, and is why an
+    /// unreferenced (or duplicate-discarded) definition's body can never
+    /// contribute a phantom entry: that body is never walked at all.
     #[must_use]
     pub fn collect(root: &MdastNode) -> Self {
         let mut definition_bodies: HashMap<&str, &Vec<MdastNode>> = HashMap::new();
         collect_definitions(root, &mut definition_bodies);
 
-        let mut order: Vec<String> = Vec::new();
-        collect_reference_order(root, &mut order);
+        let mut main_body_order: Vec<String> = Vec::new();
+        collect_reference_order(root, &mut main_body_order);
 
         let mut model = Self::default();
         // One shared allocator namespace for definition ids AND reference
         // ids — see the "Collision handling" module doc.
         let mut allocator = IdAllocator::new();
 
-        for identifier in order {
-            let Some(body) = definition_bodies.get(identifier.as_str()) else {
-                // Reference with no definition: markdown-rs never produces
-                // this, and we must not invent an entry for it.
-                continue;
-            };
-            let entry_index = match model.index.get(identifier.as_str()) {
-                Some(i) => *i,
-                None => {
-                    let number = model.entries.len() + 1;
-                    let base = slug_base(&identifier, number);
-                    let id = format!(
-                        "{FOOTNOTE_CLOBBER_PREFIX}{}",
-                        allocator.allocate(&format!("fn-{base}"))
-                    );
-                    model.entries.push(FootnoteEntry {
-                        identifier: identifier.clone(),
-                        number,
-                        id,
-                        body: (*body).clone(),
-                        references: Vec::new(),
-                    });
-                    let i = model.entries.len() - 1;
-                    model.index.insert(identifier.clone(), i);
-                    i
-                }
-            };
-            let entry = &mut model.entries[entry_index];
-            let base = slug_base(&entry.identifier, entry.number);
-            let id = format!(
-                "{FOOTNOTE_CLOBBER_PREFIX}{}",
-                allocator.allocate(&format!("fnref-{base}"))
-            );
-            let occurrence = entry.references.len() + 1;
-            entry.references.push(FootnoteRef {
-                id,
-                number: entry.number,
-                occurrence,
-            });
+        for identifier in main_body_order {
+            model.record_reference(&identifier, &definition_bodies, &mut allocator);
+        }
+
+        // Rendered-footer order: each entry's body may reference further
+        // footnotes, which render after it. `entries` grows as we go, so the
+        // index-based loop naturally covers newcomers too — and terminates,
+        // since each entry's body is walked exactly once.
+        let mut i = 0;
+        while i < model.entries.len() {
+            let mut nested: Vec<String> = Vec::new();
+            for child in &model.entries[i].body {
+                collect_reference_order(child, &mut nested);
+            }
+            for identifier in nested {
+                model.record_reference(&identifier, &definition_bodies, &mut allocator);
+            }
+            i += 1;
         }
 
         model
+    }
+
+    /// Register one reference occurrence of `identifier`, creating its entry
+    /// (and allocating its definition id) on first sight.
+    ///
+    /// A reference with no matching definition is skipped entirely —
+    /// markdown-rs never produces one, and inventing an entry for it would
+    /// emit a marker linking at an id nothing renders.
+    fn record_reference(
+        &mut self,
+        identifier: &str,
+        definition_bodies: &HashMap<&str, &Vec<MdastNode>>,
+        allocator: &mut IdAllocator,
+    ) {
+        let Some(body) = definition_bodies.get(identifier) else {
+            return;
+        };
+        let entry_index = match self.index.get(identifier) {
+            Some(i) => *i,
+            None => {
+                let number = self.entries.len() + 1;
+                let base = slug_base(identifier, number);
+                let id = format!(
+                    "{FOOTNOTE_CLOBBER_PREFIX}{}",
+                    allocator.allocate(&format!("fn-{base}"))
+                );
+                self.entries.push(FootnoteEntry {
+                    identifier: identifier.to_string(),
+                    number,
+                    id,
+                    body: (*body).clone(),
+                    references: Vec::new(),
+                });
+                let i = self.entries.len() - 1;
+                self.index.insert(identifier.to_string(), i);
+                i
+            }
+        };
+        let entry = &mut self.entries[entry_index];
+        let base = slug_base(&entry.identifier, entry.number);
+        let id = format!(
+            "{FOOTNOTE_CLOBBER_PREFIX}{}",
+            allocator.allocate(&format!("fnref-{base}"))
+        );
+        let occurrence = entry.references.len() + 1;
+        entry.references.push(FootnoteRef {
+            id,
+            number: entry.number,
+            occurrence,
+        });
     }
 
     /// Rendered footnotes, in first-reference order. Empty when the document
@@ -477,7 +525,18 @@ fn collect_definitions<'a>(node: &'a MdastNode, out: &mut HashMap<&'a str, &'a V
     }
 }
 
+/// Collect reference identifiers in document order, **not descending into
+/// footnote definition subtrees**.
+///
+/// A definition's body renders in the footer, not where it was written, so its
+/// own nested references must be ordered by the definition's rendered position
+/// — `FootnoteModel::collect`'s pass 3 does that separately. Walking them here
+/// would number a nested reference by its source position and, worse, mint
+/// entries out of definitions that never render at all.
 fn collect_reference_order(node: &MdastNode, out: &mut Vec<String>) {
+    if matches!(node, MdastNode::FootnoteDefinition(_)) {
+        return;
+    }
     if let MdastNode::FootnoteReference(r) = node {
         out.push(r.identifier.clone());
     }
@@ -603,6 +662,72 @@ mod tests {
         let m = model("Dangling ref[^missing] end.\n");
         assert!(m.is_empty());
         assert!(m.entry("missing").is_none());
+    }
+
+    // ---- references nested inside definition bodies ----
+
+    #[test]
+    fn reference_inside_a_definition_body_is_numbered_by_footer_position() {
+        // `[^a]`'s body references `[^b]`, and `[^a]`'s definition is written
+        // BEFORE the main-body reference to `[^c]`. `b` renders after `a` in
+        // the footer, so it must number after `c`, which is referenced in the
+        // main body — source position must not win.
+        let m = model(
+            "Main[^a] then[^c] end.\n\n\
+             [^a]: A body[^b].\n\n[^b]: B body.\n\n[^c]: C body.\n",
+        );
+        let numbering: Vec<(&str, usize)> = m
+            .entries()
+            .iter()
+            .map(|e| (e.identifier.as_str(), e.number))
+            .collect();
+        assert_eq!(numbering, vec![("a", 1), ("c", 2), ("b", 3)]);
+        assert_eq!(m.entry("b").unwrap().references.len(), 1);
+        assert_unique_ids(&m);
+    }
+
+    #[test]
+    fn unreferenced_definition_body_contributes_no_phantom_entry() {
+        // `[^ghost]` is never referenced, so it never renders — and neither
+        // does the `[^hidden]` its body references. Walking its body anyway
+        // would mint an entry whose backreference points at a marker that is
+        // never emitted.
+        let m = model(
+            "Only a[^a].\n\n\
+             [^a]: A body.\n\n[^ghost]: Ghost[^hidden].\n\n[^hidden]: Hidden body.\n",
+        );
+        assert_eq!(m.entries().len(), 1);
+        assert_eq!(m.entries()[0].identifier, "a");
+        assert!(m.entry("ghost").is_none());
+        assert!(m.entry("hidden").is_none());
+    }
+
+    #[test]
+    fn discarded_duplicate_definition_body_contributes_no_phantom_entry() {
+        // The losing duplicate's body references `[^ghost]`. Only the winning
+        // body renders, so `ghost` must not appear.
+        let m = model("Dup[^a].\n\n[^a]: First.\n\n[^a]: Second[^ghost].\n\n[^ghost]: G.\n");
+        assert_eq!(m.entries().len(), 1);
+        assert!(m.entry("ghost").is_none());
+    }
+
+    #[test]
+    fn self_referencing_definition_body_terminates_with_one_extra_occurrence() {
+        let m = model("Main[^a].\n\n[^a]: A body[^a].\n");
+        assert_eq!(m.entries().len(), 1);
+        assert_eq!(m.entries()[0].references.len(), 2);
+        assert_unique_ids(&m);
+    }
+
+    #[test]
+    fn mutually_referencing_definition_bodies_terminate() {
+        let m = model("Main[^a].\n\n[^a]: A body[^b].\n\n[^b]: B body[^a].\n");
+        assert_eq!(m.entries().len(), 2);
+        assert_eq!(m.entries()[0].identifier, "a");
+        assert_eq!(m.entries()[1].identifier, "b");
+        assert_eq!(m.entry("a").unwrap().references.len(), 2);
+        assert_eq!(m.entry("b").unwrap().references.len(), 1);
+        assert_unique_ids(&m);
     }
 
     #[test]
