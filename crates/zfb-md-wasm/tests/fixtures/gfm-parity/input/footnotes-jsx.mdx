@@ -7,7 +7,9 @@ title: Footnotes In JSX
 <Callout>
   A footnote nested inside an MDX JSX element body[^nested] still numbers by
   first-reference order.
-</Callout>
 
-[^nested]: This definition lives at the document's footer, like every other
-    footnote definition.
+[^nested]:
+    This definition is itself nested inside the same JSX element
+    body, not the document's top level.
+
+</Callout>
