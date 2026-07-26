@@ -1102,10 +1102,15 @@ async fn an_abort_mid_body_cancels_the_transport_and_closes_the_socket() {
     // `/slow` promises 64 bytes, writes 8, signals `body_started`, then
     // parks holding the socket — the transport is now mid-body. `/gate`
     // answers only after that signal, which is how the bundle learns the
-    // transport reached that point without a sleep. `/drain` is an
-    // ordinary 200 the bundle fetches after aborting, purely to keep the
-    // event loop turning so the cancelled op is polled once more and
-    // dropped.
+    // transport reached that point without a sleep.
+    //
+    // The handler aborts and returns its `Response` IMMEDIATELY, with
+    // nothing afterwards to keep the event loop turning. That is
+    // load-bearing: `CancelHandle::cancel()` only marks and wakes the
+    // handle, so without `drain_cancelled_fetches` the dispatch promise
+    // would settle first and the host would go idle with the socket
+    // still open. Do not add a trailing fetch here to "help it along" —
+    // that is exactly the crutch this case exists to remove.
     let body_started = Arc::new(Semaphore::new(0));
     let socket_closed = Arc::new(Semaphore::new(0));
     let started = body_started.clone();
@@ -1147,10 +1152,7 @@ async fn an_abort_mid_body_cancels_the_transport_and_closes_the_socket() {
                     let _ = stream.write_all(&ok_response("go")).await;
                     let _ = stream.shutdown().await;
                 }
-                _ => {
-                    let _ = stream.write_all(&ok_response("drain")).await;
-                    let _ = stream.shutdown().await;
-                }
+                other => panic!("unexpected request target {other:?}"),
             }
         }
     })
@@ -1158,7 +1160,6 @@ async fn an_abort_mid_body_cancels_the_transport_and_closes_the_socket() {
 
     let slow = server.url("/slow");
     let gate = server.url("/gate");
-    let drain = server.url("/drain");
     let bundle = format!(
         r#"
         export default {{
@@ -1175,7 +1176,6 @@ async fn an_abort_mid_body_cancels_the_transport_and_closes_the_socket() {
             }} catch (e) {{
               out = String(e && e.name);
             }}
-            await fetch({drain:?});
             return new Response(out, {{ status: 200 }});
           }},
         }};

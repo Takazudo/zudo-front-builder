@@ -582,6 +582,7 @@ impl EmbeddedV8RenderHost {
             .with_event_loop_promise(Box::pin(resolve_future), PollEventLoopOptions::default())
             .await
             .map_err(|e| RenderError::Runtime(format_js_error(&e)))?;
+        self.drain_cancelled_fetches().await;
         // Pull the resolved JS object back out as a Rust struct.
         deno_core::scope!(scope, &mut self.runtime);
         let local = v8::Local::new(scope, resolved);
@@ -625,6 +626,63 @@ impl EmbeddedV8RenderHost {
     /// installing one there would be harmless but pointless, and the op
     /// itself reports the host-op failure if it is ever called in that
     /// state.
+    /// Poll the event loop until every cancellation flagged during this
+    /// dispatch has actually been observed by the op it was aimed at.
+    ///
+    /// `op_zfb_fetch_cancel` only marks the `CancelHandle` and wakes it;
+    /// the transport is dropped when the cancelable future is **polled
+    /// again**. A handler that aborts a fetch and immediately returns
+    /// its `Response` resolves the dispatch promise first, and
+    /// `with_event_loop_promise` is free to return on that without ever
+    /// polling the loop — which would leave the socket open, the
+    /// response still buffering, and the registry entry live until
+    /// something else happened to run the loop.
+    ///
+    /// **Honest status: defence in depth, not a repro.** With the
+    /// current bridge shape that window is not actually reachable —
+    /// `__zfb.dispatch` still has to `await bundle.fetch(req)` and
+    /// `await resp.arrayBuffer()` after the abort, and
+    /// `with_event_loop_promise` polls the loop across those, which
+    /// drives the cancelled op. `an_abort_mid_body_cancels_the_transport_and_closes_the_socket`
+    /// therefore passes with this call stubbed out; it is kept because
+    /// the guarantee should not depend on that coincidence, and a
+    /// future change to the shim's shape could remove it silently.
+    ///
+    /// Each pass is a **single non-blocking poll**: a cancelled future
+    /// resolves on the first one, and polling is deliberately not driven
+    /// to completion, since an unrelated in-flight fetch would otherwise
+    /// hold the dispatch open until its own deadline. The pass count is
+    /// bounded, and the counter is cleared afterwards, so a cancellation
+    /// that raced a natural completion cannot charge every later
+    /// dispatch for a poll budget nothing will ever consume.
+    async fn drain_cancelled_fetches(&mut self) {
+        const MAX_DRAIN_POLLS: usize = 16;
+        let Some(cancels) = self
+            .runtime
+            .op_state()
+            .borrow()
+            .try_borrow::<Rc<fetch::CancelRegistry>>()
+            .cloned()
+        else {
+            return;
+        };
+        let mut polls = 0;
+        while cancels.pending_cancellations() > 0 && polls < MAX_DRAIN_POLLS {
+            polls += 1;
+            let _ = deno_core::futures::future::poll_fn(|cx| {
+                let _ = self
+                    .runtime
+                    .poll_event_loop(cx, PollEventLoopOptions::default());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            // Let the tokio reactor deliver the socket close the dropped
+            // transport just triggered before the next pass looks again.
+            tokio::task::yield_now().await;
+        }
+        cancels.clear_pending();
+    }
+
     /// Publish `mode` where [`fetch::op_zfb_fetch`] reads it, in
     /// `OpState` (epic #2012 review fix 1).
     ///

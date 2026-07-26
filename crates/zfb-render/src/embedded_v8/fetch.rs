@@ -287,6 +287,19 @@ pub struct DispatchModeState(pub DispatchMode);
 #[derive(Debug, Default)]
 pub struct CancelRegistry {
     handles: RefCell<HashMap<u32, Rc<CancelHandle>>>,
+    /// Cancellations flagged but not yet observed by the op they were
+    /// aimed at.
+    ///
+    /// `CancelHandle::cancel()` only marks the handle and wakes its
+    /// waker — the transport is dropped when the cancelable future is
+    /// **polled again**. A handler that aborts and immediately returns
+    /// its `Response` resolves the dispatch promise first, and
+    /// `with_event_loop_promise` can return on that without polling the
+    /// event loop, leaving the socket open and the entry live while the
+    /// host sits idle. This counter is what lets
+    /// [`super::EmbeddedV8RenderHost::drain_cancelled_fetches`] know it
+    /// still owes the loop a poll.
+    pending: Cell<usize>,
 }
 
 impl CancelRegistry {
@@ -309,8 +322,30 @@ impl CancelRegistry {
     /// late abort must never be an error.
     pub(crate) fn cancel(&self, id: u32) {
         if let Some(handle) = self.handles.borrow_mut().remove(&id) {
+            self.pending.set(self.pending.get() + 1);
             handle.cancel();
         }
+    }
+
+    /// The op saw its cancellation and dropped the transport.
+    pub(crate) fn note_cancel_observed(&self) {
+        self.pending.set(self.pending.get().saturating_sub(1));
+    }
+
+    /// Cancellations flagged but not yet observed. Drops to zero once
+    /// every cancelled op has been polled to completion.
+    pub fn pending_cancellations(&self) -> usize {
+        self.pending.get()
+    }
+
+    /// Forget the outstanding count without waiting for it.
+    ///
+    /// Called at the end of a drain pass so a cancellation that raced a
+    /// natural completion — the op returned `Ok` on the same turn the
+    /// abort fired, so nothing will ever observe the flag — cannot make
+    /// every later dispatch pay for the same phantom poll budget.
+    pub(crate) fn clear_pending(&self) {
+        self.pending.set(0);
     }
 
     /// Number of registered in-flight cancellable fetches. Tests use it
@@ -946,9 +981,12 @@ pub async fn op_zfb_fetch(
             // Dropping `transport` here is the whole point: it closes
             // the socket instead of letting the request run on to the
             // wall-clock deadline with its result destined for the bin.
-            Err(_canceled) => Err(FetchError::Aborted {
-                url: spec.url.clone(),
-            }),
+            Err(_canceled) => {
+                cancels.note_cancel_observed();
+                Err(FetchError::Aborted {
+                    url: spec.url.clone(),
+                })
+            }
         },
         None => transport.await,
     };
