@@ -29,7 +29,7 @@ precedence; see [Plugins](./plugins.mdx) for injected-route details.
 A few rules worth knowing up front:
 
 - Files starting with `_` (for example `_app.tsx`) are ignored. Use this prefix for shared helpers that live next to your routes but should not be exposed.
-- Accepted page extensions are `.tsx`, `.mdx`, `.md`, and `.html`. Files with any other extension in `pages/` are skipped (a warning is logged), so README files and ad-hoc notes are safe to drop there.
+- Accepted page extensions are `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`, and `.html`. `.tsx` is not the only script-page shape — a page with no JSX markup can be written as plain `.ts` (or `.jsx`/`.js`) using `h()` calls directly, and it routes exactly like `.tsx`. Files with any other extension in `pages/` are skipped (a warning is logged), so README files and ad-hoc notes are safe to drop there.
 - Two files that resolve to the same route raise `RouterError::AmbiguousRoute` at build time, so the router never silently picks a winner. The router also raises `RouterError::AmbiguousShape` when two routes differ only in parameter names but match the same URLs (e.g. `docs/[a].tsx` vs `docs/[b].tsx`), and `RouterError::OptionalCatchallConflict` when an optional catchall overlaps another route at the same position.
 
 See [Markdown and HTML Pages](./md-html-pages.mdx) for the full contract and v1 limitations of `.md` and `.html` page entries.
