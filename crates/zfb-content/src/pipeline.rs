@@ -2395,10 +2395,19 @@ fn register_post_syntect_features_config_derived(
 pub enum JsxEmitStrategy<'a> {
     /// HTML-path preserving strategy. Same as the pre-#121 behaviour.
     HtmlPath,
-    /// JSX-path strategy. The closure receives an mdast node and
-    /// returns the JSX-shaped string the bridge should embed
-    /// verbatim.
-    JsxPath(&'a dyn Fn(&MdastNode) -> String),
+    /// JSX-path strategy. The closure receives an mdast node plus the
+    /// SAME [`FootnoteRenderCtx`] the surrounding `mdast_to_hast_with`
+    /// walk is using, and returns the JSX-shaped string the bridge
+    /// should embed verbatim.
+    ///
+    /// Threading `FootnoteRenderCtx` through here (issue #2027) is what
+    /// lets a footnote reference nested inside an MDX JSX element body
+    /// claim its occurrence from the SAME shared cursor the top-level
+    /// walk uses, instead of `mdx_jsx_emit` building a second,
+    /// independently-advancing model/cursor that could drift out of
+    /// sync with the main walk for a document mixing top-level and
+    /// JSX-nested references to one identifier.
+    JsxPath(&'a dyn Fn(&MdastNode, &FootnoteRenderCtx<'_>) -> String),
 }
 
 /// Convert an mdast node into a hast node.
@@ -2475,7 +2484,14 @@ pub fn mdast_to_hast_with(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> H
 /// rendered entry's own body, in the model's final entry order. Both
 /// walks are plain depth-first traversals over the same
 /// `Node::children()`, so they agree.
-struct FootnoteRenderCtx<'a> {
+// `pub`, not `pub(crate)`: `JsxEmitStrategy::JsxPath` is a variant of a
+// `pub` enum reachable through `pub mod pipeline`, so a lower-visibility
+// type in its function-pointer signature would be a "private type in
+// public interface" error. Nothing about `FootnoteRenderCtx` is
+// sensitive — it only hands out the next pre-computed reference
+// occurrence, mirroring how `HastNode`/`MdastNode` are already public
+// types threaded through this same enum.
+pub struct FootnoteRenderCtx<'a> {
     cursor: RefCell<FootnoteCursor<'a>>,
 }
 
@@ -2484,6 +2500,17 @@ impl<'a> FootnoteRenderCtx<'a> {
         Self {
             cursor: RefCell::new(model.cursor()),
         }
+    }
+
+    /// Consume and return the next reference occurrence for `identifier`
+    /// from the shared cursor — see [`FootnoteCursor::next_reference`].
+    /// This is what lets `mdx_jsx_emit`'s separate JSX-child recursive
+    /// renderer claim occurrences from the SAME cursor the main
+    /// `mdast_to_hast_inner` walk uses, keeping numbering/ids correct
+    /// for footnotes nested inside an MDX JSX element body.
+    #[must_use]
+    pub fn next_reference(&self, identifier: &str) -> Option<(&'a FootnoteEntry, &'a FootnoteRef)> {
+        self.cursor.borrow_mut().next_reference(identifier)
     }
 }
 
@@ -2627,7 +2654,7 @@ fn mdast_to_hast_inner(
         MdastNode::MdxJsxFlowElement(_)
         | MdastNode::MdxJsxTextElement(_)
         | MdastNode::MdxFlowExpression(_)
-        | MdastNode::MdxTextExpression(_) => HastNode::JsxRaw(emit_jsx_raw(node, strategy)),
+        | MdastNode::MdxTextExpression(_) => HastNode::JsxRaw(emit_jsx_raw(node, strategy, fc)),
         // remark-math `$$...$$` block. Mirror the shape markdown-rs's
         // HTML serializer (`on_enter_raw_flow`) produces and what
         // `mdx_jsx_emit::JsxEmitter` emits on the no-pipeline path:
@@ -2876,9 +2903,13 @@ fn render_footnote_item(
 /// pre-#121 HTML snapshot output). The JSX-path strategy delegates to
 /// the user-supplied closure (typically the recursive renderer in
 /// `mdx_jsx_emit`).
-fn emit_jsx_raw(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> String {
+fn emit_jsx_raw(
+    node: &MdastNode,
+    strategy: &JsxEmitStrategy<'_>,
+    fc: &FootnoteRenderCtx<'_>,
+) -> String {
     if let JsxEmitStrategy::JsxPath(emit) = strategy {
-        return emit(node);
+        return emit(node, fc);
     }
     // HTML-path strategy: preserve pre-#121 behaviour exactly.
     match node {
