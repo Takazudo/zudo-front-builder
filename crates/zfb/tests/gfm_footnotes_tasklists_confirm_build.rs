@@ -64,22 +64,34 @@
 //!   — proving the document-level footnote model isn't confused by a
 //!   reference living inside a JSX subtree.
 //!
-//! ## Where the two JSX-emit sites legitimately differ
+//! ## Where the two JSX-emit sites used to differ (epic review fix)
 //!
-//! Empirically diffing the nested (`jsx_render_child`) output against the
-//! top-level (`emit_node`) output for otherwise-identical content surfaces
-//! two real, harmless serialization differences that this test tolerates
-//! rather than papering over:
+//! The original wave-6 pass empirically diffed the nested
+//! (`jsx_render_child`) output against the top-level (`emit_node`) output
+//! and found two serialization differences, which it recorded here as
+//! "harmless" and encoded into the expectations below:
 //!
-//! - The nested path's footnote marker renders `data-footnote-ref="true"`;
-//!   the top-level path renders the bare `data-footnote-ref` (no value).
-//! - The nested path inserts a literal space between a task-list checkbox
-//!   and its following `<p>` (`<input .../> <p>`); the top-level path does
-//!   not (`<input.../><p>`).
+//! - The nested path's footnote marker rendered `data-footnote-ref="true"`;
+//!   the top-level path rendered the bare `data-footnote-ref`.
+//! - The nested path inserted a literal space between a task-list checkbox
+//!   and its following `<p>` (`<input .../> <p>`); the top-level path did
+//!   not (`<input.../><p>`), and the two also disagreed on attribute order
+//!   (`checked disabled` vs `disabled checked`).
 //!
-//! Neither difference changes checked state, numbering, or link structure,
-//! so this test asserts on those semantics rather than forcing byte
-//! equality across the two sites.
+//! The epic-level review rejected that reading: this epic exists precisely
+//! so a page does not render differently depending on which path it took,
+//! and two footnotes on ONE `.mdx` page were diverging purely by whether
+//! one sat inside a JSX component's children. Both differences are fixed
+//! at the source (`mdx_jsx_emit`'s `jsx_footnote_reference_marker` and
+//! `task_list_checkbox_jsx`), so the assertions below now expect the two
+//! sites to agree, and the nested expectations were updated accordingly.
+//!
+//! Separately, the checkbox now opens the item's OWN paragraph
+//! (`<li><p><input/> label</p></li>`) instead of sitting as a sibling
+//! before it (`<li><input/><p>label</p></li>`). This pipeline does not
+//! unwrap tight-list paragraphs, so the old placement rendered every
+//! checkbox on its own line ABOVE its label; the new one reads as a
+//! checkbox beside its text, the way GitHub renders one.
 //!
 //! ## Tiering
 //!
@@ -279,10 +291,10 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
         tasklist_md,
         "<main data-slug=\"tasklist-md\">\
          <ul>\
-         <li><input type=\"checkbox\" disabled/><p>Buy milk</p></li>\
-         <li><input type=\"checkbox\" disabled checked/><p>Walk the dog</p></li>\
-         <li><input type=\"checkbox\" disabled/><p>Nested parent</p>\
-         <ul><li><input type=\"checkbox\" disabled checked/><p>Nested child</p></li></ul>\
+         <li><p><input type=\"checkbox\" disabled/> Buy milk</p></li>\
+         <li><p><input type=\"checkbox\" disabled checked/> Walk the dog</p></li>\
+         <li><p><input type=\"checkbox\" disabled/> Nested parent</p>\
+         <ul><li><p><input type=\"checkbox\" disabled checked/> Nested child</p></li></ul>\
          </li>\
          <li><p>Plain non-task item</p></li>\
          </ul>\
@@ -368,30 +380,29 @@ fn gfm_footnotes_and_task_lists_confirm_build() {
         "expected the <Note> wrapper to render: {nested}"
     );
 
-    // Task-list checked state, nested inside the JSX subtree, matches the
-    // top-level fixture's semantics (unchecked then checked) — tolerating
-    // the known nested-path whitespace difference (a literal space before
-    // the following <p>) rather than forcing a byte match against the
-    // top-level rendering.
+    // Task-list checked state, nested inside the JSX subtree, now matches
+    // the top-level fixture's rendering BYTE FOR BYTE — same attribute
+    // spelling, same attribute order, same single space between the
+    // checkbox and its label, and the checkbox opening the item's own
+    // paragraph rather than sitting as a sibling above it.
     assert!(
-        nested.contains("<input type=\"checkbox\" disabled/> <p>Nested task unchecked</p>"),
+        nested.contains("<p><input type=\"checkbox\" disabled/> Nested task unchecked</p>"),
         "expected the unchecked nested task-list item: {nested}"
     );
     assert!(
-        nested.contains("<input type=\"checkbox\" checked disabled/> <p>Nested task checked</p>"),
+        nested.contains("<p><input type=\"checkbox\" disabled checked/> Nested task checked</p>"),
         "expected the checked nested task-list item: {nested}"
     );
 
     // Footnote reference nested inside <Note>'s children resolves to number
     // 1 and the SAME `user-content-fn-n` / `user-content-fnref-n` id
-    // contract as the top-level path — tolerating the nested path's known
-    // `data-footnote-ref="true"` (vs the top-level path's bare
-    // `data-footnote-ref`) as a legitimate serialization difference between
-    // the two emit sites, not a semantic one.
+    // contract as the top-level path — and now the same MARKER SPELLING
+    // too: both emit sites write `data-footnote-ref=""`, which serializes
+    // as the bare attribute here.
     assert!(
         nested.contains(
             "Ref inside note<sup><a href=\"#user-content-fn-n\" \
-             id=\"user-content-fnref-n\" data-footnote-ref=\"true\" \
+             id=\"user-content-fnref-n\" data-footnote-ref \
              aria-describedby=\"footnote-label\">1</a></sup>"
         ),
         "expected the nested footnote reference marker: {nested}"

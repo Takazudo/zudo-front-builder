@@ -81,9 +81,15 @@ export default defineConfig({
 ## タスクリストのチェックボックス
 
 `taskListItem` を有効にすると、各 `- [x]` / `- [ ]` 項目のチェック状態がチェック
-ボックスとしてレンダリングされます。項目自身のコンテンツの前に `disabled` な
-`<input type="checkbox">` が挿入され、項目がチェック済みの場合のみ `checked`
-属性が付きます。`[x]`/`[ ]` マーカーのない通常のリスト項目には影響しません。
+ボックスとしてレンダリングされます。項目自身の段落の先頭に `disabled` な
+`<input type="checkbox">` が挿入され、続けて半角スペースが 1 つ入ります。項目が
+チェック済みの場合のみ `checked` 属性が付きます。`[x]`/`[ ]` マーカーのない通常の
+リスト項目には影響しません。
+
+チェックボックスが段落の *外側* ではなく *内側* に置かれるのは、ラベルと同じ行に
+レンダリングさせるためです。zfb は tight list の段落をアンラップしないため、`<p>`
+の兄弟要素としてチェックボックスを出力すると、テキストの上の行に単独で表示されて
+しまいます。
 
 ```md title="input"
 - [x] Done
@@ -92,8 +98,8 @@ export default defineConfig({
 
 ```html title="output"
 <ul>
-  <li><input type="checkbox" checked disabled /><p>Done</p></li>
-  <li><input type="checkbox" disabled /><p>Not done</p></li>
+  <li><p><input type="checkbox" disabled checked /> Done</p></li>
+  <li><p><input type="checkbox" disabled /> Not done</p></li>
 </ul>
 ```
 
@@ -133,6 +139,25 @@ GitHub 自身の脚注の挙動と同様に、ドキュメント末尾に集約�
   書き換えられてしまうため）が含まれます。参照リンクとバックリファレンスリンクは
   どちらも GitHub のマークアップと同様のアクセシビリティ属性
   （`aria-describedby`/`aria-label`）を持ちます。
+- このランドマークを視覚的に隠しているのは、併記されている `sr-only` クラスでは
+  なく **インライン `style`** です。zfb は `.sr-only` を定義するスタイルシートを
+  同梱していません。またこのクラスは zfb 自身が出力するもので、Tailwind が走査
+  するファイルには一切現れないため、Tailwind の `sr-only` ユーティリティも生成
+  されません。つまりクラスだけに頼ると、ほとんどのプロジェクトでランドマークが
+  そのまま表示されてしまいます。クラス自体はスタイリング用のフックとして残して
+  あります。逆に見出しを表示させたい場合は、インラインスタイルを `!important`
+  で上書きしてください:
+
+  ```css
+  .footnotes [role="heading"] {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    margin: 0 !important;
+    clip: auto !important;
+    clip-path: none !important;
+  }
+  ```
 
 ```md title="input"
 Footnotes[^note] keep reading order.
@@ -143,7 +168,7 @@ Footnotes[^note] keep reading order.
 ```html title="output"
 <p>Footnotes<sup><a href="#user-content-fn-note" id="user-content-fnref-note" data-footnote-ref aria-describedby="footnote-label">1</a></sup> keep reading order.</p>
 <section data-footnotes class="footnotes">
-  <div role="heading" aria-level="2" class="sr-only" id="footnote-label">Footnotes</div>
+  <div role="heading" aria-level="2" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0" id="footnote-label">Footnotes</div>
   <ol>
     <li id="user-content-fn-note">
       <p>The footnote text.</p>

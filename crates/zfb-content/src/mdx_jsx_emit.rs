@@ -53,6 +53,8 @@ use zfb_md_ast::{BuildContext, CrossFileLinkCandidate, FileHeadings};
 use zfb_types::normalize_path_lexical;
 
 use crate::dep_manifest::DependencyManifest;
+#[cfg(test)]
+use crate::footnotes::FOOTNOTE_LABEL_STYLE;
 use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
     constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode, JsxEmitStrategy,
@@ -893,13 +895,21 @@ impl JsxEmitter {
                 self.emit_html(tag, &attrs, &l.children)
             }
             MdastNode::ListItem(li) => {
-                let checkbox = li.checked.map(task_list_checkbox_jsx).unwrap_or_default();
-                if li.checked.is_some() {
-                    self.html_tags.insert("input".to_string());
-                }
                 self.html_tags.insert("li".to_string());
-                let inner = self.emit_inline_children(&li.children);
-                format!("<_components.li>{checkbox}{inner}</_components.li>")
+                let inner = match li.checked {
+                    Some(checked) => {
+                        self.html_tags.insert("input".to_string());
+                        // The checkbox is hosted by the item's leading
+                        // paragraph, so `p` is emitted here even though
+                        // the `Paragraph` arm never runs for it.
+                        self.html_tags.insert("p".to_string());
+                        task_list_item_jsx(&li.children, checked, |nodes| {
+                            self.emit_inline_children(nodes)
+                        })
+                    }
+                    None => self.emit_inline_children(&li.children),
+                };
+                format!("<_components.li>{inner}</_components.li>")
             }
             MdastNode::Blockquote(b) => self.emit_html("blockquote", &[], &b.children),
             MdastNode::ThematicBreak(_) => self.emit_html_void("hr", &[]),
@@ -1059,12 +1069,14 @@ fn align_style(align: &AlignKind) -> Option<&'static str> {
 fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKind]) -> String {
     let mut out = String::new();
 
-    // Build a style attr string for column index `col`.
+    // Build a style attr string for column index `col`. Object-valued,
+    // matching the other two emit paths — a string `style` prop makes
+    // React throw. See `jsx_style_attr`.
     let style_attr = |col: usize| -> String {
         align
             .get(col)
             .and_then(align_style)
-            .map(|v| format!(" style=\"text-align: {v}\""))
+            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -1383,20 +1395,125 @@ fn is_void_html_tag(tag: &str) -> bool {
 /// (mirrors `jsx_string_attr` in [`JsxEmitter`]).
 ///
 /// Empty-valued attributes (e.g. `data-mermaid=""` synthesized by
-/// `MermaidPlugin`) emit as `attr=""` to keep the attribute present
-/// and serializable.
+/// `MermaidPlugin`, `data-footnote-ref=""` by the footnote emitter) emit
+/// as `attr=""` to keep the attribute present and serializable.
+///
+/// The one exception is an empty-valued **HTML boolean attribute** —
+/// [`is_html_boolean_attr`] — which emits BARE (JSX `true`). hast has no
+/// way to spell a bare attribute (its values are plain `String`s), so the
+/// HTML serializer's `disabled=""` is the only spelling available on that
+/// side; carrying the empty string straight into JSX would hand
+/// React/Preact a falsy prop, and a task-list checkbox would hydrate
+/// enabled and unchecked. Data attributes keep `=""` — they are ordinary
+/// strings, and `true` would serialize as the visibly different
+/// `data-footnote-ref="true"`.
 fn render_hast_attrs(attrs: &[(String, String)]) -> String {
     if attrs.is_empty() {
         return String::new();
     }
     let mut out = String::new();
     for (k, v) in attrs {
+        if k == "style" {
+            out.push_str(&jsx_style_attr(v));
+            continue;
+        }
         out.push(' ');
         out.push_str(k);
+        if v.is_empty() && is_html_boolean_attr(k) {
+            continue;
+        }
         out.push('=');
         out.push_str(&jsx_string_attr(v));
     }
     out
+}
+
+/// Render a CSS declaration string as a JSX `style` **object** prop:
+/// ` style={{"position": "absolute", …}}`. Returns the empty string when
+/// nothing parses, so the attribute is omitted entirely.
+///
+/// React throws outright on a string-valued `style` prop ("The `style`
+/// prop expects a mapping from style properties to values, not a string"),
+/// which would take down every page carrying one. hast stores attribute
+/// values as plain `String`s, so the CSS text has to be converted here, at
+/// the JSX boundary — the HTML serializer keeps writing the string form
+/// untouched.
+///
+/// Hyphenated property names are camelCased (`white-space` → `whiteSpace`)
+/// because React ignores the hyphenated spelling with a warning. Custom
+/// properties (`--shiki-dark-bg`, emitted by `SyntectPlugin`'s dual-theme
+/// mode) keep their exact name — both React and Preact read those verbatim.
+///
+/// Splitting is deliberately simple: `;` separates declarations and the
+/// FIRST `:` separates name from value. That is sufficient for every
+/// declaration this crate emits (footnote label hiding, table
+/// `text-align`, syntect colors) and for ordinary author CSS. A value
+/// containing a literal `;` — a `url(data:…;base64,…)` — would split
+/// wrongly; no producer here emits one.
+fn jsx_style_attr(css: &str) -> String {
+    let mut props: Vec<String> = Vec::new();
+    for decl in css.split(';') {
+        let decl = decl.trim();
+        if decl.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        let key = if name.starts_with("--") {
+            name.to_string()
+        } else {
+            camel_case_css_property(name)
+        };
+        props.push(format!(
+            "{}: {}",
+            js_string_literal(&key),
+            js_string_literal(value)
+        ));
+    }
+    if props.is_empty() {
+        return String::new();
+    }
+    format!(" style={{{{{}}}}}", props.join(", "))
+}
+
+/// `white-space` → `whiteSpace`. Leaves an already-camelCase or
+/// single-word name untouched.
+fn camel_case_css_property(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut upper_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// True for HTML attributes whose presence alone means "true" and which
+/// React/Preact expose as boolean props.
+///
+/// Only consulted for EMPTY-valued attributes (see [`render_hast_attrs`]);
+/// an explicit value is always preserved verbatim.
+///
+/// Deliberately NOT the full HTML boolean-attribute set. The list is the
+/// two attributes this crate itself synthesizes with an empty value
+/// (`task_list_checkbox_hast`). `plugins::directives` also records an
+/// author-written valueless attribute as `key=""`, so widening this list
+/// (to `open`, `hidden`, …) would change directive output that is outside
+/// the scope this was added for — a deliberate call, not an oversight.
+fn is_html_boolean_attr(name: &str) -> bool {
+    matches!(name, "checked" | "disabled")
 }
 
 /// Return true if the trimmed-leading raw HTML string begins with a
@@ -1800,14 +1917,14 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>)
             )
         }
         MdastNode::ListItem(li) => {
-            let checkbox = li.checked.map(task_list_checkbox_jsx).unwrap_or_default();
-            format!(
-                "<_components.li>{checkbox}{}</_components.li>",
-                li.children
-                    .iter()
-                    .map(|c| jsx_render_child(c, ctx, fc))
-                    .collect::<String>(),
-            )
+            let render = |nodes: &[MdastNode]| -> String {
+                nodes.iter().map(|c| jsx_render_child(c, ctx, fc)).collect()
+            };
+            let inner = match li.checked {
+                Some(checked) => task_list_item_jsx(&li.children, checked, render),
+                None => render(&li.children),
+            };
+            format!("<_components.li>{inner}</_components.li>")
         }
         MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children, ctx, fc),
         MdastNode::ThematicBreak(_) => "<_components.hr />".to_string(),
@@ -1867,11 +1984,20 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>)
     }
 }
 
-/// `<sup><a href="#{definition id}" id="{occurrence id}" data-footnote-ref
+/// `<sup><a href="#{definition id}" id="{occurrence id}" data-footnote-ref=""
 /// aria-describedby="footnote-label">{number}</a></sup>`, routed through
 /// `_components.<tag>` like every other synthesized HTML tag in this
 /// file — the JSX-child-renderer's counterpart to
-/// `pipeline::footnote_reference_marker`. The number renders via
+/// `pipeline::footnote_reference_marker`.
+///
+/// `data-footnote-ref=""` — an empty-valued attribute, NOT the bare
+/// boolean-attribute shorthand this file uses elsewhere. Bare means `true`
+/// in JSX, which serializes as `data-footnote-ref="true"`, whereas the
+/// hast bridge emits `data-footnote-ref=""` for the identical marker at
+/// the document's top level. Two footnotes on one `.mdx` page would then
+/// differ purely by whether one happened to sit inside a JSX component's
+/// children — exactly the divergence epic #2021 exists to remove. The
+/// number renders via
 /// `js_string_literal_in_braces` (not plain text) so a document-level
 /// reference and one nested inside an MDX JSX element body produce the
 /// SAME `{"N"}` shape `HastJsxBridge::emit_node`'s `HastNode::Text` arm
@@ -1880,7 +2006,7 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>)
 /// vs. top-level within one `.mdx`) never visibly diverge.
 fn jsx_footnote_reference_marker(entry: &FootnoteEntry, footnote_ref: &FootnoteRef) -> String {
     format!(
-        "<_components.sup><_components.a href=\"{}\" id=\"{}\" data-footnote-ref aria-describedby=\"{}\">{}</_components.a></_components.sup>",
+        "<_components.sup><_components.a href=\"{}\" id=\"{}\" data-footnote-ref=\"\" aria-describedby=\"{}\">{}</_components.a></_components.sup>",
         jsx_attr_escape(&entry.href()),
         jsx_attr_escape(&footnote_ref.id),
         jsx_attr_escape(FOOTNOTE_LABEL_ID),
@@ -1901,10 +2027,12 @@ fn jsx_render_table(
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let style_attr = |col: usize| -> String {
+        // Object-valued, matching the hast bridge's own `style` handling —
+        // a string `style` prop makes React throw. See `jsx_style_attr`.
         t.align
             .get(col)
             .and_then(align_style)
-            .map(|v| format!(" style=\"text-align: {v}\""))
+            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -1953,20 +2081,56 @@ fn jsx_render_table(
     out
 }
 
-/// Render the (disabled) task-list checkbox JSX literal that precedes a
-/// `ListItem`'s own children when `ListItem.checked` is `Some(_)`
-/// (issue #2024, epic #2021). GFM task-list checkboxes are static,
-/// server-rendered markup with no client-side toggle handler — always
-/// `disabled`; `checked` (JSX boolean-attribute shorthand) is present
-/// only when the item itself is checked. Routes through
-/// `_components.input`, like every other synthesized HTML tag in this
-/// file. Shared by both JSX-emit `ListItem` arms (`JsxEmitter::emit_node`
-/// and `jsx_render_child`).
+/// Render the (disabled) task-list checkbox JSX literal that opens a
+/// `ListItem`'s content when `ListItem.checked` is `Some(_)` (issue
+/// #2024, epic #2021), followed by a single `{" "}` separating it from
+/// the label. GFM task-list checkboxes are static, server-rendered
+/// markup with no client-side toggle handler — always `disabled`;
+/// `checked` is present only when the item itself is checked. Routes
+/// through `_components.input`, like every other synthesized HTML tag in
+/// this file. Shared by both JSX-emit `ListItem` arms
+/// (`JsxEmitter::emit_node` and `jsx_render_child`).
+///
+/// Attribute spelling, ORDER (`type`, `disabled`, `checked`) and the
+/// trailing spacer all match what `pipeline::task_list_checkbox_hast` +
+/// `prepend_task_list_checkbox` produce for the same item, so a task list
+/// serializes identically whether it sits at a document's top level or
+/// inside a JSX component's children. `disabled`/`checked` stay BARE
+/// (JSX `true`) rather than `=""`: they are real HTML boolean attributes,
+/// and an empty string is falsy as a React/Preact prop — a `checked=""`
+/// checkbox hydrates unchecked and enabled. `render_hast_attrs` applies
+/// the same rule when bridging the hast path's empty-valued
+/// `disabled`/`checked` into JSX.
 fn task_list_checkbox_jsx(checked: bool) -> String {
-    if checked {
-        "<_components.input type=\"checkbox\" checked disabled /> ".to_string()
-    } else {
-        "<_components.input type=\"checkbox\" disabled /> ".to_string()
+    let checked_attr = if checked { " checked" } else { "" };
+    format!("<_components.input type=\"checkbox\" disabled{checked_attr} />{{\" \"}}")
+}
+
+/// Wrap a task-list item's rendered content so the checkbox reads as a
+/// checkbox BESIDE its label rather than on its own line above it.
+///
+/// The JSX-emit counterpart of `pipeline::prepend_task_list_checkbox` —
+/// see that function for the full rationale. Neither emit path unwraps
+/// tight-list paragraphs, so a task item's children start with a
+/// `Paragraph`; the checkbox goes INSIDE that paragraph. An item that
+/// starts with something else (a nested list, a code block) keeps the
+/// plain prefix placement, since there is no inline context to join.
+///
+/// `render` turns a slice of mdast nodes into JSX text. It is a closure
+/// because `JsxEmitter`'s call site needs `&mut self` while
+/// `jsx_render_child`'s is a free function.
+fn task_list_item_jsx<R>(children: &[MdastNode], checked: bool, mut render: R) -> String
+where
+    R: FnMut(&[MdastNode]) -> String,
+{
+    let checkbox = task_list_checkbox_jsx(checked);
+    match children.split_first() {
+        Some((MdastNode::Paragraph(p), rest)) => format!(
+            "<_components.p>{checkbox}{}</_components.p>{}",
+            render(&p.children),
+            render(rest),
+        ),
+        _ => format!("{checkbox}{}", render(children)),
     }
 }
 
@@ -4181,9 +4345,15 @@ mod tests {
         );
     }
 
-    /// Per-column alignment is emitted as `style="text-align: …"` on
-    /// `<th>` and `<td>` elements. `:---` = left, `---:` = right,
-    /// `:---:` = center.
+    /// Per-column alignment is emitted as a `style` OBJECT prop
+    /// (`style={{"textAlign": "left"}}`) on `<th>` and `<td>` elements.
+    /// `:---` = left, `---:` = right, `:---:` = center.
+    ///
+    /// The spelling changed from the string form `style="text-align: left"`
+    /// during epic #2021's review pass: React throws on a string-valued
+    /// `style` prop, so every JSX emit site now goes through
+    /// `jsx_style_attr`. The alignment semantics asserted here are
+    /// unchanged — only how the declaration is spelled in JSX.
     #[test]
     fn pipe_table_alignment_emits_style_attr() {
         // Columns: left | right | center | none
@@ -4192,26 +4362,31 @@ mod tests {
 
         // Header cells carry the alignment.
         assert!(
-            out.contains("style=\"text-align: left\""),
+            out.contains("style={{\"textAlign\": \"left\"}}"),
             "left alignment missing: {out}"
         );
         assert!(
-            out.contains("style=\"text-align: right\""),
+            out.contains("style={{\"textAlign\": \"right\"}}"),
             "right alignment missing: {out}"
         );
         assert!(
-            out.contains("style=\"text-align: center\""),
+            out.contains("style={{\"textAlign\": \"center\"}}"),
             "center alignment missing: {out}"
         );
         // The fourth column has no alignment → no style attr on that cell.
         // A loose check: the output must not have a 4th `style=` that
         // would indicate the None column sprouted one.
-        let style_count = out.matches("style=\"text-align:").count();
+        let style_count = out.matches("style={{\"textAlign\":").count();
         // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
         // have alignment → 3 × 2 = 6 `style=` occurrences.
         assert_eq!(
             style_count, 6,
             "expected 6 style attrs (3 cols × 2 rows): {out}"
+        );
+        assert!(
+            !out.contains("style=\""),
+            "no JSX emit site may produce a STRING style prop — React \
+             throws on one: {out}"
         );
     }
 
@@ -5162,6 +5337,144 @@ mod tests {
                 && !jsx.contains("data-footnotes"),
             "no footnote-shaped attribute may appear anywhere when the \
              construct is off: {jsx}"
+        );
+    }
+
+    // ---- the two JSX emit sites must not diverge (epic #2021 review) ----
+    //
+    // The epic's stated purpose is that a user switching a page between
+    // `.md` and `.mdx` sees no behavioural difference. The same rule binds
+    // the two JSX-emit sites WITHIN one `.mdx`: a footnote or task list
+    // that happens to sit inside a JSX component's children goes through
+    // `jsx_render_child`, while one at the document's top level goes
+    // through the hast bridge. The three tests below pin the spellings
+    // that used to differ.
+
+    /// The exact checkbox literal both JSX sites must produce. Bare
+    /// boolean attributes (`disabled`/`checked` are real HTML booleans and
+    /// must not be falsy props), `type`-`disabled`-`checked` order, and one
+    /// `{" "}` separating the checkbox from its label.
+    const CHECKED_CHECKBOX_JSX: &str =
+        "<_components.input type=\"checkbox\" disabled checked />{\" \"}";
+    const UNCHECKED_CHECKBOX_JSX: &str = "<_components.input type=\"checkbox\" disabled />{\" \"}";
+
+    const TASK_AND_FOOTNOTE_SRC: &str =
+        "- [ ] Todo\n- [x] Done\n\nRef[^a] end.\n\n[^a]: Body text.\n";
+
+    #[test]
+    fn both_jsx_emit_sites_spell_the_footnote_reference_marker_identically() {
+        let top_level = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        let nested = emit_with_footnotes(&format!("<Note>\n\n{TASK_AND_FOOTNOTE_SRC}\n</Note>\n"));
+
+        for (label, jsx) in [("top-level", &top_level), ("nested", &nested)] {
+            assert!(
+                jsx.contains("data-footnote-ref=\"\""),
+                "the {label} path must spell the marker attribute as \
+                 data-footnote-ref=\"\": {jsx}"
+            );
+            // The bare JSX shorthand means `true`, which serializes as the
+            // visibly different `data-footnote-ref="true"` — the exact
+            // divergence this pins against.
+            assert!(
+                !jsx.contains("data-footnote-ref "),
+                "the {label} path must not emit the bare boolean-attribute \
+                 shorthand for data-footnote-ref (JSX `true`, which \
+                 serializes as data-footnote-ref=\"true\"): {jsx}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_jsx_emit_sites_spell_the_task_list_checkbox_identically() {
+        let top_level = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        let nested = emit_with_footnotes(&format!("<Note>\n\n{TASK_AND_FOOTNOTE_SRC}\n</Note>\n"));
+
+        for (label, jsx) in [("top-level", &top_level), ("nested", &nested)] {
+            assert!(
+                jsx.contains(UNCHECKED_CHECKBOX_JSX),
+                "the {label} path must emit {UNCHECKED_CHECKBOX_JSX:?}: {jsx}"
+            );
+            assert!(
+                jsx.contains(CHECKED_CHECKBOX_JSX),
+                "the {label} path must emit {CHECKED_CHECKBOX_JSX:?}: {jsx}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_jsx_emit_sites_put_the_checkbox_inside_the_items_own_paragraph() {
+        // A checkbox emitted as a SIBLING before the item's `<p>` renders on
+        // its own line ABOVE the label, because neither emit path unwraps
+        // tight-list paragraphs. It must open the paragraph instead, so the
+        // checkbox reads as a checkbox beside its text (as GitHub renders
+        // one).
+        let top_level = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        let nested = emit_with_footnotes(&format!("<Note>\n\n{TASK_AND_FOOTNOTE_SRC}\n</Note>\n"));
+
+        for (label, jsx) in [("top-level", &top_level), ("nested", &nested)] {
+            assert!(
+                jsx.contains(&format!(
+                    "<_components.li><_components.p>{UNCHECKED_CHECKBOX_JSX}"
+                )),
+                "the {label} path must open the item's own paragraph with the \
+                 checkbox, never place it as a sibling before it: {jsx}"
+            );
+            assert!(
+                !jsx.contains(&format!("<_components.li>{UNCHECKED_CHECKBOX_JSX}")),
+                "the {label} path must not emit the checkbox as a sibling \
+                 before the item's paragraph: {jsx}"
+            );
+        }
+    }
+
+    #[test]
+    fn jsx_style_attr_emits_a_react_compatible_object_prop() {
+        assert_eq!(
+            jsx_style_attr("text-align: center"),
+            " style={{\"textAlign\": \"center\"}}"
+        );
+        // Custom properties keep their exact name — React and Preact both
+        // read `--x` verbatim, and camelCasing would break them.
+        assert_eq!(
+            jsx_style_attr("--shiki-dark-bg:#111;color:#eee"),
+            " style={{\"--shiki-dark-bg\": \"#111\", \"color\": \"#eee\"}}"
+        );
+        // A value may contain `:` and `,` (`clip: rect(0,0,0,0)`); only the
+        // FIRST `:` separates name from value.
+        assert_eq!(
+            jsx_style_attr("clip:rect(0,0,0,0)"),
+            " style={{\"clip\": \"rect(0,0,0,0)\"}}"
+        );
+        // Nothing parseable → the attribute is omitted entirely rather
+        // than emitted empty.
+        assert_eq!(jsx_style_attr(""), "");
+        assert_eq!(jsx_style_attr(";  ;"), "");
+        assert_eq!(jsx_style_attr("novalue"), "");
+    }
+
+    #[test]
+    fn the_footnote_label_is_hidden_by_an_inline_style_not_a_project_css_class() {
+        // `sr-only` is a Tailwind utility, and this class is emitted from
+        // Rust — Tailwind's content scan never sees the string, so the
+        // utility is never generated; zfb ships no stylesheet defining it
+        // either. The inline style is what actually makes the documented
+        // "visually hidden" landmark true.
+        let jsx = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        // Emitted as a style OBJECT, never a string — React throws on a
+        // string `style` prop. `jsx_style_attr` camelCases the hyphenated
+        // property names on the way through.
+        assert!(
+            jsx.contains(&jsx_style_attr(FOOTNOTE_LABEL_STYLE)),
+            "the footnote label must carry the visually-hidden inline style: {jsx}"
+        );
+        assert!(
+            jsx.contains("\"whiteSpace\": \"nowrap\"") && !jsx.contains("white-space"),
+            "hyphenated CSS property names must be camelCased for React: {jsx}"
+        );
+        assert!(
+            jsx.contains("class=\"sr-only\""),
+            "the sr-only class stays as a styling hook alongside the inline \
+             style: {jsx}"
         );
     }
 }

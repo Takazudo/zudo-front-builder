@@ -139,18 +139,31 @@
 //!
 //! ```text
 //! reference:  <sup><a href="#user-content-fn-a" id="user-content-fnref-a"
-//!                     data-footnote-ref aria-describedby="footnote-label">1</a></sup>
+//!                     data-footnote-ref="" aria-describedby="footnote-label">1</a></sup>
 //!
-//! section:    <section data-footnotes class="footnotes">
-//!               <h2 class="sr-only" id="footnote-label">Footnotes</h2>
+//! section:    <section data-footnotes="" class="footnotes">
+//!               <div role="heading" aria-level="2" class="sr-only"
+//!                    style="…visually-hidden…" id="footnote-label">Footnotes</div>
 //!               <ol>
 //!                 <li id="user-content-fn-a"> …definition body…
-//!                   <a href="#user-content-fnref-a" data-footnote-backref
+//!                   <a href="#user-content-fnref-a" data-footnote-backref=""
 //!                      aria-label="Back to reference 1">↩</a>
 //!                 </li>
 //!               </ol>
 //!             </section>
 //! ```
+//!
+//! `data-footnote-ref` / `data-footnote-backref` / `data-footnotes` are
+//! spelled as **empty-valued attributes** (`attr=""`), not bare booleans,
+//! on BOTH emit paths. That is what keeps a footnote nested inside a JSX
+//! component's children serializing identically to one at the document's
+//! top level — see [`crate::mdx_jsx_emit`]'s
+//! `jsx_footnote_reference_marker`.
+//!
+//! The heading is a `div` carrying `role="heading" aria-level="2"` rather
+//! than a real `<h2>` (see [`crate::pipeline`]'s `render_footnote_section`
+//! for why), and it is hidden by the inline [`FOOTNOTE_LABEL_STYLE`]
+//! rather than by the `sr-only` class alone.
 //!
 //! ## 7. Missing definition
 //!
@@ -190,8 +203,11 @@
 //!   `aria-label="Back to reference {n}"` (or `{n}-{k}` for the k-th
 //!   occurrence) — [`FootnoteRef::backref_aria_label`] — because the visible
 //!   `↩` glyph is meaningless when announced;
-//! - the section carries `data-footnotes`, and its `<h2 class="sr-only"
-//!   id="footnote-label">Footnotes</h2>` is the `aria-describedby` target.
+//! - the section carries `data-footnotes`, and its visually-hidden
+//!   `role="heading"` landmark (`id="footnote-label"`) is the
+//!   `aria-describedby` target. It is hidden by [`FOOTNOTE_LABEL_STYLE`],
+//!   an inline style, so the hiding never depends on the consuming
+//!   project happening to define a `.sr-only` rule.
 
 use std::collections::{HashMap, HashSet};
 
@@ -212,6 +228,25 @@ pub const FOOTNOTE_LABEL_ID: &str = "footnote-label";
 
 /// Visible text of the visually-hidden section heading.
 pub const FOOTNOTE_LABEL_TEXT: &str = "Footnotes";
+
+/// Inline `style` that visually hides the section heading while leaving it
+/// in the accessibility tree.
+///
+/// This is deliberately an INLINE style rather than a rule keyed off the
+/// `sr-only` class the heading also carries. `sr-only` is a Tailwind
+/// utility, and zfb emits this class from Rust — Tailwind's content scan
+/// never sees the string, so the utility is never generated, and zfb ships
+/// no base stylesheet that could define it either (`zfb-css`'s
+/// `assets/zfb-hi.css` is the syntax-highlighting token sheet and is
+/// opt-in). Without the inline style the heading renders as ordinary
+/// visible body text in essentially every project, contradicting the
+/// documented "visually hidden landmark" contract. The class stays for
+/// projects that DO define it and for styling hooks.
+///
+/// The declarations are the standard visually-hidden recipe (clip to a
+/// 1×1 box, no wrapping, no border); `clip` is kept alongside `clip-path`
+/// for older engines.
+pub const FOOTNOTE_LABEL_STYLE: &str = "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0";
 
 /// Visible glyph of a backreference link.
 pub const FOOTNOTE_BACKREF_MARKER: &str = "\u{21a9}";
@@ -438,6 +473,21 @@ impl FootnoteModel {
         self.entries.is_empty()
     }
 
+    /// Total reference occurrences across every entry — i.e. exactly how
+    /// many `FootnoteReference` nodes [`collect`](Self::collect) reached.
+    ///
+    /// Emitters compare this against [`FootnoteCursor::consumed_total`] to
+    /// prove their own walk visited the same set: the model recurses
+    /// through every `Node::children()`, while an emitter's match
+    /// statement can drop a whole subtree through its catch-all (a
+    /// `LinkReference` body, say). A reference stranded in a dropped
+    /// subtree would still be numbered and would still emit a definition
+    /// whose backreference anchor points at nothing.
+    #[must_use]
+    pub fn total_references(&self) -> usize {
+        self.entries.iter().map(|e| e.references.len()).sum()
+    }
+
     /// The entry for `identifier`, or `None` when it is not rendered (no
     /// definition, or a definition nothing references).
     #[must_use]
@@ -482,6 +532,14 @@ impl<'a> FootnoteCursor<'a> {
     #[must_use]
     pub fn model(&self) -> &'a FootnoteModel {
         self.model
+    }
+
+    /// How many occurrences this cursor has handed out so far, across
+    /// every identifier. Compare against [`FootnoteModel::total_references`]
+    /// once a document has been fully emitted — see that method's docs.
+    #[must_use]
+    pub fn consumed_total(&self) -> usize {
+        self.consumed.values().sum()
     }
 
     /// Consume and return the next reference occurrence for `identifier`,

@@ -1,5 +1,5 @@
 {
-  "html": "<ul><li><input type=\"checkbox\" disabled=\"\" checked=\"\"/><p>Write the parity test</p></li><li><input type=\"checkbox\" disabled=\"\"/><p>Ship the release</p><ul><li><input type=\"checkbox\" disabled=\"\" checked=\"\"/><p>Nested checked item</p></li><li><input type=\"checkbox\" disabled=\"\"/><p>Nested unchecked item</p></li></ul></li><li><p>Plain item with no checkbox</p></li></ul>",
+  "html": "<ul><li><p><input type=\"checkbox\" disabled=\"\" checked=\"\"/> Write the parity test</p></li><li><p><input type=\"checkbox\" disabled=\"\"/> Ship the release</p><ul><li><p><input type=\"checkbox\" disabled=\"\" checked=\"\"/> Nested checked item</p></li><li><p><input type=\"checkbox\" disabled=\"\"/> Nested unchecked item</p></li></ul></li><li><p>Plain item with no checkbox</p></li></ul>",
   "frontmatter": null,
   "diagnostics": []
 }
