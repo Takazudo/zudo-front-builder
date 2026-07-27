@@ -30,12 +30,53 @@ A few rules worth knowing up front:
 
 - Files starting with `_` (for example `_app.tsx`) are ignored. Use this prefix for shared helpers that live next to your routes but should not be exposed.
 - Accepted page extensions are `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`, and `.html`. `.tsx` is not the only script-page shape: `.jsx` is the same shape without TypeScript — it carries JSX markup just like `.tsx`. `.ts` and `.js` are the non-JSX shapes; TypeScript reserves `<…>` for type assertions in `.ts`, so a page written that way builds its element tree by calling the framework's element factory directly (`h(...)` from Preact, `createElement(...)` from React) and importing it explicitly. That explicit import is not a contradiction of the automatic JSX runtime — the automatic runtime injects the factory for JSX *syntax*, and these pages have none. All four script shapes route identically. Files with any other extension in `pages/` are skipped (a warning is logged), so README files and ad-hoc notes are safe to drop there.
-- Two conventional sidecars are skipped silently even though they carry a routable extension, because they are never pages: TypeScript declaration files (`pages/env.d.ts`) and colocated tests (`pages/index.test.ts`, `pages/about.spec.tsx`). Everything else with a page extension is treated as a page — including a bare helper module like `pages/helpers.ts`, which will fail the build on its missing default export. Keep helpers under an `_`-prefixed name or directory.
+- Two conventional sidecars are skipped silently even though they carry a routable extension, because they are never pages: TypeScript declaration files (`pages/env.d.ts`) and colocated tests (`pages/index.test.ts`, `pages/about.spec.tsx`). Everything else with a page extension is treated as a page — including a bare helper module like `pages/helpers.ts`, which will fail the build on its missing default export. See **Helper modules under `pages/`** below for the exact rule and for where helpers belong.
 - Two files that resolve to the same route raise `RouterError::AmbiguousRoute` at build time, so the router never silently picks a winner. The router also raises `RouterError::AmbiguousShape` when two routes differ only in parameter names but match the same URLs (e.g. `docs/[a].tsx` vs `docs/[b].tsx`), and `RouterError::OptionalCatchallConflict` when an optional catchall overlaps another route at the same position.
 
 See [Markdown and HTML Pages](./md-html-pages.mdx) for the full contract and v1 limitations of `.md` and `.html` page entries.
 
 The scan is performed by `Router::scan` in the `zfb-router` crate. Results are sorted so that **static routes win over dynamic, and dynamic wins over catchall** — more specific routes are matched first.
+
+## Helper modules under `pages/`
+
+`pages/` is a route table, not a general source directory. Now that the
+accepted extensions include `.ts` and `.js`, almost any module dropped in
+there looks like a page — so shared helpers belong **outside** `pages/`
+(`src/lib/format.ts` and friends), or under the `_` prefix described above.
+The scan skips a file whose name starts with `_` as well as any file whose
+path passes through an `_`-prefixed directory, so both `pages/_format.ts` and
+`pages/_lib/format.ts` stay invisible to routing.
+
+Only two conventional sidecar shapes are skipped silently, and the rule is
+narrower than it looks. A file is treated as a non-page sidecar when its name
+is either:
+
+- `<stem>.test.<ext>` or `<stem>.spec.<ext>`, where `<ext>` is one of the four
+  script page extensions (`.tsx`, `.ts`, `.jsx`, `.js`) and `<stem>` is not
+  empty — `pages/index.test.ts`, `pages/about.spec.tsx`. These are colocated
+  tests, not routes.
+- `<stem>.d.ts` with a non-empty `<stem>` — `pages/env.d.ts`, the TypeScript
+  ambient-declaration shape.
+
+Everything else routes, including three cases that are easy to assume are
+skipped but are not:
+
+- A **stemless** file whose entire name is the suffix — `pages/.test.ts`, or a
+  `.d.ts` with nothing in front of it — is not a sidecar. It still routes as
+  an ordinary, if oddly named, page.
+- `.test.*` / `.spec.*` on a **content** extension — `pages/api.spec.md`,
+  `pages/about.test.md` — still routes. Only the four script extensions take
+  part in the sidecar check, because `about.spec.md` is a perfectly plausible
+  content page name.
+- A plain helper module such as `pages/helpers.ts`.
+
+That last case is the one worth internalising: as far as the router is
+concerned `pages/helpers.ts` is a page, so the build fails on its missing
+default export. **That failure is by design.** zfb takes no position on what a
+bare helper module under `pages/` is meant to be, and would rather name the
+problem at build time than silently drop a file that might well have been a
+page you had not finished writing. Move the helper out of `pages/`, or give it
+(or its directory) the `_` prefix, and the build goes green.
 
 ## Static, dynamic, and catchall routes
 
