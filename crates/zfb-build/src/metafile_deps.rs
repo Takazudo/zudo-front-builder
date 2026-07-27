@@ -15,7 +15,7 @@
 //! consuming route, and registers any out-of-root real paths (symlinked
 //! workspace component deps) as extra watch targets.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
@@ -287,31 +287,49 @@ fn package_input_is_declared_first_party_entry(
     canonical: &Path,
     canonical_first_party_root: &Path,
 ) -> bool {
-    let Some((package_name, subpath)) = split_package_name_and_subpath(key) else {
-        return false;
-    };
-    let Some(package_root) = package_root_for_input(canonical, &subpath) else {
-        return false;
-    };
-    let Ok(manifest) = std::fs::read_to_string(package_root.join("package.json")) else {
-        return false;
-    };
-    let Ok(manifest): std::result::Result<serde_json::Value, _> = serde_json::from_str(&manifest)
-    else {
-        return false;
-    };
+    declared_first_party_package_identity_from_key(key, canonical, canonical_first_party_root)
+        .is_some()
+}
+
+/// Identity-bearing twin of [`package_input_is_declared_first_party_entry`]
+/// above: the SAME five conditions, but returning the accepted package's
+/// declared name, on-disk root, and declared entry roots instead of a bare
+/// `bool` on success. Added for epic #2078 Sub 10a (the enrolment-selection
+/// contract, [`accepted_enrolment_set`]) so that function and the
+/// stage-escape audit's own case-2 acceptance share exactly one
+/// implementation of the rule — they can never independently drift on which
+/// inputs are accepted. [`package_input_is_declared_first_party_entry`]
+/// stays the audit's own call shape (a plain predicate); this is the query
+/// shape.
+fn declared_first_party_package_identity_from_key(
+    key: &str,
+    canonical: &Path,
+    canonical_first_party_root: &Path,
+) -> Option<AcceptedPackage> {
+    let (package_name, subpath) = split_package_name_and_subpath(key)?;
+    let package_root = package_root_for_input(canonical, &subpath)?;
+    let manifest = std::fs::read_to_string(package_root.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest).ok()?;
     if manifest.get("name").and_then(|n| n.as_str()) != Some(package_name.as_str()) {
-        return false;
+        return None;
     }
     if !zfb_types::first_party::workspace_root_claims_path(
         canonical_first_party_root,
         &package_root,
     ) {
-        return false;
+        return None;
     }
 
     let subpath = subpath.join("/");
-    declared_entries_cover(&declared_entries(&manifest), &subpath)
+    let entries = declared_entries(&manifest);
+    if !declared_entries_cover(&entries, &subpath) {
+        return None;
+    }
+    Some(AcceptedPackage {
+        name: package_name,
+        package_root,
+        declared_entry_roots: declared_entry_roots_from(&entries),
+    })
 }
 
 /// Split a `node_modules`-shaped metafile key into `(package name,
@@ -434,38 +452,46 @@ fn canonical_input_is_declared_first_party_entry(
     canonical: &Path,
     canonical_first_party_root: &Path,
 ) -> bool {
-    let Some(package_root) =
-        nearest_package_root_for_canonical(canonical, canonical_first_party_root)
-    else {
-        return false;
-    };
-    let Ok(manifest) = std::fs::read_to_string(package_root.join("package.json")) else {
-        return false;
-    };
-    let Ok(manifest): std::result::Result<serde_json::Value, _> = serde_json::from_str(&manifest)
-    else {
-        return false;
-    };
-    if manifest.get("name").and_then(|n| n.as_str()).is_none() {
-        return false;
-    }
+    declared_first_party_package_identity_from_canonical(canonical, canonical_first_party_root)
+        .is_some()
+}
+
+/// Identity-bearing twin of [`canonical_input_is_declared_first_party_entry`]
+/// above, mirroring [`declared_first_party_package_identity_from_key`]'s
+/// relationship to [`package_input_is_declared_first_party_entry`]: same four
+/// conditions, returning the accepted package's identity instead of a bare
+/// `bool`. Added for epic #2078 Sub 10a's [`accepted_enrolment_set`].
+fn declared_first_party_package_identity_from_canonical(
+    canonical: &Path,
+    canonical_first_party_root: &Path,
+) -> Option<AcceptedPackage> {
+    let package_root = nearest_package_root_for_canonical(canonical, canonical_first_party_root)?;
+    let manifest = std::fs::read_to_string(package_root.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest).ok()?;
+    let name = manifest.get("name").and_then(|n| n.as_str())?.to_string();
     if !zfb_types::first_party::workspace_root_claims_path(
         canonical_first_party_root,
         &package_root,
     ) {
-        return false;
+        return None;
     }
 
-    let Ok(subpath_rel) = canonical.strip_prefix(&package_root) else {
-        return false;
-    };
+    let subpath_rel = canonical.strip_prefix(&package_root).ok()?;
     let subpath: String = subpath_rel
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("/");
 
-    declared_entries_cover(&declared_entries(&manifest), &subpath)
+    let entries = declared_entries(&manifest);
+    if !declared_entries_cover(&entries, &subpath) {
+        return None;
+    }
+    Some(AcceptedPackage {
+        name,
+        package_root,
+        declared_entry_roots: declared_entry_roots_from(&entries),
+    })
 }
 
 /// One entry a `package.json` declares, in the two shapes a target can take.
@@ -585,6 +611,25 @@ fn declared_entries(manifest: &serde_json::Value) -> Vec<DeclaredEntry> {
         }
     }
     entries
+}
+
+/// Stringify a package's declared entries for
+/// [`AcceptedPackage::declared_entry_roots`] (epic #2078 Sub 10a): a
+/// [`DeclaredEntry::Prefix`] becomes its package-relative directory string
+/// (`""` for the whole-package wildcard shape), a [`DeclaredEntry::ExactFile`]
+/// becomes its package-relative file string. Sorted and deduplicated so the
+/// result does not depend on `exports`/`main`/`module` declaration order.
+fn declared_entry_roots_from(entries: &[DeclaredEntry]) -> Vec<String> {
+    let mut roots: Vec<String> = entries
+        .iter()
+        .map(|entry| match entry {
+            DeclaredEntry::Prefix(prefix) => prefix.clone(),
+            DeclaredEntry::ExactFile(file) => file.clone(),
+        })
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 /// One metafile input, resolved under the two spellings every post-esbuild
@@ -973,6 +1018,243 @@ pub fn audit_metafile_stage_escape_at_path(
         )
     })?;
     audit_metafile_stage_escape(&bytes, metafile_cwd, stage_roots, first_party_root)
+}
+
+// ── Enrolment-selection contract (epic #2078 Sub 10a) ──────────────────────
+//
+// Sub 9 (#2087) added `zfb_types::first_party::claimed_workspace_member_names`
+// — every package a workspace's `pnpm-workspace.yaml` CLAIMS. This section
+// answers a different, narrower question: of those claims, which packages
+// did THIS bundle session's metafile actually show were REACHED and ACCEPTED
+// by the stage-escape audit's declared-entry rule? Sub 10b (SSR coupling,
+// `bundler.rs`) and Sub 10c (islands/client coupling, `commands/build.rs`)
+// both need exactly this narrower answer before they may mirror-enrol,
+// expand macros for, or register watches on a sibling package — see the
+// "bounded enrolment set" requirement in epic #2078's Wave 4 restructure.
+
+/// One declared consume-from-source package this bundle session's metafile
+/// showed was reached AND accepted by the stage-escape audit's declared-entry
+/// rule — [`package_input_is_declared_first_party_entry`]'s case-2
+/// node_modules-keyed form, or [`canonical_input_is_declared_first_party_entry`]'s
+/// canonical-key sibling for copy-mode staging (issues #2047/#2086). See
+/// [`accepted_enrolment_set`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedPackage {
+    /// The package's own declared `package.json` `name`.
+    pub name: String,
+    /// The package's own root directory on disk (canonical — symlinks
+    /// resolved), i.e. the directory holding its `package.json`. This is the
+    /// boundary an enrolment pass (Sub 10b/10c) would mirror-copy from or
+    /// otherwise register — never a subset chosen by this contract.
+    pub package_root: PathBuf,
+    /// The package-relative entry locations its OWN `package.json` declares
+    /// via `exports`/`main`/`module` — a directory prefix (e.g. `"src/"`, or
+    /// `""` for the whole package, the `./*` wildcard shape) or a single file
+    /// (e.g. `"index.ts"`). Sorted and deduplicated. This is what bounds
+    /// enrolment to what the package itself declares reachable, not its
+    /// entire directory tree (build output, tests, tooling config, etc.
+    /// included) — see [`declared_entries_cover`]'s own docs for why a
+    /// package's declarations, not its whole tree, is the accepted surface.
+    pub declared_entry_roots: Vec<String>,
+}
+
+/// The bounded enrolment set for one bundle session (epic #2078 Sub 10a —
+/// the shared selection contract Sub 10b and Sub 10c couple against). See
+/// [`accepted_enrolment_set`] for how this is computed.
+///
+/// Keyed by each package's own declared `name`, so a package reached through
+/// more than one metafile input (e.g. two separate subpaths of the same
+/// sibling) is still exactly one entry here, not one per input.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AcceptedEnrolmentSet {
+    by_name: BTreeMap<String, AcceptedPackage>,
+}
+
+impl AcceptedEnrolmentSet {
+    /// Whether nothing was reached and accepted this session.
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+
+    /// How many distinct packages were reached and accepted this session.
+    pub fn len(&self) -> usize {
+        self.by_name.len()
+    }
+
+    /// Whether `name` — a package's declared `package.json` `name` — was
+    /// reached and accepted this session.
+    pub fn contains(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    /// The accepted package record for `name`, if it was reached and
+    /// accepted this session.
+    pub fn get(&self, name: &str) -> Option<&AcceptedPackage> {
+        self.by_name.get(name)
+    }
+
+    /// Every accepted package, in declared-name order.
+    pub fn iter(&self) -> impl Iterator<Item = &AcceptedPackage> {
+        self.by_name.values()
+    }
+}
+
+impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
+    type Item = &'a AcceptedPackage;
+    type IntoIter = std::collections::btree_map::Values<'a, String, AcceptedPackage>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.by_name.values()
+    }
+}
+
+/// Bounded enrolment-selection contract (epic #2078 Sub 10a): which declared
+/// consume-from-source packages did THIS bundle session's metafile show were
+/// reached and accepted by the stage-escape audit's declared-entry rule, and
+/// what are their declared entry roots?
+///
+/// This is a QUERY over the exact same metafile
+/// [`audit_metafile_stage_escape`] classifies for its own pass — not a
+/// second resolution pass, and not an enumeration of workspace membership.
+/// It shares [`package_input_is_declared_first_party_entry`]'s and
+/// [`canonical_input_is_declared_first_party_entry`]'s own identity-bearing
+/// twins (`declared_first_party_package_identity_from_key`/`_from_canonical`)
+/// with the audit itself, so this can never independently drift from what
+/// the audit would accept — the same non-goal the audit-eligibility
+/// predicate's own docs describe (see `zfb_types::audit_eligibility`'s module
+/// docs: a predicate must never grow into a second resolver). esbuild stays
+/// the only resolver; this only reclassifies what esbuild already recorded.
+///
+/// # The bounded-set guarantee — never "every claimed workspace member"
+///
+/// The result can only ever name a package esbuild ACTUALLY resolved an
+/// input from in THIS metafile. A package `pnpm-workspace.yaml` claims but
+/// that nothing in this bundle session imports never appears here, no matter
+/// how many workspace members are claimed in total — see
+/// [`zfb_types::first_party::claimed_workspace_member_names`] for the
+/// (deliberately separate) full claimed-member roster, and this module's own
+/// `accepted_enrolment_set_excludes_unrelated_claimed_member` test for a
+/// fixture proving the boundary directly. Wholesale-mirroring every claimed
+/// member regardless of whether it is reached would be an uncontrolled
+/// perf/staging-surface expansion — exactly what this contract exists to
+/// prevent Sub 10b/10c from doing.
+///
+/// # What this does NOT decide
+///
+/// Whether, and how, to actually mirror-enrol, expand macros for, or
+/// register watches on an accepted package is Sub 10b's (SSR coupling,
+/// `crates/zfb-build/src/bundler.rs`) and Sub 10c's (islands/client coupling,
+/// `crates/zfb/src/commands/build.rs`) job, not this function's. This only
+/// answers "which packages, and where" — a query, never a wiring.
+///
+/// # Arguments
+///
+/// Identical shape to [`audit_metafile_stage_escape`]'s: `metafile_cwd` is
+/// esbuild's own working directory the metafile's keys resolve against;
+/// `stage_roots` is the full set of roots a legitimately staged input may
+/// live under; `first_party_root` is the outer boundary of "this build's own
+/// source" (the project root, or the widened workspace root for a
+/// sibling-mirrored build). Callers that already invoke
+/// `audit_metafile_stage_escape[_at_path]` for the same bundle session pass
+/// it the exact same arguments.
+pub fn accepted_enrolment_set(
+    metafile_bytes: &[u8],
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<AcceptedEnrolmentSet> {
+    let meta: Metafile = serde_json::from_slice(metafile_bytes).map_err(|e| {
+        anyhow!("zfb bundler: enrolment-selection query failed to parse metafile: {e}")
+    })?;
+
+    let canonical_stage_roots: Vec<PathBuf> = stage_roots
+        .iter()
+        .map(|root| canonical_or_self(root).unwrap_or_else(|| root.to_path_buf()))
+        .collect();
+    let canonical_first_party_root =
+        canonical_or_self(first_party_root).unwrap_or_else(|| first_party_root.to_path_buf());
+    let lexical_stage_roots: Vec<PathBuf> = stage_roots
+        .iter()
+        .map(|root| normalize_path_lexical(root))
+        .collect();
+
+    let mut by_name: BTreeMap<String, AcceptedPackage> = BTreeMap::new();
+    for record in resolve_metafile_inputs(&meta, metafile_cwd, &[metafile_cwd]) {
+        let Some(canonical) = record.canonical_path else {
+            continue;
+        };
+
+        let package_shaped = has_node_modules_segment(Path::new(record.key));
+        let canonical_in_node_modules = has_node_modules_segment(&canonical);
+        let in_stage = canonical_stage_roots
+            .iter()
+            .any(|root| canonical.starts_with(root));
+        let in_first_party = canonical.starts_with(&canonical_first_party_root);
+
+        if package_shaped {
+            // Case 3 (ordinary third-party dep) and anything entirely
+            // outside first-party territory carry no package identity this
+            // contract cares about — mirrors `audit_metafile_stage_escape`'s
+            // own early `continue`s for those same two shapes.
+            if canonical_in_node_modules || !in_first_party {
+                continue;
+            }
+            if let Some(pkg) = declared_first_party_package_identity_from_key(
+                record.key,
+                &canonical,
+                &canonical_first_party_root,
+            ) {
+                by_name.entry(pkg.name.clone()).or_insert(pkg);
+            }
+            // An offender (rejected by the audit) is simply not enrolled —
+            // this contract has no separate "rejected" channel to report to;
+            // that remains `audit_metafile_stage_escape`'s job.
+            continue;
+        }
+
+        if in_stage {
+            continue; // ordinary staged source — not a package boundary at all.
+        }
+
+        let logical_in_stage = lexical_stage_roots
+            .iter()
+            .any(|root| normalize_path_lexical(&record.logical_path).starts_with(root));
+        if logical_in_stage
+            || logical_path_names_staged_entry(&record.logical_path, &canonical_stage_roots)
+        {
+            continue; // case 1: ordinary staged source, through an aliased cwd spelling.
+        }
+
+        if !in_first_party {
+            continue; // outside first-party territory entirely — out of scope.
+        }
+        if let Some(pkg) = declared_first_party_package_identity_from_canonical(
+            &canonical,
+            &canonical_first_party_root,
+        ) {
+            by_name.entry(pkg.name.clone()).or_insert(pkg);
+        }
+    }
+
+    Ok(AcceptedEnrolmentSet { by_name })
+}
+
+/// Convenience wrapper over [`accepted_enrolment_set`]: read the metafile
+/// from `metafile_path` first, mirroring
+/// [`audit_metafile_stage_escape_at_path`]'s own read-then-classify shape.
+pub fn accepted_enrolment_set_at_path(
+    metafile_path: &Path,
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<AcceptedEnrolmentSet> {
+    let bytes = std::fs::read(metafile_path).map_err(|e| {
+        anyhow!(
+            "zfb bundler: enrolment-selection query failed to read metafile {}: {e}",
+            metafile_path.display()
+        )
+    })?;
+    accepted_enrolment_set(&bytes, metafile_cwd, stage_roots, first_party_root)
 }
 
 #[cfg(test)]
@@ -2198,5 +2480,289 @@ mod tests {
             err.to_string().contains("stage-escape audit"),
             "fail-closed error must name the stage-escape audit; got {err}"
         );
+    }
+
+    // ── Enrolment-selection contract (epic #2078 Sub 10a) ──────────────────
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_includes_node_modules_keyed_declared_sibling() {
+        // Mirrors `stage_escape_allows_consume_from_source_sibling_declared_by_wildcard_exports`
+        // above: the SAME topology and metafile the audit accepts must
+        // surface `@acme/ui` in the enrolment-selection contract's result,
+        // with its own package root and declared `src/` entry.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "ui",
+            r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+            &[
+                ("src/cta-button.tsx", "import './theme';"),
+                ("src/theme.ts", "theme"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/ui/src/cta-button.tsx": {"imports": []},
+            "node_modules/@acme/ui/src/theme.ts": {"imports": []}
+        }}"#;
+
+        let set = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party)
+            .expect("a declared consume-from-source sibling must be a valid query, not an error");
+        assert_eq!(
+            set.len(),
+            1,
+            "exactly one distinct package must be enrolled: {set:?}"
+        );
+        let pkg = set
+            .get("@acme/ui")
+            .expect("@acme/ui must be present in the enrolment set");
+        assert_eq!(pkg.package_root, first_party.join("packages/ui"));
+        assert_eq!(pkg.declared_entry_roots, vec!["src/".to_string()]);
+        assert!(set.contains("@acme/ui"));
+        assert!(!set.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_includes_canonicalized_key_declared_sibling() {
+        // Mirrors `stage_escape_allows_consume_from_source_sibling_via_canonicalized_key`
+        // above (issues #2047/#2086's copy-mode canonicalized-key shape):
+        // the enrolment contract must recognise this package too, not just
+        // the node_modules-keyed spelling.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "ui",
+            r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+            &[
+                ("src/cta-button.tsx", "import './theme';"),
+                ("src/theme.ts", "theme"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "../workspace/packages/ui/src/cta-button.tsx": {"imports": []},
+            "../workspace/packages/ui/src/theme.ts": {"imports": []}
+        }}"#;
+
+        let set = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party)
+            .expect("a canonicalized-key declared sibling must be a valid query, not an error");
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("@acme/ui"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_excludes_undeclared_offender_but_keeps_the_declared_entry() {
+        // Mirrors `stage_escape_flags_dist_shipping_sibling_reached_at_an_undeclared_source_path`:
+        // `@acme/built` ships a built dist and declares only `./dist/index.js`.
+        // The package is still enrolled ONCE (it has at least one genuinely
+        // declared, accepted input), but the undeclared deep import into
+        // `src/internal.ts` is an offender, not itself a reason to enrol
+        // anything, and the resulting `declared_entry_roots` names only what
+        // the manifest itself declares (`dist/`), never the undeclared path.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "built",
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
+            &[
+                ("dist/index.js", "built"),
+                ("src/internal.ts", "internal source"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/built/dist/index.js": {"imports": []},
+            "node_modules/@acme/built/src/internal.ts": {"imports": []}
+        }}"#;
+
+        let set = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party)
+            .expect("offending inputs must not turn this query itself into an error");
+        assert_eq!(
+            set.len(),
+            1,
+            "the package enrols once, not per accepted input: {set:?}"
+        );
+        let pkg = set
+            .get("@acme/built")
+            .expect("@acme/built must be enrolled");
+        assert_eq!(pkg.declared_entry_roots, vec!["dist/".to_string()]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_excludes_a_package_reached_only_at_an_undeclared_path() {
+        // The sharper negative: when EVERY input reaching a package is
+        // undeclared (no accepted input exists for it at all), the package
+        // must not appear in the enrolment set — "reached" alone is not
+        // "accepted".
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "built",
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
+            &[
+                ("dist/index.js", "built"),
+                ("src/internal.ts", "internal source"),
+            ],
+        );
+
+        // Only the UNDECLARED path is in this metafile — the declared
+        // `dist/index.js` entry was never actually imported this session.
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/built/src/internal.ts": {"imports": []}
+        }}"#;
+
+        let set = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party).unwrap();
+        assert!(
+            set.is_empty(),
+            "a package reached only through an undeclared path must not be enrolled: {set:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_excludes_ordinary_third_party_dependency() {
+        // Case 3 (an ordinary `.pnpm`-nested registry dependency) must never
+        // surface as an "accepted package" — it is not first-party at all.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let work = root.join("work");
+        let pnpm_pkg = work.join("node_modules/.pnpm/left-pad@1.0.0/node_modules/left-pad");
+        std::fs::create_dir_all(&pnpm_pkg).unwrap();
+        std::fs::write(pnpm_pkg.join("index.js"), "module.exports = 1;\n").unwrap();
+        std::fs::create_dir_all(work.join("node_modules")).unwrap();
+        std::os::unix::fs::symlink(&pnpm_pkg, work.join("node_modules/left-pad")).unwrap();
+
+        let metafile = br#"{"inputs": {"node_modules/left-pad/index.js": {"imports": []}}}"#;
+
+        let set = accepted_enrolment_set(metafile, &work, &[&work], &root).unwrap();
+        assert!(
+            set.is_empty(),
+            "an ordinary third-party dep must never be enrolled: {set:?}"
+        );
+    }
+
+    #[test]
+    fn accepted_enrolment_set_fails_closed_on_malformed_metafile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        let err = accepted_enrolment_set(b"not json", &root, &[&root], &root)
+            .expect_err("a malformed metafile must be a build error, not an empty result");
+        assert!(
+            err.to_string().contains("enrolment-selection query"),
+            "fail-closed error must name the enrolment-selection query; got {err}"
+        );
+    }
+
+    #[test]
+    fn accepted_enrolment_set_at_path_fails_closed_on_missing_metafile_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let missing = root.join("does-not-exist/metafile.json");
+
+        let err = accepted_enrolment_set_at_path(&missing, &root, &[&root], &root)
+            .expect_err("an unreadable metafile path must be a build error, not an empty result");
+        assert!(
+            err.to_string().contains("enrolment-selection query"),
+            "fail-closed error must name the enrolment-selection query; got {err}"
+        );
+    }
+
+    /// THE central regression guard for epic #2078 Sub 10a's "bounded
+    /// enrolment set" requirement: a fixture with TWO claimed workspace
+    /// members, where only ONE is actually imported/reached by the project
+    /// under bundling this session. The unreached member must NOT appear in
+    /// [`accepted_enrolment_set`]'s result even though
+    /// `pnpm-workspace.yaml` claims it exactly as much as the reached one —
+    /// proving this contract is never "every claimed workspace member."
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_excludes_unrelated_claimed_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let first_party = base.join("workspace");
+        write(
+            &first_party,
+            "pnpm-workspace.yaml",
+            "packages:\n  - '.'\n  - 'packages/*'\n",
+        );
+
+        // Reached member: imported by the project this session.
+        let ui = first_party.join("packages/ui");
+        write(
+            &ui,
+            "package.json",
+            r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+        );
+        write(&ui, "src/cta-button.tsx", "export const x = 1;\n");
+
+        // Unrelated member: claimed by the SAME `pnpm-workspace.yaml` globs,
+        // but nothing in this bundle session imports it — it never appears
+        // anywhere in the metafile below.
+        let unrelated = first_party.join("packages/unrelated");
+        write(
+            &unrelated,
+            "package.json",
+            r#"{ "name": "@acme/unrelated", "exports": { "./*": "./src/*" } }"#,
+        );
+        write(&unrelated, "src/index.ts", "export const y = 2;\n");
+
+        // Sanity: the workspace claims BOTH members — proves the exclusion
+        // below is not an accident of the fixture's own claim globs.
+        let claimed = zfb_types::claimed_workspace_member_names(&first_party);
+        assert!(claimed.contains_key("@acme/ui"));
+        assert!(claimed.contains_key("@acme/unrelated"));
+        assert_eq!(claimed.len(), 2);
+
+        let stage = base.join("stage");
+        let link = stage.join("node_modules/@acme/ui");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&ui, &link).unwrap();
+        // No node_modules entry for `@acme/unrelated` at all — it is
+        // reachable in principle (the workspace claims it), but nothing
+        // actually imports it, so no metafile input ever names it either.
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/ui/src/cta-button.tsx": {"imports": []}
+        }}"#;
+
+        let set = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party)
+            .expect("a valid, if partial, bundle session must not itself be an error");
+
+        assert_eq!(
+            set.len(),
+            1,
+            "only the reached member may be enrolled, never the whole claimed roster: {set:?}"
+        );
+        assert!(
+            set.contains("@acme/ui"),
+            "the reached member must still be enrolled"
+        );
+        assert!(
+            !set.contains("@acme/unrelated"),
+            "a claimed-but-unreached member must NOT be enrolled just because it is claimed: {set:?}"
+        );
+    }
+
+    #[test]
+    fn accepted_enrolment_set_default_and_accessors_on_an_empty_result() {
+        // The contract's own accessors must behave sanely for the "nothing
+        // to enrol" case (a build with no first-party escapes at all) —
+        // usable standalone, independent of any Sub 10b/10c wiring.
+        let set = AcceptedEnrolmentSet::default();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+        assert!(!set.contains("anything"));
+        assert!(set.get("anything").is_none());
+        assert_eq!(set.iter().count(), 0);
+        assert_eq!((&set).into_iter().count(), 0);
     }
 }
