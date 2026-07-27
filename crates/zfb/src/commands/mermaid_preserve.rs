@@ -97,6 +97,14 @@ pub(crate) struct MermaidPreservation {
     bodies: Vec<Vec<u8>>,
     /// `MARKER_CORE` + pad + `-`, i.e. everything before a placeholder's index.
     prefix: Vec<u8>,
+    /// `true` when the scanner met an unresolvable construct and abandoned
+    /// extraction wholesale (see the module docs' "Malformed HTML" policy),
+    /// as opposed to simply finding no `data-mermaid` element at all. Both
+    /// cases leave [`bodies`](Self::bodies) empty, but a caller must not
+    /// treat them the same way: minifying the original bytes directly is
+    /// safe when there was never any mermaid content, but can corrupt an
+    /// unresolved mermaid body sitting elsewhere in a malformed document.
+    malformed: bool,
 }
 
 /// Why a [`MermaidPreservation::restore`] call could not put the bodies back.
@@ -146,6 +154,17 @@ impl MermaidPreservation {
     /// `true` when nothing was extracted — [`html`](Self::html) is the input.
     pub(crate) fn is_empty(&self) -> bool {
         self.bodies.is_empty()
+    }
+
+    /// `true` when extraction was abandoned because the scanner met an
+    /// unresolvable construct, per the module docs' "Malformed HTML" policy.
+    /// A caller must not minify [`html`](Self::html) in this case: an
+    /// unresolved mermaid body may still be sitting in it. `false` (with
+    /// [`is_empty`](Self::is_empty) also `true`) means the document was
+    /// simply resolved with no `data-mermaid` element at all, which is safe
+    /// to minify normally.
+    pub(crate) fn is_malformed(&self) -> bool {
+        self.malformed
     }
 
     /// How many mermaid bodies were taken out.
@@ -220,6 +239,7 @@ pub(crate) fn extract(html: &[u8]) -> MermaidPreservation {
             html: html.to_vec(),
             bodies: Vec::new(),
             prefix,
+            malformed: true,
         };
     };
     if ranges.is_empty() {
@@ -227,6 +247,7 @@ pub(crate) fn extract(html: &[u8]) -> MermaidPreservation {
             html: html.to_vec(),
             bodies: Vec::new(),
             prefix,
+            malformed: false,
         };
     }
 
@@ -245,6 +266,7 @@ pub(crate) fn extract(html: &[u8]) -> MermaidPreservation {
         html: out,
         bodies,
         prefix,
+        malformed: false,
     }
 }
 

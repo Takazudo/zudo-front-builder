@@ -10,7 +10,17 @@ use super::mermaid_preserve;
 
 pub(crate) fn minify_rendered_html_bytes(html: &[u8]) -> Vec<u8> {
     let preservation = mermaid_preserve::extract(html);
+    if preservation.is_malformed() {
+        // The scanner abandoned extraction wholesale because it met an
+        // unresolvable construct somewhere in the document — per the
+        // helper's own "Malformed HTML" policy, an unresolved mermaid body
+        // may still be sitting in `html` unextracted. Minifying it directly
+        // could collapse that body's whitespace, so the whole document
+        // passes through untouched instead.
+        return html.to_vec();
+    }
     if preservation.is_empty() {
+        // No `data-mermaid` element anywhere — safe to minify normally.
         return minify(html, &conservative_cfg());
     }
 
@@ -202,5 +212,24 @@ mod tests {
         let wrapped = minify_rendered_html_bytes(input.as_bytes());
 
         assert_eq!(wrapped, baseline);
+    }
+
+    #[test]
+    fn html_minify_leaves_a_malformed_document_with_a_mermaid_body_completely_untouched() {
+        // A document with a real mermaid body PLUS an unresolvable
+        // construct elsewhere (here: a dangling, never-terminated comment)
+        // makes `mermaid_preserve::extract` abandon extraction wholesale —
+        // `MermaidPreservation::is_empty()` is true, exactly as it would be
+        // for a page with no mermaid content at all. Minifying the raw
+        // bytes directly in that case (as a plain `is_empty()` check would)
+        // would still collapse the unextracted mermaid body's whitespace,
+        // contradicting `mermaid_preserve`'s own documented "malformed
+        // input passes through untouched" policy. This must come out
+        // byte-identical to the input — not merely "mermaid body intact".
+        let input = "<div data-mermaid>graph TD;\n  A\n  B\n</div><!-- dangling";
+
+        let output = minify_rendered_html_string(input);
+
+        assert_eq!(output, input);
     }
 }
