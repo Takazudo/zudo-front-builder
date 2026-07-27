@@ -19,14 +19,25 @@
 //! * **Nested `data-mermaid`** — *outermost wins*. The scanner jumps over the
 //!   whole body of the element it claims, so an inner `data-mermaid` element
 //!   is preserved verbatim as part of that body rather than extracted again.
-//! * **Malformed HTML** — *the whole document passes through untouched*.
-//!   Whenever the scanner meets a construct it cannot resolve (an unterminated
-//!   comment, an unterminated raw-text element, a `data-mermaid` element with
-//!   no matching end tag), extraction is abandoned wholesale: [`extract`]
-//!   returns zero bodies and the original bytes. Losing the preservation for a
-//!   broken document is strictly better than emitting a corrupted one. Nothing
-//!   here panics, indexes out of bounds, or recurses.
-//! * **Token collision** — *unforgeable by construction*, not merely unlikely.
+//! * **Malformed HTML** — *the whole document passes through untouched, but
+//!   only when a mermaid body is actually at risk*. Whenever the scanner meets
+//!   a construct it cannot resolve (an unterminated comment, an unterminated
+//!   raw-text element, a `data-mermaid` element with no matching end tag),
+//!   extraction is abandoned wholesale: [`extract`] returns zero bodies and the
+//!   original bytes. Losing the preservation for a broken document is strictly
+//!   better than emitting a corrupted one. Nothing here panics, indexes out of
+//!   bounds, or recurses.
+//!
+//!   The abandonment is only reported as
+//!   [`is_malformed`](MermaidPreservation::is_malformed) — the flag that makes
+//!   a caller skip minification entirely — when the document contains the
+//!   literal bytes `data-mermaid` (case-insensitively) *somewhere*. A real
+//!   `data-mermaid` attribute name necessarily contains them, so their absence
+//!   proves no mermaid body exists to endanger, and such a document minifies
+//!   normally no matter how odd its markup is. The check is deliberately a
+//!   substring scan rather than anything smarter: it must over-approximate,
+//!   never under-approximate.
+//! * **Token collision** — *the input cannot forge a placeholder*.
 //!   The placeholder is `ZFB-MERMAID-PRESERVE-<pad>-<index>-END`, where `pad`
 //!   is a run of `X` one longer than the longest run of `X` following any
 //!   occurrence of `ZFB-MERMAID-PRESERVE-` anywhere in the input. The input
@@ -34,6 +45,25 @@
 //!   including a document that embeds a placeholder from an earlier run
 //!   verbatim. It stays deterministic: the pad is a pure function of the
 //!   input, so no randomness or global state is involved.
+//!
+//!   That proof is about the **input**.
+//!   [`restore`](MermaidPreservation::restore) reads the **minifier's output**,
+//!   which is a different byte string, so the guarantee it delivers is narrower
+//!   and worth stating exactly. A minifier that deletes bytes can in principle
+//!   *create* a prefix-shaped run the input never contained (by joining two
+//!   fragments that were separated in the input). Every such forgery is
+//!   rejected — as [`Malformed`](MermaidRestoreError::Malformed),
+//!   [`UnknownIndex`](MermaidRestoreError::UnknownIndex),
+//!   [`Duplicated`](MermaidRestoreError::Duplicated), or
+//!   [`Missing`](MermaidRestoreError::Missing) — *except* in one residual case:
+//!   a forged token naming exactly the index of a real placeholder that the
+//!   same minification pass also deleted. It is substituted silently, because
+//!   the seen-set then looks complete. The blast radius is bounded: the bytes
+//!   written are still the correct extracted body (nothing is lost, and nothing
+//!   from the document is injected) — only its *position* can be wrong. No
+//!   real-world minifier is known to produce this shape, and closing it would
+//!   need a second, independent channel for placeholder identity; the honest
+//!   claim is the narrower one above, not "unforgeable".
 //! * **False positives** — only a genuine *attribute name* counts. The scanner
 //!   parses tags properly, so `data-mermaid` in ordinary text, inside another
 //!   attribute's value, or as a prefix of a longer attribute name
@@ -48,7 +78,7 @@
 //!   only choice that can round-trip exactly, and it matches what the
 //!   serializer actually emits (`-->` reaches the minifier as `--&gt;`).
 //!
-//! An element whose start tag is self-closing, or whose body is empty, is
+//! A [void element](VOID_ELEMENTS), or an element whose body is empty, is
 //! skipped — there are no bytes to protect, and inserting a placeholder into
 //! an empty element would change the document for no benefit.
 //!
@@ -57,6 +87,17 @@
 //! label therefore ends the element here exactly as it would in a browser.
 //! (`zfb-md-extras` escapes the body, so a real emitted diagram cannot contain
 //! one.) Round-tripping is exact either way.
+//!
+//! For the same reason a trailing `/` in a start tag is **ignored**, exactly as
+//! an HTML parser ignores it: `<div/>` opens a `div`, so
+//! `<div data-mermaid>a<div/>b</div>c</div>` has the body `a<div/>b</div>c`,
+//! not `a<div/>b`. Honouring `/>` here would leave part of what a browser
+//! considers the diagram outside the protected range, where the minifier would
+//! collapse it. Foreign (SVG/MathML) content, where `/>` genuinely does
+//! self-close, is not tracked as a separate namespace: it could only change the
+//! outcome for an element sharing the mermaid host's own tag name, and such a
+//! document resolves to the malformed pass-through above rather than to a
+//! wrong extraction.
 
 use std::fmt;
 use std::ops::Range;
@@ -70,7 +111,10 @@ const PLACEHOLDER_SUFFIX: &[u8] = b"-END";
 
 /// Elements whose content the HTML tokenizer treats as raw (or escapable-raw)
 /// text rather than markup, so this scanner skips over it too.
-const RAW_TEXT_ELEMENTS: [&[u8]; 8] = [
+///
+/// `noscript` is raw text whenever scripting is enabled, which is the only
+/// case that matters for output zfb ships to a browser.
+const RAW_TEXT_ELEMENTS: [&[u8]; 9] = [
     b"script",
     b"style",
     b"textarea",
@@ -79,7 +123,11 @@ const RAW_TEXT_ELEMENTS: [&[u8]; 8] = [
     b"iframe",
     b"noembed",
     b"noframes",
+    b"noscript",
 ];
+
+/// The bytes any genuine `data-mermaid` attribute name must contain.
+const MERMAID_ATTR: &[u8] = b"data-mermaid";
 
 /// `<plaintext>` has no end tag at all: everything after it is text forever.
 const PLAINTEXT_ELEMENT: &[u8] = b"plaintext";
@@ -98,12 +146,13 @@ pub(crate) struct MermaidPreservation {
     /// `MARKER_CORE` + pad + `-`, i.e. everything before a placeholder's index.
     prefix: Vec<u8>,
     /// `true` when the scanner met an unresolvable construct and abandoned
-    /// extraction wholesale (see the module docs' "Malformed HTML" policy),
-    /// as opposed to simply finding no `data-mermaid` element at all. Both
-    /// cases leave [`bodies`](Self::bodies) empty, but a caller must not
-    /// treat them the same way: minifying the original bytes directly is
-    /// safe when there was never any mermaid content, but can corrupt an
-    /// unresolved mermaid body sitting elsewhere in a malformed document.
+    /// extraction wholesale (see the module docs' "Malformed HTML" policy)
+    /// *and* the document could still contain a `data-mermaid` element, as
+    /// opposed to simply finding no mermaid content at all. Both cases leave
+    /// [`bodies`](Self::bodies) empty, but a caller must not treat them the
+    /// same way: minifying the original bytes directly is safe when there was
+    /// never any mermaid content, but can corrupt an unresolved mermaid body
+    /// sitting elsewhere in a malformed document.
     malformed: bool,
 }
 
@@ -157,12 +206,14 @@ impl MermaidPreservation {
     }
 
     /// `true` when extraction was abandoned because the scanner met an
-    /// unresolvable construct, per the module docs' "Malformed HTML" policy.
+    /// unresolvable construct *and* the bytes `data-mermaid` occur somewhere
+    /// in the document, per the module docs' "Malformed HTML" policy.
     /// A caller must not minify [`html`](Self::html) in this case: an
     /// unresolved mermaid body may still be sitting in it. `false` (with
-    /// [`is_empty`](Self::is_empty) also `true`) means the document was
-    /// simply resolved with no `data-mermaid` element at all, which is safe
-    /// to minify normally.
+    /// [`is_empty`](Self::is_empty) also `true`) means no mermaid body can be
+    /// at risk — either the document resolved cleanly with no `data-mermaid`
+    /// element, or it did not resolve but provably has no mermaid content to
+    /// protect — which is safe to minify normally.
     pub(crate) fn is_malformed(&self) -> bool {
         self.malformed
     }
@@ -239,7 +290,10 @@ pub(crate) fn extract(html: &[u8]) -> MermaidPreservation {
             html: html.to_vec(),
             bodies: Vec::new(),
             prefix,
-            malformed: true,
+            // Unresolvable markup only endangers a mermaid body if there is
+            // one. A genuine `data-mermaid` attribute name cannot exist
+            // without these bytes, so their absence is proof of safety.
+            malformed: contains_mermaid_attr_bytes(html),
         };
     };
     if ranges.is_empty() {
@@ -329,7 +383,7 @@ fn collect_mermaid_bodies(html: &[u8]) -> Option<Vec<Range<usize>>> {
                 }
                 if is_raw_text(name) {
                     i = skip_raw_text(html, tag.end, name)?;
-                } else if tag.has_mermaid && !tag.self_closing && !is_void(name) {
+                } else if tag.has_mermaid && !is_void(name) {
                     let (body_end, after_close) = find_matching_close(html, tag.end, name)?;
                     if body_end > tag.end {
                         bodies.push(tag.end..body_end);
@@ -370,7 +424,7 @@ fn find_matching_close(html: &[u8], start: usize, name: &[u8]) -> Option<(usize,
                     i = skip_raw_text(html, tag.end, tag_name)?;
                     continue;
                 }
-                if !tag.self_closing && !is_void(tag_name) && tag_name.eq_ignore_ascii_case(name) {
+                if !is_void(tag_name) && tag_name.eq_ignore_ascii_case(name) {
                     depth += 1;
                 }
                 i = tag.end;
@@ -411,7 +465,6 @@ enum Markup {
 struct StartTag {
     name: Range<usize>,
     has_mermaid: bool,
-    self_closing: bool,
     /// Index just past the start tag's `>`.
     end: usize,
 }
@@ -458,6 +511,9 @@ fn markup_at(html: &[u8], i: usize) -> Option<Markup> {
 /// Parse `<name attr=… >`, recording whether a `data-mermaid` attribute
 /// *name* (never a value, never a longer name that merely starts with it) is
 /// present. `None` when the tag never closes.
+///
+/// A trailing `/` ends the tag but is otherwise ignored, matching an HTML
+/// parser: `<div/>` opens a `div` (see the module docs).
 fn parse_start_tag(html: &[u8], i: usize) -> Option<StartTag> {
     let mut p = i + 1;
     let name_start = p;
@@ -470,7 +526,6 @@ fn parse_start_tag(html: &[u8], i: usize) -> Option<StartTag> {
     }
 
     let mut has_mermaid = false;
-    let mut self_closing = false;
 
     loop {
         while html.get(p).is_some_and(u8::is_ascii_whitespace) {
@@ -484,7 +539,6 @@ fn parse_start_tag(html: &[u8], i: usize) -> Option<StartTag> {
             }
             Some(b'/') => {
                 if html.get(p + 1) == Some(&b'>') {
-                    self_closing = true;
                     p += 2;
                     break;
                 }
@@ -536,7 +590,7 @@ fn parse_start_tag(html: &[u8], i: usize) -> Option<StartTag> {
                     p = q;
                 }
 
-                if attr_name.eq_ignore_ascii_case(b"data-mermaid") {
+                if attr_name.eq_ignore_ascii_case(MERMAID_ATTR) {
                     has_mermaid = true;
                 }
             }
@@ -546,7 +600,6 @@ fn parse_start_tag(html: &[u8], i: usize) -> Option<StartTag> {
     Some(StartTag {
         name,
         has_mermaid,
-        self_closing,
         end: p,
     })
 }
@@ -603,6 +656,17 @@ fn is_void(name: &[u8]) -> bool {
     VOID_ELEMENTS
         .iter()
         .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+/// Could `html` contain a `data-mermaid` attribute name at all?
+///
+/// A deliberate over-approximation: it says `true` for the string in a comment,
+/// in text, or as part of a longer name. What matters is that it can never say
+/// `false` for a document that really carries the attribute, since a `false`
+/// lets the caller minify markup the scanner could not resolve.
+fn contains_mermaid_attr_bytes(html: &[u8]) -> bool {
+    html.windows(MERMAID_ATTR.len())
+        .any(|window| window.eq_ignore_ascii_case(MERMAID_ATTR))
 }
 
 fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -798,7 +862,10 @@ mod tests {
         // A short raw-text list would scan this text as markup, hit an
         // unmatched `data-mermaid` element, and abandon extraction — silently
         // dropping preservation for the real diagram that follows.
-        for host in ["xmp", "iframe", "noembed", "noframes"] {
+        // `noscript` belongs here too: with scripting enabled — the only case
+        // that matters for output served to a browser — its content is raw
+        // text, so markup-shaped text inside it must not be scanned.
+        for host in ["xmp", "iframe", "noembed", "noframes", "noscript"] {
             let input = format!(
                 "<{host}><div data-mermaid>not markup</{host}>\
                  <div data-mermaid>graph TD;\n  A\n</div>"
@@ -857,16 +924,46 @@ mod tests {
     }
 
     #[test]
-    fn a_self_closing_or_void_data_mermaid_element_has_no_body_to_extract() {
+    fn a_void_data_mermaid_element_has_no_body_to_extract() {
         for input in [
-            "<div data-mermaid/>text\nhere",
             "<img data-mermaid>text\nhere",
             "<br data-mermaid>text\nhere",
+            // A void element's trailing `/` is ignored by an HTML parser too,
+            // and changes nothing here either.
+            "<br data-mermaid/>text\nhere",
         ] {
             let preservation = extract(input.as_bytes());
             assert!(preservation.is_empty(), "must not extract from: {input}");
             assert_eq!(extracted_html(&preservation), input);
         }
+    }
+
+    #[test]
+    fn a_trailing_slash_does_not_self_close_an_ordinary_element() {
+        // An HTML parser ignores `/` in the start tag of an HTML-namespace
+        // element, so `<div/>` OPENS a div. Treating it as self-closing would
+        // end a mermaid body at the first `</div>` instead of the second,
+        // leaving `b</div>c` outside the protected range — where a minifier
+        // would collapse whitespace a browser considers part of the diagram.
+        let input = "<div data-mermaid>a\n<div/>b\n</div>c\n</div>";
+
+        let preservation = extract(input.as_bytes());
+
+        assert_eq!(
+            preservation.bodies,
+            vec![b"a\n<div/>b\n</div>c\n".to_vec()],
+            "the inner `<div/>` opens an element, so the FIRST `</div>` closes it"
+        );
+        assert_eq!(round_trip(input), input);
+
+        // The same rule applied to the mermaid element itself: `<div .../>` is
+        // an ordinary start tag, so this document has no end tag at all and
+        // falls into the malformed pass-through rather than being read as an
+        // empty, bodiless element.
+        let unclosed = extract(b"<div data-mermaid/>text\nhere");
+        assert!(unclosed.is_empty());
+        assert!(unclosed.is_malformed());
+        assert_eq!(extracted_html(&unclosed), "<div data-mermaid/>text\nhere");
     }
 
     #[test]
@@ -919,6 +1016,52 @@ mod tests {
             );
             assert_eq!(extracted_html(&preservation), input);
         }
+    }
+
+    #[test]
+    fn unresolvable_markup_is_only_reported_as_malformed_when_mermaid_content_exists() {
+        // `is_malformed` is what makes a caller skip minification for the
+        // WHOLE page, so it must mean "a mermaid body may be at risk", not
+        // merely "the scanner gave up". A document with no `data-mermaid`
+        // anywhere has nothing to protect no matter how odd its markup is.
+        for input in [
+            "<p>fine</p><script>never closed",
+            "<script src=\"/a.js\" /><p>after</p>",
+            "<p>fine</p><div class=\"x",
+            "<p>fine</p><!-- dangling",
+            "<section><p>orphan</p>",
+        ] {
+            let preservation = extract(input.as_bytes());
+            assert!(
+                !preservation.is_malformed(),
+                "no mermaid content, so nothing is endangered: {input}"
+            );
+            assert!(preservation.is_empty());
+            assert_eq!(extracted_html(&preservation), input);
+        }
+
+        // The same constructs WITH mermaid content present stay malformed.
+        for input in [
+            "<div data-mermaid>a\nb\n</div><script>never closed",
+            "<div data-mermaid>a\nb\n</div><!-- dangling",
+        ] {
+            assert!(
+                extract(input.as_bytes()).is_malformed(),
+                "a mermaid body IS at risk here: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_mermaid_content_probe_over_approximates_rather_than_parsing() {
+        // The probe only has to be safe, not precise: it may say "malformed"
+        // for a document whose only `data-mermaid` is inert text. Pinning that
+        // keeps a future "smarter" probe from quietly becoming an
+        // under-approximation, which is the direction that loses data.
+        let preservation = extract(b"<p>write data-mermaid on the div</p><script>never closed");
+
+        assert!(preservation.is_malformed());
+        assert!(preservation.is_empty());
     }
 
     #[test]
@@ -1070,9 +1213,13 @@ mod tests {
 
     #[test]
     fn extract_minify_restore_preserves_a_real_mermaid_body() {
-        // Proof the helper composes with the minifier it was built for. It is
-        // NOT wired in — `minify_rendered_html_bytes` is still called directly
-        // here, exactly as #2033 will call it once it does the wiring.
+        // Proof the helper composes with the minifier it was built for. The
+        // RAW `minify_html::minify` is called here, with the same config the
+        // production wrapper uses — never `minify_rendered_html_bytes`, which
+        // already performs this extract/restore internally and would make the
+        // test prove only that the wrapper composes with itself. Bypassing the
+        // wrapper is what makes the extract/restore calls below load-bearing:
+        // drop either one and the mermaid body's newlines are collapsed.
         let mermaid_body = concat!(
             "graph TD;\n",
             "  subgraph build[\"zfb build — your machine\"]\n",
@@ -1085,10 +1232,19 @@ mod tests {
         );
 
         let preservation = extract(input.as_bytes());
-        let minified =
-            crate::commands::html_minify::minify_rendered_html_bytes(preservation.html());
+        let minified = minify_html::minify(
+            preservation.html(),
+            &crate::commands::html_minify::conservative_cfg(),
+        );
         let restored = preservation.restore(&minified).expect("restores");
         let output = String::from_utf8(restored).expect("UTF-8");
+
+        // The raw minifier really did collapse the staged document — without
+        // this, "the body survived" could just mean nothing was minified.
+        assert!(
+            minified.len() < preservation.html().len(),
+            "the raw minifier must have done something"
+        );
 
         assert!(
             output.contains(mermaid_body),

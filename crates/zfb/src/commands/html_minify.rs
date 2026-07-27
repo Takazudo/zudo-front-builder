@@ -12,15 +12,24 @@ pub(crate) fn minify_rendered_html_bytes(html: &[u8]) -> Vec<u8> {
     let preservation = mermaid_preserve::extract(html);
     if preservation.is_malformed() {
         // The scanner abandoned extraction wholesale because it met an
-        // unresolvable construct somewhere in the document — per the
-        // helper's own "Malformed HTML" policy, an unresolved mermaid body
-        // may still be sitting in `html` unextracted. Minifying it directly
-        // could collapse that body's whitespace, so the whole document
-        // passes through untouched instead.
+        // unresolvable construct AND the document carries mermaid content —
+        // per the helper's own "Malformed HTML" policy, an unresolved mermaid
+        // body may still be sitting in `html` unextracted. Minifying it
+        // directly could collapse that body's whitespace, so the whole
+        // document passes through untouched instead.
+        //
+        // Warn rather than bail silently: this drops minification for a whole
+        // page, and the only other symptom is a larger file. It is not
+        // reachable at all for a page with no `data-mermaid` element, so it
+        // cannot become routine noise.
+        tracing::warn!(
+            bytes = html.len(),
+            "html minify: skipped — unresolvable markup in a page carrying mermaid content"
+        );
         return html.to_vec();
     }
     if preservation.is_empty() {
-        // No `data-mermaid` element anywhere — safe to minify normally.
+        // No mermaid body is at risk — safe to minify normally.
         return minify(html, &conservative_cfg());
     }
 
@@ -39,7 +48,10 @@ pub(crate) fn minify_rendered_html_string(html: &str) -> String {
         .expect("minify-html returned non-UTF-8 for UTF-8 HTML input")
 }
 
-fn conservative_cfg() -> Cfg {
+/// The one minifier configuration this module ever uses. Visible to sibling
+/// modules so their tests can drive the raw minifier with the identical
+/// config instead of an approximation of it.
+pub(super) fn conservative_cfg() -> Cfg {
     let mut cfg = Cfg::new();
     cfg.keep_comments = true;
     cfg.keep_closing_tags = true;
@@ -231,5 +243,41 @@ mod tests {
         let output = minify_rendered_html_string(input);
 
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn html_minify_still_minifies_a_malformed_document_that_has_no_mermaid_content() {
+        // The counterpart to the test above, and the case that matters far
+        // more often: odd markup with NO `data-mermaid` element anywhere.
+        // The scanner is deliberately strict because an unresolved mermaid
+        // body must never be collapsed — but with no mermaid content there is
+        // nothing to protect, and bailing would silently ship the whole page
+        // unminified with no error, no warning, and no symptom but size.
+        // Each input below makes `collect_mermaid_bodies` give up, and each
+        // must still come out byte-identical to the raw minifier's own output.
+        for input in [
+            // unterminated raw-text element
+            "<main>\n  <h1> Hi </h1>\n  <script>never closed",
+            // a self-closed <script src=…/>, which is NOT self-closing in HTML
+            "<main>\n  <h1> Hi </h1>\n  <script src=\"/a.js\" />\n  <p> x </p>",
+            // unterminated quote in an attribute value
+            "<main>\n  <h1> Hi </h1>\n  <div class=\"x",
+            // unterminated comment
+            "<main>\n  <h1> Hi </h1>\n</main><!-- dangling",
+            // an unbalanced inner tag with no end tag of its own
+            "<main>\n  <h1> Hi </h1>\n  <section>\n    <p> x </p>\n</main>",
+        ] {
+            let baseline = minify(input.as_bytes(), &conservative_cfg());
+            let wrapped = minify_rendered_html_bytes(input.as_bytes());
+
+            assert_eq!(
+                wrapped, baseline,
+                "a mermaid-free document must minify normally however odd its markup: {input:?}"
+            );
+            assert!(
+                wrapped.len() < input.len(),
+                "…and minification must actually have happened: {input:?}"
+            );
+        }
     }
 }
