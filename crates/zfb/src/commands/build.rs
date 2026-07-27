@@ -11751,6 +11751,257 @@ mod tests {
         );
     }
 
+    /// Issue #2083 (epic #2078, Wave 1) — RED test for #2048's silent
+    /// islands/client shape.
+    ///
+    /// **This test asserts macro expansion as its desired outcome.** If,
+    /// when epic #2078's Wave 4 lands, the sanctioned loud-failure fallback
+    /// is invoked instead of full acceptance⇒enrolment coupling (a decision
+    /// reserved to sub #2090, #2078's "islands/client coupling or sanctioned
+    /// fallback" sub-issue), the flipping sub REWRITES this assertion to the
+    /// loud-failure form (build fails with a diagnostic naming the package
+    /// and the unexpanded macro) and records that downgrade explicitly in
+    /// its PR body and an epic-issue comment — this would be a deliberate,
+    /// documented edit, not a silent weakening of the assertion below.
+    ///
+    /// **Scope note:** the fix this test guards targets NESTED workspace
+    /// members only. `SiblingMirrorPlan::compute`'s early-return
+    /// (`crates/zfb-build/src/bundler.rs` :5167) and the
+    /// `mirror_sibling_root` gate (:3009) put root-claimed topology
+    /// (`first_party_root == project_root`) explicitly out of scope,
+    /// matching #2048's own scoping — this fixture is deliberately a NESTED
+    /// member (`apps/demo`, under a `pnpm-workspace.yaml` claiming `apps/*` +
+    /// `packages/*`, never `.`).
+    ///
+    /// ## Why this is a command-layer test, not a `zfb-build`-only one
+    ///
+    /// #2048's interaction is real for the SSR pipeline too (a bare-package
+    /// consume-from-source sibling is never mirrored, so its own macro ships
+    /// literally there as well), but the SSR shape is not what this sub
+    /// guards — epic #2078's Wave 4 restructure notes an SSR-executed path
+    /// that reaches an unexpanded macro throws at RENDER time (loud-ish),
+    /// while the islands/client pipeline ships the literal macro to the
+    /// browser with a fully green BUILD and no render ever happens
+    /// build-side. Driving `build_default_islands_payload_with_bundle_options`
+    /// (the same command-layer entry point `zfb build` itself calls for the
+    /// production islands bundle) is what actually reaches that silent
+    /// no-stage islands/client path.
+    ///
+    /// ## The repro
+    ///
+    /// `@acme/glob-sibling` is a first-party, consume-from-source sibling
+    /// package (#2040's declared-entry exemption: its `package.json`
+    /// `exports` map declares `./glob-source` as an entry root pointing
+    /// straight at un-built `./index.ts`, no `dist`). `index.ts` calls
+    /// `import.meta.glob('./data/*.json')` over its own sibling-local
+    /// `data/` directory.
+    ///
+    /// The host island (`GlobWidget.tsx`) reaches the sibling via
+    /// `require('@acme/glob-sibling/glob-source')` — deliberately CommonJS,
+    /// not `import`, because `collect_import_edges` (the islands scanner's
+    /// edge collector) only records `import` / `export ... from` / `export
+    /// *` / string-literal dynamic `import()` edges; a query-free
+    /// `require(...)` call produces NO edge at all (see
+    /// `find_unsupported_query_call`, which only flags QUERY-BEARING
+    /// require/dynamic-import calls — mirrors the same technique the
+    /// root-workspace regression test above uses to bypass guard (a)'s
+    /// scanner). The sibling's `index.ts` is therefore NEVER visited by
+    /// `scan_islands_with_meta`'s DFS: its `import.meta.glob` call stays
+    /// invisible to `glob_by_path`, so `scan_meta.glob_reachable_from_islands`
+    /// stays empty. With no OTHER raw/worker/glob signal anywhere in this
+    /// fixture, `build_default_islands_payload_with_bundle_options`'s
+    /// shadow-staging precondition (~build.rs:3732,
+    /// `!scan_meta.glob_reachable_from_islands.is_empty() || …`) is never
+    /// met, `_islands_shadow` stays `None`, and BOTH guard (a) (the
+    /// workspace-package-edge check inside
+    /// `materialise_islands_shadow_with_worker_context`, ~build.rs:2874 —
+    /// never even called) and guard (b) (`stage_escape_audit_policy`, only
+    /// ever armed `if let Some(islands_stage_root) = _islands_shadow…`) are
+    /// skipped entirely. esbuild bundles straight from `project_root`,
+    /// resolves the `require()` call through the REAL
+    /// `node_modules/@acme/glob-sibling` symlink to LIVE, unprocessed
+    /// source, and the literal, unexpanded `import.meta.glob(...)` call text
+    /// ships in the production islands bundle with a GREEN build — exactly
+    /// #2048's silent-wrongness window.
+    ///
+    /// Desired post-fix behavior: once #2048's acceptance⇒enrolment coupling
+    /// lands, an accepted (case-2) consume-from-source sibling like this one
+    /// must be enrolled for preprocessing exactly like an alias-mirrored
+    /// sibling (#1985's fix for #1724), so its own `import.meta.glob`
+    /// genuinely expands — the emitted bundle must embed the ACTUAL matched
+    /// file's content (`GLOB_SIBLING_DATA_MARKER`, from `data/entry.json`),
+    /// not merely avoid the literal macro text (an expansion that dropped
+    /// the call without wiring the real match would be as wrong as today's
+    /// silence).
+    ///
+    /// ### Flip protocol
+    ///
+    /// This test needs a staged real esbuild binary (env-gate), so the
+    /// flipping sub REPLACES the `pending-feature` tag below with the normal
+    /// `#[ignore = "env-gate: esbuild — …"]` tag — never a bare delete —
+    /// per epic #2078's corrected flip protocol.
+    ///
+    /// Verified RED (today, on this working tree): the build returns `Ok`
+    /// (green) and the emitted islands bundle bytes contain the literal
+    /// substring `import.meta.glob(` while `GLOB_SIBLING_DATA_MARKER` is
+    /// absent — i.e. the first assertion below fails, proving the macro
+    /// reaches the browser bundle unexpanded rather than being rejected or
+    /// genuinely resolved.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2090"]
+    fn bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded() {
+        if zfb_test_utils::locate_esbuild().is_none() {
+            panic!(
+                "bare-package consume-from-source glob-sibling regression requires a pinned \
+                 real esbuild binary; set ZFB_ESBUILD_BIN or stage \
+                 crates/zfb/binaries/esbuild/esbuild"
+            );
+        }
+
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        // Nested-member workspace: `.` is deliberately NOT claimed (unlike
+        // the root-claimed fixture above) — #2048's fix scope explicitly
+        // excludes the root-claimed topology.
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"workspace-root","private":true}"#,
+        )
+        .unwrap();
+
+        // The consume-from-source sibling (#2040's declared-entry
+        // exemption): its own `package.json` declares `./glob-source` as an
+        // entry root pointing straight at un-built `.ts` source, and it
+        // carries its own `import.meta.glob` over sibling-local files.
+        let sibling = root.join("packages/glob-sibling");
+        std::fs::create_dir_all(sibling.join("data")).unwrap();
+        std::fs::write(
+            sibling.join("package.json"),
+            r#"{"name":"@acme/glob-sibling","exports":{"./glob-source":"./index.ts"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sibling.join("index.ts"),
+            "export const modules = import.meta.glob('./data/*.json');\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sibling.join("data/entry.json"),
+            r#"{"value":"GLOB_SIBLING_DATA_MARKER"}"#,
+        )
+        .unwrap();
+
+        // Minimal islands runtime deps — the synthesized islands entry
+        // always imports these (mirrors `stage_minimal_node_modules` in
+        // `crates/zfb-islands/tests/integration.rs` and the root-workspace
+        // regression test above). Hoisted at the WORKSPACE ROOT
+        // `node_modules`, matching real pnpm-workspace hoisting for a
+        // nested member.
+        let nm = root.join("node_modules");
+        let zfb_runtime = nm.join("@takazudo/zfb");
+        std::fs::create_dir_all(&zfb_runtime).unwrap();
+        std::fs::write(
+            zfb_runtime.join("package.json"),
+            r#"{"name":"@takazudo/zfb","version":"0.0.0","exports":{"./runtime":"./runtime.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            zfb_runtime.join("runtime.js"),
+            "export function mountIslands() {}\n",
+        )
+        .unwrap();
+        let preact = nm.join("preact");
+        std::fs::create_dir_all(&preact).unwrap();
+        std::fs::write(
+            preact.join("package.json"),
+            r#"{"name":"preact","version":"10.0.0","main":"index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            preact.join("index.js"),
+            "export function h() {}\nexport function hydrate() {}\nexport function render() {}\n",
+        )
+        .unwrap();
+        // The genuine pnpm-style symlink into the first-party
+        // consume-from-source sibling package.
+        let scope_dir = nm.join("@acme");
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        std::os::unix::fs::symlink(&sibling, scope_dir.join("glob-sibling")).unwrap();
+
+        // The nested host member.
+        let project = root.join("apps/demo");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::create_dir_all(project.join("components")).unwrap();
+        std::fs::write(
+            project.join("package.json"),
+            r#"{"name":"demo","private":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("pages/index.tsx"),
+            "import { GlobWidget } from '../components/GlobWidget';\n\
+             export default GlobWidget;\n",
+        )
+        .unwrap();
+        // The unrecorded edge: a plain, query-free `require(...)` call,
+        // which `collect_import_edges` (guard (a)'s scanner) never visits —
+        // see this test's header comment. Deliberately NO `?raw` / worker /
+        // direct-`import` glob edge sits alongside it: this fixture must
+        // trigger NO OTHER preprocessing signal anywhere, so the
+        // shadow-staging precondition is never met and the no-shadow fast
+        // path is taken.
+        std::fs::write(
+            project.join("components/GlobWidget.tsx"),
+            "'use client';\n\
+             const sibling = require('@acme/glob-sibling/glob-source');\n\
+             export function GlobWidget() { return sibling.modules ? 'HAS_MODULES' : 'NO_MODULES'; }\n",
+        )
+        .unwrap();
+
+        let outdir = project.join("dist");
+        let plugin_config = IslandsPluginConfig::default();
+        let (islands_payload, _markers) = build_default_islands_payload_with_bundle_options(
+            &project,
+            &project.join("pages"),
+            &[],
+            &outdir,
+            crate::config::Framework::Preact,
+            None,
+            zfb_islands::BundleMode::Production,
+            &plugin_config,
+            IslandsGlobPolicy::HardError,
+            None,
+        )
+        .expect(
+            "the require()-reached consume-from-source sibling is an ACCEPTED case-2 input \
+             (declared entry root, claimed by pnpm-workspace.yaml), not a stage escape — this \
+             build must stay GREEN; this test's contract is that the sibling's own \
+             import.meta.glob genuinely expands, not that the build is rejected",
+        );
+        let islands_js =
+            String::from_utf8(islands_payload.expect("islands payload").bytes).unwrap();
+
+        assert!(
+            !islands_js.contains("import.meta.glob("),
+            "the sibling's import.meta.glob call must be EXPANDED before reaching esbuild — a \
+             literal, unexpanded macro call shipped to the browser throws at hydration time: \
+             {islands_js}"
+        );
+        assert!(
+            islands_js.contains("GLOB_SIBLING_DATA_MARKER"),
+            "expansion must reference the glob's ACTUAL matched file on disk (data/entry.json) \
+             — its content must be reachable from the emitted bundle, not merely absent of the \
+             literal macro text: {islands_js}"
+        );
+    }
+
     #[test]
     fn client_virtual_module_preprocessing_syntax_is_an_explicit_command_error() {
         let tmp = tempdir().unwrap();
