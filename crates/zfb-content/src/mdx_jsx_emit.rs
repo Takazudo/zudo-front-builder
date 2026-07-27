@@ -53,9 +53,12 @@ use zfb_md_ast::{BuildContext, CrossFileLinkCandidate, FileHeadings};
 use zfb_types::normalize_path_lexical;
 
 use crate::dep_manifest::DependencyManifest;
+#[cfg(test)]
+use crate::footnotes::FOOTNOTE_LABEL_STYLE;
+use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
-    constructs_for_jsx_emit, mdast_to_hast_with, HastNode, JsxEmitStrategy, Pipeline,
-    PipelineError, ResolvedGfmConstructs,
+    constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode, JsxEmitStrategy,
+    Pipeline, PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 use crate::plugins::BrokenLinkDiagnostic;
@@ -414,7 +417,9 @@ fn mdx_to_jsx_module_inner(
             nested_slugs: &nested_slugs,
             cursor: std::cell::Cell::new(0),
         };
-        let strategy_fn = |node: &MdastNode| -> String { jsx_raw_recursive(node, &slug_ctx) };
+        let strategy_fn = |node: &MdastNode, fc: &FootnoteRenderCtx<'_>| -> String {
+            jsx_raw_recursive(node, &slug_ctx, fc)
+        };
         let strategy = JsxEmitStrategy::JsxPath(&strategy_fn);
         let mut hast = mdast_to_hast_with(&mdast_root, &strategy);
         // The emitter must have consumed every nested-heading slug in
@@ -889,7 +894,23 @@ impl JsxEmitter {
                 }
                 self.emit_html(tag, &attrs, &l.children)
             }
-            MdastNode::ListItem(li) => self.emit_html("li", &[], &li.children),
+            MdastNode::ListItem(li) => {
+                self.html_tags.insert("li".to_string());
+                let inner = match li.checked {
+                    Some(checked) => {
+                        self.html_tags.insert("input".to_string());
+                        // The checkbox is hosted by the item's leading
+                        // paragraph, so `p` is emitted here even though
+                        // the `Paragraph` arm never runs for it.
+                        self.html_tags.insert("p".to_string());
+                        task_list_item_jsx(&li.children, checked, |nodes| {
+                            self.emit_inline_children(nodes)
+                        })
+                    }
+                    None => self.emit_inline_children(&li.children),
+                };
+                format!("<_components.li>{inner}</_components.li>")
+            }
             MdastNode::Blockquote(b) => self.emit_html("blockquote", &[], &b.children),
             MdastNode::ThematicBreak(_) => self.emit_html_void("hr", &[]),
             MdastNode::Break(_) => self.emit_html_void("br", &[]),
@@ -1048,12 +1069,14 @@ fn align_style(align: &AlignKind) -> Option<&'static str> {
 fn emit_table_jsx(emitter: &mut JsxEmitter, rows: &[MdastNode], align: &[AlignKind]) -> String {
     let mut out = String::new();
 
-    // Build a style attr string for column index `col`.
+    // Build a style attr string for column index `col`. Object-valued,
+    // matching the other two emit paths — a string `style` prop makes
+    // React throw. See `jsx_style_attr`.
     let style_attr = |col: usize| -> String {
         align
             .get(col)
             .and_then(align_style)
-            .map(|v| format!(" style=\"text-align: {v}\""))
+            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -1372,20 +1395,125 @@ fn is_void_html_tag(tag: &str) -> bool {
 /// (mirrors `jsx_string_attr` in [`JsxEmitter`]).
 ///
 /// Empty-valued attributes (e.g. `data-mermaid=""` synthesized by
-/// `MermaidPlugin`) emit as `attr=""` to keep the attribute present
-/// and serializable.
+/// `MermaidPlugin`, `data-footnote-ref=""` by the footnote emitter) emit
+/// as `attr=""` to keep the attribute present and serializable.
+///
+/// The one exception is an empty-valued **HTML boolean attribute** —
+/// [`is_html_boolean_attr`] — which emits BARE (JSX `true`). hast has no
+/// way to spell a bare attribute (its values are plain `String`s), so the
+/// HTML serializer's `disabled=""` is the only spelling available on that
+/// side; carrying the empty string straight into JSX would hand
+/// React/Preact a falsy prop, and a task-list checkbox would hydrate
+/// enabled and unchecked. Data attributes keep `=""` — they are ordinary
+/// strings, and `true` would serialize as the visibly different
+/// `data-footnote-ref="true"`.
 fn render_hast_attrs(attrs: &[(String, String)]) -> String {
     if attrs.is_empty() {
         return String::new();
     }
     let mut out = String::new();
     for (k, v) in attrs {
+        if k == "style" {
+            out.push_str(&jsx_style_attr(v));
+            continue;
+        }
         out.push(' ');
         out.push_str(k);
+        if v.is_empty() && is_html_boolean_attr(k) {
+            continue;
+        }
         out.push('=');
         out.push_str(&jsx_string_attr(v));
     }
     out
+}
+
+/// Render a CSS declaration string as a JSX `style` **object** prop:
+/// ` style={{"position": "absolute", …}}`. Returns the empty string when
+/// nothing parses, so the attribute is omitted entirely.
+///
+/// React throws outright on a string-valued `style` prop ("The `style`
+/// prop expects a mapping from style properties to values, not a string"),
+/// which would take down every page carrying one. hast stores attribute
+/// values as plain `String`s, so the CSS text has to be converted here, at
+/// the JSX boundary — the HTML serializer keeps writing the string form
+/// untouched.
+///
+/// Hyphenated property names are camelCased (`white-space` → `whiteSpace`)
+/// because React ignores the hyphenated spelling with a warning. Custom
+/// properties (`--shiki-dark-bg`, emitted by `SyntectPlugin`'s dual-theme
+/// mode) keep their exact name — both React and Preact read those verbatim.
+///
+/// Splitting is deliberately simple: `;` separates declarations and the
+/// FIRST `:` separates name from value. That is sufficient for every
+/// declaration this crate emits (footnote label hiding, table
+/// `text-align`, syntect colors) and for ordinary author CSS. A value
+/// containing a literal `;` — a `url(data:…;base64,…)` — would split
+/// wrongly; no producer here emits one.
+fn jsx_style_attr(css: &str) -> String {
+    let mut props: Vec<String> = Vec::new();
+    for decl in css.split(';') {
+        let decl = decl.trim();
+        if decl.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        let key = if name.starts_with("--") {
+            name.to_string()
+        } else {
+            camel_case_css_property(name)
+        };
+        props.push(format!(
+            "{}: {}",
+            js_string_literal(&key),
+            js_string_literal(value)
+        ));
+    }
+    if props.is_empty() {
+        return String::new();
+    }
+    format!(" style={{{{{}}}}}", props.join(", "))
+}
+
+/// `white-space` → `whiteSpace`. Leaves an already-camelCase or
+/// single-word name untouched.
+fn camel_case_css_property(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut upper_next = false;
+    for ch in name.chars() {
+        if ch == '-' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// True for HTML attributes whose presence alone means "true" and which
+/// React/Preact expose as boolean props.
+///
+/// Only consulted for EMPTY-valued attributes (see [`render_hast_attrs`]);
+/// an explicit value is always preserved verbatim.
+///
+/// Deliberately NOT the full HTML boolean-attribute set. The list is the
+/// two attributes this crate itself synthesizes with an empty value
+/// (`task_list_checkbox_hast`). `plugins::directives` also records an
+/// author-written valueless attribute as `key=""`, so widening this list
+/// (to `open`, `hidden`, …) would change directive output that is outside
+/// the scope this was added for — a deliberate call, not an oversight.
+fn is_html_boolean_attr(name: &str) -> bool {
+    matches!(name, "checked" | "disabled")
 }
 
 /// Return true if the trimmed-leading raw HTML string begins with a
@@ -1630,13 +1758,13 @@ fn nested_heading_id_and_anchor(slug: &str, text: &str) -> (String, String) {
 /// recursion only on the JSX path is safe because the bridge already
 /// embeds the resulting JsxRaw payload verbatim — JSX accepts plain
 /// HTML tags inside MDX JSX bodies.
-fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx) -> String {
+fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>) -> String {
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
         MdastNode::MdxJsxTextElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
         MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
@@ -1644,7 +1772,7 @@ fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx) -> String {
         // fires for the JSX-shaped arms above, but if the contract
         // ever changes we fall back to the recursive child renderer
         // rather than dropping the node.
-        other => jsx_render_child(other, ctx),
+        other => jsx_render_child(other, ctx, fc),
     }
 }
 
@@ -1653,6 +1781,7 @@ fn jsx_element_text(
     attrs: &[AttributeContent],
     children: &[MdastNode],
     ctx: &SlugCtx,
+    fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let attrs_str = render_jsx_attrs(attrs);
     // Choose the open/close JSX tag name. `name == None` is the MDX
@@ -1673,7 +1802,10 @@ fn jsx_element_text(
         // matches `JsxEmitter::emit_jsx`'s output.
         return format!("<{open_name}{attrs_str} />");
     }
-    let inner: String = children.iter().map(|c| jsx_render_child(c, ctx)).collect();
+    let inner: String = children
+        .iter()
+        .map(|c| jsx_render_child(c, ctx, fc))
+        .collect();
     format!("<{open_name}{attrs_str}>{inner}</{close_name}>")
 }
 
@@ -1690,19 +1822,19 @@ fn jsx_element_text(
 /// `HastNode::JsxRaw` arm) harvests the `<_components.<tag>` references
 /// afterwards so the module preamble registers each tag's default
 /// fallback in the `_components` map.
-fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
+fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>) -> String {
     match node {
         MdastNode::Text(t) => jsx_text_escape(&t.value),
         MdastNode::Html(h) => h.value.clone(),
         MdastNode::MdxFlowExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxTextExpression(e) => emit_mdx_expression_braced(&e.value),
         MdastNode::MdxJsxFlowElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
         MdastNode::MdxJsxTextElement(j) => {
-            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx)
+            jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
         }
-        MdastNode::Paragraph(p) => jsx_wrap_children("p", "", &p.children, ctx),
+        MdastNode::Paragraph(p) => jsx_wrap_children("p", "", &p.children, ctx, fc),
         MdastNode::Heading(h) => {
             let depth = h.depth.clamp(1, 6);
             // This heading lives inside an MDX JSX body, so
@@ -1718,12 +1850,16 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             let text = mdast_inline_text(&h.children);
             let (id_attr, anchor) = nested_heading_id_and_anchor(slug, &text);
             let tag = format!("h{depth}");
-            let inner: String = h.children.iter().map(|c| jsx_render_child(c, ctx)).collect();
+            let inner: String = h
+                .children
+                .iter()
+                .map(|c| jsx_render_child(c, ctx, fc))
+                .collect();
             format!("<_components.{tag}{id_attr}>{inner}{anchor}</_components.{tag}>")
         }
-        MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children, ctx),
-        MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children, ctx),
-        MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children, ctx),
+        MdastNode::Emphasis(e) => jsx_wrap_children("em", "", &e.children, ctx, fc),
+        MdastNode::Strong(s) => jsx_wrap_children("strong", "", &s.children, ctx, fc),
+        MdastNode::Delete(d) => jsx_wrap_children("del", "", &d.children, ctx, fc),
         MdastNode::InlineCode(c) => format!(
             "<_components.code>{}</_components.code>",
             jsx_text_escape(&c.value),
@@ -1745,7 +1881,10 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             }
             format!(
                 "<_components.a{attrs}>{}</_components.a>",
-                l.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+                l.children
+                    .iter()
+                    .map(|c| jsx_render_child(c, ctx, fc))
+                    .collect::<String>(),
             )
         }
         MdastNode::Image(i) => {
@@ -1771,11 +1910,23 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             }
             format!(
                 "<_components.{tag}{attrs}>{}</_components.{tag}>",
-                l.children.iter().map(|c| jsx_render_child(c, ctx)).collect::<String>(),
+                l.children
+                    .iter()
+                    .map(|c| jsx_render_child(c, ctx, fc))
+                    .collect::<String>(),
             )
         }
-        MdastNode::ListItem(li) => jsx_wrap_children("li", "", &li.children, ctx),
-        MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children, ctx),
+        MdastNode::ListItem(li) => {
+            let render = |nodes: &[MdastNode]| -> String {
+                nodes.iter().map(|c| jsx_render_child(c, ctx, fc)).collect()
+            };
+            let inner = match li.checked {
+                Some(checked) => task_list_item_jsx(&li.children, checked, render),
+                None => render(&li.children),
+            };
+            format!("<_components.li>{inner}</_components.li>")
+        }
+        MdastNode::Blockquote(b) => jsx_wrap_children("blockquote", "", &b.children, ctx, fc),
         MdastNode::ThematicBreak(_) => "<_components.hr />".to_string(),
         MdastNode::Break(_) => "<_components.br />".to_string(),
         MdastNode::Math(m) => format!(
@@ -1786,14 +1937,81 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
             "<_components.code class=\"language-math math-inline\">{}</_components.code>",
             jsx_text_escape(&m.value),
         ),
-        MdastNode::Root(r) => r.children.iter().map(|c| jsx_render_child(c, ctx)).collect(),
+        MdastNode::Root(r) => r
+            .children
+            .iter()
+            .map(|c| jsx_render_child(c, ctx, fc))
+            .collect(),
         // GFM pipe-table inside MDX JSX body — routes table tags through
         // `_components.<tag>`, matching the non-pipeline `emit_table_jsx`.
-        MdastNode::Table(t) => jsx_render_table(t, ctx),
-        // Footnotes, references, ESM, frontmatter, etc. drop silently here
-        // — better than leaking a `Debug` repr.
+        MdastNode::Table(t) => jsx_render_table(t, ctx, fc),
+        // GFM footnotes (issue #2023/#2025/#2027) nested inside an MDX
+        // JSX element body. This is a SEPARATE recursive descent from
+        // `pipeline::mdast_to_hast_inner`'s (this one is only reached
+        // for nodes inside an `MdxJsxFlowElement`/`MdxJsxTextElement`
+        // body), but `FootnoteModel::collect` already walked the WHOLE
+        // document tree — including JSX element bodies — when building
+        // the shared model, so an identifier referenced only in here
+        // still has an entry. `fc` is the SAME `FootnoteRenderCtx` (and
+        // therefore the same cursor) `mdast_to_hast_with`'s main walk
+        // is using, threaded down through `JsxEmitStrategy::JsxPath`'s
+        // closure — see that type's doc comment — so occurrences claim
+        // in the correct combined document order rather than a second,
+        // independently-advancing count that could drift from the main
+        // walk's.
+        //
+        // A `FootnoteDefinition` never renders in place here either,
+        // matching `pipeline::mdast_to_hast_inner`'s arm — its body only
+        // appears once, in the collected section `mdast_to_hast_with`
+        // appends at the end of the document.
+        MdastNode::FootnoteDefinition(_) => String::new(),
+        // A `FootnoteReference` claims its next occurrence from the
+        // shared cursor, mirroring `pipeline::footnote_reference_marker`'s
+        // shape but as JSX text routed through `_components.<tag>`, and
+        // reusing the SAME `FootnoteEntry`/`FootnoteRef` data the model
+        // already computed (ids, numbering, escaping policy) rather than
+        // re-deriving any of it here. `next_reference` returning `None`
+        // is not reachable through the public parse API (see the
+        // pipeline.rs arm's comment for why), so this degrades to
+        // nothing rather than panicking.
+        MdastNode::FootnoteReference(r) => fc
+            .next_reference(&r.identifier)
+            .map(|(entry, footnote_ref)| jsx_footnote_reference_marker(entry, footnote_ref))
+            .unwrap_or_default(),
+        // ESM, frontmatter, reference-style link/image definitions,
+        // etc. drop silently here — better than leaking a `Debug` repr.
         _ => String::new(),
     }
+}
+
+/// `<sup><a href="#{definition id}" id="{occurrence id}" data-footnote-ref=""
+/// aria-describedby="footnote-label">{number}</a></sup>`, routed through
+/// `_components.<tag>` like every other synthesized HTML tag in this
+/// file — the JSX-child-renderer's counterpart to
+/// `pipeline::footnote_reference_marker`.
+///
+/// `data-footnote-ref=""` — an empty-valued attribute, NOT the bare
+/// boolean-attribute shorthand this file uses elsewhere. Bare means `true`
+/// in JSX, which serializes as `data-footnote-ref="true"`, whereas the
+/// hast bridge emits `data-footnote-ref=""` for the identical marker at
+/// the document's top level. Two footnotes on one `.mdx` page would then
+/// differ purely by whether one happened to sit inside a JSX component's
+/// children — exactly the divergence epic #2021 exists to remove. The
+/// number renders via
+/// `js_string_literal_in_braces` (not plain text) so a document-level
+/// reference and one nested inside an MDX JSX element body produce the
+/// SAME `{"N"}` shape `HastJsxBridge::emit_node`'s `HastNode::Text` arm
+/// already produces for the top-level path — the acceptance criterion
+/// this file's tests pin is that `.md` and `.mdx` (and, here, JSX-nested
+/// vs. top-level within one `.mdx`) never visibly diverge.
+fn jsx_footnote_reference_marker(entry: &FootnoteEntry, footnote_ref: &FootnoteRef) -> String {
+    format!(
+        "<_components.sup><_components.a href=\"{}\" id=\"{}\" data-footnote-ref=\"\" aria-describedby=\"{}\">{}</_components.a></_components.sup>",
+        jsx_attr_escape(&entry.href()),
+        jsx_attr_escape(&footnote_ref.id),
+        jsx_attr_escape(FOOTNOTE_LABEL_ID),
+        js_string_literal_in_braces(&footnote_ref.number.to_string()),
+    )
 }
 
 /// Render a GFM pipe-table as `_components.<tag>`-routed JSX.
@@ -1803,12 +2021,18 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx) -> String {
 /// callers can override them, matching the non-pipeline `emit_table_jsx`.
 /// The resulting string is embedded as a [`HastNode::JsxRaw`] payload;
 /// the bridge's `collect_components_tag_names` scan registers each tag.
-fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
+fn jsx_render_table(
+    t: &markdown::mdast::Table,
+    ctx: &SlugCtx,
+    fc: &FootnoteRenderCtx<'_>,
+) -> String {
     let style_attr = |col: usize| -> String {
+        // Object-valued, matching the hast bridge's own `style` handling —
+        // a string `style` prop makes React throw. See `jsx_style_attr`.
         t.align
             .get(col)
             .and_then(align_style)
-            .map(|v| format!(" style=\"text-align: {v}\""))
+            .map(|v| jsx_style_attr(&format!("text-align: {v}")))
             .unwrap_or_default()
     };
 
@@ -1825,7 +2049,7 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
             let inner: String = tc
                 .children
                 .iter()
-                .map(|c| jsx_render_child(c, ctx))
+                .map(|c| jsx_render_child(c, ctx, fc))
                 .collect();
             out.push_str(&format!(
                 "<_components.{cell_tag}{style}>{inner}</_components.{cell_tag}>"
@@ -1857,12 +2081,71 @@ fn jsx_render_table(t: &markdown::mdast::Table, ctx: &SlugCtx) -> String {
     out
 }
 
-fn jsx_wrap_children(tag: &str, attrs: &str, children: &[MdastNode], ctx: &SlugCtx) -> String {
+/// Render the (disabled) task-list checkbox JSX literal that opens a
+/// `ListItem`'s content when `ListItem.checked` is `Some(_)` (issue
+/// #2024, epic #2021), followed by a single `{" "}` separating it from
+/// the label. GFM task-list checkboxes are static, server-rendered
+/// markup with no client-side toggle handler — always `disabled`;
+/// `checked` is present only when the item itself is checked. Routes
+/// through `_components.input`, like every other synthesized HTML tag in
+/// this file. Shared by both JSX-emit `ListItem` arms
+/// (`JsxEmitter::emit_node` and `jsx_render_child`).
+///
+/// Attribute spelling, ORDER (`type`, `disabled`, `checked`) and the
+/// trailing spacer all match what `pipeline::task_list_checkbox_hast` +
+/// `prepend_task_list_checkbox` produce for the same item, so a task list
+/// serializes identically whether it sits at a document's top level or
+/// inside a JSX component's children. `disabled`/`checked` stay BARE
+/// (JSX `true`) rather than `=""`: they are real HTML boolean attributes,
+/// and an empty string is falsy as a React/Preact prop — a `checked=""`
+/// checkbox hydrates unchecked and enabled. `render_hast_attrs` applies
+/// the same rule when bridging the hast path's empty-valued
+/// `disabled`/`checked` into JSX.
+fn task_list_checkbox_jsx(checked: bool) -> String {
+    let checked_attr = if checked { " checked" } else { "" };
+    format!("<_components.input type=\"checkbox\" disabled{checked_attr} />{{\" \"}}")
+}
+
+/// Wrap a task-list item's rendered content so the checkbox reads as a
+/// checkbox BESIDE its label rather than on its own line above it.
+///
+/// The JSX-emit counterpart of `pipeline::prepend_task_list_checkbox` —
+/// see that function for the full rationale. Neither emit path unwraps
+/// tight-list paragraphs, so a task item's children start with a
+/// `Paragraph`; the checkbox goes INSIDE that paragraph. An item that
+/// starts with something else (a nested list, a code block) keeps the
+/// plain prefix placement, since there is no inline context to join.
+///
+/// `render` turns a slice of mdast nodes into JSX text. It is a closure
+/// because `JsxEmitter`'s call site needs `&mut self` while
+/// `jsx_render_child`'s is a free function.
+fn task_list_item_jsx<R>(children: &[MdastNode], checked: bool, mut render: R) -> String
+where
+    R: FnMut(&[MdastNode]) -> String,
+{
+    let checkbox = task_list_checkbox_jsx(checked);
+    match children.split_first() {
+        Some((MdastNode::Paragraph(p), rest)) => format!(
+            "<_components.p>{checkbox}{}</_components.p>{}",
+            render(&p.children),
+            render(rest),
+        ),
+        _ => format!("{checkbox}{}", render(children)),
+    }
+}
+
+fn jsx_wrap_children(
+    tag: &str,
+    attrs: &str,
+    children: &[MdastNode],
+    ctx: &SlugCtx,
+    fc: &FootnoteRenderCtx<'_>,
+) -> String {
     format!(
         "<_components.{tag}{attrs}>{}</_components.{tag}>",
         children
             .iter()
-            .map(|c| jsx_render_child(c, ctx))
+            .map(|c| jsx_render_child(c, ctx, fc))
             .collect::<String>(),
     )
 }
@@ -4062,9 +4345,15 @@ mod tests {
         );
     }
 
-    /// Per-column alignment is emitted as `style="text-align: …"` on
-    /// `<th>` and `<td>` elements. `:---` = left, `---:` = right,
-    /// `:---:` = center.
+    /// Per-column alignment is emitted as a `style` OBJECT prop
+    /// (`style={{"textAlign": "left"}}`) on `<th>` and `<td>` elements.
+    /// `:---` = left, `---:` = right, `:---:` = center.
+    ///
+    /// The spelling changed from the string form `style="text-align: left"`
+    /// during epic #2021's review pass: React throws on a string-valued
+    /// `style` prop, so every JSX emit site now goes through
+    /// `jsx_style_attr`. The alignment semantics asserted here are
+    /// unchanged — only how the declaration is spelled in JSX.
     #[test]
     fn pipe_table_alignment_emits_style_attr() {
         // Columns: left | right | center | none
@@ -4073,26 +4362,31 @@ mod tests {
 
         // Header cells carry the alignment.
         assert!(
-            out.contains("style=\"text-align: left\""),
+            out.contains("style={{\"textAlign\": \"left\"}}"),
             "left alignment missing: {out}"
         );
         assert!(
-            out.contains("style=\"text-align: right\""),
+            out.contains("style={{\"textAlign\": \"right\"}}"),
             "right alignment missing: {out}"
         );
         assert!(
-            out.contains("style=\"text-align: center\""),
+            out.contains("style={{\"textAlign\": \"center\"}}"),
             "center alignment missing: {out}"
         );
         // The fourth column has no alignment → no style attr on that cell.
         // A loose check: the output must not have a 4th `style=` that
         // would indicate the None column sprouted one.
-        let style_count = out.matches("style=\"text-align:").count();
+        let style_count = out.matches("style={{\"textAlign\":").count();
         // 4 columns × 2 rows (head + body) = 8 cells, but only 3 columns
         // have alignment → 3 × 2 = 6 `style=` occurrences.
         assert_eq!(
             style_count, 6,
             "expected 6 style attrs (3 cols × 2 rows): {out}"
+        );
+        assert!(
+            !out.contains("style=\""),
+            "no JSX emit site may produce a STRING style prop — React \
+             throws on one: {out}"
         );
     }
 
@@ -4554,6 +4848,633 @@ mod tests {
         assert!(
             headings[0].headings.is_empty(),
             "zero headings, but the record itself must exist: {headings:?}"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // RED characterization tests for GFM task-list checkbox emission,
+    // Site 2 (#2022, Wave 1 of epic #2021 — superseding #1950):
+    // `JsxEmitter::emit_node`'s `ListItem` arm (~line 892,
+    // `self.emit_html("li", &[], &li.children)`) never reads
+    // `ListItem.checked`.
+    //
+    // This site is unit-tested directly (constructing the mdast node
+    // and calling `JsxEmitter::emit_node` by hand) rather than through
+    // the crate's public API, because it is structurally unreachable
+    // with `checked: Some(_)` through any public entry point today:
+    // `JsxEmitter::emit_node` is only reached by `mdx_to_jsx_module_inner`
+    // when NO pipeline is supplied (`take_hast_detour = pipeline_mut.is_some()`
+    // — see that function), and the no-pipeline branch always resolves
+    // GFM constructs to `ResolvedGfmConstructs::CONSERVATIVE`
+    // (`task_list_item: false`, hard-coded a few lines above). Supplying
+    // ANY pipeline — the only way to turn `task_list_item` on — forces
+    // the hast detour instead, which routes a top-level list through
+    // `pipeline::mdast_to_hast_inner`'s `ListItem` arm (Site 1), never
+    // through this one. See `tests/gfm_task_list_red.rs` for Sites 1 and 3.
+    //
+    // Desired post-fix contract mirrors the other two sites: a checked
+    // item's checkbox carries a `checked` marker, an unchecked item's
+    // does not, both are `disabled` (static, server-rendered output),
+    // and item text survives alongside the checkbox.
+    fn task_list_item_node(checked: Option<bool>, text: &str) -> MdastNode {
+        MdastNode::ListItem(markdown::mdast::ListItem {
+            children: vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
+                children: vec![MdastNode::Text(markdown::mdast::Text {
+                    value: text.to_string(),
+                    position: None,
+                })],
+                position: None,
+            })],
+            position: None,
+            spread: false,
+            checked,
+        })
+    }
+
+    #[test]
+    fn emit_node_checked_task_list_item_emits_checked_checkbox() {
+        let li = task_list_item_node(Some(true), "Buy milk");
+        let mut emitter = JsxEmitter::new();
+        let out = emitter.emit_node(&li);
+        assert!(
+            out.contains("type=\"checkbox\""),
+            "checked task-list item must emit a checkbox input; got:\n{out}"
+        );
+        assert!(
+            out.contains("checked"),
+            "checked task-list item's checkbox must carry a checked marker; got:\n{out}"
+        );
+        assert!(
+            out.contains("disabled"),
+            "the emitted checkbox is static (server-rendered) and must be disabled; got:\n{out}"
+        );
+        assert!(
+            out.contains("Buy milk"),
+            "item text must still be present alongside the checkbox; got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn emit_node_unchecked_task_list_item_emits_unchecked_checkbox() {
+        let li = task_list_item_node(Some(false), "Buy milk");
+        let mut emitter = JsxEmitter::new();
+        let out = emitter.emit_node(&li);
+        assert!(
+            out.contains("type=\"checkbox\""),
+            "unchecked task-list item must still emit a checkbox input; got:\n{out}"
+        );
+        assert!(
+            !out.contains("checked"),
+            "unchecked task-list item's checkbox must NOT carry a checked marker; got:\n{out}"
+        );
+        assert!(
+            out.contains("disabled"),
+            "the emitted checkbox is static (server-rendered) and must be disabled; got:\n{out}"
+        );
+        assert!(
+            out.contains("Buy milk"),
+            "item text must still be present alongside the checkbox; got:\n{out}"
+        );
+    }
+
+    /// Control (NOT ignored — must pass today and after the fix): an
+    /// ordinary list item (`checked: None`, i.e. not part of a task
+    /// list at all) must never grow a checkbox. Pins that the fix is
+    /// scoped to `checked.is_some()` and does not regress plain lists.
+    #[test]
+    fn emit_node_plain_list_item_never_emits_a_checkbox() {
+        let li = task_list_item_node(None, "Buy milk");
+        let mut emitter = JsxEmitter::new();
+        let out = emitter.emit_node(&li);
+        assert!(
+            !out.contains("type=\"checkbox\""),
+            "a plain (non-task-list) list item must never emit a checkbox; got:\n{out}"
+        );
+        assert!(
+            out.contains("Buy milk"),
+            "item text must still be present; got:\n{out}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Footnote RED tests (issue #2023, epic #2021: GFM Footnotes And
+    // Task Lists) — the JSX converter path.
+    //
+    // The real production path for `.mdx` content always supplies a
+    // `Pipeline` (`compile_mdx_to_jsx_module_cached` / the bundler / dev
+    // loader), which takes the hast detour: `mdast_to_hast_with` (shared
+    // with `pipeline.rs`'s `Pipeline::run`, see the mirrored tests
+    // there) then this file's `emit_node(&HastNode)`. The no-pipeline
+    // legacy entry point (`mdx_to_jsx_module` with no pipeline) always
+    // forces `ResolvedGfmConstructs::CONSERVATIVE`
+    // (`footnote_definition: false`) with no way to override it, so
+    // footnote syntax never parses into `FootnoteReference`/
+    // `FootnoteDefinition` nodes on that path — its `emit_node(&MdastNode)`
+    // catch-all (~line 953) is unreachable for footnotes through the
+    // public API and is deliberately NOT exercised here.
+    //
+    // What IS reachable and broken in THIS file specifically:
+    // `jsx_render_child`'s own catch-all (~line 1795), fired when a
+    // footnote reference/definition is nested INSIDE an MDX JSX
+    // element's body (`<Note>…[^a]…</Note>`) — see the `jsx_nested_*`
+    // tests below, tagged for #2027. The ordinary (non-nested) cases
+    // mirror `pipeline.rs`'s test names/fixtures exactly and are tagged
+    // for #2026, since they exercise the SAME shared catch-all in
+    // `mdast_to_hast_inner`, just observed through the JSX string
+    // output instead of a `HastNode` tree.
+
+    /// Pipeline with every GFM construct on, including
+    /// `footnote_definition`.
+    fn footnote_pipeline() -> Pipeline {
+        Pipeline::with_resolved_gfm_constructs(ResolvedGfmConstructs::ALL_ON)
+    }
+
+    fn emit_with_footnotes(src: &str) -> String {
+        let mut p = footnote_pipeline();
+        mdx_to_jsx_module_with_pipeline(src, MdxJsxOptions::default(), &mut p).expect("emit ok")
+    }
+
+    /// Extract every `key="VALUE"` occurrence's VALUE from a JSX source
+    /// string, in left-to-right (document) order. A tiny hand-rolled
+    /// scanner — this crate has no regex dependency, and the exact
+    /// id/href STRING scheme is #2025's policy call, not something
+    /// these tests should hardcode.
+    fn extract_attr_values(jsx: &str, key: &str) -> Vec<String> {
+        let needle = format!("{key}=\"");
+        let mut out = Vec::new();
+        let mut rest = jsx;
+        while let Some(idx) = rest.find(needle.as_str()) {
+            let after = &rest[idx + needle.len()..];
+            match after.find('"') {
+                Some(end) => {
+                    out.push(after[..end].to_string());
+                    rest = &after[end + 1..];
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// Extract a `key="VALUE"` attribute value from the innermost JSX
+    /// opening tag that ENCLOSES byte offset `pos` in `jsx` — i.e. the
+    /// nearest `<tag …>` immediately before `pos` with no intervening
+    /// `>`. Used to tie a specific visible marker occurrence (e.g. the
+    /// SECOND `{"1"}`) to the `id`/`href` on the exact element that
+    /// renders it, rather than to "some id/href anywhere in the
+    /// document" (codex review flagged the weaker document-wide
+    /// version as unable to distinguish a correct per-occurrence
+    /// backreference wiring from a broken one that merely produces the
+    /// right COUNT of ids/hrefs).
+    fn enclosing_tag_attr(jsx: &str, pos: usize, key: &str) -> Option<String> {
+        let before = &jsx[..pos];
+        let tag_start = before.rfind('<')?;
+        let tag_end = jsx[tag_start..].find('>').map(|i| tag_start + i)?;
+        extract_attr_values(&jsx[tag_start..tag_end], key)
+            .into_iter()
+            .next()
+    }
+
+    // 1. A single reference and its definition are ASSOCIATED — mirrors
+    // `pipeline::tests::footnote_reference_and_definition_are_associated`.
+    // Strengthened per codex review: the ORIGINAL version only checked
+    // that "every fragment href resolves to SOME id anywhere in the
+    // document", which an implementation emitting only a
+    // marker-to-definition link (and no backreference at all) would
+    // satisfy. This version ties the marker's OWN id to a backreference
+    // href specifically targeting it, mirroring the pipeline.rs test's
+    // structure.
+    #[test]
+    fn jsx_footnote_reference_and_definition_are_associated() {
+        let jsx = emit_with_footnotes("Ref one[^a] end.\n\n[^a]: Definition body.\n");
+
+        let marker_pos = jsx
+            .find("{\"1\"}")
+            .unwrap_or_else(|| panic!("expected the visible footnote marker \"1\": {jsx}"));
+        assert!(
+            jsx.contains("{\"Definition body.\"}"),
+            "footnote definition body missing from emitted JSX: {jsx}"
+        );
+
+        let marker_id = enclosing_tag_attr(&jsx, marker_pos, "id").unwrap_or_else(|| {
+            panic!("reference marker's own enclosing tag must carry an id=: {jsx}")
+        });
+        let marker_href = enclosing_tag_attr(&jsx, marker_pos, "href").unwrap_or_else(|| {
+            panic!("reference marker's own enclosing tag must carry an href=: {jsx}")
+        });
+        assert!(
+            marker_href.starts_with('#'),
+            "reference marker href must be a fragment link, got {marker_href:?}: {jsx}"
+        );
+
+        // The marker's href must resolve to SOME rendered id= (the
+        // definition's target)…
+        let ids = extract_attr_values(&jsx, "id");
+        let def_target = marker_href.trim_start_matches('#');
+        assert!(
+            ids.iter().any(|id| id == def_target),
+            "the reference marker's href ({marker_href}) does not resolve to \
+             any rendered id= — it must point at the rendered definition: \
+             ids={ids:?} jsx={jsx}"
+        );
+
+        // …AND a backreference href must exist SPECIFICALLY targeting
+        // the marker's OWN id (not just any id in the document) —
+        // proves the definition can link back to THIS occurrence.
+        let expected_backref = format!("#{marker_id}");
+        let hrefs = extract_attr_values(&jsx, "href");
+        assert!(
+            hrefs.iter().any(|h| h == &expected_backref),
+            "no backreference href={expected_backref} found pointing back at \
+             the marker's own id={marker_id} — reference and definition must \
+             link to EACH OTHER, not just one direction: hrefs={hrefs:?} jsx={jsx}"
+        );
+    }
+
+    // 2. Repeated references to ONE definition need distinct
+    // backreference targets — mirrors
+    // `pipeline::tests::repeated_references_get_distinct_backreference_targets`.
+    // Strengthened per codex review: the ORIGINAL version only counted
+    // ids/hrefs document-wide, which an implementation giving only the
+    // FIRST occurrence a working backreference (the second rendering
+    // unusable) could still satisfy by coincidence (definition id +
+    // first-marker id = 2 unique ids; def-to-first-marker link +
+    // marker-to-definition link = 2 unique hrefs). This version ties
+    // EACH of the two visible marker occurrences to its OWN id and its
+    // OWN backreference specifically.
+    #[test]
+    fn jsx_repeated_references_get_distinct_backreference_targets() {
+        let jsx = emit_with_footnotes("Ref one[^a] and ref again[^a] end.\n\n[^a]: Shared def.\n");
+
+        let marker_count = jsx.matches("{\"1\"}").count();
+        assert_eq!(
+            marker_count, 2,
+            "expected exactly two visible footnote-1 markers (same number, \
+             two occurrences), got {marker_count}: {jsx}"
+        );
+
+        let mut marker_ids = Vec::new();
+        let mut rest = jsx.as_str();
+        let mut offset = 0usize;
+        while let Some(rel) = rest.find("{\"1\"}") {
+            let pos = offset + rel;
+            let id = enclosing_tag_attr(&jsx, pos, "id").unwrap_or_else(|| {
+                panic!("marker occurrence at byte {pos} must carry its own id=: {jsx}")
+            });
+            marker_ids.push(id);
+            offset = pos + "{\"1\"}".len();
+            rest = &jsx[offset..];
+        }
+        assert_eq!(
+            marker_ids.len(),
+            2,
+            "expected two marker ids, got {marker_ids:?}"
+        );
+        assert_ne!(
+            marker_ids[0], marker_ids[1],
+            "each repeated reference occurrence must get its own distinct \
+             backreference id, got the same id twice: {marker_ids:?}"
+        );
+
+        let hrefs = extract_attr_values(&jsx, "href");
+        for id in &marker_ids {
+            let expected_backref = format!("#{id}");
+            assert!(
+                hrefs.iter().any(|h| h == &expected_backref),
+                "no backreference href={expected_backref} found for marker \
+                 id={id} — EACH occurrence needs its own working \
+                 backreference, not just a document-wide id/href count \
+                 match: hrefs={hrefs:?} jsx={jsx}"
+            );
+        }
+    }
+
+    // 3. Multiple definitions: numbering and order follow REFERENCE
+    // order — mirrors
+    // `pipeline::tests::multiple_definitions_are_numbered_and_ordered_by_first_reference`.
+    #[test]
+    fn jsx_multiple_definitions_are_numbered_and_ordered_by_first_reference() {
+        let jsx = emit_with_footnotes(
+            "First[^a] then second[^b] end.\n\n[^b]: Second body.\n\n[^a]: First body.\n",
+        );
+
+        let one_pos = jsx
+            .find("{\"1\"}")
+            .unwrap_or_else(|| panic!("marker \"1\" missing from emitted JSX: {jsx}"));
+        let two_pos = jsx
+            .find("{\"2\"}")
+            .unwrap_or_else(|| panic!("marker \"2\" missing from emitted JSX: {jsx}"));
+        assert!(
+            one_pos < two_pos,
+            "the FIRST-referenced footnote (`a`) must be numbered 1 and its \
+             marker must appear before the SECOND-referenced footnote's \
+             marker \"2\": jsx={jsx}"
+        );
+
+        let a_pos = jsx
+            .find("First body.")
+            .unwrap_or_else(|| panic!("First body. missing from emitted JSX: {jsx}"));
+        let b_pos = jsx
+            .find("Second body.")
+            .unwrap_or_else(|| panic!("Second body. missing from emitted JSX: {jsx}"));
+        assert!(
+            a_pos < b_pos,
+            "footnote definitions must render in REFERENCE order (a before \
+             b): jsx={jsx}"
+        );
+    }
+
+    // 4. Duplicate `[^a]` definitions collapse to exactly one entry —
+    // mirrors
+    // `pipeline::tests::duplicate_definitions_collapse_to_exactly_one_entry`.
+    // WHICH body wins is #2025's policy call; this test only pins the
+    // "exactly one, not two" structural fact.
+    #[test]
+    fn jsx_duplicate_definitions_collapse_to_exactly_one_entry() {
+        let jsx =
+            emit_with_footnotes("Dup label[^a] end.\n\n[^a]: First.\n\n[^a]: Second (dup).\n");
+
+        let has_first = jsx.contains("First.");
+        let has_second = jsx.contains("Second (dup).");
+        assert!(
+            has_first ^ has_second,
+            "exactly ONE of the duplicate definition bodies must survive \
+             (the tie-break is #2025's policy call) — got first={has_first} \
+             second={has_second}: {jsx}"
+        );
+
+        let marker_count = jsx.matches("{\"1\"}").count();
+        assert_eq!(
+            marker_count, 1,
+            "duplicate definitions must still yield exactly one reference \
+             marker \"1\", got {marker_count}: {jsx}"
+        );
+    }
+
+    // 5. A reference with NO matching definition stays literal text —
+    // parser-level fact (see the mirrored, non-ignored pin in
+    // `pipeline::tests::unmatched_reference_stays_literal_text` for the
+    // full rationale). Passing today; not a RED test.
+    #[test]
+    fn jsx_unmatched_reference_stays_literal_text() {
+        let jsx = emit_with_footnotes("Dangling ref[^missing] end.\n");
+        assert!(
+            jsx.contains("[^missing]"),
+            "unmatched footnote reference must stay literal text in the \
+             emitted JSX: {jsx}"
+        );
+    }
+
+    // 6. A footnote reference AND its definition nested inside an MDX
+    // JSX element's body (`<Note>…</Note>`) go through this file's OWN
+    // `jsx_render_child` catch-all (~line 1795), not the shared
+    // `mdast_to_hast_inner` one — confirmed via a throwaway
+    // `zfb-content` example during this issue's investigation: both
+    // `FootnoteReference` and `FootnoteDefinition` parse as direct
+    // children of the `MdxJsxFlowElement` node when nested this way.
+    // #2027's acceptance criteria calls this out by name ("a footnote
+    // reference inside JSX children").
+    #[test]
+    fn jsx_nested_footnote_reference_and_definition_inside_jsx_element_are_not_dropped() {
+        let jsx = emit_with_footnotes("<Note>\n\nRef[^a] end.\n\n[^a]: Body text.\n\n</Note>\n");
+
+        assert!(
+            jsx.contains("{\"1\"}"),
+            "a footnote reference nested inside an MDX JSX element body must \
+             still render its visible marker \"1\" — jsx_render_child's \
+             catch-all drops it today: {jsx}"
+        );
+        assert!(
+            jsx.contains("Body text."),
+            "a footnote definition nested inside an MDX JSX element body \
+             must still render its content: {jsx}"
+        );
+    }
+
+    // 7. A footnote DEFINITION whose body contains JSX (`<Bold>…</Bold>`)
+    // — the reverse nesting #2027's acceptance criteria also calls out
+    // by name. The `FootnoteDefinition` itself is top-level here (so
+    // the emission fix mechanically lands via #2026's shared catch-all),
+    // but confirming the nested JSX content survives is explicitly
+    // #2027's stated scope, so it stays tagged for #2027's confirm pass
+    // rather than #2026's.
+    #[test]
+    fn jsx_footnote_definition_body_containing_jsx_is_not_dropped() {
+        let jsx =
+            emit_with_footnotes("Ref[^a] end.\n\n[^a]: Body with <Bold>emphasis</Bold> inside.\n");
+
+        assert!(
+            jsx.contains("Body with"),
+            "footnote definition body must survive: {jsx}"
+        );
+        assert!(
+            jsx.contains("emphasis"),
+            "JSX content nested inside a footnote definition body must \
+             survive: {jsx}"
+        );
+        assert!(
+            jsx.contains("Bold"),
+            "the JSX component name nested inside a footnote definition \
+             body must survive (not just its text content): {jsx}"
+        );
+    }
+
+    // 8. `jsx_render_child`'s catch-all still swallows what it legitimately
+    // should — mirrors `pipeline::tests::catch_all_still_swallows_reference_style_link_definitions`,
+    // but exercised through THIS file's own catch-all by nesting the
+    // reference-style link definition inside an MDX JSX element body
+    // (`<Note>…</Note>`), the one shape that routes through
+    // `jsx_render_child` rather than the shared `mdast_to_hast_inner`
+    // catch-all. Carving footnotes out of the catch-all (this wave)
+    // must not weaken or remove it for everything else it drops.
+    #[test]
+    fn jsx_catch_all_still_swallows_reference_style_link_definitions_nested_in_jsx() {
+        let jsx = emit_with_footnotes(
+            "<Note>\n\nPara text.\n\n[label]: /elsewhere \"Title\"\n\n</Note>\n",
+        );
+
+        assert!(
+            jsx.contains("Para text."),
+            "the surrounding paragraph must still render: {jsx}"
+        );
+        assert!(
+            !jsx.contains("/elsewhere") && !jsx.contains("Title"),
+            "a reference-style link definition nested inside an MDX JSX \
+             element body must still be silently dropped by \
+             jsx_render_child's catch-all, got: {jsx}"
+        );
+    }
+
+    // 9. `gfm: false` (footnote_definition off) leaves footnote syntax
+    // nested inside an MDX JSX element body as literal text, with no
+    // footnote-shaped markup anywhere — mirrors
+    // `pipeline::tests::gfm_false_leaves_footnote_syntax_as_literal_text_with_no_section_appended`,
+    // but through THIS file's `jsx_render_child` path (a `Pipeline`
+    // whose GFM constructs default to `CONSERVATIVE`, i.e.
+    // `Pipeline::new()`, never turns on `footnote_definition`, so
+    // markdown-rs never produces a `FootnoteReference`/
+    // `FootnoteDefinition` node at all — the same structural guarantee
+    // the task-list wave relied on for its own `gfm: false` byte-parity
+    // proof, not something this emitter has to re-derive).
+    #[test]
+    fn jsx_gfm_false_leaves_nested_footnote_syntax_as_literal_text() {
+        let mut p = Pipeline::new();
+        let jsx = mdx_to_jsx_module_with_pipeline(
+            "<Note>\n\nRef[^a] end.\n\n[^a]: Body text.\n\n</Note>\n",
+            MdxJsxOptions::default(),
+            &mut p,
+        )
+        .expect("emit ok");
+
+        assert!(
+            jsx.contains("[^a]") && jsx.contains("[^a]: Body text."),
+            "footnote syntax must survive as literal text nested inside an \
+             MDX JSX element body when footnote_definition is off, got: {jsx}"
+        );
+        assert!(
+            !jsx.contains("data-footnote-ref")
+                && !jsx.contains("data-footnote-backref")
+                && !jsx.contains("data-footnotes"),
+            "no footnote-shaped attribute may appear anywhere when the \
+             construct is off: {jsx}"
+        );
+    }
+
+    // ---- the two JSX emit sites must not diverge (epic #2021 review) ----
+    //
+    // The epic's stated purpose is that a user switching a page between
+    // `.md` and `.mdx` sees no behavioural difference. The same rule binds
+    // the two JSX-emit sites WITHIN one `.mdx`: a footnote or task list
+    // that happens to sit inside a JSX component's children goes through
+    // `jsx_render_child`, while one at the document's top level goes
+    // through the hast bridge. The three tests below pin the spellings
+    // that used to differ.
+
+    /// The exact checkbox literal both JSX sites must produce. Bare
+    /// boolean attributes (`disabled`/`checked` are real HTML booleans and
+    /// must not be falsy props), `type`-`disabled`-`checked` order, and one
+    /// `{" "}` separating the checkbox from its label.
+    const CHECKED_CHECKBOX_JSX: &str =
+        "<_components.input type=\"checkbox\" disabled checked />{\" \"}";
+    const UNCHECKED_CHECKBOX_JSX: &str = "<_components.input type=\"checkbox\" disabled />{\" \"}";
+
+    const TASK_AND_FOOTNOTE_SRC: &str =
+        "- [ ] Todo\n- [x] Done\n\nRef[^a] end.\n\n[^a]: Body text.\n";
+
+    #[test]
+    fn both_jsx_emit_sites_spell_the_footnote_reference_marker_identically() {
+        let top_level = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        let nested = emit_with_footnotes(&format!("<Note>\n\n{TASK_AND_FOOTNOTE_SRC}\n</Note>\n"));
+
+        for (label, jsx) in [("top-level", &top_level), ("nested", &nested)] {
+            assert!(
+                jsx.contains("data-footnote-ref=\"\""),
+                "the {label} path must spell the marker attribute as \
+                 data-footnote-ref=\"\": {jsx}"
+            );
+            // The bare JSX shorthand means `true`, which serializes as the
+            // visibly different `data-footnote-ref="true"` — the exact
+            // divergence this pins against.
+            assert!(
+                !jsx.contains("data-footnote-ref "),
+                "the {label} path must not emit the bare boolean-attribute \
+                 shorthand for data-footnote-ref (JSX `true`, which \
+                 serializes as data-footnote-ref=\"true\"): {jsx}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_jsx_emit_sites_spell_the_task_list_checkbox_identically() {
+        let top_level = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        let nested = emit_with_footnotes(&format!("<Note>\n\n{TASK_AND_FOOTNOTE_SRC}\n</Note>\n"));
+
+        for (label, jsx) in [("top-level", &top_level), ("nested", &nested)] {
+            assert!(
+                jsx.contains(UNCHECKED_CHECKBOX_JSX),
+                "the {label} path must emit {UNCHECKED_CHECKBOX_JSX:?}: {jsx}"
+            );
+            assert!(
+                jsx.contains(CHECKED_CHECKBOX_JSX),
+                "the {label} path must emit {CHECKED_CHECKBOX_JSX:?}: {jsx}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_jsx_emit_sites_put_the_checkbox_inside_the_items_own_paragraph() {
+        // A checkbox emitted as a SIBLING before the item's `<p>` renders on
+        // its own line ABOVE the label, because neither emit path unwraps
+        // tight-list paragraphs. It must open the paragraph instead, so the
+        // checkbox reads as a checkbox beside its text (as GitHub renders
+        // one).
+        let top_level = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        let nested = emit_with_footnotes(&format!("<Note>\n\n{TASK_AND_FOOTNOTE_SRC}\n</Note>\n"));
+
+        for (label, jsx) in [("top-level", &top_level), ("nested", &nested)] {
+            assert!(
+                jsx.contains(&format!(
+                    "<_components.li><_components.p>{UNCHECKED_CHECKBOX_JSX}"
+                )),
+                "the {label} path must open the item's own paragraph with the \
+                 checkbox, never place it as a sibling before it: {jsx}"
+            );
+            assert!(
+                !jsx.contains(&format!("<_components.li>{UNCHECKED_CHECKBOX_JSX}")),
+                "the {label} path must not emit the checkbox as a sibling \
+                 before the item's paragraph: {jsx}"
+            );
+        }
+    }
+
+    #[test]
+    fn jsx_style_attr_emits_a_react_compatible_object_prop() {
+        assert_eq!(
+            jsx_style_attr("text-align: center"),
+            " style={{\"textAlign\": \"center\"}}"
+        );
+        // Custom properties keep their exact name — React and Preact both
+        // read `--x` verbatim, and camelCasing would break them.
+        assert_eq!(
+            jsx_style_attr("--shiki-dark-bg:#111;color:#eee"),
+            " style={{\"--shiki-dark-bg\": \"#111\", \"color\": \"#eee\"}}"
+        );
+        // A value may contain `:` and `,` (`clip: rect(0,0,0,0)`); only the
+        // FIRST `:` separates name from value.
+        assert_eq!(
+            jsx_style_attr("clip:rect(0,0,0,0)"),
+            " style={{\"clip\": \"rect(0,0,0,0)\"}}"
+        );
+        // Nothing parseable → the attribute is omitted entirely rather
+        // than emitted empty.
+        assert_eq!(jsx_style_attr(""), "");
+        assert_eq!(jsx_style_attr(";  ;"), "");
+        assert_eq!(jsx_style_attr("novalue"), "");
+    }
+
+    #[test]
+    fn the_footnote_label_is_hidden_by_an_inline_style_not_a_project_css_class() {
+        // `sr-only` is a Tailwind utility, and this class is emitted from
+        // Rust — Tailwind's content scan never sees the string, so the
+        // utility is never generated; zfb ships no stylesheet defining it
+        // either. The inline style is what actually makes the documented
+        // "visually hidden" landmark true.
+        let jsx = emit_with_footnotes(TASK_AND_FOOTNOTE_SRC);
+        // Emitted as a style OBJECT, never a string — React throws on a
+        // string `style` prop. `jsx_style_attr` camelCases the hyphenated
+        // property names on the way through.
+        assert!(
+            jsx.contains(&jsx_style_attr(FOOTNOTE_LABEL_STYLE)),
+            "the footnote label must carry the visually-hidden inline style: {jsx}"
+        );
+        assert!(
+            jsx.contains("\"whiteSpace\": \"nowrap\"") && !jsx.contains("white-space"),
+            "hyphenated CSS property names must be camelCased for React: {jsx}"
+        );
+        assert!(
+            jsx.contains("class=\"sr-only\""),
+            "the sr-only class stays as a styling hook alongside the inline \
+             style: {jsx}"
         );
     }
 }

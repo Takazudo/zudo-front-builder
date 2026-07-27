@@ -1574,6 +1574,45 @@ mod tests {
         );
     }
 
+    /// Issues #2063 / #2064 — what the dev server's content-provenance
+    /// FAILURE path actually costs.
+    ///
+    /// When `reconcile_content_provenance` errors, the dev session wipes
+    /// every `DepKind::Content` edge from this graph (see
+    /// `replace_content_edges` in `crates/zfb/src/commands/dev.rs`). This
+    /// test models exactly that end state — page `c` keeps its self-edge but
+    /// no longer records `content/post.md` — and pins the consequence: the
+    /// content path becomes UNKNOWN to the graph, which trips the
+    /// conservative `PageSelection::All` fallback.
+    ///
+    /// That is the load-bearing fact for #2063's hypothesis. A provenance
+    /// failure degrades to "rebuild EVERY page", never to "rebuild NO page",
+    /// so it cannot be what empties `BuildOutcome::pages_stale` and gates
+    /// `ReloadEvent::Page` out of `outcome_to_events`. #2063's missing
+    /// reload therefore has a different cause than #2064.
+    #[test]
+    fn content_edit_after_a_provenance_wipe_falls_back_to_a_full_rebuild() {
+        let mut g = DependencyGraph::new();
+        // The post-wipe shape: the page survives, its Content edge does not.
+        g.upsert(PageDeps::new(pid("/proj/pages/c.tsx"), vec![]));
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            ),
+            Arc::new(Mutex::new(g)),
+            CountingPipeline::default(),
+        );
+
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/content/post.md")]);
+        assert!(
+            plan.pages.is_all(),
+            "a content path the graph no longer knows must take the conservative \
+             whole-site fallback — narrowing off, NOT rendering off; got {:?}",
+            plan.pages,
+        );
+    }
+
     #[test]
     fn css_change_triggers_css_pipeline_only() {
         let orch = make_orch(CountingPipeline::default());
