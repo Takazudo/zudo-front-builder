@@ -1068,6 +1068,7 @@ pub struct AcceptedPackage {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AcceptedEnrolmentSet {
     by_name: BTreeMap<String, AcceptedPackage>,
+    inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>>,
 }
 
 impl AcceptedEnrolmentSet {
@@ -1096,6 +1097,30 @@ impl AcceptedEnrolmentSet {
     /// Every accepted package, in declared-name order.
     pub fn iter(&self) -> impl Iterator<Item = &AcceptedPackage> {
         self.by_name.values()
+    }
+
+    /// The canonical paths of the metafile inputs that made `name` accepted —
+    /// i.e. the files esbuild ACTUALLY read from that package in this bundle
+    /// session, each one individually cleared by the declared-entry rule.
+    ///
+    /// This is the tightest bound a consumer can key off: strictly the bundled
+    /// files, never the package's whole tree and never a location its manifest
+    /// merely declares reachable. Epic #2078 Sub 10b (issue #2089) needs
+    /// exactly that precision — it turns "this package was accepted" into a
+    /// per-FILE question ("did THIS bundled file ship an unexpanded macro?"),
+    /// so an unreferenced macro-bearing fixture elsewhere in the package can
+    /// never be mistaken for one that reached the bundle. An input REJECTED by
+    /// the audit (e.g. an undeclared deep import into a dist-shipping sibling)
+    /// is never recorded here, even when a sibling input made the same package
+    /// accepted — see `accepted_enrolment_set`'s own docs for that boundary.
+    ///
+    /// Empty for a name that was not accepted this session.
+    pub fn reached_inputs(&self, name: &str) -> impl Iterator<Item = &Path> {
+        self.inputs_by_name
+            .get(name)
+            .into_iter()
+            .flatten()
+            .map(PathBuf::as_path)
     }
 }
 
@@ -1179,6 +1204,7 @@ pub fn accepted_enrolment_set(
         .collect();
 
     let mut by_name: BTreeMap<String, AcceptedPackage> = BTreeMap::new();
+    let mut inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     for record in resolve_metafile_inputs(&meta, metafile_cwd, &[metafile_cwd]) {
         let Some(canonical) = record.canonical_path else {
             continue;
@@ -1204,6 +1230,10 @@ pub fn accepted_enrolment_set(
                 &canonical,
                 &canonical_first_party_root,
             ) {
+                inputs_by_name
+                    .entry(pkg.name.clone())
+                    .or_default()
+                    .insert(canonical);
                 by_name.entry(pkg.name.clone()).or_insert(pkg);
             }
             // An offender (rejected by the audit) is simply not enrolled —
@@ -1232,11 +1262,18 @@ pub fn accepted_enrolment_set(
             &canonical,
             &canonical_first_party_root,
         ) {
+            inputs_by_name
+                .entry(pkg.name.clone())
+                .or_default()
+                .insert(canonical);
             by_name.entry(pkg.name.clone()).or_insert(pkg);
         }
     }
 
-    Ok(AcceptedEnrolmentSet { by_name })
+    Ok(AcceptedEnrolmentSet {
+        by_name,
+        inputs_by_name,
+    })
 }
 
 /// Convenience wrapper over [`accepted_enrolment_set`]: read the metafile
@@ -2592,6 +2629,88 @@ mod tests {
             .get("@acme/built")
             .expect("@acme/built must be enrolled");
         assert_eq!(pkg.declared_entry_roots, vec!["dist/".to_string()]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_reports_only_the_accepted_inputs_as_reached() {
+        // The per-FILE bound epic #2078 Sub 10b (issue #2089) keys off. Same
+        // `@acme/built` fixture as the test above: the package IS accepted (its
+        // declared `dist/index.js` was reached), but the undeclared deep import
+        // into `src/internal.ts` is an OFFENDER, so it must never appear as a
+        // reached input — otherwise a consumer would attribute a rejected input
+        // to an accepted package.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "built",
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
+            &[
+                ("dist/index.js", "built"),
+                ("src/internal.ts", "internal source"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/built/dist/index.js": {"imports": []},
+            "node_modules/@acme/built/src/internal.ts": {"imports": []}
+        }}"#;
+
+        let set = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party).unwrap();
+        let reached: Vec<PathBuf> = set
+            .reached_inputs("@acme/built")
+            .map(Path::to_path_buf)
+            .collect();
+        assert_eq!(
+            reached,
+            vec![first_party.join("packages/built/dist/index.js")],
+            "only the declared, accepted input may be reported as reached"
+        );
+        assert_eq!(
+            set.reached_inputs("@acme/never-accepted").count(),
+            0,
+            "a name that was never accepted has no reached inputs"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_enrolment_set_reports_every_accepted_input_of_one_package() {
+        // A package reached through more than one input is still ONE entry in
+        // the set (asserted by the sibling test above), but every one of its
+        // accepted inputs must be individually visible — Sub 10b inspects each
+        // bundled file, not just the first one that made the package accepted.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "ui",
+            r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+            &[
+                ("src/cta-button.tsx", "import './theme';"),
+                ("src/theme.ts", "theme"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/ui/src/cta-button.tsx": {"imports": []},
+            "node_modules/@acme/ui/src/theme.ts": {"imports": []}
+        }}"#;
+
+        let set = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party).unwrap();
+        assert_eq!(set.len(), 1);
+        let reached: Vec<PathBuf> = set
+            .reached_inputs("@acme/ui")
+            .map(Path::to_path_buf)
+            .collect();
+        assert_eq!(
+            reached,
+            vec![
+                first_party.join("packages/ui/src/cta-button.tsx"),
+                first_party.join("packages/ui/src/theme.ts"),
+            ]
+        );
     }
 
     #[test]
