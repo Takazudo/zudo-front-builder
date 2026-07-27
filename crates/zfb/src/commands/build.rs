@@ -3558,6 +3558,357 @@ mod stage_escape_audit_policy_tests {
     }
 }
 
+/// Issue #2090 (epic #2078, Wave 4, Sub 10c) — the epic's **sanctioned
+/// loud-failure fallback** for #2048's silent islands/client shape, in place
+/// of a full acceptance⇒enrolment coupling.
+///
+/// # What is silent today, and why the SSR fix cannot reach it
+///
+/// A first-party workspace sibling that is a *declared consume-from-source*
+/// package (#2040's declared-entry exemption: its own `package.json` declares
+/// an entry root pointing straight at un-built source) is **accepted** by the
+/// stage-escape audit's case-2 rule, but nothing ever mirror-enrols it — so
+/// its own `import.meta.glob(...)` is never expanded. On the SSR side that
+/// throws at render time. Here it does not: the islands/client pipeline ships
+/// the literal, unexpanded macro text into the browser bundle with a fully
+/// GREEN build, and the throw only happens in the user's browser at hydration.
+///
+/// Worse, the shape that leaks is precisely the one with **no audit attached
+/// at all**. `stage_escape_audit_policy` (guard (b)) is only ever consulted
+/// `if let Some(islands_stage_root) = _islands_shadow…`, and the shadow itself
+/// is only materialised when the scan already found a glob/raw/worker/plugin
+/// preprocessing need. A sibling reached by bare package name through an edge
+/// the islands scanner never records (a query-free `require(...)`, which
+/// `collect_import_edges` does not visit) contributes no such need: no shadow,
+/// no `--metafile`, no guard (a), no guard (b). Bolting a check onto the
+/// existing audit call site would therefore never fire for it — hence this
+/// pass, which is deliberately **not** gated on a stage existing.
+///
+/// # Why this is the fallback and not the coupling
+///
+/// Coupling acceptance to enrolment here would need esbuild to have run
+/// first (acceptance is a property of its metafile), then a second bundling
+/// pass over a shadow that also *redirects* the bare specifier away from the
+/// wholesale live `node_modules` symlink the shadow sets up. That is a second
+/// esbuild pass plus a curated `node_modules` layer in the latency-sensitive
+/// dev rebundle path — new machinery of exactly the kind epic #2078's stop
+/// condition reserves the loud-failure fallback for. esbuild stays the only
+/// resolver: this pass predicts nothing.
+///
+/// # The evidence chain (no heuristics on the "is it broken" question)
+///
+/// 1. **Scope gate** — only a NESTED workspace member is in scope, matching
+///    #2048's and #2083's own scoping (root-claimed topology is explicitly
+///    out). Outside a workspace this returns before touching the bytes, so a
+///    single-project build pays nothing.
+/// 2. **Trigger** — the emitted, browser-bound artifacts are searched for a
+///    Vite-only macro that must never ship. This is esbuild's own output, so a
+///    hit is *proof* the macro leaked, not a prediction that it might. It also
+///    subsumes "and the package was not otherwise mirror-enrolled": an
+///    enrolled package's macro was expanded, so it cannot be here.
+/// 3. **Attribution** — only once a leak is proven does this walk the
+///    workspace's CLAIMED members, looking for a genuine `import.meta.glob`
+///    CALL (via the AST-based `source_contains_import_meta_glob`, not a
+///    substring) inside a location the package's own manifest DECLARES as an
+///    entry root ([`zfb_build::declared_first_party_package_for_source`] —
+///    Sub #2088's declared-data query, the same rule the audit accepts case-2
+///    inputs by). Nothing is named on the strength of workspace membership
+///    alone, and nothing is failed on inert text alone.
+///
+/// # Known blind spots (deliberately not widened here)
+///
+/// - **Attribution is candidate-level, not causal.** With no `--metafile` on
+///   this path there is no record of which input esbuild actually pulled in,
+///   so when several claimed members declare a macro-bearing entry this names
+///   all of them. Both conditions must hold to fail at all (a macro really
+///   leaked into the browser bytes AND a declared first-party entry really
+///   contains one), so this cannot fail a build that ships nothing broken —
+///   it can only be imprecise about which package to blame, and the
+///   diagnostic says so.
+/// - A leak attributable to no claimed member — e.g. a macro in a
+///   project-local module the scanner never visited — leaves behaviour exactly
+///   as it is today rather than failing an out-of-scope build.
+/// - Only `import.meta.glob` is covered: it is the marker #2083 pins and the
+///   one proven to survive into emitted bytes as literal text. `?raw` and the
+///   module-worker `new URL(...)` macro are NOT covered by this fallback.
+fn audit_unenrolled_first_party_macro_leak(
+    project_root: &Path,
+    emitted: &[&[u8]],
+    artifact_label: &str,
+) -> Result<()> {
+    // (1) Scope gate — nested workspace members only.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let normalized_project_root = zfb_types::normalize_path_lexical(project_root);
+    if first_party_root == normalized_project_root {
+        return Ok(());
+    }
+
+    // (2) Trigger — did a Vite-only macro actually reach the browser bundle?
+    if !emitted
+        .iter()
+        .any(|bytes| bytes_contain_import_meta_glob(bytes))
+    {
+        return Ok(());
+    }
+
+    // (3) Attribution — reached only when a leak is already proven, so this
+    // walk never runs on a healthy build.
+    //
+    // The three filters below are ordered cheapest-first on purpose. The AST
+    // check is what makes the whole pass decisive rather than textual: step
+    // (2)'s byte scan cannot tell a real macro CALL from the same characters
+    // sitting in a string or a comment, so on its own it could fail a build
+    // over inert text. `source_contains_import_meta_glob` parses and looks for
+    // a genuine call expression, and nothing is ever flagged without it
+    // agreeing — the same detector `materialise_islands_shadow_with_worker_context`
+    // already uses for its own stopgap offenders.
+    let mut offenders: Vec<String> = Vec::new();
+    for (name, package_root) in
+        zfb_types::first_party::claimed_workspace_member_names(&first_party_root)
+    {
+        if package_root == normalized_project_root {
+            continue; // the project's own package — its sources go through the ordinary pipeline.
+        }
+        for entry in walkdir::WalkDir::new(&package_root)
+            .follow_links(false)
+            .into_iter()
+            // Only the two boundaries `claimed_workspace_member_names` itself
+            // honours. Deliberately NOT `is_islands_shadow_pruned_dir`, which
+            // also prunes top-level `dist`/`target` and hidden dirs: a package
+            // may legitimately DECLARE an entry under one of those, and
+            // skipping it would silently drop the attribution and let the leak
+            // through unreported.
+            .filter_entry(|e| {
+                !e.file_type().is_dir()
+                    || !matches!(
+                        e.file_name().to_string_lossy().as_ref(),
+                        "node_modules" | ".git"
+                    )
+            })
+            .filter_map(|r| r.ok())
+        {
+            let path = entry.path();
+            if !entry.file_type().is_file() || !is_islands_shadow_js_like_file(path) {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            if !source.contains("import.meta.glob") {
+                continue; // cheap prefilter before paying for a parse.
+            }
+            if !matches!(
+                zfb_build::glob_expand::source_contains_import_meta_glob(&source),
+                Ok(true)
+            ) {
+                continue; // inert text (string/comment), or unparseable — fail open, not closed.
+            }
+            // Only a location the package ITSELF declares reachable can have
+            // been the case-2 accepted input — an undeclared file behind a
+            // built entry is a stage escape the audit rejects, not a leak this
+            // fallback should name. Left last: it is the costliest check
+            // (canonicalisation + manifest parse) and the AST filter above has
+            // already reduced the candidates to ~nothing.
+            let Some(package) =
+                zfb_build::declared_first_party_package_for_source(path, &first_party_root)
+            else {
+                continue;
+            };
+            if package.name != name {
+                continue;
+            }
+            offenders.push(format!("`{}` ({})", package.name, path.display()));
+        }
+    }
+
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "the emitted {artifact_label} contains a literal, unexpanded \
+         `import.meta.glob(...)` call — a Vite-only macro that throws in the browser at \
+         hydration, so this build must not ship. The unexpanded macro is declared by {} \
+         — a first-party workspace package this project consumes FROM SOURCE (its own \
+         package.json declares that location as an entry root). zfb accepts such a \
+         package as first-party, but does not mirror its sources into the preprocessing \
+         shadow, so its macros are never expanded. Reach the sibling through a tsconfig \
+         alias or a relative import instead of its package name (those ARE mirrored and \
+         expanded), replace the glob with explicit static imports, or move the usage to a \
+         server-only (non-\"use client\") module. If more than one package is listed, the \
+         leaked macro came from at least one of them — zfb runs no esbuild `--metafile` \
+         on this bundling path, so it can name every candidate but not single one out. \
+         Tracked at https://github.com/Takazudo/zudo-front-builder/issues/2048.",
+        offenders.join(", ")
+    ))
+}
+
+/// Cheap, esbuild-free boundary coverage for
+/// [`audit_unenrolled_first_party_macro_leak`]. The end-to-end proof that the
+/// fallback fires on the real NO-STAGE islands path is the env-gated
+/// `bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded`
+/// (issue #2083, flipped by #2090); these run on EVERY gate instead, so the
+/// bounded-set guarantee is never left resting on the esbuild lane alone.
+#[cfg(test)]
+mod unenrolled_macro_leak_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    const LEAKED_BUNDLE: &[u8] = b"var m = import.meta.glob(\"./data/*.json\");\n";
+    const CLEAN_BUNDLE: &[u8] = b"var m = { \"./data/entry.json\": () => x };\n";
+
+    /// A nested-member workspace whose sibling `@acme/sib` is a declared
+    /// consume-from-source package (`exports` points straight at un-built
+    /// `.ts` source) carrying its own `import.meta.glob`. Returns the nested
+    /// project root.
+    fn write_nested_member_workspace(root: &Path) -> PathBuf {
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"workspace-root","private":true}"#,
+        )
+        .unwrap();
+
+        let sibling = root.join("packages/sib");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(
+            sibling.join("package.json"),
+            r#"{"name":"@acme/sib","exports":{"./glob-source":"./index.ts"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sibling.join("index.ts"),
+            "export const modules = import.meta.glob('./data/*.json');\n",
+        )
+        .unwrap();
+
+        let project = root.join("apps/demo");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("package.json"),
+            r#"{"name":"demo","private":true}"#,
+        )
+        .unwrap();
+        project
+    }
+
+    #[test]
+    fn names_the_declared_consume_from_source_package_the_macro_leaked_from() {
+        let tmp = tempdir().unwrap();
+        let project = write_nested_member_workspace(tmp.path());
+
+        let error =
+            audit_unenrolled_first_party_macro_leak(&project, &[LEAKED_BUNDLE], "islands bundle")
+                .expect_err("a leaked macro attributable to a declared sibling must fail loudly");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/sib"), "{message}");
+        assert!(message.contains("import.meta.glob("), "{message}");
+        assert!(message.contains("islands bundle"), "{message}");
+    }
+
+    /// The bounded-set guarantee (epic #2078 Sub 10a's central boundary,
+    /// enforced here at the consuming end): workspace MEMBERSHIP alone never
+    /// fires this. The sibling declares a macro-bearing entry exactly as
+    /// above, but nothing leaked into the emitted bytes, so nothing is
+    /// flagged — no walk result can substitute for the evidence.
+    #[test]
+    fn stays_silent_when_no_macro_actually_reached_the_emitted_bundle() {
+        let tmp = tempdir().unwrap();
+        let project = write_nested_member_workspace(tmp.path());
+
+        audit_unenrolled_first_party_macro_leak(&project, &[CLEAN_BUNDLE], "islands bundle")
+            .expect("a clean bundle must not be failed just because a claimed member has a macro");
+    }
+
+    /// Scope gate: root-claimed / non-workspace topology is explicitly out of
+    /// scope for #2048's fix, so a leak there leaves behaviour exactly as it
+    /// was rather than failing an out-of-scope build.
+    #[test]
+    fn stays_silent_outside_a_workspace_even_when_a_macro_leaked() {
+        let tmp = tempdir().unwrap();
+        let project = tmp.path().join("solo");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("package.json"), r#"{"name":"solo"}"#).unwrap();
+
+        audit_unenrolled_first_party_macro_leak(&project, &[LEAKED_BUNDLE], "islands bundle")
+            .expect("a project outside a pnpm workspace is out of this fallback's scope");
+    }
+
+    /// Inert text is not a macro. A declared entry that merely MENTIONS
+    /// `import.meta.glob(` in a string literal has no call for the shadow to
+    /// expand, so it must never fail a build — the AST check
+    /// (`source_contains_import_meta_glob`), not the byte scan, is what
+    /// decides. Without it this pass would hard-fail on a package that does
+    /// nothing wrong.
+    #[test]
+    fn does_not_fail_on_a_declared_entry_that_only_mentions_the_macro_in_a_string() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        let project = write_nested_member_workspace(root);
+        // Overwrite the sibling's entry so its only occurrence is inert text.
+        std::fs::write(
+            root.join("packages/sib/index.ts"),
+            "export const docs = \"call import.meta.glob('./data/*.json') to load data\";\n",
+        )
+        .unwrap();
+
+        audit_unenrolled_first_party_macro_leak(&project, &[LEAKED_BUNDLE], "islands bundle")
+            .expect("a string literal is not a macro call and must not fail the build");
+    }
+
+    /// The diagnostic names only what it can attribute: a second claimed
+    /// member with no macro at all is never named, and a macro sitting in an
+    /// UNDECLARED location behind a dist-shipping package's declared entry is
+    /// not attributable either — that shape is a stage escape the audit
+    /// rejects, not an accepted case-2 input this fallback covers.
+    #[test]
+    fn names_neither_an_unrelated_claimed_member_nor_an_undeclared_source() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        let project = write_nested_member_workspace(root);
+
+        let unrelated = root.join("packages/unrelated");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(
+            unrelated.join("package.json"),
+            r#"{"name":"@acme/unrelated","exports":{"./src":"./index.ts"}}"#,
+        )
+        .unwrap();
+        std::fs::write(unrelated.join("index.ts"), "export const x = 1;\n").unwrap();
+
+        let built = root.join("packages/built");
+        std::fs::create_dir_all(built.join("src")).unwrap();
+        std::fs::write(
+            built.join("package.json"),
+            r#"{"name":"@acme/built","exports":{".":"./dist/index.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            built.join("src/internal.ts"),
+            "export const modules = import.meta.glob('./data/*.json');\n",
+        )
+        .unwrap();
+
+        let error =
+            audit_unenrolled_first_party_macro_leak(&project, &[LEAKED_BUNDLE], "islands bundle")
+                .expect_err("the declared sibling still leaked, so this must still fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("@acme/sib"), "{message}");
+        assert!(
+            !message.contains("@acme/unrelated"),
+            "a claimed member carrying no macro must never be named: {message}"
+        );
+        assert!(
+            !message.contains("@acme/built"),
+            "a macro in an UNDECLARED location behind a built entry is not an accepted case-2 \
+             input and must not be named: {message}"
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)] // 10 params: #1497 added bundle mode/config + raw_invalidation; each param carries its own routing contract (see per-param comments), a struct would just shuffle the same fields
 pub(crate) fn build_default_islands_payload_with_bundle_options(
     // The project root — used for esbuild's working dir (tsconfig
@@ -4106,10 +4457,47 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // shadow tree during `bundle()`. It drops at end of function, after the
     // bundle bytes are in memory.
     match build_production_islands_asset(&bundler, &bundle_islands, &bundle_cfg)? {
-        Some(asset) => Ok((
-            Some(production_islands_asset_to_payload(asset)),
-            registered_marker_names,
-        )),
+        Some(asset) => {
+            // Issue #2090 — the sanctioned loud-failure fallback, run against
+            // every browser-bound artifact this bundle produced. Deliberately
+            // OUTSIDE the `_islands_shadow` block above: the leak it catches
+            // happens precisely when no shadow (and therefore no stage-escape
+            // audit) exists at all.
+            //
+            // Dev takes the SAME `WarnAndSkip` branch the `KeepStopgap` arm
+            // above already takes for this identical macro class, rather than
+            // inventing a second dev semantics here. Note what that branch
+            // really does: `rebundle_islands` reads `None` as "this project
+            // has no islands bundle", so it clears the published URL and
+            // prunes the previous generation's companions (`commands/dev.rs`)
+            // — the tab loses islands until the offending file is fixed and
+            // saved. That is pre-existing shared behaviour, not something this
+            // fallback introduces, so the warning below says so plainly
+            // instead of promising an untouched last-good bundle.
+            let emitted: Vec<&[u8]> = std::iter::once(asset.bytes.as_slice())
+                .chain(asset.chunks.iter().map(|chunk| chunk.bytes.as_slice()))
+                .chain(asset.workers.iter().map(|worker| worker.bytes.as_slice()))
+                .collect();
+            if let Err(error) =
+                audit_unenrolled_first_party_macro_leak(project_root, &emitted, "islands bundle")
+            {
+                match islands_glob_policy {
+                    IslandsGlobPolicy::HardError => return Err(error),
+                    IslandsGlobPolicy::WarnAndSkip => {
+                        output::warn(format!(
+                            "zfb islands: {error:#} The dev server stays up, but this rebundle \
+                             emits no islands bundle at all — the page will serve without \
+                             islands until the file(s) above are fixed and saved."
+                        ));
+                        return Ok((None, std::collections::BTreeSet::new()));
+                    }
+                }
+            }
+            Ok((
+                Some(production_islands_asset_to_payload(asset)),
+                registered_marker_names,
+            ))
+        }
         None => Ok((None, registered_marker_names)),
     }
 }
@@ -5204,6 +5592,25 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
         &bundle_cfg,
     )
     .context("client-script bundler failed")?;
+
+    // Issue #2090 — the same sanctioned loud-failure fallback the islands path
+    // above runs, applied to the client-script pipeline's own browser-bound
+    // artifacts. This entry point has no `IslandsGlobPolicy` to consult, so a
+    // leak is always a hard error here.
+    {
+        let emitted: Vec<&[u8]> = assets
+            .iter()
+            .flat_map(|asset| {
+                std::iter::once(asset.bytes.as_slice()).chain(
+                    asset
+                        .companions
+                        .iter()
+                        .map(|companion| companion.bytes.as_slice()),
+                )
+            })
+            .collect();
+        audit_unenrolled_first_party_macro_leak(project_root, &emitted, "client-script bundle")?;
+    }
 
     Ok(assets
         .into_iter()
@@ -11751,18 +12158,31 @@ mod tests {
         );
     }
 
-    /// Issue #2083 (epic #2078, Wave 1) — RED test for #2048's silent
-    /// islands/client shape.
+    /// Issue #2083 (epic #2078, Wave 1) — the RED test for #2048's silent
+    /// islands/client shape, **flipped by issue #2090** (Wave 4, Sub 10c).
     ///
-    /// **This test asserts macro expansion as its desired outcome.** If,
-    /// when epic #2078's Wave 4 lands, the sanctioned loud-failure fallback
-    /// is invoked instead of full acceptance⇒enrolment coupling (a decision
-    /// reserved to sub #2090, #2078's "islands/client coupling or sanctioned
-    /// fallback" sub-issue), the flipping sub REWRITES this assertion to the
-    /// loud-failure form (build fails with a diagnostic naming the package
-    /// and the unexpanded macro) and records that downgrade explicitly in
-    /// its PR body and an epic-issue comment — this would be a deliberate,
-    /// documented edit, not a silent weakening of the assertion below.
+    /// # DELIBERATE, DOCUMENTED ASSERTION REWRITE (#2090)
+    ///
+    /// As authored by #2083 this test asserted the DESIRED outcome of a full
+    /// acceptance⇒enrolment coupling: the sibling's `import.meta.glob`
+    /// EXPANDS, and the emitted bundle embeds the matched file's content
+    /// (`GLOB_SIBLING_DATA_MARKER`). #2090 invoked epic #2078's **sanctioned
+    /// loud-failure fallback** instead, so — exactly as #2083's own header
+    /// anticipated and authorised — the two assertions below were REWRITTEN
+    /// to the loud-failure form: the build now FAILS with a diagnostic naming
+    /// the package and the unexpanded macro. This is a deliberate, documented
+    /// downgrade recorded in #2090's PR body and an epic-issue comment, NOT a
+    /// silent weakening. The reason the coupling was not taken: acceptance is
+    /// a property of esbuild's metafile, so coupling here would need a SECOND
+    /// esbuild pass plus a curated `node_modules` layer to redirect the bare
+    /// specifier away from the shadow's wholesale live-`node_modules` symlink
+    /// — new machinery of exactly the kind the epic's stop condition reserves
+    /// the fallback for. See `audit_unenrolled_first_party_macro_leak`.
+    ///
+    /// What the fallback does NOT change: the sibling is still ACCEPTED (it
+    /// is a legitimate declared consume-from-source first-party package, not
+    /// a stage escape), and it is still not mirror-enrolled. What changes is
+    /// only that the resulting leak is now loud instead of silent.
     ///
     /// **Scope note:** the fix this test guards targets NESTED workspace
     /// members only. `SiblingMirrorPlan::compute`'s early-return
@@ -11824,32 +12244,30 @@ mod tests {
     /// ships in the production islands bundle with a GREEN build — exactly
     /// #2048's silent-wrongness window.
     ///
-    /// Desired post-fix behavior: once #2048's acceptance⇒enrolment coupling
-    /// lands, an accepted (case-2) consume-from-source sibling like this one
-    /// must be enrolled for preprocessing exactly like an alias-mirrored
-    /// sibling (#1985's fix for #1724), so its own `import.meta.glob`
-    /// genuinely expands — the emitted bundle must embed the ACTUAL matched
-    /// file's content (`GLOB_SIBLING_DATA_MARKER`, from `data/entry.json`),
-    /// not merely avoid the literal macro text (an expansion that dropped
-    /// the call without wiring the real match would be as wrong as today's
-    /// silence).
+    /// Post-#2090 behavior (what the assertions below now pin): the leak is
+    /// caught after the bundle is produced, by scanning the browser-bound
+    /// bytes for the macro and then attributing it — through Sub #2088's
+    /// declared-data query — to the claimed workspace member whose DECLARED
+    /// entry source carries it. `zfb build` (`IslandsGlobPolicy::HardError`,
+    /// what this test drives) fails with that diagnostic.
+    ///
+    /// This test is the proof that the fallback fires on the **NO-STAGE**
+    /// path specifically: as traced above, this fixture materialises no
+    /// shadow, so neither guard (a) nor guard (b) runs and there is no
+    /// `--metafile` anywhere. A check bolted onto the existing stage-escape
+    /// audit call site could not possibly fire here.
     ///
     /// ### Flip protocol
     ///
-    /// This test needs a staged real esbuild binary (env-gate), so the
-    /// flipping sub REPLACES the `pending-feature` tag below with the normal
+    /// This test needs a staged real esbuild binary (env-gate), so #2090
+    /// REPLACED the `pending-feature` tag below with the normal
     /// `#[ignore = "env-gate: esbuild — …"]` tag — never a bare delete —
-    /// per epic #2078's corrected flip protocol.
-    ///
-    /// Verified RED (today, on this working tree): the build returns `Ok`
-    /// (green) and the emitted islands bundle bytes contain the literal
-    /// substring `import.meta.glob(` while `GLOB_SIBLING_DATA_MARKER` is
-    /// absent — i.e. the first assertion below fails, proving the macro
-    /// reaches the browser bundle unexpanded rather than being rejected or
-    /// genuinely resolved.
+    /// per epic #2078's corrected flip protocol, and dropped the matching
+    /// `--skip` from `health.yml`'s `commands::build:: -- --ignored` step in
+    /// the same commit so the flipped test genuinely runs in CI again.
     #[cfg(unix)]
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2090"]
+    #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb --lib commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded -- --ignored"]
     fn bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded() {
         if zfb_test_utils::locate_esbuild().is_none() {
             panic!(
@@ -11967,7 +12385,7 @@ mod tests {
 
         let outdir = project.join("dist");
         let plugin_config = IslandsPluginConfig::default();
-        let (islands_payload, _markers) = build_default_islands_payload_with_bundle_options(
+        let error = build_default_islands_payload_with_bundle_options(
             &project,
             &project.join("pages"),
             &[],
@@ -11979,26 +12397,23 @@ mod tests {
             IslandsGlobPolicy::HardError,
             None,
         )
-        .expect(
+        .expect_err(
             "the require()-reached consume-from-source sibling is an ACCEPTED case-2 input \
-             (declared entry root, claimed by pnpm-workspace.yaml), not a stage escape — this \
-             build must stay GREEN; this test's contract is that the sibling's own \
-             import.meta.glob genuinely expands, not that the build is rejected",
+             (declared entry root, claimed by pnpm-workspace.yaml) that is never mirror-enrolled, \
+             so its own import.meta.glob reaches the browser bundle unexpanded — under #2090's \
+             sanctioned loud-failure fallback that must now FAIL the build loudly instead of \
+             shipping silently",
         );
-        let islands_js =
-            String::from_utf8(islands_payload.expect("islands payload").bytes).unwrap();
+        let message = format!("{error:#}");
 
         assert!(
-            !islands_js.contains("import.meta.glob("),
-            "the sibling's import.meta.glob call must be EXPANDED before reaching esbuild — a \
-             literal, unexpanded macro call shipped to the browser throws at hydration time: \
-             {islands_js}"
+            message.contains("import.meta.glob("),
+            "the diagnostic must name the unexpanded macro that leaked: {message}"
         );
         assert!(
-            islands_js.contains("GLOB_SIBLING_DATA_MARKER"),
-            "expansion must reference the glob's ACTUAL matched file on disk (data/entry.json) \
-             — its content must be reachable from the emitted bundle, not merely absent of the \
-             literal macro text: {islands_js}"
+            message.contains("@acme/glob-sibling"),
+            "the diagnostic must name the consume-from-source package the macro came from: \
+             {message}"
         );
     }
 
