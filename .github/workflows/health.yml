@@ -362,7 +362,20 @@ jobs:
         # Quoted: a bare `commands::build:: -- --ignored` plain scalar trips
         # YAML's colon-space mapping-indicator rule (the trailing `:: ` reads
         # as a key/value separator to a strict parser).
-        run: "cargo test -p zfb --lib commands::build:: -- --ignored"
+        #
+        # `--skip` excludes ONE test from this blanket `--ignored` run:
+        # `bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded`
+        # (issue #2083, epic #2078) is deliberately `#[ignore = "pending-feature:
+        # …"]`, not `env-gate:` — it is a genuine RED test (the islands/client
+        # acceptance⇒enrolment coupling sub #2090 will add does not exist yet)
+        # living in the same `commands::build::` module this step sweeps
+        # wholesale. Without this skip, `--ignored` would run it and turn this
+        # step red until #2090 lands. Sub #2090 must DROP this `--skip` in the
+        # same commit it replaces that test's `pending-feature:` tag with
+        # `env-gate: esbuild — …` (the epic's corrected flip protocol) —
+        # leaving it here after the flip would silently stop the flipped test
+        # from ever running in CI again.
+        run: "cargo test -p zfb --lib commands::build:: -- --ignored --skip bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded"
 
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
       # previously only *compiled* the test code (the cargo build --all-targets
