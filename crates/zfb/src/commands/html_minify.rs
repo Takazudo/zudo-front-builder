@@ -133,8 +133,24 @@ mod tests {
 
         let output = minify_rendered_html_string(&input);
 
+        // Assert on the mermaid BODY only, not the whole element. Minifying the
+        // wrapper's attributes (`class="mermaid"` -> `class=mermaid`,
+        // `data-mermaid=""` -> `data-mermaid`) is correct and desirable — it is
+        // ordinary HTML, not whitespace-significant DSL. Asserting
+        // `output == input` would demand the attributes survive un-minified too,
+        // so a CORRECT fix (preserve the body, keep minifying the wrapper) would
+        // still fail it, forcing #2033 to edit this assertion. The whole point of
+        // a red test is that the implementing wave flips it green without
+        // touching an assertion, so it must specify exactly the property under
+        // test and nothing more.
+        let body = output
+            .split_once('>')
+            .and_then(|(_, rest)| rest.rsplit_once("</div>"))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("no <div>…</div> in minifier output: {output}"));
+
         assert_eq!(
-            output, input,
+            body, mermaid_body,
             "mermaid body must survive minification byte-identically \
              (newline positions preserved), got: {output}"
         );
