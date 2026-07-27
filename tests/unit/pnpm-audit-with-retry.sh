@@ -96,6 +96,26 @@ Severity: 1 high
 EOF
     exit 1
     ;;
+  finding-with-infra-token)
+    # A genuine --audit-level=high finding whose advisory TITLE carries the
+    # infra signature verbatim. `pnpm audit` renders `advisory.title` straight
+    # from the GitHub Advisory Database, so this text is registry-supplied and
+    # NOT controlled or reviewed by this repo. Before the FINDING_MARKERS
+    # guard this classified as infrastructure: retried 4x, then exit 0 —
+    # a silent bypass of a required security gate. Found by the epic #2071
+    # fresh-context gate review.
+    cat <<'EOF'
+┌─────────────────────┬────────────────────────────────────────────────────┐
+│ high                │ Improper handling of ERR_PNPM_AUDIT_BAD_RESPONSE   │
+│                     │ leads to remote code execution                      │
+├─────────────────────┼────────────────────────────────────────────────────┤
+│ Package              │ example-vulnerable-pkg                             │
+└─────────────────────┴────────────────────────────────────────────────────┘
+1 vulnerabilities found
+Severity: 1 high
+EOF
+    exit 1
+    ;;
   unrecognized-error)
     # An unrecognized non-zero outcome that is NOT the captured infra
     # signature and NOT a finding-shaped table — proves the fail-closed
@@ -203,12 +223,18 @@ case "$OUTPUT_1B" in
 esac
 
 # ── Scenario 2: recognized infra failure on every attempt → backoff
-# observed, then exit 0 + ::warning:: annotation on exhaustion. ────────────
+# observed, then exit 0 + ::warning:: annotation on exhaustion.
+#
+# This models the PR GATE specifically, which opts into the exhaustion
+# relaxation via PNPM_AUDIT_EXHAUSTION_EXIT=0 (pr-checks.yml). The script's
+# own default is fail-closed; the weekly-lane half of that contract is
+# asserted separately below. ────────────────────────────────────────────────
 
 LOG=$(mktemp)
 rm -f "$LOG"
 set +e
 OUTPUT_2=$(MOCK_PNPM_MODE=infra-always MOCK_PNPM_CALL_LOG="$LOG" PNPM_AUDIT_RETRY_DELAYS="0 0 0" \
+  PNPM_AUDIT_EXHAUSTION_EXIT=0 \
   bash "$SCRIPT" 2>&1)
 RC_2=$?
 set -e
@@ -321,6 +347,94 @@ case "$OUTPUT_4" in
     fail "malformed override: expected an ::error:: annotation, got: $OUTPUT_4"
     ;;
 esac
+
+# ── Findings-plus-infra-token: a genuine finding must NEVER be classified as
+#    infrastructure, even when the captured output also contains the infra
+#    signature (registry-supplied advisory title). Regression test for the
+#    bypass found by epic #2071's fresh-context gate review. ────────────────
+
+: >"$LOG"
+set +e
+OUTPUT_5=$(MOCK_PNPM_MODE=finding-with-infra-token MOCK_PNPM_CALL_LOG="$LOG" \
+  PNPM_AUDIT_RETRY_DELAYS="0 0 0" PNPM_AUDIT_EXHAUSTION_EXIT=0 \
+  bash "$SCRIPT" 2>&1)
+RC_5=$?
+set -e
+
+if [ "$RC_5" -ne 0 ]; then
+  pass "finding+infra-token: wrapper exits non-zero (gate NOT bypassed)"
+else
+  fail "finding+infra-token: SECURITY — genuine finding passed the gate (exit 0)"
+fi
+
+if [ "$(call_count "$LOG")" -eq 1 ]; then
+  pass "finding+infra-token: pnpm audit invoked exactly once (no retry)"
+else
+  fail "finding+infra-token: expected 1 invocation, got $(call_count "$LOG")"
+fi
+
+case "$OUTPUT_5" in
+  *"genuine (non-infra) result"*)
+    pass "finding+infra-token: classified as genuine, not infrastructure"
+    ;;
+  *)
+    fail "finding+infra-token: expected the genuine-result ::error::, got: $OUTPUT_5"
+    ;;
+esac
+
+# ── Exhaustion is per-caller: the same infra-always input must PASS for the
+#    PR gate (opt-in 0) and FAIL for the weekly lane (default 1), so a
+#    sustained outage can never false-green security-audit.yml's tracking
+#    issue. ──────────────────────────────────────────────────────────────────
+
+: >"$LOG"
+set +e
+MOCK_PNPM_MODE=infra-always MOCK_PNPM_CALL_LOG="$LOG" \
+  PNPM_AUDIT_RETRY_DELAYS="0 0 0" PNPM_AUDIT_EXHAUSTION_EXIT=0 \
+  bash "$SCRIPT" >/dev/null 2>&1
+RC_6A=$?
+: >"$LOG"
+OUTPUT_6B=$(MOCK_PNPM_MODE=infra-always MOCK_PNPM_CALL_LOG="$LOG" \
+  PNPM_AUDIT_RETRY_DELAYS="0 0 0" bash "$SCRIPT" 2>&1)
+RC_6B=$?
+set -e
+
+if [ "$RC_6A" -eq 0 ]; then
+  pass "exhaustion: PNPM_AUDIT_EXHAUSTION_EXIT=0 (PR gate) exits 0"
+else
+  fail "exhaustion: expected exit 0 with opt-in, got $RC_6A"
+fi
+
+if [ "$RC_6B" -ne 0 ]; then
+  pass "exhaustion: default is fail-closed (weekly lane cannot false-green)"
+else
+  fail "exhaustion: SECURITY — default exhaustion exited 0; security-audit.yml would close its tracking issue on a registry outage"
+fi
+
+case "$OUTPUT_6B" in
+  *"failing closed"*)
+    pass "exhaustion: fail-closed path emits an ::error:: naming the reason"
+    ;;
+  *)
+    fail "exhaustion: expected a failing-closed ::error::, got: $OUTPUT_6B"
+    ;;
+esac
+
+# ── Delay VALUES are validated, not just the count: a non-numeric entry would
+#    make `sleep` fail non-fatally and collapse the backoff to zero. ─────────
+
+: >"$LOG"
+set +e
+OUTPUT_7=$(MOCK_PNPM_MODE=infra-always MOCK_PNPM_CALL_LOG="$LOG" \
+  PNPM_AUDIT_RETRY_DELAYS="abc def ghi" bash "$SCRIPT" 2>&1)
+RC_7=$?
+set -e
+
+if [ "$RC_7" -eq 2 ] && [ "$(call_count "$LOG")" -eq 0 ]; then
+  pass "delay values: non-numeric override rejected before any audit runs"
+else
+  fail "delay values: expected exit 2 with 0 invocations, got $RC_7 / $(call_count "$LOG")"
+fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

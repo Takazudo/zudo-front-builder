@@ -52,6 +52,16 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: pnpm audit (production deps)
+        # PNPM_AUDIT_EXHAUSTION_EXIT=1 (the script's default, set explicitly
+        # here because it is load-bearing): this lane MUST fail closed on
+        # exhaustion. Its own file-or-close-issue job reads the job result and
+        # CLOSES the open tracking issue on success — so an exit-0 after a
+        # sustained registry outage would be a false green that deletes the
+        # paper trail issue #1394 created this workflow to keep. The PR gate's
+        # relaxation is justified by "the weekly lane re-checks"; that
+        # reasoning is circular here, because this IS the weekly lane.
+        env:
+          PNPM_AUDIT_EXHAUSTION_EXIT: "1"
         run: bash scripts/pnpm-audit-with-retry.sh
 
   cargo-deny:

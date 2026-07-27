@@ -24,7 +24,7 @@ set -uo pipefail
 #   with something the client couldn't use" (non-2xx status, invalid JSON,
 #   or an unexpected response shape). Captured from pnpm's own source, not
 #   hand-authored: pnpm/pnpm's audit test suite
-#   (pnpm11/deps/compliance/audit/test/index.ts, commit 5ed47dcf) asserts
+#   (pnpm11/deps/compliance/audit/test/index.ts, lines 553/580/607) asserts
 #   `err.code === 'ERR_PNPM_AUDIT_BAD_RESPONSE'` for exactly these cases, and
 #   a real-world incident (pnpm/pnpm#11265, 2026-04: the npm registry retired
 #   its legacy audit endpoints and returned 410) shows the exact message
@@ -38,13 +38,33 @@ set -uo pipefail
 #   name catches that rendering regardless of color-code stripping in CI.
 #   No other transport/decode signature was found captured anywhere, so none
 #   is included — a narrower allowlist is safer than a guessed-broad one.
+#   (Sibling AuditEndpointNotExistsError — a 404 from the endpoint — is also
+#   registry-side but is deliberately NOT allowlisted: it fails the gate.)
+#
+# WHY THE SIGNATURE ALONE IS NOT ENOUGH (fresh-context review, epic #2071):
+# a bare substring match over the whole captured output can be satisfied by
+# text this repo does not control. `pnpm audit` renders each advisory's
+# `title` verbatim from the GitHub Advisory Database, so an advisory whose
+# title happened to contain the signature name would make a GENUINE
+# high-severity finding classify as infrastructure — retried, then passed
+# with exit 0. That was demonstrated with a local shim during review.
+# The mitigation is FINDING_MARKERS below: pnpm THROWS on
+# AUDIT_BAD_RESPONSE before any advisory is rendered, so a findings table
+# and this error are mutually exclusive in one run. Requiring the absence of
+# findings-shaped output therefore costs no false reds, and any collision
+# resolves toward "genuine" — the fail-closed direction.
 #
 # CONTRACT NOTE (security-audit.yml): that workflow's file-or-close-issue /
 # notify jobs read `needs.audit.result`, i.e. "real audit signal" there means
-# job failure. An infra-exhaustion exit-0 (below) is deliberately invisible
-# to that machinery — that is fine, because it is not a real audit signal:
-# the weekly schedule re-checks independently within days. A genuine finding
-# still fails the job exactly as before, immediately, no retry.
+# job failure — including its "Close tracking issue (green)" step, which
+# closes an open tracking issue when the job succeeds. An infra-exhaustion
+# exit-0 there would be a FALSE GREEN that closes the very paper trail issue
+# #1394 created that lane to keep, and the "the weekly schedule re-checks
+# independently" justification is circular when the caller IS the weekly
+# schedule. So exhaustion behaviour is per-caller, not baked in:
+# PNPM_AUDIT_EXHAUSTION_EXIT defaults to 1 (fail closed) and pr-checks.yml
+# opts into 0 explicitly, which also keeps the relaxation visible at the call
+# site of the required gate rather than buried in this script.
 #
 # Retry contract — FOUR attempts, THREE delays (issue #2074's review-amended
 # contract): attempt 1 -> (infra failure) wait 30s -> attempt 2 -> wait 2m ->
@@ -73,6 +93,24 @@ INFRA_SIGNATURES=(
   "ERR_PNPM_AUDIT_BAD_RESPONSE"
 )
 
+# FINDING_MARKERS: text pnpm emits only when it actually rendered advisories.
+# Presence of ANY of these means the run produced a real audit verdict, so it
+# is NEVER infrastructure — regardless of what else the output contains. See
+# "WHY THE SIGNATURE ALONE IS NOT ENOUGH" in the header.
+FINDING_MARKERS=(
+  "vulnerabilities found"
+  "Severity:"
+)
+
+# Exhaustion behaviour is the caller's decision — see the CONTRACT NOTE above.
+# 1 (default) = fail closed. 0 = exit 0 with a loud annotation, which only the
+# PR gate opts into.
+EXHAUSTION_EXIT="${PNPM_AUDIT_EXHAUSTION_EXIT:-1}"
+if [[ "$EXHAUSTION_EXIT" != "0" && "$EXHAUSTION_EXIT" != "1" ]]; then
+  echo "::error::PNPM_AUDIT_EXHAUSTION_EXIT must be 0 or 1 (got '${EXHAUSTION_EXIT}')" >&2
+  exit 2
+fi
+
 DELAYS_OVERRIDE="${PNPM_AUDIT_RETRY_DELAYS:-}"
 if [[ -n "$DELAYS_OVERRIDE" ]]; then
   read -r -a DELAYS <<<"$DELAYS_OVERRIDE"
@@ -85,13 +123,35 @@ if [[ "${#DELAYS[@]}" -ne 3 ]]; then
   exit 2
 fi
 
+# Validate VALUES, not just the count: a non-numeric entry would make `sleep`
+# fail non-fatally (set -e is deliberately off) and silently collapse the
+# whole backoff to zero, which is precisely what makes an exhaustion exit
+# easiest to reach.
+for delay_value in "${DELAYS[@]}"; do
+  if [[ ! "$delay_value" =~ ^[0-9]+$ ]]; then
+    echo "::error::PNPM_AUDIT_RETRY_DELAYS entries must be non-negative integers (got '${delay_value}' in '${DELAYS_OVERRIDE}')" >&2
+    exit 2
+  fi
+done
+
 # is_infra_failure <captured-output>
 #
 # True (0) only when the output contains one of the recognized, captured
-# infra signatures above. False (1) for everything else, including output
-# this script has never seen — the fail-closed default.
+# infra signatures AND contains no findings-shaped output. False (1) for
+# everything else, including output this script has never seen — the
+# fail-closed default.
+#
+# The findings check runs FIRST and is decisive: an advisory `title` comes
+# verbatim from the registry, so the signature string can appear inside a
+# real findings table. Treating that as infrastructure would retry a genuine
+# high-severity finding and then pass the gate.
 is_infra_failure() {
-  local output="$1" sig
+  local output="$1" sig marker
+  for marker in "${FINDING_MARKERS[@]}"; do
+    if grep -qF -- "$marker" <<<"$output"; then
+      return 1
+    fi
+  done
   for sig in "${INFRA_SIGNATURES[@]}"; do
     if grep -qF -- "$sig" <<<"$output"; then
       return 0
@@ -119,8 +179,12 @@ while :; do
   fi
 
   if [[ "$attempt" -ge "$MAX_ATTEMPTS" ]]; then
-    echo "::warning::pnpm audit signal missing — registry unavailable (ERR_PNPM_AUDIT_BAD_RESPONSE) after ${MAX_ATTEMPTS} attempts; weekly security-audit.yml re-checks independently"
-    exit 0
+    if [[ "$EXHAUSTION_EXIT" -eq 0 ]]; then
+      echo "::warning::pnpm audit signal missing — registry unavailable (ERR_PNPM_AUDIT_BAD_RESPONSE) after ${MAX_ATTEMPTS} attempts; weekly security-audit.yml re-checks independently"
+      exit 0
+    fi
+    echo "::error::pnpm audit signal missing — registry unavailable (ERR_PNPM_AUDIT_BAD_RESPONSE) after ${MAX_ATTEMPTS} attempts; failing closed (PNPM_AUDIT_EXHAUSTION_EXIT=1)"
+    exit 1
   fi
 
   delay="${DELAYS[$((attempt - 1))]}"

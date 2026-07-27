@@ -56,4 +56,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: pnpm audit (production deps)
+        # PNPM_AUDIT_EXHAUSTION_EXIT=0: on THIS gate only, a registry outage
+        # that survives the full 4-attempt backoff passes with a loud
+        # ::warning:: rather than blocking every PR on an incident nobody in
+        # this repo can fix. Deliberately explicit here rather than defaulted
+        # in the script, so the relaxation is visible at the required check's
+        # own call site. security-audit.yml keeps the fail-closed default.
+        env:
+          PNPM_AUDIT_EXHAUSTION_EXIT: "0"
         run: bash scripts/pnpm-audit-with-retry.sh
