@@ -207,13 +207,16 @@ all, which is what keeps the inner winning there. The same false claim appears i
 top-of-file header comment around line 51 ("detected as an HTML document with a real
 Content-Length") — fix that wording too.
 
-**Also fix the test mock, and say so in the PR.** `cli.test.ts:106-116`'s `styledAsset404Response`
-sets `content-length` under the comment `(verified: workerd/CF serve 404.html with Content-Length)`.
-That comment is false and is why the suite never caught this. Drop the `content-length` header from
-the mock and correct the comment, so the mock models what workerd actually sends. This is not
-"editing a test to make a fix pass" — it is removing a mock's incorrect premise, and every existing
-assertion stays as-is except the one at `:739` that reads `content-length` back off the HEAD
-response, which must go with it.
+**Do NOT touch the tests in #2037.** The mock at `cli.test.ts:106-116` encodes the same false premise
+as the predicate, but correcting it is **wave 3's** work (section 7) — repairing that mock is by
+itself most of #2038's deliverable, so doing it here would leave the confirm wave with nothing to
+implement. Removing a conjunct only *loosens* the predicate, so **every existing test stays green
+under the production change alone**; verify that and stop there.
+
+Say plainly in the PR that the green suite does **not** prove the fix — those tests still mock a
+`content-length` the platform never sends, so they pass with or without the change. #2037's proof is
+the acceptance criterion it already carries: an unknown URL returning the styled page in a real local
+preview.
 
 **What must NOT change:**
 
@@ -232,21 +235,34 @@ response, which must go with it.
 ## 7. Recommended shape for #2038's Level-3 regression test
 
 The reason this bug shipped is that the only coverage mocked `env.ASSETS` with a hand-written
-`content-length`. The regression test must not be able to repeat that mistake:
+`content-length`. **Wave 3's central job is therefore to repair that mock**, which is why #2037 is
+told to leave the tests alone (section 6) — the two waves would otherwise implement the same change.
 
-1. **Assert the predicate against a header set that carries no `content-length`.** Drive the
-   *emitted* `_worker.js` (the existing dynamic-import pattern in `cli.test.ts`) with an `env.ASSETS`
-   mock returning `new Response(styledHtml, { status: 404, headers: { "content-type":
-   "text/html; charset=utf-8" } })` — **no `content-length`, not even implicitly**. Assert the styled
-   body wins. This one test would have caught the bug and cannot pass under the old predicate.
-2. **Keep the negative control in the same file:** a `"none"`-shaped asset 404 modelled as
-   `new Response(null, { status: 404 })` with **no headers at all** (that is what workerd actually
-   sends — see Control A) must still yield the inner 404.
-3. **Cover HEAD with the same header-only, content-length-free shape** — asset response with a null
-   body and only a content-type; the styled asset's status/headers must still win.
-4. Optionally record the measured header set from section 3 as a comment beside the mock, so the next
-   reader can see the mock is grounded in an observation rather than an assumption.
+1. **Correct the mock's false premise.** `styledAsset404Response` (`cli.test.ts:106-116`) sets
+   `content-length` under the comment `(verified: workerd/CF serve 404.html with Content-Length)`.
+   That claim is false. Drop the header and rewrite the comment to record what was actually measured
+   (section 3's header set is worth quoting inline, so the next reader sees an observation rather
+   than an assumption). Every existing assertion stays as-is except the one at `:739`, which reads
+   `content-length` back off the HEAD response and must go with it.
 
-A real `wrangler dev` lane would be stronger still, but it is a T3/T4 concern — see the
-"wrangler/workerd adapter heavy lane" row in `CLAUDE.md`'s T3 cutover manifest. Level 3 on the
-emitted worker is the right tier for the PR gate, provided the mock is corrected as above.
+   This single edit converts the two already-existing emitted-worker tests into genuine regression
+   tests: `:512` (GET, `"404-page"` styled body wins) and `:713` (HEAD, same). Both currently pass for
+   the wrong reason. State that explicitly in the PR — this is removing a mock's incorrect premise,
+   not editing assertions to make a fix pass.
+2. **Prove it is revert-proof** — the step that makes this wave worth its own sub-issue, and this
+   repo's established practice for a confirm pass. With the corrected mock in place, temporarily
+   restore the `&& contentLength > 0` conjunct and confirm `:512` and `:713` **fail**; revert, confirm
+   green, confirm `git diff` clean before committing. Without this, a future regression could
+   reintroduce the conjunct and nothing would notice.
+3. **The negative controls already exist and must stay green** — `:540` models the `"none"` case as
+   `new Response(null, { status: 404 })` with no headers at all, which is exactly what workerd was
+   measured to send (Control A), and `:568` covers the bare Pages `text/plain` 404. Neither is
+   affected by the mock repair. Do not duplicate them.
+4. **Leave the narrowing test alone** — `:675` (the `it(`; the "Narrowing from the original #1322
+   fix" comment sits at `:681`, which is the line the epic and #2037 cite). It governs the inner side
+   and is not implicated.
+
+A real `wrangler dev` lane would be stronger still — it is what produced this diagnosis — but it is a
+T3/T4 concern; see the "wrangler/workerd adapter heavy lane" row in `CLAUDE.md`'s T3 cutover manifest.
+Level 3 on the emitted worker is the right tier for the PR gate, provided the mock is corrected as
+above.
