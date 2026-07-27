@@ -99,16 +99,23 @@ const INNER_PLAIN_404 = `export default {
 const STYLED_404_HTML =
   '<!doctype html><html><head><link rel="stylesheet" href="/assets/s.css"></head><body>Custom styled 404 page</body></html>';
 
-// Model the asset server's styled-404 response: 404 + text/html + a real
-// Content-Length (a static file). new Response(string) does NOT auto-set
-// content-length in this runtime, so we set it explicitly to match the
-// platform (verified: workerd/CF serve 404.html with Content-Length).
+// Model the asset server's styled-404 response: 404 + text/html, deliberately
+// carrying NO content-length. Measured directly against real workerd
+// (`wrangler dev` 4.85.0, local mode) with `not_found_handling = "404-page"`:
+// the Workers Static Assets binding streams every response — chunked
+// locally, HTTP/2-framed in production — and never sends a `content-length`
+// header, including for this exact styled-404-page hit (see the #2036
+// diagnosis doc, research/2036-styled-404-detection-diagnosis.md §3). An
+// earlier version of this mock hand-set `content-length` under a comment
+// claiming that was "verified" platform behaviour; that claim was false, and
+// it is precisely what let `assetHasStyled404Body`'s now-removed
+// `contentLength > 0` conjunct ship broken — every test here stayed green
+// while the real predicate was dead-false for every real ASSETS response.
 function styledAsset404Response(body: string | null = STYLED_404_HTML): Response {
   return new Response(body, {
     status: 404,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "content-length": String(STYLED_404_HTML.length),
       "x-served-by": "asset-404-page",
     },
   });
@@ -509,6 +516,18 @@ export default {
   // asset page.
   // ---------------------------------------------------------------------------
 
+  // Central confirm test for epic #2035 / sub-issue #2038: the emitted
+  // `_worker.js` (dynamically imported and executed — Level 3, per this
+  // repo's "the pattern zfb-adapter-cloudflare already uses to prove env/ctx
+  // threading" idiom) must substitute the styled HTML 404 body for an
+  // unknown URL, not Hono's `text/plain` default. `env.ASSETS.fetch` here
+  // mirrors the real platform response exactly: 404, `content-type:
+  // text/html`, and NO `content-length` (see `styledAsset404Response`'s own
+  // comment). This test fails against the pre-fix predicate
+  // (`contentType.includes("text/html") && contentLength > 0`) — restoring
+  // that conjunct makes `assetHasStyled404Body` false for every real ASSETS
+  // response, so the inner's plain 404 wins instead; see the PR body for the
+  // exact revert-proof failure message.
   it('prefers the styled asset 404 over the inner plain 404 (not_found_handling = "404-page")', async () => {
     // Asset layer returns 404 WITH the styled 404.html body; the inner router
     // returns its generic text/plain 404. The styled page must win.
@@ -530,7 +549,11 @@ export default {
     expect(response.status).toBe(404);
     expect(assetsCalls).toBe(1);
     expect(response.headers.get("x-served-by")).toBe("asset-404-page");
+    expect(response.headers.get("content-type")).toContain("text/html");
     const body = await response.text();
+    // Real body length, not merely a truthy/non-empty check — proves the
+    // full styled page substituted, not a truncated or synthetic stand-in.
+    expect(body.length).toBe(STYLED_404_HTML.length);
     expect(body).toContain("Custom styled 404 page");
     expect(body).toContain('rel="stylesheet"');
     // The inner's plain-text 404 must NOT leak through.
@@ -539,7 +562,8 @@ export default {
 
   it('keeps the inner 404 when the asset 404 has an empty/non-HTML body (not_found_handling = "none")', async () => {
     // "none" is Cloudflare's default 404 — no styled body. The predicate
-    // (text/html + Content-Length) is false, so the inner 404 wins, exactly
+    // (content-type text/html alone, per the corrected
+    // assetHasStyled404Body) is false, so the inner 404 wins, exactly
     // as before this fix.
     const worker = await emitAndImportWorker(`export default {
   async fetch() {
@@ -711,9 +735,10 @@ export default {
   });
 
   it("HEAD: prefers the styled asset 404 headers/status over the inner plain 404 (no body)", async () => {
-    // A HEAD asset 404 carries no body but the same content-type/Content-Length
-    // headers a GET would. The header-only predicate fires symmetrically, so
-    // the styled asset response (status + headers) wins for HEAD too.
+    // A HEAD asset 404 carries no body and, matching the real platform (see
+    // styledAsset404Response's comment), no content-length either — only
+    // content-type. The header-only predicate fires symmetrically, so the
+    // styled asset response (status + headers) wins for HEAD too.
     const worker = await emitAndImportWorker(`export default {
   async fetch() {
     return new Response(null, {
@@ -726,7 +751,7 @@ export default {
 
     const env = {
       ASSETS: {
-        // HEAD: null body, but content-type + Content-Length present.
+        // HEAD: null body, content-type present, no content-length.
         fetch: async () => styledAsset404Response(null),
       },
     };
@@ -736,7 +761,6 @@ export default {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("content-type")).toContain("text/html");
-    expect(response.headers.get("content-length")).toBe(String(STYLED_404_HTML.length));
     // The asset response won, not the inner.
     expect(response.headers.get("x-served-by")).toBe("asset-404-page");
   });
