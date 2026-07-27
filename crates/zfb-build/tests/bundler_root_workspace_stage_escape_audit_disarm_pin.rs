@@ -1,42 +1,52 @@
 //! Issue #2081 (Staging Correctness 2 epic #2078, Wave 1) originally pinned a
-//! KNOWN, currently-open gap in the SSR stage-escape audit's eligibility
-//! predicate (issue #2050, superseded by #2078): at a root-claimed workspace
+//! KNOWN, then-open gap in the SSR stage-escape audit (issue #2050,
+//! superseded by #2078): at a root-claimed workspace
 //! (`first_party_root == project_root`, so `shadow == work` —
-//! `crates/zfb-build/src/bundler.rs` :2100-2135), guard (b)'s eligibility
-//! check (`zfb_types::stage_escape_audit_eligibility`) used to scan
-//! `work.join("node_modules")` for a **symlink** whose canonical target is a
-//! claimed workspace package (`crates/zfb-types/src/audit_eligibility.rs`).
-//! Whenever that directory instead held a **real (non-symlink) staged copy**
-//! of the package, no symlink was found, eligibility fell back to
-//! [`zfb_types::AuditEligibility::NoReachableFirstPartyPackage`], and the
-//! audit was silently disarmed — an undeclared stage escape then shipped with
-//! no error at all, exactly the P1 "completely silent" framing #1730/#1988
-//! were meant to close.
+//! `crates/zfb-build/src/bundler.rs` :2100-2135), whenever
+//! `<work>/node_modules` held a **real (non-symlink) staged copy** of a
+//! workspace package instead of the usual symlink, an undeclared stage escape
+//! shipped with no error at all — exactly the P1 "completely silent" framing
+//! #1730/#1988 were meant to close.
 //!
-//! Sub #2087 (Wave 3 of epic #2078) has since landed the eligibility half of
-//! the fix: `stage_escape_audit_eligibility` now also recognises a staged
-//! package by its **declared** identity (`package.json` `name` + workspace
-//! claim, via `zfb_types::claimed_workspace_member_names`) when no symlink is
-//! present. That closes the ELIGIBILITY gap this file originally pinned —
-//! [`real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafile_audit_still_admits_it_as_case_three`]
-//! confirms `stage_escape_audit_eligibility` now correctly returns
-//! `FirstPartyPackageReachable` for this exact topology.
+//! **Both halves of that gap are now closed.** It took two fixes in two
+//! different crates, and this file's three tests are the record of both:
 //!
-//! **However, arming eligibility alone does not make `bundle_with_session`
-//! reject the escape.** Investigation after #2087 landed found a SEPARATE,
-//! previously-undiscovered gap one layer up, in
-//! `crates/zfb-build/src/metafile_deps.rs::audit_metafile_stage_escape`'s own
-//! case classification: a real-copy-staged package's canonical (symlink-
-//! resolution) path trivially STILL contains a `node_modules` segment (there
-//! is no symlink to resolve away from — the file is genuinely, physically
-//! there), so it is unconditionally classified "case 3: ordinary third-party
-//! dependency, allowed" regardless of whether it is declared or claimed. The
-//! build therefore still returns `Ok` and still ships the undeclared
-//! sibling's marker, unaudited, even with #2087's eligibility fix in place.
-//! This residual gap is tracked as issue #2127 (out of #2087's assigned file
-//! scope — `zfb-types` only — since closing it needs a change in
-//! `crates/zfb-build/src/metafile_deps.rs`, currently being edited in
-//! parallel by epic #2078's sub #2086).
+//! 1. **Eligibility** (sub #2087, Wave 3). Guard (b)'s eligibility check
+//!    (`zfb_types::stage_escape_audit_eligibility`) used to scan
+//!    `work.join("node_modules")` for a **symlink** whose canonical target is
+//!    a claimed workspace package
+//!    (`crates/zfb-types/src/audit_eligibility.rs`); with only a real copy
+//!    present it found none, fell back to
+//!    [`zfb_types::AuditEligibility::NoReachableFirstPartyPackage`], and
+//!    silently disarmed the audit. #2087 extended row 3's evidence to
+//!    **declared** identity (`package.json` `name` + workspace claim, via
+//!    `zfb_types::claimed_workspace_member_names`), so a real copy now arms
+//!    the audit.
+//! 2. **Classification** (issue #2127, this wave). Arming eligibility alone
+//!    did NOT make `bundle_with_session` reject the escape: a SECOND,
+//!    previously-undiscovered gap sat one layer up, in
+//!    `crates/zfb-build/src/metafile_deps.rs::audit_metafile_stage_escape`'s
+//!    own case classification. A real-copy-staged package's canonical
+//!    (symlink-resolved) path trivially STILL contains a `node_modules`
+//!    segment — there is no symlink to resolve away from, the file is
+//!    genuinely, physically there — so it was unconditionally classified
+//!    "case 3: ordinary third-party dependency, allowed" before declared
+//!    identity was ever consulted. #2127 made the case-2/case-3 boundary
+//!    consult the claimed-member roster by declared NAME for exactly this
+//!    shape (an ordinary registry dependency's name matches nothing there, so
+//!    case 3 is untouched), and then apply the same declared-entry rule case 2
+//!    already applies to the symlink shape.
+//!
+//! # Why this file is still called `…_disarm_pin`
+//!
+//! The name states the QUESTION all three tests investigate — whether either
+//! staging configuration #2050 named can disarm the stage-escape audit at a
+//! root-claimed workspace — not the answer, which is now uniformly "no". The
+//! per-test names below carry the current facts. Renaming was considered and
+//! declined: every candidate either collided confusingly with the sibling
+//! `bundler_root_workspace_stage_escape_audit_armed_regression.rs` binary or
+//! misdescribed the third test, a symlink-shape negative control that is not
+//! about real-copy staging at all.
 //!
 //! # The two trigger shapes named in #2081 — and what exploration found
 //!
@@ -45,14 +55,15 @@
 //! (`crates/zfb-build/src/bundler.rs` :2591-2624, :3130-3135):
 //!
 //! 1. **`bundle.exclude` is non-empty.** Confirmed reproducible below
-//!    ([`real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafile_audit_still_admits_it_as_case_three`]):
+//!    ([`real_copy_staging_under_active_bundle_exclude_stages_a_real_copy_and_arms_eligibility`]):
 //!    with any non-empty (even non-matching) `bundle.exclude`, the live
 //!    `<shadow>/node_modules -> <live node_modules>` symlink is never created;
 //!    non-excluded dependencies — including an undeclared workspace sibling
 //!    reached by bare package name — are staged as REAL copies at their
-//!    natural position instead. Eligibility now correctly arms
-//!    (`FirstPartyPackageReachable`, since #2087), but the build STILL
-//!    succeeds — see issue #2127 above for why.
+//!    natural position instead. Eligibility arms (`FirstPartyPackageReachable`,
+//!    since #2087) AND the build now fails
+//!    ([`real_copy_staging_under_active_bundle_exclude_rejects_the_undeclared_escape`],
+//!    since #2127).
 //!
 //! 2. **Empty `bundle.exclude`, but `workspace_package_staging_active` is
 //!    true** (`bundler.rs` :2591-2602). Investigated directly against working
@@ -151,6 +162,36 @@ fn write_undeclared_child_package(root: &Path) -> std::path::PathBuf {
     node_modules
 }
 
+/// The POSITIVE twin of [`write_undeclared_child_package`]: the identical
+/// package and topology, except `@scope/child` DECLARES its source tree as an
+/// entry root — #2040's "consume from source" carve-out. Everything else is
+/// byte-for-byte the same, so the only variable between the two fixtures is
+/// declaredness itself.
+///
+/// The `"."` export is what the shared [`write_consumer_entry`] bare-name
+/// import (`from "@scope/child"`) resolves through; the sibling `"./*"` entry
+/// is the wildcard shape #2040's own fixtures use. Both declare the `src/`
+/// entry root, which is what the audit reads.
+fn write_declared_child_package(root: &Path) -> std::path::PathBuf {
+    write(
+        &root.join("packages/child/package.json"),
+        r#"{ "name": "@scope/child", "exports": { ".": "./src/index.ts", "./*": "./src/*" } }"#,
+    );
+    write(
+        &root.join("packages/child/src/index.ts"),
+        r#"export const childMarker = "CHILD_PACKAGE_DECLARED_MARKER";"#,
+    );
+
+    let node_modules = root.join("node_modules");
+    fs::create_dir_all(node_modules.join("@scope")).expect("create node_modules/@scope");
+    std::os::unix::fs::symlink(
+        root.join("packages/child"),
+        node_modules.join("@scope/child"),
+    )
+    .expect("link first-party child package into node_modules");
+    node_modules
+}
+
 fn write_consumer_entry(root: &Path) {
     write(
         &root.join("pages/index.tsx"),
@@ -185,29 +226,34 @@ fn base_input(
     input
 }
 
-fn bundle_text(path: &Path) -> String {
-    fs::read_to_string(path).expect("read emitted bundle")
-}
-
-/// **Part 1 pin — trigger shape 1 (non-empty `bundle.exclude`), updated for
-/// issue #2087.** #2087 fixed the ELIGIBILITY half of this gap:
-/// `stage_escape_audit_eligibility` now recognises the undeclared
-/// `@scope/child` workspace sibling's real-copy staging via its own declared
-/// `package.json` `name`, so it returns `FirstPartyPackageReachable` instead
-/// of `NoReachableFirstPartyPackage` for this exact topology (the ONLY
-/// assertion below that changed from this test's original form). The build
-/// STILL succeeds and STILL ships the undeclared sibling's marker unaudited,
-/// though — for a different, newly-discovered reason tracked as issue #2127:
-/// `metafile_deps.rs`'s stage-escape audit classifies a real-copy-staged
-/// package as case 3 ("ordinary third-party dependency, allowed") purely
-/// because its canonical path still contains a `node_modules` segment (there
-/// is no symlink to resolve away from it), regardless of declared identity.
-/// This test therefore still stays green — it now documents the eligibility
-/// fix landing correctly while pinning the residual case-3 gap #2127 tracks.
+/// **Part 1 — trigger shape 1 (non-empty `bundle.exclude`): the two
+/// PRECONDITIONS.** Renamed and reasserted by issue #2127 from
+/// `real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafile_audit_still_admits_it_as_case_three`,
+/// which #2087 had in turn renamed from #2081's original disarm pin. Two of
+/// that version's assertions — *the build succeeds* and *the escape marker
+/// ships* — described the very gap #2127 closed and are now false, so they
+/// are gone (the marker assertion is not merely false but unreachable: the
+/// build fails, so no bundle is emitted to read). The two that survive are
+/// the ones this test uniquely pins, and they are what makes its sibling's
+/// rejection meaningful rather than incidental:
+///
+/// 1. **the staging MECHANISM** — `<shadow>/node_modules` really is a real
+///    directory here, not a symlink to the live tree, so the rejection below
+///    genuinely exercises the real-copy classification path and not the
+///    ordinary symlink one (`bundler.rs`'s live-link branch is skipped once
+///    `bundle.exclude` is non-empty);
+/// 2. **the eligibility VERDICT** — `stage_escape_audit_eligibility` returns
+///    `FirstPartyPackageReachable` for this topology (#2087), asserted
+///    directly rather than inferred from the build's outcome, so a future
+///    change to either fix can never mask a regression in the other.
+///
+/// The rejection itself is asserted by
+/// [`real_copy_staging_under_active_bundle_exclude_rejects_the_undeclared_escape`]
+/// below; this test only records that the build no longer succeeds, without
+/// inspecting the diagnostic.
 #[test]
 #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
-fn real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafile_audit_still_admits_it_as_case_three(
-) {
+fn real_copy_staging_under_active_bundle_exclude_stages_a_real_copy_and_arms_eligibility() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
@@ -226,36 +272,23 @@ fn real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafil
     input.bundle_exclude = vec!["**/*.neverMatchesAnything".to_string()];
 
     let mut session = ShadowSession::new(root).expect("shadow session");
-    let output = bundle_with_session(input, Some(&mut session)).expect(
-        "RESIDUAL GAP (issue #2127): active bundle.exclude stages the undeclared @scope/child \
-         sibling as a real copy; eligibility now correctly arms (#2087), but \
-         metafile_deps.rs's stage-escape audit still classifies the real copy as an ordinary \
-         case-3 third-party dependency (its canonical path trivially keeps a node_modules \
-         segment, since there is no symlink to resolve away from) and allows it regardless of \
-         declared identity. The build must keep succeeding here until #2127 is fixed, so this \
-         pin stays a faithful record of today's behavior.",
-    );
-
-    // The escape genuinely shipped: the undeclared sibling's source reached
-    // the emitted bundle, completely unaudited.
-    let body = bundle_text(&output.bundle_path);
-    assert!(
-        body.contains("CHILD_PACKAGE_ESCAPE_MARKER"),
-        "the undeclared @scope/child sibling's source must have shipped into the bundle \
-         unaudited; got: {body}"
+    let _rejected = bundle_with_session(input, Some(&mut session)).expect_err(
+        "with both halves of the #2050 gap closed (#2087 eligibility + #2127 classification), \
+         the undeclared @scope/child sibling staged as a real copy under active bundle.exclude \
+         must be rejected — the diagnostic itself is asserted by this test's sibling below",
     );
 
     // `<shadow>/node_modules` (== `<work>/node_modules` here, since
     // shadow == work at a root-claimed workspace) is a REAL directory, not a
     // symlink to the live tree — the staging mechanism itself, unchanged by
-    // #2087 (which only changed the eligibility VERDICT for this shape, not
-    // how it is staged).
+    // either fix (both changed how the staged copy is CLASSIFIED, never how
+    // it is staged).
     let shadow_nm = session.shadow_root().join("node_modules");
     let shadow_nm_meta = fs::symlink_metadata(&shadow_nm).expect("shadow node_modules must exist");
     assert!(
         !shadow_nm_meta.file_type().is_symlink(),
         "shadow node_modules must be a REAL directory under active bundle.exclude, not a \
-         symlink to the live tree — the staging mechanism this pin documents"
+         symlink to the live tree — the staging mechanism this test documents"
     );
 
     // Pin the exact eligibility reason directly, independent of the build's
@@ -289,26 +322,28 @@ fn node_modules_child_dir(node_modules: &Path) -> std::path::PathBuf {
     node_modules.join("@scope/child")
 }
 
-/// **RED desired-form twin for trigger shape 1 — STILL RED after #2087.**
-/// The SAME configuration above must eventually REJECT the escape — an
-/// undeclared workspace sibling reached only via a staged real copy is still
-/// a case-2 offender, real-copy staging must not exempt it. Written in the
-/// assertion form the eventual fix should make true; **assertions are
-/// deliberately left untouched** (never edited to game the gate).
+/// **The acceptance test for trigger shape 1 — written RED by #2081, GREEN
+/// since #2127.** The SAME configuration as the preconditions test above must
+/// REJECT the escape: an undeclared workspace sibling reached only via a
+/// staged real copy is still a case-2 offender, and real-copy staging must
+/// not exempt it.
 ///
-/// Originally tagged `pending-feature: #2087`, on the assumption that
-/// arming eligibility alone would close this. #2087 landed and DOES arm
-/// eligibility correctly (see the sibling pin above) — but empirically this
-/// test still fails: `bundle_with_session` still returns `Ok`, because
-/// `metafile_deps.rs`'s stage-escape audit classifies a real-copy-staged
-/// package as case 3 (ordinary third-party dependency, always allowed)
-/// regardless of declared identity — a separate, previously-undiscovered
-/// gap, now tracked as issue #2127 (out of #2087's `zfb-types`-only file
-/// scope). Retagged accordingly; still `#[ignore]`d until #2127 lands.
+/// #2081 wrote both assertions below in their desired post-fix form, and
+/// **not one byte of them has been edited since** — the flip was the fix
+/// landing under them, never an assertion being rewritten to suit it
+/// (CLAUDE.md rule 8). It was first tagged `pending-feature: #2087`, on the
+/// assumption that arming eligibility alone would close this; #2087 landed,
+/// armed eligibility correctly, and this test still failed, which is what
+/// surfaced the separate classification gap #2127 (see this file's header
+/// for both halves). Retagged to `#2127`, then flipped by #2127's
+/// `metafile_deps.rs` fix and — per epic #2078's corrected flip protocol —
+/// tagged with the ordinary `env-gate: esbuild` reason rather than having its
+/// `#[ignore]` deleted: this binary needs a staged esbuild, so deleting the
+/// attribute would drop it out of the `-- --ignored` lanes that run it
+/// entirely. `health.yml`'s matching `--skip` was removed in the same commit.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2127"]
-fn real_copy_staging_under_active_bundle_exclude_should_reject_the_undeclared_escape_once_declared_identity_lands(
-) {
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
+fn real_copy_staging_under_active_bundle_exclude_rejects_the_undeclared_escape() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
@@ -335,6 +370,70 @@ fn real_copy_staging_under_active_bundle_exclude_should_reject_the_undeclared_es
         message.contains("node_modules/@scope/child/index.ts"),
         "expected the stage-escape error to name the escaped case-2 child-package metafile key \
          node_modules/@scope/child/index.ts; got: {message}"
+    );
+}
+
+/// **The POSITIVE control for #2127 at the production call site.** The
+/// rejection above is only correct if the identical topology with a DECLARED
+/// sibling still builds: #2127 changed the case-2/case-3 boundary, which
+/// governs ALL third-party dependency classification, so the failure mode to
+/// guard against is the fix becoming an overzealous "anything staged into
+/// `node_modules` as a real copy is suspect" regression that breaks ordinary
+/// builds.
+///
+/// Same workspace, same active `bundle.exclude`, same bare-package-name
+/// import, same real-copy staging — the ONLY difference from the rejection
+/// test above is that `@scope/child` declares its source tree as an entry
+/// root (`exports: {"./*": "./src/*"}`), #2040's consume-from-source
+/// carve-out. `bundle_with_session` must succeed and the sibling's source
+/// must ship.
+///
+/// This closes the one real-esbuild coverage gap #2127 would otherwise leave:
+/// this crate's other consume-from-source acceptance tests
+/// (`bundler_consume_from_source_esbuild_regression.rs`) all run with an
+/// EMPTY `bundle.exclude`, so they exercise the symlink shape and never reach
+/// the real-copy discriminator at all. The unit-level twin is
+/// `metafile_deps.rs`'s
+/// `stage_escape_allows_consume_from_source_sibling_staged_as_a_real_copy`.
+#[test]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
+fn real_copy_staging_under_active_bundle_exclude_accepts_the_declared_sibling() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
+        );
+        return;
+    };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    write_root_workspace(root);
+    let node_modules = write_declared_child_package(root);
+    write_consumer_entry(root);
+
+    let mut input = base_input(root, esbuild, node_modules);
+    input.bundle_exclude = vec!["**/*.neverMatchesAnything".to_string()];
+
+    let mut session = ShadowSession::new(root).expect("shadow session");
+    let output = bundle_with_session(input, Some(&mut session)).expect(
+        "a DECLARED consume-from-source workspace sibling (#2040) staged as a real copy under \
+         active bundle.exclude must still build — #2127's real-copy discriminator must reject \
+         only what the package fails to declare, never real-copy staging as such",
+    );
+
+    let body = fs::read_to_string(&output.bundle_path).expect("read emitted bundle");
+    assert!(
+        body.contains("CHILD_PACKAGE_DECLARED_MARKER"),
+        "the declared sibling's source must reach the emitted bundle; got: {body}"
+    );
+
+    // Same staging mechanism as the rejection test — proving this build took
+    // the real-copy path too, not an incidental symlink one.
+    let shadow_nm = session.shadow_root().join("node_modules");
+    let shadow_nm_meta = fs::symlink_metadata(&shadow_nm).expect("shadow node_modules must exist");
+    assert!(
+        !shadow_nm_meta.file_type().is_symlink(),
+        "shadow node_modules must be a REAL directory here too, or this test would not be \
+         exercising the real-copy discriminator at all"
     );
 }
 
