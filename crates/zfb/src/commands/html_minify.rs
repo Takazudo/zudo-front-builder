@@ -99,6 +99,48 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2033"]
+    fn html_minify_preserves_mermaid_source_whitespace() {
+        // `zfb-md-extras::mermaid` emits this exact shape (see
+        // `crates/zfb-content/tests/fixtures/snapshots/08-mermaid.html` for the real
+        // serializer's output): a `<div class="mermaid" data-mermaid="">` whose text
+        // content is the mermaid DSL body run through the ordinary HTML text-node
+        // escaper — `-->` serializes as `--&gt;`, matching hast-util-to-html's default
+        // for an empty attribute value and for `>` in text. Mermaid's grammar is
+        // newline-significant, so the minifier must not collapse whitespace inside it
+        // the way it would for an ordinary `<div>`.
+        //
+        // `subgraph build["…"]` is the deliberately chosen shape: zudo-doc's client-side
+        // `normalizeCollapsedMermaidSource` repair heuristic requires whitespace between a
+        // subgraph id and what follows it, and here the id (`build`) is immediately
+        // followed by `[` with no space — so a fix that only reinserts newlines between
+        // top-level statements (but not inside/around bracketed labels sitting flush
+        // against an id) would still leave this exact line unparseable. A weaker fixture
+        // using only simple `A --> B` node declarations would pass under such a fix.
+        let mermaid_body = concat!(
+            "graph TD;\n",
+            "  subgraph build[\"zfb build — your machine\"]\n",
+            "    A[Content] --&gt; B[Bundle]\n",
+            "  end\n",
+            "  subgraph deploy[\"edge\"]\n",
+            "    C[Deploy]\n",
+            "  end\n"
+        );
+        let input = format!(
+            "<div class=\"mermaid\" data-mermaid=\"\">{mermaid_body}</div>",
+            mermaid_body = mermaid_body
+        );
+
+        let output = minify_rendered_html_string(&input);
+
+        assert_eq!(
+            output, input,
+            "mermaid body must survive minification byte-identically \
+             (newline positions preserved), got: {output}"
+        );
+    }
+
+    #[test]
     fn html_minify_is_deterministic_for_fixed_input() {
         let input = "<html><head><title>Hi</title></head><body><p> Hello </p></body></html>";
 
