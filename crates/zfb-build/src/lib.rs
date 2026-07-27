@@ -85,8 +85,9 @@ pub use head_inject::{
     ProdHeadAssets, HTML5_DOCTYPE_PREFIX,
 };
 pub use metafile_deps::{
-    accepted_enrolment_set, accepted_enrolment_set_at_path, route_module_deps,
-    AcceptedEnrolmentSet, AcceptedPackage, RouteEntryRef, RouteModuleDeps,
+    accepted_enrolment_set, accepted_enrolment_set_at_path,
+    declared_first_party_package_for_source, route_module_deps, AcceptedEnrolmentSet,
+    AcceptedPackage, RouteEntryRef, RouteModuleDeps,
 };
 pub use module_worker::{
     discover_module_preprocessing_with_context,

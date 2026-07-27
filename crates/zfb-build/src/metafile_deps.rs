@@ -1276,6 +1276,36 @@ pub fn accepted_enrolment_set(
     })
 }
 
+/// Declared-data-only package identity for a first-party **source path** the
+/// caller already holds, rather than for a metafile key (epic #2078 Sub 10c,
+/// issue #2090).
+///
+/// [`accepted_enrolment_set`] answers "which declared consume-from-source
+/// packages did THIS bundle session's metafile show were reached and
+/// accepted". The islands/client pipeline's no-stage path
+/// (`crates/zfb/src/commands/build.rs`) has no metafile at all — esbuild runs
+/// there without `--metafile`, which is exactly why #2048's defect is silent
+/// in that pipeline — so its sanctioned loud-failure fallback has to apply the
+/// same declared-entry acceptance rule to a path it already holds. Delegating
+/// to [`declared_first_party_package_identity_from_canonical`] is what keeps
+/// that fallback from drifting away from what the audit itself accepts: the
+/// same four conditions (nearest `package.json` inside `first_party_root`, a
+/// declared `name`, a `pnpm-workspace.yaml`-claimed root, a subpath covered by
+/// the package's own declared entries), the same fail-closed posture.
+///
+/// This is a QUERY over declared data (`package.json` + `pnpm-workspace.yaml`)
+/// and never a resolution pass: it says nothing about whether esbuild did, or
+/// would, resolve `source` — only whether the package that owns it declares
+/// that location reachable. Callers bring their own evidence of reachability.
+pub fn declared_first_party_package_for_source(
+    source: &Path,
+    first_party_root: &Path,
+) -> Option<AcceptedPackage> {
+    let canonical = canonical_or_self(source)?;
+    let canonical_first_party_root = canonical_or_self(first_party_root)?;
+    declared_first_party_package_identity_from_canonical(&canonical, &canonical_first_party_root)
+}
+
 /// Convenience wrapper over [`accepted_enrolment_set`]: read the metafile
 /// from `metafile_path` first, mirroring
 /// [`audit_metafile_stage_escape_at_path`]'s own read-then-classify shape.
