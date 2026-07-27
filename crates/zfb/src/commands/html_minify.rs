@@ -6,8 +6,21 @@
 
 use minify_html::{minify, Cfg};
 
+use super::mermaid_preserve;
+
 pub(crate) fn minify_rendered_html_bytes(html: &[u8]) -> Vec<u8> {
-    minify(html, &conservative_cfg())
+    let preservation = mermaid_preserve::extract(html);
+    if preservation.is_empty() {
+        return minify(html, &conservative_cfg());
+    }
+
+    let minified = minify(preservation.html(), &conservative_cfg());
+    // A placeholder that fails to round-trip means minification mangled it in
+    // a way `restore` cannot resolve safely — the module's own docs call the
+    // original bytes the only safe fallback in that case.
+    preservation
+        .restore(&minified)
+        .unwrap_or_else(|_| html.to_vec())
 }
 
 #[cfg(test)]
@@ -99,7 +112,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2033"]
     fn html_minify_preserves_mermaid_source_whitespace() {
         // `zfb-md-extras::mermaid` emits this exact shape (see
         // `crates/zfb-content/tests/fixtures/snapshots/08-mermaid.html` for the real
@@ -164,5 +176,31 @@ mod tests {
         let second = minify_rendered_html_bytes(input.as_bytes());
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn html_minify_of_a_no_mermaid_page_is_unchanged_by_the_mermaid_wrapper() {
+        // The mermaid extract/restore wrapper must be a no-op for the common
+        // case: a page with no `data-mermaid` element at all. This pins the
+        // output byte-for-byte against `minify_html::minify` called directly
+        // with the same conservative config, bypassing the wrapper entirely —
+        // so a wrapper that perturbs the common path (a stray placeholder, an
+        // extra allocation-driven reordering, etc.) fails this test even
+        // though every other test above only checks properties of the
+        // wrapped output, not its exact bytes against the unwrapped baseline.
+        let input = concat!(
+            "<!doctype html><html><head><title>Hi</title></head><body>\n",
+            "  <main>\n",
+            "    <h1> Hello </h1>\n",
+            "    <p>  Welcome   home. </p>\n",
+            "    <ul>\n      <li>One</li>\n      <li>Two</li>\n    </ul>\n",
+            "  </main>\n",
+            "</body></html>"
+        );
+
+        let baseline = minify(input.as_bytes(), &conservative_cfg());
+        let wrapped = minify_rendered_html_bytes(input.as_bytes());
+
+        assert_eq!(wrapped, baseline);
     }
 }

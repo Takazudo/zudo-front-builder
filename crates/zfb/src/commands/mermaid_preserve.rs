@@ -58,10 +58,6 @@
 //! (`zfb-md-extras` escapes the body, so a real emitted diagram cannot contain
 //! one.) Round-tripping is exact either way.
 
-// #2032 builds this helper; #2033 wires it into `minify_rendered_html_bytes`.
-// Until then nothing outside this module's own tests calls it.
-#![allow(dead_code)]
-
 use std::fmt;
 use std::ops::Range;
 
@@ -153,6 +149,7 @@ impl MermaidPreservation {
     }
 
     /// How many mermaid bodies were taken out.
+    #[allow(dead_code)] // exercised by this module's own tests, not by `html_minify`
     pub(crate) fn len(&self) -> usize {
         self.bodies.len()
     }
