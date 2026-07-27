@@ -14739,6 +14739,263 @@ mod tests {
             .contains(&RawImportEdge { importer, target }));
     }
 
+    // --- issue #2080 (epic #2078): rejected mirror-derived materialisation
+    // leaves shared-state residue ---
+    //
+    // `materialise_source_file` mutates FOUR pieces of shared state before it
+    // can fail: it writes generated `.zfb-raw-*.mjs` modules to disk
+    // (:7871-7882), and it extends `glob_matched_files` (:7851-7853),
+    // `raw_import_edges` (:7883-7885), and `module_worker_dependencies`
+    // (:7902-7904) — all BEFORE the final `writer.write_if_changed(to, ...)`
+    // commit. A late failure at that final step (the only point reachable
+    // after every one of those mutations has already run) leaves every
+    // mutation in place with no rollback — issue #2049's non-monotonicity.
+    // Fixed by issue #2085 (provenance threading), per epic #2078's pinned
+    // "transactional" scope: PRE-COMMIT transformation/parse rejection only,
+    // never the sequential `write_if_changed` commit's own atomicity.
+
+    /// Shared fixture for the residue tests below: an importer that exercises
+    /// all three cross-file transforms (`import.meta.glob`, terminal `?raw`,
+    /// and a module-worker URL macro) in one file, plus an unrelated sibling
+    /// (`victim.ts`) that ALSO uses `import.meta.glob` on its own — the file
+    /// whose outcome the sharpest residue pin (the "flip" test below) checks.
+    /// Returns `(project, root, importer, victim)`.
+    fn write_residue_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().to_path_buf();
+        let pages = root.join("pages");
+        fs::create_dir_all(pages.join("widgets-a")).unwrap();
+        fs::create_dir_all(pages.join("widgets-b")).unwrap();
+        fs::write(pages.join("widgets-a/a.tsx"), "export const a = 1;\n").unwrap();
+        fs::write(pages.join("widgets-b/b.tsx"), "export const b = 2;\n").unwrap();
+        fs::write(
+            pages.join("search.worker.ts"),
+            "self.postMessage('ready');\n",
+        )
+        .unwrap();
+        let importer = pages.join("importer.ts");
+        fs::write(
+            &importer,
+            "import text from './victim.ts?raw';\n\
+             const widgets = import.meta.glob('./widgets-a/*.tsx', { eager: true });\n\
+             new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });\n\
+             export default { widgets, text };\n",
+        )
+        .unwrap();
+        let victim = pages.join("victim.ts");
+        fs::write(
+            &victim,
+            "export const widgets = import.meta.glob('./widgets-b/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+        (project, root, importer, victim)
+    }
+
+    /// Orphan-detection helper: whether a `.zfb-raw-*.mjs` generated module
+    /// exists directly inside `dir`. Content-hash-independent so callers
+    /// don't need to reproduce the filename derivation to look for it.
+    fn generated_raw_module_exists(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        entries.filter_map(|entry| entry.ok()).any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(".zfb-raw-") && name.ends_with(".mjs")
+        })
+    }
+
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2085"]
+    fn materialise_source_file_late_failure_leaves_orphan_module_and_extended_accumulators() {
+        let (_project, root, importer, _victim) = write_residue_fixture();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        writer.ensure_dir(&shadow_pages).unwrap();
+
+        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let raw_edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
+
+        // Force the ONLY failure point reachable after every mutation below
+        // has already run: the final `write_if_changed(to, ...)` commit. A
+        // pre-existing DIRECTORY at `to` makes that specific write fail
+        // while every earlier mutation stays in place.
+        let staged = shadow_pages.join("importer.ts");
+        fs::create_dir_all(&staged).unwrap();
+
+        let result = materialise_source_file(
+            &importer,
+            &importer,
+            &staged,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        );
+        let err = result.expect_err("a directory at the destination must reject the final commit");
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("write expanded source to"),
+            "must fail at the FINAL write — after glob/raw/worker have already mutated shared \
+             state, not earlier: {err}"
+        );
+
+        // Desired post-fix state: a rejected call must not leave any of
+        // these three accumulators carrying its partial work.
+        assert!(
+            glob_matched_files.borrow().is_empty(),
+            "a rejected materialisation must not leave queued glob matches behind"
+        );
+        assert!(
+            raw_edges.borrow().is_empty(),
+            "a rejected materialisation must not leave a raw_import_edges residue behind"
+        );
+        assert!(
+            worker_dependencies.borrow().is_empty(),
+            "a rejected materialisation must not leave module_worker_dependencies residue behind"
+        );
+        assert!(
+            !generated_raw_module_exists(&shadow_pages),
+            "a rejected materialisation must not leave an orphan generated .zfb-raw-*.mjs module on disk"
+        );
+    }
+
+    #[test]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2085"]
+    fn materialise_source_file_late_failure_residue_does_not_corrupt_unrelated_file_outcome() {
+        let (_project, root, importer, victim) = write_residue_fixture();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        writer.ensure_dir(&shadow_pages).unwrap();
+
+        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let raw_edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
+
+        let staged_importer = shadow_pages.join("importer.ts");
+        fs::create_dir_all(&staged_importer).unwrap();
+        materialise_source_file(
+            &importer,
+            &importer,
+            &staged_importer,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect_err("importer's final commit must fail (destination is a directory)");
+
+        // The sharpest pin: the failed call above left a `raw_import_edges`
+        // entry targeting `victim.ts` (discovered via ITS OWN, unrelated
+        // `?raw` import in `importer.ts`). Materialising `victim.ts` next —
+        // sharing the SAME `raw_import_edges` set, exactly as one shared
+        // `MaterialiseCtx` does across a real walk — must not let that
+        // leftover entry flip `raw_target_matches` for it: victim.ts is
+        // never itself a surviving `?raw` target of anything.
+        let staged_victim = shadow_pages.join("victim.ts");
+        materialise_source_file(
+            &victim,
+            &victim,
+            &staged_victim,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap();
+
+        let victim_staged = fs::read_to_string(&staged_victim).unwrap();
+        assert!(
+            !victim_staged.contains("import.meta.glob("),
+            "victim.ts's own import.meta.glob must still be expanded normally — an unrelated \
+             rejected sibling call must not corrupt it into a terminal raw-copy; got:\n{victim_staged}"
+        );
+    }
+
+    /// Control (NOT ignored): a SUCCESSFUL materialisation of the same
+    /// importer fixture must still commit all four effects the residue tests
+    /// above pin as wrongly-surviving-a-rejection. This is the positive case
+    /// the eventual #2085 fix must not break.
+    #[test]
+    fn materialise_source_file_successful_call_commits_all_four_effects() {
+        let (_project, root, importer, _victim) = write_residue_fixture();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        writer.ensure_dir(&shadow_pages).unwrap();
+
+        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let raw_edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
+        let staged = shadow_pages.join("importer.ts");
+
+        materialise_source_file(
+            &importer,
+            &importer,
+            &staged,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap();
+
+        assert!(
+            glob_matched_files
+                .borrow()
+                .contains(&root.join("pages/widgets-a/a.tsx")),
+            "a successful call must commit the glob match"
+        );
+        assert!(
+            generated_raw_module_exists(&shadow_pages),
+            "a successful call must commit the generated raw module to disk"
+        );
+        assert!(
+            raw_edges
+                .borrow()
+                .iter()
+                .any(|edge| edge.importer == importer),
+            "a successful call must commit the raw_import_edges entry"
+        );
+        assert!(
+            worker_dependencies
+                .borrow()
+                .iter()
+                .any(|dep| dep.importer == importer),
+            "a successful call must commit the module_worker_dependencies entry"
+        );
+        let staged_source = fs::read_to_string(&staged).unwrap();
+        assert!(!staged_source.contains("?raw"), "{staged_source}");
+        assert!(
+            !staged_source.contains("import.meta.glob("),
+            "{staged_source}"
+        );
+        assert!(staged_source.contains(".js?v="), "{staged_source}");
+    }
+
     #[test]
     fn ssr_terminal_js_raw_target_is_never_reparsed_by_broad_mirror() {
         let project = tempfile::tempdir().unwrap();
