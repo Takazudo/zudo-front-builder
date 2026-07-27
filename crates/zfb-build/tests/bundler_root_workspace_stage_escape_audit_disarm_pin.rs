@@ -9,7 +9,7 @@
 //! #1730/#1988 were meant to close.
 //!
 //! **Both halves of that gap are now closed.** It took two fixes in two
-//! different crates, and this file's three tests are the record of both:
+//! different crates, and this file's four tests are the record of both:
 //!
 //! 1. **Eligibility** (sub #2087, Wave 3). Guard (b)'s eligibility check
 //!    (`zfb_types::stage_escape_audit_eligibility`) used to scan
@@ -39,14 +39,16 @@
 //!
 //! # Why this file is still called `…_disarm_pin`
 //!
-//! The name states the QUESTION all three tests investigate — whether either
+//! The name states the QUESTION all four tests investigate — whether either
 //! staging configuration #2050 named can disarm the stage-escape audit at a
 //! root-claimed workspace — not the answer, which is now uniformly "no". The
 //! per-test names below carry the current facts. Renaming was considered and
 //! declined: every candidate either collided confusingly with the sibling
 //! `bundler_root_workspace_stage_escape_audit_armed_regression.rs` binary or
-//! misdescribed the third test, a symlink-shape negative control that is not
-//! about real-copy staging at all.
+//! misdescribed the last test
+//! ([`empty_exclude_workspace_package_exact_staging_does_not_disarm_the_audit_at_root_claimed_workspace`]),
+//! a symlink-shape negative control that is not about real-copy staging at
+//! all.
 //!
 //! # The two trigger shapes named in #2081 — and what exploration found
 //!

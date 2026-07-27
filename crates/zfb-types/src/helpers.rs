@@ -84,11 +84,25 @@ pub fn path_to_posix_string(p: &Path) -> String {
 /// was reached by resolving a bare package specifier through some install
 /// root, rather than a relative/project-rooted import.
 ///
-/// Canonical home for a predicate previously duplicated between
-/// `zfb-build`'s `metafile_deps::audit_metafile_stage_escape` (to tell a
-/// package-name resolution apart from an ordinary source path) and
-/// `zfb-types`'s own `audit_eligibility` (to filter `node_modules` symlink
-/// targets that resolve back into another install root) — issue #2051.
+/// This is the CANONICAL home for that predicate (issue #2051). The durable
+/// rule, which does not go stale: **delegate to it — with a local alias when a
+/// shorter name reads better in context, as `zfb-build`'s
+/// `bundler::path_is_inside_node_modules` does — and never re-inline the
+/// component walk.** It is trivial enough to retype from memory, which is
+/// exactly why copies keep appearing, and each one is a place a future
+/// refinement (UNC prefixes, case-insensitive volumes, a nested-install
+/// carve-out) would silently miss.
+///
+/// Migration is NOT complete, and this doc deliberately does not claim
+/// otherwise — the earlier version enumerated the two sites #2051 had folded
+/// in, which read as "there is now one implementation" and went stale the
+/// moment a third was found in `zfb-build`'s `bundler.rs`. Hand-written
+/// equivalents still live in other crates. Find the current set rather than
+/// trusting any list here:
+///
+/// ```sh
+/// grep -rn -A2 'components()' crates/ --include='*.rs' | grep node_modules
+/// ```
 pub fn has_node_modules_segment(path: &Path) -> bool {
     path.components()
         .any(|c| matches!(c, Component::Normal(name) if name == "node_modules"))
