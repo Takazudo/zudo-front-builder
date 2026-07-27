@@ -146,7 +146,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::first_party::workspace_root_claims_path;
-use crate::normalize_path_lexical;
+use crate::{has_node_modules_segment, normalize_path_lexical};
 
 /// Why the stage-escape audit is (or is not) eligible to run.
 ///
@@ -281,11 +281,6 @@ fn package_dir_candidates(node_modules: &Path) -> Vec<PathBuf> {
         }
     }
     candidates
-}
-
-fn has_node_modules_segment(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == "node_modules")
 }
 
 #[cfg(test)]

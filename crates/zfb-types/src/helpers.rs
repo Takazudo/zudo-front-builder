@@ -78,6 +78,22 @@ pub fn path_to_posix_string(p: &Path) -> String {
     }
 }
 
+// ── node_modules path detection ───────────────────────────────────────────────
+
+/// True when any path component is literally `node_modules` — i.e. the path
+/// was reached by resolving a bare package specifier through some install
+/// root, rather than a relative/project-rooted import.
+///
+/// Canonical home for a predicate previously duplicated between
+/// `zfb-build`'s `metafile_deps::audit_metafile_stage_escape` (to tell a
+/// package-name resolution apart from an ordinary source path) and
+/// `zfb-types`'s own `audit_eligibility` (to filter `node_modules` symlink
+/// targets that resolve back into another install root) — issue #2051.
+pub fn has_node_modules_segment(path: &Path) -> bool {
+    path.components()
+        .any(|c| matches!(c, Component::Normal(name) if name == "node_modules"))
+}
+
 // ── Lexical path normalization ────────────────────────────────────────────────
 
 /// Lexically normalise a path: collapse `.` and `..` segments without
@@ -212,6 +228,31 @@ mod tests {
             path_to_posix_string(Path::new("sub/dir/file.ts")),
             "sub/dir/file.ts"
         );
+    }
+
+    // ── has_node_modules_segment ──────────────────────────────────────────────
+
+    #[test]
+    fn has_node_modules_segment_detects_middle_component() {
+        assert!(has_node_modules_segment(Path::new(
+            "/proj/node_modules/@acme/ui/src/index.ts"
+        )));
+    }
+
+    #[test]
+    fn has_node_modules_segment_absent_for_ordinary_source_path() {
+        assert!(!has_node_modules_segment(Path::new(
+            "/proj/pages/blog/index.tsx"
+        )));
+    }
+
+    #[test]
+    fn has_node_modules_segment_requires_exact_component_match() {
+        // A directory merely containing "node_modules" as a substring of a
+        // longer name must not match — only a literal path component does.
+        assert!(!has_node_modules_segment(Path::new(
+            "/proj/not_node_modules_really/file.ts"
+        )));
     }
 
     // ── normalize_path_lexical ────────────────────────────────────────────────
