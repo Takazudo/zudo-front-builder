@@ -1404,6 +1404,110 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2086"]
+    fn stage_escape_allows_consume_from_source_sibling_via_canonicalized_key() {
+        // RED (#2082, epic #2078 Wave 1; to be flipped by Sub #2086, #2047's
+        // real fix). The SAME #2040 topology as
+        // `stage_escape_allows_consume_from_source_sibling_declared_by_wildcard_exports`
+        // above, but esbuild recorded a CANONICALIZED (non-`node_modules`-
+        // shaped) metafile key for the resolved import instead of a
+        // `node_modules/...`-shaped one — exactly what happens under
+        // copy_mode (`node_modules_dir` set + non-empty `tsconfig_paths`, no
+        // `--preserve-symlinks`; see bundler.rs :10153/:2019 and this crate's
+        // `tests/bundler_consume_from_source_esbuild_regression.rs` env-gate
+        // sibling test).
+        //
+        // `package_shaped` (this file's `has_node_modules_segment` check on
+        // the KEY STRING, not the canonical path) is `false` for this key, so
+        // the case-2 declared-entry exemption
+        // (`package_input_is_declared_first_party_entry`) never fires — the
+        // input falls straight through to the case-1/case-4 stage-membership
+        // check below, which rejects it as case 4 today even though
+        // `@acme/ui` is declared, claimed, and its entry covers the import.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "ui",
+            r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+            &[
+                ("src/cta-button.tsx", "import './theme';"),
+                ("src/theme.ts", "theme"),
+            ],
+        );
+
+        // The canonicalized key climbs straight out of the stage to the real
+        // workspace path — no `node_modules` segment anywhere in the string,
+        // unlike the `node_modules/@acme/ui/...` spelling the sibling test
+        // above uses for the identical topology.
+        let metafile = br#"{"inputs": {
+            "../workspace/packages/ui/src/cta-button.tsx": {"imports": []},
+            "../workspace/packages/ui/src/theme.ts": {"imports": []}
+        }}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+        assert!(
+            result.is_ok(),
+            "a first-party workspace sibling consumed from source must not be a stage \
+             escape regardless of whether esbuild recorded a node_modules-shaped or a \
+             canonicalized metafile key for it; got {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_flags_dist_shipping_sibling_canonicalized_key_stays_rejected() {
+        // Part 3 (#2082, mandatory fail-closed twin). Mirrors
+        // `stage_escape_flags_dist_shipping_sibling_reached_at_an_undeclared_source_path`
+        // above, but reached via a CANONICALIZED (non-`node_modules`-shaped)
+        // key instead. An UNDECLARED deep import into `src/internal.ts` must
+        // stay rejected TODAY (case-4 rejection, same as now) and — this is
+        // the point of this test — must STILL be rejected once Sub #2086
+        // lands the canonical-key exemption for declared entries. This is
+        // the boundary that stops #2086 from becoming a blanket "any
+        // canonical path under first_party_root is fine" exemption: only a
+        // DECLARED entry may ever be accepted, node_modules-shaped key or
+        // not.
+        //
+        // Deliberately a single-offender fixture (unlike the node_modules-
+        // shaped negative above, which also asserts the declared dist entry
+        // is spared): today, case 4 doesn't consult declaredness at all, so
+        // a canonicalized dist entry alongside this one would ALSO be
+        // flagged pre-fix — that is Part 1/Part 2's concern, not this
+        // permanent guard's. This fixture only pins what must never flip:
+        // an undeclared canonical-key climb stays an offender before AND
+        // after #2086.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "built",
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
+            &[
+                ("dist/index.js", "built"),
+                ("src/internal.ts", "internal source"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "../workspace/packages/built/src/internal.ts": {"imports": []}
+        }}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err(
+                "an undeclared deep import reached via a canonicalized key must stay \
+                 flagged, both today and after the canonical-key exemption lands \
+                 (#2047/#2086)",
+            );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("../workspace/packages/built/src/internal.ts"),
+            "the undeclared source path must be named as an offender; got {msg:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn stage_escape_flags_consume_from_source_target_not_claimed_by_the_workspace() {
         // Declared entry roots alone are not enough: the target must also be
         // a package the governing pnpm-workspace.yaml actually claims. Here

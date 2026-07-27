@@ -183,6 +183,31 @@ fn base_input(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> Bundle
     input
 }
 
+/// Same as [`base_input`], but with a non-empty `tsconfig_paths` — the second
+/// half of `esbuild_will_preserve_symlinks`'s (bundler.rs :10153) three-way
+/// test. With `node_modules_dir: Some(_)` (already set by `base_input`) and
+/// `node_modules_preserve_symlinks` left at its `false` default, a non-empty
+/// `tsconfig_paths` flips that predicate to `false`, so `bundle`
+/// (bundler.rs :2019) sets `copy_mode = true` and drives esbuild WITHOUT
+/// `--preserve-symlinks`. The alias itself is inert — it targets a real
+/// path already inside `project_root` (`components/`, created by
+/// `write_required_project_dirs`), which `collect_runtime_alias_claim_graph`
+/// (bundler.rs :4870-4875) skips (`file.starts_with(project_root)`) even in
+/// the nested-member topology where `first_party_root != project_root`. Its
+/// only job is making `tsconfig_paths` non-empty.
+fn base_input_copy_mode(project: &Path, esbuild: PathBuf, node_modules: PathBuf) -> BundlerInput {
+    let mut input = base_input(project, esbuild, node_modules);
+    input.tsconfig_paths = BTreeMap::from([(
+        "#components/*".to_string(),
+        vec![project
+            .join("components")
+            .join("*")
+            .to_string_lossy()
+            .into_owned()],
+    )]);
+    input
+}
+
 fn bundle_text(path: &Path) -> String {
     fs::read_to_string(path).expect("read emitted bundle")
 }
@@ -221,6 +246,68 @@ fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party
     .expect(
         "a nested member consuming a first-party sibling from source by bare \
          package name is a legitimate monorepo idiom, not a stage escape (#2040)",
+    );
+
+    let body = bundle_text(&output.bundle_path);
+    for marker in [
+        "CONSUMER_MARKER",
+        "CTA_BUTTON_SOURCE_MARKER",
+        "THEME_STATE_SOURCE_MARKER",
+    ] {
+        assert!(
+            body.contains(marker),
+            "bundle must contain {marker}; got: {body}"
+        );
+    }
+}
+
+/// **RED (#2082, epic #2078 Wave 1; to be flipped by Sub #2086, #2047's real
+/// fix).** Identical topology to
+/// [`nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party_source`]
+/// above, but under **copy_mode**
+/// (`node_modules_dir` set + non-empty `tsconfig_paths`, `node_modules_preserve_symlinks`
+/// left `false` — `esbuild_will_preserve_symlinks`, bundler.rs :10153/:2019).
+///
+/// Without `--preserve-symlinks`, esbuild canonicalises the
+/// `node_modules/@acme/ui` symlink back to its real target and records a
+/// CANONICALIZED metafile key for the resolved import (a `..`-climbing
+/// relative path such as `../../packages/ui/src/cta-button/cta-button.tsx`),
+/// not a `node_modules/...`-shaped one. `package_shaped`
+/// (`metafile_deps.rs`'s `has_node_modules_segment` check on the KEY string,
+/// not the canonical path) is `false` for such a key, so it never enters the
+/// case-2 branch where `package_input_is_declared_first_party_entry` (the
+/// #2040 exemption) is consulted at all — it falls through to the case-1/
+/// case-4 stage-membership check instead, which rejects it as case 4
+/// ("first-party input resolved outside every stage root, no staged
+/// spelling") even though `@acme/ui` is declared, claimed, and its entry
+/// covers the import — the SAME package the sibling test above already
+/// accepts when esbuild happens to preserve symlinks.
+///
+/// Desired POST-FIX form: the build stays GREEN, identically to the
+/// `--preserve-symlinks` case.
+#[test]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2086"]
+fn nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_under_copy_mode() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    write_workspace_root(root);
+    write_required_project_dirs(root);
+    let node_modules = write_consume_from_source_sibling(root);
+    let project = write_nested_host(root);
+    write_consumer_entry(&project);
+
+    let output = bundle_with_session(
+        base_input_copy_mode(&project, esbuild, node_modules),
+        Some(&mut ShadowSession::new(&project).expect("shadow session")),
+    )
+    .expect(
+        "a nested member consuming a first-party sibling from source by bare package \
+         name is legitimate regardless of whether esbuild records a node_modules-shaped \
+         or a canonicalized metafile key for the resolved import (#2047/#2086)",
     );
 
     let body = bundle_text(&output.bundle_path);
