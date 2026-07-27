@@ -58,7 +58,7 @@
 //!
 //! Evaluated top to bottom; the first matching row wins.
 //!
-//! | # | stage widened (`first_party_root != normalize(project_root)`) | `first_party_root/pnpm-workspace.yaml` is a file | ≥1 first-party-reachable link under `node_modules_dir` | Result | Variant |
+//! | # | stage widened (`first_party_root != normalize(project_root)`) | `first_party_root/pnpm-workspace.yaml` is a file | ≥1 first-party-reachable link or declared real copy under `node_modules_dir` | Result | Variant |
 //! |---|---|---|---|---|---|
 //! | 1 | yes | — (not read) | — (not scanned) | **eligible** | [`AuditEligibility::WidenedStage`] |
 //! | 2 | no | no | — (not scanned) | not eligible | [`AuditEligibility::NoWorkspace`] |
@@ -75,11 +75,20 @@
 //! proxies it replaces — nothing eligible under the old rule becomes
 //! ineligible under this one.
 //!
-//! # What counts as a "first-party-reachable link"
+//! # What counts as first-party-reachable evidence
 //!
 //! An entry directly under `node_modules_dir` — or one level below a
-//! `@scope/` directory, the only nesting pnpm's public layout produces — that
-//! satisfies **all three** of:
+//! `@scope/` directory, the only nesting pnpm's public layout produces — can
+//! establish row 3 in either of two ways: as a **symlink** (resolution-based)
+//! or, since issue #2087, as a **declared real copy** (identity-based, no
+//! resolution at all). Either way, the entry itself is "no evidence" and
+//! skipped on any I/O failure — mirroring the metafile audit's own "skip,
+//! don't invent" posture — and entries whose name starts with `.` (`.pnpm`,
+//! `.bin`, `.modules.yaml`) are skipped outright.
+//!
+//! ## As a symlink
+//!
+//! Satisfies **all three** of:
 //!
 //! 1. it is a **symlink** (checked with `symlink_metadata`, not followed);
 //! 2. its **canonical target** lies inside the canonical `first_party_root`
@@ -98,10 +107,30 @@
 //! the epic requires: a link into some *unclaimed* directory inside the
 //! workspace tree is not a workspace package and does not arm the audit.
 //!
-//! Failures to read the directory, to stat an entry, or to canonicalise a
-//! target are treated as "no evidence" and skipped — mirroring the metafile
-//! audit's own "skip, don't invent" posture. Entries whose name starts with
-//! `.` (`.pnpm`, `.bin`, `.modules.yaml`) are skipped outright.
+//! ## As a declared real copy (issue #2087)
+//!
+//! Satisfies **both** of:
+//!
+//! 1. it is a **real directory**, not a symlink (a `bundle.exclude`-active
+//!    build stages every non-excluded dependency this way instead of leaving
+//!    the wholesale `<node_modules_dir> -> <live tree>` symlink in place —
+//!    see "Declared-identity recognition" below);
+//! 2. its own `package.json` declares a `name` that appears in
+//!    [`crate::first_party::claimed_workspace_member_names`]`(first_party_root)`
+//!    — the roster of every package `pnpm-workspace.yaml`'s `packages:` globs
+//!    claim, read from each claimed member's *own* manifest.
+//!
+//! No path resolution happens here at all: a real copy's own physical
+//! location under `node_modules_dir` is irrelevant, and is never compared
+//! against any live source path. Only the declared name is consulted, and
+//! only against a roster built the same declared-data-only way this
+//! predicate already reads `pnpm-workspace.yaml` for the symlink case. A
+//! `package.json` that is missing, unreadable, or carries no string `name`
+//! yields no evidence, same as a symlink that fails to canonicalise. An
+//! ordinary external registry dependency staged as a real copy (e.g. `react`)
+//! is unaffected: its declared name simply matches nothing in the claimed
+//! roster, so it is never counted (see fixture 8 below, the negative
+//! control).
 //!
 //! # Consume-from-source (issue #1730's second comment)
 //!
@@ -113,11 +142,67 @@
 //! that shape should be *accepted* by the audit (today it lands in the
 //! audit's "case 2: OFFENDER") is a separate policy question owned by #2040.
 //! This predicate's job is only to make sure #2040 has the case in scope.
+//!
+//! # Declared-identity recognition of real (non-symlink) copies (issue #2087, closed)
+//!
+//! Historical context: through issue #2081, row 3
+//! ([`AuditEligibility::FirstPartyPackageReachable`]) required a **symlink**
+//! under `node_modules_dir` — it had no way to recognise a first-party
+//! package that was staged as a **real, non-symlink copy** instead. A
+//! caller's `node_modules_dir` holds real copies rather than symlinks
+//! whenever `bundle.exclude` is active (the live `<node_modules_dir> -> <live
+//! tree>` symlink is deliberately never created once exclusions are in play,
+//! so an excluded dependency cannot be resurrected by climbing through it —
+//! see `crates/zfb-build/src/bundler.rs`). In that configuration the
+//! predicate used to fall through to
+//! [`AuditEligibility::NoReachableFirstPartyPackage`] even though a
+//! first-party package was genuinely staged and reachable — **silently
+//! disarming the caller's stage-escape audit** for that build, shipping an
+//! undeclared workspace sibling with no error at all (issue #2081's
+//! `crates/zfb-build/tests/bundler_root_workspace_stage_escape_audit_disarm_pin.rs`
+//! pinned this exact gap with a regression test; every test in that file now
+//! asserts the fixed, armed behaviour).
+//!
+//! Issue #2087 closed the gap by extending row 3's evidence: a real directory
+//! under `node_modules_dir` is now ALSO first-party-reachable when its own
+//! `package.json` declares a `name` claimed by `pnpm-workspace.yaml` (see
+//! "As a declared real copy" above and
+//! [`crate::first_party::claimed_workspace_member_names`]) — the same
+//! declared-data-only posture this predicate already used for symlinks,
+//! extended to a case where there is no link to resolve at all. Row 3's
+//! symlink requirement is no longer the sole path to eligibility; its absence
+//! now only means "not reachable *via a symlink*", not "not reachable at
+//! all". #1731's external `npm link` / `file:` false-positive topology stays
+//! correctly out of scope: an external dependency's declared name simply
+//! does not appear in the claimed-member roster, so real-copy staging of one
+//! is not itself evidence (see fixture 8, the negative control below).
+//!
+//! ## Arming this predicate was necessary, not sufficient (issue #2127, closed)
+//!
+//! #2087's own investigation surfaced that arming eligibility did NOT by
+//! itself make the caller reject the escape: the metafile audit downstream
+//! (`zfb_build::metafile_deps::audit_metafile_stage_escape`) classified any
+//! real-copy-staged `node_modules/<pkg>` input as "case 3: ordinary
+//! third-party dependency, allowed" purely because its canonical path
+//! trivially retains a `node_modules` segment — there being no symlink to
+//! resolve away from it — regardless of declared identity. Issue #2127 closed
+//! that second gap the same declared-data-only way this predicate closed the
+//! first, reusing the very same claimed-member roster
+//! ([`crate::first_party::claimed_workspace_member_names`]) to tell a staged
+//! workspace sibling apart from an ordinary registry dependency before
+//! applying the audit's declared-entry rule.
+//!
+//! The division of labour is unchanged by either fix, and is the point worth
+//! carrying forward: this module still decides only **whether to audit**, and
+//! the metafile still decides **whether an escape occurred**. #2127 is a
+//! reminder that a fix on this side is never on its own a fix to the audit's
+//! own classification, and that a `zfb-types` predicate must not grow toward
+//! becoming one.
 
 use std::path::{Path, PathBuf};
 
 use crate::first_party::workspace_root_claims_path;
-use crate::normalize_path_lexical;
+use crate::{has_node_modules_segment, normalize_path_lexical};
 
 /// Why the stage-escape audit is (or is not) eligible to run.
 ///
@@ -129,13 +214,22 @@ pub enum AuditEligibility {
     /// boundary moved, and escapes across it include non-symlink forms.
     WidenedStage,
     /// Row 3 — the stage did not widen, but at least one `node_modules`
-    /// entry is a symlink to a claimed workspace package inside
-    /// `first_party_root`. This is the #1730 root-claimed-workspace case the
-    /// old proxies read as "not a workspace".
+    /// entry is first-party-reachable: either a symlink to a claimed
+    /// workspace package inside `first_party_root`, or (issue #2087) a real,
+    /// non-symlink directory whose own `package.json` declares a `name`
+    /// claimed by `pnpm-workspace.yaml`. This is the #1730
+    /// root-claimed-workspace case the old proxies read as "not a
+    /// workspace".
     FirstPartyPackageReachable {
-        /// The `node_modules` entry (the symlink itself, canonical parent).
+        /// The `node_modules` entry itself: the symlink's own path in the
+        /// symlink case, or the real staged copy's own path in the
+        /// declared-identity case.
         link: PathBuf,
-        /// Its canonical target — claimed workspace source.
+        /// Claimed workspace source for this package: the symlink's
+        /// canonical target in the symlink case, or the claimed member
+        /// directory that declares the matching name in the declared-identity
+        /// case (issue #2087) — the latter is looked up by name, never by
+        /// resolving `link` itself.
         target: PathBuf,
     },
     /// Row 2 — no `pnpm-workspace.yaml` governs this build, so there is no
@@ -181,9 +275,11 @@ pub fn stage_escape_audit_eligibility(
     }
 }
 
-/// The lexicographically first `node_modules` entry that is a symlink to a
-/// claimed workspace package inside `first_party_root`, as
-/// `(link, canonical target)`.
+/// The lexicographically first `node_modules` entry that is
+/// first-party-reachable — either a symlink to a claimed workspace package
+/// inside `first_party_root`, or (issue #2087) a real, non-symlink directory
+/// whose own `package.json` declares a `name` claimed by
+/// `pnpm-workspace.yaml` — as `(link, target)`.
 ///
 /// Deterministic by sorting: `read_dir` order is filesystem-defined, and the
 /// returned pair is surfaced in [`AuditEligibility::FirstPartyPackageReachable`].
@@ -197,24 +293,50 @@ fn first_party_reachable_package(
     // `<project_root>/node_modules` it points at scan identically.
     let node_modules = std::fs::canonicalize(node_modules_dir).ok()?;
 
+    // Lazily computed: the declared-member roster (issue #2087) needs a full
+    // walk of `workspace_root`, which is unnecessary overhead for the common
+    // case (every `node_modules` entry is a symlink, the roster is never
+    // consulted). Computed at most once per call, the first time a
+    // non-symlink directory candidate is actually encountered.
+    let mut claimed_members: Option<std::collections::BTreeMap<String, PathBuf>> = None;
+
     let mut found: Vec<(PathBuf, PathBuf)> = Vec::new();
     for candidate in package_dir_candidates(&node_modules) {
         let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
             continue;
         };
-        if !metadata.file_type().is_symlink() {
+        if metadata.file_type().is_symlink() {
+            let Ok(target) = std::fs::canonicalize(&candidate) else {
+                continue;
+            };
+            if !target.starts_with(&workspace_root) || has_node_modules_segment(&target) {
+                continue;
+            }
+            if !workspace_root_claims_path(&workspace_root, &target) {
+                continue;
+            }
+            found.push((candidate, target));
             continue;
         }
-        let Ok(target) = std::fs::canonicalize(&candidate) else {
+        if !metadata.file_type().is_dir() {
+            continue;
+        }
+        // Declared-identity evidence (issue #2087): no symlink, no
+        // resolution — only the staged copy's OWN declared `package.json`
+        // `name`, checked against the claimed-member roster.
+        let Ok(manifest) = std::fs::read_to_string(candidate.join("package.json")) else {
             continue;
         };
-        if !target.starts_with(&workspace_root) || has_node_modules_segment(&target) {
+        let Some(name) = crate::first_party::package_json_name(&manifest) else {
             continue;
-        }
-        if !workspace_root_claims_path(&workspace_root, &target) {
+        };
+        let claimed = claimed_members.get_or_insert_with(|| {
+            crate::first_party::claimed_workspace_member_names(&workspace_root)
+        });
+        let Some(target) = claimed.get(&name) else {
             continue;
-        }
-        found.push((candidate, target));
+        };
+        found.push((candidate, target.clone()));
     }
     found.sort();
     found.into_iter().next()
@@ -252,11 +374,6 @@ fn package_dir_candidates(node_modules: &Path) -> Vec<PathBuf> {
         }
     }
     candidates
-}
-
-fn has_node_modules_segment(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == "node_modules")
 }
 
 #[cfg(test)]
@@ -394,6 +511,104 @@ mod tests {
         };
         assert_eq!(link.file_name().unwrap(), "ui");
         assert_eq!(target, std::fs::canonicalize(&ui).unwrap());
+    }
+
+    /// Fixture 6 (issue #2087) — the declared-identity counterpart to
+    /// fixture 1: the SAME undeclared-vs-claimed topology, but the
+    /// `node_modules` entry is a REAL (non-symlink) DIRECTORY copy of the
+    /// claimed package instead of a symlink — the exact shape a
+    /// `bundle.exclude`-active build stages (issue #2081's regression pin).
+    /// No symlink anywhere in this fixture. Recognised purely by its own
+    /// `package.json` `name` matching a claimed workspace member — no path
+    /// resolution at all.
+    #[test]
+    fn fixture_6_real_copy_staged_package_is_first_party_reachable_via_declared_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        let (_, node_modules) = workspace(&root, "packages: ['.', 'packages/*']\n");
+        let ui = root.join("packages/ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("package.json"), r#"{"name":"@scope/ui"}"#).unwrap();
+
+        // A REAL COPY, not a symlink.
+        let staged = node_modules.join("@scope/ui");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("package.json"), r#"{"name":"@scope/ui"}"#).unwrap();
+        std::fs::write(staged.join("index.js"), "export default 1;\n").unwrap();
+        assert!(
+            !std::fs::symlink_metadata(&staged)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "fixture must stage a real directory, not a symlink"
+        );
+
+        let eligibility = stage_escape_audit_eligibility(&root, &root, &node_modules);
+        assert!(eligibility.is_eligible(), "{eligibility:?}");
+        let AuditEligibility::FirstPartyPackageReachable { link, target } = eligibility else {
+            panic!("a declared-identity-matched real copy must be first-party-reachable");
+        };
+        // Compare against the canonicalized path, matching every other
+        // fixture in this suite — macOS resolves the tempdir's `/var` prefix
+        // to `/private/var` via canonicalize, which `node_modules_dir`
+        // scanning already goes through internally.
+        assert_eq!(link, std::fs::canonicalize(&staged).unwrap());
+        assert_eq!(target, std::fs::canonicalize(&ui).unwrap());
+    }
+
+    /// Fixture 7 (issue #2087, negative control) — a real-copy `node_modules`
+    /// entry whose `package.json` is missing or malformed must not arm the
+    /// audit, and must not panic; it is "no evidence", exactly like a
+    /// symlink that fails to canonicalise.
+    #[test]
+    fn fixture_7_real_copy_with_malformed_or_missing_manifest_is_not_eligible() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        let (_, node_modules) = workspace(&root, "packages: ['.', 'packages/*']\n");
+
+        // Malformed JSON.
+        let broken = node_modules.join("broken-pkg");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("package.json"), "{ not json").unwrap();
+
+        // No package.json at all.
+        let bare = node_modules.join("bare-pkg");
+        std::fs::create_dir_all(&bare).unwrap();
+
+        let eligibility = stage_escape_audit_eligibility(&root, &root, &node_modules);
+        assert_eq!(eligibility, AuditEligibility::NoReachableFirstPartyPackage);
+        assert!(!eligibility.is_eligible());
+    }
+
+    /// Fixture 8 (issue #2087, negative control) — an ordinary EXTERNAL
+    /// dependency staged as a real copy (the common `bundle.exclude` shape
+    /// for every non-excluded, non-workspace dependency) must NOT arm the
+    /// audit just because it happens to be a real directory: its declared
+    /// name matches no claimed workspace member. Widening the predicate to
+    /// real copies must never widen it to "any real copy at all".
+    #[test]
+    fn fixture_8_real_copy_of_unclaimed_external_dependency_is_not_eligible() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        let (_, node_modules) = workspace(&root, "packages: ['.', 'packages/*']\n");
+        // Claimed workspace member exists, but is irrelevant here — no entry
+        // under `node_modules` declares its name.
+        std::fs::create_dir_all(root.join("packages/ui")).unwrap();
+        std::fs::write(
+            root.join("packages/ui/package.json"),
+            r#"{"name":"@scope/ui"}"#,
+        )
+        .unwrap();
+
+        // A real copy of an ORDINARY external dependency, unclaimed by the
+        // workspace.
+        let react = node_modules.join("react");
+        std::fs::create_dir_all(&react).unwrap();
+        std::fs::write(react.join("package.json"), r#"{"name":"react"}"#).unwrap();
+
+        let eligibility = stage_escape_audit_eligibility(&root, &root, &node_modules);
+        assert_eq!(eligibility, AuditEligibility::NoReachableFirstPartyPackage);
+        assert!(!eligibility.is_eligible());
     }
 
     /// An ordinary registry dependency in pnpm's real layout keeps a

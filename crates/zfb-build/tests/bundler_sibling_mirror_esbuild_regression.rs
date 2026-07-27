@@ -1036,3 +1036,326 @@ fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build(
         truncate(&body)
     );
 }
+
+// ---------------------------------------------------------------------------
+// (m) issue #2045 (epic #2078, sub #2079) — a glob match queued
+// TRANSITIVELY by an UNREACHABLE mirror-derived file must be best-effort
+// too, not hard-materialised.
+//
+// Case (l) above established that a file no import edge reaches, sitting
+// inside a wholesale-claimed mirror root, tolerates its OWN preprocessing
+// failure (the `mirror_derived_preprocessing_files` catch in the
+// `plugin_preprocessing_files` loop, bundler.rs ~:3695). But that same
+// unreachable file's `import.meta.glob` can enqueue OTHER targets into
+// `mat_ctx.glob_matched_files` — glob expansion only lists matching
+// filenames, it never parses their content, so the host's own materialise
+// call succeeds even when its match is broken. `stage_glob_matched_files_to_fixed_point`
+// then drains that queue with an unconditional `?` (bundler.rs :5468-5473) —
+// no equivalent tolerance exists there. So a glob match reached ONLY through
+// an unreachable mirror-derived host still hard-fails the WHOLE build today,
+// even though the host that enqueued it was already best-effort.
+//
+// The desired post-fix behavior (delivered by #2085's provenance threading)
+// is: this build stays GREEN — the broken match warns and is skipped, same
+// as case (l)'s own tolerance. Tagged `pending-feature` per epic #2078's
+// corrected flip protocol: this binary self-skips via `locate_esbuild()` and
+// is NOT env-gate-`#[ignore]`d, so the flipping sub DELETES this attribute
+// entirely rather than swapping it for an `env-gate:` tag.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m_transitive_glob_match_from_unreachable_mirrored_host_is_best_effort() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared/junk-m")).unwrap();
+    // The file the build actually reaches — establishes the wholesale mirror
+    // claim over `lib/shared`, mirroring case (l)'s `reached-l.ts`.
+    fs::write(
+        ws_root.join("lib/shared/reached-m.ts"),
+        "export const reachedMarker = 'REACHED_M_MARKER';\n",
+    )
+    .unwrap();
+    // No import edge ever reaches this file — it joins
+    // `plugin_preprocessing_files` ONLY through the wholesale mirror's
+    // best-effort enrolment (#1724/#1985), exactly like case (l)'s
+    // `unreachable-*` fixtures. Its OWN glob expands successfully (glob
+    // expansion only lists matching filenames; it never parses their
+    // content), so this file's own materialise call SUCCEEDS and enqueues
+    // its match into `mat_ctx.glob_matched_files`.
+    fs::write(
+        ws_root.join("lib/shared/unreachable-glob-host-m.ts"),
+        r#"
+            const junk = import.meta.glob('./junk-m/*.ts', { eager: true });
+            export const junkKeys = Object.keys(junk);
+        "#,
+    )
+    .unwrap();
+    // The glob's own match: carries the exact broken-worker shape from case
+    // (l)'s `unreachable-broken.ts`, which trips
+    // `rewrite_module_worker_urls_with_context`'s hard parse error.
+    fs::write(
+        ws_root.join("lib/shared/junk-m/broken-m.ts"),
+        "const broken = ;\nnew Worker(new URL('./worker-m.worker.ts', import.meta.url));\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { reachedMarker } from "@shared/reached-m";
+            export default function Home() {
+              return reachedMarker;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@shared/*".to_string(),
+        vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+
+    // Desired POST-FIX form (issue #2045): a glob match queued by an
+    // UNREACHABLE mirror-derived host must be best-effort, exactly like the
+    // host's own preprocessing failure already is — the broken match must
+    // warn-and-skip, never fail the whole build.
+    let out = bundle(input).expect(
+        "issue #2045: a glob match queued by an UNREACHABLE mirrored sibling \
+         file must be best-effort — its own broken/unsupported worker text \
+         must not fail the whole build",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("REACHED_M_MARKER"),
+        "the actually-reached sibling must still build normally: {}",
+        truncate(&body)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (m) control — the FATAL path must stay untouched: a glob match enqueued by
+// a genuinely REACHED file (an ordinary project-local import, no sibling
+// mirror involved at all, so nothing here is ever eligible for the
+// `mirror_derived_preprocessing_files` tolerance) with the EXACT SAME broken
+// worker text must keep failing the build today, and after #2085 lands.
+// This is the negative that proves the eventual fix narrows to
+// mirror-derived provenance instead of disabling
+// `stage_glob_matched_files_to_fixed_point`'s hard-fail wholesale.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m_control_transitive_glob_match_from_reached_host_stays_fatal() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path();
+    scaffold_project_dirs(project);
+
+    fs::create_dir_all(project.join("components/junk-m-control")).unwrap();
+    // Genuinely reached via an ordinary project-local relative import — no
+    // workspace, no sibling mirror plan, so nothing here can ever qualify
+    // for the mirror-derived best-effort tolerance.
+    fs::write(
+        project.join("components/_gallery-m-control.tsx"),
+        r#"
+            const junk = import.meta.glob('./junk-m-control/*.ts', { eager: true });
+            export const junkKeys = Object.keys(junk);
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("components/junk-m-control/broken-m-control.ts"),
+        "const broken = ;\nnew Worker(new URL('./worker-m-control.worker.ts', import.meta.url));\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { junkKeys } from "../components/_gallery-m-control";
+            export default function Home() {
+              return junkKeys.join(",");
+            }
+        "#,
+    )
+    .unwrap();
+
+    let input = base_input(project, esbuild, unrelated_exclude());
+    let error = bundle(input).expect_err(
+        "a glob match enqueued by a genuinely REACHED file must still hard-fail \
+         the build on broken/unsupported worker text — the fatal path must stay \
+         untouched by the mirror-derived best-effort fix",
+    );
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("broken-m-control.ts"),
+        "the failure must name the broken matched file, not an unrelated setup \
+         error: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (n) issue #2089 (epic #2078 Sub 10b, serving #2048): the bare package-name
+// door back into #1724's defect class, and the fail-closed coupling that now
+// shuts it.
+//
+// Cases (b)/(g)/(j)/(k) above cover a sibling reached through an ALIAS: the
+// mirror plan sees that claim before esbuild runs, mirrors the region, and
+// enrols every mirrored source file so its macros expand (#1985). A sibling
+// reached by BARE PACKAGE NAME has no such claim — esbuild resolves it through
+// the wholesale `<work>/node_modules` link, and the stage-escape audit ACCEPTS
+// it as a declared consume-from-source entry (#2040). Nothing ever staged it,
+// so its own macros used to reach esbuild literally and ship unexpanded in a
+// GREEN build. Verified directly on the pre-fix tree with this exact fixture:
+// the build returned Ok and the emitted bundle carried
+// `var mods = import.meta.glob("./data/*.json", { eager: true });` under a
+// `// node_modules/@acme/ui/src/cta.tsx` banner, with the matched JSON's
+// content nowhere in it.
+//
+// Acceptance is a fact about esbuild's metafile, which does not exist until
+// the bundle is already emitted, so the enrolment cannot be driven from it —
+// see `enforce_accepted_package_enrolment` in `bundler.rs` for the full
+// argument. The build now fails loudly instead.
+// ---------------------------------------------------------------------------
+
+/// The workspace shape of the consume-from-source idiom (#1730/#2040): a
+/// nested member at `apps/demo` reaching first-party `packages/ui` by bare
+/// package name through the hoisted `node_modules/@acme/ui` symlink. `cta_body`
+/// is the sibling's own declared entry source, so each caller decides whether
+/// it carries a zfb macro. Returns `(project_root, workspace_node_modules)`.
+#[cfg(unix)]
+fn write_bare_package_consumer(root: &Path, cta_body: &str) -> (PathBuf, PathBuf) {
+    fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'packages/*'\n  - 'apps/*'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{ "name": "workspace-root", "private": true }"#,
+    )
+    .unwrap();
+
+    let ui = root.join("packages/ui");
+    fs::create_dir_all(ui.join("src/data")).unwrap();
+    fs::write(
+        ui.join("package.json"),
+        r#"{ "name": "@acme/ui", "exports": { "./cta": "./src/cta.tsx" } }"#,
+    )
+    .unwrap();
+    fs::write(ui.join("src/cta.tsx"), cta_body).unwrap();
+    fs::write(ui.join("src/data/one.json"), r#"{"value":"GLOB_MATCHED"}"#).unwrap();
+
+    let node_modules = root.join("node_modules");
+    fs::create_dir_all(node_modules.join("@acme")).unwrap();
+    std::os::unix::fs::symlink(&ui, node_modules.join("@acme/ui")).unwrap();
+
+    let project = root.join("apps/demo");
+    scaffold_project_dirs(&project);
+    fs::write(
+        project.join("package.json"),
+        r#"{ "name": "demo", "private": true }"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { ctaButton } from "@acme/ui/cta";
+            export default function Home() { return "CONSUMER:" + ctaButton; }
+        "#,
+    )
+    .unwrap();
+    (project, node_modules)
+}
+
+#[cfg(unix)]
+#[test]
+fn n_bare_package_accepted_sibling_with_unexpanded_macro_fails_loudly() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let (project, node_modules) = write_bare_package_consumer(
+        root,
+        "const mods = import.meta.glob('./data/*.json', { eager: true });\n\
+         export const ctaButton = 'CTA_' + Object.keys(mods).length;\n",
+    );
+
+    let mut input = base_input(&project, esbuild, Vec::new());
+    input.node_modules_dir = Some(node_modules);
+    let error = bundle_with_session(
+        input,
+        Some(&mut ShadowSession::new(&project).expect("shadow session")),
+    )
+    .expect_err(
+        "an accepted-but-unmirrored consume-from-source sibling whose own source \
+         uses `import.meta.glob` must fail the build loudly, not emit a bundle \
+         carrying the literal, unexpanded macro (#2048/#2089)",
+    );
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("@acme/ui"),
+        "the failure must name the accepted package: {message}"
+    );
+    assert!(
+        message.contains("cta.tsx"),
+        "the failure must name the offending source file: {message}"
+    );
+    assert!(
+        message.contains("import.meta.glob"),
+        "the failure must name the unexpanded macro form: {message}"
+    );
+    assert!(
+        message.contains("never mirror-enrolled"),
+        "the failure must say WHY the macro survived — acceptance without \
+         enrolment: {message}"
+    );
+}
+
+/// The control that keeps the case above from degenerating into "an accepted
+/// workspace sibling is now always rejected". The identical topology, with the
+/// identical `@acme/ui` acceptance, still builds GREEN when the sibling's own
+/// source carries none of the three macro forms — which is what every existing
+/// consume-from-source fixture looks like (`bundler_consume_from_source_esbuild_regression.rs`),
+/// and what case (f) above staged.
+#[cfg(unix)]
+#[test]
+fn n_control_bare_package_accepted_sibling_without_macros_still_builds_clean() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let (project, node_modules) =
+        write_bare_package_consumer(root, "export const ctaButton = 'CTA_SOURCE_MARKER';\n");
+
+    let mut input = base_input(&project, esbuild, Vec::new());
+    input.node_modules_dir = Some(node_modules);
+    let output = bundle_with_session(
+        input,
+        Some(&mut ShadowSession::new(&project).expect("shadow session")),
+    )
+    .expect(
+        "consuming a declared first-party sibling from source by bare package \
+         name stays a legitimate monorepo idiom (#2040) — the #2089 coupling \
+         only fires on a macro that would ship unexpanded",
+    );
+
+    let body = fs::read_to_string(&output.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("CTA_SOURCE_MARKER"),
+        "the sibling's source must still be bundled: {}",
+        truncate(&body)
+    );
+}
