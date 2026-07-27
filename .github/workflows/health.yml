@@ -306,19 +306,27 @@ jobs:
       # Root-claimed-workspace stage-escape audit DISARM pin (issues
       # #2050/#2081, epic #2078): the sibling armed-regression step above
       # proves guard (b) rejects an escape when the live node_modules
-      # symlink survives. This step pins the KNOWN, currently-open gap where
-      # it does NOT survive — active `bundle.exclude` forces REAL copies into
-      # `<shadow>/node_modules` instead, starving the eligibility predicate
-      # of symlink evidence and silently disarming the audit. Two of this
-      # binary's three tests are env-gated pins of that reality (one positive
-      # repro, one negative control proving the SECOND trigger shape #2050's
-      # own text named — a workspace package staged as an exact target with
-      # an empty `bundle.exclude` — is not actually reachable at a
-      # root-claimed workspace; see the file's own header for the
-      # investigation); `--skip` excludes the third, a deliberate
-      # `pending-feature: #2087` RED twin asserting the FIXED behavior sub
-      # #2087 will land — it must keep failing until then, so it must never
-      # run under this gate.
+      # symlink survives. This step covers the shape where it does NOT
+      # survive — active `bundle.exclude` forces REAL copies into
+      # `<shadow>/node_modules` instead. Sub #2087 fixed the ELIGIBILITY half
+      # of this: `stage_escape_audit_eligibility` now recognises the staged
+      # real copy via declared identity (package.json name + workspace
+      # claim), so this file's positive pin now asserts the FIXED (armed)
+      # eligibility verdict rather than the old disarmed one. Arming
+      # eligibility alone does not close the actual escape, though — a
+      # SEPARATE, newly-discovered gap in metafile_deps.rs's stage-escape
+      # audit case classification (issue #2127, out of #2087's zfb-types-only
+      # scope) still lets a real-copy-staged package through as an ordinary
+      # case-3 dependency. Two of this binary's three tests are env-gated
+      # (the positive pin, now documenting the ARMED-but-still-shipping
+      # residual gap, and a negative control proving the SECOND trigger
+      # shape #2050's own text named — a workspace package staged as an
+      # exact target with an empty `bundle.exclude` — is not actually
+      # reachable at a root-claimed workspace; see the file's own header for
+      # the investigation); `--skip` excludes the third, a
+      # `pending-feature: #2127` RED twin asserting the fully-fixed behavior
+      # a future metafile_deps.rs fix will land — it must keep failing until
+      # then, so it must never run under this gate.
       - name: Run zfb-build root-workspace stage-escape audit disarm pin
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
