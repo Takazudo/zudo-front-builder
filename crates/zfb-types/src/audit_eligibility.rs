@@ -113,6 +113,35 @@
 //! that shape should be *accepted* by the audit (today it lands in the
 //! audit's "case 2: OFFENDER") is a separate policy question owned by #2040.
 //! This predicate's job is only to make sure #2040 has the case in scope.
+//!
+//! # Known limitation — real (non-symlink) staged copies disarm eligibility (issue #2050)
+//!
+//! **This is NOT closed as of this writing.** Row 3
+//! ([`AuditEligibility::FirstPartyPackageReachable`]) requires a **symlink**
+//! under `node_modules_dir` (see "What counts as a first-party-reachable
+//! link" above) — it has no way to recognise a first-party package that was
+//! staged as a **real, non-symlink copy** instead. A caller's
+//! `node_modules_dir` holds real copies rather than symlinks whenever
+//! `bundle.exclude` is active (the live `<node_modules_dir> -> <live tree>`
+//! symlink is deliberately never created once exclusions are in play, so an
+//! excluded dependency cannot be resurrected by climbing through it — see
+//! `crates/zfb-build/src/bundler.rs`, confirmed by issue #2081's env-gated
+//! regression test). In that configuration this predicate falls through to
+//! [`AuditEligibility::NoReachableFirstPartyPackage`] even though a
+//! first-party package genuinely is staged and reachable — **silently
+//! disarming the caller's stage-escape audit** for that build. An undeclared
+//! workspace sibling then ships into the bundle with no error at all, the
+//! exact "completely silent" P1 shape issue #1730 was meant to close.
+//!
+//! Issue #2050 (superseded by epic #2078) tracks this gap; #2081 pins the
+//! current disarmed behavior with a regression test, and #2087 is the sub
+//! that closes it by recognising a staged first-party package via its
+//! **declared identity** (`package.json` name, claimed by
+//! `pnpm-workspace.yaml`) instead of requiring link-ness — the same
+//! declared-data-only posture this predicate already uses for symlinks. Until
+//! #2087 lands, treat row 3's symlink requirement as a **necessary but not
+//! sufficient** signal: its absence does not prove no first-party package is
+//! reachable, only that none was reachable *via a symlink*.
 
 use std::path::{Path, PathBuf};
 
