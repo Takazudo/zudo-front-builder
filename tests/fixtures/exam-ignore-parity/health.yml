@@ -1,0 +1,26 @@
+# health.yml fixture for tests/unit/check-exam-ignore-parity.sh (issue #2072).
+
+name: health-fixture
+
+on:
+  pull_request:
+
+jobs:
+  health:
+    steps:
+      - name: Run fixture beta integration suite
+        run: cargo test -p fixture-pkg --test beta_integration -- --ignored
+
+      # Quoted: a bare `mod_a::mod_b:: -- --ignored` plain scalar trips YAML's
+      # colon-space mapping-indicator rule, same as the real health.yml's
+      # `commands::build::` step.
+      - name: Run fixture lib module suite
+        run: "cargo test -p fixture-pkg --lib mod_a::mod_b:: -- --ignored"
+
+      # Decoy: this step's *name* mentions "delta", but its `run:` line
+      # actually scopes the SAME beta_integration binary again — a loose
+      # name-similarity grep against step names would wrongly call
+      # delta_integration's uncovered_test "covered". A real scope parser
+      # must not be fooled by this.
+      - name: Run fixture delta integration suite (decoy — scope does not match)
+        run: cargo test -p fixture-pkg --test beta_integration -- --ignored

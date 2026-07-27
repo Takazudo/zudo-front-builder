@@ -1,0 +1,24 @@
+# exam.yml fixture for tests/unit/check-exam-ignore-parity.sh (issue #2072).
+#
+# Deliberately mirrors the real workflow's shape closely enough for the
+# guard script's parser: a `#`-prefixed header comment block (including a
+# `test(=NAME)` placeholder mention below, to prove comment lines are
+# excluded from the filterset scan — no `NAME` test exists anywhere in this
+# fixture), followed by a real `-E '...'` filterset.
+#
+# `test(=NAME)` is prose here, not a real filterset entry — the guard script
+# must not count it as coverage for anything.
+
+name: exam-fixture
+
+on:
+  workflow_dispatch:
+
+jobs:
+  quarantine-heavy:
+    steps:
+      - name: "Run the fixture quarantine/heavy manifest"
+        run: |
+          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
+            test(=covered_by_exam_test)
+          '

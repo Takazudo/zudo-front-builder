@@ -186,7 +186,9 @@ jobs:
       # issue #2020 — see CLAUDE.md's "`#[ignore]` manifest (Rust)" table for
       # the authoritative list; this filterset's own count has drifted from
       # that table's total before, so re-measure both rather than trusting
-      # either). No pending-feature-tagged tests exist as of #1504's
+      # either — scripts/check-exam-ignore-parity.sh (issue #2072) now does
+      # that re-measurement mechanically instead of by manual audit). No
+      # pending-feature-tagged tests exist as of #1504's
       # reconciliation, so there is nothing left to deliberately exclude here
       # — a future pending-feature #[ignore] would still be left out of this
       # filterset (it would just fail every run with no new information)
