@@ -5336,8 +5336,11 @@ fn unexpanded_macro_form(path: &Path) -> Option<&'static str> {
 /// a workspace-symlinked package canonicalises to LIVE source and takes the
 /// ordinary case-2 symlink path instead. Verified end-to-end against a
 /// nested member with a non-empty `bundle.exclude` and a macro-bearing
-/// declared sibling: the identical failure, naming the identical live-source
-/// path, reproduces with #2127's change reverted.
+/// declared sibling: this diagnostic fires, naming the LIVE source path — and
+/// the identical failure, naming the identical live path, reproduces with
+/// `metafile_deps.rs` restored to the pre-#2127 base commit (844edc5b). The
+/// failure is therefore entirely pre-existing; #2127 neither introduced nor
+/// widened it.
 ///
 /// `enrolled` is `bundle_with_session`'s `plugin_preprocessing_files` — the
 /// single set every enrolment seam publishes into.
