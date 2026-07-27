@@ -202,8 +202,33 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, boot_lazy: Option<&str>) -> DevSessi
     }
 }
 
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let response = client
+/// Dedicated client for `/__zfb/reload` subscriptions, deliberately built
+/// WITHOUT a total-response timeout.
+///
+/// `build_reqwest_client`'s `.timeout(...)` bounds the whole response, not
+/// just its headers. For an SSE stream the response body never completes,
+/// so that setting silently caps how long ANY subscription can observe —
+/// no matter what `SSE_FIRST_EVENT_DEADLINE`, `SSE_QUIET_WINDOW`, or
+/// `OVERALL_DEADLINE` say. A tick that takes longer than the cap surfaces
+/// as a reqwest transport error ("operation timed out") from inside
+/// `next_sse_event_name`/`collect_tick_events`, which reads as a broken
+/// harness rather than as the zero-`page`-events outcome this file exists
+/// to be able to observe. Measured (sub #2094): the injected-route
+/// fixture's first tick restages injected-route bundles and crosses 10s,
+/// while the baseline fixture's cheap MDX warmup lands well under it — so
+/// the cap was invisible until a slower fixture arrived.
+///
+/// The connect timeout is kept: failing to CONNECT is a real error, and
+/// bounding it does not truncate a healthy stream.
+static SSE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .expect("build SSE reqwest client")
+});
+
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let response = SSE_CLIENT
         .get(format!("{base}/__zfb/reload"))
         .send()
         .await
@@ -216,10 +241,10 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
     response
 }
 
-async fn drain_ticks_until_quiescent(client: &reqwest::Client, base: &str) {
+async fn drain_ticks_until_quiescent(base: &str) {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(20) {
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, Duration::from_millis(1500)).await {
             Ok(Some(_)) => continue,
             _ => break,
@@ -385,14 +410,19 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
 ///   fixture instead warms up its STATIC injected `/` route's own
 ///   component source (`pkg/home.tsx`), an ordinary Module dependency
 ///   edit wholly unrelated to the Content-provenance path under test.
+///
+/// `warmup_interval` is the delay between successive warmup rewrites — see
+/// `MatrixFixture::warmup_interval`'s doc comment for why this must also
+/// vary by fixture (manager finding, 2026-07, alongside the SSE-client
+/// total-timeout bug fixed above).
 async fn confirm_watcher_live(
     session: &DevSession,
     base: &str,
-    client: &reqwest::Client,
     warmup_path: &Path,
     render_revision: fn(u32) -> String,
+    warmup_interval: Duration,
 ) {
-    let sse = subscribe_sse(client, base).await;
+    let sse = subscribe_sse(base).await;
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let warmup = warmup_path.to_path_buf();
@@ -402,7 +432,7 @@ async fn confirm_watcher_live(
             while !stop.load(Ordering::SeqCst) {
                 fs::write(&warmup, render_revision(revision)).expect("edit existing warmup entry");
                 revision += 1;
-                tokio::time::sleep(Duration::from_millis(400)).await;
+                tokio::time::sleep(warmup_interval).await;
             }
         })
     };
@@ -427,10 +457,15 @@ fn build_reqwest_client() -> reqwest::Client {
         .expect("build reqwest client")
 }
 
+/// Default warmup-rewrite cadence — the baseline/out-of-root fixtures'
+/// cheap MDX warmup always lands well under this.
+const WARMUP_INTERVAL_DEFAULT: Duration = Duration::from_millis(400);
+
 async fn boot_and_handshake(
     session: &mut DevSession,
     warmup_path: &Path,
     render_revision: fn(u32) -> String,
+    warmup_interval: Duration,
 ) -> Option<(String, reqwest::Client)> {
     let port = wait_for_ready_port(session).await?;
     let base = format!("http://localhost:{port}");
@@ -453,7 +488,14 @@ async fn boot_and_handshake(
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 
-    confirm_watcher_live(session, &base, &client, warmup_path, render_revision).await;
+    confirm_watcher_live(
+        session,
+        &base,
+        warmup_path,
+        render_revision,
+        warmup_interval,
+    )
+    .await;
 
     Some((base, client))
 }
@@ -525,8 +567,13 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
     let pgid = session.guard.pgid;
     let body = async {
         let warmup_path = session.root.join("content/posts/__warmup.mdx");
-        let Some((base, client)) =
-            boot_and_handshake(&mut session, &warmup_path, render_mdx_warmup_revision).await
+        let Some((base, client)) = boot_and_handshake(
+            &mut session,
+            &warmup_path,
+            render_mdx_warmup_revision,
+            WARMUP_INTERVAL_DEFAULT,
+        )
+        .await
         else {
             return ScenarioOutcome::Skipped;
         };
@@ -545,9 +592,9 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         // in-flight tick. Settle before subscribing for the assertion
         // below — otherwise a late handshake `page` event could be
         // misattributed as the edit's own SSE traffic.
-        drain_ticks_until_quiescent(&client, &base).await;
+        drain_ticks_until_quiescent(&base).await;
 
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/alpha.mdx"),
             "---\ntitle: Alpha V2 Frontmatter\ndate: 2026-01-02\n---\n\nV2-BODY-ALPHA updated markdown body.\n",
@@ -691,6 +738,15 @@ struct MatrixFixture {
     /// `confirm_watcher_live`'s doc comment for why this must vary by
     /// fixture rather than always being an MDX content rewrite.
     warmup_render_revision: fn(u32) -> String,
+    /// Delay between successive warmup rewrites. Manager finding
+    /// (2026-07): `confirm_watcher_live`'s original unconditional 400ms
+    /// cadence works for a cheap MDX rewrite, but the injected fixture's
+    /// warmup edit (a TSX component source) triggers a real rebundle —
+    /// churning it every 400ms can invalidate an in-flight rebundle
+    /// before it ever reaches its publish/SSE step, so that fixture
+    /// needs a much longer interval (comfortably above its observed
+    /// ~8s first-tick latency) to let one edit's tick actually complete.
+    warmup_interval: Duration,
     /// Path (relative to the copied family root) of the entry this
     /// scenario edits for its own assertion.
     entry_rel: &'static str,
@@ -742,8 +798,13 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
     let mut session = spawn_dev(project_root, &esbuild, boot_lazy);
     let pgid = session.guard.pgid;
     let body = async {
-        let Some((base, client)) =
-            boot_and_handshake(&mut session, &warmup_path, fixture.warmup_render_revision).await
+        let Some((base, client)) = boot_and_handshake(
+            &mut session,
+            &warmup_path,
+            fixture.warmup_render_revision,
+            fixture.warmup_interval,
+        )
+        .await
         else {
             return ScenarioOutcome::Skipped;
         };
@@ -772,9 +833,9 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
 
         // Settle any trailing boot/handshake tick before subscribing —
         // see `run_scenario`'s identical step for why.
-        drain_ticks_until_quiescent(&client, &base).await;
+        drain_ticks_until_quiescent(&base).await;
 
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(&entry_path, fixture.edit_contents).expect("edit the matrix fixture entry");
 
         let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
@@ -907,6 +968,11 @@ fn injected_matrix_fixture() -> MatrixFixture {
         project_subdir: "project",
         warmup_rel: "project/pkg/home.tsx",
         warmup_render_revision: render_injected_home_warmup_revision,
+        // Well above the ~8s first-tick latency the manager observed by
+        // hand for this fixture (one `pkg/home.tsx` append -> `page`
+        // event), so a subsequent warmup rewrite cannot interrupt the
+        // in-flight rebundle before it publishes.
+        warmup_interval: Duration::from_secs(15),
         entry_rel: "shared-content/posts/alpha.mdx",
         home_route: "/",
         home_marker: "INJECTED_ROOT_OK",
@@ -961,6 +1027,7 @@ fn out_of_root_matrix_fixture() -> MatrixFixture {
         project_subdir: "project",
         warmup_rel: "shared-content/posts/__warmup.mdx",
         warmup_render_revision: render_mdx_warmup_revision,
+        warmup_interval: WARMUP_INTERVAL_DEFAULT,
         entry_rel: "shared-content/posts/alpha.mdx",
         home_route: "/",
         home_marker: "dev-content-reload-2063-outofroot",
