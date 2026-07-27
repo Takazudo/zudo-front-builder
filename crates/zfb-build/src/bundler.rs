@@ -151,7 +151,8 @@ use crate::module_worker::{
     ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{
-    expand_raw_imports_with_aliases, RawImportAliasContext, RawImportEdge,
+    expand_raw_imports_with_aliases, supported_raw_import_specifier_for_path,
+    RawImportAliasContext, RawImportEdge,
 };
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
@@ -3043,6 +3044,19 @@ pub fn bundle_with_session(
             mirror_derived_preprocessing_files.insert(src);
         }
     }
+    // The exact COMPLEMENT of the marks just recorded, and the reason
+    // `provenance_for_source` can tell "its only claim is the wholesale
+    // mirror" from "it was also reached". `plugin_preprocessing_files` takes
+    // no further insertions after this loop, so this is its final state:
+    // every membership that did NOT come from the mirror above arrived
+    // through a real claim (a discovered graph file, an exact alias target, a
+    // virtual-module import) and must propagate `Fatal`, whether or not a
+    // best-effort mirror source also happens to glob-match it.
+    mat_ctx.glob_matched_files.mark_reached_sources(
+        plugin_preprocessing_files
+            .difference(&mirror_derived_preprocessing_files)
+            .cloned(),
+    );
 
     // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
     //     part 1; contract inverted by #1693). In a pnpm workspace the deps
@@ -4046,7 +4060,12 @@ pub fn bundle_with_session(
                     &first_party_root,
                 )
                 .context("bundler: enrolment-selection query failed")?;
-                enforce_accepted_package_enrolment(&accepted, &plugin_preprocessing_files)?;
+                enforce_accepted_package_enrolment(
+                    &accepted,
+                    &plugin_preprocessing_files,
+                    &input.project_root,
+                    &mat_ctx.worker_build_context,
+                )?;
             }
         }
     }
@@ -5257,32 +5276,88 @@ impl SiblingMirrorPlan {
 }
 
 /// Which of the three macro forms [`materialise_source_file`] expands does
-/// `path` carry, if any — detected with the SAME cheap textual signals that
-/// function's own fast path uses (`import.meta.glob` / `?raw` /
-/// `Worker` + `import.meta.url`), never a parse and never a resolution.
+/// `path` carry, if any.
 ///
-/// Deliberately TIGHTER than `materialise_source_file`'s own gate on two of
-/// the three: that gate opens on a bare `?` or a bare `Worker` because a false
-/// positive there costs only a redundant expansion attempt, whereas a false
-/// positive here would hard-fail a legitimate build. `?raw` is the exact
-/// substring [`preflight_raw_file`] keys off, and the worker form additionally
-/// requires `import.meta.url` — both halves of the only supported spelling
-/// (`new Worker(new URL("./w.ts", import.meta.url), { type: "module" })`).
+/// # A substring is not evidence here
+///
+/// The verdict gates a HARD build failure
+/// ([`enforce_accepted_package_enrolment`], whose `Err` propagates with a bare
+/// `?` — there is no warn-and-skip downgrade at that call site), on a file
+/// that is BY CONSTRUCTION one the stage-escape audit already ACCEPTED: a
+/// legitimate declared entry of a legitimately claimed workspace member. So a
+/// false positive here breaks a build that was green, naming a macro the
+/// user's file does not contain. Raw substring tests produce exactly that on
+/// ordinary code — `const u = "/api/asset?raw=1"`, a comment mentioning `?raw`,
+/// or an `interface WorkerPoolOptions` co-occurring with an unrelated
+/// `import.meta.url` (a common way to derive a package-relative asset URL).
+/// The sibling implementation in `crates/zfb/src/commands/build.rs` rejects
+/// substring detection for this identical question for the same reason.
+///
+/// Each arm therefore requires AGREEMENT from the SAME predicate the real
+/// expansion path uses, with the literal substring kept only as the cheap
+/// pre-filter that avoids a parse on the overwhelming majority of files:
+///
+/// * glob — [`crate::glob_expand::source_contains_import_meta_glob`], the AST
+///   collector [`expand_import_meta_glob_with_matches`] itself runs;
+/// * `?raw` — [`supported_raw_import_specifier_for_path`], the same
+///   `collect_raw_occurrences` AST pass [`expand_raw_imports_with_aliases`]
+///   opens with. Its alias/exclusion arguments are deliberately NOT plumbed
+///   in: they decide where a target RESOLVES, not whether the macro exists,
+///   and an unexpanded macro ships literally either way;
+/// * module worker — [`rewrite_module_worker_urls_with_context`] itself,
+///   keyed on the same `worker_edges.is_empty()` test `materialise_source_file`
+///   uses for its own `has_worker`.
+///
+/// # Fail-open
+///
+/// Every arm answers "no macro" when its predicate cannot reach a verdict — an
+/// unparseable file, an unsupported form, a worker URL that does not resolve.
+/// That mirrors `audit_unenrolled_first_party_macro_leak`'s own
+/// `continue // inert text … fail open, not closed`, and it costs nothing this
+/// pass could have delivered: a file whose macro cannot be recognised here is
+/// one whose expansion would have failed anyway, and this is a diagnostic, not
+/// a transform. The direction matters — closed would mean inventing build
+/// failures for files nobody can name.
 ///
 /// A non-JS-like leaf (JSON, CSS, an asset) is never a macro carrier and a
 /// non-UTF-8 file cannot be scanned, so both answer `None`.
-fn unexpanded_macro_form(path: &Path) -> Option<&'static str> {
+fn unexpanded_macro_form(
+    path: &Path,
+    project_root: &Path,
+    worker_build_context: &ModuleWorkerBuildContext,
+) -> Option<&'static str> {
     if !raw_source_extension(path) {
         return None;
     }
     let source = fs::read_to_string(path).ok()?;
-    if source.contains("import.meta.glob") {
+    if source.contains("import.meta.glob")
+        && matches!(
+            crate::glob_expand::source_contains_import_meta_glob(&source),
+            Ok(true)
+        )
+    {
         return Some("`import.meta.glob(...)`");
     }
-    if source.contains("?raw") {
+    if source.contains("?raw")
+        && matches!(
+            supported_raw_import_specifier_for_path(&source, path),
+            Ok(Some(_))
+        )
+    {
         return Some("a terminal `?raw` import");
     }
-    if source.contains("Worker") && source.contains("import.meta.url") {
+    if source.contains("Worker")
+        && source.contains("import.meta.url")
+        && matches!(
+            rewrite_module_worker_urls_with_context(
+                &source,
+                path,
+                project_root,
+                worker_build_context,
+            ),
+            Ok(rewrite) if !rewrite.worker_edges.is_empty()
+        )
+    {
         return Some("a module-worker `new URL(..., import.meta.url)` macro");
     }
     None
@@ -5347,19 +5422,22 @@ fn unexpanded_macro_form(path: &Path) -> Option<&'static str> {
 fn enforce_accepted_package_enrolment(
     accepted: &crate::metafile_deps::AcceptedEnrolmentSet,
     enrolled: &BTreeSet<PathBuf>,
+    project_root: &Path,
+    worker_build_context: &ModuleWorkerBuildContext,
 ) -> Result<()> {
     if accepted.is_empty() {
         return Ok(());
     }
     // The macro scan comes FIRST: it costs one read per accepted input (a
-    // handful of files), whereas canonicalising `enrolled` is a stat per
-    // preprocessing file (thousands on a real project). The ordinary
-    // consume-from-source sibling carries no macro at all, so that cost is
-    // only ever paid by a build that is about to fail.
+    // handful of files) plus, only when that read turns up one of the three
+    // literal substrings, a parse of that one file — whereas canonicalising
+    // `enrolled` is a stat per preprocessing file (thousands on a real
+    // project). The ordinary consume-from-source sibling carries no macro at
+    // all, so neither cost is paid outside a build that is about to fail.
     let mut candidates = Vec::new();
     for package in accepted {
         for input in accepted.reached_inputs(&package.name) {
-            if let Some(form) = unexpanded_macro_form(input) {
+            if let Some(form) = unexpanded_macro_form(input, project_root, worker_build_context) {
                 candidates.push((&package.name, input, form));
             }
         }
@@ -6429,6 +6507,18 @@ struct GlobMatchQueue {
     /// the wholesale sibling-mirror enrolment in [`bundle_with_session`]
     /// (#1724's non-fatal arm).
     best_effort_sources: RefCell<BTreeSet<PathBuf>>,
+    /// Source files with an explicit REACHED claim — a membership in
+    /// `plugin_preprocessing_files` that did NOT come from the wholesale
+    /// mirror enrolment (a discovered graph file, an exact alias target, a
+    /// virtual-module import). Populated at the same single site as
+    /// [`Self::mark_best_effort_source`], as that set's exact complement, so
+    /// the two cannot drift.
+    ///
+    /// This exists because best-effort is only ever correct for a file whose
+    /// ONLY claim is the wholesale mirror; see
+    /// [`Self::provenance_for_source`] for why a queue entry alone cannot
+    /// establish that.
+    reached_sources: RefCell<BTreeSet<PathBuf>>,
 }
 
 impl GlobMatchQueue {
@@ -6456,21 +6546,66 @@ impl GlobMatchQueue {
         self.best_effort_sources.borrow_mut().insert(path);
     }
 
+    /// THE best-effort opt-OUT: record an explicit REACHED claim, which beats
+    /// any best-effort signal for the same source. See
+    /// [`Self::reached_sources`] and [`Self::provenance_for_source`].
+    fn mark_reached_sources(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.reached_sources.borrow_mut().extend(paths);
+    }
+
     /// The provenance a materialisation of `physical_from` / `logical_from`
-    /// PROPAGATES to everything it enqueues.
+    /// PROPAGATES to everything it enqueues — the join of every claim on this
+    /// source, defaulting to the fail-safe [`MaterialiseProvenance::Fatal`]
+    /// when there is none.
     ///
-    /// The queue entry is consulted FIRST and wins outright, because it is
-    /// already the lattice join of every path that enqueued this target — so
-    /// a file that is both mirror-enrolled AND queued by a reached path
-    /// propagates `Fatal`, never the weaker mark (joining a `BestEffort`
-    /// mark with the entry is exactly `entry.max(BestEffort) == entry`).
-    /// Only when the target was never queued does the enrolment mark decide,
-    /// and absent both it is the fail-safe `Fatal` default.
+    /// Three claims can exist, and all three are consulted:
+    ///
+    /// 1. an explicit REACHED claim ([`Self::mark_reached_sources`]) — Fatal,
+    ///    and it wins OUTRIGHT;
+    /// 2. the queue entry, when this source was itself a glob target;
+    /// 3. the wholesale-mirror enrolment mark
+    ///    ([`Self::mark_best_effort_source`]) — BestEffort.
+    ///
+    /// # Why the queue entry does not win outright (issue #2085 follow-up)
+    ///
+    /// It used to, on the stated grounds that it "is already the lattice join
+    /// of every path that enqueued this target". It is not: the queue records
+    /// GLOB-TARGET ENQUEUES ONLY. Being reached by an ordinary import edge —
+    /// membership in `plugin_preprocessing_files`, or a `materialise_shadow`
+    /// walk — is not an enqueue and contributes nothing to that join. So a
+    /// file reached by a REAL import edge that a best-effort mirror source
+    /// also happened to glob-match read back `BestEffort`, its own glob
+    /// matches inherited `BestEffort`, and a materialisation failure for one
+    /// of THOSE warned-and-continued instead of failing the build — a
+    /// fail-open path that did not exist before the provenance lattice, since
+    /// pre-#2085 every such failure was a hard error.
+    ///
+    /// Claim 1 is that missing signal, and it is checked first because
+    /// `BestEffort` is only ever correct for a file whose ONLY claim is the
+    /// wholesale mirror. Claims 2 and 3 then join as before (`Fatal` is the
+    /// lattice maximum, so a fatally-queued source stays fatal and a
+    /// best-effort mark can never downgrade it).
+    ///
+    /// # Boundary
+    ///
+    /// Claim 1 covers the `plugin_preprocessing_files` channel, which is
+    /// where every non-mirror enrolment lands. A project file materialised
+    /// only by the ordinary `materialise_shadow` walk carries no such mark,
+    /// so if a best-effort mirror source's glob reaches back INTO the project
+    /// and matches it, that file still reads `BestEffort`. Closing that would
+    /// mean marking at every walk call site, which is precisely the
+    /// per-call-site argument #2085 rejected; it is left open deliberately.
     fn provenance_for_source(
         &self,
         physical_from: &Path,
         logical_from: &Path,
     ) -> MaterialiseProvenance {
+        {
+            let reached = self.reached_sources.borrow();
+            if reached.contains(physical_from) || reached.contains(logical_from) {
+                return MaterialiseProvenance::Fatal;
+            }
+        }
         let queued = {
             let matches = self.matches.borrow();
             matches
@@ -8877,9 +9012,17 @@ fn project_path_is_inside_node_modules(path: &Path, project_root: &Path) -> bool
         .is_ok_and(path_is_inside_node_modules)
 }
 
+/// This file's name for [`zfb_types::has_node_modules_segment`], the canonical
+/// home for the predicate (issue #2051). Until now this carried its own copy
+/// of the component walk — a third one, which is why that function's docs no
+/// longer claim the dedup is finished.
+///
+/// Kept as a thin local alias rather than rewriting the call sites (10 direct,
+/// plus 9 more through [`project_path_is_inside_node_modules`] below): the
+/// short name reads better against the surrounding staging code, and
+/// delegating the BODY is the whole point of the dedup.
 fn path_is_inside_node_modules(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == std::ffi::OsStr::new("node_modules"))
+    zfb_types::has_node_modules_segment(path)
 }
 
 /// Map a logical path to its physical location in the re-rooted SSR shadow
@@ -19703,8 +19846,12 @@ mod tests {
         let probe = |name: &str, body: &str| {
             let path = dir.join(name);
             fs::write(&path, body).unwrap();
-            unexpanded_macro_form(&path)
+            unexpanded_macro_form(&path, dir, &ModuleWorkerBuildContext::default())
         };
+        // The worker arm now agrees with the real rewriter, which resolves the
+        // URL target — so the macro below needs a target that exists, exactly
+        // as a genuine one in user code would.
+        fs::write(dir.join("w.worker.ts"), "self.onmessage = () => {};\n").unwrap();
 
         assert_eq!(
             probe("glob.tsx", "const m = import.meta.glob('./d/*.json');\n"),
@@ -19808,8 +19955,13 @@ mod tests {
             "const m = import.meta.glob('./data/*.json');\nexport const cta = m;\n",
         );
 
-        let error = enforce_accepted_package_enrolment(&accepted, &BTreeSet::new())
-            .expect_err("an accepted-but-unenrolled macro source must fail the build");
+        let error = enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect_err("an accepted-but-unenrolled macro source must fail the build");
         let message = format!("{error:#}");
         for expected in ["@acme/ui", "cta.tsx", "import.meta.glob", "UNEXPANDED"] {
             assert!(
@@ -19834,7 +19986,13 @@ mod tests {
         );
 
         let enrolled = BTreeSet::from([cta]);
-        enforce_accepted_package_enrolment(&accepted, &enrolled).expect(
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &enrolled,
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
             "an accepted package whose bundled source DID go through the \
              materialise pass has no unexpanded macro left to report",
         );
@@ -19850,17 +20008,93 @@ mod tests {
         let (accepted, _) =
             accepted_sibling_fixture(&base, "export const cta = 'CTA_SOURCE_MARKER';\n");
 
-        enforce_accepted_package_enrolment(&accepted, &BTreeSet::new()).expect(
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
             "acceptance alone is never a rejection — only a macro that would \
              ship unexpanded is",
         );
     }
 
+    /// A `?raw` substring that is not a `?raw` IMPORT must not fail the build.
+    ///
+    /// The offender is ordinary code — a URL query string — in a file the
+    /// stage-escape audit already ACCEPTED, so the substring test this arm
+    /// used to be would hard-fail a build that was green, naming a macro the
+    /// file does not contain. The AST predicate
+    /// ([`supported_raw_import_specifier_for_path`]) only ever inspects
+    /// import/re-export/dynamic-import/`require` specifiers, so a plain
+    /// string literal is invisible to it.
+    #[test]
+    #[cfg(unix)]
+    fn raw_substring_outside_an_import_specifier_does_not_fail_the_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, _) = accepted_sibling_fixture(
+            &base,
+            "// The ?raw import docs live at /docs/raw.\n\
+             export const endpoint = '/api/asset?raw=1';\n\
+             export const cta = 'CTA_SOURCE_MARKER';\n",
+        );
+
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
+            "a `?raw` substring in a string literal and a comment is not a terminal \
+             `?raw` import — failing here would break an ordinary build",
+        );
+    }
+
+    /// A `Worker` IDENTIFIER co-occurring with an unrelated `import.meta.url`
+    /// must not fail the build.
+    ///
+    /// `new URL('./asset', import.meta.url)` is the common way to derive a
+    /// package-relative asset URL, and `Worker` appears in ordinary type
+    /// names (`WorkerPoolOptions`, `ServiceWorkerRegistration`). Together they
+    /// satisfied the old two-substring test while carrying no module-worker
+    /// macro at all. The real rewriter
+    /// ([`rewrite_module_worker_urls_with_context`]) reports no `worker_edges`
+    /// without an actual `new Worker(...)` constructor.
+    #[test]
+    #[cfg(unix)]
+    fn worker_identifier_with_unrelated_import_meta_url_does_not_fail_the_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, _) = accepted_sibling_fixture(
+            &base,
+            "interface WorkerPoolOptions {\n  size: number;\n}\n\
+             export const logo = new URL('./logo.svg', import.meta.url).href;\n\
+             export const cta: WorkerPoolOptions = { size: 1 };\n",
+        );
+
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
+            "a `Worker`-bearing identifier plus an unrelated `import.meta.url` is \
+             not a module-worker macro — failing here would break an ordinary build",
+        );
+    }
+
     #[test]
     fn empty_accepted_set_enrols_nothing_and_rejects_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
         enforce_accepted_package_enrolment(
             &crate::metafile_deps::AcceptedEnrolmentSet::default(),
             &BTreeSet::new(),
+            tmp.path(),
+            &ModuleWorkerBuildContext::default(),
         )
         .expect("a build that reached no accepted sibling is untouched by the coupling");
     }
@@ -20301,6 +20535,73 @@ mod tests {
             queue.provenance_for_source(&marked, &marked),
             MaterialiseProvenance::Fatal,
             "a best-effort enrolment mark must never downgrade a fatally-queued source"
+        );
+    }
+
+    /// The queue records GLOB-TARGET ENQUEUES ONLY, so a `BestEffort` entry is
+    /// NOT evidence that the wholesale mirror is a file's only claim — being
+    /// reached by an ordinary import edge is not an enqueue and contributes
+    /// nothing to that join.
+    ///
+    /// Traced scenario: mirror source `M` is best-effort-marked; `M`'s glob
+    /// matches `F`; `F` is ALSO reached by a real import edge (so it is in
+    /// `plugin_preprocessing_files` outside the mirror enrolment, i.e.
+    /// `mark_reached_sources`); `F`'s own glob then matches `G`. Before the
+    /// explicit reached claim existed, `F` read back `BestEffort` from the
+    /// queue and `G` inherited it, so a materialisation failure for `G`
+    /// warned-and-continued instead of failing the build — a fail-open path
+    /// that did not exist before the provenance lattice.
+    #[test]
+    fn an_explicitly_reached_source_propagates_fatal_despite_a_best_effort_queue_entry() {
+        let mirror = PathBuf::from("/tmp/zfb-provenance/ws/lib/shared/M.ts");
+        let reached = PathBuf::from("/tmp/zfb-provenance/ws/lib/shared/F.ts");
+
+        // Control: with ONLY the mirror's glob enqueue, `F` is best-effort —
+        // the wholesale mirror genuinely is its only claim.
+        let control = GlobMatchQueue::default();
+        control.mark_best_effort_source(mirror.clone());
+        // Hoisted: `borrow_mut()` as a receiver outlives the argument
+        // expression, so an inline `provenance_for_source` call would
+        // re-borrow the same `RefCell`.
+        let from_mirror = control.provenance_for_source(&mirror, &mirror);
+        control.borrow_mut().enqueue(reached.clone(), from_mirror);
+        assert_eq!(
+            control.provenance_for_source(&reached, &reached),
+            MaterialiseProvenance::BestEffort,
+            "a file claimed only by a best-effort mirror source's glob stays best-effort"
+        );
+
+        // The scenario: the SAME queue state, plus the explicit reached claim
+        // an ordinary import edge records. `G` must now inherit `Fatal`.
+        let queue = GlobMatchQueue::default();
+        queue.mark_best_effort_source(mirror.clone());
+        let from_mirror = queue.provenance_for_source(&mirror, &mirror);
+        queue.borrow_mut().enqueue(reached.clone(), from_mirror);
+        queue.mark_reached_sources([reached.clone()]);
+        assert_eq!(
+            queue.provenance_for_source(&reached, &reached),
+            MaterialiseProvenance::Fatal,
+            "a real import edge reaches this file, so its own glob matches must be \
+             fatal — the queue entry only records that a mirror source also \
+             glob-matched it"
+        );
+
+        // ...and that is what `G` actually receives when `F` materialises.
+        let g = PathBuf::from("/tmp/zfb-provenance/ws/lib/shared/G.ts");
+        let propagated = queue.provenance_for_source(&reached, &reached);
+        queue.borrow_mut().enqueue(g.clone(), propagated);
+        assert_eq!(
+            queue.provenance_for_source(&g, &g),
+            MaterialiseProvenance::Fatal,
+            "a materialisation failure for a transitively-globbed target of a \
+             genuinely-reached file must fail the build, not warn and continue"
+        );
+
+        // The reached claim is scoped to the file that carries it: the mirror
+        // source itself is untouched and stays best-effort.
+        assert_eq!(
+            queue.provenance_for_source(&mirror, &mirror),
+            MaterialiseProvenance::BestEffort
         );
     }
 

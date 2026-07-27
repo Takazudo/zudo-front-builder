@@ -1414,7 +1414,13 @@ pub fn audit_metafile_stage_escape(
     }
 
     bail!(
-        "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: {}",
+        "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: \
+         {}\n\
+         For an offender named as a workspace sibling reached by PACKAGE NAME, the fix is in that \
+         package's own `package.json`, not in this project's staging or bundler config: either \
+         declare the imported location as an entry root under `exports` (or `main`), or import it \
+         through a path the package already declares. An undeclared deep import reaches live \
+         source nothing staged, which is what the audit is refusing.",
         offenders.join(", ")
     );
 }
@@ -1582,20 +1588,38 @@ impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
 ///
 /// This is a QUERY over the exact same metafile
 /// [`audit_metafile_stage_escape`] classifies for its own pass — not a
-/// second resolution pass, and not an enumeration of workspace membership.
-/// It shares the audit's own machinery on BOTH levels, so it can never
-/// independently drift from what the audit would accept: the identity-bearing
-/// leaf rules (`declared_first_party_package_identity_from_key`/
-/// `_from_canonical`) since Sub 10a, and — since issue #2127 — the
-/// case-2/case-3 GATE itself, [`classify_package_shaped_input`], which each
-/// side previously carried its own copy of. That gate now decides both
-/// staging shapes in one place, so widening what the audit accepts (as #2127
-/// did for real-copy-staged workspace siblings) cannot produce a package the
-/// audit accepts but this query skips. It remains the same non-goal the
-/// audit-eligibility predicate's own docs describe (see
-/// `zfb_types::audit_eligibility`'s module docs: a predicate must never grow
-/// into a second resolver). esbuild stays the only resolver; this only
-/// reclassifies what esbuild already recorded.
+/// second resolution pass, and not an enumeration of workspace membership. It
+/// remains the same non-goal the audit-eligibility predicate's own docs
+/// describe (see `zfb_types::audit_eligibility`'s module docs: a predicate
+/// must never grow into a second resolver). esbuild stays the only resolver;
+/// this only reclassifies what esbuild already recorded.
+///
+/// # What is shared with the audit, and what is merely duplicated
+///
+/// SHARED — one implementation, so these cannot drift:
+///
+/// * the case-2/case-3 GATE, [`classify_package_shaped_input`], which each
+///   side carried its own copy of until issue #2127 hoisted it. It decides
+///   both staging shapes in one place, so widening what the audit accepts (as
+///   #2127 did for real-copy-staged workspace siblings) cannot produce a
+///   package the audit accepts but this query skips;
+/// * the identity-bearing leaf rules
+///   (`declared_first_party_package_identity_from_key`/`_from_canonical`),
+///   shared since Sub 10a.
+///
+/// DUPLICATED — written out twice, in this function and in
+/// [`audit_metafile_stage_escape`]: the per-input ROUTING LOOP around that
+/// gate, plus the preamble that sets it up (the canonical/lexical stage roots,
+/// the [`ClaimedMemberRoster`], and the four per-record locality bools). The
+/// non-package-shaped tail — the `in_stage` early-out, the `logical_in_stage`
+/// / [`logical_path_names_staged_entry`] case-1 early-out, and the
+/// `in_first_party` scope check — is two independent copies of the same
+/// sequence. A reviewer diffed every branch when this note was written and
+/// found no live divergence, but nothing MECHANICALLY holds them together:
+/// **a short-circuit, an early `continue`, or a reordering added to one copy
+/// must be mirrored in the other by hand.** Consolidating the loop behind a
+/// single per-input classifier is tracked separately and deliberately out of
+/// scope here.
 ///
 /// # The bounded-set guarantee — never "every claimed workspace member"
 ///
