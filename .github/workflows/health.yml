@@ -280,26 +280,16 @@ jobs:
       # a first-party sibling package whose `exports` point straight at
       # `./src/*` with no `dist` is imported by bare package name through the
       # workspace symlink, landing on the metafile audit's case-2 shape. These
-      # three env-gated tests are the acceptance rule's positive pair plus the
+      # four env-gated tests are the acceptance rule's positive pair, the
       # dist-shipping negative that stops it becoming a blanket "workspace
-      # siblings are always fine" exemption — an unwired binary would let that
-      # rule regress in either direction unnoticed. Same ABSOLUTE-path
-      # requirement for ZFB_ESBUILD_BIN as the steps above.
-      # `--skip` excludes ONE test from this blanket `--ignored` run:
-      # `nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_under_copy_mode`
-      # (issue #2082, epic #2078) is deliberately `#[ignore = "pending-feature:
-      # …"]`, not `env-gate:` — it is a genuine RED test (the canonical-key
-      # exemption Sub #2086 will add does not exist yet) sharing this
-      # already-CI-wired binary with three green env-gate tests. Without this
-      # skip, `--ignored` would sweep it up and turn this step red until
-      # #2086 lands. Sub #2086 must DROP this `--skip` in the same commit it
-      # replaces that test's `pending-feature:` tag with `env-gate:` (the
-      # epic's corrected flip protocol) — leaving it here after the flip
-      # would silently stop the flipped test from ever running in CI again.
+      # siblings are always fine" exemption, and the copy-mode canonicalized-
+      # key twin (issue #2047, landed by sub #2086 of epic #2078) — an
+      # unwired binary would let any of these regress unnoticed. Same
+      # ABSOLUTE-path requirement for ZFB_ESBUILD_BIN as the steps above.
       - name: Run zfb-build consume-from-source esbuild regression test
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored --skip nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_under_copy_mode
+        run: cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored
 
       # Root-claimed-workspace stage-escape audit, SSR leg (issues
       # #1984/#1988, epic #1982): when `project_root` is itself claimed by

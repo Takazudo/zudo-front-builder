@@ -362,6 +362,112 @@ fn package_root_for_input(canonical: &Path, subpath: &[String]) -> Option<PathBu
     Some(root)
 }
 
+/// The canonical-path-keyed sibling of [`package_root_for_input`] above
+/// (issue #2047/#2086): used when the metafile KEY itself is not
+/// package-shaped, so there is no `node_modules`-relative subpath to strip
+/// from it in the first place. Under copy-mode staging (`node_modules_dir`
+/// set, no `--preserve-symlinks` — `esbuild_will_preserve_symlinks`,
+/// bundler.rs :10153/:2019), esbuild canonicalises a staged
+/// `node_modules/<pkg>` symlink back to a `..`-climbing relative path
+/// instead of a `node_modules/...`-shaped one, so [`split_package_name_and_subpath`]
+/// finds no `node_modules` segment in the key at all.
+///
+/// Walks upward from `canonical`'s parent directory to the nearest ancestor
+/// carrying a `package.json`, bounded so the walk never climbs above
+/// `first_party_root` — this is a search for the nearest package boundary,
+/// never a probe for a plausible root outside first-party territory.
+///
+/// Fail-closed: no `package.json` found within that bound yields `None`, and
+/// the caller falls back to the existing case-4 rejection.
+fn nearest_package_root_for_canonical(
+    canonical: &Path,
+    first_party_root: &Path,
+) -> Option<PathBuf> {
+    let mut dir = canonical.parent()?.to_path_buf();
+    loop {
+        if !dir.starts_with(first_party_root) {
+            return None;
+        }
+        if dir.join("package.json").is_file() {
+            return Some(dir);
+        }
+        if dir == first_party_root {
+            return None;
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// The canonical-key sibling of [`package_input_is_declared_first_party_entry`]
+/// below (issue #2047, sub #2086): consulted only when the metafile key is
+/// NOT package-shaped but its canonical path still lands inside
+/// `canonical_first_party_root` — the copy-mode canonicalisation shape
+/// [`nearest_package_root_for_canonical`] documents. Resolves package
+/// identity from the CANONICAL PATH via the same declared-data-only rule,
+/// minus the "the key names this exact package" cross-check
+/// [`package_input_is_declared_first_party_entry`] performs (there is no
+/// key-carried package name here to cross-check against):
+///
+/// 1. the nearest ancestor of `canonical` carrying a `package.json`, bounded
+///    to `canonical_first_party_root`
+///    ([`nearest_package_root_for_canonical`]);
+/// 2. that root's `package.json` must parse and declare a `name` (only a
+///    genuine package, not an arbitrary directory that happens to hold a
+///    `package.json`, may be exempted);
+/// 3. the package root must be **claimed** by the governing
+///    `pnpm-workspace.yaml`
+///    ([`zfb_types::first_party::workspace_root_claims_path`]);
+/// 4. the subpath (`canonical` stripped of that package root) must be
+///    covered by the package's own declared entries
+///    ([`declared_entries_cover`]) — exactly condition 5 of the
+///    node_modules-keyed rule below, no relaxation.
+///
+/// Fail-closed throughout: any missing `package.json`, unclaimed root, or
+/// uncovered subpath returns `false` and the caller's case-4 rejection
+/// stands. This is additive only — it never widens what the node_modules-
+/// keyed rule already accepts, and it does not replace the case-4 rejection
+/// for anything it does not itself cover (e.g. an undeclared deep import
+/// reached via a canonicalized key stays rejected, same as before).
+fn canonical_input_is_declared_first_party_entry(
+    canonical: &Path,
+    canonical_first_party_root: &Path,
+) -> bool {
+    let Some(package_root) =
+        nearest_package_root_for_canonical(canonical, canonical_first_party_root)
+    else {
+        return false;
+    };
+    let Ok(manifest) = std::fs::read_to_string(package_root.join("package.json")) else {
+        return false;
+    };
+    let Ok(manifest): std::result::Result<serde_json::Value, _> = serde_json::from_str(&manifest)
+    else {
+        return false;
+    };
+    if manifest.get("name").and_then(|n| n.as_str()).is_none() {
+        return false;
+    }
+    if !zfb_types::first_party::workspace_root_claims_path(
+        canonical_first_party_root,
+        &package_root,
+    ) {
+        return false;
+    }
+
+    let Ok(subpath_rel) = canonical.strip_prefix(&package_root) else {
+        return false;
+    };
+    let subpath: String = subpath_rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    declared_entries_cover(&declared_entries(&manifest), &subpath)
+}
+
 /// One entry a `package.json` declares, in the two shapes a target can take.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum DeclaredEntry {
@@ -810,6 +916,24 @@ pub fn audit_metafile_stage_escape(
         }
 
         if in_first_party {
+            // Canonical-key sibling of the case-2 declared-entry exemption
+            // (issue #2047/#2086): `package_shaped` above is checked against
+            // the metafile KEY string, but under copy-mode staging esbuild
+            // can canonicalise a staged `node_modules/<pkg>` symlink back to
+            // a `..`-climbing relative key instead of a `node_modules/...`-
+            // shaped one, so this input never entered the case-2/3 branch at
+            // all even though its canonical target is a declared, claimed,
+            // covered first-party package entry. Resolve package identity
+            // from the CANONICAL PATH instead, via the same declared-data-
+            // only rule, fail-closed — see
+            // [`canonical_input_is_declared_first_party_entry`].
+            if canonical_input_is_declared_first_party_entry(
+                &canonical,
+                &canonical_first_party_root,
+            ) {
+                continue;
+            }
+
             // case 4: esbuild never produced a staged spelling for this
             // input at all — it recorded the live first-party path
             // directly, whether as an absolute key or a `..`-climbing one.
@@ -1393,11 +1517,10 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2086"]
     fn stage_escape_allows_consume_from_source_sibling_via_canonicalized_key() {
-        // RED (#2082, epic #2078 Wave 1; to be flipped by Sub #2086, #2047's
-        // real fix). The SAME #2040 topology as
-        // `stage_escape_allows_consume_from_source_sibling_declared_by_wildcard_exports`
+        // Flipped by #2086 (Staging Correctness 2 epic #2078, Wave 3; #2082's
+        // Part 2, epic Wave 1, was the RED author). The SAME #2040 topology
+        // as `stage_escape_allows_consume_from_source_sibling_declared_by_wildcard_exports`
         // above, but esbuild recorded a CANONICALIZED (non-`node_modules`-
         // shaped) metafile key for the resolved import instead of a
         // `node_modules/...`-shaped one — exactly what happens under
@@ -1410,9 +1533,11 @@ mod tests {
         // the KEY STRING, not the canonical path) is `false` for this key, so
         // the case-2 declared-entry exemption
         // (`package_input_is_declared_first_party_entry`) never fires — the
-        // input falls straight through to the case-1/case-4 stage-membership
-        // check below, which rejects it as case 4 today even though
+        // input used to fall straight through to the case-1/case-4
+        // stage-membership check, which rejected it as case 4 even though
         // `@acme/ui` is declared, claimed, and its entry covers the import.
+        // `canonical_input_is_declared_first_party_entry` now resolves
+        // package identity from the canonical path instead and accepts it.
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path().canonicalize().unwrap();
         let (stage, first_party) = write_workspace_sibling_stage(
