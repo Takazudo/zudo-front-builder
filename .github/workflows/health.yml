@@ -302,6 +302,27 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored
 
+      # Root-claimed-workspace stage-escape audit DISARM pin (issues
+      # #2050/#2081, epic #2078): the sibling armed-regression step above
+      # proves guard (b) rejects an escape when the live node_modules
+      # symlink survives. This step pins the KNOWN, currently-open gap where
+      # it does NOT survive — active `bundle.exclude` forces REAL copies into
+      # `<shadow>/node_modules` instead, starving the eligibility predicate
+      # of symlink evidence and silently disarming the audit. Two of this
+      # binary's three tests are env-gated pins of that reality (one positive
+      # repro, one negative control proving the SECOND trigger shape #2050's
+      # own text named — a workspace package staged as an exact target with
+      # an empty `bundle.exclude` — is not actually reachable at a
+      # root-claimed workspace; see the file's own header for the
+      # investigation); `--skip` excludes the third, a deliberate
+      # `pending-feature: #2087` RED twin asserting the FIXED behavior sub
+      # #2087 will land — it must keep failing until then, so it must never
+      # run under this gate.
+      - name: Run zfb-build root-workspace stage-escape audit disarm pin
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored --skip real_copy_staging_under_active_bundle_exclude_should_reject_the_undeclared_escape_once_declared_identity_lands
+
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are
       # staged by the assert step above but, like the zfb-islands suite before
