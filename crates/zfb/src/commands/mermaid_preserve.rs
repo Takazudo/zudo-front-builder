@@ -37,10 +37,11 @@
 //! * **False positives** — only a genuine *attribute name* counts. The scanner
 //!   parses tags properly, so `data-mermaid` in ordinary text, inside another
 //!   attribute's value, or as a prefix of a longer attribute name
-//!   (`data-mermaid-src`) never triggers extraction. Raw-text elements
-//!   (`<script>`, `<style>`, `<textarea>`, `<title>`) and comments are skipped
-//!   rather than scanned, so mermaid-shaped markup quoted inside a script is
-//!   likewise inert.
+//!   (`data-mermaid-src`) never triggers extraction. Every context the HTML
+//!   tokenizer reads as text rather than markup is skipped rather than scanned
+//!   — comments, CDATA sections, the raw-text elements in
+//!   [`RAW_TEXT_ELEMENTS`], and everything following `<plaintext>` — so
+//!   mermaid-shaped markup quoted inside a script is likewise inert.
 //! * **Bytes vs decoded text** — *raw bytes* are what is preserved. No entity
 //!   decoding, re-encoding, or UTF-8 validation happens anywhere: the body
 //!   `A --&gt; B` is stored and restored as those exact bytes. That is the
@@ -71,8 +72,21 @@ const PAD_BYTE: u8 = b'X';
 /// Trailer that closes a placeholder after its decimal index.
 const PLACEHOLDER_SUFFIX: &[u8] = b"-END";
 
-/// Elements whose content is raw (or escapable-raw) text: never scanned.
-const RAW_TEXT_ELEMENTS: [&[u8]; 4] = [b"script", b"style", b"textarea", b"title"];
+/// Elements whose content the HTML tokenizer treats as raw (or escapable-raw)
+/// text rather than markup, so this scanner skips over it too.
+const RAW_TEXT_ELEMENTS: [&[u8]; 8] = [
+    b"script",
+    b"style",
+    b"textarea",
+    b"title",
+    b"xmp",
+    b"iframe",
+    b"noembed",
+    b"noframes",
+];
+
+/// `<plaintext>` has no end tag at all: everything after it is text forever.
+const PLAINTEXT_ELEMENT: &[u8] = b"plaintext";
 
 /// Elements that never have a body, so never have a mermaid body either.
 const VOID_ELEMENTS: [&[u8]; 14] = [
@@ -289,6 +303,11 @@ fn collect_mermaid_bodies(html: &[u8]) -> Option<Vec<Range<usize>>> {
             Markup::Text => i += 1,
             Markup::Start(tag) => {
                 let name = &html[tag.name.clone()];
+                if name.eq_ignore_ascii_case(PLAINTEXT_ELEMENT) {
+                    // Nothing after this can be an element, so stop scanning
+                    // and keep whatever was already claimed.
+                    break;
+                }
                 if is_raw_text(name) {
                     i = skip_raw_text(html, tag.end, name)?;
                 } else if tag.has_mermaid && !tag.self_closing && !is_void(name) {
@@ -324,6 +343,10 @@ fn find_matching_close(html: &[u8], start: usize, name: &[u8]) -> Option<(usize,
             Markup::Text => i += 1,
             Markup::Start(tag) => {
                 let tag_name = &html[tag.name.clone()];
+                if tag_name.eq_ignore_ascii_case(PLAINTEXT_ELEMENT) {
+                    // The open element can never be closed after this point.
+                    return None;
+                }
                 if is_raw_text(tag_name) {
                     i = skip_raw_text(html, tag.end, tag_name)?;
                     continue;
@@ -385,8 +408,18 @@ fn markup_at(html: &[u8], i: usize) -> Option<Markup> {
             next: i + 4 + offset + 3,
         });
     }
+    // A CDATA section (legal inside inline SVG/MathML) ends at `]]>`, not at
+    // the first `>` — a `>` in its text would otherwise leave the remainder
+    // being scanned as markup.
+    if html[i..].starts_with(b"<![CDATA[") {
+        let rest = &html[i + 9..];
+        let offset = find_sub(rest, b"]]>")?;
+        return Some(Markup::Skipped {
+            next: i + 9 + offset + 3,
+        });
+    }
     match html.get(i + 1) {
-        // Doctype, CDATA, processing instruction: run to the next `>`.
+        // Doctype or processing instruction: runs to the next `>`.
         Some(b'!' | b'?') => {
             let offset = find_sub(&html[i..], b">")?;
             Some(Markup::Skipped {
@@ -738,6 +771,69 @@ mod tests {
         let preservation = extract(input.as_bytes());
 
         assert!(preservation.is_empty(), "{}", extracted_html(&preservation));
+        assert_eq!(extracted_html(&preservation), input);
+    }
+
+    #[test]
+    fn markup_shaped_text_in_the_other_raw_text_elements_is_inert_too() {
+        // A short raw-text list would scan this text as markup, hit an
+        // unmatched `data-mermaid` element, and abandon extraction — silently
+        // dropping preservation for the real diagram that follows.
+        for host in ["xmp", "iframe", "noembed", "noframes"] {
+            let input = format!(
+                "<{host}><div data-mermaid>not markup</{host}>\
+                 <div data-mermaid>graph TD;\n  A\n</div>"
+            );
+
+            let preservation = extract(input.as_bytes());
+
+            assert_eq!(
+                preservation.bodies,
+                vec![b"graph TD;\n  A\n".to_vec()],
+                "the real diagram after <{host}> must still be extracted"
+            );
+            assert_eq!(round_trip(&input), input);
+        }
+    }
+
+    #[test]
+    fn a_cdata_section_is_skipped_through_its_own_terminator() {
+        // The `>` inside the CDATA text must not be mistaken for the end of a
+        // declaration, or the fake element after it would abort extraction.
+        let input = concat!(
+            "<svg><script type=\"application/xml\"></script></svg>",
+            "<p><![CDATA[ a > b <div data-mermaid>not markup ]]></p>",
+            "<div data-mermaid>graph TD;\n  A\n</div>"
+        );
+
+        let preservation = extract(input.as_bytes());
+
+        assert_eq!(preservation.bodies, vec![b"graph TD;\n  A\n".to_vec()]);
+        assert_eq!(round_trip(input), input);
+    }
+
+    #[test]
+    fn everything_after_plaintext_is_text_and_extraction_stops_there() {
+        let input = "<div data-mermaid>graph TD;\n  A\n</div>\
+                     <plaintext><div data-mermaid>not markup</div>";
+
+        let preservation = extract(input.as_bytes());
+
+        assert_eq!(
+            preservation.bodies,
+            vec![b"graph TD;\n  A\n".to_vec()],
+            "the diagram before <plaintext> is kept; nothing after it is scanned"
+        );
+        assert_eq!(round_trip(input), input);
+    }
+
+    #[test]
+    fn a_mermaid_element_that_plaintext_swallows_is_left_untouched() {
+        let input = "<div data-mermaid>graph TD;\n<plaintext></div>";
+
+        let preservation = extract(input.as_bytes());
+
+        assert!(preservation.is_empty());
         assert_eq!(extracted_html(&preservation), input);
     }
 
