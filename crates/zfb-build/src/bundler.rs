@@ -4026,6 +4026,28 @@ pub fn bundle_with_session(
                 &first_party_root,
             )
             .context("bundler: SSR work-mirror stage-escape audit failed")?;
+
+            // Acceptance ⇒ enrolment (issue #2089, epic #2078 Sub 10b —
+            // serving #2048), enforced fail-closed over the SAME metafile the
+            // audit just classified, with the SAME four arguments, so the two
+            // can never disagree about which inputs were accepted. Nested
+            // workspace members only: `first_party_root == project_root` is the
+            // exact condition under which `SiblingMirrorPlan::compute` returns
+            // an empty plan and `mirror_sibling_root` never runs, so there is
+            // no enrolment channel to couple to at a root-claimed workspace —
+            // #2048 scopes itself the same way. See
+            // [`enforce_accepted_package_enrolment`] for why this enforces the
+            // coupling rather than performing it.
+            if first_party_root != project_root {
+                let accepted = crate::metafile_deps::accepted_enrolment_set_at_path(
+                    meta_path,
+                    shadow,
+                    &[work],
+                    &first_party_root,
+                )
+                .context("bundler: enrolment-selection query failed")?;
+                enforce_accepted_package_enrolment(&accepted, &plugin_preprocessing_files)?;
+            }
         }
     }
 
@@ -5232,6 +5254,138 @@ impl SiblingMirrorPlan {
         let path = normalize_path_lexical(path);
         self.mirror_roots.iter().any(|root| path.starts_with(root))
     }
+}
+
+/// Which of the three macro forms [`materialise_source_file`] expands does
+/// `path` carry, if any — detected with the SAME cheap textual signals that
+/// function's own fast path uses (`import.meta.glob` / `?raw` /
+/// `Worker` + `import.meta.url`), never a parse and never a resolution.
+///
+/// Deliberately TIGHTER than `materialise_source_file`'s own gate on two of
+/// the three: that gate opens on a bare `?` or a bare `Worker` because a false
+/// positive there costs only a redundant expansion attempt, whereas a false
+/// positive here would hard-fail a legitimate build. `?raw` is the exact
+/// substring [`preflight_raw_file`] keys off, and the worker form additionally
+/// requires `import.meta.url` — both halves of the only supported spelling
+/// (`new Worker(new URL("./w.ts", import.meta.url), { type: "module" })`).
+///
+/// A non-JS-like leaf (JSON, CSS, an asset) is never a macro carrier and a
+/// non-UTF-8 file cannot be scanned, so both answer `None`.
+fn unexpanded_macro_form(path: &Path) -> Option<&'static str> {
+    if !raw_source_extension(path) {
+        return None;
+    }
+    let source = fs::read_to_string(path).ok()?;
+    if source.contains("import.meta.glob") {
+        return Some("`import.meta.glob(...)`");
+    }
+    if source.contains("?raw") {
+        return Some("a terminal `?raw` import");
+    }
+    if source.contains("Worker") && source.contains("import.meta.url") {
+        return Some("a module-worker `new URL(..., import.meta.url)` macro");
+    }
+    None
+}
+
+/// Acceptance ⇒ enrolment, enforced fail-closed (issue #2089, epic #2078 Sub
+/// 10b — serving #2048).
+///
+/// # Why this is an enforcement and not a widening
+///
+/// The stage-escape audit ACCEPTS a workspace sibling consumed from source by
+/// bare package name (#2040's declared-entry rule): `@acme/ui`'s own manifest
+/// declares the resolved location, `pnpm-workspace.yaml` claims the package,
+/// and esbuild reached it through the wholesale `<work>/node_modules` link.
+/// Nothing staged it — the mirror plan never saw a claim for it, because a
+/// bare package name is resolved by esbuild, not by the Rust discovery that
+/// feeds [`SiblingMirrorPlan::compute`]. So the package's own
+/// `import.meta.glob` / `?raw` / module-worker macros reach esbuild LITERALLY
+/// and ship unexpanded in a GREEN build — exactly the #1724 defect class
+/// #1985 closed for alias-claimed siblings, re-opened through the
+/// package-name door.
+///
+/// The coupling this sub was asked for — make acceptance IMPLY mirror
+/// enrolment — is not reachable in this direction of the pipeline.
+/// "Accepted" is a fact about esbuild's METAFILE, which does not exist until
+/// after `run_esbuild` has already emitted the bundle; every enrolment seam
+/// ([`SiblingMirrorPlan::compute`], the wholesale mirror, the
+/// `plugin_preprocessing_files` materialise pass) runs before it. Bridging
+/// that gap would mean either predicting pre-esbuild which packages esbuild
+/// will resolve — the one thing this crate's hard constraint forbids (esbuild
+/// stays the only resolver; see the `l-lessons-client-bundling` project
+/// lessons on why "match what esbuild would resolve" has no finish line) — or
+/// re-running esbuild to a fixed point after each newly-discovered package.
+/// So epic #2078's sanctioned fallback applies: the defect becomes a LOUD,
+/// named build failure instead of a silent wrong bundle.
+///
+/// # Self-limiting by construction
+///
+/// The check is keyed on the reached input NOT being enrolled. An accepted
+/// package whose bundled sources DID go through
+/// [`materialise_source_file`] (its macros already expanded in the shadow)
+/// passes silently — so a later wave that genuinely couples acceptance to
+/// enrolment, or that widens which inputs reach case-2 acceptance (issue
+/// #2127), retires this diagnostic automatically rather than fighting it.
+///
+/// `enrolled` is `bundle_with_session`'s `plugin_preprocessing_files` — the
+/// single set every enrolment seam publishes into.
+fn enforce_accepted_package_enrolment(
+    accepted: &crate::metafile_deps::AcceptedEnrolmentSet,
+    enrolled: &BTreeSet<PathBuf>,
+) -> Result<()> {
+    if accepted.is_empty() {
+        return Ok(());
+    }
+    // The macro scan comes FIRST: it costs one read per accepted input (a
+    // handful of files), whereas canonicalising `enrolled` is a stat per
+    // preprocessing file (thousands on a real project). The ordinary
+    // consume-from-source sibling carries no macro at all, so that cost is
+    // only ever paid by a build that is about to fail.
+    let mut candidates = Vec::new();
+    for package in accepted {
+        for input in accepted.reached_inputs(&package.name) {
+            if let Some(form) = unexpanded_macro_form(input) {
+                candidates.push((&package.name, input, form));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(());
+    }
+
+    // The audit reports canonical paths; `plugin_preprocessing_files` holds
+    // whatever spelling the enqueuing claim source used, so compare canonical
+    // forms or a symlinked claim would read as "never enrolled".
+    let enrolled_canonical: BTreeSet<PathBuf> = enrolled
+        .iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect();
+    let offenders: Vec<String> = candidates
+        .into_iter()
+        .filter(|(_, input, _)| !enrolled_canonical.contains(*input))
+        .map(|(name, input, form)| format!("  - `{}` at {} uses {}", name, input.display(), form))
+        .collect();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "bundler: stage-escape audit accepted a workspace package consumed from \
+         source, but its sources are never mirror-enrolled, so the macros below \
+         reached esbuild literally and would ship UNEXPANDED in the emitted \
+         bundle (issue #2048 — the #1724 defect class, through the bare \
+         package-name door):\n{}\n\
+         Acceptance is only knowable from esbuild's own metafile, i.e. after the \
+         bundle is already emitted, so this pass cannot retroactively expand \
+         them; failing here is deliberate — a green build would emit a bundle \
+         whose macro calls do not exist at runtime.\n\
+         Reach the package through a claim the mirror plan can see BEFORE \
+         esbuild runs — a tsconfig or plugin alias into its source tree, which \
+         is mirrored and macro-expanded like any other workspace sibling \
+         (issues #1691/#1985) — or consume a pre-built entry whose sources carry \
+         none of these macros.",
+        offenders.join("\n")
+    ))
 }
 
 /// Wholesale-mirror one claimed sibling `mirror_root` into the SSR work mirror
@@ -19517,6 +19671,184 @@ mod tests {
         // The audit predicate reports paths inside a claimed root.
         assert!(plan.claims_path(&ws.join("packages/ui/nested/x.ts")));
         assert!(!plan.claims_path(&project.join("src/app.ts")));
+    }
+
+    // -----------------------------------------------------------------
+    // Acceptance ⇒ enrolment (issue #2089, epic #2078 Sub 10b, serving
+    // #2048): the fail-closed coupling between what the stage-escape audit
+    // accepts and what the mirror-enrolment pass actually processed. The
+    // real-esbuild end-to-end proof is case (n) in
+    // `bundler_sibling_mirror_esbuild_regression.rs`; these pin the two
+    // pure halves the call site composes.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unexpanded_macro_form_detects_the_three_expanded_forms_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let probe = |name: &str, body: &str| {
+            let path = dir.join(name);
+            fs::write(&path, body).unwrap();
+            unexpanded_macro_form(&path)
+        };
+
+        assert_eq!(
+            probe("glob.tsx", "const m = import.meta.glob('./d/*.json');\n"),
+            Some("`import.meta.glob(...)`")
+        );
+        assert_eq!(
+            probe("raw.ts", "import text from './note.md?raw';\n"),
+            Some("a terminal `?raw` import")
+        );
+        assert_eq!(
+            probe(
+                "worker.ts",
+                "new Worker(new URL('./w.worker.ts', import.meta.url), { type: 'module' });\n"
+            ),
+            Some("a module-worker `new URL(..., import.meta.url)` macro")
+        );
+
+        assert_eq!(
+            probe("plain.ts", "export const marker = 'CTA';\n"),
+            None,
+            "an ordinary source file carries no macro"
+        );
+        assert_eq!(
+            probe("ternary.ts", "export const v = cond ? 'a' : 'b';\n"),
+            None,
+            "a bare `?` must not read as a `?raw` import — `materialise_source_file`'s \
+             own gate opens on that, but here a false positive would hard-fail a \
+             legitimate build"
+        );
+        assert_eq!(
+            probe(
+                "webworker-doc.ts",
+                "// This module also runs inside a Worker.\nexport const v = 1;\n"
+            ),
+            None,
+            "`Worker` alone is not the macro — the supported spelling needs \
+             `import.meta.url` too"
+        );
+        assert_eq!(
+            probe(
+                "data.json",
+                r#"{"note":"import.meta.glob is just text here"}"#
+            ),
+            None,
+            "a non-JS-like leaf is never a macro carrier"
+        );
+    }
+
+    /// Build a real [`crate::metafile_deps::AcceptedEnrolmentSet`] the only way
+    /// production does — by querying a metafile — so these tests compose the
+    /// exact contract the call site consumes rather than a hand-built stand-in.
+    /// Returns `(accepted set, the sibling's own source file)`.
+    #[cfg(unix)]
+    fn accepted_sibling_fixture(
+        base: &Path,
+        cta_body: &str,
+    ) -> (crate::metafile_deps::AcceptedEnrolmentSet, PathBuf) {
+        let first_party = base.join("workspace");
+        fs::create_dir_all(&first_party).unwrap();
+        fs::write(
+            first_party.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        let package = first_party.join("packages/ui");
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "@acme/ui", "exports": { "./cta": "./src/cta.tsx" } }"#,
+        )
+        .unwrap();
+        let cta = package.join("src/cta.tsx");
+        fs::write(&cta, cta_body).unwrap();
+
+        let stage = base.join("stage");
+        let link = stage.join("node_modules/@acme/ui");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&package, &link).unwrap();
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/ui/src/cta.tsx": {"imports": []}
+        }}"#;
+        let accepted =
+            crate::metafile_deps::accepted_enrolment_set(metafile, &stage, &[&stage], &first_party)
+                .unwrap();
+        assert!(
+            accepted.contains("@acme/ui"),
+            "fixture precondition: the sibling must be ACCEPTED, or these tests \
+             would pass for the wrong reason"
+        );
+        (accepted, cta)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_package_with_unenrolled_macro_source_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, cta) = accepted_sibling_fixture(
+            &base,
+            "const m = import.meta.glob('./data/*.json');\nexport const cta = m;\n",
+        );
+
+        let error = enforce_accepted_package_enrolment(&accepted, &BTreeSet::new())
+            .expect_err("an accepted-but-unenrolled macro source must fail the build");
+        let message = format!("{error:#}");
+        for expected in ["@acme/ui", "cta.tsx", "import.meta.glob", "UNEXPANDED"] {
+            assert!(
+                message.contains(expected),
+                "the diagnostic must contain {expected}: {message}"
+            );
+        }
+        assert!(cta.is_file());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_package_whose_macro_source_is_enrolled_is_accepted() {
+        // The self-limiting half: once a later wave genuinely enrols these
+        // sources (or #2127 widens which inputs reach case-2 acceptance), the
+        // diagnostic retires itself instead of having to be deleted.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, cta) = accepted_sibling_fixture(
+            &base,
+            "const m = import.meta.glob('./data/*.json');\nexport const cta = m;\n",
+        );
+
+        let enrolled = BTreeSet::from([cta]);
+        enforce_accepted_package_enrolment(&accepted, &enrolled).expect(
+            "an accepted package whose bundled source DID go through the \
+             materialise pass has no unexpanded macro left to report",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_package_without_macros_is_accepted() {
+        // The ordinary consume-from-source idiom (#2040) — accepted, never
+        // enrolled, and entirely fine, because there is no macro to expand.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, _) =
+            accepted_sibling_fixture(&base, "export const cta = 'CTA_SOURCE_MARKER';\n");
+
+        enforce_accepted_package_enrolment(&accepted, &BTreeSet::new()).expect(
+            "acceptance alone is never a rejection — only a macro that would \
+             ship unexpanded is",
+        );
+    }
+
+    #[test]
+    fn empty_accepted_set_enrols_nothing_and_rejects_nothing() {
+        enforce_accepted_package_enrolment(
+            &crate::metafile_deps::AcceptedEnrolmentSet::default(),
+            &BTreeSet::new(),
+        )
+        .expect("a build that reached no accepted sibling is untouched by the coupling");
     }
 
     // -----------------------------------------------------------------

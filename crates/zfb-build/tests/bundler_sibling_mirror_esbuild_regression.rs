@@ -1200,3 +1200,162 @@ fn m_control_transitive_glob_match_from_reached_host_stays_fatal() {
          error: {message}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// (n) issue #2089 (epic #2078 Sub 10b, serving #2048): the bare package-name
+// door back into #1724's defect class, and the fail-closed coupling that now
+// shuts it.
+//
+// Cases (b)/(g)/(j)/(k) above cover a sibling reached through an ALIAS: the
+// mirror plan sees that claim before esbuild runs, mirrors the region, and
+// enrols every mirrored source file so its macros expand (#1985). A sibling
+// reached by BARE PACKAGE NAME has no such claim — esbuild resolves it through
+// the wholesale `<work>/node_modules` link, and the stage-escape audit ACCEPTS
+// it as a declared consume-from-source entry (#2040). Nothing ever staged it,
+// so its own macros used to reach esbuild literally and ship unexpanded in a
+// GREEN build. Verified directly on the pre-fix tree with this exact fixture:
+// the build returned Ok and the emitted bundle carried
+// `var mods = import.meta.glob("./data/*.json", { eager: true });` under a
+// `// node_modules/@acme/ui/src/cta.tsx` banner, with the matched JSON's
+// content nowhere in it.
+//
+// Acceptance is a fact about esbuild's metafile, which does not exist until
+// the bundle is already emitted, so the enrolment cannot be driven from it —
+// see `enforce_accepted_package_enrolment` in `bundler.rs` for the full
+// argument. The build now fails loudly instead.
+// ---------------------------------------------------------------------------
+
+/// The workspace shape of the consume-from-source idiom (#1730/#2040): a
+/// nested member at `apps/demo` reaching first-party `packages/ui` by bare
+/// package name through the hoisted `node_modules/@acme/ui` symlink. `cta_body`
+/// is the sibling's own declared entry source, so each caller decides whether
+/// it carries a zfb macro. Returns `(project_root, workspace_node_modules)`.
+#[cfg(unix)]
+fn write_bare_package_consumer(root: &Path, cta_body: &str) -> (PathBuf, PathBuf) {
+    fs::write(
+        root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'packages/*'\n  - 'apps/*'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("package.json"),
+        r#"{ "name": "workspace-root", "private": true }"#,
+    )
+    .unwrap();
+
+    let ui = root.join("packages/ui");
+    fs::create_dir_all(ui.join("src/data")).unwrap();
+    fs::write(
+        ui.join("package.json"),
+        r#"{ "name": "@acme/ui", "exports": { "./cta": "./src/cta.tsx" } }"#,
+    )
+    .unwrap();
+    fs::write(ui.join("src/cta.tsx"), cta_body).unwrap();
+    fs::write(ui.join("src/data/one.json"), r#"{"value":"GLOB_MATCHED"}"#).unwrap();
+
+    let node_modules = root.join("node_modules");
+    fs::create_dir_all(node_modules.join("@acme")).unwrap();
+    std::os::unix::fs::symlink(&ui, node_modules.join("@acme/ui")).unwrap();
+
+    let project = root.join("apps/demo");
+    scaffold_project_dirs(&project);
+    fs::write(
+        project.join("package.json"),
+        r#"{ "name": "demo", "private": true }"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { ctaButton } from "@acme/ui/cta";
+            export default function Home() { return "CONSUMER:" + ctaButton; }
+        "#,
+    )
+    .unwrap();
+    (project, node_modules)
+}
+
+#[cfg(unix)]
+#[test]
+fn n_bare_package_accepted_sibling_with_unexpanded_macro_fails_loudly() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let (project, node_modules) = write_bare_package_consumer(
+        root,
+        "const mods = import.meta.glob('./data/*.json', { eager: true });\n\
+         export const ctaButton = 'CTA_' + Object.keys(mods).length;\n",
+    );
+
+    let mut input = base_input(&project, esbuild, Vec::new());
+    input.node_modules_dir = Some(node_modules);
+    let error = bundle_with_session(
+        input,
+        Some(&mut ShadowSession::new(&project).expect("shadow session")),
+    )
+    .expect_err(
+        "an accepted-but-unmirrored consume-from-source sibling whose own source \
+         uses `import.meta.glob` must fail the build loudly, not emit a bundle \
+         carrying the literal, unexpanded macro (#2048/#2089)",
+    );
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("@acme/ui"),
+        "the failure must name the accepted package: {message}"
+    );
+    assert!(
+        message.contains("cta.tsx"),
+        "the failure must name the offending source file: {message}"
+    );
+    assert!(
+        message.contains("import.meta.glob"),
+        "the failure must name the unexpanded macro form: {message}"
+    );
+    assert!(
+        message.contains("never mirror-enrolled"),
+        "the failure must say WHY the macro survived — acceptance without \
+         enrolment: {message}"
+    );
+}
+
+/// The control that keeps the case above from degenerating into "an accepted
+/// workspace sibling is now always rejected". The identical topology, with the
+/// identical `@acme/ui` acceptance, still builds GREEN when the sibling's own
+/// source carries none of the three macro forms — which is what every existing
+/// consume-from-source fixture looks like (`bundler_consume_from_source_esbuild_regression.rs`),
+/// and what case (f) above staged.
+#[cfg(unix)]
+#[test]
+fn n_control_bare_package_accepted_sibling_without_macros_still_builds_clean() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    let (project, node_modules) =
+        write_bare_package_consumer(root, "export const ctaButton = 'CTA_SOURCE_MARKER';\n");
+
+    let mut input = base_input(&project, esbuild, Vec::new());
+    input.node_modules_dir = Some(node_modules);
+    let output = bundle_with_session(
+        input,
+        Some(&mut ShadowSession::new(&project).expect("shadow session")),
+    )
+    .expect(
+        "consuming a declared first-party sibling from source by bare package \
+         name stays a legitimate monorepo idiom (#2040) — the #2089 coupling \
+         only fires on a macro that would ship unexpanded",
+    );
+
+    let body = fs::read_to_string(&output.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("CTA_SOURCE_MARKER"),
+        "the sibling's source must still be bundled: {}",
+        truncate(&body)
+    );
+}
