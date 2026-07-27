@@ -2415,56 +2415,11 @@ pub fn bundle_with_session(
         &input.plugin_alias_entries,
     );
 
-    // Issue #1724: make `mirror_sibling_root`'s own promise true — "reachable
-    // source files that DO need `?raw`/glob/worker rewrites are overwritten
-    // afterwards by the plugin-preprocessing pass". That pass materialises
-    // `plugin_preprocessing_files`, which a claimed sibling's macro-bearing
-    // source could never join: the exact-target loops above are gated to
-    // `project_root`, and `collect_runtime_alias_claim_graph` fail-closes on
-    // workspace membership (a bare `lib/shared` region is claimed by the
-    // mirror plan but is not a workspace package). So the mirror's RAW byte
-    // copy was the only pass those files ever saw and their
-    // `import.meta.glob` / module-worker `new URL(...)` macros reached
-    // esbuild literally — a GREEN build with unexpanded macro text in the
-    // bundle. Enrolling every mirrored SOURCE file here routes it through the
-    // same `materialise_source_file` every project file gets, which
-    // overwrites the raw copy in place. This is the same conclusion the #1695
-    // glob fixed-point queue already reached for glob matches inside a
-    // claimed region (see `stage_glob_matched_files_to_fixed_point`'s doc
-    // comment): a wholesale mirror is a byte copy, so macro expansion has to
-    // come from somewhere else. Non-source leaves (CSS/JSON/text) carry no
-    // macros and keep the pure mirror copy.
-    //
-    // A mirror root is claimed WHOLESALE, so this set includes files no
-    // import edge ever reaches — an unused fixture carrying an unsupported
-    // `SharedWorker` form or an unparseable snippet that esbuild would never
-    // load. Those must not become build failures they were not before, so
-    // the enrolments recorded here are marked NON-FATAL: if
-    // `materialise_source_file` rejects one, the pass below keeps the
-    // mirror's raw copy (already on disk and already recorded visited) and
-    // moves on, which is byte-for-byte the pre-#1724 outcome for that file.
-    // Every other membership in `plugin_preprocessing_files` — a discovered
-    // graph file, an exact alias target, a virtual-module import — stays a
-    // hard error, because those ARE reached and a silent non-expansion there
-    // is the very defect this issue fixes.
-    let mut mirror_derived_preprocessing_files = BTreeSet::new();
-    for mirror_root in sibling_mirror_plan.mirror_roots() {
-        for src in enumerate_mirror_root_files(mirror_root) {
-            // The mirror pass's own guards, so this set can never be wider
-            // than what was actually mirrored.
-            if !raw_source_extension(&src)
-                || path_is_inside_node_modules(&src)
-                || !src.starts_with(&first_party_root)
-                || src.starts_with(&project_root)
-                || bundle_exclude.is_excluded(&src, &project_root)
-            {
-                continue;
-            }
-            if plugin_preprocessing_files.insert(src.clone()) {
-                mirror_derived_preprocessing_files.insert(src);
-            }
-        }
-    }
+    // Issue #1724's mirror-derived preprocessing enrolment (what used to be a
+    // second walk of every mirror root, re-deriving `mirror_sibling_root`'s
+    // own guards) now happens as a post-filter over the SAME walk the actual
+    // wholesale-mirror copy pass performs below (issue #2051) — see the
+    // "2a-sibling" section and `mirror_derived_preprocessing_files`.
 
     // Seed the staged-dependency closure from the materialized project module
     // graph and the framework packages the generated entry/hydration shim
@@ -3006,9 +2961,10 @@ pub fn bundle_with_session(
     // `workspace_rel.is_some()` (⇔ the plan being non-empty requires a widened
     // first-party root), so a non-workspace build never enters here and stays
     // byte-identical.
+    let mut mirrored_sibling_files: Vec<PathBuf> = Vec::new();
     if workspace_rel.is_some() && !sibling_mirror_plan.is_empty() {
         for mirror_root in sibling_mirror_plan.mirror_roots() {
-            mirror_sibling_root(
+            let mirrored = mirror_sibling_root(
                 mirror_root,
                 &project_root,
                 &first_party_root,
@@ -3024,6 +2980,57 @@ pub fn bundle_with_session(
                     mirror_root.display()
                 )
             })?;
+            mirrored_sibling_files.extend(mirrored);
+        }
+    }
+
+    // Issue #1724: make `mirror_sibling_root`'s own promise true — "reachable
+    // source files that DO need `?raw`/glob/worker rewrites are overwritten
+    // afterwards by the plugin-preprocessing pass". That pass materialises
+    // `plugin_preprocessing_files`, which a claimed sibling's macro-bearing
+    // source could never join: the exact-target loops above are gated to
+    // `project_root`, and `collect_runtime_alias_claim_graph` fail-closes on
+    // workspace membership (a bare `lib/shared` region is claimed by the
+    // mirror plan but is not a workspace package). So the mirror's RAW byte
+    // copy was the only pass those files ever saw and their
+    // `import.meta.glob` / module-worker `new URL(...)` macros reached
+    // esbuild literally — a GREEN build with unexpanded macro text in the
+    // bundle. Enrolling every mirrored SOURCE file here routes it through the
+    // same `materialise_source_file` every project file gets, which
+    // overwrites the raw copy in place. This is the same conclusion the #1695
+    // glob fixed-point queue already reached for glob matches inside a
+    // claimed region (see `stage_glob_matched_files_to_fixed_point`'s doc
+    // comment): a wholesale mirror is a byte copy, so macro expansion has to
+    // come from somewhere else. Non-source leaves (CSS/JSON/text) carry no
+    // macros and keep the pure mirror copy.
+    //
+    // A mirror root is claimed WHOLESALE, so this set includes files no
+    // import edge ever reaches — an unused fixture carrying an unsupported
+    // `SharedWorker` form or an unparseable snippet that esbuild would never
+    // load. Those must not become build failures they were not before, so
+    // the enrolments recorded here are marked NON-FATAL: if
+    // `materialise_source_file` rejects one, the pass below keeps the
+    // mirror's raw copy (already on disk and already recorded visited) and
+    // moves on, which is byte-for-byte the pre-#1724 outcome for that file.
+    // Every other membership in `plugin_preprocessing_files` — a discovered
+    // graph file, an exact alias target, a virtual-module import — stays a
+    // hard error, because those ARE reached and a silent non-expansion there
+    // is the very defect this issue fixes.
+    //
+    // Issue #2051: this is a POST-FILTER over `mirrored_sibling_files` —
+    // exactly what the mirror copy pass above just walked and staged — rather
+    // than a second, independent walk of `mirror_root` re-deriving that same
+    // guard list (`path_is_inside_node_modules` / first-party-root /
+    // project-root / `bundle_exclude`) a second time. Only the
+    // `raw_source_extension` filter is unique to enrolment, so it is the only
+    // check still applied here.
+    let mut mirror_derived_preprocessing_files = BTreeSet::new();
+    for src in mirrored_sibling_files {
+        if !raw_source_extension(&src) {
+            continue;
+        }
+        if plugin_preprocessing_files.insert(src.clone()) {
+            mirror_derived_preprocessing_files.insert(src);
         }
     }
 
@@ -3689,9 +3696,10 @@ pub fn bundle_with_session(
         match materialised {
             Ok(()) => {}
             // Issue #1724: a WHOLESALE mirror enrolment is best-effort — see
-            // the enrolment loop's comment. The mirror's raw copy is already
-            // on disk and already recorded visited, so falling back to it is
-            // exactly the pre-#1724 outcome for a file no import edge reaches.
+            // the enrolment comment in the "2a-sibling" section. The mirror's
+            // raw copy is already on disk and already recorded visited, so
+            // falling back to it is exactly the pre-#1724 outcome for a file
+            // no import edge reaches.
             Err(error) if mirror_derived_preprocessing_files.contains(physical) => {
                 // "Not reached by any import edge" is the JUSTIFICATION for
                 // the fallback, not something this code can verify — the
@@ -5225,11 +5233,18 @@ impl SiblingMirrorPlan {
 /// predict. Source files that DO need `?raw`/glob/worker rewrites are
 /// overwritten afterwards by the plugin-preprocessing pass: since issue #1724
 /// EVERY mirrored source file is enrolled in `plugin_preprocessing_files`
-/// (see the enrolment loop in [`bundle_with_session`]), because a claimed
-/// sibling region's macro-bearing file frequently reaches no other claim
-/// source and would otherwise ship its literal macro text. Every file lands at its
-/// workspace-relative slot via [`shadow_path_for_project_path`]
+/// (see the caller in [`bundle_with_session`]'s "2a-sibling" section), because
+/// a claimed sibling region's macro-bearing file frequently reaches no other
+/// claim source and would otherwise ship its literal macro text. Every file
+/// lands at its workspace-relative slot via [`shadow_path_for_project_path`]
 /// (`work.join(<rel>)`), so it never collides with the nested project mirror.
+///
+/// Returns every source path that cleared this function's own guards — i.e.
+/// the exact set that is now part of the mirror, whether this call actually
+/// rewrote its bytes or the incremental skip below left an already-correct
+/// copy in place. Issue #2051 (dedup + unify traversal): the caller derives
+/// the #1724 enrolment set from this returned list instead of re-walking
+/// `mirror_root` a second time with a duplicated copy of these same guards.
 #[allow(clippy::too_many_arguments)]
 fn mirror_sibling_root(
     mirror_root: &Path,
@@ -5240,7 +5255,8 @@ fn mirror_sibling_root(
     node_modules_isolation_root: Option<&Path>,
     writer: &ShadowWriter<'_>,
     bundle_exclude: &BundleExcludeMatcher,
-) -> Result<()> {
+) -> Result<Vec<PathBuf>> {
+    let mut mirrored = Vec::new();
     for src in enumerate_mirror_root_files(mirror_root) {
         // Defense in depth vs. the walk's own pruning: never mirror through a
         // node_modules component, out of the first-party region, or over the
@@ -5257,6 +5273,11 @@ fn mirror_sibling_root(
         if bundle_exclude.is_excluded(&src, project_root) {
             continue;
         }
+        // `src` cleared every guard above — record it as mirrored before the
+        // incremental-skip fast path below, so a skip (unchanged bytes,
+        // already-correct copy on disk) is still reported to the caller
+        // exactly like a fresh copy would be.
+        mirrored.push(src.clone());
         let dest = shadow_path_for_project_path(
             &src,
             project_root,
@@ -5322,7 +5343,7 @@ fn mirror_sibling_root(
             }
         }
     }
-    Ok(())
+    Ok(mirrored)
 }
 
 /// Drain [`MaterialiseCtx::glob_matched_files`] to a fixed point (issue

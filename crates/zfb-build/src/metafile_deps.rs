@@ -16,11 +16,11 @@
 //! workspace component deps) as extra watch targets.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
-use zfb_types::normalize_path_lexical;
+use zfb_types::{has_node_modules_segment, normalize_path_lexical};
 
 /// Minimal view of esbuild's metafile — only the `inputs` graph is needed.
 ///
@@ -220,17 +220,6 @@ fn logical_path_names_staged_entry(logical_path: &Path, canonical_stage_roots: &
     canonical_stage_roots
         .iter()
         .any(|root| reconstructed.starts_with(root))
-}
-
-/// True when any path component is literally `node_modules` — i.e. the path
-/// was reached by resolving a bare package specifier through some install
-/// root, rather than a relative/project-rooted import. Used by
-/// [`audit_metafile_stage_escape`] to tell a package-name resolution (guard
-/// (a)'s scope, cases 2/3 of the epic's predicate) apart from an ordinary
-/// source path (cases 1/4).
-fn has_node_modules_segment(path: &Path) -> bool {
-    path.components()
-        .any(|c| matches!(c, Component::Normal(name) if name == "node_modules"))
 }
 
 /// Case-2 acceptance rule (issue #2040, epic #1982): is this package-shaped
