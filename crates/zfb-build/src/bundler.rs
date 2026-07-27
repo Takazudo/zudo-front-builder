@@ -5325,8 +5325,19 @@ fn unexpanded_macro_form(path: &Path) -> Option<&'static str> {
 /// package whose bundled sources DID go through
 /// [`materialise_source_file`] (its macros already expanded in the shadow)
 /// passes silently — so a later wave that genuinely couples acceptance to
-/// enrolment, or that widens which inputs reach case-2 acceptance (issue
-/// #2127), retires this diagnostic automatically rather than fighting it.
+/// enrolment retires this diagnostic automatically rather than fighting it.
+///
+/// Widening which inputs reach case-2 acceptance does NOT retire it, and the
+/// original wording here claiming issue #2127 would was wrong: a wider
+/// acceptance set can only ever add candidates to this check, never remove
+/// them. #2127 was in fact measured to be behaviour-neutral here — its
+/// real-copy discriminator requires the input to canonicalise INSIDE a stage
+/// root, whereas at the nested-member topology this call site is gated to,
+/// a workspace-symlinked package canonicalises to LIVE source and takes the
+/// ordinary case-2 symlink path instead. Verified end-to-end against a
+/// nested member with a non-empty `bundle.exclude` and a macro-bearing
+/// declared sibling: the identical failure, naming the identical live-source
+/// path, reproduces with #2127's change reverted.
 ///
 /// `enrolled` is `bundle_with_session`'s `plugin_preprocessing_files` — the
 /// single set every enrolment seam publishes into.

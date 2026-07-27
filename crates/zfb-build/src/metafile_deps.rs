@@ -415,7 +415,7 @@ fn nearest_package_root_for_canonical(
 }
 
 /// The canonical-key sibling of [`declared_first_party_package_identity_from_key`]
-/// below (issue #2047, sub #2086): consulted only when the metafile key is
+/// above (issue #2047, sub #2086): consulted only when the metafile key is
 /// NOT package-shaped but its canonical path still lands inside
 /// `canonical_first_party_root` — the copy-mode canonicalisation shape
 /// [`nearest_package_root_for_canonical`] documents. Resolves package
@@ -436,7 +436,7 @@ fn nearest_package_root_for_canonical(
 /// 4. the subpath (`canonical` stripped of that package root) must be
 ///    covered by the package's own declared entries
 ///    ([`declared_entries_cover`]) — exactly condition 5 of the
-///    node_modules-keyed rule below, no relaxation.
+///    node_modules-keyed rule above, no relaxation.
 ///
 /// Fail-closed throughout: any missing `package.json`, unclaimed root, or
 /// uncovered subpath returns `false` and the caller's case-4 rejection
@@ -453,10 +453,11 @@ fn canonical_input_is_declared_first_party_entry(
 }
 
 /// Identity-bearing twin of [`canonical_input_is_declared_first_party_entry`]
-/// above, mirroring [`declared_first_party_package_identity_from_key`]'s
-/// relationship to [`declared_first_party_package_identity_from_key`]: same four
-/// conditions, returning the accepted package's identity instead of a bare
-/// `bool`. Added for epic #2078 Sub 10a's [`accepted_enrolment_set`].
+/// above: the same four conditions, returning the accepted package's identity
+/// instead of a bare `bool`. Added for epic #2078 Sub 10a's
+/// [`accepted_enrolment_set`], the same reason
+/// [`declared_first_party_package_identity_from_key`] carries the identity
+/// shape for the node_modules-keyed rule.
 fn declared_first_party_package_identity_from_canonical(
     canonical: &Path,
     canonical_first_party_root: &Path,
@@ -494,22 +495,31 @@ fn declared_first_party_package_identity_from_canonical(
 /// `pnpm-workspace.yaml` claims, computed at most once per audit/query pass.
 ///
 /// [`zfb_types::first_party::claimed_workspace_member_names`] walks the whole
-/// workspace tree, which is pure overhead for the overwhelmingly common
-/// metafile input (an ordinary third-party dependency, whose name can never
-/// be in the roster). The roster is therefore built lazily, the first time an
-/// input actually reaches the real-copy discriminator below — mirroring the
-/// same lazy shape `zfb_types::audit_eligibility`'s own declared-identity
-/// branch uses for the identical reason.
+/// workspace tree — measured on this repo at ~6600 directories / ~0.48s warm,
+/// since it prunes only `node_modules` and `.git` and so descends `target/`,
+/// `dist/` and `worktrees/`. That is far too expensive to pay per input, or
+/// per ordinary build, so it is built lazily and at most once per pass, the
+/// same shape `zfb_types::audit_eligibility`'s own declared-identity branch
+/// uses for the identical reason.
 ///
-/// Beyond that, the cost is deliberately NOT narrowed further. The obvious
-/// next filter — consult the roster only for an input whose canonical path
-/// lands inside a stage root, since that is where a staged copy lives —
-/// would be fail-OPEN: it silently re-opens #2127's escape for any staging
-/// root a caller forgets to list in `stage_roots`. One bounded walk per
-/// audited build, on a workspace topology that is the only place the audit
-/// runs at all, is the price of staying fail-closed. (A project with no
-/// governing `pnpm-workspace.yaml` costs one failed read and no walk —
-/// `claimed_workspace_member_names` returns empty before walking anything.)
+/// Laziness alone would not have been enough: every ordinary third-party
+/// input reaches [`classify_package_shaped_input`] with a `node_modules`
+/// segment in its canonical path, so a build that merely imports `preact`
+/// would have paid the walk. What actually keeps it off the common path is
+/// **gate 1 (locality)**: under an empty `bundle.exclude` — the ordinary
+/// configuration — `<shadow>/node_modules` is a wholesale symlink to the live
+/// tree, so third-party inputs canonicalise OUTSIDE every stage root and exit
+/// before the roster is ever consulted. Measured directly with a temporary
+/// probe: **zero** roster builds for the empty-`bundle.exclude` fixture,
+/// exactly **one** for the real-copy fixture that needs it. A project with no
+/// governing `pnpm-workspace.yaml` costs one failed read and no walk at all —
+/// `claimed_workspace_member_names` returns empty before walking anything.
+///
+/// The remaining cost — one walk per audit pass and one per enrolment query,
+/// i.e. twice per SSR bundle, on builds that genuinely real-copy-stage — is
+/// accepted rather than shared through a threaded roster, which would mean
+/// widening two public function signatures for a cost only paid by the
+/// configuration that needs the check.
 struct ClaimedMemberRoster<'a> {
     workspace_root: &'a Path,
     members: Option<BTreeMap<String, PathBuf>>,
@@ -535,6 +545,22 @@ impl<'a> ClaimedMemberRoster<'a> {
     }
 }
 
+/// Where a metafile input's canonical path sits, relative to the three
+/// boundaries [`classify_package_shaped_input`] discriminates on. Both call
+/// sites compute these identically; grouping them keeps the classifier's
+/// signature readable and makes it impossible for one site to pass them in a
+/// different order than the other.
+#[derive(Debug, Clone, Copy)]
+struct InputLocality {
+    /// The canonical (symlink-resolved) path still contains a `node_modules`
+    /// segment.
+    canonical_in_node_modules: bool,
+    /// The canonical path is inside one of this build's stage roots.
+    in_stage: bool,
+    /// The canonical path is inside `first_party_root`.
+    in_first_party: bool,
+}
+
 /// How a package-shaped metafile input classifies under the stage-escape
 /// audit's case-2/case-3 boundary.
 ///
@@ -552,7 +578,11 @@ enum PackageShapedInput {
     ThirdPartyDependency,
     /// Case 2 — a first-party workspace package reached by package name, at a
     /// location the package itself declares as an entry. Allowed by the
-    /// audit, and the enrolment set's only member kind.
+    /// audit, and the enrolment set's only member kind. For the real-copy
+    /// shape this genuinely is the workspace package and not merely a
+    /// name match: gate 3
+    /// ([`staged_copy_is_a_copy_of_claimed_member`]) has already proven the
+    /// staged manifest agrees with the claimed member's.
     DeclaredFirstPartyEntry(AcceptedPackage),
     /// Case 2 — a first-party workspace package reached by package name at a
     /// location it does NOT declare. An offender; never enrolled.
@@ -633,30 +663,55 @@ fn classify_package_shaped_input(
     key: &str,
     canonical: &Path,
     canonical_first_party_root: &Path,
-    canonical_in_node_modules: bool,
-    in_first_party: bool,
+    locality: InputLocality,
     claimed_members: &mut ClaimedMemberRoster<'_>,
 ) -> PackageShapedInput {
+    let InputLocality {
+        canonical_in_node_modules,
+        in_stage,
+        in_first_party,
+    } = locality;
     if canonical_in_node_modules {
         // Real-copy shape: the input physically lives under a `node_modules`
-        // directory even after canonicalisation.
+        // directory even after canonicalisation. THREE gates stand between
+        // that observation and the declared-entry rule, and every one of them
+        // exits to case 3 — see this function's own docs for why each is
+        // load-bearing.
+        //
+        // Gate 1, LOCALITY. Only an input inside a root THIS build staged
+        // into can be an artifact of our own staging. Anything in a live,
+        // vendored, or content-addressable-store `node_modules` outside every
+        // stage root is an ordinary dependency by construction, and case 2 is
+        // defined as being about staged/first-party locations in the first
+        // place. Verified against the real fixture: the #2127 escape resolves
+        // to `<shadow>/node_modules/@scope/child/index.ts`, which IS inside
+        // the passed stage root (and is NOT under `first_party_root`, which
+        // is why locality is checked against the stage, not first-party).
+        if !in_stage {
+            return PackageShapedInput::ThirdPartyDependency;
+        }
         let Some((package_name, subpath)) = split_package_name_and_subpath(key) else {
             // No package-relative subpath in the key at all, so no package
             // can be named — the bare package directory is never a bundled
             // input. Nothing to classify; today's case-3 pass stands.
             return PackageShapedInput::ThirdPartyDependency;
         };
+        // Gate 2, DECLARED IDENTITY.
         let Some(member_dir) = claimed_members.claimed_member_dir(&package_name) else {
             return PackageShapedInput::ThirdPartyDependency; // case 3.
         };
         let member_dir = member_dir.to_path_buf();
+        // Gate 3, PROVENANCE — see `staged_copy_is_a_copy_of_claimed_member`.
         match staged_copy_declared_first_party_identity(
             &package_name,
             &subpath,
             canonical,
             &member_dir,
         ) {
-            Some(package) => PackageShapedInput::DeclaredFirstPartyEntry(package),
+            Some(StagedCopyClass::DeclaredEntry(package)) => {
+                PackageShapedInput::DeclaredFirstPartyEntry(package)
+            }
+            Some(StagedCopyClass::NotTheClaimedMember) => PackageShapedInput::ThirdPartyDependency,
             None => PackageShapedInput::UndeclaredFirstPartyEscape {
                 detail: format!(
                     "{key} (package import resolved to a staged copy of workspace package \
@@ -735,23 +790,109 @@ fn staged_copy_declared_first_party_identity(
     subpath: &[String],
     canonical: &Path,
     member_dir: &Path,
-) -> Option<AcceptedPackage> {
+) -> Option<StagedCopyClass> {
     let staged_package_root = package_root_for_input(canonical, subpath)?;
     let manifest = std::fs::read_to_string(staged_package_root.join("package.json")).ok()?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest).ok()?;
     if manifest.get("name").and_then(|n| n.as_str()) != Some(package_name) {
         return None;
     }
-    let subpath = subpath.join("/");
     let entries = declared_entries(&manifest);
-    if !declared_entries_cover(&entries, &subpath) {
+    if !staged_copy_is_a_copy_of_claimed_member(&manifest, &entries, member_dir) {
+        // Same name, different package — an ordinary dependency that merely
+        // collides with a claimed member's name. Case 3, exactly as before
+        // this rule existed.
+        return Some(StagedCopyClass::NotTheClaimedMember);
+    }
+    if !declared_entries_cover(&entries, &subpath.join("/")) {
         return None;
     }
-    Some(AcceptedPackage {
+    Some(StagedCopyClass::DeclaredEntry(AcceptedPackage {
         name: package_name.to_string(),
         package_root: member_dir.to_path_buf(),
         declared_entry_roots: declared_entry_roots_from(&entries),
-    })
+    }))
+}
+
+/// What [`staged_copy_declared_first_party_identity`] found once it could read
+/// the input's own manifest.
+enum StagedCopyClass {
+    /// The input IS a staged copy of the claimed workspace member, at a
+    /// location that member declares.
+    DeclaredEntry(AcceptedPackage),
+    /// The input merely SHARES a claimed member's name — a different package
+    /// entirely. Case 3, allowed, never enrolled.
+    NotTheClaimedMember,
+}
+
+/// Gate 3 of the real-copy discriminator (issue #2127 review): is this staged
+/// package actually a COPY of the claimed workspace member, or a different
+/// package that merely shares its declared name?
+///
+/// # Why a name match is not enough
+///
+/// **pnpm 10 defaults `link-workspace-packages` to `false`.** A dependency
+/// declared `"@acme/ui": "^1.0.0"` — no `workspace:` protocol — therefore
+/// installs the PUBLISHED registry copy even though `pnpm-workspace.yaml`
+/// claims a member by that same name, and an active `bundle.exclude` stages
+/// that registry copy into `<shadow>/node_modules/@acme/ui/` like any other
+/// dependency. Gates 1 and 2 cannot tell it apart from a staged copy of the
+/// workspace member. Without this gate it would be judged by the case-2
+/// declared-entry rule, and an ordinary dual-format publish
+/// (`{"main": "dist/cjs/index.js", "module": "dist/esm/index.js"}`, declaring
+/// the entry roots `dist/cjs/` and `dist/esm/`) whose bundle also pulls
+/// `dist/shared/chunk.js` — the standard rollup/tsup layout — would HARD-FAIL
+/// an ordinary build. A workspace claiming `.` amplifies this: the root
+/// package's own name joins the roster, and generic names (`docs`, `app`,
+/// `site`) collide with real registry packages.
+///
+/// # The check, and why these two fields
+///
+/// Declared data only, and only fields staging copies verbatim: the `version`
+/// string and the DECLARED ENTRY SET. Staging materialises a workspace
+/// member's `package.json` unchanged, so a genuine staged copy agrees with
+/// the live member on both — the invariant
+/// [`staged_copy_declared_first_party_identity`]'s own docs already rely on.
+/// A registry package disagrees on at least one in any realistic
+/// configuration: you depend on a published `^1.0.0` while your member is at
+/// some other version, or the two ship different entries.
+///
+/// Compared semantically (parsed `version`, sorted/deduped entry roots) rather
+/// than byte-for-byte: byte equality would break the moment anything
+/// reformats a manifest, which is the FAIL-OPEN direction — it would silently
+/// re-admit #2127's escape.
+///
+/// # Residual limit, stated plainly
+///
+/// A registry package whose name, version AND declared entry set all match the
+/// workspace member's is indistinguishable from a staged copy of it by
+/// declared data alone, and is judged by the case-2 rule. That needs a project
+/// to depend on a published copy of its own member at the exact same version
+/// with an identical entry set — a degenerate configuration, and the only
+/// alternative would be to inspect file contents or resolve, both of which
+/// this audit is forbidden from doing.
+fn staged_copy_is_a_copy_of_claimed_member(
+    staged_manifest: &serde_json::Value,
+    staged_entries: &[DeclaredEntry],
+    member_dir: &Path,
+) -> bool {
+    let Ok(member_manifest) = std::fs::read_to_string(member_dir.join("package.json")) else {
+        return false;
+    };
+    let Ok(member_manifest) = serde_json::from_str::<serde_json::Value>(&member_manifest) else {
+        return false;
+    };
+    let version = |manifest: &serde_json::Value| {
+        manifest
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    if version(staged_manifest) != version(&member_manifest) {
+        return false;
+    }
+    declared_entry_roots_from(staged_entries)
+        == declared_entry_roots_from(&declared_entries(&member_manifest))
 }
 
 /// One entry a `package.json` declares, in the two shapes a target can take.
@@ -1188,8 +1329,11 @@ pub fn audit_metafile_stage_escape(
                     record.key,
                     &canonical,
                     &canonical_first_party_root,
-                    canonical_in_node_modules,
-                    in_first_party,
+                    InputLocality {
+                        canonical_in_node_modules,
+                        in_stage,
+                        in_first_party,
+                    },
                     &mut claimed_members,
                 )
             {
@@ -1323,6 +1467,19 @@ pub struct AcceptedPackage {
     /// resolved), i.e. the directory holding its `package.json`. This is the
     /// boundary an enrolment pass (Sub 10b/10c) would mirror-copy from or
     /// otherwise register — never a subset chosen by this contract.
+    ///
+    /// **Always LIVE workspace source, never a staged location.** For the
+    /// real-copy staging shape (issue #2127) the inputs esbuild actually read
+    /// live inside the stage, and this deliberately names the claimed member's
+    /// own directory instead: an enrolment consumer mirrors from workspace
+    /// source, and pointing it at a build artifact inside the stage would be
+    /// actively misleading. So [`AcceptedEnrolmentSet::reached_inputs`] may
+    /// name paths OUTSIDE this root for that shape — see its own docs. The
+    /// two are still describing one package: #2127's gate 3
+    /// ([`staged_copy_is_a_copy_of_claimed_member`]) admits a staged copy only
+    /// after proving it agrees with this directory's manifest on `version` and
+    /// on the declared entry set, so `declared_entry_roots` below is identical
+    /// whichever of the two manifests it is read from.
     pub package_root: PathBuf,
     /// The package-relative entry locations its OWN `package.json` declares
     /// via `exports`/`main`/`module` — a directory prefix (e.g. `"src/"`, or
@@ -1390,6 +1547,14 @@ impl AcceptedEnrolmentSet {
     /// the audit (e.g. an undeclared deep import into a dist-shipping sibling)
     /// is never recorded here, even when a sibling input made the same package
     /// accepted — see `accepted_enrolment_set`'s own docs for that boundary.
+    ///
+    /// These are the paths esbuild RECORDED, which for the real-copy staging
+    /// shape (issue #2127) sit inside the stage rather than under
+    /// [`AcceptedPackage::package_root`] — deliberately, since the point of
+    /// this method is "which bytes actually reached the bundle", and for that
+    /// shape the bytes came from the staged copy. A consumer that needs the
+    /// live-source counterpart must map it through `package_root` itself
+    /// rather than assume containment.
     ///
     /// Empty for a name that was not accepted this session.
     pub fn reached_inputs(&self, name: &str) -> impl Iterator<Item = &Path> {
@@ -1514,8 +1679,11 @@ pub fn accepted_enrolment_set(
                 record.key,
                 &canonical,
                 &canonical_first_party_root,
-                canonical_in_node_modules,
-                in_first_party,
+                InputLocality {
+                    canonical_in_node_modules,
+                    in_stage,
+                    in_first_party,
+                },
                 &mut claimed_members,
             ) {
                 inputs_by_name
@@ -2683,6 +2851,110 @@ mod tests {
             result.is_ok(),
             "an ordinary third-party dependency staged as a real copy must stay allowed (case 3) \
              — its declared name matches nothing the workspace claims; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_allows_registry_dep_sharing_a_claimed_name_whose_chunk_no_entry_covers() {
+        // THE regression this rule most has to avoid (found in review of
+        // #2127): pnpm 10 defaults `link-workspace-packages` to FALSE, so a
+        // dependency declared `"@acme/ui": "^1.0.0"` — no `workspace:`
+        // protocol — installs the PUBLISHED registry copy even though
+        // `pnpm-workspace.yaml` claims a member by that same name, and an
+        // active `bundle.exclude` stages that registry copy into the shadow
+        // like any other dependency. Name and locality therefore both match a
+        // staged workspace copy.
+        //
+        // Judged by the case-2 declared-entry rule it would HARD-FAIL: a
+        // dual-format publish declares the entry roots `dist/cjs/` and
+        // `dist/esm/`, and the standard rollup/tsup layout also emits
+        // `dist/shared/chunk.js`, which neither covers. Gate 3
+        // (`staged_copy_is_a_copy_of_claimed_member`) is what keeps it in
+        // case 3: the registry copy is at 1.0.0 while the workspace member is
+        // at 2.0.0-dev, so it is provably NOT a copy of that member.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_real_copy_stage(
+            &base,
+            "ui",
+            r#"{ "name": "@acme/ui", "version": "2.0.0-dev",
+                 "main": "dist/cjs/index.js", "module": "dist/esm/index.js" }"#,
+            &[("dist/cjs/index.js", "cjs"), ("dist/esm/index.js", "esm")],
+        );
+        // The registry copy, staged at its natural position exactly like any
+        // other non-excluded dependency.
+        let registry = stage.join("node_modules/@acme/ui");
+        std::fs::remove_dir_all(&registry).unwrap();
+        write(
+            &registry,
+            "package.json",
+            r#"{ "name": "@acme/ui", "version": "1.0.0",
+                 "main": "dist/cjs/index.js", "module": "dist/esm/index.js" }"#,
+        );
+        write(
+            &registry,
+            "dist/cjs/index.js",
+            "import '../shared/chunk.js';",
+        );
+        write(&registry, "dist/shared/chunk.js", "shared chunk");
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/ui/dist/cjs/index.js": {"imports": []},
+            "node_modules/@acme/ui/dist/shared/chunk.js": {"imports": []}
+        }}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+        assert!(
+            result.is_ok(),
+            "an ordinary registry dependency that merely SHARES a claimed member's name must \
+             stay case-3 allowed, including the shared chunk no declared entry covers — \
+             otherwise the #2127 rule breaks ordinary pnpm builds; got {result:?}"
+        );
+
+        let enrolled = accepted_enrolment_set(metafile, &stage, &[&stage], &first_party).unwrap();
+        assert!(
+            enrolled.is_empty(),
+            "a registry dependency must never be enrolled as a first-party package; got {enrolled:?}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_allows_node_modules_input_outside_every_stage_root() {
+        // Gate 1 (locality), added in review of #2127: case 2 is defined as
+        // being about STAGED / first-party locations. An input in a live,
+        // vendored, or store `node_modules` outside every stage root is an
+        // ordinary dependency by construction and must never reach the
+        // declared-entry rule on a name collision alone — even when its name,
+        // version and declared entries would all match the claimed member.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_real_copy_stage(
+            &base,
+            "ui",
+            r#"{ "name": "@acme/ui", "version": "1.0.0", "main": "dist/index.js" }"#,
+            &[("dist/index.js", "built")],
+        );
+        // A vendored copy that is neither inside the stage nor under
+        // first_party_root, carrying an undeclared `src/` file.
+        let vendored = base.join("vendor/node_modules/@acme/ui");
+        write(
+            &vendored,
+            "package.json",
+            r#"{ "name": "@acme/ui", "version": "1.0.0", "main": "dist/index.js" }"#,
+        );
+        write(&vendored, "src/internal.ts", "internal");
+
+        let metafile = format!(
+            r#"{{"inputs": {{"{}": {{"imports": []}}}}}}"#,
+            vendored.join("src/internal.ts").display()
+        );
+
+        let result =
+            audit_metafile_stage_escape(metafile.as_bytes(), &stage, &[&stage], &first_party);
+        assert!(
+            result.is_ok(),
+            "a node_modules-nested input outside every stage root is out of case 2's scope and \
+             must stay allowed; got {result:?}"
         );
     }
 
