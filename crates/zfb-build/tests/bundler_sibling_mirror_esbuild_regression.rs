@@ -1064,7 +1064,6 @@ fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build(
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2085"]
 fn m_transitive_glob_match_from_unreachable_mirrored_host_is_best_effort() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
