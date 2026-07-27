@@ -160,9 +160,8 @@
 //! disarming the caller's stage-escape audit** for that build, shipping an
 //! undeclared workspace sibling with no error at all (issue #2081's
 //! `crates/zfb-build/tests/bundler_root_workspace_stage_escape_audit_disarm_pin.rs`
-//! pinned this exact gap with a regression test — its positive pin has since
-//! been updated in place to document the fix below plus a residual gap it
-//! surfaced, issue #2127).
+//! pinned this exact gap with a regression test; every test in that file now
+//! asserts the fixed, armed behaviour).
 //!
 //! Issue #2087 closed the gap by extending row 3's evidence: a real directory
 //! under `node_modules_dir` is now ALSO first-party-reachable when its own
@@ -177,6 +176,28 @@
 //! correctly out of scope: an external dependency's declared name simply
 //! does not appear in the claimed-member roster, so real-copy staging of one
 //! is not itself evidence (see fixture 8, the negative control below).
+//!
+//! ## Arming this predicate was necessary, not sufficient (issue #2127, closed)
+//!
+//! #2087's own investigation surfaced that arming eligibility did NOT by
+//! itself make the caller reject the escape: the metafile audit downstream
+//! (`zfb_build::metafile_deps::audit_metafile_stage_escape`) classified any
+//! real-copy-staged `node_modules/<pkg>` input as "case 3: ordinary
+//! third-party dependency, allowed" purely because its canonical path
+//! trivially retains a `node_modules` segment — there being no symlink to
+//! resolve away from it — regardless of declared identity. Issue #2127 closed
+//! that second gap the same declared-data-only way this predicate closed the
+//! first, reusing the very same claimed-member roster
+//! ([`crate::first_party::claimed_workspace_member_names`]) to tell a staged
+//! workspace sibling apart from an ordinary registry dependency before
+//! applying the audit's declared-entry rule.
+//!
+//! The division of labour is unchanged by either fix, and is the point worth
+//! carrying forward: this module still decides only **whether to audit**, and
+//! the metafile still decides **whether an escape occurred**. #2127 is a
+//! reminder that a fix on this side is never on its own a fix to the audit's
+//! own classification, and that a `zfb-types` predicate must not grow toward
+//! becoming one.
 
 use std::path::{Path, PathBuf};
 
