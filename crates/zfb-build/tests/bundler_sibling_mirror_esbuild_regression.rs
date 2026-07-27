@@ -1036,3 +1036,168 @@ fn l_unreachable_unsupported_worker_form_in_mirror_root_does_not_fail_the_build(
         truncate(&body)
     );
 }
+
+// ---------------------------------------------------------------------------
+// (m) issue #2045 (epic #2078, sub #2079) — a glob match queued
+// TRANSITIVELY by an UNREACHABLE mirror-derived file must be best-effort
+// too, not hard-materialised.
+//
+// Case (l) above established that a file no import edge reaches, sitting
+// inside a wholesale-claimed mirror root, tolerates its OWN preprocessing
+// failure (the `mirror_derived_preprocessing_files` catch in the
+// `plugin_preprocessing_files` loop, bundler.rs ~:3695). But that same
+// unreachable file's `import.meta.glob` can enqueue OTHER targets into
+// `mat_ctx.glob_matched_files` — glob expansion only lists matching
+// filenames, it never parses their content, so the host's own materialise
+// call succeeds even when its match is broken. `stage_glob_matched_files_to_fixed_point`
+// then drains that queue with an unconditional `?` (bundler.rs :5468-5473) —
+// no equivalent tolerance exists there. So a glob match reached ONLY through
+// an unreachable mirror-derived host still hard-fails the WHOLE build today,
+// even though the host that enqueued it was already best-effort.
+//
+// The desired post-fix behavior (delivered by #2085's provenance threading)
+// is: this build stays GREEN — the broken match warns and is skipped, same
+// as case (l)'s own tolerance. Tagged `pending-feature` per epic #2078's
+// corrected flip protocol: this binary self-skips via `locate_esbuild()` and
+// is NOT env-gate-`#[ignore]`d, so the flipping sub DELETES this attribute
+// entirely rather than swapping it for an `env-gate:` tag.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2085"]
+fn m_transitive_glob_match_from_unreachable_mirrored_host_is_best_effort() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (ws_root, project) = write_workspace(tmp.path());
+
+    fs::create_dir_all(ws_root.join("lib/shared/junk-m")).unwrap();
+    // The file the build actually reaches — establishes the wholesale mirror
+    // claim over `lib/shared`, mirroring case (l)'s `reached-l.ts`.
+    fs::write(
+        ws_root.join("lib/shared/reached-m.ts"),
+        "export const reachedMarker = 'REACHED_M_MARKER';\n",
+    )
+    .unwrap();
+    // No import edge ever reaches this file — it joins
+    // `plugin_preprocessing_files` ONLY through the wholesale mirror's
+    // best-effort enrolment (#1724/#1985), exactly like case (l)'s
+    // `unreachable-*` fixtures. Its OWN glob expands successfully (glob
+    // expansion only lists matching filenames; it never parses their
+    // content), so this file's own materialise call SUCCEEDS and enqueues
+    // its match into `mat_ctx.glob_matched_files`.
+    fs::write(
+        ws_root.join("lib/shared/unreachable-glob-host-m.ts"),
+        r#"
+            const junk = import.meta.glob('./junk-m/*.ts', { eager: true });
+            export const junkKeys = Object.keys(junk);
+        "#,
+    )
+    .unwrap();
+    // The glob's own match: carries the exact broken-worker shape from case
+    // (l)'s `unreachable-broken.ts`, which trips
+    // `rewrite_module_worker_urls_with_context`'s hard parse error.
+    fs::write(
+        ws_root.join("lib/shared/junk-m/broken-m.ts"),
+        "const broken = ;\nnew Worker(new URL('./worker-m.worker.ts', import.meta.url));\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { reachedMarker } from "@shared/reached-m";
+            export default function Home() {
+              return reachedMarker;
+            }
+        "#,
+    )
+    .unwrap();
+
+    let tsconfig_paths = BTreeMap::from([(
+        "@shared/*".to_string(),
+        vec![ws_root.join("lib/shared/*").to_string_lossy().into_owned()],
+    )]);
+    let mut input = base_input(&project, esbuild, unrelated_exclude());
+    input.tsconfig_paths = tsconfig_paths;
+
+    // Desired POST-FIX form (issue #2045): a glob match queued by an
+    // UNREACHABLE mirror-derived host must be best-effort, exactly like the
+    // host's own preprocessing failure already is — the broken match must
+    // warn-and-skip, never fail the whole build.
+    let out = bundle(input).expect(
+        "issue #2045: a glob match queued by an UNREACHABLE mirrored sibling \
+         file must be best-effort — its own broken/unsupported worker text \
+         must not fail the whole build",
+    );
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+    assert!(
+        body.contains("REACHED_M_MARKER"),
+        "the actually-reached sibling must still build normally: {}",
+        truncate(&body)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (m) control — the FATAL path must stay untouched: a glob match enqueued by
+// a genuinely REACHED file (an ordinary project-local import, no sibling
+// mirror involved at all, so nothing here is ever eligible for the
+// `mirror_derived_preprocessing_files` tolerance) with the EXACT SAME broken
+// worker text must keep failing the build today, and after #2085 lands.
+// This is the negative that proves the eventual fix narrows to
+// mirror-derived provenance instead of disabling
+// `stage_glob_matched_files_to_fixed_point`'s hard-fail wholesale.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn m_control_transitive_glob_match_from_reached_host_stays_fatal() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_sibling_mirror_esbuild_regression] no esbuild binary; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path();
+    scaffold_project_dirs(project);
+
+    fs::create_dir_all(project.join("components/junk-m-control")).unwrap();
+    // Genuinely reached via an ordinary project-local relative import — no
+    // workspace, no sibling mirror plan, so nothing here can ever qualify
+    // for the mirror-derived best-effort tolerance.
+    fs::write(
+        project.join("components/_gallery-m-control.tsx"),
+        r#"
+            const junk = import.meta.glob('./junk-m-control/*.ts', { eager: true });
+            export const junkKeys = Object.keys(junk);
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("components/junk-m-control/broken-m-control.ts"),
+        "const broken = ;\nnew Worker(new URL('./worker-m-control.worker.ts', import.meta.url));\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"
+            import { junkKeys } from "../components/_gallery-m-control";
+            export default function Home() {
+              return junkKeys.join(",");
+            }
+        "#,
+    )
+    .unwrap();
+
+    let input = base_input(project, esbuild, unrelated_exclude());
+    let error = bundle(input).expect_err(
+        "a glob match enqueued by a genuinely REACHED file must still hard-fail \
+         the build on broken/unsupported worker text — the fatal path must stay \
+         untouched by the mirror-derived best-effort fix",
+    );
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("broken-m-control.ts"),
+        "the failure must name the broken matched file, not an unrelated setup \
+         error: {message}"
+    );
+}
