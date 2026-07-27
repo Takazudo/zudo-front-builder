@@ -66,10 +66,33 @@ pub const NODE_ASYNC_HOOKS_SRC: &str = include_str!("js/node_async_hooks.js");
 
 /// Host-bridge JS source. Installs `globalThis.__zfb` with
 /// `setBundle(defaultExport)` and
-/// `dispatch(urlStr, method, headersObj, bodyU8)`. Executed once at
-/// host boot via `execute_script` (NOT as a module — it sets a global
-/// rather than exporting bindings).
+/// `dispatch(urlStr, method, headersObj, bodyU8, mode, nonce)`. Executed
+/// once at host boot via `execute_script` (NOT as a module — it sets a
+/// global rather than exporting bindings).
+///
+/// The source is NOT executed verbatim: the host substitutes
+/// [`MODE_NONCE_PLACEHOLDER`] for a per-host nonce first (issue #2014).
 pub const HOST_GLOBALS_SHIM_SRC: &str = include_str!("js/globals_shim.js");
+
+/// Placeholder token in [`HOST_GLOBALS_SHIM_SRC`] that
+/// `EmbeddedV8RenderHost::bootstrap_host_shim` replaces with the host's
+/// per-instance dispatch-mode nonce (issue #2014). The shim honours a
+/// `dispatch(...)` call's `mode` argument only when the caller presents
+/// the matching nonce, so bundle code — which can reach
+/// `globalThis.__zfb.dispatch` but not the nonce (it lands inside the
+/// shim's IIFE closure) — cannot select request-time capability.
+pub const MODE_NONCE_PLACEHOLDER: &str = "__ZFB_MODE_NONCE_PLACEHOLDER__";
+
+/// Placeholder token in [`HOST_GLOBALS_SHIM_SRC`] that
+/// `EmbeddedV8RenderHost::bootstrap_host_shim` replaces with the JSON
+/// object literal [`super::limits::limits_js_literal`] renders (issue
+/// #2016), publishing the Rust-side request-time limits as
+/// `globalThis.__zfb.limits`.
+///
+/// Unlike the nonce this is not a secret — it is here so
+/// `js/web_polyfills.js` can read the caps out of Rust instead of
+/// carrying a second copy that drifts silently.
+pub const LIMITS_PLACEHOLDER: &str = "__ZFB_LIMITS_PLACEHOLDER__";
 
 /// Web Platform API polyfills for the embedded V8 host: `Request`,
 /// `Response`, `Headers`, `URL`, `URLSearchParams`, `fetch`,

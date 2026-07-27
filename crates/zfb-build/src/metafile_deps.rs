@@ -233,6 +233,265 @@ fn has_node_modules_segment(path: &Path) -> bool {
         .any(|c| matches!(c, Component::Normal(name) if name == "node_modules"))
 }
 
+/// Case-2 acceptance rule (issue #2040, epic #1982): is this package-shaped
+/// metafile input a location the target first-party workspace package
+/// **itself declares** as an entry root?
+///
+/// # Why case 2 needed redefining
+///
+/// The audit's original theory was that a bare package-name import landing on
+/// live workspace source is always an escape — which silently assumes every
+/// workspace package ships a built `dist/`. It does not: consuming a sibling
+/// **from source** (`package.json` `exports` pointing straight at `./src/*`,
+/// no build step) is a deliberate, increasingly common monorepo architecture.
+/// The resolved target there is still first-party workspace source; it is
+/// merely reached by package name instead of by relative path, so it is not
+/// something staging was meant to isolate. #1730's real-world repro hard-failed
+/// on exactly that shape with 70+ offender inputs.
+///
+/// # What is read — and what is deliberately NOT
+///
+/// Only **declared** data, in the same category as `pnpm-workspace.yaml`
+/// membership: the target package's own `package.json` `name` and its
+/// `exports` / `main` / `module` entry declarations. This is emphatically not
+/// a resolver — it never probes extensions, never falls back to an index
+/// file, never replicates conditional-`exports` resolution order, and never
+/// walks `node_modules`. esbuild has already resolved everything; this only
+/// classifies the input esbuild recorded. (`browser` is not read: it is a
+/// substitution map, not an entry declaration.)
+///
+/// # The rule
+///
+/// All of the following must hold, else the input stays an offender:
+///
+/// 1. the key is package-shaped — `.../node_modules/<pkg>/<subpath>` — and
+///    the package-relative `<subpath>` is non-empty
+///    ([`split_package_name_and_subpath`]);
+/// 2. the canonical path's trailing components are exactly that `<subpath>`,
+///    so the package root is plain arithmetic on two known strings rather
+///    than a lookup ([`package_root_for_input`]);
+/// 3. `<package root>/package.json` exists and its `name` is the package name
+///    the key was reached under — the link and the package agree;
+/// 4. the package root is **claimed** by the governing
+///    `pnpm-workspace.yaml`'s `packages:` globs
+///    ([`zfb_types::first_party::workspace_root_claims_path`], the declared-
+///    membership half of #1986's eligibility predicate) — an unclaimed
+///    directory inside the workspace tree is not a workspace package;
+/// 5. `<subpath>` is covered by one of the package's **declared entries**
+///    ([`declared_entries`]).
+///
+/// Condition 5 is what keeps this from becoming a blanket "workspace siblings
+/// are always fine" exemption. A package whose only declaration is
+/// `"main": "./dist/index.js"` declares the entry root `dist/`; a deep import
+/// reaching `src/internal.ts` past that built entry is undeclared, escapes the
+/// stage, and stays rejected. A package declaring `"exports": {"./*":
+/// "./src/*"}` declares `src/`, so its whole source tree is accepted. A
+/// package declaring a root-level FILE (`"main": "./index.ts"`) declares the
+/// package root only when it declares no directory entry alongside it — see
+/// [`declared_entries_cover`] for why both halves of that rule are needed.
+/// `{"main": "./index.js", "exports": {"./*": "./dist/*"}}` is an ordinary
+/// dist-shipping package, and reading its root `main` as a blanket
+/// package-wide grant would authorise every `src/` file behind the built
+/// entry.
+fn package_input_is_declared_first_party_entry(
+    key: &str,
+    canonical: &Path,
+    canonical_first_party_root: &Path,
+) -> bool {
+    let Some((package_name, subpath)) = split_package_name_and_subpath(key) else {
+        return false;
+    };
+    let Some(package_root) = package_root_for_input(canonical, &subpath) else {
+        return false;
+    };
+    let Ok(manifest) = std::fs::read_to_string(package_root.join("package.json")) else {
+        return false;
+    };
+    let Ok(manifest): std::result::Result<serde_json::Value, _> = serde_json::from_str(&manifest)
+    else {
+        return false;
+    };
+    if manifest.get("name").and_then(|n| n.as_str()) != Some(package_name.as_str()) {
+        return false;
+    }
+    if !zfb_types::first_party::workspace_root_claims_path(
+        canonical_first_party_root,
+        &package_root,
+    ) {
+        return false;
+    }
+
+    let subpath = subpath.join("/");
+    declared_entries_cover(&declared_entries(&manifest), &subpath)
+}
+
+/// Split a `node_modules`-shaped metafile key into `(package name,
+/// package-relative subpath segments)`, keyed on the LAST `node_modules`
+/// segment (the install root the specifier actually resolved through).
+/// `@scope/pkg` consumes two segments, the only nesting pnpm's public layout
+/// produces. Returns `None` when no package-relative subpath remains — the
+/// bare package directory itself is never a bundled input.
+fn split_package_name_and_subpath(key: &str) -> Option<(String, Vec<String>)> {
+    let segments: Vec<&str> = key
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    let last_node_modules = segments.iter().rposition(|s| *s == "node_modules")?;
+    let rest = &segments[last_node_modules + 1..];
+    let (name, tail) = if rest.first()?.starts_with('@') {
+        if rest.len() < 2 {
+            return None;
+        }
+        (format!("{}/{}", rest[0], rest[1]), &rest[2..])
+    } else {
+        (rest[0].to_string(), &rest[1..])
+    };
+    if tail.is_empty() {
+        return None;
+    }
+    Some((name, tail.iter().map(|s| (*s).to_string()).collect()))
+}
+
+/// The package root `canonical` sits in, derived by stripping the key's
+/// package-relative `subpath` off its tail.
+///
+/// Fail-closed: every stripped component must match the corresponding subpath
+/// segment. When the canonical spelling and the key's spelling disagree (the
+/// key was rewritten, the link points somewhere structurally different), no
+/// package root is claimed and the caller falls back to rejecting the input —
+/// this is not a search for a plausible root.
+fn package_root_for_input(canonical: &Path, subpath: &[String]) -> Option<PathBuf> {
+    let mut root = canonical.to_path_buf();
+    for expected in subpath.iter().rev() {
+        if root.file_name().and_then(|s| s.to_str()) != Some(expected.as_str()) {
+            return None;
+        }
+        if !root.pop() {
+            return None;
+        }
+    }
+    Some(root)
+}
+
+/// One entry a `package.json` declares, in the two shapes a target can take.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum DeclaredEntry {
+    /// A package-relative directory prefix authorising every subpath under it
+    /// (`./src/*` -> `src/`, `./dist/index.js` -> `dist/`). The empty prefix
+    /// authorises the whole package and is only ever produced by a
+    /// root-level WILDCARD (`./*`).
+    Prefix(String),
+    /// A concrete file at the package root (`"main": "./index.js"`), which
+    /// authorises exactly that one file. Deliberately NOT a prefix: an
+    /// ordinary dist-shipping package commonly carries a root `main`, and
+    /// reading it as the empty prefix would grant its whole source tree.
+    ExactFile(String),
+}
+
+impl DeclaredEntry {
+    fn covers(&self, subpath: &str) -> bool {
+        match self {
+            Self::Prefix(prefix) => prefix.is_empty() || subpath.starts_with(prefix),
+            Self::ExactFile(file) => subpath == file,
+        }
+    }
+}
+
+/// Whether the package's declared entries authorise `subpath`.
+///
+/// Almost always this is just "any entry covers it". The one aggregate rule:
+/// a root-level FILE entry (`"main": "./index.ts"`) authorises the whole
+/// package **only when the package declares no directory entry at all**.
+///
+/// Both halves are load-bearing:
+///
+/// - A package whose only declarations are root-level files has no
+///   build-artifact directory to keep separate from its source, and its entry
+///   necessarily imports its siblings (`./index.ts` -> `./helper.ts`); esbuild
+///   records those as inputs too, so treating the root file as *literally*
+///   the only authorised input would reject the ordinary consume-from-source
+///   shape.
+/// - A package that ALSO declares a directory entry does have that
+///   separation, and there the root file must authorise only itself:
+///   `{"main": "./index.js", "exports": {"./*": "./dist/*"}}` is an ordinary
+///   dist-shipping package, and reading its root `main` as a package-wide
+///   grant would authorise every `src/` file behind the built entry — the
+///   blanket exemption condition 5 exists to prevent.
+///
+/// This is decided by plain arithmetic over the DECLARED set. It deliberately
+/// does not walk the entry's imports: which files the entry actually reaches
+/// is esbuild's answer to give, and predicting it in Rust is the failure mode
+/// this whole audit is built to avoid.
+fn declared_entries_cover(entries: &[DeclaredEntry], subpath: &str) -> bool {
+    let declares_directory = entries
+        .iter()
+        .any(|entry| matches!(entry, DeclaredEntry::Prefix(prefix) if !prefix.is_empty()));
+    entries.iter().any(|entry| match entry {
+        DeclaredEntry::ExactFile(_) if !declares_directory => true,
+        other => other.covers(subpath),
+    })
+}
+
+/// The entries a `package.json` declares, from `exports` (walked recursively
+/// — conditions, subpath maps and arrays are all just nesting around the
+/// target strings), `main` and `module`.
+///
+/// A target carrying a directory component contributes the directory portion
+/// of its path up to the first `*`: `./dist/index.js` -> `dist/`, `./src/*`
+/// -> `src/`. A target with no directory component contributes an exact file
+/// (`./index.ts`) unless it is a wildcard (`./*`), which is the only spelling
+/// that declares the package root itself. Targets that are absolute or climb
+/// out with `..` are ignored.
+///
+/// The `./` prefix is **required** for `exports` targets — the spec mandates
+/// it, and a bare string there is a package name, not a location inside this
+/// package — but **optional** for `main` and `module`, where the bare form
+/// (`"main": "dist/index.js"`) is both valid and common.
+fn declared_entries(manifest: &serde_json::Value) -> Vec<DeclaredEntry> {
+    fn entry(target: &str, require_dot_slash: bool) -> Option<DeclaredEntry> {
+        let target = match target.strip_prefix("./") {
+            Some(rest) => rest,
+            None if require_dot_slash => return None,
+            None => target,
+        };
+        if target.starts_with('/') || target.split('/').any(|segment| segment == "..") {
+            return None;
+        }
+        let (up_to_wildcard, has_wildcard) = match target.find('*') {
+            Some(at) => (&target[..at], true),
+            None => (target, false),
+        };
+        Some(match up_to_wildcard.rfind('/') {
+            Some(at) => DeclaredEntry::Prefix(up_to_wildcard[..=at].to_string()),
+            None if has_wildcard => DeclaredEntry::Prefix(String::new()),
+            None => DeclaredEntry::ExactFile(up_to_wildcard.to_string()),
+        })
+    }
+
+    fn collect(value: &serde_json::Value, require_dot_slash: bool, out: &mut Vec<DeclaredEntry>) {
+        match value {
+            serde_json::Value::String(target) => {
+                out.extend(entry(target, require_dot_slash));
+            }
+            serde_json::Value::Array(items) => items
+                .iter()
+                .for_each(|v| collect(v, require_dot_slash, out)),
+            serde_json::Value::Object(map) => map
+                .values()
+                .for_each(|v| collect(v, require_dot_slash, out)),
+            _ => {}
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (field, require_dot_slash) in [("exports", true), ("main", false), ("module", false)] {
+        if let Some(value) = manifest.get(field) {
+            collect(value, require_dot_slash, &mut entries);
+        }
+    }
+    entries
+}
+
 /// One metafile input, resolved under the two spellings every post-esbuild
 /// audit in this module needs:
 ///
@@ -399,9 +658,14 @@ pub fn audit_metafile_exclusions_at_path(
 ///    trivially — see the `in_stage` short-circuit below.)
 /// 2. a staged `node_modules/<pkg>` (or `node_modules/@scope/pkg`) symlink
 ///    that canonicalises to a live WORKSPACE SIBLING (no further
-///    `node_modules` segment in the real path) = **OFFENDER** — the exact
-///    package-name reach Guard (a) rejects at scan time; this is the
-///    metafile backstop for anything that slips past it.
+///    `node_modules` segment in the real path) = **OFFENDER, unless the
+///    sibling package itself declares that location as an entry root** —
+///    see [`package_input_is_declared_first_party_entry`]. The exception
+///    (issue #2040) is the "consume from source" monorepo idiom: reaching
+///    first-party workspace source by package name instead of by relative
+///    path is not an escape. Anything the package does NOT declare stays
+///    the package-name escape Guard (a) rejects at scan time; this is the
+///    metafile backstop for whatever slips past it.
 /// 3. an ordinary `node_modules`-nested third-party dependency (pnpm's
 ///    `.pnpm/<pkg>@<ver>/node_modules/<pkg>` content-addressable layout, or
 ///    any other real install with a `node_modules` segment still present in
@@ -502,6 +766,15 @@ pub fn audit_metafile_stage_escape(
             if in_first_party {
                 // case 2: the symlink at node_modules/<pkg> canonicalises
                 // straight to workspace source, no node_modules layer left.
+                // Accepted when the sibling package declares this location as
+                // an entry root — the "consume from source" idiom (#2040).
+                if package_input_is_declared_first_party_entry(
+                    record.key,
+                    &canonical,
+                    &canonical_first_party_root,
+                ) {
+                    continue;
+                }
                 offenders.push(format!(
                     "{} (package import resolved outside node_modules to workspace sibling {})",
                     record.key,
@@ -1013,6 +1286,337 @@ mod tests {
             // node_modules, which case 3 (ordinary third-party dep) allows.
             let _ = result;
         }
+    }
+
+    /// Build the #2040 topology: a pnpm workspace claiming `.` and
+    /// `packages/*`, a first-party sibling package at `packages/<dir>` with
+    /// the given `package.json`, and a stage whose `node_modules/<name>` is a
+    /// directory symlink to that package (the workspace-hoisted install shape
+    /// a bare package-name import resolves through). Returns
+    /// `(stage, first_party_root)`.
+    #[cfg(unix)]
+    fn write_workspace_sibling_stage(
+        base: &Path,
+        package_dir: &str,
+        package_json: &str,
+        files: &[(&str, &str)],
+    ) -> (PathBuf, PathBuf) {
+        let first_party = base.join("workspace");
+        write(
+            &first_party,
+            "pnpm-workspace.yaml",
+            "packages:\n  - '.'\n  - 'packages/*'\n",
+        );
+        let package = first_party.join("packages").join(package_dir);
+        write(&package, "package.json", package_json);
+        for (rel, body) in files {
+            write(&package, rel, body);
+        }
+
+        let name = serde_json::from_str::<serde_json::Value>(package_json)
+            .ok()
+            .and_then(|manifest| {
+                manifest
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .map(str::to_string)
+            })
+            .expect("fixture package.json must declare a name");
+        let stage = base.join("stage");
+        let link = stage.join("node_modules").join(&name);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&package, &link).unwrap();
+        (stage, first_party)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_allows_consume_from_source_sibling_declared_by_wildcard_exports() {
+        // Issue #2040 / the #1730 repro: `@acme/ui` is consumed FROM SOURCE —
+        // its exports point straight at `./src/*`, no dist, no build step.
+        // Both the declared entry itself and a file it pulls in transitively
+        // sit under the declared `src/` entry root, so neither is a stage
+        // escape even though both are case-2 shaped.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "ui",
+            r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+            &[
+                ("src/cta-button.tsx", "import './theme';"),
+                ("src/theme.ts", "theme"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/ui/src/cta-button.tsx": {"imports": []},
+            "node_modules/@acme/ui/src/theme.ts": {"imports": []}
+        }}"#;
+
+        let result = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party);
+        assert!(
+            result.is_ok(),
+            "a first-party workspace sibling consumed from source must not be a stage escape; got {result:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_flags_dist_shipping_sibling_reached_at_an_undeclared_source_path() {
+        // The guard against #2040 becoming a blanket "workspace siblings are
+        // always fine" exemption: `@acme/built` DOES ship a built dist and
+        // declares only `./dist/index.js`. Its declared dist entry is
+        // accepted; a deep import climbing past it into `src/internal.ts`
+        // reaches a location the package never declared, escapes the stage,
+        // and must stay rejected.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "built",
+            // Bare (non-`./`) `main`, the form the spec allows and packages
+            // commonly use — its declared `dist/` root must still register.
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
+            &[
+                ("dist/index.js", "built"),
+                ("src/internal.ts", "internal source"),
+            ],
+        );
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/built/dist/index.js": {"imports": []},
+            "node_modules/@acme/built/src/internal.ts": {"imports": []}
+        }}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err("an undeclared deep import into a dist-shipping sibling must stay flagged");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("node_modules/@acme/built/src/internal.ts"),
+            "the undeclared source path must be named as an offender; got {msg:?}"
+        );
+        assert!(
+            !msg.contains("dist/index.js"),
+            "the package's own declared dist entry must not be flagged; got {msg:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_flags_consume_from_source_target_not_claimed_by_the_workspace() {
+        // Declared entry roots alone are not enough: the target must also be
+        // a package the governing pnpm-workspace.yaml actually claims. Here
+        // the workspace claims only `packages/*`, and the link points at an
+        // unclaimed `vendored/ui` directory inside the workspace tree.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let first_party = base.join("workspace");
+        write(
+            &first_party,
+            "pnpm-workspace.yaml",
+            "packages:\n  - '.'\n  - 'packages/*'\n",
+        );
+        let package = first_party.join("vendored/ui");
+        write(
+            &package,
+            "package.json",
+            r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+        );
+        write(&package, "src/cta-button.tsx", "cta");
+
+        let stage = base.join("stage");
+        let link = stage.join("node_modules/@acme/ui");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&package, &link).unwrap();
+
+        let metafile =
+            br#"{"inputs": {"node_modules/@acme/ui/src/cta-button.tsx": {"imports": []}}}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err("an unclaimed directory is not a workspace package and must stay flagged");
+        assert!(
+            err.to_string()
+                .contains("node_modules/@acme/ui/src/cta-button.tsx"),
+            "the unclaimed target must be named as an offender; got {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_flags_package_whose_manifest_name_disagrees_with_the_link() {
+        // The link and the package must agree on identity. A
+        // `node_modules/@acme/ui` link whose target declares itself as
+        // something else is not the package the specifier named, so its
+        // declarations do not vouch for the input.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let first_party = base.join("workspace");
+        write(
+            &first_party,
+            "pnpm-workspace.yaml",
+            "packages:\n  - '.'\n  - 'packages/*'\n",
+        );
+        let package = first_party.join("packages/ui");
+        write(
+            &package,
+            "package.json",
+            r#"{ "name": "@acme/something-else", "exports": { "./*": "./src/*" } }"#,
+        );
+        write(&package, "src/cta-button.tsx", "cta");
+
+        let stage = base.join("stage");
+        let link = stage.join("node_modules/@acme/ui");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&package, &link).unwrap();
+
+        let metafile =
+            br#"{"inputs": {"node_modules/@acme/ui/src/cta-button.tsx": {"imports": []}}}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err("a name mismatch between link and manifest must stay flagged");
+        assert!(
+            err.to_string()
+                .contains("node_modules/@acme/ui/src/cta-button.tsx"),
+            "the mismatched target must be named as an offender; got {err}"
+        );
+    }
+
+    #[test]
+    fn declared_entries_reads_only_declared_targets() {
+        // Unit-level proof of the declaration reader: nested conditional
+        // exports and arrays are just nesting around target strings; a
+        // wildcard contributes its prefix directory; a root-level FILE
+        // contributes only itself; `..`-climbing targets contribute nothing,
+        // and a bare (non-`./`) string is a package name in `exports` but a
+        // valid path in `main`/`module`.
+        let manifest: serde_json::Value = serde_json::from_str(
+            r#"{
+                "main": "dist/index.js",
+                "module": "./index.mjs",
+                "exports": {
+                    "./*": "./src/*",
+                    ".": { "import": ["./lib/a.js", "not-relative"], "require": "../escape.js" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mut entries = declared_entries(&manifest);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                DeclaredEntry::Prefix("dist/".into()),
+                DeclaredEntry::Prefix("lib/".into()),
+                DeclaredEntry::Prefix("src/".into()),
+                DeclaredEntry::ExactFile("index.mjs".into()),
+            ]
+        );
+
+        // A root-level WILDCARD is the one spelling that declares the whole
+        // package tree — it literally says "every subpath maps to itself".
+        let root_wildcard: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { "./*": "./*" } }"#).unwrap();
+        assert_eq!(
+            declared_entries(&root_wildcard),
+            vec![DeclaredEntry::Prefix(String::new())]
+        );
+
+        // An absolute `main` names nothing inside the package.
+        let absolute: serde_json::Value =
+            serde_json::from_str(r#"{ "main": "/etc/passwd" }"#).unwrap();
+        assert!(declared_entries(&absolute).is_empty());
+    }
+
+    #[test]
+    fn root_level_main_authorises_only_itself_not_the_whole_package() {
+        // A root-level `main` used to collapse to the empty prefix, which
+        // accepted EVERY package subpath — so the extremely common
+        // dist-shipping shape below silently granted blanket access to the
+        // package's own `src/`, defeating condition 5 of the acceptance rule.
+        let manifest: serde_json::Value =
+            serde_json::from_str(r#"{ "main": "./index.js", "exports": { "./*": "./dist/*" } }"#)
+                .unwrap();
+        let entries = declared_entries(&manifest);
+
+        assert!(
+            declared_entries_cover(&entries, "index.js"),
+            "the declared root entry itself must stay accepted: {entries:?}"
+        );
+        assert!(
+            declared_entries_cover(&entries, "dist/thing.js"),
+            "the declared `dist/` wildcard must stay accepted: {entries:?}"
+        );
+        assert!(
+            !declared_entries_cover(&entries, "src/internal.ts"),
+            "an undeclared deep subpath must NOT be authorised by a root-level \
+             `main` when the package also declares a directory entry: {entries:?}"
+        );
+        // The bare-form spelling (`"main": "dist/index.js"`, no `./`) is
+        // equally common and must be read the same way.
+        let bare: serde_json::Value =
+            serde_json::from_str(r#"{ "main": "index.js", "module": "dist/index.mjs" }"#).unwrap();
+        let bare = declared_entries(&bare);
+        assert!(declared_entries_cover(&bare, "index.js"));
+        assert!(!declared_entries_cover(&bare, "src/internal.ts"));
+    }
+
+    #[test]
+    fn root_only_source_package_still_authorises_its_sibling_sources() {
+        // The other half of the rule above: when a package declares NOTHING
+        // but root-level files it has no build-artifact directory to keep
+        // separate, and its entry necessarily imports its siblings — esbuild
+        // records `helper.ts` as an input right beside `index.ts`. Reading
+        // the root entry as literally the only authorised file would reject
+        // the ordinary consume-from-source shape.
+        let manifest: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": "./index.ts" } }"#).unwrap();
+        let entries = declared_entries(&manifest);
+
+        assert!(declared_entries_cover(&entries, "index.ts"));
+        assert!(
+            declared_entries_cover(&entries, "helper.ts"),
+            "a root-entry source package must authorise the siblings its entry \
+             imports: {entries:?}"
+        );
+        assert!(
+            declared_entries_cover(&entries, "internal/deep.ts"),
+            "…including nested ones, since nothing declares a directory to keep \
+             separate: {entries:?}"
+        );
+
+        // Adding a single directory entry flips the package into the
+        // "has a build-artifact directory" shape, and the root file narrows
+        // to itself again.
+        let with_dist: serde_json::Value =
+            serde_json::from_str(r#"{ "exports": { ".": "./index.ts", "./x": "./dist/x.js" } }"#)
+                .unwrap();
+        let with_dist = declared_entries(&with_dist);
+        assert!(declared_entries_cover(&with_dist, "index.ts"));
+        assert!(declared_entries_cover(&with_dist, "dist/x.js"));
+        assert!(!declared_entries_cover(&with_dist, "helper.ts"));
+    }
+
+    #[test]
+    fn split_package_name_and_subpath_keys_on_the_last_node_modules_segment() {
+        assert_eq!(
+            split_package_name_and_subpath("node_modules/@acme/ui/src/a.ts"),
+            Some((
+                "@acme/ui".to_string(),
+                vec!["src".to_string(), "a.ts".to_string()]
+            ))
+        );
+        assert_eq!(
+            split_package_name_and_subpath("node_modules/.pnpm/x@1/node_modules/x/index.js"),
+            Some(("x".to_string(), vec!["index.js".to_string()]))
+        );
+        // No package-relative subpath left, and no node_modules at all.
+        assert_eq!(
+            split_package_name_and_subpath("node_modules/@acme/ui"),
+            None
+        );
+        assert_eq!(split_package_name_and_subpath("src/a.ts"), None);
     }
 
     #[test]

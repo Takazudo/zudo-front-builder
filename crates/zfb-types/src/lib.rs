@@ -4,11 +4,13 @@
 //! workspace, preventing code duplication and circular dependencies.
 
 pub mod asset_urls;
+pub mod audit_eligibility;
 pub mod base_prefix;
 pub mod client_scripts;
 pub mod first_party;
 pub mod helpers;
 pub mod module_workers;
+pub mod page_extensions;
 pub mod segment;
 
 pub use asset_urls::{
@@ -17,6 +19,7 @@ pub use asset_urls::{
     STABLE_CLIENT_SCRIPTS_URL_PREFIX, STABLE_CSS_FILENAME, STABLE_CSS_URL, STABLE_ISLANDS_FILENAME,
     STABLE_ISLANDS_URL,
 };
+pub use audit_eligibility::{stage_escape_audit_eligibility, AuditEligibility};
 pub use base_prefix::dev_mount_prefix;
 pub use client_scripts::{
     client_script_entry_name, is_client_script_file, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
@@ -28,4 +31,5 @@ pub use module_workers::{
     module_worker_url_specifier, module_worker_url_specifier_scoped, ModuleWorkerPathError,
     MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
 };
+pub use page_extensions::{is_page_sidecar_file, ROUTABLE_PAGE_EXTENSIONS, SCRIPT_PAGE_EXTENSIONS};
 pub use segment::Segment;

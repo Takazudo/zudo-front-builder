@@ -479,6 +479,211 @@ fn reload_redirects(path: &Path) -> Redirects {
     }
 }
 
+/// What [`DevRenderSession::mark_rewrite_target_stale_if_needed`] found
+/// for one `_redirects` 200-rewrite target (issue #2004).
+#[cfg(feature = "embed_v8")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RewriteTargetMark {
+    /// Resolved to an SSG route the stale map already holds an entry
+    /// for — so it is claimable and the pre-warm's render will proceed.
+    /// Nothing was inserted: an entry existing IS the stale state.
+    Stale(PathBuf),
+    /// Resolved to an SSG route the stale map says is already current —
+    /// a direct `GET` would not re-render it either, so neither does the
+    /// pre-warm. The whole reason the freshness check runs first.
+    Fresh,
+    /// The reverse URL index has no entry: an SSR route, a rule pointing
+    /// at nothing — or a DYNAMIC injected route, which has no concrete
+    /// URL at boot and is resolved by the adapter's own injected-pattern
+    /// fallback instead. So this is NOT a reason to stop.
+    Unresolved,
+}
+
+/// Route one tick's reload events, deciding whether the cold-bootstrap
+/// recovery pre-warm has to run first (issue #2004, Dev Self Heal epic
+/// #1999).
+///
+/// This is a named function rather than a `match` inlined in
+/// `on_outcome` so the ordering it encodes is reachable from a test.
+/// The epic review found the recovery arm sending the tick's events
+/// BEFORE the pre-warm ran — the tab reloaded onto the dev 404 and the
+/// pass's marks then landed in an already-drained tick-stale buffer, so
+/// no second reload was guaranteed. `run_and_broadcast` is what fixes
+/// that, but a test driving `run_and_broadcast` directly cannot tell
+/// whether this call site still USES it: restoring the old ordering
+/// here left every such test green. Keeping the decision in one
+/// addressable place closes that gap.
+///
+/// Two things this must not do, both load-bearing:
+/// - **Never send `events` itself on the recovery path.** They are
+///   handed to the pass so they leave together with its own marks.
+/// - **Never render inline.** The pass blocks on V8 and `on_outcome`
+///   runs on the async worker that awaited the tick's `spawn_blocking`,
+///   not on the blocking pool — rendering here would stall a runtime
+///   worker serving HTTP and SSE. Hence the pass's own `spawn_blocking`.
+///
+/// The healthy path (no latch) is the untouched inline send.
+///
+/// Returns the spawned task on the recovery path so a test can await
+/// it; production ignores it (the pass is fire-and-forget by design).
+#[cfg(feature = "embed_v8")]
+fn dispatch_outcome_events(
+    recovery: Option<&(RewritePrewarmWiring, RedirectsHandle)>,
+    events: Vec<ReloadEvent>,
+    tx: &broadcast::Sender<ReloadEvent>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    match recovery {
+        Some((wiring, redirects)) => {
+            let (wiring, redirects) = (wiring.clone(), Arc::clone(redirects));
+            Some(tokio::task::spawn_blocking(move || {
+                wiring.run_and_broadcast(&redirects, events);
+            }))
+        }
+        None => {
+            for ev in events {
+                let _ = tx.send(ev);
+            }
+            None
+        }
+    }
+}
+
+/// Everything the `_redirects` 200-rewrite pre-warm needs, bundled so
+/// both of its lifecycle moments — the deferred boot task and the
+/// `_redirects` watch task — carry one value instead of four (issue
+/// #2004, Dev Self Heal epic #1999). See [`crate::dev_rewrite_prewarm`]
+/// for what the pass does and why it lives outside every request path.
+#[cfg(feature = "embed_v8")]
+#[derive(Clone)]
+pub(crate) struct RewritePrewarmWiring {
+    mode: BootLazyMode,
+    /// The dev server's mount prefix, taken from the SAME function
+    /// `zfb_server` derives `AppState::base_prefix` with — a divergence
+    /// here would emit lookup keys the waterfall never probes.
+    base_prefix: Option<String>,
+    session: DevRenderSession,
+    adapter: crate::lazy_render_adapter::LazyRenderAdapter,
+    /// The live-reload broadcast channel, for the two call sites that
+    /// are NOT followed by a drain of their own — see
+    /// [`Self::run_and_broadcast`].
+    reload_tx: broadcast::Sender<ReloadEvent>,
+}
+
+#[cfg(feature = "embed_v8")]
+impl RewritePrewarmWiring {
+    /// Run one pass and announce its targets through the tick-stale
+    /// buffer, for the CALLER to drain.
+    ///
+    /// Exactly one call site may use this: the deferred boot hook, which
+    /// drains `take_tick_stale()` a few steps later and folds the result
+    /// into the single `run_with_boot` broadcast. Anywhere else this
+    /// would leak per-tick state — the marks would sit in the buffer
+    /// until some unrelated later tick drained them, showing up as
+    /// spurious `pages_stale` and, worse, never producing a reload of
+    /// their own. Every other call site uses
+    /// [`Self::run_and_broadcast`].
+    fn run_for_caller_drain(&self, redirects: &RedirectsHandle) {
+        let report = self.run_pass(redirects);
+        // The pass itself never writes to the shared tick-stale buffer
+        // (see `run_and_broadcast` for why). This call site is the one
+        // that wants the announcement, and it names exactly the paths
+        // this pass touched.
+        if let Some(report) = report {
+            self.session.inner.mark_stale(report.stale_targets);
+        }
+    }
+
+    /// Run one pass and broadcast for it directly — together with
+    /// `pending`, any events the caller had not sent yet.
+    ///
+    /// **Blocking: it renders.** Both callers run it inside
+    /// `spawn_blocking` (the `_redirects` watch task and `on_outcome`'s
+    /// cold-bootstrap-recovery re-run), never on an async worker: the
+    /// renderer mutex can be held for seconds by a tick's host swap, and
+    /// the same runtime workers serve HTTP and SSE. Stalling one of them
+    /// here would stall the very tab this pass exists to reload.
+    ///
+    /// Passing the caller's own events in rather than sending them first
+    /// is the ordering half: a tab told to reload BEFORE the target is
+    /// warm reloads straight onto the dev 404 — the exact symptom #1825
+    /// is about. This mirrors the boot hook, which likewise pre-warms
+    /// before its drain so both sets of marks ride one broadcast.
+    ///
+    /// **It reads the pass's OWN report, never the shared tick-stale
+    /// buffer** (codex review of this fix pass). Both of these call sites
+    /// run on a blocking thread CONCURRENTLY with the orchestrator's tick
+    /// loop, so a `take_tick_stale()` here would happily swallow marks an
+    /// in-flight rebuild laid down and had not drained yet: this pass
+    /// would announce them early and that rebuild's own outcome would
+    /// then carry an empty `pages_stale`. The report names exactly the
+    /// targets this pass resolved, so there is nothing shared to race on
+    /// — and correspondingly the pass writes nothing into that buffer
+    /// either.
+    ///
+    /// `pending` is sent even if the pass panics (a `Drop`-time flush),
+    /// so a broken pre-warm can never swallow a reload the tick had
+    /// already earned.
+    fn run_and_broadcast(&self, redirects: &RedirectsHandle, pending: Vec<ReloadEvent>) {
+        /// Sends on drop, so an unwind through the pass below still
+        /// delivers whatever was queued.
+        struct FlushOnDrop {
+            tx: broadcast::Sender<ReloadEvent>,
+            events: Vec<ReloadEvent>,
+        }
+        impl Drop for FlushOnDrop {
+            fn drop(&mut self) {
+                for ev in self.events.drain(..) {
+                    let _ = self.tx.send(ev);
+                }
+            }
+        }
+
+        let mut flush = FlushOnDrop {
+            tx: self.reload_tx.clone(),
+            events: pending,
+        };
+        let Some(report) = self.run_pass(redirects) else {
+            return;
+        };
+        // A target this pass resolved as stale is a page a tab may be
+        // sitting on the dev 404 for. Folded through `outcome_to_events`
+        // rather than pushing `ReloadEvent::Page` by hand so the "when
+        // does a stale set warrant a reload?" rule stays in one place.
+        let rendered = report.rendered;
+        let mut own = outcome_to_events(&BuildOutcome {
+            pages_stale: report.stale_targets,
+            ..BuildOutcome::default()
+        });
+        // A DYNAMIC injected target resolves inside the adapter, which
+        // marks it stale under a path synthesized there — so it never
+        // reaches `stale_targets` and the fold above cannot see it. Its
+        // render is still a page that just became servable, and there is
+        // no `BuildOutcome` field that carries it (`pages_written` is
+        // `PageId`s, which this pass does not have), so say it directly.
+        if own.is_empty() && rendered > 0 {
+            own.push(ReloadEvent::Page);
+        }
+        for ev in own {
+            if !flush.events.contains(&ev) {
+                flush.events.push(ev);
+            }
+        }
+    }
+
+    fn run_pass(
+        &self,
+        redirects: &RedirectsHandle,
+    ) -> Option<crate::dev_rewrite_prewarm::PrewarmPassReport> {
+        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev(
+            self.mode,
+            redirects,
+            self.base_prefix.as_deref(),
+            Some(&self.session),
+            Some(&self.adapter),
+        )
+    }
+}
+
 /// Start a targeted, dedicated watch for `public/_redirects` (issue
 /// #1546) and return the live [`RedirectsHandle`] the dev router reads
 /// from.
@@ -514,7 +719,24 @@ fn reload_redirects(path: &Path) -> Redirects {
 /// therefore the OS-level watch — stays alive for the lifetime of that
 /// task (i.e. the dev server process); dropping it would stop the
 /// watch immediately.
-fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHandle {
+///
+/// ## Rewrite pre-warm on a live edit (issue #2004, epic #1999)
+///
+/// `prewarm` carries everything
+/// [`crate::dev_rewrite_prewarm::prewarm_rewrite_targets_for_dev`] needs.
+/// After every reload that swaps a new ruleset in, the consumer loop
+/// re-runs the pre-warm against it — so **a live `_redirects` edit
+/// re-registers the 200-rewrite target set; no dev-server restart is
+/// required**, matching the no-restart promise this watch was built for
+/// in the first place. `None` disables it (non-Cold boot, renderer
+/// disabled, or the lazy switch off), and the pre-warm's own mode gate is
+/// a second line of defense.
+#[cfg(feature = "embed_v8")]
+fn spawn_redirects_watch(
+    project_root: &Path,
+    public_root: &Path,
+    prewarm: Option<RewritePrewarmWiring>,
+) -> RedirectsHandle {
     let redirects_path = public_root.join("_redirects");
     let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
         &redirects_path,
@@ -564,6 +786,39 @@ fn spawn_redirects_watch(project_root: &Path, public_root: &Path) -> RedirectsHa
             match handle_for_task.write() {
                 Ok(mut guard) => *guard = updated,
                 Err(poisoned) => *poisoned.into_inner() = updated,
+            }
+            // Issue #2004 — re-register the 200-rewrite target set
+            // against the ruleset just swapped in. `spawn_blocking`
+            // because the pass renders: it must never run on an async
+            // worker (the renderer mutex can be held for seconds by a
+            // tick's host swap), the same discipline the request-time
+            // hook follows.
+            //
+            // `run_and_broadcast`, not `run_for_caller_drain`: this task
+            // is wholly outside the orchestrator's tick loop, so nothing
+            // downstream of it ever drains the tick-stale buffer. Using
+            // the bare pass here would (a) broadcast no reload for the
+            // edit, leaving a tab on the old 404 until something
+            // unrelated happened, and (b) leave the marks to surface as
+            // spurious `pages_stale` inside whatever tick drained next.
+            //
+            // The unconditional `Page`: a `_redirects` edit is a ROUTING
+            // change, and the pass can only infer a reload from a target
+            // becoming warm. Adding `/alias /already-warm-target 200`
+            // renders nothing — yet a tab on `/alias`'s old 404 is now
+            // wrong and must come back. Dedupe inside `run_and_broadcast`
+            // keeps this to one event when the pass warmed something too.
+            if let Some(wiring) = prewarm.clone() {
+                let redirects = Arc::clone(&handle_for_task);
+                if let Err(join_err) = tokio::task::spawn_blocking(move || {
+                    wiring.run_and_broadcast(&redirects, vec![ReloadEvent::Page])
+                })
+                .await
+                {
+                    output::error(format!(
+                        "_redirects rewrite pre-warm task panicked after a live edit: {join_err}"
+                    ));
+                }
             }
         }
     });
@@ -928,8 +1183,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let pipeline = match dev_session.as_ref() {
         Some(session) => {
             let probe_session = session.clone();
+            let ssr_probe_session = session.clone();
+            // Issue #1826 — the SSR-publication signal rides the same
+            // per-tick drain discipline as `pages_stale`, on its own
+            // probe because SSR routes have no output path to report.
             DevAssetPipeline::with_stale_probe(Arc::new(move || {
                 probe_session.inner.take_tick_stale()
+            }))
+            .with_ssr_publish_probe(Arc::new(move || {
+                ssr_probe_session.inner.take_ssr_routes_published()
             }))
         }
         None => DevAssetPipeline::new(),
@@ -1491,10 +1753,54 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     // 4. on_outcome — translate each tick into reload events.
     let tx_cb = tx.clone();
+    // Issue #2004 — the `_redirects` rewrite pre-warm's re-run seam for
+    // the cold-bootstrap recovery path (#1809).
+    //
+    // A slot rather than a captured value because of an ordering
+    // constraint that cannot be reshuffled cheaply: `on_outcome` is built
+    // here, hundreds of lines before the lazy render adapter and the
+    // `_redirects` handle exist. The slot is filled exactly once, below,
+    // strictly before `TcpListener::bind` — so it is always populated by
+    // the time any tick outcome can reach this closure. It stays empty
+    // for the whole session in every non-Cold mode and whenever the
+    // renderer/lazy switch is off, which makes the drain inert there.
+    let rewrite_prewarm_slot: Arc<std::sync::OnceLock<(RewritePrewarmWiring, RedirectsHandle)>> =
+        Arc::new(std::sync::OnceLock::new());
+    let rewrite_prewarm_for_outcome = Arc::clone(&rewrite_prewarm_slot);
     let on_outcome = move |outcome: &BuildOutcome| {
-        for ev in outcome_to_events(outcome) {
-            let _ = tx_cb.send(ev);
-        }
+        let events = outcome_to_events(outcome);
+        // Issue #2004 — a cold-bootstrap recovery (#1809) republished the
+        // route tables the failed deferred Cold bundle never produced. The
+        // boot hook's pre-warm ran against those empty scaffold tables and
+        // warmed nothing, so re-run it now against the real ones.
+        // One-shot: the latch is raised inside
+        // `recover_cold_bootstrap_after_publish` and swapped to `false`
+        // here, so a healthy session never pays for this.
+        //
+        // TWO properties this arm has to get right, both learned the hard
+        // way (epic review of #1999):
+        //
+        // 1. **Where it runs.** `on_outcome` is invoked on the async
+        //    worker that awaited the tick's `spawn_blocking`, NOT on the
+        //    blocking pool the tick itself ran on. The pass renders, so
+        //    running it inline would block a runtime worker that serves
+        //    HTTP and SSE — stalling the dev server exactly while a tab
+        //    waits to be told to reload. Hence its own `spawn_blocking`.
+        //
+        // 2. **When the tab is told.** This tick's own events are handed
+        //    to the pass instead of being sent first: a reload delivered
+        //    before the target is warm bounces the tab straight onto the
+        //    dev 404, and the pass's marks would then land in an
+        //    ALREADY-DRAINED tick-stale buffer, so no second reload was
+        //    guaranteed either. `run_and_broadcast` sends both sets
+        //    together once the warm lands — the same ordering the boot
+        //    hook gets by pre-warming ahead of its drain.
+        //
+        // The healthy path (no latch) is unchanged: send inline, no task.
+        let recovery = rewrite_prewarm_for_outcome
+            .get()
+            .filter(|(wiring, _)| wiring.session.inner.take_rewrite_prewarm_pending());
+        let _ = dispatch_outcome_events(recovery, events, &tx_cb);
     };
 
     // 5. Build the watch-ADD discovery hook (issue #659).
@@ -1584,7 +1890,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // literally hook-free (no per-GET handle snapshot/spawn; review
     // finding on #1026). The adapter's own early-return stays as
     // defense in depth.
-    let render_on_request_hook = dev_session
+    let hook_and_adapter = dev_session
         .as_ref()
         .filter(|session| session.lazy_render_enabled())
         .map(|session| {
@@ -1602,12 +1908,54 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 injected,
             )
         });
+    let (render_on_request_hook, lazy_render_adapter) = match hook_and_adapter {
+        Some((handle, adapter)) => (Some(handle), Some(adapter)),
+        None => (None, None),
+    };
+
+    // Issue #2004 (Dev Self Heal epic #1999) — the `_redirects`
+    // 200-rewrite pre-warm's shared wiring, built once and handed to both
+    // of its lifecycle moments: the deferred boot task below and the
+    // `_redirects` watch's live-edit re-registration. `None` in every
+    // non-Cold boot mode, or when there is no session/adapter to render
+    // through — see `crate::dev_rewrite_prewarm`.
+    let rewrite_prewarm = match (
+        crate::dev_rewrite_prewarm::prewarm_rewrite_targets_decision(boot_lazy_mode_now),
+        dev_session.as_ref(),
+        lazy_render_adapter,
+    ) {
+        (true, Some(session), Some(adapter)) => Some(RewritePrewarmWiring {
+            mode: boot_lazy_mode_now,
+            // The SAME derivation `zfb_server::serve` uses for
+            // `AppState::base_prefix`, from the same `cfg.base` value
+            // threaded into `ServeOpts` below.
+            base_prefix: zfb_types::dev_mount_prefix(cfg.base.as_deref()),
+            session: session.clone(),
+            adapter,
+            // The same channel `on_outcome` sends on — the two call
+            // sites that are not followed by a caller-side drain
+            // broadcast their own marks through it.
+            reload_tx: tx.clone(),
+        }),
+        _ => None,
+    };
+    let rewrite_prewarm_for_boot = rewrite_prewarm.clone();
 
     // Issue #1546 — `_redirects` dev integration. Loads `public/_redirects`
     // (an empty ruleset when absent) and starts the targeted watch that
     // keeps it live for the rest of this session. Must run before
     // `project_root` / `public_root` are moved into `ServeOpts` below.
-    let redirects_handle = spawn_redirects_watch(&project_root, &public_root);
+    let redirects_handle =
+        spawn_redirects_watch(&project_root, &public_root, rewrite_prewarm.clone());
+    // Issue #2004 — the deferred boot task needs the same handle the
+    // server reads from; clone before `ServeOpts` consumes the original.
+    let redirects_handle_for_boot = Arc::clone(&redirects_handle);
+    // Issue #2004 — fill the cold-bootstrap re-run slot `on_outcome`
+    // captured far above. Done HERE, before `TcpListener::bind` below, so
+    // no tick outcome can ever observe an empty slot.
+    if let Some(wiring) = rewrite_prewarm {
+        let _ = rewrite_prewarm_slot.set((wiring, Arc::clone(&redirects_handle)));
+    }
 
     let opts = ServeOpts {
         project_root,
@@ -1817,6 +2165,25 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             if let Some(handle) = &ssr_route_set_for_boot {
                                 refresh_live_ssr_routes(session, handle);
                             }
+                            // Issue #1826 (Dev Self Heal epic #1999) —
+                            // the live SSR handle was just published, so
+                            // every `prerender = false` route is servable
+                            // from here on. Raise the shared signal (the
+                            // same seam `recover_cold_bootstrap_after_publish`
+                            // uses) so the boot drain below folds it into
+                            // `BuildOutcome::ssr_routes_published` and a tab
+                            // that has been sitting on the dev 404 body
+                            // through this deferred window reloads. The
+                            // premark below cannot carry this: it walks
+                            // `routes_by_source` (SSG), and SSR routes have
+                            // no `dist/` output path to mark. Ungated on
+                            // `boot_lazy_mode_now` — unlike the premark,
+                            // which is a Cold-only staleness concern, the
+                            // browser is equally uninformed in Auto (an SSR
+                            // route has no prebuilt `dist/` bytes for Auto's
+                            // seed to serve in the meantime). No-op when the
+                            // project has no SSR routes.
+                            session.note_ssr_routes_published();
                             // Issue #1808 (post-implementation review finding):
                             // Cold has no `dist/` seed to serve during the gap
                             // between this publish and `run_boot_render`'s
@@ -1937,6 +2304,27 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &dist_root_for_boot,
             );
 
+            // 4b. `_redirects` 200-rewrite pre-warm (issue #2004, Dev Self
+            //     Heal epic #1999 — the fix for #1825). Cold only.
+            //
+            //     Placed HERE deliberately, between the boot render and the
+            //     tick-stale drain below:
+            //       - AFTER step 0/4, so the route tables are published and
+            //         a target's reverse lookup can resolve. Run earlier, on
+            //         a deferred boot, every target would miss.
+            //       - BEFORE the drain, so the stale marks it lays down ride
+            //         the SAME single `run_with_boot` broadcast as every
+            //         other boot mark — one `ReloadEvent::Page`, not a
+            //         second one.
+            //
+            //     This is the one call site that closes #1825, and it is
+            //     nowhere near a request: `serve_from_waterfall` still
+            //     re-runs nothing for a rewrite. See
+            //     `crate::dev_rewrite_prewarm` for the rejected alternative.
+            if let Some(wiring) = rewrite_prewarm_for_boot.as_ref() {
+                wiring.run_for_caller_drain(&redirects_handle_for_boot);
+            }
+
             // 5. Eager islands bundle (issue #1170). This is the last
             //    size-bound step that used to run synchronously before
             //    `TcpListener::bind`; on a large-dependency consumer its
@@ -2034,6 +2422,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .as_ref()
                 .map(|s| s.inner.take_tick_stale())
                 .unwrap_or_default();
+            // Issue #1826 (Dev Self Heal epic #1999) — drain the shared
+            // SSR-publication bit the same way and at the same point.
+            // Boot-lazy returns from `run_boot_render` without running a
+            // pipeline `apply`, so the tick probe never sees this bit at
+            // boot; this drain is what carries it into the single
+            // `run_with_boot` broadcast. Whichever drain runs first for a
+            // tick wins and the other sees `false` — exactly the
+            // `take_tick_stale` contract.
+            let boot_ssr_published: bool = dev_session_for_boot
+                .as_ref()
+                .map(|s| s.inner.take_ssr_routes_published())
+                .unwrap_or(false);
 
             let mut outcome = match (render_outcome, islands_info) {
                 (Some(mut outcome), Some(info)) => {
@@ -2057,6 +2457,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     None => {
                         outcome = Some(BuildOutcome {
                             pages_stale: boot_stale,
+                            ..BuildOutcome::default()
+                        })
+                    }
+                }
+            }
+            if boot_ssr_published {
+                match &mut outcome {
+                    Some(o) => o.ssr_routes_published = true,
+                    None => {
+                        outcome = Some(BuildOutcome {
+                            ssr_routes_published: true,
                             ..BuildOutcome::default()
                         })
                     }
@@ -2883,7 +3294,7 @@ fn resolve_lazy_dev_render(lazy_var: Option<&str>, eager_var: Option<&str>) -> b
 /// `run_boot_render`'s boot-lazy branch) now treats `Cold` as active with no
 /// reshaping at the call sites, exactly as Wave 1 set up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BootLazyMode {
+pub(crate) enum BootLazyMode {
     /// Boot-lazy is off — the default `zfb dev` boot semantics ("every
     /// route exists on disk before the server is ready") are preserved
     /// exactly.
@@ -3315,6 +3726,42 @@ impl DevRenderInner {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Raise the one-shot "re-run the rewrite pre-warm" flag (issue
+    /// #2004). Stored, never swapped, so repeated raisings before a
+    /// drain are idempotent — the drain is what makes it one-shot.
+    #[cfg(feature = "embed_v8")]
+    fn set_rewrite_prewarm_pending(&self) {
+        self.rewrite_prewarm_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Consume the "re-run the rewrite pre-warm" flag (issue #2004):
+    /// `true` for exactly ONE caller per raising.
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn take_rewrite_prewarm_pending(&self) -> bool {
+        self.rewrite_prewarm_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Raise the one-shot "SSR routes were published" flag (issue
+    /// #1826). Stored (never swapped) so repeated publishes before a
+    /// drain are idempotent — the drain is what makes it one-shot.
+    fn set_ssr_routes_published(&self) {
+        self.ssr_routes_published
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Drain the "SSR routes were published this tick" flag into
+    /// [`zfb_build::BuildOutcome::ssr_routes_published`] (consumed by
+    /// the dev pipeline's SSR-publish probe on a watcher tick, or by the
+    /// boot hook's own drain at boot — whichever runs first for the
+    /// tick, exactly like `take_tick_stale`). One-shot: `true` once per
+    /// raising, then `false`.
+    fn take_ssr_routes_published(&self) -> bool {
+        self.ssr_routes_published
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Mark `output_paths` stale at the current generation and queue
     /// them for this tick's [`zfb_build::BuildOutcome::pages_stale`]
     /// signal. Re-marking an already-stale route bumps its recorded
@@ -3556,6 +4003,25 @@ struct DevRouteTables {
     /// ([`crate::lazy_render_adapter`]) on every request-time
     /// stale-route render.
     url_index: HashMap<String, RouteUniverseEntry>,
+    /// Every page-module source path the router scan produced a route
+    /// for, SSG and SSR alike — the authoritative "is this a page module?"
+    /// oracle (issue #2064).
+    ///
+    /// A superset of `routes_by_source`'s keys: a `prerender = false` page
+    /// contributes only to `ssr_routes`, and a dynamic SSG page whose
+    /// `paths()` returned `[]` contributes to NEITHER table while still
+    /// being a perfectly valid page module the worker evaluates (and thus
+    /// enrols in the content trace). Content-provenance classification
+    /// consults this set to tell a benign zero-route page apart from a
+    /// source the router has never heard of; without it, a single empty
+    /// `paths()` collapsed provenance — and therefore incremental-rebuild
+    /// narrowing — for the entire site.
+    ///
+    /// Rebuilt atomically with the other tables at P4. Injected-route
+    /// seeds are deliberately absent: they are synthesized keys that
+    /// already live in `routes_by_source`, so classification resolves them
+    /// there and never consults this set.
+    page_sources: HashSet<PathBuf>,
 }
 
 /// Boot-time inputs stashed so a watch-ADD (#659) can re-bundle the SSR
@@ -3810,6 +4276,51 @@ struct DevRenderInner {
     /// later failure may re-arm it.
     #[cfg(feature = "embed_v8")]
     cold_bootstrap_pending: std::sync::atomic::AtomicBool,
+
+    /// One-shot flag: a cold-bootstrap recovery just republished the
+    /// route tables, so the `_redirects` 200-rewrite pre-warm must run
+    /// again (issue #2004, Dev Self Heal epic #1999).
+    ///
+    /// The boot hook's pre-warm ran against the EMPTY scaffold tables
+    /// that a failed deferred Cold bundle left behind, so every rewrite
+    /// target missed its reverse lookup and nothing was warmed. Without
+    /// this flag the recovery would republish everything and still leave
+    /// `/alias` on the indefinite 404 #1825 is about — the recovery's own
+    /// `mark_all_routes_stale` makes the target CLAIMABLE, but only a
+    /// request for the target itself would ever claim it, and the whole
+    /// point is that such a request never arrives.
+    ///
+    /// Raised inside
+    /// [`DevRenderSession::recover_cold_bootstrap_after_publish`] and
+    /// drained by `run`'s `on_outcome` (which holds the pre-warm wiring;
+    /// the session deliberately does not, to avoid an `Arc` cycle with
+    /// the adapter that holds the session).
+    #[cfg(feature = "embed_v8")]
+    rewrite_prewarm_pending: std::sync::atomic::AtomicBool,
+
+    /// One-shot per-tick flag: this session published its live SSR
+    /// (`prerender = false`) route handle (issue #1826, Dev Self Heal
+    /// epic #1999).
+    ///
+    /// The SSR counterpart of `StaleRoutes::tick_stale`, and for the
+    /// same reason: an SSR route has NO `dist/` output path, so it can
+    /// never be marked in the staleness map and never reaches
+    /// [`zfb_build::BuildOutcome::pages_stale`]. It needs no staleness
+    /// machinery either — it renders per-request the instant its live
+    /// handle is published. What it needed was a way to SAY so, which
+    /// this bit is: drained into
+    /// [`zfb_build::BuildOutcome::ssr_routes_published`] (by the dev
+    /// pipeline's SSR-publish probe on a watcher tick, or by the boot
+    /// hook's own drain at boot) so `zfb_server::outcome_to_events`
+    /// emits a `ReloadEvent::Page`.
+    ///
+    /// Set through the single shared seam
+    /// `DevRenderSession::note_ssr_routes_published`, which BOTH
+    /// deferred-window self-heal channels call — the healthy deferred
+    /// boot publish and
+    /// `DevRenderSession::recover_cold_bootstrap_after_publish` — so
+    /// neither path self-heals better than the other.
+    ssr_routes_published: std::sync::atomic::AtomicBool,
 
     /// Static injected-route seeds (epic #1228, S3 #1231). One
     /// [`RouteUniverseEntry`] per **static, SSG** package-owned injected
@@ -4193,6 +4704,12 @@ impl DevRenderSession {
                         "renderer is not backed by embedded V8 while draining content trace"
                     )
                 })?;
+                // Build-time: `dispatch_fetch_full` forwards to
+                // `dispatch_fetch_full_with_mode` with
+                // `DispatchMode::BuildTime` (issue #2014). This drains a
+                // trace the build-time render pass recorded — it is not
+                // a request-time SSR dispatch, even though it shares the
+                // host instance with one.
                 host.dispatch_fetch_full(DEV_CONTENT_TRACE_ENDPOINT, "GET", &headers, &[])
                     .map_err(anyhow::Error::from)?
             };
@@ -4219,6 +4736,7 @@ impl DevRenderSession {
                 classify_content_trace_events(
                     payload.events,
                     &tables.routes_by_source,
+                    &tables.page_sources,
                     &membership,
                     &self.inner.project_root,
                 )?
@@ -4400,6 +4918,14 @@ impl DevRenderSession {
         self.inner.claim_is_current(claim)
     }
 
+    /// Test-only seam: drain the tick-stale buffer, so a test can assert
+    /// which output paths a stale-marking pass queued for the next
+    /// `BuildOutcome::pages_stale` broadcast.
+    #[cfg(test)]
+    pub(crate) fn take_tick_stale_for_tests(&self) -> Vec<PathBuf> {
+        self.inner.take_tick_stale()
+    }
+
     /// Test-only seam: mark routes stale so adapter tests can inject
     /// staleness state without driving a whole watcher tick.
     #[cfg(test)]
@@ -4571,6 +5097,90 @@ impl DevRenderSession {
         n
     }
 
+    /// Number of SSR (`prerender = false`) routes the renderer knows
+    /// about. The SSR mirror of [`Self::route_count`], which counts only
+    /// the SSG table.
+    fn ssr_route_count(&self) -> usize {
+        self.inner
+            .routes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .ssr_routes
+            .len()
+    }
+
+    /// THE shared SSR self-heal signal (issue #1826, Dev Self Heal epic
+    /// #1999). Both deferred-window self-heal channels call exactly this
+    /// method after publishing the live SSR route handle:
+    ///
+    /// - the healthy deferred boot publish (the boot hook's step-0
+    ///   success arm, beside the #1808 premark), and
+    /// - [`Self::recover_cold_bootstrap_after_publish`] (the #1809
+    ///   cold-bootstrap recovery seam).
+    ///
+    /// One method, one bit, so the two paths produce the SAME tab-facing
+    /// outcome — the design constraint that ruled out the alternative of
+    /// synthesising a reload event from the recovery path alone (which
+    /// would have made recovery self-heal *better* than a healthy boot).
+    ///
+    /// **No-op when the project has no SSR routes.** An SSG-only project
+    /// never raises the bit at all, so its `BuildOutcome` is
+    /// byte-identical to before this fix; a mixed SSG/SSR project raises
+    /// it alongside a non-empty `pages_stale`, which
+    /// `zfb_server::outcome_to_events` folds into the SAME single
+    /// `ReloadEvent::Page` — no extra and no duplicate events either way.
+    ///
+    /// Returns the number of SSR routes the signal covers (`0` = not
+    /// raised). Deliberately adds NO staleness machinery for SSR routes:
+    /// they need none — an SSR route renders per-request the instant its
+    /// live handle is published. This is a signalling fix only.
+    fn note_ssr_routes_published(&self) -> usize {
+        let n = self.ssr_route_count();
+        if n > 0 {
+            self.inner.set_ssr_routes_published();
+        }
+        n
+    }
+
+    /// Resolve ONE `_redirects` 200-rewrite target by its hook-facing
+    /// request path and report whether it needs warming (issue #2004,
+    /// Dev Self Heal epic #1999).
+    ///
+    /// The lookup half of the rewrite pre-warm — see
+    /// [`crate::dev_rewrite_prewarm`] for the whole pass and why a
+    /// rewrite target needs one at all. Deliberately routed through
+    /// [`Self::lookup_by_url`], the SAME reverse index the request-time
+    /// hook resolves a URL with, so a target that is not an SSG route in
+    /// this session (an SSR route, an unexpanded dynamic route, a typo)
+    /// is a silent no-op rather than a phantom stale entry for an output
+    /// path nothing will ever render.
+    ///
+    /// **Read-only, and the freshness question is the whole point.** The
+    /// pre-#1999-review version called `mark_stale` first and asked
+    /// afterwards, which made the answer self-fulfilling: every boot and
+    /// every live `_redirects` edit re-rendered every target. Asking
+    /// without writing is also the only reading that matches a real
+    /// request — `LazyRenderAdapter::render_stale_route` consults the
+    /// SAME stale map through the SAME non-consuming [`Self::claim_stale`]
+    /// and serves the on-disk bytes when it finds nothing. So a target
+    /// this reports [`RewriteTargetMark::Fresh`] for is exactly a target
+    /// a direct `GET` would not re-render either.
+    ///
+    /// Nothing needs inserting in the [`RewriteTargetMark::Stale`] case:
+    /// an entry being present IS the stale state, so the adapter's own
+    /// claim already succeeds. Announcing the target to livereload is a
+    /// separate decision, made per call site by `RewritePrewarmWiring`.
+    #[cfg(feature = "embed_v8")]
+    pub(crate) fn rewrite_target_stale_state(&self, request_path: &str) -> RewriteTargetMark {
+        let Some(entry) = self.lookup_by_url(request_path) else {
+            return RewriteTargetMark::Unresolved;
+        };
+        if self.inner.claim(&entry.output_path).is_none() {
+            return RewriteTargetMark::Fresh;
+        }
+        RewriteTargetMark::Stale(entry.output_path)
+    }
+
     /// Cold-bootstrap recovery (issue #1809, epic #1806): consume the
     /// pending latch and, for the single winning publish, re-run the boot
     /// seeding the FAILED deferred bundle skipped — now against the route
@@ -4597,6 +5207,11 @@ impl DevRenderSession {
     ///    drains into `BuildOutcome::pages_stale` — the #1390 broadcast —
     ///    so livereload tabs showing the dev 404 body reload and
     ///    re-render to a 200.
+    /// 3. Raise the shared SSR-publication signal
+    ///    ([`Self::note_ssr_routes_published`], issue #1826) so an
+    ///    SSR-only project — where step 2 has zero SSG routes to mark
+    ///    and therefore broadcasts nothing — still reloads the tab.
+    ///    Deliberately the SAME seam the healthy deferred publish uses.
     ///
     /// Called from [`Self::refresh_bundle_and_routes`]'s success path,
     /// AFTER the P4 table swap, so the tables it seeds and marks against
@@ -4614,6 +5229,21 @@ impl DevRenderSession {
                 assemble_boot_graph(&mut g, None, self.page_ids());
             }
         }
+        // Issue #1826 (Dev Self Heal epic #1999) — step 3: raise the
+        // shared SSR-publication signal. `mark_all_routes_stale` below
+        // walks `routes_by_source` (SSG) only, so in an SSR-only project
+        // it marks ZERO routes and this recovery drained an empty
+        // `pages_stale` — the server had recovered but the tab was never
+        // told. Same seam, same bit as the healthy deferred publish, so
+        // recovery heals a tab identically rather than better or worse.
+        self.note_ssr_routes_published();
+        // Issue #2004 — the boot hook's `_redirects` rewrite pre-warm ran
+        // against the empty scaffold tables this recovery is fixing, so it
+        // warmed nothing. Ask `on_outcome` to run it again now the tables
+        // are real. `mark_all_routes_stale` below leaves the target
+        // claimable but nothing would ever claim it: a rewrite serves
+        // `/alias`, and `/target` is never requested.
+        self.inner.set_rewrite_prewarm_pending();
         Some(self.mark_all_routes_stale())
     }
 
@@ -4972,6 +5602,10 @@ impl DevRenderSession {
             tables.ssr_routes = new_ssr_routes;
             // Swap the url_index atomically with the other tables (issue #1019).
             tables.url_index = new_url_index;
+            // Issue #2064 — the page-module oracle moves with the tables it
+            // qualifies: a page added/removed by this scan must not be
+            // judged against the previous generation's set.
+            tables.page_sources = collect_page_sources(&router);
         }
         // Issue #1025 — the route tables just moved: advance the stale
         // tick generation and evict stale entries whose output routes
@@ -5799,6 +6433,23 @@ fn build_dev_route_tables(
     Ok((routes_by_source, ssr_routes, url_index))
 }
 
+/// Every page-module source path the router scan produced a route for —
+/// the value stored in [`DevRouteTables::page_sources`] (issue #2064).
+///
+/// Taken from the router scan rather than from the built tables on purpose:
+/// the scan is the layer that decides what IS a page module, and it is
+/// complete BEFORE `paths()` runs. `routes_by_source` and `ssr_routes` are
+/// both downstream of route expansion and each drop pages the other keeps —
+/// a page whose `paths()` yields `[]` is in neither.
+#[cfg(feature = "embed_v8")]
+fn collect_page_sources(router: &zfb_router::Router) -> HashSet<PathBuf> {
+    router
+        .routes()
+        .iter()
+        .map(|route| route.source_path.clone())
+        .collect()
+}
+
 /// Percent-decode a URL path segment, returning a borrowed `str` when the
 /// input has no percent-encoded sequences or an owned `String` when decoding
 /// produces a different value (issue #1019).
@@ -6600,6 +7251,19 @@ fn boot_dev_renderer(
         )
     };
 
+    // Issue #2064 — the page-module oracle content-provenance classification
+    // consults. Taken from the router scan, not from the tables above: the
+    // scan is what decides what IS a page module, and it is complete before
+    // `paths()` runs (a page whose `paths()` yields `[]` reaches neither
+    // table). Empty on the deferred-scaffold path alongside the empty tables
+    // — no worker exists to trace yet, and the deferred publish's P4 swap
+    // installs the real set with the real tables.
+    let page_sources = if defer_bundle {
+        HashSet::new()
+    } else {
+        collect_page_sources(&router)
+    };
+
     // Issue #958 — seed the frontmatter gate cache so the FIRST body-only
     // edit of a pre-existing collection file can already narrow (G4 only
     // fires for genuinely missing/changed frontmatter). ~1 read + parse +
@@ -6612,6 +7276,7 @@ fn boot_dev_renderer(
                 routes_by_source,
                 ssr_routes,
                 url_index,
+                page_sources,
             }),
             renderer,
             project_root: project_root.to_path_buf(),
@@ -6638,6 +7303,10 @@ fn boot_dev_renderer(
             boot_render_done: std::sync::atomic::AtomicBool::new(false),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — the static injected-route seeds + post-precedence
             // survivor set, both built from the same survivor list above.
             injected_static_seeds,
@@ -6864,6 +7533,7 @@ fn add_content_slug_candidate(candidates: &mut BTreeSet<String>, value: &str) {
 /// aggregate collection reads. This is deliberately narrow: an over-broad
 /// aggregate edge is safe; a guessed direct edge can under-render.
 #[cfg(feature = "embed_v8")]
+#[derive(Debug)]
 struct ClassifiedContentTrace {
     observed: BTreeSet<DevContentTraceObservation>,
     reads: BTreeMap<DevContentTraceObservation, Vec<TrackedContentRead>>,
@@ -6877,14 +7547,19 @@ struct ClassifiedContentTrace {
 fn classify_content_trace_events(
     events: impl IntoIterator<Item = DevContentTraceEvent>,
     routes_by_source: &HashMap<PathBuf, Vec<DevRouteEntry>>,
+    page_sources: &HashSet<PathBuf>,
     membership: &DevContentMembershipSnapshot,
     project_root: &Path,
 ) -> Result<ClassifiedContentTrace> {
     let mut observed = BTreeSet::new();
     let mut reads = BTreeMap::new();
     for event in events {
-        let (consumer, entries) =
-            resolve_content_trace_consumer(&event.source, routes_by_source, project_root)?;
+        let (consumer, entries) = resolve_content_trace_consumer(
+            &event.source,
+            routes_by_source,
+            page_sources,
+            project_root,
+        )?;
         let observation = DevContentTraceObservation {
             consumer: consumer.clone(),
             phase: event.phase,
@@ -6893,6 +7568,22 @@ fn classify_content_trace_events(
             observed.insert(observation);
             continue;
         }
+        // Issue #2064 — a KNOWN page module that produced zero route
+        // entries (`paths()` legitimately returned `[]`, or the page is
+        // `prerender = false` and lives in `ssr_routes`). Nothing in the
+        // SSG route universe descends from it, so it carries no provenance
+        // obligation: its reads contribute no `Content` edge. The `Visit`
+        // arm above still ran, so any edge a PREVIOUS worker generation
+        // recorded for this page is still dropped — the page goes from
+        // "contributes X" to "contributes nothing", never to "stale X".
+        //
+        // Falling through here would push a collection-level read for a
+        // consumer with no routes, which `edge_groups` then expands into an
+        // edge from every entry in the collection to a page that renders
+        // nothing.
+        let Some(entries) = entries else {
+            continue;
+        };
         let collection = ContentCollectionId::new(event.collection.ok_or_else(|| {
             anyhow::anyhow!(
                 "worker content read from {} omitted its collection name",
@@ -6923,12 +7614,23 @@ fn classify_content_trace_events(
 
 /// Validate a worker-emitted route source and resolve it to the graph's page
 /// key plus the current route-table entries that prove a `paths()` read.
+///
+/// The returned entries are `None` when the source IS a page module the
+/// router scan knows about but it contributed no SSG route entries — a
+/// dynamic route whose `paths()` returned `[]`, or a `prerender = false`
+/// page (those live in `ssr_routes`, never in `routes_by_source`). Issue
+/// #2064: that is an ordinary, benign state and must NOT be conflated with
+/// a source the router has never heard of. The latter — a stale/renamed/
+/// moved module that the running worker still traces — is a genuine
+/// inconsistency between the live worker and the live route table, and
+/// stays a hard error so the caller keeps its conservative fallback.
 #[cfg(feature = "embed_v8")]
 fn resolve_content_trace_consumer<'a>(
     raw_source: &str,
     routes_by_source: &'a HashMap<PathBuf, Vec<DevRouteEntry>>,
+    page_sources: &HashSet<PathBuf>,
     project_root: &Path,
-) -> Result<(PageId, &'a [DevRouteEntry])> {
+) -> Result<(PageId, Option<&'a [DevRouteEntry]>)> {
     let raw_source = PathBuf::from(raw_source);
     let source = if raw_source.is_absolute() {
         if !raw_source.starts_with(project_root) {
@@ -6953,12 +7655,20 @@ fn resolve_content_trace_consumer<'a>(
         }
         project_root.join(raw_source)
     };
-    let entries = routes_by_source.get(&source).ok_or_else(|| {
-        anyhow::anyhow!(
-            "worker content trace source {} is absent from the current route table",
-            source.display()
-        )
-    })?;
+    let entries = match routes_by_source.get(&source) {
+        Some(entries) => Some(entries.as_slice()),
+        // Issue #2064 — not in the SSG route table. Ask the router scan
+        // (the authoritative page-module oracle) whether this is a page at
+        // all before collapsing provenance for the whole site.
+        None if page_sources.contains(&source) => None,
+        None => {
+            anyhow::bail!(
+                "worker content trace source {} is not a known page module \
+                 (the router scan has no record of it)",
+                source.display()
+            );
+        }
+    };
     Ok((PageId::new(source), entries))
 }
 
@@ -7892,6 +8602,7 @@ pub(crate) fn stub_session_for_adapter_tests(
     DevRenderSession {
         inner: Arc::new(DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
+                page_sources: routes_by_source.keys().cloned().collect(),
                 routes_by_source,
                 ssr_routes: Vec::new(),
                 url_index,
@@ -7923,6 +8634,10 @@ pub(crate) fn stub_session_for_adapter_tests(
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — adapter tests inject routes directly; no injected
             // package routes in the stub universe.
             injected_static_seeds: Vec::new(),
@@ -8317,6 +9032,7 @@ mod tests {
             .to_vec();
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
+                page_sources: routes_by_source.keys().cloned().collect(),
                 routes_by_source,
                 ssr_routes,
                 url_index,
@@ -8347,6 +9063,10 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1809 — armed only by a Cold deferred-bundle failure.
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
@@ -8363,6 +9083,7 @@ mod tests {
         let url_index = build_url_index(&routes_by_source);
         DevRenderInner {
             routes: std::sync::RwLock::new(DevRouteTables {
+                page_sources: routes_by_source.keys().cloned().collect(),
                 routes_by_source,
                 ssr_routes,
                 url_index,
@@ -8373,6 +9094,10 @@ mod tests {
             lazy_render: false,
             // Stubs model a session mid-flight: boot already rendered.
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
+            // Issue #1826 — raised only by a live SSR route-handle publish.
+            ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "embed_v8")]
+            rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
@@ -10387,6 +11112,258 @@ mod tests {
                 );
             }
 
+            /// Issue #2004 (Dev Self Heal epic #1999) — a cold-bootstrap
+            /// recovery must also re-run the `_redirects` rewrite
+            /// pre-warm.
+            ///
+            /// Codex review finding on #2004: the boot hook's pre-warm
+            /// ran against the EMPTY scaffold route tables a failed
+            /// deferred Cold bundle left behind, so every rewrite target
+            /// missed its reverse lookup and nothing was warmed. Recovery
+            /// republishes the real tables — but its `mark_all_routes_stale`
+            /// only makes the target CLAIMABLE, and the whole premise of
+            /// #1825 is that no request for the target ever arrives to
+            /// claim it. So recovery raises this latch, which `run`'s
+            /// `on_outcome` drains to re-run the pass.
+            ///
+            /// Asserted as a one-shot with the same discipline as the
+            /// recovery latch itself: never raised without a recovery,
+            /// raised by the winning publish, and consumed exactly once.
+            #[test]
+            fn cold_bootstrap_recovery_requests_a_rewrite_prewarm_rerun_exactly_once() {
+                let session = recovery_session();
+
+                assert!(
+                    !session.inner.take_rewrite_prewarm_pending(),
+                    "a fresh session must not request a pre-warm re-run"
+                );
+                // An unarmed publish recovers nothing, so it must not ask
+                // for a re-run either.
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), None);
+                assert!(!session.inner.take_rewrite_prewarm_pending());
+
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+                assert!(
+                    session.inner.take_rewrite_prewarm_pending(),
+                    "recovery must request a rewrite pre-warm re-run"
+                );
+                assert!(
+                    !session.inner.take_rewrite_prewarm_pending(),
+                    "the request is one-shot — a second drain sees nothing"
+                );
+
+                // A later failure + recovery re-arms cleanly.
+                session.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(session.recover_cold_bootstrap_after_publish(), Some(2));
+                assert!(session.inner.take_rewrite_prewarm_pending());
+            }
+
+            /// Epic-review finding on #1999 — the recovery re-run must
+            /// broadcast the marks it lays down, TOGETHER with the tick's
+            /// own events, and must not strand them in the tick-stale
+            /// buffer.
+            ///
+            /// The shipped #2004 `on_outcome` did this instead:
+            ///
+            /// ```text
+            /// for ev in outcome_to_events(outcome) { tx.send(ev); }  // FIRST
+            /// if latch { wiring.run(redirects); }                    // THEN, no drain
+            /// ```
+            ///
+            /// Two consequences, both asserted below and both restored by
+            /// putting those two statements back in that order:
+            ///
+            /// 1. The tab was told to reload BEFORE the target was warm,
+            ///    so it bounced onto the dev 404 — the exact #1825
+            ///    symptom the recovery exists to clear.
+            /// 2. Worse, the pass's marks then landed in an
+            ///    ALREADY-DRAINED buffer. No `ReloadEvent::Page` of their
+            ///    own was ever sent, so no SECOND reload was guaranteed
+            ///    either and the tab stayed on the 404 — while the marks
+            ///    resurfaced later as spurious `pages_stale` in an
+            ///    unrelated tick.
+            ///
+            /// `run_and_broadcast` is the seam that fixes both, and is
+            /// what `on_outcome` now calls (inside `spawn_blocking` — it
+            /// renders, and `on_outcome` runs on an async worker). The
+            /// boot path already had this ordering by construction: it
+            /// pre-warms at step 4b, ahead of its own tick-stale drain.
+            ///
+            /// The third assertion is the codex finding on that fix: this
+            /// call site runs on a blocking thread while the orchestrator
+            /// keeps ticking, so it must broadcast from its own report and
+            /// leave the SHARED tick-stale buffer alone. An unrelated
+            /// mark seeded below stands in for an in-flight rebuild's;
+            /// consuming it would announce that rebuild's page early and
+            /// leave its own outcome empty.
+            #[tokio::test]
+            async fn recovery_rerun_broadcasts_its_marks_with_the_ticks_own_events() {
+                use crate::lazy_render_adapter::LazyRenderAdapter;
+                use zfb_build::DevAssetPipeline;
+                use zfb_server::ReloadEvent;
+
+                let session = recovery_session();
+                // The Cold shape at the moment recovery re-runs the pass:
+                // `mark_all_routes_stale` has just run, so `/about` has no
+                // servable bytes.
+                session
+                    .inner
+                    .mark_stale([PathBuf::from("about/index.html")]);
+                // ...and that mark was already drained by THIS tick's
+                // stale probe, so only what the pass itself produces can
+                // reach the assertions below.
+                let _ = session.inner.take_tick_stale();
+                // A CONCURRENT rebuild's mark, not yet drained by its own
+                // tick. Nothing in this pass may consume it.
+                session.inner.mark_stale([PathBuf::from("index.html")]);
+
+                let temp = tempfile::tempdir().expect("tempdir");
+                let pipeline = DevAssetPipeline::new();
+                let (tx, mut rx) = broadcast::channel::<ReloadEvent>(16);
+                let wiring = RewritePrewarmWiring {
+                    mode: BootLazyMode::Cold,
+                    base_prefix: None,
+                    session: session.clone(),
+                    adapter: LazyRenderAdapter::new(
+                        session.clone(),
+                        pipeline.request_writer(),
+                        temp.path().join("dev-pages"),
+                        Default::default(),
+                    ),
+                    reload_tx: tx.clone(),
+                };
+                let redirects: RedirectsHandle = Arc::new(std::sync::RwLock::new(
+                    Redirects::parse("/alias /about 200\n"),
+                ));
+
+                // `Css` stands in for whatever the recovery tick itself
+                // produced: it must survive the deferral, not be dropped
+                // on the floor by the new code path.
+                //
+                // Driven through `dispatch_outcome_events` — the actual
+                // `on_outcome` call site — rather than calling
+                // `run_and_broadcast` directly. Driving the seam alone
+                // proves the seam and nothing about whether production
+                // still routes through it: restoring the pre-fix
+                // ordering at the call site left a seam-only test green.
+                //
+                // The call site is handed a DIFFERENT channel from the
+                // one the wiring broadcasts on. That is what makes the
+                // ordering falsifiable without timing: the fix is "hand
+                // the events to the pass, never send them here", so
+                // `direct` must stay silent. The pre-fix code sent them
+                // itself, which shows up as a `Css` on `direct` — an
+                // assertion no sleep or scheduling luck can flip.
+                let (direct_tx, mut direct_rx) = broadcast::channel::<ReloadEvent>(16);
+                let handle = dispatch_outcome_events(
+                    Some(&(wiring.clone(), Arc::clone(&redirects))),
+                    vec![ReloadEvent::Css],
+                    &direct_tx,
+                )
+                .expect("the recovery arm must defer to the pre-warm pass");
+                handle.await.expect("pre-warm task panicked");
+                assert!(
+                    direct_rx.try_recv().is_err(),
+                    "the call site must hand the tick's events to the pre-warm pass, \
+                     never broadcast them itself — sending here is what reloaded the \
+                     tab onto the dev 404 before the target was warm",
+                );
+
+                let mut seen = Vec::new();
+                while let Ok(ev) = rx.try_recv() {
+                    seen.push(ev);
+                }
+                assert!(
+                    seen.contains(&ReloadEvent::Css),
+                    "the tick's own events must still be delivered, got {seen:?}"
+                );
+                assert!(
+                    seen.contains(&ReloadEvent::Page),
+                    "the pre-warm's own marks must produce a reload of their own — \
+                     without one the tab is left on the dev 404 forever, got {seen:?}"
+                );
+                assert_eq!(
+                    session.inner.take_tick_stale(),
+                    vec![PathBuf::from("index.html")],
+                    "the concurrent rebuild's mark must survive untouched, and the pass \
+                     must have stranded none of its own beside it",
+                );
+            }
+
+            /// Codex review of the #1999 fix pass — a live `_redirects`
+            /// edit must reload tabs even when the pre-warm renders
+            /// nothing.
+            ///
+            /// Adding `/alias /already-warm 200` changes ROUTING, not
+            /// page content: the pass correctly reports `Fresh` and does
+            /// no work, so inferring the reload from staleness would emit
+            /// nothing at all and leave a tab on `/alias`'s old 404 (or
+            /// on whatever the previous rule rewrote it to) until
+            /// something unrelated happened. The watch task therefore
+            /// supplies the `Page` event itself — and the dedupe must
+            /// keep it to exactly one when the pass DID warm something.
+            #[test]
+            fn live_redirects_edit_reloads_even_when_the_target_is_already_warm() {
+                use crate::lazy_render_adapter::LazyRenderAdapter;
+                use zfb_build::DevAssetPipeline;
+                use zfb_server::ReloadEvent;
+
+                let session = recovery_session();
+                let temp = tempfile::tempdir().expect("tempdir");
+                let pipeline = DevAssetPipeline::new();
+                let (tx, mut rx) = broadcast::channel::<ReloadEvent>(16);
+                let wiring = RewritePrewarmWiring {
+                    mode: BootLazyMode::Cold,
+                    base_prefix: None,
+                    session: session.clone(),
+                    adapter: LazyRenderAdapter::new(
+                        session.clone(),
+                        pipeline.request_writer(),
+                        temp.path().join("dev-pages"),
+                        Default::default(),
+                    ),
+                    reload_tx: tx.clone(),
+                };
+                let redirects: RedirectsHandle = Arc::new(std::sync::RwLock::new(
+                    Redirects::parse("/alias /about 200\n"),
+                ));
+
+                // Nothing is stale: `/about` is already warm, so the pass
+                // renders nothing and reports no targets.
+                assert!(session.claim_stale(Path::new("about/index.html")).is_none());
+                // The watch task's own event, verbatim.
+                wiring.run_and_broadcast(&redirects, vec![ReloadEvent::Page]);
+
+                let mut seen = Vec::new();
+                while let Ok(ev) = rx.try_recv() {
+                    seen.push(ev);
+                }
+                assert_eq!(
+                    seen,
+                    vec![ReloadEvent::Page],
+                    "a routing-only edit must still reload the tab, exactly once",
+                );
+
+                // And with a target that IS cold, the pass's own reload
+                // folds into that same single event rather than doubling
+                // it.
+                session
+                    .inner
+                    .mark_stale([PathBuf::from("about/index.html")]);
+                let _ = session.inner.take_tick_stale();
+                wiring.run_and_broadcast(&redirects, vec![ReloadEvent::Page]);
+                let mut seen = Vec::new();
+                while let Ok(ev) = rx.try_recv() {
+                    seen.push(ev);
+                }
+                assert_eq!(
+                    seen,
+                    vec![ReloadEvent::Page],
+                    "the pass's own reload must dedupe against the edit's, got {seen:?}",
+                );
+            }
+
             /// Issue #1809 — the core exactly-once contract. A publish
             /// with the latch never armed (the Auto/Off/healthy-Cold
             /// shape) is a strict no-op: no marks, nothing broadcast.
@@ -10537,6 +11514,227 @@ mod tests {
                             && *kind == zfb_graph::DepKind::Module),
                     "recovery's seed must not clobber edges already populated \
                      by the recovering publish"
+                );
+            }
+
+            // ── shared ssr_routes_published signal (issue #1826, epic
+            //    #1999) ──────────────────────────────────────────────────
+
+            /// SSR-ONLY fixture: `routes_by_source` (the SSG table both
+            /// self-heal channels' `mark_all_routes_stale` walks) is
+            /// EMPTY, and two `prerender = false` routes live in
+            /// `ssr_routes`. Matches the epic's acceptance shape exactly —
+            /// the project where `pages_stale` can only ever drain empty.
+            fn ssr_only_session() -> DevRenderSession {
+                DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(
+                        HashMap::new(),
+                        vec![ssr_entry("/"), ssr_entry("/api/hello")],
+                    )),
+                }
+            }
+
+            fn ssr_entry(url: &str) -> RouteUniverseEntry {
+                RouteUniverseEntry {
+                    url_path: url.into(),
+                    // SSR routes have NO dist output path — the exact
+                    // reason they can never reach `pages_stale`.
+                    output_path: PathBuf::new(),
+                    route_key: url.into(),
+                    static_html: false,
+                    source_path: None,
+                }
+            }
+
+            /// MIXED fixture: [`recovery_session`]'s two SSG routes PLUS
+            /// one SSR route, so both signals fire from one channel.
+            fn mixed_session() -> DevRenderSession {
+                let mk = |url: &str, out_path: &str| RouteUniverseEntry {
+                    url_path: url.into(),
+                    output_path: PathBuf::from(out_path),
+                    route_key: url.into(),
+                    static_html: false,
+                    source_path: None,
+                };
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                routes.insert(
+                    PathBuf::from("pages/index.tsx"),
+                    vec![DevRouteEntry {
+                        entry: mk("/", "index.html"),
+                        params: None,
+                    }],
+                );
+                DevRenderSession {
+                    inner: Arc::new(stub_dev_inner(routes, vec![ssr_entry("/api/hello")])),
+                }
+            }
+
+            /// Reproduce the TAB-FACING outcome both drain sites build:
+            /// the boot hook's `take_tick_stale` + `take_ssr_routes_published`
+            /// fold, and the watcher tick's stale probe +
+            /// `with_ssr_publish_probe` pair. Same two drains either way,
+            /// which is what lets one helper stand in for both.
+            fn drain_tab_facing_outcome(session: &DevRenderSession) -> BuildOutcome {
+                BuildOutcome {
+                    pages_stale: session.inner.take_tick_stale(),
+                    ssr_routes_published: session.inner.take_ssr_routes_published(),
+                    ..BuildOutcome::default()
+                }
+            }
+
+            /// Simulate the HEALTHY deferred boot publish's step-0 success
+            /// arm exactly as `run`'s boot hook does it: publish the live
+            /// SSR handle (→ the shared signal), then Cold's #1808
+            /// premark.
+            fn simulate_healthy_deferred_publish(session: &DevRenderSession) {
+                session.note_ssr_routes_published();
+                assert!(premark_stale_after_deferred_publish_decision(
+                    BootLazyMode::Cold
+                ));
+                session.mark_all_routes_stale();
+            }
+
+            /// Issue #1826 — THE symmetry assertion, and the whole reason
+            /// this fix is a shared `BuildOutcome` bit rather than a
+            /// synthetic reload event emitted from the recovery path.
+            ///
+            /// For an SSR-only project, the healthy Cold-lazy deferred
+            /// publish and the cold-bootstrap recovery must produce the
+            /// *same* tab-facing outcome — byte-identical `BuildOutcome`,
+            /// and therefore the identical `ReloadEvent` list. A
+            /// recovery-only fix would have made recovery self-heal
+            /// BETTER than a healthy boot; this test is what would catch
+            /// that regression.
+            #[test]
+            fn healthy_publish_and_cold_bootstrap_recovery_heal_an_ssr_only_tab_identically() {
+                let healthy = ssr_only_session();
+                simulate_healthy_deferred_publish(&healthy);
+                let healthy_outcome = drain_tab_facing_outcome(&healthy);
+
+                let recovering = ssr_only_session();
+                recovering.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(
+                    recovering.recover_cold_bootstrap_after_publish(),
+                    Some(0),
+                    "an SSR-only project has ZERO SSG routes for recovery to mark stale — \
+                     that is precisely the gap the shared signal closes"
+                );
+                let recovery_outcome = drain_tab_facing_outcome(&recovering);
+
+                assert_eq!(
+                    healthy_outcome, recovery_outcome,
+                    "the healthy deferred publish and the cold-bootstrap recovery must \
+                     produce the SAME BuildOutcome — neither path may self-heal better \
+                     than the other"
+                );
+                assert!(
+                    healthy_outcome.pages_stale.is_empty(),
+                    "no SSG route exists to mark: the reload can only come from the \
+                     shared ssr_routes_published bit"
+                );
+                assert!(healthy_outcome.ssr_routes_published);
+
+                for (label, outcome) in [
+                    ("healthy deferred publish", &healthy_outcome),
+                    ("cold-bootstrap recovery", &recovery_outcome),
+                ] {
+                    assert_eq!(
+                        zfb_server::livereload::outcome_to_events(outcome),
+                        vec![zfb_server::livereload::ReloadEvent::Page],
+                        "{label} must tell the open tab to reload, exactly once"
+                    );
+                }
+            }
+
+            /// Issue #1826 — the same symmetry holds for a MIXED SSG/SSR
+            /// project, and both paths still emit exactly ONE `Page`
+            /// event even though `pages_stale` AND `ssr_routes_published`
+            /// are both set: the two signals feed one gate, so no
+            /// duplicate reload ever reaches the tab.
+            #[test]
+            fn healthy_publish_and_recovery_agree_on_mixed_projects_without_duplicate_events() {
+                let healthy = mixed_session();
+                simulate_healthy_deferred_publish(&healthy);
+                let healthy_outcome = drain_tab_facing_outcome(&healthy);
+
+                let recovering = mixed_session();
+                recovering.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(
+                    recovering.recover_cold_bootstrap_after_publish(),
+                    Some(1),
+                    "the mixed project's single SSG route is still marked stale"
+                );
+                let recovery_outcome = drain_tab_facing_outcome(&recovering);
+
+                assert_eq!(healthy_outcome, recovery_outcome);
+                assert_eq!(
+                    healthy_outcome.pages_stale,
+                    vec![PathBuf::from("index.html")]
+                );
+                assert!(healthy_outcome.ssr_routes_published);
+                assert_eq!(
+                    zfb_server::livereload::outcome_to_events(&healthy_outcome),
+                    vec![zfb_server::livereload::ReloadEvent::Page],
+                    "a mixed project setting BOTH signals must still see exactly one \
+                     Page event, never two"
+                );
+            }
+
+            /// Issue #1826 — the no-behavior-change half. An SSG-ONLY
+            /// project (`ssr_routes` empty) must never raise the bit on
+            /// EITHER path, so its outcome is byte-identical to what both
+            /// channels produced before this fix: `pages_stale` only, one
+            /// `Page` event, no extra and no duplicate.
+            #[test]
+            fn ssg_only_projects_never_raise_the_ssr_signal_on_either_path() {
+                let healthy = recovery_session();
+                assert_eq!(
+                    healthy.note_ssr_routes_published(),
+                    0,
+                    "a project with no SSR routes must not raise the signal"
+                );
+                healthy.mark_all_routes_stale();
+                let healthy_outcome = drain_tab_facing_outcome(&healthy);
+
+                let recovering = recovery_session();
+                recovering.inner.arm_cold_bootstrap_recovery();
+                assert_eq!(recovering.recover_cold_bootstrap_after_publish(), Some(2));
+                let recovery_outcome = drain_tab_facing_outcome(&recovering);
+
+                assert_eq!(healthy_outcome, recovery_outcome);
+                assert!(
+                    !healthy_outcome.ssr_routes_published,
+                    "an SSG-only project's BuildOutcome must be unchanged by this fix"
+                );
+                assert_eq!(healthy_outcome.pages_stale.len(), 2);
+                assert_eq!(
+                    zfb_server::livereload::outcome_to_events(&healthy_outcome),
+                    vec![zfb_server::livereload::ReloadEvent::Page],
+                );
+            }
+
+            /// Issue #1826 — the signal is drained ONCE per tick, exactly
+            /// like `take_tick_stale`. Whichever drain site runs first for
+            /// a tick (the boot hook's fold, or the pipeline's
+            /// SSR-publish probe) consumes it; the other sees `false`, so
+            /// a single publish can never broadcast two reloads. Also
+            /// pins that a later publish re-raises it.
+            #[test]
+            fn ssr_publish_signal_drains_once_per_publish_and_re_raises() {
+                let session = ssr_only_session();
+                session.note_ssr_routes_published();
+
+                assert!(session.inner.take_ssr_routes_published());
+                assert!(
+                    !session.inner.take_ssr_routes_published(),
+                    "a second drain for the same tick must see nothing — otherwise the \
+                     boot fold and the tick probe would each broadcast a reload"
+                );
+
+                session.note_ssr_routes_published();
+                assert!(
+                    session.inner.take_ssr_routes_published(),
+                    "a later publish must raise the signal again"
                 );
             }
 
@@ -11216,8 +12414,10 @@ mod tests {
             root: &Path,
             events: Vec<DevContentTraceEvent>,
         ) {
+            let page_sources: HashSet<PathBuf> = routes.keys().cloned().collect();
             let classified =
-                classify_content_trace_events(events, routes, membership, root).unwrap();
+                classify_content_trace_events(events, routes, &page_sources, membership, root)
+                    .unwrap();
             let groups = ContentProvenance::from_reads(classified.reads.into_values().flatten())
                 .edge_groups(&membership.membership)
                 .unwrap();
@@ -11400,6 +12600,204 @@ mod tests {
             );
         }
 
+        /// Issue #2064 — a dynamic route whose `paths()` legitimately
+        /// returned `[]` is a known page module that produced zero route
+        /// entries. It must not take the rest of the site's provenance down
+        /// with it: classification succeeds, the zero-route page contributes
+        /// no `Content` edge, and every other traced route keeps its edges.
+        ///
+        /// Before the fix `resolve_content_trace_consumer` hard-errored on
+        /// the zero-route source, and every caller turns that error into
+        /// "content provenance unavailable" + a wholesale `Content`-edge
+        /// wipe — narrowing off for the entire project.
+        #[test]
+        fn zero_route_page_module_is_benign_and_leaves_other_provenance_intact() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let alpha = write_post(root, "alpha");
+            let index_source = root.join("pages/posts/index.tsx");
+            // The zero-`paths()` route: a real page module the router scan
+            // saw, which expanded into no route entries at all.
+            let empty_source = root.join("pages/photos/tag/[tag].tsx");
+            let routes = HashMap::from([(
+                index_source.clone(),
+                vec![route_entry("/posts", "posts/index.html", "/posts", None)],
+            )]);
+            let page_sources: HashSet<PathBuf> =
+                HashSet::from([index_source.clone(), empty_source.clone()]);
+            let membership = content_membership(root, &cfg);
+
+            let classified = classify_content_trace_events(
+                vec![
+                    // The zero-route module ran `paths()` and read the
+                    // collection to decide it had nothing to emit.
+                    trace("pages/photos/tag/[tag].tsx", DevContentTracePhase::Paths),
+                    trace("pages/posts/index.tsx", DevContentTracePhase::Render),
+                ],
+                &routes,
+                &page_sources,
+                &membership,
+                root,
+            )
+            .expect("a known page module that produced zero routes is a benign, ordinary state");
+
+            assert!(
+                classified
+                    .reads
+                    .keys()
+                    .all(|observation| observation.consumer != PageId::new(empty_source.clone())),
+                "a page with no routes carries no provenance obligation, so it must contribute \
+                 no tracked read; got {:?}",
+                classified.reads.keys().collect::<Vec<_>>(),
+            );
+
+            let mut graph = DependencyGraph::new();
+            replace_content_edges(
+                &mut graph,
+                ContentProvenance::from_reads(classified.reads.into_values().flatten())
+                    .edge_groups(&membership.membership)
+                    .unwrap(),
+            );
+            assert_eq!(
+                graph.consumers_of(&alpha),
+                Some(vec![PageId::new(index_source)]),
+                "the unrelated aggregate route must keep its content edge — this is the \
+                 narrowing that the zero-route page used to destroy site-wide"
+            );
+        }
+
+        /// The oracle the two tests around this one are handed by argument
+        /// has to come from somewhere real (#2064). This pins the supplier:
+        /// the ROUTER SCAN lists a dynamic page module regardless of what
+        /// its `paths()` will later return, which is exactly why it — and
+        /// not either built route table — is what
+        /// [`resolve_content_trace_consumer`] consults.
+        #[test]
+        fn collect_page_sources_lists_a_dynamic_page_the_route_tables_may_never_hold() {
+            let tmp = tempfile::tempdir().unwrap();
+            let pages = tmp.path().join("pages");
+            std::fs::create_dir_all(pages.join("photos/tag")).unwrap();
+            std::fs::write(pages.join("index.tsx"), "export default () => null;\n").unwrap();
+            std::fs::write(
+                pages.join("photos/tag/[tag].tsx"),
+                "export function paths() { return []; }\nexport default () => null;\n",
+            )
+            .unwrap();
+
+            let router = zfb_router::Router::scan(&pages).unwrap();
+            let sources = collect_page_sources(&router);
+            assert!(
+                sources.contains(&pages.join("photos/tag/[tag].tsx")),
+                "the scan knows a dynamic page module before `paths()` ever runs; got {sources:?}"
+            );
+            assert!(sources.contains(&pages.join("index.tsx")));
+        }
+
+        /// The other half of the #2064 discrimination: a traced source the
+        /// ROUTER SCAN has never heard of is a genuine inconsistency between
+        /// the live worker and the live route table (a stale/renamed/moved
+        /// module), and must still be surfaced so the caller keeps its
+        /// conservative fallback. Silencing this alongside the benign
+        /// zero-route case would be the wrong fix.
+        #[test]
+        fn traced_source_unknown_to_the_router_scan_is_still_surfaced() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let _alpha = write_post(root, "alpha");
+            let index_source = root.join("pages/posts/index.tsx");
+            let routes = HashMap::from([(
+                index_source.clone(),
+                vec![route_entry("/posts", "posts/index.html", "/posts", None)],
+            )]);
+            // Deliberately NOT a member: the scan produced no route for it.
+            let page_sources: HashSet<PathBuf> = HashSet::from([index_source]);
+            let membership = content_membership(root, &cfg);
+
+            let error = classify_content_trace_events(
+                vec![trace("pages/ghost/[slug].tsx", DevContentTracePhase::Paths)],
+                &routes,
+                &page_sources,
+                &membership,
+                root,
+            )
+            .expect_err("a source the router scan never produced a route for is a real problem");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains("pages/ghost/[slug].tsx") && message.contains("known page module"),
+                "the error must name the offending source and say WHY it is unresolvable; got: \
+                 {message}"
+            );
+        }
+
+        /// A zero-route page module still gets its `Visit` observation
+        /// recorded (#2064). That is what drops the edges a PREVIOUS worker
+        /// generation recorded for it back when its `paths()` was non-empty:
+        /// the page must go from "contributes X" to "contributes nothing",
+        /// never to "still contributes the stale X".
+        #[test]
+        fn zero_route_page_visit_still_clears_its_previous_generation_edges() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            let cfg = posts_config();
+            let alpha = write_post(root, "alpha");
+            let empty_source = root.join("pages/photos/tag/[tag].tsx");
+            let routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+            let page_sources: HashSet<PathBuf> = HashSet::from([empty_source.clone()]);
+            let membership = content_membership(root, &cfg);
+
+            let classified = classify_content_trace_events(
+                vec![visit(
+                    "pages/photos/tag/[tag].tsx",
+                    DevContentTracePhase::Paths,
+                )],
+                &routes,
+                &page_sources,
+                &membership,
+                root,
+            )
+            .unwrap();
+
+            let observation = DevContentTraceObservation {
+                consumer: PageId::new(empty_source.clone()),
+                phase: DevContentTracePhase::Paths,
+            };
+            assert_eq!(
+                classified.observed,
+                BTreeSet::from([observation.clone()]),
+                "the visit is positive evidence that this worker executed the route phase"
+            );
+
+            // What the previous generation left behind, back when the same
+            // module's `paths()` still resolved entries.
+            let mut retained = BTreeMap::from([(
+                observation,
+                vec![TrackedContentRead::collection(
+                    PageId::new(empty_source),
+                    "posts",
+                )],
+            )]);
+            apply_content_trace_observations(&mut retained, classified.observed, classified.reads);
+            assert!(
+                retained.is_empty(),
+                "the visit must retire the stale evidence rather than leave it bridging forever"
+            );
+
+            let mut graph = DependencyGraph::new();
+            replace_content_edges(
+                &mut graph,
+                ContentProvenance::from_reads(retained.into_values().flatten())
+                    .edge_groups(&membership.membership)
+                    .unwrap(),
+            );
+            assert_eq!(
+                graph.consumers_of(&alpha),
+                None,
+                "a route that no longer exists must not keep pulling content edges"
+            );
+        }
+
         #[test]
         fn current_worker_visit_without_read_replaces_stale_route_provenance() {
             let tmp = tempfile::tempdir().unwrap();
@@ -11415,6 +12813,7 @@ mod tests {
             let classified = classify_content_trace_events(
                 vec![visit("pages/posts/index.tsx", DevContentTracePhase::Render)],
                 &routes,
+                &routes.keys().cloned().collect(),
                 &membership,
                 root,
             )
@@ -12662,6 +14061,74 @@ mod tests {
             "the dev boot CSS pass must publish a non-empty mirror-root set for a \
              project claiming a workspace sibling via a tsconfig alias — got an empty \
              registry: {roots:?}"
+        );
+    }
+
+    /// Issue #1819 (Mirror Root CSS Scan epic #1995) — the END-TO-END half
+    /// of the mandatory registry-population assertion for option (b)'s gate.
+    ///
+    /// The orchestrator now reruns the Tailwind content scan for a
+    /// `PathClass::Content` (`.md`/`.mdx`) change when
+    /// `GranularityPolicy::is_under_css_mirror_root` says the path lies
+    /// inside a published mirror root. The unit tests in `zfb-build`
+    /// (`orchestrator::tests::sibling_mirror_root_mdx_edit_reruns_css`) drive
+    /// that predicate against a HAND-POPULATED registry — which proves the
+    /// gate's logic but NOT that the real dev boot pass ever populates a
+    /// root containing a sibling markdown file. That gap is exactly how
+    /// #1058's guard stayed dead in practice for two releases
+    /// (`l-lessons-dev-watcher-narrowing`), so it is closed here: the real
+    /// `build_dev_css_and_publish_mirror_roots` seam runs against a real
+    /// workspace fixture whose sibling holds ONLY an `.mdx` file, and the
+    /// predicate is asserted against that exact file.
+    ///
+    /// Deliberately does not require a Tailwind binary: the seam publishes
+    /// mirror roots BEFORE the Tailwind subprocess runs (see the test above).
+    #[test]
+    fn dev_boot_css_mirror_roots_cover_a_sibling_mdx_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        std::fs::write(
+            ws.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        )
+        .unwrap();
+        let project = ws.join("sub-packages/mdxhost");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("tsconfig.json"),
+            r#"{"compilerOptions":{"paths":{"@ushared-mdx/*":["../../lib/ushared-mdx/*"]}}}"#,
+        )
+        .unwrap();
+        // The sibling holds ONLY markdown — no `.tsx`/`.ts` module — which
+        // is the shape #1819 is about.
+        std::fs::create_dir_all(ws.join("lib/ushared-mdx")).unwrap();
+        let sibling_mdx = ws.join("lib/ushared-mdx/notes.mdx");
+        std::fs::write(&sibling_mdx, "# Sibling notes\n").unwrap();
+
+        let cfg = config::Config::default();
+        let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+        let _ = build_dev_css_and_publish_mirror_roots(
+            &project,
+            &project.join(".zfb-dev-assets"),
+            &cfg,
+            &[],
+            &[],
+            &raw_import_invalidation,
+        );
+
+        let policy = zfb_build::GranularityPolicy::default()
+            .with_raw_import_invalidation(raw_import_invalidation);
+        let roots = policy.css_mirror_root_paths();
+        assert!(
+            !roots.is_empty(),
+            "the boot CSS pass must publish a non-empty mirror-root set: {roots:?}"
+        );
+        assert!(
+            policy.is_under_css_mirror_root(&sibling_mdx),
+            "the option-(b) gate is keyed on this predicate — a published root set that \
+             does not actually CONTAIN the sibling .mdx would make the orchestrator gate \
+             dead code in the very scenario #1819 is about. roots={roots:?}, path={}",
+            sibling_mdx.display()
         );
     }
 }

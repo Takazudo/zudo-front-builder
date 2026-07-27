@@ -10,7 +10,7 @@
 # doctests. Do not assume a green nextest run covers doctest examples.
 
 # ── Cross-binary serialization of the heavy V8/esbuild e2e binaries ──────────
-# These 22 integration-test binaries (all in package `zfb`) each spawn a real
+# These 30 integration-test binaries (all in package `zfb`) each spawn a real
 # `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
 # shells out to esbuild. Booting two at once starves CPU/memory and turns
 # their generous boot-deadline watchdogs flaky. `cargo test` serialized these
@@ -18,13 +18,16 @@
 # binaries concurrently by default — so without this group these heavy
 # processes race each other for CPU/memory. The group makes the serialization
 # explicit at the runner level: at most ONE test from this group runs at a
-# time across all 22 binaries.
+# time across all 30 binaries.
 #
 # The set is two sub-groups sharing one test-group:
-#   • 12 flock-adopting binaries (client_bundling_cross_pipeline,
-#     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set, and
-#     wasm_ssr_dev_smoke_e2e) — spawn
-#     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
+#   • 19 flock-adopting binaries (client_bundling_cross_pipeline,
+#     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set,
+#     wasm_ssr_dev_smoke_e2e, page_extension_full_matrix_e2e,
+#     mirror_css_scan_mdx_e2e, cold_rewrite_prewarm_e2e,
+#     ssr_reload_self_heal_e2e, embedded_host_request_time_e2e, and
+#     workerd_parity_e2e) — spawn `zfb dev` and/or `zfb build` and/or
+#     `zfb preview`. These ALSO hold
 #     #1339's OS advisory flock (crates/zfb-test-utils/src/cross_binary_lock.rs),
 #     so for them the test-group is defense in depth (runner-level) on top of
 #     the flock's OS-level guarantee. `preview_cross_mode_e2e` (issue #1547)
@@ -36,11 +39,49 @@
 #     starts a fresh content fixture and proves an edit reaches its entry,
 #     index, tag, and paginated aggregate routes. `wasm_ssr_dev_smoke_e2e`
 #     (issue #1511) serves a `prerender=false` Wasm-importing route through a
-#     real `zfb dev` session.
-#   • 10 build-command binaries (build_cleans_outdir, build_package_routes,
+#     real `zfb dev` session. `page_extension_full_matrix_e2e` (issue #1994,
+#     Page Extension Contract epic #1990 Wave 4 — the central confirm pass)
+#     runs a real `zfb build` THEN spawns a real
+#     `zfb dev` session over a single fixture covering all seven routable
+#     page-extension shapes (`.tsx`/`.ts`/`.jsx`/`.js`/`.mdx`/`.md`/`.html`)
+#     plus a dynamic `.ts` page, proving both the production route table and
+#     the dev server agree with Wave 3's build-only proof.
+#     `mirror_css_scan_mdx_e2e` (Mirror Root CSS Scan epic #1995; written
+#     RED in Wave 1 / #1996, assertion inverted in Wave 2 / #1997) spawns a
+#     real `zfb dev` session and proves a sibling-mirror-root `.mdx` edit both
+#     reaches the orchestrator AND reruns the Tailwind content scan, so the
+#     new utility class lands in the served stylesheet restart-free (issue
+#     #1819). `cold_rewrite_prewarm_e2e` (issues #2001/#2004, Dev Self Heal
+#     epic #1999) spawns a real `zfb dev` session over a fresh Cold boot and
+#     proves a `_redirects` 200-rewrite target is pre-warmed and resolves
+#     instead of 404ing forever. `ssr_reload_self_heal_e2e` (issues
+#     #2000/#2002/#2005, same epic) is the newest member: two tests spawning
+#     a real `zfb dev` session over an SSR-only project, proving an
+#     already-open tab reloads after the deferred publish on both the healthy
+#     Cold-lazy boot path and the cold-bootstrap recovery path.
+#     `embedded_host_request_time_e2e` (issue #2019, V8 Request Time Parity
+#     epic #2012 Wave 7 — the confirm pass over Waves 2-6) is the newest
+#     member: one test spawns a real `zfb dev` session and drives a
+#     `prerender=false` route that performs a real outbound loopback fetch
+#     AND uses Web Crypto in one dispatch, plus explicit resource-exhaustion
+#     (the 50-subrequest cap), host-side transport-failure (connection
+#     refused), and unsupported-capability (`crypto.subtle.encrypt`)
+#     scenarios; a second test spawns a real `zfb build` over a separate,
+#     SSR-route-free fixture proving the build-time SSG network denial
+#     (guardrail 4) is unchanged. `workerd_parity_e2e` (issue #2020, same
+#     epic, Wave 8 — the central confirm pass) is the newest member: it
+#     spawns a real `zfb build` (Cloudflare adapter), a real `zfb dev`, AND
+#     a real `wrangler dev` (real workerd, local mode), driving the SAME
+#     page sources through both runtimes and diffing the responses —
+#     byte-identical for supported contract rows, and exactly the
+#     documented D7/D8 divergences (legacy MD5 digest; key-bearing
+#     SubtleCrypto) where they are expected to differ.
+#   • 12 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
-#     end_to_end_basic_blog_build, html_minify_build, wasm_ssr_adapter_e2e,
+#     end_to_end_basic_blog_build, gfm_footnotes_tasklists_confirm_build,
+#     html_minify_build,
+#     page_extension_route_table_build, wasm_ssr_adapter_e2e,
 #     sibling_css_module_command_layer_build) — each runs `zfb build`,
 #     which likewise boots the embedded V8 host and shells out to esbuild.
 #     These are NOT
@@ -49,9 +90,20 @@
 #     filter did) let them run concurrently with the dev-server group and
 #     reintroduced the exact CPU/memory contention the group exists to
 #     prevent. `sibling_css_module_command_layer_build` (issue #1698,
-#     sibling-mirror epic #1691) joined last: it drives a real `zfb build`
-#     proving a workspace-sibling `.module.css` class map is discovered and
-#     emitted through the command layer, not manually supplied.
+#     sibling-mirror epic #1691) joined the set earlier; `page_extension_route_table_build`
+#     (issue #1993, Page Extension Contract epic #1990 Wave 3) joined next:
+#     it drives a real `zfb build` proving `.ts`/`.js`/`.jsx` pages reach the
+#     production route table and render end-to-end, not just the router's
+#     own scanner unit tests. `gfm_footnotes_tasklists_confirm_build` (issue
+#     #2029, GFM Footnotes And Task Lists epic #2021 Wave 6 — the central
+#     confirm pass) joined next: a real `zfb build` over a `.md`/`.mdx`
+#     content collection proving task-list checkboxes and footnotes
+#     (including a repeated reference) render identically regardless of
+#     file extension, plus a `.mdx`-only fixture proving footnote/task-list
+#     nested inside a custom JSX component's children resolves through the
+#     same document-level footnote model. This bucket is now 12 — Wave 4's
+#     new binary ALSO spawns `zfb dev`, so it joins the flock-adopting
+#     bucket above instead.
 #
 # Completeness was re-verified by grepping crates/zfb/tests/*.rs for the real
 # `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
@@ -64,15 +116,23 @@
 [test-groups.e2e-heavy]
 max-threads = 1
 
-# The override that assigns the 23 heavy binaries to the e2e-heavy group AND
+# The override that assigns the 28 heavy binaries to the e2e-heavy group AND
 # grants them a long per-test timeout lives in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
 # matches (`=name`) keep the set explicit; it is a SUPERSET of #1339's
 # 12-binary flock adoption set (8 original + `preview_cross_mode_e2e` +
 # `dev_out_of_root_collection_e2e` + `dev_content_aggregate_cold_boot_e2e` +
-# `wasm_ssr_dev_smoke_e2e`, issues #1547 / #1552 / #1598 / #1511) — the 10
-# build-command binaries have no flock and rely on this group alone.
+# `wasm_ssr_dev_smoke_e2e`, issues #1547 / #1552 / #1598 / #1511), further
+# extended by `page_extension_full_matrix_e2e` (issue #1994),
+# `cold_rewrite_prewarm_e2e` (issues #2001/#2004, Dev Self Heal epic #1999 —
+# a real `zfb dev` E2E, `#[ignore]`d `heavy`; written RED in Wave 1 and
+# inverted green in Wave 4), and `ssr_reload_self_heal_e2e` (issues
+# #2000/#2002/#2005, same epic — two real `zfb dev` E2E tests, `#[ignore]`d
+# `env-gate: esbuild`; written RED in Wave 1, inverted green in Wave 2, and
+# registered here in Wave 6 — it was previously missing from this filter
+# despite spawning `zfb dev`) — the 11 build-command binaries have no flock
+# and rely on this group alone.
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
@@ -97,8 +157,26 @@ max-threads = 1
 # (`binary(=version_stamp)` would also have worked), but `test(=...)` is used
 # for consistency with the render_pipeline entry and to stay exact-name-scoped
 # if the file ever grows a second test.
+#
+# A THIRD test-name predicate (epic #2008 review) joins the same OR, and is the
+# one entry that is a PREFIX regex rather than an exact name:
+# `test(/^v8_host_adapter::tests::/)`. Sub-issue #2009 added ~14 tests to
+# `crates/zfb/src/v8_host_adapter.rs`'s test module, and all but the one pure
+# string-formatting test boot a REAL V8 isolate on a dedicated thread — inside
+# the same shared `zfb` lib-test target as hundreds of ordinary unit tests, so
+# `binary(=...)` cannot target them. They are the same class of work as the
+# `render_pipeline` entry above, just a whole module of it. One of them
+# (`drop_closes_channel_and_joins_thread_promptly_on_both_constructors`) asserts
+# a 5s WALL-CLOCK bound on `Drop`'s thread join, which is exactly the
+# contention-sensitive shape this group exists to protect: the bound is the
+# only thing that test pins, so it is serialized rather than loosened. The
+# module prefix (not 15 exact names) is used deliberately — every test in this
+# module is V8-heavy by construction, and a prefix keeps a future addition
+# covered instead of silently unserialized. The lone non-booting test
+# (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
+# is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=end_to_end_basic_blog_build) | binary(=html_minify_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy

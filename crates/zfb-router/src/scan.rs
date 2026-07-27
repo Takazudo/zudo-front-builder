@@ -16,8 +16,10 @@
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug`     |                                |
 //!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) are ignored.
-//! Accepted page extensions: `.tsx`, `.mdx`, `.md`, `.html`. Files with any other
-//! extension are skipped with a `tracing::warn!` so authors notice accidental
+//! Accepted page extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`,
+//! `.html` (see [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`], the single source of
+//! truth shared with the bundler). Files with any other extension are
+//! skipped with a `tracing::warn!` so authors notice accidental
 //! mis-placements.
 //!
 //! ## `.md` page contract (v1)
@@ -51,12 +53,16 @@ use crate::route::{Route, RouteKind, Segment};
 
 /// Extensions accepted as page source files.
 ///
-/// `mdx` is included for parity with existing zfb projects that author MDX
-/// pages directly in `pages/`. The bundler routes `.mdx` and `.md` through
-/// the same MDX-compile pipeline, but the router must accept both shapes so
-/// `pages/about.mdx` continues to produce `/about` (zfb#404 regression fix
-/// — earlier diff briefly dropped `.mdx` while extending the allowlist).
-const ACCEPTED_PAGE_EXTENSIONS: &[&str] = &["tsx", "mdx", "md", "html"];
+/// Re-exported from [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] — the single
+/// source of truth shared with the bundler (`zfb-build`'s `derive_route`),
+/// so the two layers cannot silently drift apart again (issue #1742 / epic
+/// #1990). `mdx` is included for parity with existing zfb projects that
+/// author MDX pages directly in `pages/`. The bundler routes `.mdx` and
+/// `.md` through the same MDX-compile pipeline, but the router must accept
+/// both shapes so `pages/about.mdx` continues to produce `/about` (zfb#404
+/// regression fix — earlier diff briefly dropped `.mdx` while extending the
+/// allowlist).
+const ACCEPTED_PAGE_EXTENSIONS: &[&str] = zfb_types::ROUTABLE_PAGE_EXTENSIONS;
 
 /// Maximum specificity points awarded per route segment. The exact value is an
 /// implementation detail; only relative ordering matters.
@@ -173,15 +179,35 @@ fn scan_pages_inner(pages_dir: &Path) -> Result<(Vec<Route>, Vec<String>), Route
             continue;
         }
 
-        // Accept .tsx, .mdx, .md, .html as page sources. Warn on any other
-        // extension so authors notice accidental mis-placements in pages/.
+        // Skip conventional sidecars that carry a routable extension but are
+        // never pages: TypeScript declaration files (`env.d.ts`) and colocated
+        // tests (`index.test.ts`, `about.spec.tsx`). Widening the allowlist to
+        // `.ts`/`.js`/`.jsx` (epic #1990) newly swept these in — an
+        // `index.test.ts` beside `index.tsx` would otherwise turn a green build
+        // into `RouterError::AmbiguousRoute`. Deliberately SILENT (debug, not
+        // the `warn!` below): these extensions ARE recognised, the files are
+        // just not pages, so the "unrecognised extension" warning would be
+        // actively misleading. The filename contract is the single source of
+        // truth in `zfb-types`, beside `is_client_script_file`.
+        if zfb_types::is_page_sidecar_file(path) {
+            tracing::debug!(
+                path = %rel.display(),
+                "skipping conventional non-page sidecar under pages/ \
+                 (*.d.ts / *.test.* / *.spec.*)"
+            );
+            continue;
+        }
+
+        // Accept .tsx, .ts, .jsx, .js, .mdx, .md, .html as page sources. Warn
+        // on any other extension so authors notice accidental mis-placements
+        // in pages/.
         match ext {
             Some(e) if ACCEPTED_PAGE_EXTENSIONS.contains(&e) => {}
             _ => {
                 tracing::warn!(
                     path = %rel.display(),
                     "pages/ file has an unrecognised extension and will be skipped; \
-                     accepted extensions are: tsx, mdx, md, html"
+                     accepted extensions are: tsx, ts, jsx, js, mdx, md, html"
                 );
                 continue;
             }
@@ -276,9 +302,18 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
             // `output_extension = None` (directory-index HTML layout).
             // Frontmatter extension overrides are not supported for
             // these source types (out of scope for v1).
-            let is_tsx_or_ts = comp.ends_with(".tsx") || comp.ends_with(".ts");
+            //
+            // Applies to every script page source (`.tsx`/`.ts`/`.jsx`/
+            // `.js` — `zfb_types::SCRIPT_PAGE_EXTENSIONS`), not just
+            // `.tsx`/`.ts`: a `.js`/`.jsx` page must get the same
+            // `sitemap.xml.js` → `output_extension = Some("xml")`
+            // convention as its `.tsx`/`.ts` equivalent now that both are
+            // routable (epic #1990).
+            let is_script_page = zfb_types::SCRIPT_PAGE_EXTENSIONS
+                .iter()
+                .any(|ext| comp.ends_with(&format!(".{ext}")));
             let stem_is_param = stem.starts_with('[');
-            if is_tsx_or_ts && !stem_is_param {
+            if is_script_page && !stem_is_param {
                 if let Some((before_dot, after_dot)) = stem.rsplit_once('.') {
                     if !before_dot.is_empty() && !after_dot.is_empty() {
                         output_extension = Some(after_dot.to_string());
@@ -339,24 +374,25 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
 }
 
 /// Strip the source-language extension from a filename component.
-/// Recognised source extensions: `.tsx`, `.ts`, `.mdx`, `.md`, `.html`.
-/// Returns the input unchanged when the component does not end with
-/// one of those extensions.
+///
+/// The recognised set is exactly [`ACCEPTED_PAGE_EXTENSIONS`]
+/// (`zfb_types::ROUTABLE_PAGE_EXTENSIONS`) — this answers "can this file be
+/// routed", so it must be the ROUTABLE subset, not the narrower script one:
+/// `about.md` and `about.html` need their extensions stripped just as much as
+/// `about.tsx` does. Consuming the shared constant means an eighth routable
+/// extension cannot be accepted at the gate above yet left un-stripped here,
+/// which would leak the extension into the URL segment (`/about.ts`).
+///
+/// Order is irrelevant: no accepted extension is a suffix of another once the
+/// leading `.` is included (`"a.tsx".strip_suffix(".ts")` is `None`).
+///
+/// Returns the input unchanged when the component does not end with one of
+/// those extensions.
 fn strip_source_extension(component: &str) -> &str {
-    if let Some(stem) = component.strip_suffix(".mdx") {
-        return stem;
-    }
-    if let Some(stem) = component.strip_suffix(".tsx") {
-        return stem;
-    }
-    if let Some(stem) = component.strip_suffix(".ts") {
-        return stem;
-    }
-    if let Some(stem) = component.strip_suffix(".md") {
-        return stem;
-    }
-    if let Some(stem) = component.strip_suffix(".html") {
-        return stem;
+    for ext in ACCEPTED_PAGE_EXTENSIONS {
+        if let Some(stem) = component.strip_suffix(&format!(".{ext}")) {
+            return stem;
+        }
     }
     component
 }
@@ -1330,6 +1366,25 @@ mod tests {
     }
 
     #[test]
+    fn output_filename_sitemap_xml_js_matches_tsx_convention() {
+        // codex review (page-ext-centralize self-review): `.js`/`.jsx` page
+        // sources must follow the same `sitemap.xml.<ext>` ->
+        // `output_extension = Some("xml")` convention as `.tsx`/`.ts` now
+        // that both are routable (epic #1990) — a widened router that only
+        // widened the routing gate but not this convention would silently
+        // regress JS/JSX sitemap-style pages to `sitemap.xml/index.html`.
+        for src in ["sitemap.xml.js", "sitemap.xml.jsx"] {
+            let r = route_from(src);
+            assert_eq!(r.output_extension.as_deref(), Some("xml"), "{src}");
+            assert_eq!(
+                r.output_filename(None),
+                PathBuf::from("sitemap.xml"),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
     fn output_filename_nested_index_xml_preserves_extension() {
         // Regression: `blog/index.xml.tsx` previously wrote to a file
         // literally named `blog`. It should write to `blog/index.xml`.
@@ -1563,6 +1618,233 @@ mod tests {
         assert!(
             logs_contain("unrecognised extension"),
             "expected a warning about the unrecognised extension"
+        );
+    }
+
+    // ---- Page Extension Contract characterization (epic #1990, #1991) ------
+    //
+    // Pinned the router-vs-bundler extension divergence in #1991: the
+    // bundler treated `.tsx`/`.ts`/`.jsx`/`.js`/`.mdx` as page-capable script
+    // sources (plus `.md`/`.html` as non-script page sources — see
+    // `crates/zfb-build/src/bundler.rs`'s `derive_route`), but `scan_pages`
+    // only accepted `tsx`/`mdx`/`md`/`html` — so `pages/index.ts`, `.js`,
+    // `.jsx` were bundle-capable yet never routed. #1992 (Wave 2) widened
+    // `ACCEPTED_PAGE_EXTENSIONS` to the shared `zfb_types::
+    // ROUTABLE_PAGE_EXTENSIONS` constant, so the trio below is now green.
+    // These are BEHAVIORAL tests (observed routing outcome), deliberately
+    // not an equality check against the bundler's own extension list — that
+    // would be tautological now that both layers share one constant.
+
+    #[test]
+    fn tsx_page_is_routed_today() {
+        let routes = scan_tree(&["index.tsx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/".to_string()]);
+    }
+
+    #[test]
+    fn mdx_page_is_routed_today() {
+        // zfb#404 regression guard, exercised through the FULL scan_pages
+        // gate (ACCEPTED_PAGE_EXTENSIONS), not just parse_route in isolation
+        // — see mdx_static_about/mdx_index_root/mdx_nested_path above, which
+        // test parse_route directly and never exercise the extension gate.
+        let routes = scan_tree(&["a.mdx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/a".to_string()]);
+    }
+
+    #[test]
+    fn md_page_is_routed_today() {
+        let routes = scan_tree(&["b.md"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/b".to_string()]);
+    }
+
+    #[test]
+    fn html_page_is_routed_today() {
+        let routes = scan_tree(&["c.html"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/c".to_string()]);
+    }
+
+    #[test]
+    fn ts_page_is_routed_after_epic_1990() {
+        let routes = scan_tree(&["d.ts"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/d".to_string()]);
+    }
+
+    #[test]
+    fn js_page_is_routed_after_epic_1990() {
+        let routes = scan_tree(&["e.js"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/e".to_string()]);
+    }
+
+    #[test]
+    fn jsx_page_is_routed_after_epic_1990() {
+        let routes = scan_tree(&["f.jsx"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/f".to_string()]);
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn txt_page_is_skipped_and_warned_negative_control() {
+        // Negative control (table row `pages/g.txt`): an extension with no
+        // stake in this epic must remain skipped + warned both before and
+        // after the widening — this must NEVER flip green.
+        let routes = scan_tree(&["g.txt"]).expect("scan");
+        assert!(routes.is_empty(), ".txt page must be skipped: {routes:?}");
+        assert!(
+            logs_contain("unrecognised extension"),
+            "expected a warning about the unrecognised .txt extension"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn dynamic_md_route_stays_skipped_and_warned_across_the_epic() {
+        // Pins the existing dynamic/catchall carve-out (see the
+        // `matches!(ext, Some("md") | Some("html")) && !matches!(route.kind, ...)`
+        // gate above): dynamic `.md` routes have no `paths()` story and are
+        // skipped even though `.md` itself is an accepted extension. The
+        // gate is keyed on `ext` + `route.kind`, not on the accepted-
+        // extensions allowlist, so it must survive Wave 2's widening
+        // untouched.
+        let routes = scan_tree(&["docs/[slug].md"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            "dynamic .md page must stay skipped: {routes:?}"
+        );
+        assert!(
+            logs_contain("dynamic .md / .html page routes are not supported"),
+            "expected the dynamic .md/.html v1 warning"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn dynamic_html_route_stays_skipped_and_warned_across_the_epic() {
+        let routes = scan_tree(&["docs/[slug].html"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            "dynamic .html page must stay skipped: {routes:?}"
+        );
+        assert!(
+            logs_contain("dynamic .md / .html page routes are not supported"),
+            "expected the dynamic .md/.html v1 warning"
+        );
+    }
+
+    #[test]
+    fn dynamic_ts_route_is_routed_like_tsx() {
+        // `.ts`/`.js`/`.jsx` CAN carry a top-level `paths()` export (unlike a
+        // pure `.md`/`.html` file), so the dynamic/catchall carve-out above
+        // must NOT extend to them — they stay eligible for dynamic and
+        // catchall routes exactly like `.tsx` (epic #1990's explicit
+        // decision: do not over-apply the `.md`/`.html` restriction).
+        let routes = scan_tree(&["blog/[slug].ts"]).expect("scan");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/blog/:slug".to_string()]);
+        assert_eq!(routes[0].kind, RouteKind::Dynamic);
+    }
+
+    #[test]
+    fn ts_page_behaves_exactly_like_tsx_page() {
+        // `pages/[slug].ts` must behave exactly like `pages/[slug].tsx`
+        // (epic #1990 acceptance criterion): same template, same route
+        // kind, for both a static and a dynamic shape.
+        let tsx_static = scan_tree(&["about.tsx"]).expect("scan");
+        let ts_static = scan_tree(&["about.ts"]).expect("scan");
+        assert_eq!(
+            tsx_static.iter().map(Route::template).collect::<Vec<_>>(),
+            ts_static.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert_eq!(tsx_static[0].kind, ts_static[0].kind);
+
+        let tsx_dynamic = scan_tree(&["blog/[slug].tsx"]).expect("scan");
+        let ts_dynamic = scan_tree(&["blog/[slug].ts"]).expect("scan");
+        assert_eq!(
+            tsx_dynamic.iter().map(Route::template).collect::<Vec<_>>(),
+            ts_dynamic.iter().map(Route::template).collect::<Vec<_>>(),
+        );
+        assert_eq!(tsx_dynamic[0].kind, ts_dynamic[0].kind);
+    }
+
+    // -----------------------------------------------------------------
+    // Sidecar skips (epic #1990 review fix) — widening the allowlist to
+    // `.ts`/`.js`/`.jsx` newly swept conventional non-page sidecars into
+    // `pages/`. See `zfb_types::is_page_sidecar_file`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn colocated_test_beside_a_page_does_not_cause_ambiguous_route() {
+        // The build-breaking regression: `pages/index.test.ts` beside
+        // `pages/index.tsx` both strip to the `index` marker, so before the
+        // skip they collided as `/` and hard-failed the whole build.
+        let routes = scan_tree(&["index.tsx", "index.test.ts"]).expect("scan must not error");
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert_eq!(templates, vec!["/".to_string()]);
+    }
+
+    #[test]
+    fn colocated_tests_and_specs_are_skipped_across_script_extensions() {
+        for ext in zfb_types::SCRIPT_PAGE_EXTENSIONS {
+            for infix in ["test", "spec"] {
+                let file = format!("widget.{infix}.{ext}");
+                let routes = scan_tree(&[&file]).expect("scan");
+                assert!(
+                    routes.is_empty(),
+                    "{file} must not produce a route, got: {:?}",
+                    routes.iter().map(Route::template).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn declaration_files_do_not_route() {
+        // Would otherwise route as `/env.d` with `output_extension =
+        // Some("d")` via the widened script-page sidecar convention.
+        let routes = scan_tree(&["env.d.ts"]).expect("scan");
+        assert!(
+            routes.is_empty(),
+            "env.d.ts must not route, got: {:?}",
+            routes.iter().map(Route::template).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn genuine_plain_ts_page_still_routes() {
+        // Guard against over-exclusion: only the two universal sidecar
+        // conventions are skipped, not `.ts` pages in general.
+        let routes = scan_tree(&["plain.ts", "index.tsx", "test.md", "d.ts"]).expect("scan");
+        let mut templates: Vec<String> = routes.iter().map(Route::template).collect();
+        templates.sort();
+        assert_eq!(
+            templates,
+            vec![
+                "/".to_string(),
+                "/d".to_string(),
+                "/plain".to_string(),
+                "/test".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn sidecar_skip_does_not_emit_the_unrecognised_extension_warning() {
+        // These extensions ARE recognised — the files are just not pages.
+        // Emitting the "unrecognised extension" warning would be actively
+        // misleading, and the epic's own e2e asserts that warning never
+        // fires for a valid fixture.
+        let routes = scan_tree(&["index.tsx", "index.test.ts", "env.d.ts"]).expect("scan");
+        assert_eq!(routes.len(), 1);
+        assert!(
+            !logs_contain("unrecognised extension"),
+            "sidecar skips must be silent, not warn about an unrecognised extension"
         );
     }
 }

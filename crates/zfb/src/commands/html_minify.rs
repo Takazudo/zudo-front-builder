@@ -6,8 +6,40 @@
 
 use minify_html::{minify, Cfg};
 
+use super::mermaid_preserve;
+
 pub(crate) fn minify_rendered_html_bytes(html: &[u8]) -> Vec<u8> {
-    minify(html, &conservative_cfg())
+    let preservation = mermaid_preserve::extract(html);
+    if preservation.is_malformed() {
+        // The scanner abandoned extraction wholesale because it met an
+        // unresolvable construct AND the document carries mermaid content —
+        // per the helper's own "Malformed HTML" policy, an unresolved mermaid
+        // body may still be sitting in `html` unextracted. Minifying it
+        // directly could collapse that body's whitespace, so the whole
+        // document passes through untouched instead.
+        //
+        // Warn rather than bail silently: this drops minification for a whole
+        // page, and the only other symptom is a larger file. It is not
+        // reachable at all for a page with no `data-mermaid` element, so it
+        // cannot become routine noise.
+        tracing::warn!(
+            bytes = html.len(),
+            "html minify: skipped — unresolvable markup in a page carrying mermaid content"
+        );
+        return html.to_vec();
+    }
+    if preservation.is_empty() {
+        // No mermaid body is at risk — safe to minify normally.
+        return minify(html, &conservative_cfg());
+    }
+
+    let minified = minify(preservation.html(), &conservative_cfg());
+    // A placeholder that fails to round-trip means minification mangled it in
+    // a way `restore` cannot resolve safely — the module's own docs call the
+    // original bytes the only safe fallback in that case.
+    preservation
+        .restore(&minified)
+        .unwrap_or_else(|_| html.to_vec())
 }
 
 #[cfg(test)]
@@ -16,7 +48,10 @@ pub(crate) fn minify_rendered_html_string(html: &str) -> String {
         .expect("minify-html returned non-UTF-8 for UTF-8 HTML input")
 }
 
-fn conservative_cfg() -> Cfg {
+/// The one minifier configuration this module ever uses. Visible to sibling
+/// modules so their tests can drive the raw minifier with the identical
+/// config instead of an approximation of it.
+pub(super) fn conservative_cfg() -> Cfg {
     let mut cfg = Cfg::new();
     cfg.keep_comments = true;
     cfg.keep_closing_tags = true;
@@ -99,6 +134,63 @@ mod tests {
     }
 
     #[test]
+    fn html_minify_preserves_mermaid_source_whitespace() {
+        // `zfb-md-extras::mermaid` emits this exact shape (see
+        // `crates/zfb-content/tests/fixtures/snapshots/08-mermaid.html` for the real
+        // serializer's output): a `<div class="mermaid" data-mermaid="">` whose text
+        // content is the mermaid DSL body run through the ordinary HTML text-node
+        // escaper — `-->` serializes as `--&gt;`, matching hast-util-to-html's default
+        // for an empty attribute value and for `>` in text. Mermaid's grammar is
+        // newline-significant, so the minifier must not collapse whitespace inside it
+        // the way it would for an ordinary `<div>`.
+        //
+        // `subgraph build["…"]` is the deliberately chosen shape: zudo-doc's client-side
+        // `normalizeCollapsedMermaidSource` repair heuristic requires whitespace between a
+        // subgraph id and what follows it, and here the id (`build`) is immediately
+        // followed by `[` with no space — so a fix that only reinserts newlines between
+        // top-level statements (but not inside/around bracketed labels sitting flush
+        // against an id) would still leave this exact line unparseable. A weaker fixture
+        // using only simple `A --> B` node declarations would pass under such a fix.
+        let mermaid_body = concat!(
+            "graph TD;\n",
+            "  subgraph build[\"zfb build — your machine\"]\n",
+            "    A[Content] --&gt; B[Bundle]\n",
+            "  end\n",
+            "  subgraph deploy[\"edge\"]\n",
+            "    C[Deploy]\n",
+            "  end\n"
+        );
+        let input = format!(
+            "<div class=\"mermaid\" data-mermaid=\"\">{mermaid_body}</div>",
+            mermaid_body = mermaid_body
+        );
+
+        let output = minify_rendered_html_string(&input);
+
+        // Assert on the mermaid BODY only, not the whole element. Minifying the
+        // wrapper's attributes (`class="mermaid"` -> `class=mermaid`,
+        // `data-mermaid=""` -> `data-mermaid`) is correct and desirable — it is
+        // ordinary HTML, not whitespace-significant DSL. Asserting
+        // `output == input` would demand the attributes survive un-minified too,
+        // so a CORRECT fix (preserve the body, keep minifying the wrapper) would
+        // still fail it, forcing #2033 to edit this assertion. The whole point of
+        // a red test is that the implementing wave flips it green without
+        // touching an assertion, so it must specify exactly the property under
+        // test and nothing more.
+        let body = output
+            .split_once('>')
+            .and_then(|(_, rest)| rest.rsplit_once("</div>"))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("no <div>…</div> in minifier output: {output}"));
+
+        assert_eq!(
+            body, mermaid_body,
+            "mermaid body must survive minification byte-identically \
+             (newline positions preserved), got: {output}"
+        );
+    }
+
+    #[test]
     fn html_minify_is_deterministic_for_fixed_input() {
         let input = "<html><head><title>Hi</title></head><body><p> Hello </p></body></html>";
 
@@ -106,5 +198,86 @@ mod tests {
         let second = minify_rendered_html_bytes(input.as_bytes());
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn html_minify_of_a_no_mermaid_page_is_unchanged_by_the_mermaid_wrapper() {
+        // The mermaid extract/restore wrapper must be a no-op for the common
+        // case: a page with no `data-mermaid` element at all. This pins the
+        // output byte-for-byte against `minify_html::minify` called directly
+        // with the same conservative config, bypassing the wrapper entirely —
+        // so a wrapper that perturbs the common path (a stray placeholder, an
+        // extra allocation-driven reordering, etc.) fails this test even
+        // though every other test above only checks properties of the
+        // wrapped output, not its exact bytes against the unwrapped baseline.
+        let input = concat!(
+            "<!doctype html><html><head><title>Hi</title></head><body>\n",
+            "  <main>\n",
+            "    <h1> Hello </h1>\n",
+            "    <p>  Welcome   home. </p>\n",
+            "    <ul>\n      <li>One</li>\n      <li>Two</li>\n    </ul>\n",
+            "  </main>\n",
+            "</body></html>"
+        );
+
+        let baseline = minify(input.as_bytes(), &conservative_cfg());
+        let wrapped = minify_rendered_html_bytes(input.as_bytes());
+
+        assert_eq!(wrapped, baseline);
+    }
+
+    #[test]
+    fn html_minify_leaves_a_malformed_document_with_a_mermaid_body_completely_untouched() {
+        // A document with a real mermaid body PLUS an unresolvable
+        // construct elsewhere (here: a dangling, never-terminated comment)
+        // makes `mermaid_preserve::extract` abandon extraction wholesale —
+        // `MermaidPreservation::is_empty()` is true, exactly as it would be
+        // for a page with no mermaid content at all. Minifying the raw
+        // bytes directly in that case (as a plain `is_empty()` check would)
+        // would still collapse the unextracted mermaid body's whitespace,
+        // contradicting `mermaid_preserve`'s own documented "malformed
+        // input passes through untouched" policy. This must come out
+        // byte-identical to the input — not merely "mermaid body intact".
+        let input = "<div data-mermaid>graph TD;\n  A\n  B\n</div><!-- dangling";
+
+        let output = minify_rendered_html_string(input);
+
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn html_minify_still_minifies_a_malformed_document_that_has_no_mermaid_content() {
+        // The counterpart to the test above, and the case that matters far
+        // more often: odd markup with NO `data-mermaid` element anywhere.
+        // The scanner is deliberately strict because an unresolved mermaid
+        // body must never be collapsed — but with no mermaid content there is
+        // nothing to protect, and bailing would silently ship the whole page
+        // unminified with no error, no warning, and no symptom but size.
+        // Each input below makes `collect_mermaid_bodies` give up, and each
+        // must still come out byte-identical to the raw minifier's own output.
+        for input in [
+            // unterminated raw-text element
+            "<main>\n  <h1> Hi </h1>\n  <script>never closed",
+            // a self-closed <script src=…/>, which is NOT self-closing in HTML
+            "<main>\n  <h1> Hi </h1>\n  <script src=\"/a.js\" />\n  <p> x </p>",
+            // unterminated quote in an attribute value
+            "<main>\n  <h1> Hi </h1>\n  <div class=\"x",
+            // unterminated comment
+            "<main>\n  <h1> Hi </h1>\n</main><!-- dangling",
+            // an unbalanced inner tag with no end tag of its own
+            "<main>\n  <h1> Hi </h1>\n  <section>\n    <p> x </p>\n</main>",
+        ] {
+            let baseline = minify(input.as_bytes(), &conservative_cfg());
+            let wrapped = minify_rendered_html_bytes(input.as_bytes());
+
+            assert_eq!(
+                wrapped, baseline,
+                "a mermaid-free document must minify normally however odd its markup: {input:?}"
+            );
+            assert!(
+                wrapped.len() < input.len(),
+                "…and minification must actually have happened: {input:?}"
+            );
+        }
     }
 }

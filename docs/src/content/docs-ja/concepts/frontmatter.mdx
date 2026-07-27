@@ -105,13 +105,15 @@ pub struct UnifiedFrontmatter {
 
 TSX の例でも、結果の `value` は同じ形状になります — あなたのリテラルが `serde_json::Value` に変換されたもので、`extension` と `content_type` は対応する兄弟エクスポートも宣言した場合にのみ設定されます。
 
-## 出力拡張子の優先順位（TSX のみ）
+## 出力拡張子の優先順位（スクリプトページ）
 
-`.tsx` ページは HTML 以外の出力を生成できます。出力拡張子は 2 つのしくみで決まり、固定された優先順位があります。
+スクリプトページ、つまり `.tsx`・`.ts`・`.jsx`・`.js` は HTML 以外の出力を生成できます。出力拡張子は 2 つのしくみで決まり、固定された優先順位があります。
 
 1. `export const extension = "..."` — `frontmatter` の隣に置く兄弟リテラル。存在すれば**勝ち**ます。
-2. ファイル名規約 — ソースパスの末尾から 2 番目の `.` 区切りセグメント。`pages/sitemap.xml.tsx` → `xml`、`pages/feed.rss.tsx` → `rss`、`pages/about.tsx` → 規約のヒントなし。
+2. ファイル名規約 — ソースパスの末尾から 2 番目の `.` 区切りセグメント。`pages/sitemap.xml.tsx` → `xml`、`pages/feed.rss.ts` → `rss`、`pages/llms.txt.js` → `txt`、`pages/about.tsx` → 規約のヒントなし。
 3. デフォルト — `html`。
+
+`.mdx`・`.md`・`.html` のページはどちらのしくみの対象にもならず、常にディレクトリインデックス形式の HTML を出力します。
 
 ```tsx
 // pages/sitemap.xml.tsx

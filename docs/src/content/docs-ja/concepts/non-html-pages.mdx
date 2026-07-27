@@ -1,17 +1,17 @@
 ---
 title: HTML 以外のページ
-description: ファイル名規約と frontmatter.extension で sitemap.xml.tsx などを出力する
+description: ファイル名規約と frontmatter.extension で sitemap.xml.tsx などを出力する（.ts・.jsx・.js も同様）
 sidebar_position: 5.5
 category: Concepts
 ---
 
 <Info title="このページの内容">
 
-TSX ページが HTML 以外の出力（XML サイトマップ、RSS フィード、`llms.txt`、JSON マニフェスト）をどう生成できるかを解説します。ファイル名規約、フロントマターによる上書き、両者の優先順位ルール、ページごとの `Content-Type` メタデータ、そして拡張子が変わったときにエンジンが古い出力をどう扱うかを取り上げます。
+スクリプトページ（`.tsx`・`.ts`・`.jsx`・`.js`）が HTML 以外の出力（XML サイトマップ、RSS フィード、`llms.txt`、JSON マニフェスト）をどう生成できるかを解説します。ファイル名規約、フロントマターによる上書き、両者の優先順位ルール、ページごとの `Content-Type` メタデータ、そして拡張子が変わったときにエンジンが古い出力をどう扱うかを取り上げます。
 
 </Info>
 
-zfb のページモデルは HTML 専用ではありません。ページを描画するのと同じ TSX ファイル形式で、`.xml`、`.rss`、`.txt`、`.json`、あるいは文字列化できる任意のものを生成できます。エンジンは出力拡張子を選び、開発サーバー向けに `Content-Type` を設定し、HTML ページとまったく同じように `dist/` 配下にファイルを書き出します — 変わるのは拡張子だけです。
+zfb のページモデルは HTML 専用ではありません。ページを描画するのと同じスクリプトページの形式で、`.xml`、`.rss`、`.txt`、`.json`、あるいは文字列化できる任意のものを生成できます。エンジンは出力拡張子を選び、開発サーバー向けに `Content-Type` を設定し、HTML ページとまったく同じように `dist/` 配下にファイルを書き出します — 変わるのは拡張子だけです。
 
 これは 6 つのエンジンプリミティブのひとつです — 全リストは [エンジンとフレームワーク](./engine-vs-framework.mdx) を参照してください。サイトマップやフィードの生成、`llms.txt`、ビルド時に描画される JSON API エンドポイント — これらはすべてこのプリミティブの上に乗っています。
 
@@ -28,7 +28,17 @@ pages/llms.txt.tsx      → /llms.txt
 pages/about.tsx         → /about/index.html
 ```
 
-`.tsx` の直前の最後のセグメントが出力拡張子になり、それより前のドットはページ名の一部です。`pages/api.v2.json.tsx` は `/api.v2.json` になります。`pages/about.tsx` は規約のヒントがないため、デフォルトで `.html` になります。
+ソース拡張子の直前の最後のセグメントが出力拡張子になり、それより前のドットはページ名の一部です。`pages/api.v2.json.tsx` は `/api.v2.json` になります。`pages/about.tsx` は規約のヒントがないため、デフォルトで `.html` になります。
+
+この規約が効くのは **スクリプト** ページの拡張子すべてで、`.tsx` に限りません。`.ts`・`.jsx`・`.js` もまったく同じように振る舞います。
+
+```text
+pages/sitemap.xml.js    → /sitemap.xml
+pages/feed.rss.ts       → /feed.rss
+pages/llms.txt.jsx      → /llms.txt
+```
+
+`.mdx`・`.md`・`.html` のページは対象外です。これらは常にディレクトリインデックス形式の HTML として出力され、ファイル名にヒントを書いても効果はありません。
 
 ### フロントマターによる上書き
 

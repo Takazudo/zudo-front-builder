@@ -276,6 +276,32 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored
 
+      # Consume-from-source workspace idiom (issues #2039/#2040, epic #1982):
+      # a first-party sibling package whose `exports` point straight at
+      # `./src/*` with no `dist` is imported by bare package name through the
+      # workspace symlink, landing on the metafile audit's case-2 shape. These
+      # three env-gated tests are the acceptance rule's positive pair plus the
+      # dist-shipping negative that stops it becoming a blanket "workspace
+      # siblings are always fine" exemption — an unwired binary would let that
+      # rule regress in either direction unnoticed. Same ABSOLUTE-path
+      # requirement for ZFB_ESBUILD_BIN as the steps above.
+      - name: Run zfb-build consume-from-source esbuild regression test
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored
+
+      # Root-claimed-workspace stage-escape audit, SSR leg (issues
+      # #1984/#1988, epic #1982): when `project_root` is itself claimed by
+      # `pnpm-workspace.yaml`, guard (b) used to be skipped and SSR has no
+      # scan-time guard (a) at all — a completely silent stage escape. This
+      # env-gated test is the only proof the audit is ARMED there, so it needs
+      # its own step for the same reason as the two above: `--ignored` is the
+      # only way it ever executes.
+      - name: Run zfb-build root-workspace stage-escape audit armed regression test
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored
+
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are
       # staged by the assert step above but, like the zfb-islands suite before

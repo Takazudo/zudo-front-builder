@@ -241,6 +241,71 @@ impl RawImportInvalidation {
             .map(|roots| roots.clone())
             .unwrap_or_default()
     }
+
+    /// Locate `path` inside the registered CSS sibling-mirror roots (issue
+    /// #1819, epic #1995), returning `(matched root alias, path relative to
+    /// that root)` — `("", …)`-free and empty-relative when the path IS the
+    /// root.
+    ///
+    /// Containment, not exact membership — contrast with [`Self::contains`],
+    /// which backs the file-shaped `is_*_target` predicates. These roots are
+    /// DIRECTORIES, and the question this answers is "would
+    /// `discover_css_source_files` / Tailwind's `@source` globs have scanned
+    /// this file", which is a subtree question.
+    ///
+    /// `replace_css_mirror_roots` stores roots WITHOUT the alias expansion
+    /// `Self::replace` applies to the file-shaped sets (its only other
+    /// consumer, `sync_recursive_dir_watches`, does its own canonicalisation),
+    /// so both sides are alias-expanded here instead: the incoming watcher
+    /// event path can be the canonical real path (macOS FSEvents reports
+    /// `/private/var/...`) while the published root is the lexical one, or
+    /// vice versa.
+    ///
+    /// Callers get the matched root and remainder rather than a bare bool so
+    /// they can apply their own containment-region rules (the orchestrator
+    /// uses both: a degeneracy guard against a root that would swallow the
+    /// project, and the `CSS_SIBLING_MIRROR_SKIP_DIRS` infra-dir filter that
+    /// the `@source` scan itself applies).
+    pub fn css_mirror_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
+        let roots = self.css_mirror_roots.read().ok()?;
+        if roots.is_empty() {
+            return None;
+        }
+        let candidates: Vec<PathBuf> = Self::aliases(path.to_path_buf()).collect();
+        for root in roots.iter() {
+            for root_alias in Self::aliases(root.clone()) {
+                // The emptiness guard must test the form we MATCH on, not the
+                // raw stored root: a root spelled `.` or `a/..` normalizes to
+                // an empty path, which `starts_with`/`strip_prefix` accept as
+                // a prefix of EVERY path — turning the gate into the rejected
+                // "rerun for every markdown edit" option (a).
+                if root_alias.as_os_str().is_empty() {
+                    continue;
+                }
+                for candidate in &candidates {
+                    if let Ok(rel) = candidate.strip_prefix(&root_alias) {
+                        return Some((root_alias, rel.to_path_buf()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether `path` lies inside one of the registered CSS sibling-mirror
+    /// roots — the bool-shaped view of [`Self::css_mirror_root_match`].
+    pub fn is_under_css_mirror_root(&self, path: &Path) -> bool {
+        self.css_mirror_root_match(path).is_some()
+    }
+
+    /// Expose the lexical/canonical alias expansion this registry applies to
+    /// every path it stores or tests, so callers comparing a path against a
+    /// matched mirror root use the SAME notion of path identity (macOS
+    /// FSEvents reports `/private/var/...` where the published root is
+    /// `/var/...`, or vice versa) instead of re-deriving a second one.
+    pub fn path_aliases(path: &Path) -> Vec<PathBuf> {
+        Self::aliases(path.to_path_buf()).collect()
+    }
 }
 
 /// Coarse-grained classification of a changed file. Drives which
@@ -686,6 +751,21 @@ impl GranularityPolicy {
         self.raw_import_invalidation.css_mirror_roots()
     }
 
+    /// Whether `path` lies inside one of the registered CSS sibling-mirror
+    /// roots (issue #1819, epic #1995) — the option-(b) gate that lets a
+    /// `PathClass::Content` change rerun the Tailwind content scan without
+    /// making EVERY markdown edit pay for one.
+    pub fn is_under_css_mirror_root(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_under_css_mirror_root(path)
+    }
+
+    /// Locate `path` inside the registered CSS sibling-mirror roots,
+    /// returning `(matched root alias, path relative to that root)` — see
+    /// [`RawImportInvalidation::css_mirror_root_match`].
+    pub fn css_mirror_root_match(&self, path: &Path) -> Option<(PathBuf, PathBuf)> {
+        self.raw_import_invalidation.css_mirror_root_match(path)
+    }
+
     /// Decide whether a `Module` change is inside an islands root.
     ///
     /// We do not parse the file here to check for the `"use client"`
@@ -805,6 +885,106 @@ mod tests {
             policy.css_mirror_root_paths().is_empty(),
             "an empty replace must clear every previously published root"
         );
+    }
+
+    /// Issue #1819 (epic #1995): `is_under_css_mirror_root` is a SUBTREE
+    /// question, not the exact-path membership the file-shaped `is_*_target`
+    /// predicates answer — and it must match on whole path components, so a
+    /// sibling directory whose name merely shares a prefix is not swept in.
+    /// An empty registry answers `false` for everything, which is what keeps
+    /// the orchestrator gate inert on projects claiming no sibling.
+    #[test]
+    fn is_under_css_mirror_root_matches_subtree_by_component() {
+        let invalidation = RawImportInvalidation::default();
+        let root = PathBuf::from("/workspace/lib/shared");
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+
+        assert!(
+            !policy.is_under_css_mirror_root(&root.join("notes.mdx")),
+            "an empty registry must never claim containment"
+        );
+
+        invalidation.replace_css_mirror_roots([root.clone()]);
+        assert!(policy.is_under_css_mirror_root(&root.join("notes.mdx")));
+        assert!(policy.is_under_css_mirror_root(&root.join("deep/nested/notes.md")));
+        assert!(
+            policy.is_under_css_mirror_root(&root),
+            "the root itself is inside its own subtree"
+        );
+        assert!(
+            !policy.is_under_css_mirror_root(Path::new("/workspace/lib/shared-other/notes.mdx")),
+            "component-wise matching must not treat `shared-other` as inside `shared`"
+        );
+        assert!(!policy.is_under_css_mirror_root(Path::new("/workspace/lib/notes.mdx")));
+        assert!(!policy.is_under_css_mirror_root(Path::new("/elsewhere/notes.mdx")));
+    }
+
+    /// The empty-root guard must test the NORMALIZED form, because that is
+    /// the form containment matches on.
+    ///
+    /// A root spelled `.` or `a/..` is non-empty as stored but normalizes to
+    /// an empty path, and an empty path is a prefix of EVERY path — so a
+    /// guard that inspected only the raw spelling would let such a root
+    /// swallow the whole filesystem, silently converting the orchestrator's
+    /// option-(b) gate into the rejected option (a). Not reachable from
+    /// today's `SiblingMirrorPlan` (which publishes absolute, normalized
+    /// directories), which is exactly why the guard has to say what it means.
+    #[test]
+    fn root_normalizing_to_empty_never_matches_everything() {
+        let invalidation = RawImportInvalidation::default();
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+
+        for degenerate in [".", "a/..", "./."] {
+            invalidation.replace_css_mirror_roots([PathBuf::from(degenerate)]);
+            assert!(
+                !policy.css_mirror_root_paths().is_empty(),
+                "fixture sanity: `{degenerate}` IS stored — this is not the \
+                 empty-registry short-circuit"
+            );
+            assert!(
+                !policy.is_under_css_mirror_root(Path::new("/workspace/host/content/post.mdx")),
+                "a root spelled `{degenerate}` normalizes to an empty path and \
+                 must not be treated as containing every path"
+            );
+        }
+
+        // The guard must skip only the degenerate root, not the whole call: a
+        // real root published alongside one still matches.
+        let real = PathBuf::from("/workspace/lib/shared");
+        invalidation.replace_css_mirror_roots([PathBuf::from("."), real.clone()]);
+        assert!(policy.is_under_css_mirror_root(&real.join("notes.mdx")));
+        assert!(!policy.is_under_css_mirror_root(Path::new("/workspace/host/content/post.mdx")));
+    }
+
+    /// The registry stores roots WITHOUT alias expansion (unlike the
+    /// file-shaped sets), so containment resolves aliases on BOTH sides —
+    /// otherwise a macOS FSEvents path (`/private/var/...`) would miss a
+    /// root published in its lexical (`/var/...`) spelling.
+    #[test]
+    #[cfg(unix)]
+    fn is_under_css_mirror_root_resolves_symlink_aliases_on_both_sides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let physical = base.join("physical/shared");
+        std::fs::create_dir_all(physical.join("nested")).unwrap();
+        std::fs::write(physical.join("nested/notes.mdx"), "# notes\n").unwrap();
+        let alias = base.join("alias-shared");
+        std::os::unix::fs::symlink(&physical, &alias).unwrap();
+
+        // Root published through the SYMLINK, event path arriving as the
+        // physical spelling.
+        let invalidation = RawImportInvalidation::default();
+        invalidation.replace_css_mirror_roots([alias.clone()]);
+        let policy =
+            GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
+        assert!(policy.is_under_css_mirror_root(&physical.join("nested/notes.mdx")));
+
+        // And the reverse: root published physically, event path arriving
+        // through the symlink.
+        invalidation.replace_css_mirror_roots([physical.clone()]);
+        assert!(policy.is_under_css_mirror_root(&alias.join("nested/notes.mdx")));
     }
 
     #[test]

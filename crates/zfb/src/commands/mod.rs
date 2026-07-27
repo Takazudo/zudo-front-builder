@@ -10,6 +10,7 @@ pub mod dev;
 pub(crate) mod html_minify;
 pub mod island_marker_check;
 pub mod link_base_rewrite;
+pub(crate) mod mermaid_preserve;
 pub mod new;
 pub mod package_routes;
 pub mod plugins;

@@ -1392,7 +1392,10 @@ fn redirects_match_path(trimmed: &str, base_prefix: Option<&str>) -> String {
 /// re-canonicalization reproduces the encoded `url_path`/`output_path` the
 /// renderer wrote (issue #1768). Without the decode the `%` would be
 /// re-encoded to `%25`, missing the target route.
-fn waterfall_trimmed_for_rewrite_target(target: &str, base_prefix: Option<&str>) -> String {
+pub(crate) fn waterfall_trimmed_for_rewrite_target(
+    target: &str,
+    base_prefix: Option<&str>,
+) -> String {
     let path = target
         .split_once('?')
         .map(|(path, _)| path)
@@ -1614,7 +1617,7 @@ const CANONICAL_UNRESERVED: &AsciiSet = &NON_ALPHANUMERIC
 ///
 /// Per-component encoding preserves the `/` separators; a component's own
 /// bytes never introduce a new `/` because `/` itself is always encoded.
-fn canonical_encode_path(decoded_path: &str) -> String {
+pub(crate) fn canonical_encode_path(decoded_path: &str) -> String {
     decoded_path
         .split('/')
         .map(|seg| utf8_percent_encode(seg, CANONICAL_UNRESERVED).to_string())
@@ -1911,7 +1914,7 @@ fn method_not_allowed_get_head() -> Response {
 /// - exact match (`/blog/foo` → `/blog/foo`)
 /// - directory-style with `index.html` (`/blog/foo` → `/blog/foo/index.html`)
 /// - directory-style with trailing slash (`/blog/foo` → `/blog/foo/`)
-fn lookup_keys(path: &str) -> Vec<String> {
+pub(crate) fn lookup_keys(path: &str) -> Vec<String> {
     if path.is_empty() {
         return vec!["/".to_string(), "/index.html".to_string()];
     }
@@ -3798,6 +3801,346 @@ mod tests {
         assert!(
             body.contains("<script src=\"/foo/__zfb/livereload.js\"></script>"),
             "expected prefixed livereload tag in 404, got: {body}"
+        );
+    }
+
+    /// Issue #2003 — the empirical half of the "canonical path form"
+    /// decision row.
+    ///
+    /// [`crate::rewrite_prewarm::prewarm_rewrite_targets`] reuses this
+    /// module's own normalization functions, which makes a spelling
+    /// divergence impossible *by construction*. This test proves the
+    /// consequence that actually matters, *behaviourally*: seed the page
+    /// cache using NOTHING but the keys that helper emits, then drive a real
+    /// `_redirects` `200` rewrite through the real router. A near-miss
+    /// spelling — the failure mode the whole sub-issue is about, because it
+    /// looks like it works — would 404 here instead of 200.
+    ///
+    /// `test_state`'s `html_root` / `public_root` point at paths that do not
+    /// exist, so the PageCache leg is the ONLY leg that can produce a 200:
+    /// a pass could not come from disk by accident.
+    ///
+    /// The percent-encoded case is the load-bearing one. A pure-ASCII target
+    /// cannot falsify this — decoded and canonical forms coincide there, so
+    /// almost any plausible spelling would pass.
+    #[tokio::test]
+    async fn prewarm_keys_are_what_the_live_rewrite_waterfall_serves_from() {
+        for (rules, alias_uri, marker) in [
+            ("/alias /target 200\n", "/alias", "PREWARM_PLAIN_MARKER"),
+            (
+                "/alias-encoded /posts/caf%C3%A9 200\n",
+                "/alias-encoded",
+                "PREWARM_ENCODED_MARKER",
+            ),
+            (
+                "/alias-query /queried?flavor=vanilla 200\n",
+                "/alias-query",
+                "PREWARM_QUERY_MARKER",
+            ),
+        ] {
+            let parsed = Redirects::parse(rules);
+            let plan = crate::rewrite_prewarm::prewarm_rewrite_targets(&parsed, None);
+            assert_eq!(plan.targets.len(), 1, "fixture enumerates one target");
+
+            let mut state = test_state();
+            state.redirects = Some(Arc::new(RwLock::new(parsed)));
+            // The ONLY thing seeded is the key the enumerator produced.
+            state
+                .pages
+                .insert(
+                    &plan.targets[0].lookup_keys[0],
+                    &format!("<html><body>{marker}</body></html>"),
+                )
+                .await;
+
+            let resp = test_router(state)
+                .oneshot(
+                    Request::builder()
+                        .uri(alias_uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "{alias_uri}: rewrite must resolve from the pre-warm key"
+            );
+            let body = body_string(resp).await;
+            assert!(
+                body.contains(marker),
+                "{alias_uri}: served body must be the pre-warmed target: {body}"
+            );
+        }
+    }
+
+    /// Issue #2004 — the "resolve once, no chaining" contract, asserted
+    /// rather than assumed.
+    ///
+    /// The rewrite pre-warm this epic wires up deliberately runs OUTSIDE
+    /// every request (dev boot task + the `_redirects` watch task). The
+    /// rejected alternative was to give this function a Cold-mode
+    /// claim-and-render of its own, which would put dispatch machinery
+    /// back on a rewrite's request path. This test is the guard against
+    /// that being reintroduced — here or by a future refactor of
+    /// `serve_from_waterfall`'s callers.
+    ///
+    /// Every one of the four legs a normal request can reach — plugin
+    /// dev-middleware, embed handler, request-time SSR, render-on-request
+    /// hook — is registered for the rewrite TARGET path and counts its
+    /// own invocations. `GET /alias` must serve the page-cache bytes and
+    /// leave all four counters at zero.
+    ///
+    /// **Each of the four zeroes is proven non-vacuous individually.**
+    /// A single combined control (`GET /target` on the all-legs router)
+    /// is not enough: the legs are a priority chain and the plugin leg
+    /// wins it, so the embed / SSR / hook registrations would never be
+    /// exercised at all and a mispatterned registration among them would
+    /// leave three of the four zeroes meaningless while this docstring
+    /// claimed otherwise. So the second half builds ONE router per leg,
+    /// with only that leg registered, and proves a direct `GET /target`
+    /// reaches it while `GET /alias` still does not.
+    #[tokio::test]
+    async fn rewrite_reruns_no_middleware_embed_ssr_or_render_hook() {
+        use crate::embed_handlers::{erase_handler_for_test, EmbedHandler, EmbedHandlerSet};
+        use crate::plugin_middleware::{
+            DevMiddlewareDispatcher, DevMiddlewareSet, PluginDispatchError, PluginResponse,
+        };
+        use crate::render_hook::RenderOnRequestHook;
+        use crate::ssr::{
+            SsrDispatchError, SsrDispatcher, SsrRequest, SsrResponse, SsrRouteRecord, SsrRouteSet,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Default)]
+        struct Counters {
+            plugin: AtomicUsize,
+            embed: AtomicUsize,
+            ssr: AtomicUsize,
+            hook: AtomicUsize,
+        }
+
+        struct CountingPlugin(Arc<Counters>);
+        #[async_trait::async_trait]
+        impl DevMiddlewareDispatcher for CountingPlugin {
+            async fn dispatch(
+                &self,
+                _handler_id: &str,
+                _request: PluginRequest,
+            ) -> Result<PluginDispatchOutcome, PluginDispatchError> {
+                self.0.plugin.fetch_add(1, Ordering::SeqCst);
+                Ok(PluginDispatchOutcome::Response(PluginResponse {
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/html".into())],
+                    body: "<html><body>PLUGIN_LEG</body></html>".into(),
+                    body_encoding: PluginResponseEncoding::Utf8,
+                }))
+            }
+        }
+
+        struct CountingSsr(Arc<Counters>);
+        #[async_trait::async_trait]
+        impl SsrDispatcher for CountingSsr {
+            async fn dispatch(
+                &self,
+                _request: SsrRequest,
+            ) -> Result<SsrResponse, SsrDispatchError> {
+                self.0.ssr.fetch_add(1, Ordering::SeqCst);
+                Ok(SsrResponse {
+                    status: 200,
+                    headers: vec![("content-type".into(), "text/html".into())],
+                    body: b"<html><body>SSR_LEG</body></html>".to_vec(),
+                })
+            }
+        }
+
+        struct CountingHook(Arc<Counters>);
+        #[async_trait::async_trait]
+        impl RenderOnRequestHook for CountingHook {
+            async fn render_if_stale(&self, _url_path: &str) {
+                self.0.hook.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        /// Which dispatch legs a router registers for `/target`.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Leg {
+            Plugin,
+            Embed,
+            Ssr,
+            Hook,
+        }
+        const ALL_LEGS: [Leg; 4] = [Leg::Plugin, Leg::Embed, Leg::Ssr, Leg::Hook];
+
+        // Builds a router registering exactly `legs` for `/target`, plus
+        // the `_redirects` rule and what a completed pre-warm leaves
+        // behind: the target's bytes in the page cache, under the key the
+        // enumerator emits.
+        async fn router_for(counters: &Arc<Counters>, legs: &[Leg]) -> axum::Router {
+            let mut state = test_state();
+            state.redirects = Some(Arc::new(RwLock::new(Redirects::parse(
+                "/alias /target 200\n",
+            ))));
+            if legs.contains(&Leg::Plugin) {
+                state.plugins = Some(DevMiddlewareSet {
+                    registrations: Arc::new(vec![PluginRegistration {
+                        path: "/target".to_string(),
+                        handler_id: "h".to_string(),
+                        plugin: "counting".to_string(),
+                    }]),
+                    dispatcher: Arc::new(CountingPlugin(Arc::clone(counters))),
+                });
+            }
+            if legs.contains(&Leg::Embed) {
+                let embed_counters = Arc::clone(counters);
+                state.embed_handlers = Some(EmbedHandlerSet::new(vec![EmbedHandler {
+                    pattern: "/target".to_string(),
+                    handler: erase_handler_for_test(move |_req, _params| {
+                        let c = Arc::clone(&embed_counters);
+                        async move {
+                            c.embed.fetch_add(1, Ordering::SeqCst);
+                            "<html><body>EMBED_LEG</body></html>"
+                        }
+                    }),
+                }]));
+            }
+            if legs.contains(&Leg::Ssr) {
+                state.ssr_routes = Some(Arc::new(RwLock::new(Some(SsrRouteSet::new(
+                    vec![SsrRouteRecord {
+                        pattern: "/target".to_string(),
+                    }],
+                    Arc::new(CountingSsr(Arc::clone(counters))),
+                )))));
+            }
+            if legs.contains(&Leg::Hook) {
+                let hook: Arc<dyn RenderOnRequestHook> =
+                    Arc::new(CountingHook(Arc::clone(counters)));
+                state.render_on_request_hook = Some(Arc::new(RwLock::new(Some(hook))));
+            }
+            state
+                .pages
+                .insert("/target", "<html><body>PREWARMED_TARGET</body></html>")
+                .await;
+            test_router(state)
+        }
+
+        fn snapshot(counters: &Counters) -> (usize, usize, usize, usize) {
+            (
+                counters.plugin.load(Ordering::SeqCst),
+                counters.embed.load(Ordering::SeqCst),
+                counters.ssr.load(Ordering::SeqCst),
+                counters.hook.load(Ordering::SeqCst),
+            )
+        }
+
+        async fn get(router: &axum::Router, uri: &str) -> (StatusCode, String) {
+            let resp = router
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = resp.status();
+            (status, body_string(resp).await)
+        }
+
+        // 1. All four legs registered at once: `GET /alias` must reach
+        //    none of them and serve the pre-warmed waterfall bytes.
+        let counters = Arc::new(Counters::default());
+        let router = router_for(&counters, &ALL_LEGS).await;
+        let (status, body) = get(&router, "/alias").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("PREWARMED_TARGET"),
+            "the rewrite must serve the pre-warmed waterfall bytes, got: {body}"
+        );
+        assert_eq!(
+            snapshot(&counters),
+            (0, 0, 0, 0),
+            "a `_redirects` 200 rewrite must re-run no plugin dev-middleware, embed handler, \
+             SSR dispatch, or render-on-request hook for its target",
+        );
+
+        // 2. Per-leg controls. The legs form a priority chain (plugin →
+        //    redirects → embed → SSR → hook → waterfall), so on the
+        //    all-legs router above only the plugin leg can ever win a
+        //    direct request. Registering ONE leg at a time is what makes
+        //    each of the four zeroes above load-bearing: every
+        //    registration is shown to fire for a real `GET /target` on a
+        //    router that is otherwise identical.
+        for leg in ALL_LEGS {
+            let (name, expected, marker) = match leg {
+                Leg::Plugin => ("plugin", (1, 0, 0, 0), "PLUGIN_LEG"),
+                Leg::Embed => ("embed", (0, 1, 0, 0), "EMBED_LEG"),
+                Leg::Ssr => ("ssr", (0, 0, 1, 0), "SSR_LEG"),
+                // The hook renders as a SIDE EFFECT and then falls
+                // through, so its body is the waterfall's — the counter
+                // is the only evidence it ran.
+                Leg::Hook => ("hook", (0, 0, 0, 1), "PREWARMED_TARGET"),
+            };
+            let counters = Arc::new(Counters::default());
+            let router = router_for(&counters, &[leg]).await;
+
+            let (status, body) = get(&router, "/alias").await;
+            assert_eq!(status, StatusCode::OK, "{name}: /alias");
+            assert!(
+                body.contains("PREWARMED_TARGET"),
+                "{name}: /alias must still serve the pre-warmed bytes, got: {body}"
+            );
+            assert_eq!(
+                snapshot(&counters),
+                (0, 0, 0, 0),
+                "{name}: the rewrite must not consult this leg even when it is the only one",
+            );
+
+            let (status, body) = get(&router, "/target").await;
+            assert_eq!(status, StatusCode::OK, "{name}: /target");
+            assert!(
+                body.contains(marker),
+                "{name}: a direct request must reach this leg, got: {body}"
+            );
+            assert_eq!(
+                snapshot(&counters),
+                expected,
+                "{name}: the registration must be live, so its zero above means \
+                 `not consulted for the rewrite`, never `never wired up`",
+            );
+        }
+    }
+
+    /// The base-prefixed counterpart of the test above: the emitted key must
+    /// be the prefix-STRIPPED spelling the waterfall probes, even though the
+    /// rule's target is authored in full-path spec form.
+    #[tokio::test]
+    async fn base_prefixed_prewarm_keys_are_what_the_live_rewrite_serves_from() {
+        let parsed = Redirects::parse("/pj/site/alias /pj/site/rewritten/ 200\n");
+        let plan = crate::rewrite_prewarm::prewarm_rewrite_targets(&parsed, Some("/pj/site"));
+        assert_eq!(plan.targets.len(), 1);
+
+        let mut state = test_state_with_base("/pj/site");
+        state.redirects = Some(Arc::new(RwLock::new(parsed)));
+        state
+            .pages
+            .insert(
+                &plan.targets[0].lookup_keys[0],
+                "<html><body>PREWARM_BASE_MARKER</body></html>",
+            )
+            .await;
+
+        let resp = test_router_with_base(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/pj/site/alias")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("PREWARM_BASE_MARKER"),
+            "base-prefixed rewrite must resolve from the pre-warm key: {body}"
         );
     }
 

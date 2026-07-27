@@ -52,6 +52,7 @@ pub mod middleware;
 pub mod plugin_middleware;
 pub mod redirects;
 pub mod render_hook;
+pub mod rewrite_prewarm;
 pub mod routes;
 pub mod ssr;
 
@@ -114,6 +115,9 @@ pub use plugin_middleware::{
 };
 pub use redirects::{RedirectOutcome, Redirects, RedirectsHandle};
 pub use render_hook::{RenderOnRequestHandle, RenderOnRequestHook};
+pub use rewrite_prewarm::{
+    prewarm_rewrite_targets, PrewarmPlan, PrewarmSkip, PrewarmSkipReason, PrewarmTarget,
+};
 pub use routes::{
     build_router, content_type_for_extension, resolve_content_type, AppState, CachedPage,
     PageCache, DEV_404_BODY,
