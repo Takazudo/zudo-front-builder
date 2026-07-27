@@ -39,7 +39,7 @@
 //! | Query string on the target (`/target?x=1`) | **Stripped**, by delegating to [`waterfall_trimmed_for_rewrite_target`]. Because it is discarded, a `:name` / `:splat` token appearing ONLY in the query does not make the target non-concrete — `/:id /fallback?from=:id 200` serves the single path `/fallback` and IS enumerated. | Query strings are not part of a filesystem / page-cache lookup, and that is already what the live rewrite does — preview splits the query before its static waterfall and dev mirrors it. Stripping here keeps pre-warm and serve on the same key. |
 //! | Fragment on the target (`/target#a`) | **Not stripped** — deliberately, because production does not strip it either (it splits only on `?`). The surviving `#` is then canonically encoded like any other reserved character, giving `/target%23a`. | Fidelity beats cleverness: the pre-warm key must equal the serve key. If a fragment-bearing target is wrong, it is wrong identically on both sides, and pre-warm still hits whatever the waterfall probes. |
 //! | Base-path prefix | Targets are authored in **full-path spec form including the base** (e.g. `/pj/site/rewritten/`); the prefix is stripped via the same `strip_prefix_from_path` boundary rule production uses. A target that does NOT carry the prefix passes through unchanged — again matching production. | The dev route universe, the render-on-request hook, and the waterfall all work in prefix-STRIPPED space. Emitting anything else would miss. |
-//! | External / absolute-URL targets | **Excluded.** Already rejected at parse time ([`Redirects::parse`] drops a `200` rule with a `scheme:` target, per the Cloudflare spec's "cannot proxy external domains"), and re-checked here as defense in depth. **Protocol-relative** targets (`//example.com/x`) are excluded here too — parse does not catch those, since they start with `/`. | There is nothing local to pre-warm. A protocol-relative target would otherwise normalize to the nonsense lookup path `example.com/x`. |
+//! | External / absolute-URL / protocol-relative targets | **Excluded.** Already rejected at parse time ([`Redirects::parse`] drops a `200` rule whose target is a `scheme:` URL or is protocol-relative (`//host/x`), per the Cloudflare spec's "cannot proxy external domains" — issue #2073), and re-checked here as defense in depth. | There is nothing local to pre-warm. A protocol-relative target would otherwise normalize to the nonsense lookup path `example.com/x`. |
 //! | Targets that are not absolute paths (`foo/bar`) | **Excluded.** | Not a same-site absolute path. Production would still probe some trimmed form of it, but pre-warming a path the author never meant risks a spurious render; declining to pre-warm only leaves the status quo. |
 //! | Non-200 rules | **Out of scope** — only `is_rewrite` (status `200`) rules are read. | A `301`/`302` hands the browser a new URL, which then arrives as a normal request and goes through the hook like any other. Redirects were never affected by this bug. |
 //! | Duplicates | Deduped on the normalized request path, keeping **first-file-order** occurrence. | Mirrors `_redirects` first-match-wins, and keeps the output deterministic for the caller's registration pass. |
@@ -179,9 +179,14 @@ pub fn prewarm_rewrite_targets(redirects: &Redirects, base_prefix: Option<&str>)
 /// `true` for an absolute URL (`https://host/x`) or a protocol-relative one
 /// (`//host/x`).
 ///
-/// The absolute case is already rejected at parse time for `200` rules; this
-/// is defense in depth plus the protocol-relative case, which parse does NOT
-/// catch (it starts with `/`, so it never looks like a `scheme:`).
+/// Both cases are already rejected at parse time for `200` rules (issue
+/// #2073: [`crate::redirects::is_external_target`] classifies a `//` prefix
+/// as external too, exactly like a `scheme:` prefix), so a `200` rule with
+/// either shape of target never reaches this module at all. The
+/// `starts_with("//")` check below is kept anyway as defense in depth —
+/// this module must never normalize a protocol-relative target to the
+/// nonsense lookup path `example.com/x` if it were ever reached some other
+/// way.
 fn is_external_or_protocol_relative(target: &str) -> bool {
     target.starts_with("//") || crate::redirects::is_external_target(target)
 }
@@ -456,15 +461,17 @@ mod tests {
 
     #[test]
     fn protocol_relative_target_is_skipped() {
-        // Parse does NOT catch this one — it starts with `/`, so it never
-        // looks like a `scheme:`. Without this module's check it would
-        // normalize to the nonsense lookup path `example.com/evil`.
+        // Issue #2073: the parser now catches this one too (a `//` prefix
+        // classifies as external, exactly like a `scheme:` prefix), so —
+        // same as the `scheme:` case above — it never reaches this module
+        // at all: absent from both lists in the shared FIXTURE's plan, not
+        // present in `skipped` with a reason. The defense-in-depth check
+        // below is what would stop it normalizing to the nonsense lookup
+        // path `example.com/evil` if it were ever reached some other way.
         let p = plan(None);
-        assert_eq!(
-            skip_reason(&p, "//example.com/evil"),
-            Some(PrewarmSkipReason::ExternalTarget)
-        );
+        assert_eq!(skip_reason(&p, "//example.com/evil"), None);
         assert!(!request_paths(&p).iter().any(|r| r.contains("example.com")));
+        assert!(is_external_or_protocol_relative("//example.com/evil"));
     }
 
     #[test]
