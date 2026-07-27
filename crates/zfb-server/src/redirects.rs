@@ -516,12 +516,17 @@ fn is_valid_placeholder_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// `true` when `target` starts with a URL scheme (`scheme:`), i.e. is
-/// an absolute/external URL rather than a same-site relative path.
-/// A relative target always starts with `/`, which never matches a
-/// scheme (schemes must start with an ASCII letter), so this cannot
+/// `true` when `target` starts with a URL scheme (`scheme:`) or is
+/// protocol-relative (`//host/path`), i.e. is an absolute/external URL
+/// rather than a same-site relative path.
+///
+/// A same-site relative target starts with a single `/` followed by a
+/// path segment, never by a second `/` — so the `//` check cannot
 /// misclassify placeholder-bearing relative targets like `/:lang/about`.
 pub(crate) fn is_external_target(target: &str) -> bool {
+    if target.starts_with("//") {
+        return true;
+    }
     let mut chars = target.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() => {}
@@ -716,6 +721,28 @@ mod tests {
     fn external_target_is_rejected_for_200_rewrites() {
         let r = Redirects::parse("/old https://example.com/new 200\n");
         assert!(r.is_empty(), "external 200-rewrite rule must be skipped");
+        assert_eq!(r.match_request("/old", None, "GET"), None);
+    }
+
+    #[test]
+    fn protocol_relative_target_is_allowed_for_redirects() {
+        let r = Redirects::parse("/old //example.com/new 301\n");
+        assert_eq!(
+            r.match_request("/old", None, "GET"),
+            Some(RedirectOutcome::Redirect {
+                status: 301,
+                location: "//example.com/new".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn protocol_relative_target_is_rejected_for_200_rewrites() {
+        let r = Redirects::parse("/old //example.com/new 200\n");
+        assert!(
+            r.is_empty(),
+            "protocol-relative 200-rewrite rule must be skipped"
+        );
         assert_eq!(r.match_request("/old", None, "GET"), None);
     }
 
