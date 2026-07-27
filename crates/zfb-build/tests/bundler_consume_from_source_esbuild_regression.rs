@@ -261,8 +261,8 @@ fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party
     }
 }
 
-/// **RED (#2082, epic #2078 Wave 1; to be flipped by Sub #2086, #2047's real
-/// fix).** Identical topology to
+/// **Flipped by #2086 (Staging Correctness 2 epic #2078, Wave 3; #2082's Part
+/// 1, epic Wave 1, was the RED author).** Identical topology to
 /// [`nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party_source`]
 /// above, but under **copy_mode**
 /// (`node_modules_dir` set + non-empty `tsconfig_paths`, `node_modules_preserve_symlinks`
@@ -276,17 +276,17 @@ fn nested_member_consume_from_source_sibling_is_accepted_as_declared_first_party
 /// (`metafile_deps.rs`'s `has_node_modules_segment` check on the KEY string,
 /// not the canonical path) is `false` for such a key, so it never enters the
 /// case-2 branch where `package_input_is_declared_first_party_entry` (the
-/// #2040 exemption) is consulted at all — it falls through to the case-1/
-/// case-4 stage-membership check instead, which rejects it as case 4
+/// #2040 exemption) is consulted at all — it used to fall through to the
+/// case-1/case-4 stage-membership check instead, which rejected it as case 4
 /// ("first-party input resolved outside every stage root, no staged
 /// spelling") even though `@acme/ui` is declared, claimed, and its entry
 /// covers the import — the SAME package the sibling test above already
 /// accepts when esbuild happens to preserve symlinks.
-///
-/// Desired POST-FIX form: the build stays GREEN, identically to the
-/// `--preserve-symlinks` case.
+/// `canonical_input_is_declared_first_party_entry` (`metafile_deps.rs`) now
+/// resolves package identity from the canonical path instead, so the build
+/// stays GREEN, identically to the `--preserve-symlinks` case.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2086"]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored"]
 fn nested_member_consume_from_source_sibling_accepted_via_canonicalized_key_under_copy_mode() {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!("[bundler_consume_from_source_esbuild_regression] no esbuild binary; skipping.");
