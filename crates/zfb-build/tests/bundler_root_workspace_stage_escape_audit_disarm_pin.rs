@@ -1,41 +1,58 @@
-//! Issue #2081 (Staging Correctness 2 epic #2078, Wave 1) — pin of a KNOWN,
-//! currently-open gap in the SSR stage-escape audit's eligibility predicate
-//! (issue #2050, superseded by #2078): at a root-claimed workspace
+//! Issue #2081 (Staging Correctness 2 epic #2078, Wave 1) originally pinned a
+//! KNOWN, currently-open gap in the SSR stage-escape audit's eligibility
+//! predicate (issue #2050, superseded by #2078): at a root-claimed workspace
 //! (`first_party_root == project_root`, so `shadow == work` —
 //! `crates/zfb-build/src/bundler.rs` :2100-2135), guard (b)'s eligibility
-//! check (`zfb_types::stage_escape_audit_eligibility`) scans
+//! check (`zfb_types::stage_escape_audit_eligibility`) used to scan
 //! `work.join("node_modules")` for a **symlink** whose canonical target is a
-//! claimed workspace package (`crates/zfb-types/src/audit_eligibility.rs`
-//! :78-99). Whenever that directory instead holds a **real (non-symlink)
-//! staged copy** of the package, no symlink is found, eligibility falls back
-//! to [`zfb_types::AuditEligibility::NoReachableFirstPartyPackage`], and the
-//! audit is silently disarmed — an undeclared stage escape then ships with no
-//! error at all, exactly the P1 "completely silent" framing #1730/#1988 were
-//! meant to close.
+//! claimed workspace package (`crates/zfb-types/src/audit_eligibility.rs`).
+//! Whenever that directory instead held a **real (non-symlink) staged copy**
+//! of the package, no symlink was found, eligibility fell back to
+//! [`zfb_types::AuditEligibility::NoReachableFirstPartyPackage`], and the
+//! audit was silently disarmed — an undeclared stage escape then shipped with
+//! no error at all, exactly the P1 "completely silent" framing #1730/#1988
+//! were meant to close.
 //!
-//! Sub #2087 (Wave 3 of epic #2078) lands the real fix (recognising a staged
-//! package by its **declared** identity — `package.json` name + workspace
-//! claim — instead of by link-ness). This file only PINS today's behavior and
-//! adds a RED desired-form twin for #2087 to flip; no behavior changes here.
+//! Sub #2087 (Wave 3 of epic #2078) has since landed the eligibility half of
+//! the fix: `stage_escape_audit_eligibility` now also recognises a staged
+//! package by its **declared** identity (`package.json` `name` + workspace
+//! claim, via `zfb_types::claimed_workspace_member_names`) when no symlink is
+//! present. That closes the ELIGIBILITY gap this file originally pinned —
+//! [`real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafile_audit_still_admits_it_as_case_three`]
+//! confirms `stage_escape_audit_eligibility` now correctly returns
+//! `FirstPartyPackageReachable` for this exact topology.
+//!
+//! **However, arming eligibility alone does not make `bundle_with_session`
+//! reject the escape.** Investigation after #2087 landed found a SEPARATE,
+//! previously-undiscovered gap one layer up, in
+//! `crates/zfb-build/src/metafile_deps.rs::audit_metafile_stage_escape`'s own
+//! case classification: a real-copy-staged package's canonical (symlink-
+//! resolution) path trivially STILL contains a `node_modules` segment (there
+//! is no symlink to resolve away from — the file is genuinely, physically
+//! there), so it is unconditionally classified "case 3: ordinary third-party
+//! dependency, allowed" regardless of whether it is declared or claimed. The
+//! build therefore still returns `Ok` and still ships the undeclared
+//! sibling's marker, unaudited, even with #2087's eligibility fix in place.
+//! This residual gap is tracked as issue #2127 (out of #2087's assigned file
+//! scope — `zfb-types` only — since closing it needs a change in
+//! `crates/zfb-build/src/metafile_deps.rs`, currently being edited in
+//! parallel by epic #2078's sub #2086).
 //!
 //! # The two trigger shapes named in #2081 — and what exploration found
 //!
-//! #2081 asks this pin to cover two shapes that make `<work>/node_modules`
+//! #2081 asked this pin to cover two shapes that make `<work>/node_modules`
 //! hold real copies instead of a symlink
 //! (`crates/zfb-build/src/bundler.rs` :2591-2624, :3130-3135):
 //!
 //! 1. **`bundle.exclude` is non-empty.** Confirmed reproducible below
-//!    ([`real_copy_staging_under_active_bundle_exclude_disarms_eligibility_and_ships_the_escape_silently`]):
+//!    ([`real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafile_audit_still_admits_it_as_case_three`]):
 //!    with any non-empty (even non-matching) `bundle.exclude`, the live
 //!    `<shadow>/node_modules -> <live node_modules>` symlink is never created;
 //!    non-excluded dependencies — including an undeclared workspace sibling
 //!    reached by bare package name — are staged as REAL copies at their
-//!    natural position instead. `stage_escape_audit_eligibility` then finds no
-//!    symlink and returns `NoReachableFirstPartyPackage`; the build succeeds
-//!    even though `@scope/child` is undeclared (no `exports`/`main`) and would
-//!    have been rejected as a case-2 offender had the symlink survived (as it
-//!    does in `bundler_root_workspace_stage_escape_audit_armed_regression.rs`'s
-//!    otherwise-IDENTICAL fixture).
+//!    natural position instead. Eligibility now correctly arms
+//!    (`FirstPartyPackageReachable`, since #2087), but the build STILL
+//!    succeeds — see issue #2127 above for why.
 //!
 //! 2. **Empty `bundle.exclude`, but `workspace_package_staging_active` is
 //!    true** (`bundler.rs` :2591-2602). Investigated directly against working
@@ -172,22 +189,25 @@ fn bundle_text(path: &Path) -> String {
     fs::read_to_string(path).expect("read emitted bundle")
 }
 
-/// **Part 1 pin — trigger shape 1 (non-empty `bundle.exclude`).** Today's
-/// ACTUAL, known-disarmed behavior: an active (even non-matching)
-/// `bundle.exclude` forces every staged dependency — including the
-/// undeclared `@scope/child` workspace sibling — into REAL copies at their
-/// natural shadow position instead of leaving the live
-/// `<shadow>/node_modules` symlink in place. `stage_escape_audit_eligibility`
-/// then finds no symlink evidence and returns `NoReachableFirstPartyPackage`,
-/// so guard (b) never arms and the build succeeds — shipping the undeclared
-/// sibling's source with no stage-escape error at all. This is a
-/// characterization pin of a known-wrong-but-current behavior (see #2050);
-/// it stays green until #2087 lands the declared-identity fix, at which point
-/// this test itself documents history and its RED twin below flips.
+/// **Part 1 pin — trigger shape 1 (non-empty `bundle.exclude`), updated for
+/// issue #2087.** #2087 fixed the ELIGIBILITY half of this gap:
+/// `stage_escape_audit_eligibility` now recognises the undeclared
+/// `@scope/child` workspace sibling's real-copy staging via its own declared
+/// `package.json` `name`, so it returns `FirstPartyPackageReachable` instead
+/// of `NoReachableFirstPartyPackage` for this exact topology (the ONLY
+/// assertion below that changed from this test's original form). The build
+/// STILL succeeds and STILL ships the undeclared sibling's marker unaudited,
+/// though — for a different, newly-discovered reason tracked as issue #2127:
+/// `metafile_deps.rs`'s stage-escape audit classifies a real-copy-staged
+/// package as case 3 ("ordinary third-party dependency, allowed") purely
+/// because its canonical path still contains a `node_modules` segment (there
+/// is no symlink to resolve away from it), regardless of declared identity.
+/// This test therefore still stays green — it now documents the eligibility
+/// fix landing correctly while pinning the residual case-3 gap #2127 tracks.
 #[test]
 #[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<abs path> cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored"]
-fn real_copy_staging_under_active_bundle_exclude_disarms_eligibility_and_ships_the_escape_silently()
-{
+fn real_copy_staging_under_active_bundle_exclude_is_now_eligible_yet_the_metafile_audit_still_admits_it_as_case_three(
+) {
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[bundler_root_workspace_stage_escape_audit_disarm_pin] no esbuild binary; skipping."
@@ -207,12 +227,13 @@ fn real_copy_staging_under_active_bundle_exclude_disarms_eligibility_and_ships_t
 
     let mut session = ShadowSession::new(root).expect("shadow session");
     let output = bundle_with_session(input, Some(&mut session)).expect(
-        "KNOWN-DISARMED (issue #2050/#2081): active bundle.exclude stages the undeclared \
-         @scope/child sibling as a real copy instead of leaving the live node_modules symlink \
-         in place, so guard (b)'s eligibility predicate finds no symlink evidence and never \
-         arms — the build succeeds even though this is the same undeclared case-2 escape the \
-         symlink-preserving sibling fixture rejects. Sub #2087 fixes this; until then the build \
-         must keep succeeding here so this pin stays a faithful record of today's behavior.",
+        "RESIDUAL GAP (issue #2127): active bundle.exclude stages the undeclared @scope/child \
+         sibling as a real copy; eligibility now correctly arms (#2087), but \
+         metafile_deps.rs's stage-escape audit still classifies the real copy as an ordinary \
+         case-3 third-party dependency (its canonical path trivially keeps a node_modules \
+         segment, since there is no symlink to resolve away from) and allows it regardless of \
+         declared identity. The build must keep succeeding here until #2127 is fixed, so this \
+         pin stays a faithful record of today's behavior.",
     );
 
     // The escape genuinely shipped: the undeclared sibling's source reached
@@ -226,42 +247,66 @@ fn real_copy_staging_under_active_bundle_exclude_disarms_eligibility_and_ships_t
 
     // `<shadow>/node_modules` (== `<work>/node_modules` here, since
     // shadow == work at a root-claimed workspace) is a REAL directory, not a
-    // symlink to the live tree — the mechanism that starves the eligibility
-    // predicate of symlink evidence.
+    // symlink to the live tree — the staging mechanism itself, unchanged by
+    // #2087 (which only changed the eligibility VERDICT for this shape, not
+    // how it is staged).
     let shadow_nm = session.shadow_root().join("node_modules");
     let shadow_nm_meta = fs::symlink_metadata(&shadow_nm).expect("shadow node_modules must exist");
     assert!(
         !shadow_nm_meta.file_type().is_symlink(),
         "shadow node_modules must be a REAL directory under active bundle.exclude, not a \
-         symlink to the live tree — that is exactly the disarm mechanism this pin documents"
+         symlink to the live tree — the staging mechanism this pin documents"
     );
 
     // Pin the exact eligibility reason directly, independent of the build's
     // pass/fail outcome above, so a future change to `bundle_with_session`'s
     // error handling can never mask a change in the eligibility predicate
-    // itself.
+    // itself. This is the ONE assertion #2087 flips: eligibility is now
+    // ARMED for this topology.
     let eligibility = zfb_types::stage_escape_audit_eligibility(
         root,
         &zfb_types::first_party_root_for(root),
         &shadow_nm,
     );
+    let zfb_types::AuditEligibility::FirstPartyPackageReachable { link, target } = eligibility
+    else {
+        panic!("expected the NOW-ARMED eligibility reason (issue #2087); got {eligibility:?}");
+    };
     assert_eq!(
-        eligibility,
-        zfb_types::AuditEligibility::NoReachableFirstPartyPackage,
-        "expected the KNOWN-DISARMED eligibility reason; got {eligibility:?}"
+        link,
+        std::fs::canonicalize(node_modules_child_dir(&shadow_nm)).expect("canonicalize link"),
+        "the declared-identity match must point at the staged real copy itself"
+    );
+    assert_eq!(
+        target,
+        std::fs::canonicalize(root.join("packages/child")).expect("canonicalize target"),
+        "the declared-identity match must resolve to the claimed workspace member's own \
+         directory, looked up by name — never by resolving the real copy's own path"
     );
 }
 
-/// **RED desired-form twin for trigger shape 1.** Once #2087 lands
-/// declared-identity recognition, the SAME configuration above must instead
-/// REJECT the escape — an undeclared workspace sibling reached only via a
-/// staged real copy is still a case-2 offender, real-copy staging must not
-/// exempt it. Written in the assertion form #2087 should make true, so that
-/// sub can flip this green by dropping the `#[ignore]` (replaced per the
-/// epic's corrected flip protocol — never just deleted) without touching a
-/// single assertion.
+fn node_modules_child_dir(node_modules: &Path) -> std::path::PathBuf {
+    node_modules.join("@scope/child")
+}
+
+/// **RED desired-form twin for trigger shape 1 — STILL RED after #2087.**
+/// The SAME configuration above must eventually REJECT the escape — an
+/// undeclared workspace sibling reached only via a staged real copy is still
+/// a case-2 offender, real-copy staging must not exempt it. Written in the
+/// assertion form the eventual fix should make true; **assertions are
+/// deliberately left untouched** (never edited to game the gate).
+///
+/// Originally tagged `pending-feature: #2087`, on the assumption that
+/// arming eligibility alone would close this. #2087 landed and DOES arm
+/// eligibility correctly (see the sibling pin above) — but empirically this
+/// test still fails: `bundle_with_session` still returns `Ok`, because
+/// `metafile_deps.rs`'s stage-escape audit classifies a real-copy-staged
+/// package as case 3 (ordinary third-party dependency, always allowed)
+/// regardless of declared identity — a separate, previously-undiscovered
+/// gap, now tracked as issue #2127 (out of #2087's `zfb-types`-only file
+/// scope). Retagged accordingly; still `#[ignore]`d until #2127 lands.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2087"]
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2127"]
 fn real_copy_staging_under_active_bundle_exclude_should_reject_the_undeclared_escape_once_declared_identity_lands(
 ) {
     let Some(esbuild) = locate_esbuild() else {
