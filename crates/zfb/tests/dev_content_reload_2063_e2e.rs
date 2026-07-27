@@ -180,6 +180,15 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, boot_lazy: Option<&str>) -> DevSessi
         .arg("0")
         .current_dir(&root)
         .env("ZFB_ESBUILD_BIN", esbuild)
+        // Surfaces `[zfb-timing] tick(): kinds=[<file>:<Kind>]` on stderr
+        // (`crates/zfb-build/src/orchestrator.rs`) — proof a filesystem
+        // event reached the orchestrator, independent of whatever the
+        // tick decided to do about SSE. Harmless for every cell; load-
+        // bearing for the injected-route cell (a)+(c2), whose whole
+        // premise is that an SSE event is NOT a trustworthy liveness
+        // signal (see `wait_for_tick_mentioning`'s doc comment). Same
+        // env var / pattern as `mirror_css_scan_mdx_e2e.rs`'s `spawn_dev`.
+        .env("ZFB_DEV_TIMING", "1")
         .env_remove("ZFB_DEV_EAGER")
         .env_remove("ZFB_LAZY_DEV_RENDER")
         .env_remove("ZFB_DEV_BOOT_LAZY")
@@ -350,6 +359,45 @@ async fn collect_tick_events(
     events
 }
 
+/// Wait until a `[zfb-timing] tick(): kinds=[...]` line whose `kinds` list
+/// mentions `filename` appears in the dev server's stderr — proof a
+/// filesystem event for that file reached the orchestrator (delivery),
+/// independent of whatever the tick decided to do about SSE. Mirrors
+/// `mirror_css_scan_mdx_e2e.rs`'s `wait_for_tick_mentioning` helper.
+///
+/// Load-bearing for the injected-route matrix cell (a)+(c2)
+/// (`run_injected_matrix_scenario` below): that fixture's whole premise is
+/// that `restale_dynamic_injected` re-stales without ever pushing to
+/// `tick_stale`, so an SSE event is NOT a trustworthy "the watcher noticed
+/// my edit" signal there — the manager's own manual repro attempt (2026-
+/// 07) mistook an unrelated boot/deferred-publish tick for a
+/// `pkg/home.tsx` edit's own tick for exactly this reason, and confirmed
+/// separately that `pkg/` is not a watch root at all (only `pages/`,
+/// `content/`, `components/`, `layouts/`, `styles/`, `data/`, `src/`
+/// are). This helper instead proves delivery from the SAME tick the
+/// content-edit assertion below observes, via a channel (`ZFB_DEV_TIMING`
+/// stderr tracing) that is unaffected by the SSE-dark bug under test.
+async fn wait_for_tick_mentioning(session: &DevSession, filename: &str) -> String {
+    let started = Instant::now();
+    while started.elapsed() < SSE_FIRST_EVENT_DEADLINE {
+        let stderr = read_log(&session.stderr_path);
+        if let Some(line) = stderr
+            .lines()
+            .find(|line| line.contains("tick(): kinds=[") && line.contains(filename))
+        {
+            return line.to_string();
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "no `[zfb-timing] tick(): kinds=[...]` line mentioning {filename:?} within {}s — the \
+         filesystem event for the content edit never reached the orchestrator at all, which \
+         would be a DIFFERENT bug than #2063 (no delivery vs. SSE-dark delivery)\n{}",
+        SSE_FIRST_EVENT_DEADLINE.as_secs(),
+        session.logs(),
+    );
+}
+
 async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
     let boot_start = Instant::now();
     loop {
@@ -388,33 +436,24 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
     }
 }
 
-/// Repeated edits of the dedicated `__warmup.mdx` entry (never touched by
-/// the test's own assertions below) prove the watch stream is live
-/// without racing the fixture's `alpha` entry the scenario edits later.
+/// Repeated edits of a dedicated warmup entry (never touched by the test's
+/// own assertions later) prove the watch stream is live without racing
+/// the fixture's real entry the scenario edits later.
+///
+/// Used by the baseline (`__warmup.mdx`) and out-of-root/cell-(c1)
+/// (`shared-content/posts/__warmup.mdx`) scenarios ONLY. The injected-route
+/// matrix cell (a)+(c2) does NOT use this handshake at all — see
+/// `run_injected_matrix_scenario`'s own header comment for why an
+/// SSE-based liveness probe is the wrong instrument there, and
+/// `wait_for_tick_mentioning` for the delivery-proof mechanism it uses
+/// instead (manager finding, 2026-07: `pkg/` is not a watch root, so no
+/// warmup edit under it — at any interval — would ever be observed).
 ///
 /// `warmup_path` is an ABSOLUTE path to the file this handshake edits
-/// repeatedly. Generalized (sub #2094) beyond a hardcoded
-/// `content/posts/__warmup.mdx` MDX rewrite in two ways:
-///
-/// - the injected/out-of-root matrix fixtures split an in-project
-///   `project/` dir from a sibling out-of-root `shared-content/` dir —
-///   the warmup entry there does not live under `session.root` at all;
-/// - `render_revision` generates each revision's file bytes, because the
-///   injected-route matrix fixture (cell (a)+(c2)) CANNOT use a content
-///   entry here at all: its `posts` collection has no in-project
-///   consumer other than the dynamic injected route under test, which
-///   is SSE-dark by design (the very behavior this file exists to
-///   characterize) — so a content-entry warmup edit there would never
-///   produce an SSE event either, making this liveness handshake hang
-///   for the wrong reason instead of proving the watcher is live. That
-///   fixture instead warms up its STATIC injected `/` route's own
-///   component source (`pkg/home.tsx`), an ordinary Module dependency
-///   edit wholly unrelated to the Content-provenance path under test.
-///
-/// `warmup_interval` is the delay between successive warmup rewrites — see
-/// `MatrixFixture::warmup_interval`'s doc comment for why this must also
-/// vary by fixture (manager finding, 2026-07, alongside the SSE-client
-/// total-timeout bug fixed above).
+/// repeatedly; `render_revision` generates each revision's bytes;
+/// `warmup_interval` is the delay between successive rewrites — see
+/// `MatrixFixture`'s doc comments for why these are still fields on that
+/// struct even though only one matrix cell (c1) uses it today.
 async fn confirm_watcher_live(
     session: &DevSession,
     base: &str,
@@ -718,13 +757,24 @@ async fn content_edit_emits_exactly_one_page_event_cold_boot() {
 // found, per the epic's explicit instruction.
 // ============================================================================
 
-/// Describes one process-based matrix cell fixture, generalizing
-/// `run_scenario` above beyond the flat single-root baseline layout: the
-/// injected/out-of-root fixture families split an in-project `project/`
-/// dir from a sibling out-of-root `shared-content/` dir (mirroring a real
-/// `allowOutsideRoot: true` collection config), so `zfb dev` must be
-/// spawned in the `project/` subdirectory of the copied fixture tree while
-/// the edited content entry and the warmup entry live outside it.
+/// Describes one process-based matrix cell fixture driven through
+/// `run_matrix_scenario`, generalizing `run_scenario` above beyond the flat
+/// single-root baseline layout: the out-of-root fixture family splits an
+/// in-project `project/` dir from a sibling out-of-root `shared-content/`
+/// dir (mirroring a real `allowOutsideRoot: true` collection config), so
+/// `zfb dev` must be spawned in the `project/` subdirectory of the copied
+/// fixture tree while the edited content entry and the warmup entry live
+/// outside it.
+///
+/// Currently used by cell (c1) only — the injected-route cell (a)+(c2)
+/// has its own dedicated `run_injected_matrix_scenario` (manager finding,
+/// 2026-07: that fixture cannot use this struct's `confirm_watcher_live`-
+/// based liveness handshake at all; see that function's header comment).
+/// The `warmup_render_revision`/`warmup_interval` fields stay generalized
+/// (fn pointer / configurable cadence, not hardcoded to the baseline's
+/// plain MDX rewrite) in case a future matrix cell needs a different
+/// warmup shape, rather than narrowing back to what only cell (c1) needs
+/// today.
 struct MatrixFixture {
     /// Directory name under `tests/fixtures/`.
     family_dir: &'static str,
@@ -734,18 +784,9 @@ struct MatrixFixture {
     /// Path (relative to the copied family root) of the warmup entry
     /// `confirm_watcher_live` edits repeatedly.
     warmup_rel: &'static str,
-    /// Generates each revision's bytes for `warmup_rel` — see
-    /// `confirm_watcher_live`'s doc comment for why this must vary by
-    /// fixture rather than always being an MDX content rewrite.
+    /// Generates each revision's bytes for `warmup_rel`.
     warmup_render_revision: fn(u32) -> String,
-    /// Delay between successive warmup rewrites. Manager finding
-    /// (2026-07): `confirm_watcher_live`'s original unconditional 400ms
-    /// cadence works for a cheap MDX rewrite, but the injected fixture's
-    /// warmup edit (a TSX component source) triggers a real rebundle —
-    /// churning it every 400ms can invalidate an in-flight rebundle
-    /// before it ever reaches its publish/SSE step, so that fixture
-    /// needs a much longer interval (comfortably above its observed
-    /// ~8s first-tick latency) to let one edit's tick actually complete.
+    /// Delay between successive warmup rewrites.
     warmup_interval: Duration,
     /// Path (relative to the copied family root) of the entry this
     /// scenario edits for its own assertion.
@@ -935,51 +976,172 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
 // A future wave (#2097, "the fix") should be able to flip this test green
 // WITHOUT touching any assertion below, only implementing the fix epic
 // #2092 Wave 3 (#2096) locks.
+//
+// DOES NOT use `run_matrix_scenario`/`MatrixFixture`/`confirm_watcher_live`
+// (manager finding, 2026-07): an SSE-based watcher-liveness handshake is
+// the wrong instrument for a fixture whose entire premise is that SSE is
+// dark for this collection. `pkg/` (the only place this fixture's route
+// sources live) is not a watch root at all (only `pages/`, `content/`,
+// `components/`, `layouts/`, `styles/`, `data/`, `src/` are), so an edit
+// to `pkg/home.tsx` is never observed by the watcher regardless of
+// rewrite interval — the manager's manual repro that seemed to show a
+// `page` event ~8s after such an edit was in fact the unrelated boot/
+// deferred-publish tick landing shortly after they subscribed, not a
+// response to that edit. This cell instead proves delivery the way
+// `mirror_css_scan_mdx_e2e.rs` does — `wait_for_tick_mentioning` above —
+// keyed on the SAME single edit the assertion below observes
+// (`shared-content/posts/alpha.mdx`), so delivery and the SSE-event
+// collection race the same tick: this pins all three legs of #2063's
+// signature together — event delivered, bytes fresh, zero `page` events.
 // ----------------------------------------------------------------------------
 
-/// Warmup revision generator for the injected fixture's `pkg/home.tsx` —
-/// see `confirm_watcher_live`'s doc comment for why this fixture cannot
-/// use a content-entry warmup like the other two matrix fixtures. Keeps
-/// the `INJECTED_ROOT_OK` marker present at every revision (the `home_marker`
-/// polled after boot) and stays valid TSX; only a revision-numbered
-/// leading comment changes between writes.
-fn render_injected_home_warmup_revision(revision: u32) -> String {
-    format!(
-        "// warmup revision {revision}\n\
-         export default function InjectedHome() {{\n\
-         \x20 return (\n\
-         \x20   <html lang=\"en\">\n\
-         \x20     <head>\n\
-         \x20       <meta charSet=\"utf-8\" />\n\
-         \x20       <title>dev-content-reload-2063-injected fixture</title>\n\
-         \x20     </head>\n\
-         \x20     <body>\n\
-         \x20       <h1>INJECTED_ROOT_OK</h1>\n\
-         \x20     </body>\n\
-         \x20   </html>\n\
-         \x20 );\n\
-         }}\n"
-    )
-}
+async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[dev_content_reload_2063_e2e] [{label}] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
 
-fn injected_matrix_fixture() -> MatrixFixture {
-    MatrixFixture {
-        family_dir: "dev-content-reload-2063-injected",
-        project_subdir: "project",
-        warmup_rel: "project/pkg/home.tsx",
-        warmup_render_revision: render_injected_home_warmup_revision,
-        // Well above the ~8s first-tick latency the manager observed by
-        // hand for this fixture (one `pkg/home.tsx` append -> `page`
-        // event), so a subsequent warmup rewrite cannot interrupt the
-        // in-flight rebundle before it publishes.
-        warmup_interval: Duration::from_secs(15),
-        entry_rel: "shared-content/posts/alpha.mdx",
-        home_route: "/",
-        home_marker: "INJECTED_ROOT_OK",
-        entry_route: "/injected-posts/alpha",
-        v1_marker: "V1-BODY-ALPHA-INJECTED",
-        v2_marker: "V2-BODY-ALPHA-INJECTED",
-        edit_contents: "---\ntitle: Alpha V2 Frontmatter Injected\ndate: 2026-01-02\n---\n\nV2-BODY-ALPHA-INJECTED updated markdown body.\n",
+    let temp = tempfile::tempdir().expect("create tempdir for injected matrix fixture");
+    let family_root = temp
+        .path()
+        .canonicalize()
+        .expect("canonicalize fixture root");
+    copy_dir(
+        &matrix_family_dir("dev-content-reload-2063-injected"),
+        &family_root,
+    )
+    .expect("copy injected matrix fixture family");
+
+    let project_root = family_root.join("project");
+    let entry_path = family_root.join("shared-content/posts/alpha.mdx");
+
+    let mut session = spawn_dev(project_root, &esbuild, boot_lazy);
+    let pgid = session.guard.pgid;
+    let body = async {
+        let Some(port) = wait_for_ready_port(&mut session).await else {
+            return ScenarioOutcome::Skipped;
+        };
+        let base = format!("http://localhost:{port}");
+        let client = build_reqwest_client();
+
+        // GET / readiness — inlined rather than via `boot_and_handshake`,
+        // since this cell deliberately skips `confirm_watcher_live`'s
+        // SSE-based liveness handshake entirely (see the header comment
+        // above).
+        let ready_start = Instant::now();
+        loop {
+            if matches!(
+                client.get(format!("{base}/")).send().await,
+                Ok(response) if response.status().as_u16() == 200
+            ) {
+                break;
+            }
+            assert!(
+                ready_start.elapsed() < BOOT_DEADLINE,
+                "[{label}] GET / never answered 200 within {}s after the ready banner.\n{}",
+                BOOT_DEADLINE.as_secs(),
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/"),
+            "INJECTED_ROOT_OK",
+            &format!("[{label}] boot readiness probe (/)"),
+            &session,
+        )
+        .await;
+
+        // Confirm the entry's initial content is served before editing it.
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/injected-posts/alpha"),
+            "V1-BODY-ALPHA-INJECTED",
+            &format!("[{label}] boot entry route (/injected-posts/alpha)"),
+            &session,
+        )
+        .await;
+
+        let sse = subscribe_sse(&base).await;
+        fs::write(
+            &entry_path,
+            "---\ntitle: Alpha V2 Frontmatter Injected\ndate: 2026-01-02\n---\n\nV2-BODY-ALPHA-INJECTED updated markdown body.\n",
+        )
+        .expect("edit the injected fixture's content entry");
+
+        // Delivery proof (see this cell's header comment) — keyed on the
+        // SAME edit the SSE-collection/freshness assertions below
+        // observe, so a delivery regression can never be misread as the
+        // #2063 SSE-dark regression under test.
+        let tick_line = wait_for_tick_mentioning(&session, "alpha.mdx").await;
+        eprintln!("[dev_content_reload_2063_e2e] [{label}] observed delivery: {tick_line}");
+        assert!(
+            tick_line.contains("Modified") || tick_line.contains("Created"),
+            "[{label}] expected the tick() line for alpha.mdx to report a Modified/Created \
+             kind, got: {tick_line}\n{}",
+            session.logs(),
+        );
+
+        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
+        eprintln!(
+            "[dev_content_reload_2063_e2e] [{label}] observed SSE event sequence after the \
+             content edit: {events:?}"
+        );
+
+        for name in &events {
+            assert!(
+                matches!(name.as_str(), "page" | "css" | "islands"),
+                "[{label}] unexpected SSE event name {name:?}; observed sequence: {events:?}\n{}",
+                session.logs(),
+            );
+        }
+
+        // Freshness check runs BEFORE the page-event-count assertions —
+        // see `run_matrix_scenario`'s identical ordering and its own
+        // comment for why.
+        poll_until_response_contains(
+            &client,
+            &format!("{base}/injected-posts/alpha"),
+            "V2-BODY-ALPHA-INJECTED",
+            &format!("[{label}] entry rerender after content edit"),
+            &session,
+        )
+        .await;
+
+        let page_count = events.iter().filter(|name| name.as_str() == "page").count();
+        assert!(
+            page_count >= 1,
+            "[{label}] expected at least one `page` SSE event after the content edit within \
+             {}s; observed sequence: {events:?}\n{}",
+            SSE_FIRST_EVENT_DEADLINE.as_secs(),
+            session.logs(),
+        );
+        assert_eq!(
+            page_count,
+            1,
+            "[{label}] expected EXACTLY ONE `page` SSE event for one content-edit tick (a \
+             second `page` event means the open tab would be told to reload twice for one \
+             edit) — a same-tick `css`/`islands` companion is fine, a duplicate `page` is not; \
+             observed sequence: {events:?}\n{}",
+            session.logs(),
+        );
+
+        ScenarioOutcome::Completed
+    };
+
+    match tokio::time::timeout(OVERALL_DEADLINE, body).await {
+        Ok(ScenarioOutcome::Completed) | Ok(ScenarioOutcome::Skipped) => {}
+        Err(_) => panic!(
+            "[watchdog] [{label}] dev_content_reload_2063_e2e injected matrix cell did not \
+             finish within {}s. Process group {pgid} will be killed.\n{}",
+            OVERALL_DEADLINE.as_secs(),
+            session.logs(),
+        ),
     }
 }
 
@@ -987,20 +1149,14 @@ fn injected_matrix_fixture() -> MatrixFixture {
 async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_default_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    run_matrix_scenario(
-        &injected_matrix_fixture(),
-        None,
-        "matrix (a)+(c2) default boot",
-    )
-    .await;
+    run_injected_matrix_scenario(None, "matrix (a)+(c2) default boot").await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_cold_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
-    run_matrix_scenario(
-        &injected_matrix_fixture(),
+    run_injected_matrix_scenario(
         Some("cold"),
         "matrix (a)+(c2) Cold boot (ZFB_DEV_BOOT_LAZY=cold)",
     )
