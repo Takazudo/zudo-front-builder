@@ -2209,3 +2209,294 @@ fn working_dir_is_clean_after_multi_entry_bundle() {
          in the project root; found {leftovers:?}"
     );
 }
+
+/// Every `(prefix, suffix)` pair recognized by `zfb-islands`'
+/// `sweep_orphaned_in_project_temp_files` (issue #2109, generalizing #1976's
+/// entry-only sweep). Kept as a literal mirror of that crate's private
+/// `IN_PROJECT_TEMP_CLASSES` table rather than an import, matching the
+/// existing convention in this file (`working_dir_is_clean_after_multi_entry_bundle`
+/// above already hardcodes the entry class's own prefix/suffix as literals for
+/// the same reason: none of these constants are `pub`).
+fn recognized_in_project_temp_classes() -> [(&'static str, &'static str); 4] {
+    [
+        (".zfb-esbuild-entry-", ".tsx"),
+        (".zfb-islands-tsconfig-", ".json"),
+        (".zfb-worker-tsconfig-", ".json"),
+        (
+            zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX,
+            zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_SUFFIX,
+        ),
+    ]
+}
+
+/// Strand a stale, unlocked file of one recognized temp-file class directly
+/// in `root`, aged past the sweep's grace window — mirroring
+/// `working_dir_is_clean_after_multi_entry_bundle`'s own stranding of
+/// `.zfb-esbuild-entry-plnMVZ.tsx` above, generalized to any of the four
+/// classes.
+fn strand_stale_temp_file(root: &Path, name: &str, contents: &str) {
+    let path = root.join(name);
+    std::fs::write(&path, contents).unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 60 * 60))
+        .unwrap();
+}
+
+/// Collect every file in `root` whose name matches a recognized in-project
+/// temp-file class, regardless of which class it is.
+fn recognized_temp_leftovers(root: &Path) -> Vec<String> {
+    let classes = recognized_in_project_temp_classes();
+    std::fs::read_dir(root)
+        .expect("read project root")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            classes
+                .iter()
+                .any(|(prefix, suffix)| name.starts_with(prefix) && name.ends_with(suffix))
+        })
+        .collect()
+}
+
+/// Issue #2111 (Temp Sweeper epic #2106, Wave 3 — the epic's final confirm
+/// sub), Scenario A: a real-esbuild fixture that actually registers a
+/// plugin alias, a virtual module, AND a module worker together — none of
+/// which `working_dir_is_clean_after_multi_entry_bundle` above exercises,
+/// so the three classes #2109 generalized the sweep to cover
+/// (`.zfb-islands-tsconfig-*.json`, `.zfb-worker-tsconfig-*.json`,
+/// `.zfb-virtual-*.mjs`) were never proven end-to-end against real esbuild
+/// until now.
+///
+/// One `bundle()` call with `module_workers` set exercises all four classes
+/// in a single subprocess pass: the shared islands entry allocates the
+/// entry-tsconfig pair (`build_plugin_tsconfig("islands", ...)` ->
+/// `.zfb-islands-tsconfig-*.json`) because `alias_entries`/`virtual_modules`
+/// are non-empty, the module-worker job allocates its own
+/// `.zfb-worker-tsconfig-*.json` via the same `build_job_resolver_inputs`
+/// helper `bundle_client_script_file_with_workers` uses (see Scenario B
+/// below), and the virtual module's source materializes to a
+/// `.zfb-virtual-*.mjs` file via `zfb_plugin_resolver::build_resolver_inputs`.
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker \
+            -- --ignored"]
+fn all_four_temp_classes_are_reaped_with_plugin_alias_virtual_module_and_worker() {
+    let project = tempfile::tempdir().expect("tempdir");
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("components")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+    std::fs::create_dir_all(root.join("pages")).unwrap();
+
+    let helper_path = root.join("lib/helper.ts");
+    std::fs::write(
+        &helper_path,
+        "export const helperMarker = 'ZFB_ALIAS_HELPER_MARKER';\n",
+    )
+    .unwrap();
+
+    let worker_path = root.join("pages/search.worker.ts");
+    std::fs::write(
+        &worker_path,
+        "import { helperMarker } from '@alias/helper';\n\
+         self.postMessage('ZFB_MODULE_WORKER_MARKER:' + helperMarker);\n",
+    )
+    .unwrap();
+
+    let island_path = root.join("components/Alpha.tsx");
+    std::fs::write(
+        &island_path,
+        "import { helperMarker } from '@alias/helper';\n\
+         import { virtualMarker } from 'virtual:data';\n\
+         export default function Alpha() {\n\
+           new Worker(new URL('../pages/search.worker.ts', import.meta.url), \
+           { type: 'module' });\n\
+           return helperMarker + virtualMarker;\n\
+         }\n",
+    )
+    .unwrap();
+
+    // Pre-strand a stale, unlocked file of each of the four recognized
+    // temp-file classes before the build runs (issue #1976's entry-class
+    // fixture above, extended to the three classes #2109 generalized the
+    // sweep to cover).
+    strand_stale_temp_file(
+        root,
+        ".zfb-esbuild-entry-plnMVZ.tsx",
+        "// Generated by zfb-islands\n",
+    );
+    strand_stale_temp_file(root, ".zfb-islands-tsconfig-stAle1.json", "{}");
+    strand_stale_temp_file(root, ".zfb-worker-tsconfig-stAle2.json", "{}");
+    strand_stale_temp_file(
+        root,
+        &format!(
+            "{}stAle3{}",
+            zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX,
+            zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_SUFFIX
+        ),
+        "export default {};\n",
+    );
+
+    let worker_entry = ModuleWorkerBundleEntry::new(root, &worker_path, &worker_path).unwrap();
+    let out_dir = tempfile::tempdir().expect("outdir");
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default()
+            .with_working_dir(root.to_path_buf())
+            .with_alias_entries(vec![(
+                "@alias/helper".to_string(),
+                helper_path.to_string_lossy().into_owned(),
+            )])
+            .with_virtual_modules(vec![(
+                "virtual:data".to_string(),
+                "export const virtualMarker = 'ZFB_VIRTUAL_MODULE_MARKER';\n".to_string(),
+            )]),
+    );
+    let bundle_cfg = BundleConfig::production()
+        .with_outdir(out_dir.path())
+        .with_module_workers(vec![worker_entry]);
+    let islands = [Island::new("Alpha", island_path.clone())];
+
+    let output = bundler
+        .bundle(&islands, &bundle_cfg)
+        .expect("bundle with plugin alias, virtual module, and module worker");
+    assert!(!output.bytes.is_empty());
+    assert_eq!(output.workers.len(), 1);
+    let worker_js = String::from_utf8_lossy(&output.workers[0].bytes);
+    assert!(
+        worker_js.contains("ZFB_ALIAS_HELPER_MARKER"),
+        "module worker did not resolve the plugin alias: {worker_js}"
+    );
+
+    let leftovers = recognized_temp_leftovers(root);
+    assert!(
+        leftovers.is_empty(),
+        "a successful bundle registering a plugin alias, virtual module, and module \
+         worker must leave no recognized in-project temp-file class behind, and must \
+         reap every pre-stranded stale file of each class; found {leftovers:?}"
+    );
+}
+
+/// Issue #2111, Scenario B: a dedicated client-script-only proof. Extending
+/// Scenario A's fixture is NOT sufficient to prove #2109's fix — Scenario-A-
+/// style tests exercise `bundle()`/`bundle_per_island()`, which already
+/// called the sweep before this epic (only `bundle_client_script_file_with_workers`
+/// was missing the call, per #2109's Part 4). This test makes that call the
+/// FIRST operation — never preceded by `bundle()` or `bundle_per_island()` —
+/// so it directly proves the newly-wired call site reaps strays for a
+/// project that never runs an islands build at all.
+#[test]
+#[ignore = "env-gate: esbuild binary — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb-islands --test integration \
+            client_script_only_project_reaps_all_four_stranded_temp_classes_before_any_islands_operation \
+            -- --ignored"]
+fn client_script_only_project_reaps_all_four_stranded_temp_classes_before_any_islands_operation() {
+    use zfb_islands::{module_worker_filename, ClientScriptWorkerEntry};
+
+    let project = tempfile::tempdir().unwrap();
+    let root = project.path();
+    stage_minimal_node_modules(root);
+    std::fs::create_dir_all(root.join("pages")).unwrap();
+    std::fs::create_dir_all(root.join("lib")).unwrap();
+
+    let helper_path = root.join("lib/helper.ts");
+    std::fs::write(
+        &helper_path,
+        "export const helperMarker = 'ZFB_CLIENT_ALIAS_HELPER';\n",
+    )
+    .unwrap();
+
+    let worker_path = root.join("pages/client.worker.ts");
+    std::fs::write(
+        &worker_path,
+        "import { helperMarker } from '@alias/helper';\n\
+         self.postMessage('ZFB_CLIENT_WORKER_MARKER:' + helperMarker);\n",
+    )
+    .unwrap();
+
+    let entry_path = root.join("pages/entry.client.ts");
+    std::fs::write(
+        &entry_path,
+        "import { helperMarker } from '@alias/helper';\n\
+         import { virtualMarker } from 'virtual:data';\n\
+         console.log(helperMarker, virtualMarker);\n",
+    )
+    .unwrap();
+
+    // Strand a stale, unlocked file of ALL FOUR recognized temp-file classes
+    // before any build operation runs at all — including the islands-
+    // tsconfig class, which this test never otherwise produces, proving the
+    // sweep called by `bundle_client_script_file_with_workers` is generic
+    // rather than scoped to the job type that happens to run.
+    strand_stale_temp_file(
+        root,
+        ".zfb-esbuild-entry-plnMVZ.tsx",
+        "// Generated by zfb-islands\n",
+    );
+    strand_stale_temp_file(root, ".zfb-islands-tsconfig-stAle1.json", "{}");
+    strand_stale_temp_file(root, ".zfb-worker-tsconfig-stAle2.json", "{}");
+    strand_stale_temp_file(
+        root,
+        &format!(
+            "{}stAle3{}",
+            zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX,
+            zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_SUFFIX
+        ),
+        "export default {};\n",
+    );
+
+    let worker_filename = module_worker_filename(root, &worker_path).unwrap();
+    let out_dir = tempfile::tempdir().unwrap();
+    let bundler = EsbuildSubprocessBundler::new(
+        EsbuildSubprocessConfig::default()
+            .with_working_dir(root.to_path_buf())
+            .with_alias_entries(vec![(
+                "@alias/helper".to_string(),
+                helper_path.to_string_lossy().into_owned(),
+            )])
+            .with_virtual_modules(vec![(
+                "virtual:data".to_string(),
+                "export const virtualMarker = 'ZFB_CLIENT_VIRTUAL_MARKER';\n".to_string(),
+            )]),
+    );
+    let config = BundleConfig::production().with_outdir(out_dir.path());
+
+    // The FIRST operation in this test is a real client-script-only bundle
+    // call — never `bundle()`, never `bundle_per_island()`, and no islands
+    // operation precedes it anywhere in this test. This is the only direct
+    // proof that the call site #2109 wired into
+    // `bundle_client_script_file_with_workers` actually reaps strays for a
+    // client-script-only project.
+    let output = bundler
+        .bundle_client_script_file_with_workers(
+            "entry",
+            &entry_path,
+            &[ClientScriptWorkerEntry {
+                filename: worker_filename.clone(),
+                source_path: worker_path.clone(),
+            }],
+            &config,
+        )
+        .expect("client-script-only bundle with plugin alias, virtual module, and worker");
+
+    assert!(
+        output.js.contains("ZFB_CLIENT_ALIAS_HELPER"),
+        "client entry did not resolve the plugin alias: {}",
+        output.js
+    );
+    assert_eq!(output.companions.len(), 1);
+    assert_eq!(output.companions[0].filename, worker_filename);
+    let worker_js = String::from_utf8_lossy(&output.companions[0].bytes);
+    assert!(
+        worker_js.contains("ZFB_CLIENT_WORKER_MARKER"),
+        "client worker did not resolve the plugin alias: {worker_js}"
+    );
+
+    let leftovers = recognized_temp_leftovers(root);
+    assert!(
+        leftovers.is_empty(),
+        "a client-script-only bundle call must reap every pre-stranded stale temp \
+         file of all four recognized classes as its first operation, before any \
+         islands-path operation ever runs; found {leftovers:?}"
+    );
+}
