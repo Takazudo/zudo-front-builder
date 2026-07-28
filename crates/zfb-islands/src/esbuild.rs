@@ -636,9 +636,9 @@ pub struct EsbuildSubprocessBundler {
 /// caller passes the SAME map to `build_resolver_inputs` so the virtual-module `--alias` set
 /// honors the same user-wins policy (#1267).
 ///
-/// `label` distinguishes the two call sites in temp-file names / error context
-/// (`"islands"` vs `"client-script"`); `comment` is the `//` provenance string embedded in
-/// the emitted JSON.
+/// `label` distinguishes call sites in temp-file names / error context (today only
+/// `"islands"` is ever passed — see the call site below); `comment` is the `//`
+/// provenance string embedded in the emitted JSON.
 fn build_plugin_tsconfig(
     working_dir: &Path,
     resolver_inputs: &zfb_plugin_resolver::ResolverInputs,
@@ -685,6 +685,10 @@ fn build_plugin_tsconfig(
     };
     std::fs::write(tmp.path(), serde_json::to_vec_pretty(&json)?)
         .with_context(|| format!("failed to write {label} synthetic tsconfig"))?;
+    // Claim a shared lock so a concurrent sweep of this crate's temp classes (mirroring
+    // `allocate_locked_entry_tmp`'s contract) can tell "still in use" from "orphaned" rather
+    // than inferring it from age alone.
+    let _ = tmp.as_file().lock_shared();
     Ok(Some(tmp))
 }
 
@@ -924,6 +928,10 @@ fn build_job_resolver_inputs(
         serde_json::Value::Object(compiler_options),
     );
 
+    // This one `.zfb-worker-tsconfig-*.json` class serves BOTH module-worker jobs and
+    // client-script entry jobs — `build_job_resolver_inputs` is called once per physical
+    // esbuild entry regardless of which job shape owns that entry, so there is no separate
+    // `.zfb-client-script-tsconfig-*.json` class to look for.
     let tmp = if working_dir.is_dir() {
         tempfile::Builder::new()
             .prefix(".zfb-worker-tsconfig-")
@@ -939,6 +947,10 @@ fn build_job_resolver_inputs(
     };
     std::fs::write(tmp.path(), serde_json::to_vec_pretty(&root)?)
         .context("failed to write per-entry synthetic tsconfig")?;
+    // Claim a shared lock so a concurrent sweep of this crate's temp classes (mirroring
+    // `allocate_locked_entry_tmp`'s contract) can tell "still in use" from "orphaned" rather
+    // than inferring it from age alone.
+    let _ = tmp.as_file().lock_shared();
     Ok(JobResolverInputs {
         resolver_inputs,
         tsconfig: Some(tmp),
@@ -3311,6 +3323,59 @@ mod tests {
     }
 
     #[test]
+    fn islands_tsconfig_is_locked_so_a_concurrent_exclusive_lock_attempt_fails_while_owned() {
+        // Same contract as `allocated_entry_is_locked_so_a_concurrent_sweep_spares_it` above,
+        // applied to `build_plugin_tsconfig`'s `.zfb-islands-tsconfig-*.json` allocation: drive
+        // the REAL production helper (not a hand-written file), then prove a second handle's
+        // exclusive `try_lock()` fails while the production handle is alive and succeeds once
+        // it drops. Drop `build_plugin_tsconfig`'s `lock_shared` call and this fails.
+        let dir = tempfile::tempdir().unwrap();
+        let plugin_target = dir.path().join("plugin-entry.ts");
+        std::fs::write(&plugin_target, "export const plugin = true;\n").unwrap();
+        let aliases = vec![(
+            "@plugin/entry".to_string(),
+            plugin_target.to_string_lossy().into_owned(),
+        )];
+        let resolver_inputs =
+            zfb_plugin_resolver::build_resolver_inputs(&aliases, &[], dir.path(), &BTreeMap::new())
+                .expect("build resolver inputs with at least one plugin entry");
+        assert!(
+            !resolver_inputs.paths_entries.is_empty(),
+            "the fixture must actually register a plugin path entry, or build_plugin_tsconfig \
+             takes its no-plugin early return and allocates nothing"
+        );
+
+        let tmp = build_plugin_tsconfig(
+            dir.path(),
+            &resolver_inputs,
+            &BTreeMap::new(),
+            "islands",
+            "test tsconfig",
+        )
+        .expect("build the islands tsconfig")
+        .expect("a plugin entry must produce a synthetic tsconfig");
+        let path = tmp.path().to_path_buf();
+
+        let second_handle = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open a second handle to the same tsconfig");
+        assert!(
+            second_handle.try_lock().is_err(),
+            "a concurrent exclusive try_lock must fail while build_plugin_tsconfig's own \
+             shared-lock-holding handle is still alive"
+        );
+
+        drop(tmp);
+
+        assert!(
+            second_handle.try_lock().is_ok(),
+            "once the production handle drops, the exclusive try_lock must succeed"
+        );
+    }
+
+    #[test]
     fn sweep_touches_nothing_but_stale_entry_files() {
         let dir = tempfile::tempdir().unwrap();
         let old = ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60);
@@ -3484,6 +3549,51 @@ mod tests {
         assert_eq!(
             json["compilerOptions"]["paths"]["@plugin/entry"][0].as_str(),
             Some(plugin_target.to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn worker_tsconfig_is_locked_so_a_concurrent_exclusive_lock_attempt_fails_while_owned() {
+        // Same contract as `allocated_entry_is_locked_so_a_concurrent_sweep_spares_it` and
+        // `islands_tsconfig_is_locked_so_a_concurrent_exclusive_lock_attempt_fails_while_owned`
+        // above, applied to `build_job_resolver_inputs`'s `.zfb-worker-tsconfig-*.json`
+        // allocation: drive the REAL production helper, then prove a second handle's exclusive
+        // `try_lock()` fails while the production handle is alive and succeeds once it drops.
+        // Drop `build_job_resolver_inputs`'s `lock_shared` call and this fails.
+        let project = tempfile::tempdir().unwrap();
+        let source = project.path().join("src/worker.ts");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "export {};\n").unwrap();
+        let plugin_target = project.path().join("plugin-entry.ts");
+        std::fs::write(&plugin_target, "export const plugin = true;\n").unwrap();
+        let aliases = vec![(
+            "@plugin/entry".to_string(),
+            plugin_target.to_string_lossy().into_owned(),
+        )];
+
+        let effective =
+            build_job_resolver_inputs(project.path(), &source, None, &aliases, &[]).unwrap();
+        let tmp = effective
+            .tsconfig
+            .expect("a plugin entry must produce a synthetic worker tsconfig");
+        let path = tmp.path().to_path_buf();
+
+        let second_handle = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open a second handle to the same tsconfig");
+        assert!(
+            second_handle.try_lock().is_err(),
+            "a concurrent exclusive try_lock must fail while build_job_resolver_inputs's own \
+             shared-lock-holding handle is still alive"
+        );
+
+        drop(tmp);
+
+        assert!(
+            second_handle.try_lock().is_ok(),
+            "once the production handle drops, the exclusive try_lock must succeed"
         );
     }
 
