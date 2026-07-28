@@ -7,6 +7,7 @@ description = "zfb-types: canonical shared data types used across multiple zfb c
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 

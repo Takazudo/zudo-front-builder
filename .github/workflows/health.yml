@@ -10,7 +10,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, "base/**"]
 
 # Default to least privilege; jobs that need more must opt in.
 permissions:
@@ -216,7 +216,7 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 20
+      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 23
       # `#[ignore]`d tests (tagged `env-gate:` per CLAUDE.md's taxonomy) were
       # staged by the assert step above but never actually executed by any CI
       # step — `cargo test --workspace` below does not pass `--ignored`, so a
@@ -226,7 +226,12 @@ jobs:
       # `cargo test` runs each test binary with its CWD set to the package
       # directory (`crates/zfb-islands`), not the workspace root, so the
       # relative default never resolves.
-      # --tests scopes this to integration-test binaries only (where the 20
+      # (This count was re-measured, not incremented, during issue #2111 —
+      # it had already drifted stale to 21 by the time that issue started,
+      # before either of its own 2 additions: `grep -rn '#\[ignore = "'
+      # crates/zfb-islands/ | grep -v ':[0-9]*: *//' | wc -l` is the
+      # authoritative recount.)
+      # --tests scopes this to integration-test binaries only (where the 23
       # target tests live, in tests/integration.rs) — the unscoped `-p
       # zfb-islands` form also compiles+runs the crate's doctests, and 3 of
       # those are pre-existing broken/illustrative examples never meant to
@@ -280,11 +285,12 @@ jobs:
       # a first-party sibling package whose `exports` point straight at
       # `./src/*` with no `dist` is imported by bare package name through the
       # workspace symlink, landing on the metafile audit's case-2 shape. These
-      # three env-gated tests are the acceptance rule's positive pair plus the
+      # four env-gated tests are the acceptance rule's positive pair, the
       # dist-shipping negative that stops it becoming a blanket "workspace
-      # siblings are always fine" exemption — an unwired binary would let that
-      # rule regress in either direction unnoticed. Same ABSOLUTE-path
-      # requirement for ZFB_ESBUILD_BIN as the steps above.
+      # siblings are always fine" exemption, and the copy-mode canonicalized-
+      # key twin (issue #2047, landed by sub #2086 of epic #2078) — an
+      # unwired binary would let any of these regress unnoticed. Same
+      # ABSOLUTE-path requirement for ZFB_ESBUILD_BIN as the steps above.
       - name: Run zfb-build consume-from-source esbuild regression test
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
@@ -301,6 +307,39 @@ jobs:
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored
+
+      # Root-claimed-workspace stage-escape audit DISARM pin (issues
+      # #2050/#2081, epic #2078): the sibling armed-regression step above
+      # proves guard (b) rejects an escape when the live node_modules
+      # symlink survives. This step covers the shape where it does NOT
+      # survive — active `bundle.exclude` forces REAL copies into
+      # `<shadow>/node_modules` instead. Closing that took two fixes: sub
+      # #2087 armed ELIGIBILITY (stage_escape_audit_eligibility recognises
+      # the staged real copy via declared identity — package.json name +
+      # workspace claim), and issue #2127 then fixed the CLASSIFICATION gap
+      # that arming eligibility alone left open (metafile_deps.rs used to
+      # admit any real-copy-staged package as an ordinary case-3 dependency,
+      # purely because its canonical path trivially keeps a node_modules
+      # segment). All FOUR of this binary's tests now run under this gate —
+      # #2127 deleted the `--skip` that used to exclude the RED twin, which
+      # has since flipped GREEN with its assertions untouched and its
+      # `pending-feature:` tag swapped for the ordinary `env-gate: esbuild`
+      # one, per epic #2078's corrected flip protocol. The other three: a
+      # preconditions test, proving the staging really is a real copy and
+      # eligibility really is armed; #2127's POSITIVE control, proving the
+      # identical topology with a DECLARED sibling still builds (the
+      # case-2/case-3 boundary governs all third-party classification, so an
+      # over-broad fix would break ordinary builds — and this crate's other
+      # consume-from-source acceptance tests all run with an EMPTY
+      # `bundle.exclude`, so they never reach the real-copy path); and a
+      # negative control proving the SECOND trigger shape #2050's own text
+      # named — a workspace package staged as an exact target with an empty
+      # `bundle.exclude` — is not actually reachable at a root-claimed
+      # workspace. See the file's own header for the investigation.
+      - name: Run zfb-build root-workspace stage-escape audit disarm pin
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored
 
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are

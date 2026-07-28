@@ -31,7 +31,10 @@ jobs:
   audit:
     name: pnpm audit (prod)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 15 min: the shared retry script's 4-attempt/3-delay backoff (30s + 2m +
+    # 5m = 7.5 min) alone exceeds the previous 5-min budget — see
+    # scripts/pnpm-audit-with-retry.sh's header comment (issue #2074).
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -49,17 +52,17 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: pnpm audit (production deps)
-        run: |
-          for attempt in 1 2; do
-            if pnpm audit --prod --audit-level=high; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 2 ]; then
-              echo "audit failed, retrying in 30s..."
-              sleep 30
-            fi
-          done
-          exit 1
+        # PNPM_AUDIT_EXHAUSTION_EXIT=1 (the script's default, set explicitly
+        # here because it is load-bearing): this lane MUST fail closed on
+        # exhaustion. Its own file-or-close-issue job reads the job result and
+        # CLOSES the open tracking issue on success — so an exit-0 after a
+        # sustained registry outage would be a false green that deletes the
+        # paper trail issue #1394 created this workflow to keep. The PR gate's
+        # relaxation is justified by "the weekly lane re-checks"; that
+        # reasoning is circular here, because this IS the weekly lane.
+        env:
+          PNPM_AUDIT_EXHAUSTION_EXIT: "1"
+        run: bash scripts/pnpm-audit-with-retry.sh
 
   cargo-deny:
     name: cargo deny (Rust supply chain)

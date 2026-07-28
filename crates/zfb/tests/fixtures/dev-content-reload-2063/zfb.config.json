@@ -1,0 +1,9 @@
+{
+  "framework": "preact",
+  "collections": [
+    {
+      "name": "posts",
+      "path": "content/posts"
+    }
+  ]
+}

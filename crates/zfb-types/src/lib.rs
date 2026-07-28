@@ -24,8 +24,11 @@ pub use base_prefix::dev_mount_prefix;
 pub use client_scripts::{
     client_script_entry_name, is_client_script_file, CLIENT_SCRIPT_EXTENSIONS, CLIENT_SCRIPT_INFIX,
 };
-pub use first_party::first_party_root_for;
-pub use helpers::{escape_html, json_string, normalize_path_lexical, path_to_posix_string};
+pub use first_party::{claimed_workspace_member_names, first_party_root_for};
+pub use helpers::{
+    escape_html, has_node_modules_segment, json_string, normalize_path_lexical,
+    path_to_posix_string,
+};
 pub use module_workers::{
     module_worker_content_hash, module_worker_filename, module_worker_filename_scoped,
     module_worker_url_specifier, module_worker_url_specifier_scoped, ModuleWorkerPathError,

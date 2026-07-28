@@ -393,6 +393,34 @@ pub type StaleProbe = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync + 'static>;
 /// published).
 pub type SsrPublishProbe = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
 
+/// Function the dev pipeline calls alongside [`StaleProbe`] to collect
+/// the "previously-rendered DYNAMIC injected routes were re-staled this
+/// tick" bit (issue #2097, MDX Reload Fix epic #2092).
+///
+/// A dynamic injected route (`/preset-articles/[slug]`) has no concrete
+/// URL at boot, so it is never a member of `injected_static_seeds` and
+/// never enters `routes_by_source`. The dev session therefore re-stales
+/// it through its own dedicated channel (`restale_dynamic_injected`),
+/// which is a pure staleness-map insert with **no** `tick_stale` push —
+/// deliberately, since pushing from that site would reintroduce the
+/// documented non-tick-drain race. The consequence was that for a project
+/// whose injected routes are ALL dynamic, every SSE-visible channel
+/// drained empty: `mark_injected_seeds_stale` early-returned (no static
+/// seeds), `lazy_render_tick`'s per-page loop found nothing in
+/// `routes_by_source`, [`BuildOutcome::pages_stale`] stayed empty, and
+/// `zfb_server::outcome_to_events` emitted nothing — while the very next
+/// request already served fresh bytes. An already-open tab never
+/// reloaded; that is issue #2063's exact signature.
+///
+/// This probe carries the separate boolean signal instead, on the same
+/// one-shot drain discipline as [`SsrPublishProbe`]: calling it twice for
+/// one tick yields `true` once, then `false`.
+///
+/// Like [`SsrPublishProbe`] this is a **signalling** channel only — it
+/// adds no staleness machinery and triggers no eager render, so the
+/// hard-won lazy-render narrowing (#958 / #1025 / #1583) is untouched.
+pub type DynamicInjectedProbe = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
+
 /// Function the dev pipeline calls before re-rendering pages, when
 /// the SSR worker bundle on disk may have changed (a `.tsx` page edit,
 /// layout edit, or exported-handler change).
@@ -684,6 +712,30 @@ pub struct BuildOutcome {
     /// gate as `pages_stale`, so a mixed SSG/SSR project that sets both
     /// still emits exactly one `Page` event.
     pub ssr_routes_published: bool,
+
+    /// Whether this tick re-staled at least one previously-rendered
+    /// DYNAMIC injected route (issue #2097, MDX Reload Fix epic #2092).
+    ///
+    /// Populated by [`DevAssetPipeline`] from its
+    /// [`DynamicInjectedProbe`] (watcher ticks) and by the dev command's
+    /// boot hook (boot), and left `false` by every other pipeline.
+    ///
+    /// Exists for the same structural reason as
+    /// [`Self::ssr_routes_published`]: a dynamic injected route is
+    /// re-staled through a channel that deliberately performs no
+    /// `tick_stale` push, so it can never appear in [`Self::pages_stale`].
+    /// Without this bit, a project whose injected routes are all dynamic
+    /// produces a `BuildOutcome` indistinguishable from an empty tick,
+    /// and `zfb_server::outcome_to_events` emits nothing — leaving an
+    /// open tab on stale HTML even though the next GET already serves
+    /// fresh bytes (issue #2063). It folds into the SAME
+    /// `ReloadEvent::Page` gate as `pages_stale`, so a mixed tick that
+    /// sets several of them still emits exactly one `Page` event.
+    ///
+    /// `false` for any project with no dynamic injected routes — the bit
+    /// is raised only when a non-empty set was actually re-staled, never
+    /// on membership or on every swap.
+    pub dynamic_injected_restaled: bool,
 }
 
 /// The contract every asset pipeline implementation must satisfy.

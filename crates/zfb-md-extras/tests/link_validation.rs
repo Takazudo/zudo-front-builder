@@ -908,3 +908,116 @@ fn cross_file_link_broken_anchor_in_headingless_file_emits_diagnostic() {
         "diagnostic url must be the raw href: {diags:?}"
     );
 }
+
+// ── Fixture 12: bare-fragment matching is exact-only (ASCII + CJK) ───────────
+//
+// zfb#2116 (Link Gating epic #2112): investigated an UNCONFIRMED observation
+// of an EN/JA broken-link warning asymmetry on "leaf-slug" bare-anchor
+// shorthand (a link using only the trailing segment of a hierarchical
+// heading id, e.g. `#child-heading` when the actual id is
+// `parent-heading-child-heading`). `validate_fragment_in_file`'s match rule
+// (`entries.iter().any(|e| e.id == fragment)`) is plain string equality with
+// no suffix/leaf fallback — this pin proves that holds identically for a
+// CJK heading id, which had no test coverage in this suite before this
+// fixture. The suite's exhaustive per-fixture-token grep already showed no
+// asymmetry in the matching code path itself; this pins the finding.
+
+/// `[foo](#leaf-heading)` where the only heading id is the hierarchical
+/// `parent-heading-leaf-heading` → still a broken-link warning (no suffix
+/// fallback). ASCII control for the CJK case below.
+#[test]
+fn bare_fragment_ascii_leaf_slug_shorthand_does_not_match_hierarchical_heading() {
+    let source = PathBuf::from("/project/docs/page.md");
+    let mut registry = HeadingRegistry::new();
+    registry.insert(
+        source.clone(),
+        HeadingEntry {
+            id: "parent-heading-leaf-heading".to_string(),
+            text: "Leaf Heading".to_string(),
+            depth: 3,
+        },
+    );
+    let md = "[foo](#leaf-heading)\n";
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert_eq!(
+        diags.len(),
+        1,
+        "leaf-slug shorthand must not match the hierarchical id: {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "#leaf-heading"),
+        "diagnostic url must be the raw href: {diags:?}"
+    );
+}
+
+/// CJK counterpart: `[foo](#子見出し)` where the only registered heading id
+/// is the hierarchical `親見出し-子見出し` → still a broken-link warning.
+/// This is the first CJK fixture in this suite (confirmed absent by grep
+/// before this test was added) and rules out any CJK-specific suffix
+/// fallback as the source of the #2116 asymmetry.
+#[test]
+fn bare_fragment_cjk_leaf_slug_shorthand_does_not_match_hierarchical_heading() {
+    let source = PathBuf::from("/project/docs/page.md");
+    let mut registry = HeadingRegistry::new();
+    registry.insert(
+        source.clone(),
+        HeadingEntry {
+            id: "親見出し-子見出し".to_string(),
+            text: "子見出し".to_string(),
+            depth: 3,
+        },
+    );
+    let md = "[foo](#子見出し)\n";
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert_eq!(
+        diags.len(),
+        1,
+        "CJK leaf-slug shorthand must not match the hierarchical id: {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "#子見出し"),
+        "diagnostic url must be the raw href: {diags:?}"
+    );
+}
+
+/// Control: the CJK hierarchical id matched EXACTLY (not via a leaf-slug
+/// shorthand) must still resolve with no diagnostic, proving the exact-match
+/// path itself is CJK-safe and the two tests above are pinning the absence
+/// of a suffix fallback, not a broader CJK matching bug.
+#[test]
+fn bare_fragment_cjk_exact_hierarchical_id_matches_no_diagnostic() {
+    let source = PathBuf::from("/project/docs/page.md");
+    let mut registry = HeadingRegistry::new();
+    registry.insert(
+        source.clone(),
+        HeadingEntry {
+            id: "親見出し-子見出し".to_string(),
+            text: "子見出し".to_string(),
+            depth: 3,
+        },
+    );
+    let md = "[foo](#親見出し-子見出し)\n";
+    let diags = run(
+        md,
+        source,
+        PathBuf::from("/project"),
+        &mut registry,
+        LinkValidationConfig::default(),
+    );
+    assert!(
+        diags.is_empty(),
+        "exact CJK heading id match must not emit a diagnostic: {diags:?}"
+    );
+}

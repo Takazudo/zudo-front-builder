@@ -113,6 +113,103 @@ fn dev_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Pure parse for `ZFB_DEV_TEST_ORCH_PANIC_ON_TICK` (issue #2100, Dev
+/// Supervision epic #2099 Sub #2100 — deterministic fault-injection knobs).
+/// Mirrors the tolerant boolean idiom `dev_timing_enabled` above uses: unset,
+/// empty, `"0"`, or `"false"` (case-insensitive) is NOT armed; anything else
+/// is armed. No `cfg(test)` gate — read in production code, inert when unset.
+///
+/// When armed, [`BuildOrchestrator::run_with_boot`]'s drain loop panics
+/// INSIDE the `spawn_blocking` tick closure on the very next dispatched
+/// tick, exercising the `std::panic::resume_unwind` re-raise path a few
+/// lines below in this file — the same shape a genuine tick panic takes.
+///
+/// Marker lines this knob prints (exact wording; downstream e2e tests grep
+/// these verbatim — keep stable):
+///   armed: `"[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK"`
+///   fired: `"[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK"`
+fn orch_panic_on_tick_armed(raw: Option<&str>) -> bool {
+    match raw {
+        None => false,
+        Some(v) => {
+            let v = v.trim();
+            !(v.is_empty() || v.eq_ignore_ascii_case("0") || v.eq_ignore_ascii_case("false"))
+        }
+    }
+}
+
+/// Pure parse for `ZFB_DEV_TEST_ORCH_STOP_MS` (issue #2100, Dev Supervision
+/// epic #2099 Sub #2100). Returns `Some(ms)` when the raw value parses as a
+/// non-negative integer number of milliseconds (`"0"` is a valid, armed
+/// boundary value — see below); `None` when unset, empty, or unparsable
+/// (inert, matching the tolerant-parse idiom of `ZFB_DEV_TEST_SLOW_*`
+/// elsewhere in this codebase).
+///
+/// When `Some(ms)`, [`BuildOrchestrator::run_with_boot`]'s drain loop
+/// returns `Ok(())` (the same silent-channel-close shape an ordinary
+/// watcher-dropped-elsewhere exit takes) `ms` milliseconds after the boot
+/// hook completes — NOT `ms` after `run_with_boot` was entered, and never
+/// before the watcher's live handshake, so a slow boot can never make this
+/// fire before the watcher is actually observing. `ms = 0` fires on the
+/// very first drain-loop poll after the boot hook returns.
+///
+/// **Timing caveat (only checked between ticks, not preemptive):** the
+/// deadline is raced against the receiver only while the loop is idle,
+/// waiting for the *next* [`Change`] — see [`recv_with_stop_deadline`]. If a
+/// tick is already dispatched to `spawn_blocking` when the deadline elapses,
+/// the fault fires only once that tick's `spawn_blocking` future resolves,
+/// not mid-flight — tokio blocking tasks cannot be safely preempted without
+/// losing the orchestrator/session state the closure owns for that
+/// iteration, and the elapsed-but-not-yet-observed deadline is itself
+/// consistent with the "silent channel close" shape this knob emulates (an
+/// ordinary channel close is likewise only ever noticed between ticks, never
+/// mid-tick). A test relying on `ms` as a tight upper bound must keep the
+/// fixture idle (no watched-file churn) between the boot hook completing and
+/// the deadline elapsing.
+///
+/// Marker lines this knob prints (exact wording; downstream e2e tests grep
+/// these verbatim — keep stable):
+///   armed: `"[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_STOP_MS <ms>ms"`
+///   fired: `"[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_STOP_MS"`
+fn orch_stop_ms_decision(raw: Option<&str>) -> Option<u64> {
+    match raw {
+        None => None,
+        Some(v) => {
+            let v = v.trim();
+            if v.is_empty() {
+                None
+            } else {
+                v.parse::<u64>().ok()
+            }
+        }
+    }
+}
+
+/// Awaits the next [`Change`] off `rx`, but — when `stop_deadline` is set —
+/// races that against the deadline and returns `None` (the same shape as a
+/// closed channel) the instant the deadline elapses, printing the
+/// `ZFB_DEV_TEST_ORCH_STOP_MS` fired marker first. `biased` ensures an
+/// already-elapsed deadline (the `ms = 0` boundary) always wins over a
+/// simultaneously-ready `Change` rather than being starved by it.
+async fn recv_with_stop_deadline(
+    rx: &mut tokio::sync::mpsc::Receiver<Change>,
+    stop_deadline: Option<tokio::time::Instant>,
+) -> Option<Change> {
+    match stop_deadline {
+        None => rx.recv().await,
+        Some(deadline) => {
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    eprintln!("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_STOP_MS");
+                    None
+                }
+                change = rx.recv() => change,
+            }
+        }
+    }
+}
+
 /// Live watch-ADD discovery hook (issue #659).
 ///
 /// Invoked from [`BuildOrchestrator::tick_with_kinds`] /
@@ -377,10 +474,62 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         &self.config.policy
     }
 
+    /// Class-agnostic containment test: does `path` live inside a
+    /// registered CSS sibling-mirror root (issue #1802's `css_mirror_roots`
+    /// registry), once the two containment rules below are applied? This is
+    /// "the `@source` scan would have read this file, wherever it sits in
+    /// the tree" — it carries no opinion on `PathClass` at all. Split out of
+    /// `content_under_css_mirror_root` in #2077 so the REMOVED-path fold
+    /// (`tick_with_kinds`) can consult it for every path class, not just the
+    /// three the live-edit arms happen to gate on.
+    ///
+    /// Two containment rules ride on top of the bare subtree test, both
+    /// keeping this gate equivalent to "the `@source` scan would have read
+    /// this file":
+    ///
+    /// - **Non-degeneracy.** A root that CONTAINS `project_root` would match
+    ///   every path in the project and silently convert this into the
+    ///   rejected option (a). `SiblingMirrorPlan`'s `resolve_mirror_root`
+    ///   never publishes such a root (pinned by
+    ///   `bundler::tests::resolve_mirror_root_never_returns_an_ancestor_of_project_root`),
+    ///   so this is defense in depth against a future claim-policy change —
+    ///   not a live condition.
+    /// - **Infra skip-dirs.** Tailwind's `@source` globs exclude the
+    ///   `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs (`dist/`,
+    ///   `node_modules/`, …) at any depth under a mirror root, so an event
+    ///   from one cannot change the emitted CSS. The list is the command
+    ///   layer's, threaded down through
+    ///   [`OrchestratorConfig::css_mirror_skip_dir_names`] — the SAME value
+    ///   the recursive-directory watch already suppresses on — rather than
+    ///   re-spelled here, so the two can never drift into two different
+    ///   definitions of "inside a claimed mirror region".
+    fn path_under_css_mirror_root(&self, path: &Path) -> bool {
+        let Some((root, relative)) = self.config.policy.css_mirror_root_match(path) else {
+            return false;
+        };
+        let root_swallows_the_project =
+            crate::policy::RawImportInvalidation::path_aliases(&self.config.project_root)
+                .iter()
+                .any(|project_alias| project_alias.starts_with(&root));
+        if root_swallows_the_project {
+            return false;
+        }
+        !relative.components().any(|component| match component {
+            std::path::Component::Normal(name) => self
+                .config
+                .css_mirror_skip_dir_names
+                .iter()
+                .any(|skip| name == std::ffi::OsStr::new(skip)),
+            _ => false,
+        })
+    }
+
     /// Issue #1819 (epic #1995) — option (b): a `PathClass::Content` change
     /// (`.md`/`.mdx`) must rerun the Tailwind content scan ONLY when it lies
-    /// under a registered CSS sibling-mirror root (issue #1802's
-    /// `css_mirror_roots` registry).
+    /// under a registered CSS sibling-mirror root. Thin class-gated wrapper
+    /// around [`Self::path_under_css_mirror_root`] for the LIVE-edit arms
+    /// (`plan_for_changes`'s three call sites) — behaviourally identical to
+    /// the pre-#2077 combined function for every class it ever accepted.
     ///
     /// `discover_css_source_files` (`crates/zfb/src/commands/build.rs`) scans
     /// `.md`/`.mdx` inside a claimed mirror root, and Tailwind's `@source`
@@ -407,27 +556,6 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// This is a CSS-rerun signal and nothing else — it never touches page
     /// selection (see the `PageSelection::All` note in the
     /// `Page | Module | Content | Data` arm).
-    ///
-    /// Two containment rules ride on top of the bare subtree test, both
-    /// keeping this gate equivalent to "the `@source` scan would have read
-    /// this file":
-    ///
-    /// - **Non-degeneracy.** A root that CONTAINS `project_root` would match
-    ///   every path in the project and silently convert this into the
-    ///   rejected option (a). `SiblingMirrorPlan`'s `resolve_mirror_root`
-    ///   never publishes such a root (pinned by
-    ///   `bundler::tests::resolve_mirror_root_never_returns_an_ancestor_of_project_root`),
-    ///   so this is defense in depth against a future claim-policy change —
-    ///   not a live condition.
-    /// - **Infra skip-dirs.** Tailwind's `@source` globs exclude the
-    ///   `CSS_SIBLING_MIRROR_SKIP_DIRS` infra dirs (`dist/`,
-    ///   `node_modules/`, …) at any depth under a mirror root, so an event
-    ///   from one cannot change the emitted CSS. The list is the command
-    ///   layer's, threaded down through
-    ///   [`OrchestratorConfig::css_mirror_skip_dir_names`] — the SAME value
-    ///   the recursive-directory watch already suppresses on — rather than
-    ///   re-spelled here, so the two can never drift into two different
-    ///   definitions of "inside a claimed mirror region".
     fn content_under_css_mirror_root(&self, class: PathClass, path: &Path) -> bool {
         if !matches!(
             class,
@@ -435,24 +563,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         ) {
             return false;
         }
-        let Some((root, relative)) = self.config.policy.css_mirror_root_match(path) else {
-            return false;
-        };
-        let root_swallows_the_project =
-            crate::policy::RawImportInvalidation::path_aliases(&self.config.project_root)
-                .iter()
-                .any(|project_alias| project_alias.starts_with(&root));
-        if root_swallows_the_project {
-            return false;
-        }
-        !relative.components().any(|component| match component {
-            std::path::Component::Normal(name) => self
-                .config
-                .css_mirror_skip_dir_names
-                .iter()
-                .any(|skip| name == std::ffi::OsStr::new(skip)),
-            _ => false,
-        })
+        self.path_under_css_mirror_root(path)
     }
 
     /// Build a plan from a list of changed paths. Pure: does not call
@@ -1023,34 +1134,43 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                     {
                         plan.mark_islands();
                     }
-                    // #1819 (epic #1995) — DELETING a mirror-root markdown
-                    // file also changes the Tailwind content set: its classes
-                    // must stop being emitted.
-                    //
-                    // This applies the SAME predicate as the live arm, which
-                    // means it covers exactly the classes that predicate
-                    // covers: `Content`/`Data` here, `External` below. It is
-                    // NOT full deletion symmetry — a deleted `Module`
-                    // (`.tsx`) still does not rerun the scan, so in dev its
-                    // utility classes stay emitted until the next
-                    // CSS-triggering tick. That gap is PRE-EXISTING (deleted
-                    // in-root modules have always behaved this way) and
-                    // deliberately out of scope here; closing it is a broader
-                    // behaviour change tracked separately.
-                    if self.content_under_css_mirror_root(class, path) {
-                        plan.mark_css();
-                    }
                 }
                 PathClass::Style => {
                     plan.mark_css();
                 }
                 PathClass::External => {
                     plan.mark_ssr_reload_needed();
-                    if self.content_under_css_mirror_root(class, path) {
-                        plan.mark_css();
-                    }
                 }
                 PathClass::Asset | PathClass::Unclassified => {}
+            }
+            // #1819 (epic #1995), widened by #2077 — DELETING a path under a
+            // registered CSS mirror root always changes the Tailwind content
+            // set: its classes must stop being emitted. Unlike the live-edit
+            // arms above (which gate on `content_under_css_mirror_root`'s
+            // `Content`/`Data`/`External` class list, because the narrower
+            // `Module`/`Style` classes already `mark_css` unconditionally on
+            // a LIVE edit), a removal has no such per-class shortcut — none
+            // of the match arms above already covers a mirror-root deletion
+            // — so this consults the class-agnostic
+            // [`Self::path_under_css_mirror_root`] directly, unconditionally,
+            // for EVERY removed-path class reached above: `Global` and
+            // `Style` already call `mark_css` unconditionally (this is a
+            // harmless no-op re-set for them), and `Page`/`Module`/`Content`/
+            // `Data`/`External`/`Asset`/`Unclassified` all now gain the
+            // mirror-root signal a `content_under_css_mirror_root(class, ..)`
+            // call could never give `Module`/`Asset`/`Unclassified` — those
+            // classes never pass its class gate.
+            //
+            // In-root deletions (any class) remain UNCHANGED:
+            // `path_under_css_mirror_root` only matches a path inside a
+            // REGISTERED mirror root, and a mirror root can never swallow the
+            // project (`root_swallows_the_project`, checked inside the
+            // helper), so a deleted in-root `.tsx` still does not rerun the
+            // scan. That gap is PRE-EXISTING (deleted in-root modules have
+            // always behaved this way) and deliberately out of scope here;
+            // closing it is a broader behaviour change tracked separately.
+            if self.path_under_css_mirror_root(path) {
+                plan.mark_css();
             }
             if self.config.policy.is_islands_dependency(path) {
                 plan.mark_islands();
@@ -1341,6 +1461,29 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             &self.config.css_mirror_skip_dir_names,
         );
 
+        // Deterministic fault-injection knobs (issue #2100, Dev Supervision
+        // epic #2099 Sub #2100). Both are read here — AFTER the boot hook
+        // has completed and the post-boot watch registration above has run
+        // — never earlier, so a slow boot can never make either fault fire
+        // before the watcher has performed its live handshake. See
+        // `orch_panic_on_tick_armed` / `orch_stop_ms_decision` for the pure
+        // parse/decision logic and the exact marker-line wording.
+        let panic_on_tick_armed = orch_panic_on_tick_armed(
+            std::env::var("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK")
+                .ok()
+                .as_deref(),
+        );
+        if panic_on_tick_armed {
+            eprintln!("[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK");
+        }
+        let stop_deadline = orch_stop_ms_decision(
+            std::env::var("ZFB_DEV_TEST_ORCH_STOP_MS").ok().as_deref(),
+        )
+        .map(|ms| {
+            eprintln!("[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_STOP_MS {ms}ms");
+            tokio::time::Instant::now() + Duration::from_millis(ms)
+        });
+
         // Drain loop: wait for the first event, then drain everything
         // currently in the channel so we coalesce concurrent bursts
         // into one tick.
@@ -1364,7 +1507,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         let mut this = self;
         let mut ctx = ctx;
         let mut discover = discover;
-        while let Some(first) = rx.recv().await {
+        while let Some(first) = recv_with_stop_deadline(&mut rx, stop_deadline).await {
             let mut batch: Vec<Change> = vec![first];
             while let Ok(c) = rx.try_recv() {
                 batch.push(c);
@@ -1373,6 +1516,15 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             let changes: Vec<(PathBuf, ChangeKind)> =
                 batch.iter().map(|c| (c.path.clone(), c.kind)).collect();
             let tick = tokio::task::spawn_blocking(move || {
+                // Fault injection (issue #2100): fires INSIDE this
+                // spawn_blocking closure, on the thread that would
+                // otherwise run `tick_with_kinds`, so the panic takes the
+                // exact `resume_unwind` re-raise path below that a genuine
+                // tick panic would.
+                if panic_on_tick_armed {
+                    eprintln!("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK");
+                    panic!("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK fault injection");
+                }
                 let result = this.tick_with_kinds(changes, &ctx, discover.as_ref());
                 (result, this, ctx, discover)
             })
@@ -2965,6 +3117,163 @@ mod tests {
         );
     }
 
+    /// Issue #2077: the gap `sibling_mirror_root_mdx_removal_reruns_css`
+    /// left open. Deleting a mirror-root `PathClass::Module` (`.tsx`) file
+    /// leaves its utility classes in the served stylesheet until restart,
+    /// because the pre-#2077 removed-path fold only ever consulted
+    /// `content_under_css_mirror_root`, whose class gate never accepts
+    /// `Module`. This is the RED-before / GREEN-after test for the fix —
+    /// see the PR body for the recorded RED→GREEN transcript.
+    #[test]
+    fn sibling_mirror_root_module_removal_reruns_css() {
+        use zfb_watcher::ChangeKind;
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, mirror_root, policy) = css_mirror_root_fixture(&ws);
+        let sibling_tsx = mirror_root.join("Widget.tsx");
+        std::fs::write(&sibling_tsx, "export const Widget = () => null;\n").unwrap();
+
+        assert_eq!(
+            classify_change_with_content_roots(
+                &sibling_tsx,
+                &project,
+                &[PathBuf::from("pages"), PathBuf::from("content")],
+                |_| false,
+            ),
+            PathClass::Module,
+            "fixture sanity: an out-of-root .tsx must classify as Module — exactly the \
+             class `content_under_css_mirror_root`'s class gate always rejected"
+        );
+
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = orch_for_css_mirror_root(pipeline, &project, policy);
+        let dist = tempfile::tempdir().unwrap();
+
+        std::fs::remove_file(&sibling_tsx).unwrap();
+        orch.tick_with_kinds(
+            vec![(sibling_tsx, ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plan = applies.lock().unwrap().last().unwrap().clone();
+        assert!(
+            plan.rerun_css,
+            "deleting a mirror-root .tsx must rerun the content scan so the utility \
+             classes it was the sole source of stop being emitted (#2077)"
+        );
+    }
+
+    /// Negative paired with the RED test above: an ORDINARY in-root Module
+    /// removal must NOT gain a Tailwind rescan — that gap is documented,
+    /// pre-existing, and deliberately out of scope for #2077 (see the fold's
+    /// own doc comment). Must pass BOTH before and after the fix, proving
+    /// in-root behavior is genuinely unchanged rather than merely uncovered.
+    #[test]
+    fn in_root_module_removal_does_not_rerun_css() {
+        use zfb_watcher::ChangeKind;
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, _mirror_root, policy) = css_mirror_root_fixture(&ws);
+        std::fs::create_dir_all(project.join("components")).unwrap();
+        let in_root_tsx = project.join("components/Widget.tsx");
+        std::fs::write(&in_root_tsx, "export const Widget = () => null;\n").unwrap();
+
+        assert_eq!(
+            classify_change_with_content_roots(
+                &in_root_tsx,
+                &project,
+                &[PathBuf::from("pages"), PathBuf::from("content")],
+                |_| false,
+            ),
+            PathClass::Module,
+            "fixture sanity: an in-root .tsx under components/ must classify as Module"
+        );
+        assert!(
+            !policy.is_under_css_mirror_root(&in_root_tsx),
+            "fixture sanity: the in-root path must not itself be under the registered \
+             mirror root, or this negative proves nothing"
+        );
+
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = orch_for_css_mirror_root(pipeline, &project, policy);
+        let dist = tempfile::tempdir().unwrap();
+
+        std::fs::remove_file(&in_root_tsx).unwrap();
+        orch.tick_with_kinds(
+            vec![(in_root_tsx, ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plan = applies.lock().unwrap().last().unwrap().clone();
+        assert!(
+            !plan.rerun_css,
+            "an in-root Module deletion must NOT rerun the Tailwind content scan — that \
+             gap is documented and deliberately out of scope for #2077"
+        );
+    }
+
+    /// Negative paired with the RED test above: a removal under a mirror
+    /// root's `dist/` (a `css_mirror_skip_dir_names` infra dir) must NOT
+    /// rerun the Tailwind scan, matching the live-edit arm's own
+    /// `mirror_root_infra_dir_event_does_not_rerun_css` — the skip-dir
+    /// exclusion must hold for the removed-path fold too, even though the
+    /// fold now consults the class-agnostic check unconditionally.
+    #[test]
+    fn mirror_root_infra_dir_module_removal_does_not_rerun_css() {
+        use zfb_watcher::ChangeKind;
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().canonicalize().unwrap();
+        let (project, mirror_root, policy) = css_mirror_root_fixture(&ws);
+        let generated_tsx = mirror_root.join("dist/Generated.tsx");
+        std::fs::create_dir_all(generated_tsx.parent().unwrap()).unwrap();
+        std::fs::write(&generated_tsx, "export const Generated = () => null;\n").unwrap();
+
+        assert_eq!(
+            classify_change_with_content_roots(
+                &generated_tsx,
+                &project,
+                &[PathBuf::from("pages"), PathBuf::from("content")],
+                |_| false,
+            ),
+            PathClass::Module,
+            "fixture sanity: an out-of-root .tsx must classify as Module, so this \
+             negative genuinely exercises the skip-dir exclusion against the SAME \
+             class the RED test above proves the fold now covers"
+        );
+        assert!(
+            policy.is_under_css_mirror_root(&generated_tsx),
+            "fixture sanity: the path must be under the registered mirror root as a \
+             bare subtree match, or this negative proves nothing about the skip-dir \
+             exclusion specifically"
+        );
+
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = orch_for_css_mirror_root(pipeline, &project, policy);
+        let dist = tempfile::tempdir().unwrap();
+
+        std::fs::remove_file(&generated_tsx).unwrap();
+        orch.tick_with_kinds(
+            vec![(generated_tsx, ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plan = applies.lock().unwrap().last().unwrap().clone();
+        assert!(
+            !plan.rerun_css,
+            "a removal under a mirror root's dist/ is excluded from the @source scan, \
+             so it can never change the emitted CSS"
+        );
+    }
+
     /// `PathClass::Data`: an out-of-root `.json`/`.yaml` inside a mirror
     /// root is read by the same whole-subtree `@source` scan, so a class
     /// token authored there is CSS input like any other. Raised by codex
@@ -3471,5 +3780,91 @@ mod tests {
             orch.initial_build(&ctx).expect("must not error").is_none(),
             "empty graph must yield Ok(None)",
         );
+    }
+
+    // Issue #2100 (Dev Supervision epic #2099 Sub #2100): Level-1 unit
+    // coverage for the two fault-injection knobs' pure parse/decision
+    // functions, per zudo-test-wisdom — these don't need a booted dev
+    // server to exercise the parse/decision logic.
+
+    #[test]
+    fn orch_panic_on_tick_armed_unset_is_not_armed() {
+        assert!(!orch_panic_on_tick_armed(None));
+    }
+
+    #[test]
+    fn orch_panic_on_tick_armed_set_invalid_falsy_values_are_not_armed() {
+        assert!(!orch_panic_on_tick_armed(Some("")));
+        assert!(!orch_panic_on_tick_armed(Some("0")));
+        assert!(!orch_panic_on_tick_armed(Some("false")));
+        assert!(!orch_panic_on_tick_armed(Some("FALSE")));
+        assert!(!orch_panic_on_tick_armed(Some("  ")));
+    }
+
+    #[test]
+    fn orch_panic_on_tick_armed_set_valid_is_armed() {
+        assert!(orch_panic_on_tick_armed(Some("1")));
+        assert!(orch_panic_on_tick_armed(Some("true")));
+        assert!(orch_panic_on_tick_armed(Some("yes")));
+    }
+
+    #[test]
+    fn orch_stop_ms_decision_unset_is_none() {
+        assert_eq!(orch_stop_ms_decision(None), None);
+    }
+
+    #[test]
+    fn orch_stop_ms_decision_set_invalid_is_none() {
+        assert_eq!(orch_stop_ms_decision(Some("")), None);
+        assert_eq!(orch_stop_ms_decision(Some("  ")), None);
+        assert_eq!(orch_stop_ms_decision(Some("not-a-number")), None);
+        assert_eq!(orch_stop_ms_decision(Some("-5")), None);
+        assert_eq!(orch_stop_ms_decision(Some("12.5")), None);
+    }
+
+    #[test]
+    fn orch_stop_ms_decision_set_valid_parses() {
+        assert_eq!(orch_stop_ms_decision(Some("250")), Some(250));
+        assert_eq!(orch_stop_ms_decision(Some(" 250 ")), Some(250));
+    }
+
+    /// Boundary value: `STOP_MS=0` is a VALID, armed value (fires on the
+    /// very next drain-loop poll after the boot hook completes) — not
+    /// treated the same as unset.
+    #[test]
+    fn orch_stop_ms_decision_boundary_zero_is_armed() {
+        assert_eq!(orch_stop_ms_decision(Some("0")), Some(0));
+    }
+
+    /// `recv_with_stop_deadline` with no deadline is a plain passthrough to
+    /// `rx.recv()` — proves the knob is provably inert when unset, without
+    /// needing to boot a real orchestrator/watcher.
+    #[tokio::test]
+    async fn recv_with_stop_deadline_none_is_plain_passthrough() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Change>(1);
+        tx.send(Change {
+            path: PathBuf::from("/proj/pages/a.tsx"),
+            kind: ChangeKind::Modified,
+        })
+        .await
+        .expect("send");
+        let got = recv_with_stop_deadline(&mut rx, None).await;
+        assert_eq!(
+            got.map(|c| c.path),
+            Some(PathBuf::from("/proj/pages/a.tsx"))
+        );
+    }
+
+    /// The `STOP_MS=0` boundary: an elapsed (already-past) deadline wins
+    /// over the channel and returns `None` — the silent channel-close shape
+    /// — even though the channel is never closed and never receives an
+    /// item.
+    #[tokio::test]
+    async fn recv_with_stop_deadline_elapsed_deadline_returns_none() {
+        let (_tx, mut rx) = tokio::sync::mpsc::channel::<Change>(1);
+        let deadline = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let got = recv_with_stop_deadline(&mut rx, Some(deadline)).await;
+        assert!(got.is_none(), "an elapsed deadline must return None");
     }
 }

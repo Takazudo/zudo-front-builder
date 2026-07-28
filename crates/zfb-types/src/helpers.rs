@@ -78,6 +78,36 @@ pub fn path_to_posix_string(p: &Path) -> String {
     }
 }
 
+// ── node_modules path detection ───────────────────────────────────────────────
+
+/// True when any path component is literally `node_modules` — i.e. the path
+/// was reached by resolving a bare package specifier through some install
+/// root, rather than a relative/project-rooted import.
+///
+/// This is the CANONICAL home for that predicate (issue #2051). The durable
+/// rule, which does not go stale: **delegate to it — with a local alias when a
+/// shorter name reads better in context, as `zfb-build`'s
+/// `bundler::path_is_inside_node_modules` does — and never re-inline the
+/// component walk.** It is trivial enough to retype from memory, which is
+/// exactly why copies keep appearing, and each one is a place a future
+/// refinement (UNC prefixes, case-insensitive volumes, a nested-install
+/// carve-out) would silently miss.
+///
+/// Migration is NOT complete, and this doc deliberately does not claim
+/// otherwise — the earlier version enumerated the two sites #2051 had folded
+/// in, which read as "there is now one implementation" and went stale the
+/// moment a third was found in `zfb-build`'s `bundler.rs`. Hand-written
+/// equivalents still live in other crates. Find the current set rather than
+/// trusting any list here:
+///
+/// ```sh
+/// grep -rn -A2 'components()' crates/ --include='*.rs' | grep node_modules
+/// ```
+pub fn has_node_modules_segment(path: &Path) -> bool {
+    path.components()
+        .any(|c| matches!(c, Component::Normal(name) if name == "node_modules"))
+}
+
 // ── Lexical path normalization ────────────────────────────────────────────────
 
 /// Lexically normalise a path: collapse `.` and `..` segments without
@@ -212,6 +242,31 @@ mod tests {
             path_to_posix_string(Path::new("sub/dir/file.ts")),
             "sub/dir/file.ts"
         );
+    }
+
+    // ── has_node_modules_segment ──────────────────────────────────────────────
+
+    #[test]
+    fn has_node_modules_segment_detects_middle_component() {
+        assert!(has_node_modules_segment(Path::new(
+            "/proj/node_modules/@acme/ui/src/index.ts"
+        )));
+    }
+
+    #[test]
+    fn has_node_modules_segment_absent_for_ordinary_source_path() {
+        assert!(!has_node_modules_segment(Path::new(
+            "/proj/pages/blog/index.tsx"
+        )));
+    }
+
+    #[test]
+    fn has_node_modules_segment_requires_exact_component_match() {
+        // A directory merely containing "node_modules" as a substring of a
+        // longer name must not match — only a literal path component does.
+        assert!(!has_node_modules_segment(Path::new(
+            "/proj/not_node_modules_really/file.ts"
+        )));
     }
 
     // ── normalize_path_lexical ────────────────────────────────────────────────

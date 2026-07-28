@@ -148,6 +148,28 @@ pub struct BuildArgs {
         conflicts_with = "minify_html"
     )]
     no_minify_html: bool,
+
+    /// Fail the build (non-zero exit) when broken links are found.
+    ///
+    /// Force-enables link validation with its default configuration when
+    /// `markdown.features.link_validation` is otherwise unset, so this flag
+    /// always has an effect rather than silently doing nothing on a bare
+    /// project. See issue #2112 (Link Gating epic).
+    #[arg(
+        long = "strict-broken",
+        action = ArgAction::SetTrue,
+        conflicts_with = "no_strict_broken"
+    )]
+    strict_broken: bool,
+
+    /// Do not fail the build on broken links, even if `strictBrokenLinks` is
+    /// enabled in `zfb.config.*`.
+    #[arg(
+        long = "no-strict-broken",
+        action = ArgAction::SetTrue,
+        conflicts_with = "strict_broken"
+    )]
+    no_strict_broken: bool,
 }
 
 impl BuildArgs {
@@ -166,6 +188,22 @@ impl BuildArgs {
             (true, true) => BuildMinifyHtml::Disabled,
         }
     }
+
+    /// The user-facing strict-broken-links CLI state.
+    ///
+    /// Kept as a tri-state so command orchestration can layer
+    /// "explicit CLI > config `strictBrokenLinks` > default false" without
+    /// treating an omitted flag as an explicit `false`.
+    pub fn strict_broken_links(&self) -> BuildStrictBrokenLinks {
+        match (self.strict_broken, self.no_strict_broken) {
+            (true, false) => BuildStrictBrokenLinks::Enabled,
+            (false, true) => BuildStrictBrokenLinks::Disabled,
+            (false, false) => BuildStrictBrokenLinks::Unspecified,
+            // clap rejects this via `conflicts_with`; keep the branch
+            // deterministic for direct struct construction in tests.
+            (true, true) => BuildStrictBrokenLinks::Disabled,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +214,23 @@ pub enum BuildMinifyHtml {
 }
 
 impl BuildMinifyHtml {
+    pub fn as_option(self) -> Option<bool> {
+        match self {
+            Self::Unspecified => None,
+            Self::Enabled => Some(true),
+            Self::Disabled => Some(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStrictBrokenLinks {
+    Unspecified,
+    Enabled,
+    Disabled,
+}
+
+impl BuildStrictBrokenLinks {
     pub fn as_option(self) -> Option<bool> {
         match self {
             Self::Unspecified => None,
@@ -272,6 +327,13 @@ mod tests {
     fn build_minify_html(argv: &[&str]) -> BuildMinifyHtml {
         match Cli::try_parse_from(argv).expect("parse").command {
             Command::Build(args) => args.minify_html(),
+            other => panic!("expected build subcommand, got {other:?}"),
+        }
+    }
+
+    fn build_strict_broken_links(argv: &[&str]) -> BuildStrictBrokenLinks {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Build(args) => args.strict_broken_links(),
             other => panic!("expected build subcommand, got {other:?}"),
         }
     }
@@ -390,6 +452,55 @@ mod tests {
         assert!(
             help.contains("--no-minify-html"),
             "build help must document --no-minify-html:\n{help}"
+        );
+    }
+
+    #[test]
+    fn build_strict_broken_links_absent_is_unspecified() {
+        assert_eq!(
+            build_strict_broken_links(&["zfb", "build"]),
+            BuildStrictBrokenLinks::Unspecified
+        );
+    }
+
+    #[test]
+    fn build_strict_broken_links_flag_enables() {
+        assert_eq!(
+            build_strict_broken_links(&["zfb", "build", "--strict-broken"]),
+            BuildStrictBrokenLinks::Enabled
+        );
+    }
+
+    #[test]
+    fn build_no_strict_broken_links_flag_disables() {
+        assert_eq!(
+            build_strict_broken_links(&["zfb", "build", "--no-strict-broken"]),
+            BuildStrictBrokenLinks::Disabled
+        );
+    }
+
+    #[test]
+    fn build_strict_broken_links_flags_conflict() {
+        let err = Cli::try_parse_from(["zfb", "build", "--strict-broken", "--no-strict-broken"])
+            .expect_err("conflicting strict-broken flags must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn build_help_documents_strict_broken_links_flags() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let build = cmd
+            .find_subcommand_mut("build")
+            .expect("build subcommand exists");
+        let help = build.render_long_help().to_string();
+        assert!(
+            help.contains("--strict-broken"),
+            "build help must document --strict-broken:\n{help}"
+        );
+        assert!(
+            help.contains("--no-strict-broken"),
+            "build help must document --no-strict-broken:\n{help}"
         );
     }
 

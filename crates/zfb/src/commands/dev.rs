@@ -731,12 +731,30 @@ impl RewritePrewarmWiring {
 /// in the first place. `None` disables it (non-Cold boot, renderer
 /// disabled, or the lazy switch off), and the pre-warm's own mode gate is
 /// a second line of defense.
+/// ## Supervision (issue #2103, epic #2099 Wave 3)
+///
+/// Returns the outer task's [`tokio::task::JoinHandle`] ADDITIVELY
+/// alongside the [`RedirectsHandle`] — it used to be discarded at the
+/// `tokio::spawn` call site below. Disposition, decided in the issue (see
+/// the call site in `run()` for where this is wired):
+///
+/// - **Startup failure (the `Err(e)` arm right below) stays UNCHANGED**:
+///   still a non-fatal degrade, still just a `tracing::warn!` — no watch
+///   task is ever started in that case, so there is nothing to
+///   supervise. The returned `JoinHandle` in that arm wraps a task that
+///   never completes on its own ([`std::future::pending`]), so wiring it
+///   into a supervision `select!` arm can never spuriously fire at boot.
+/// - **An unexpected death of an ALREADY-STARTED task is now supervised**
+///   — the caller feeds the returned handle into the same
+///   `tokio::select!` pattern issue #2102 built for `boot_handle`, via
+///   `map_redirects_watch_join_result` (declared beside
+///   `map_boot_task_join_result` further down this file).
 #[cfg(feature = "embed_v8")]
 fn spawn_redirects_watch(
     project_root: &Path,
     public_root: &Path,
     prewarm: Option<RewritePrewarmWiring>,
-) -> RedirectsHandle {
+) -> (RedirectsHandle, tokio::task::JoinHandle<()>) {
     let redirects_path = public_root.join("_redirects");
     let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
         &redirects_path,
@@ -758,7 +776,12 @@ fn spawn_redirects_watch(
                 "_redirects: failed to start targeted watcher; edits to public/_redirects \
                  will require a dev-server restart to take effect"
             );
-            return handle;
+            // Issue #2103 — no watch task was ever started here, so
+            // there is nothing to supervise. A task that never completes
+            // keeps the return shape uniform for the caller without ever
+            // making the supervision select arm fire spuriously.
+            let never_completes = tokio::spawn(std::future::pending::<()>());
+            return (handle, never_completes);
         }
     };
     // `public/` does not exist at all on a fresh project with no static
@@ -768,7 +791,13 @@ fn spawn_redirects_watch(
     watcher.watch_additional_files([redirects_path.clone()]);
 
     let handle_for_task = Arc::clone(&handle);
-    tokio::spawn(async move {
+    // Issue #2103 — the OUTER task spawned here is what `run()`'s
+    // supervision select arm now watches via the returned `JoinHandle`.
+    // The INNER `spawn_blocking` prewarm call below (issue #2004) is
+    // already awaited with its own printed join error on a panic — that
+    // inner join is NOT the gap this sub closes; this task's own
+    // `JoinHandle`, previously discarded entirely, is.
+    let join = tokio::spawn(async move {
         // Keep the watcher (and therefore the OS-level watch) alive for
         // as long as this task runs.
         let _watcher = watcher;
@@ -823,7 +852,7 @@ fn spawn_redirects_watch(
         }
     });
 
-    handle
+    (handle, join)
 }
 
 /// Entry point for `zfb dev`.
@@ -1184,14 +1213,31 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Some(session) => {
             let probe_session = session.clone();
             let ssr_probe_session = session.clone();
+            let dynamic_injected_probe_session = session.clone();
             // Issue #1826 — the SSR-publication signal rides the same
             // per-tick drain discipline as `pages_stale`, on its own
             // probe because SSR routes have no output path to report.
+            // Issue #2097 — likewise for the dynamic-injected re-stale
+            // signal, whose routes have an output path but reach it
+            // through a channel that performs no `tick_stale` push.
             DevAssetPipeline::with_stale_probe(Arc::new(move || {
-                probe_session.inner.take_tick_stale()
+                let drained = probe_session.inner.take_tick_stale();
+                // Issue #2097 (instrumentation reinstated from #2095) —
+                // the drained `pages_stale` length, the most direct
+                // answer to why a tick did or did not emit a `page` SSE
+                // event. Permanent, `ZFB_DEV_TIMING`-gated.
+                if dev_timing_enabled() {
+                    eprintln!("{}", format_pages_stale_drain_line(drained.len()));
+                }
+                drained
             }))
             .with_ssr_publish_probe(Arc::new(move || {
                 ssr_probe_session.inner.take_ssr_routes_published()
+            }))
+            .with_dynamic_injected_probe(Arc::new(move || {
+                dynamic_injected_probe_session
+                    .inner
+                    .take_dynamic_injected_restaled()
             }))
         }
         None => DevAssetPipeline::new(),
@@ -1945,7 +1991,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // (an empty ruleset when absent) and starts the targeted watch that
     // keeps it live for the rest of this session. Must run before
     // `project_root` / `public_root` are moved into `ServeOpts` below.
-    let redirects_handle =
+    // Issue #2103 (Dev Supervision epic #2099, Wave 3) — disposition
+    // decision recorded here: startup failure inside
+    // `spawn_redirects_watch` stays an unchanged non-fatal degrade (see
+    // that function's own doc comment); an unexpected death of an
+    // already-started watch task is now supervised via the retained
+    // `redirects_watch_join` handle below, wired into the same
+    // `tokio::select!` issue #2102 built for `boot_handle` (see the
+    // `res = &mut redirects_watch_join` arm further down).
+    let (redirects_handle, mut redirects_watch_join) =
         spawn_redirects_watch(&project_root, &public_root, rewrite_prewarm.clone());
     // Issue #2004 — the deferred boot task needs the same handle the
     // server reads from; clone before `ServeOpts` consumes the original.
@@ -2062,7 +2116,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //     on first request via the render-on-request hook installed in
     //     `ServeOpts` above (already live before the first accept, so a
     //     request can never race a not-yet-installed hook).
-    let boot_handle = tokio::spawn(async move {
+    // Issue #2102 (Dev Supervision epic #2099, Wave 2): this task's future
+    // now returns `anyhow::Result<()>` instead of printing-and-ending. Both
+    // an `Err` (the orchestrator's own failure) and a silent `Ok` (the
+    // watch channel closed with nothing left to drain) must produce a
+    // value the new supervision arm below can map to a fatal error — a
+    // dead watcher/orchestrator task must take the whole process down, not
+    // leave the HTTP listener answering stale 200s forever.
+    let mut boot_handle = tokio::spawn(async move {
         // Test-only slow-step injection (issue #1166 regression guard):
         // `ZFB_DEV_TEST_SLOW_DIGEST_MS` makes the deferred boot work
         // sleep BEFORE the digest walk, so a test can prove the port
@@ -2434,6 +2495,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .as_ref()
                 .map(|s| s.inner.take_ssr_routes_published())
                 .unwrap_or(false);
+            // Issue #2097 (MDX Reload Fix epic #2092) — drain the
+            // dynamic-injected re-stale bit the same way and at the same
+            // point, for the same reason: a boot that re-staled dynamic
+            // injected routes without running a pipeline `apply` would
+            // otherwise leave the bit raised until the next watcher tick.
+            // Same first-drain-wins contract as the two above.
+            let boot_dynamic_injected_restaled: bool = dev_session_for_boot
+                .as_ref()
+                .map(|s| s.inner.take_dynamic_injected_restaled())
+                .unwrap_or(false);
 
             let mut outcome = match (render_outcome, islands_info) {
                 (Some(mut outcome), Some(info)) => {
@@ -2473,18 +2544,31 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     }
                 }
             }
+            if boot_dynamic_injected_restaled {
+                match &mut outcome {
+                    Some(o) => o.dynamic_injected_restaled = true,
+                    None => {
+                        outcome = Some(BuildOutcome {
+                            dynamic_injected_restaled: true,
+                            ..BuildOutcome::default()
+                        })
+                    }
+                }
+            }
             outcome
         };
 
         // Orchestrator watcher loop — registers the watch, runs the boot
         // hook above (steps 1-5), then drains change events until aborted on
         // shutdown.
-        if let Err(err) = orchestrator
+        //
+        // Issue #2102: `run_with_boot`'s own "Ok-on-close, caller decides"
+        // contract is untouched — we simply propagate its `Result` instead
+        // of printing it here. The supervision arm in `run()`'s
+        // `tokio::select!` is what decides an `Ok(())` here is fatal.
+        orchestrator
             .run_with_boot(ctx, discover_hook, on_outcome, Some(boot))
             .await
-        {
-            output::error(format!("build orchestrator stopped: {err:#}"));
-        }
     });
 
     // Issue #1718 (Watcher Liveness epic #1716) — spawn the watcher-
@@ -2495,6 +2579,29 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // any warning, and teardown — lives inside `spawn_watcher_liveness_probe`
     // itself; `run()` only retains the handle so a graceful Ctrl+C can
     // cancel + await it below rather than leaking an orphaned probe dir.
+    //
+    // Disposition (issue #2104, Dev Supervision epic #2099, Wave 3): this
+    // probe is RETAINED AS-IS — no supervision arm was added for it, and
+    // none is needed. It is a BOUNDED DIAGNOSTIC: the handshake completes
+    // (success or a printed warning) on its own within its 10s deadline,
+    // then the task simply ends — it is not a long-lived task whose death
+    // mid-flight would need catching. Its outer `JoinHandle` is retained
+    // only so graceful Ctrl+C can cancel + await it (above), not because a
+    // spontaneous death needs a fatal supervision path.
+    //
+    // Post-#2102 consequence (intentional, not a regression to this
+    // probe's own correctness): #1718's probe was originally built to
+    // diagnose a HALF-ALIVE dev server — the HTTP listener still answering
+    // stale 200s while the watcher/orchestrator had silently died, with no
+    // other signal available. Epic #2099's supervision link (#2102) closed
+    // that half-alive state: a dead orchestrator now takes the whole
+    // process down (connection refused), which is a strictly louder signal
+    // than anything this probe could report. The probe's own value doesn't
+    // vanish — it still catches watcher misconfiguration / platform
+    // FS-event gaps (e.g. an inotify limit) that never even reach the
+    // orchestrator-death path this epic supervises — but its "half-alive"
+    // audience is narrower than when it was written. That narrowing is a
+    // deliberate outcome of this epic's work, not a defect in the probe.
     let liveness_probe_handle = spawn_watcher_liveness_probe(
         probe_project_root,
         probe_effective_watch_targets,
@@ -2519,6 +2626,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let result = tokio::select! {
         res = serve_with_listener(opts, listener, ctrl_c) => {
             boot_handle.abort();
+            // Issue #2103 — abort the `_redirects` watch task alongside
+            // `boot_handle` on the graceful-shutdown path, for symmetry;
+            // this is what keeps a cancelled join on that task's supervision
+            // arm structurally unreachable (see
+            // `map_redirects_watch_join_result`'s doc comment).
+            redirects_watch_join.abort();
             // Issue #1718 — cancel the liveness probe's OUTER task and reap
             // it. Since the probe body now runs inside `spawn_blocking`
             // (see `run_watcher_liveness_probe_inner`), this abort cancels
@@ -2536,7 +2649,117 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             let _ = liveness_probe_handle.await;
             res
         }
+        // Issue #2102 (Dev Supervision epic #2099, Wave 2) — the
+        // supervision link. `boot_handle` (the orchestrator watcher loop
+        // spawned above) previously ran fire-and-forget: nothing ever
+        // joined it, so a panic or a silent close of its watch channel
+        // left the HTTP listener answering stale 200s forever (issue
+        // #1718's liveness-probe audience intentionally now gets a DEAD
+        // server instead of a half-alive one — an intentional consequence
+        // of this epic, not a regression to soften). This arm fires the
+        // moment `boot_handle` finishes for ANY reason, maps its outcome
+        // to a fatal error via the pure `map_boot_task_join_result` helper
+        // (unit-tested below), and tears the liveness probe down the same
+        // way the serve arm above does before propagating the error as
+        // this function's result.
+        //
+        // `boot_handle.abort()` itself stays ONLY in the serve arm above —
+        // this arm never re-aborts `boot_handle` (it already finished,
+        // that's why it fired). It DOES abort `redirects_watch_join`
+        // (issue #2103, codex review finding): without this, a
+        // `boot_handle` death would begin renderer/plugin teardown and
+        // the final graph save below while the `_redirects` watch task
+        // is still detached and running, racing shutdown with whatever
+        // that task is mid-doing (a live reload broadcast, a prewarm
+        // render). Aborting it here — not just joining it — matches the
+        // serve arm's own teardown discipline.
+        res = &mut boot_handle => {
+            redirects_watch_join.abort();
+            liveness_probe_handle.abort();
+            let _ = liveness_probe_handle.await;
+            Err(map_boot_task_join_result(res))
+        }
+        // Issue #2103 (Dev Supervision epic #2099, Wave 3) — the same
+        // supervision link #2102 built for `boot_handle`, applied to the
+        // `_redirects` watch task's own outer `JoinHandle` (previously
+        // discarded at `spawn_redirects_watch`'s `tokio::spawn` call). A
+        // dead `_redirects` watch serves stale routing state — the same
+        // failure class the orchestrator link exists to catch — so its
+        // unexpected post-start death is fatal here too, via
+        // `map_redirects_watch_join_result` (distinct wording from
+        // `map_boot_task_join_result`'s, so stderr is diagnostic about
+        // WHICH task died). This arm never re-aborts `redirects_watch_join`
+        // itself (it already finished, that's why it fired). It DOES abort
+        // `boot_handle`, mirroring the arm above — a codex review finding
+        // during this sub: without it, the orchestrator watcher loop would
+        // keep running concurrently with the teardown below (renderer
+        // shutdown, plugin host shutdown, the final graph save), racing
+        // whatever tick it is mid-processing against that teardown.
+        res = &mut redirects_watch_join => {
+            boot_handle.abort();
+            liveness_probe_handle.abort();
+            let _ = liveness_probe_handle.await;
+            Err(map_redirects_watch_join_result(res))
+        }
     };
+
+    // Task-surface disposition audit (issue #2104, Dev Supervision epic
+    // #2099, Wave 3 — the epic's closing inventory). Every long-lived task
+    // this dev-server run spawns now has an explicit, recorded
+    // disposition: `boot_handle` and `redirects_watch_join` are SUPERVISED
+    // by the two `select!` arms above (#2102, #2103); the liveness probe
+    // is RETAINED AS-IS, documented at its own spawn site above (a bounded
+    // diagnostic, not a long-lived task); the plugin-host stdout/stderr
+    // reader tasks get a loud-EOF disposition at their own spawn sites in
+    // `crates/zfb-build/src/plugin_runner.rs`. The remaining surfaces below
+    // are TRANSITIVELY covered — they need no arm of their own because
+    // their failure already routes through one of the two supervised arms,
+    // or they are not a task at all:
+    //
+    // - The watcher's notify thread + debouncer bridge (`zfb-watcher`'s
+    //   `Watcher::start_with_debounce`, spawned inside `run_with_boot`):
+    //   if either half dies, the debounced-event channel it feeds closes,
+    //   `run_with_boot`'s drain loop sees the channel close and returns
+    //   `Ok(())`, `boot_handle` finishes, and the `res = &mut boot_handle`
+    //   arm above fires — the exact "silent Ok on channel close is fatal"
+    //   case `map_boot_task_join_result` exists for. No separate arm
+    //   needed: this dies through `boot_handle`, not around it.
+    //
+    // - SSE (`zfb-server`'s `livereload` module): a `tokio::sync::broadcast`
+    //   channel plus one `axum` response stream per open browser
+    //   connection. This is not a spawned task at all — there is no
+    //   background loop to supervise. A dropped receiver (a closed tab)
+    //   just stops getting broadcasts; the sender side lives as long as
+    //   the server does. Nothing here can "die" independently of the
+    //   process itself.
+    //
+    // - The CSS pass (`build_dev_css_and_publish_mirror_roots`, shared by
+    //   the boot hook above and the `run_css` watcher-tick closure): it
+    //   runs INLINE — once synchronously inside the boot hook (before
+    //   `run_with_boot`'s drain loop starts), and once per tick inside the
+    //   orchestrator's own dispatch, both already running on `boot_handle`'s
+    //   task. It is not a separate task and so is covered by whichever
+    //   call site it executes inline within — the boot hook's failure
+    //   surfaces through `boot_handle`'s `Result`, and a tick-time failure
+    //   is handled by the orchestrator's own per-tick error handling
+    //   inside that same supervised task.
+    //
+    // - `dispatch_outcome_events` (defined below, called from the
+    //   `on_outcome` closure passed into `run_with_boot`): this is a
+    //   genuinely DELIBERATE, PERMANENT fire-and-forget detach — every
+    //   call spawns a `tokio::task` whose `JoinHandle` is intentionally
+    //   dropped, because a reload broadcast must never block the tick
+    //   that produced it. Do NOT read this file as claiming "no detached
+    //   handles" anywhere in this epic — this one is named and justified
+    //   instead: `FlushOnDrop` (or the outcome-event task's equivalent
+    //   panic-safety wrapper) covers a panic inside the detached task, so
+    //   a panic there doesn't silently vanish with no trace at all — it
+    //   still surfaces (a captured panic message / log line), it just
+    //   doesn't take the process down, which is the intended shape for a
+    //   best-effort broadcast fan-out.
+    //
+    // Net: every deliberate detach is documented; every unexpected task
+    // termination has an explicit disposition.
 
     if let Some(session) = dev_session {
         session.shutdown_explicit();
@@ -2576,6 +2799,166 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
 
     result
+}
+
+/// Context string every fatal `boot_handle` mapping attaches (issue
+/// #2102). Deliberately carries BOTH a component word ("watcher" /
+/// "orchestrator") and a termination word ("died" / "shutting down") in
+/// one string, so stderr always names what died regardless of which
+/// underlying cause produced the error — a bare Rust panic backtrace
+/// already prints "orchestrator.rs" and "panicked" on its own, so a
+/// genuine supervision message needs a word the backtrace doesn't already
+/// contain (see `dev_supervision_e2e.rs`'s `assert_desired_supervision_contract`).
+const DEV_WATCHER_TASK_DIED_CONTEXT: &str =
+    "dev watcher/orchestrator task died — shutting down the dev server";
+
+/// Maps the join result of `run()`'s `boot_handle` (the orchestrator
+/// watcher loop) to a fatal error naming the dead task. Pure and
+/// unit-tested (see `mod tests` below) — no I/O, no process exit; the
+/// caller (`run()`'s new supervision `tokio::select!` arm) decides what to
+/// do with the returned error, which today becomes `run()`'s `Err` result
+/// and, via `main`'s centralized error handling, a non-zero process exit.
+///
+/// Covers every `JoinResult` shape `boot_handle` can produce:
+/// - `Ok(Ok(()))` — the watch channel closed with nothing left to drain
+///   (a silent, otherwise-unnoticed death).
+/// - `Ok(Err(e))` — the orchestrator's own `run_with_boot` error,
+///   propagated as fatal (its "Ok-on-close, caller decides" return
+///   contract is untouched; THIS function is where "caller decides").
+/// - `Err(join_err)` with `join_err.is_panic()` — the task panicked;
+///   the panic payload is extracted and surfaced.
+///
+/// ## Cancellation is structurally excluded from this function's domain
+///
+/// `boot_handle.abort()` is called from TWO places in `run()` (issue
+/// #2103 added the second): the serve arm, which fires when
+/// `serve_with_listener` itself resolves (the Ctrl+C-initiated graceful
+/// shutdown path), and the `redirects_watch_join` supervision arm, which
+/// aborts `boot_handle` as part of its own teardown when the
+/// `_redirects` watch task dies first. Both are OTHER arms relative to
+/// this one: by the time either abort could make `boot_handle`'s join
+/// result a cancelled `JoinError`, that other arm has already won the
+/// `select!` race and the process is already tearing down through IT —
+/// the supervision arm THIS function's result feeds can therefore never
+/// observe a cancelled join in practice, in either case. A cancelled
+/// `JoinError` reaching this function would mean that invariant broke
+/// (e.g. a future change adding an `abort()` call site reachable from
+/// THIS arm itself), which is a logic error to fix, not a runtime
+/// outcome to map to fatal or benign — so it panics loudly via
+/// `unreachable!()` instead. See
+/// `boot_task_supervision::cancellation_is_structurally_unreachable` for the
+/// dedicated regression test pinning this invariant.
+fn map_boot_task_join_result(
+    result: Result<anyhow::Result<()>, tokio::task::JoinError>,
+) -> anyhow::Error {
+    match result {
+        Ok(Ok(())) => anyhow::anyhow!(
+            "dev watcher stopped (channel closed) — this usually means the \
+             file-watch backend gave up (e.g. an OS inotify/FSEvents watch \
+             limit was hit) or the watch loop otherwise exited with nothing \
+             left to drain"
+        )
+        .context(DEV_WATCHER_TASK_DIED_CONTEXT),
+        Ok(Err(orchestrator_err)) => orchestrator_err.context(DEV_WATCHER_TASK_DIED_CONTEXT),
+        Err(join_err) if join_err.is_cancelled() => unreachable!(
+            "boot_handle join observed as CANCELLED by the supervision select \
+             arm — this should be structurally impossible: `boot_handle.abort()` \
+             is only ever called from within the already-selected serve arm \
+             (the Ctrl+C shutdown path), so by the time cancellation could \
+             happen the process is already exiting through that other arm, \
+             never through this one. If this fired, a change made \
+             cancellation reachable here and the invariant this function \
+             documents needs re-verifying, not paving over."
+        ),
+        Err(join_err) => {
+            // `tokio::task::JoinError` has exactly two states: panicked or
+            // cancelled. Cancelled is excluded above, so this is always the
+            // panic case.
+            debug_assert!(join_err.is_panic(), "unexpected non-panic JoinError");
+            let panic_msg = boot_task_panic_payload_message(join_err.into_panic());
+            anyhow::anyhow!("panicked: {panic_msg}").context(DEV_WATCHER_TASK_DIED_CONTEXT)
+        }
+    }
+}
+
+/// Context string every fatal `redirects_watch_join` mapping attaches
+/// (issue #2103). Deliberately distinct wording from
+/// `DEV_WATCHER_TASK_DIED_CONTEXT` — it names the `_redirects` watcher
+/// specifically, so stderr is diagnostic about WHICH task died rather
+/// than reusing the orchestrator's message for a different task.
+const REDIRECTS_WATCH_TASK_DIED_CONTEXT: &str =
+    "_redirects watcher task died — shutting down the dev server";
+
+/// Maps the join result of `run()`'s `redirects_watch_join` (the
+/// dedicated `public/_redirects` watch task `spawn_redirects_watch`
+/// spawns) to a fatal error naming the dead task. Mirrors
+/// `map_boot_task_join_result`'s shape, cancellation reasoning, and panic
+/// extraction (reusing `boot_task_panic_payload_message` directly) — see
+/// that function's docs for the argument in full.
+///
+/// ## Where this genuinely diverges from `map_boot_task_join_result`
+///
+/// `boot_handle` wraps `anyhow::Result<()>` (the orchestrator's own
+/// `run_with_boot` can fail), so its mapping has a distinct `Ok(Err(e))`
+/// arm. The `_redirects` watch task's `tokio::spawn` body has no
+/// fallible inner return — it is a bare `JoinHandle<()>` — so there is
+/// no equivalent arm here: every non-panicking completion means the same
+/// single thing, that the watch channel closed with nothing left to
+/// drain (`rx.recv()` returned `None`), the SAME failure class
+/// `map_boot_task_join_result`'s `Ok(Ok(()))` arm treats as fatal for
+/// the orchestrator's own channel.
+///
+/// Note: the task's INNER prewarm `spawn_blocking` call (issue #2004,
+/// `dev.rs`'s `spawn_redirects_watch`) is ALREADY awaited with its own
+/// printed join error today — that inner join is NOT the gap this
+/// function closes. This function only fires when the OUTER task itself
+/// ends unexpectedly after a successful start.
+fn map_redirects_watch_join_result(result: Result<(), tokio::task::JoinError>) -> anyhow::Error {
+    match result {
+        Ok(()) => anyhow::anyhow!(
+            "_redirects watch stopped (channel closed) — this usually means \
+             the file-watch backend gave up (e.g. an OS inotify/FSEvents \
+             watch limit was hit) or the watch loop otherwise exited with \
+             nothing left to drain"
+        )
+        .context(REDIRECTS_WATCH_TASK_DIED_CONTEXT),
+        Err(join_err) if join_err.is_cancelled() => unreachable!(
+            "redirects_watch_join observed as CANCELLED by the supervision \
+             select arm — structurally impossible for the same reason \
+             `map_boot_task_join_result` documents: `redirects_watch_join.abort()` \
+             is called from two OTHER arms relative to this one (the serve \
+             arm's Ctrl+C shutdown path, and the `boot_handle` supervision \
+             arm's own teardown — issue #2103), never from within this arm \
+             itself, so by the time either abort could happen the process is \
+             already exiting through that other arm, never through this one. \
+             If this fired, a change made cancellation reachable here and the \
+             invariant this function documents needs re-verifying, not paving \
+             over."
+        ),
+        Err(join_err) => {
+            // `tokio::task::JoinError` has exactly two states: panicked or
+            // cancelled. Cancelled is excluded above, so this is always the
+            // panic case.
+            debug_assert!(join_err.is_panic(), "unexpected non-panic JoinError");
+            let panic_msg = boot_task_panic_payload_message(join_err.into_panic());
+            anyhow::anyhow!("panicked: {panic_msg}").context(REDIRECTS_WATCH_TASK_DIED_CONTEXT)
+        }
+    }
+}
+
+/// Extracts a human-readable message from a `tokio::task::JoinError`'s
+/// panic payload — a `Box<dyn Any + Send>`, whose concrete type is almost
+/// always `&'static str` (a `panic!("literal")`) or `String` (a
+/// `panic!("{}", formatted)`), matching `std::panic::PanicHookInfo`'s own
+/// payload conventions.
+fn boot_task_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }
 
 /// Re-bundle the project's `"use client"` islands once and publish the
@@ -3762,6 +4145,28 @@ impl DevRenderInner {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Raise the one-shot "dynamic injected routes were re-staled" flag
+    /// (issue #2097). Stored (never swapped) so repeated raises before a
+    /// drain are idempotent — the drain is what makes it one-shot, and
+    /// what makes it STICKY across a tick that fails after the raise:
+    /// such a tick publishes no `BuildOutcome` at all, so nothing drains
+    /// the bit and the next SUCCESSFUL tick broadcasts it instead.
+    fn set_dynamic_injected_restaled(&self) {
+        self.dynamic_injected_restaled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Drain the "dynamic injected routes were re-staled this tick" flag
+    /// into [`zfb_build::BuildOutcome::dynamic_injected_restaled`]
+    /// (consumed by the dev pipeline's dynamic-injected probe on a
+    /// watcher tick, or by the boot hook's own drain at boot — whichever
+    /// runs first for the tick, exactly like `take_tick_stale`).
+    /// One-shot: `true` once per raising, then `false`.
+    fn take_dynamic_injected_restaled(&self) -> bool {
+        self.dynamic_injected_restaled
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Mark `output_paths` stale at the current generation and queue
     /// them for this tick's [`zfb_build::BuildOutcome::pages_stale`]
     /// signal. Re-marking an already-stale route bumps its recorded
@@ -3896,12 +4301,48 @@ impl DevRenderInner {
     /// The next request re-renders them lazily against the fresh snapshot.
     /// The bumped generation defeats the claim/clear ABA race exactly as
     /// the static seed re-stale does.
+    ///
+    /// SIGNALLING (issue #2097, MDX Reload Fix epic #2092): re-staling
+    /// alone made the next REQUEST serve fresh bytes but told an
+    /// already-open tab nothing, because the pure `entries` insert above
+    /// reaches no SSE-visible channel. For a project whose injected
+    /// routes are ALL dynamic (`injected_static_seeds` empty) that meant
+    /// zero `page` events for a content edit — issue #2063. So this
+    /// function additionally raises the one-shot
+    /// [`Self::set_dynamic_injected_restaled`] bit, which is drained into
+    /// [`zfb_build::BuildOutcome::dynamic_injected_restaled`] and folded
+    /// into `outcome_to_events`'s EXISTING single `Page` gate. Still no
+    /// `tick_stale` push — that shape is forbidden here (a drain from a
+    /// site that can race an in-flight tick can swallow the tick's own
+    /// marks), and it would also fan out to routes that have no
+    /// `routes_by_source` entry to fan out to.
+    ///
+    /// The raise is conditional on the re-staled set being NON-EMPTY, so
+    /// a project with no dynamic injected routes is byte-identically
+    /// unaffected. This is deliberately the dynamic mirror of what
+    /// [`DevRenderSession::mark_injected_seeds_stale`] has always done
+    /// for STATIC injected seeds: that function pushes to `tick_stale`
+    /// unconditionally on every swap for every seed, so a static-injected
+    /// project has always reloaded open tabs on every full-refresh tick.
+    /// This does not make the dynamic case MORE aggressive than the
+    /// long-shipping static case — it makes them equal. It is not a
+    /// blanket "reload everything" flag: it raises only for sessions that
+    /// have actually rendered a dynamic injected route, and only on ticks
+    /// that reached P4, i.e. performed a real full refresh (a Phase-B
+    /// skip returns before P4 and never calls this at all).
     fn restale_dynamic_injected(&self) {
-        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
-        let generation = stale.generation;
-        let paths: Vec<PathBuf> = stale.dynamic_injected.iter().cloned().collect();
-        for path in paths {
-            stale.entries.insert(path, generation);
+        let restaled_any = {
+            let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+            let generation = stale.generation;
+            let paths: Vec<PathBuf> = stale.dynamic_injected.iter().cloned().collect();
+            let any = !paths.is_empty();
+            for path in paths {
+                stale.entries.insert(path, generation);
+            }
+            any
+        };
+        if restaled_any {
+            self.set_dynamic_injected_restaled();
         }
     }
 
@@ -4321,6 +4762,38 @@ struct DevRenderInner {
     /// `DevRenderSession::recover_cold_bootstrap_after_publish` — so
     /// neither path self-heals better than the other.
     ssr_routes_published: std::sync::atomic::AtomicBool,
+
+    /// One-shot per-tick flag: this session's P4 route-table swap
+    /// re-staled at least one previously-rendered DYNAMIC injected route
+    /// (issue #2097, MDX Reload Fix epic #2092).
+    ///
+    /// The dynamic-injected counterpart of `ssr_routes_published` above,
+    /// and structurally the same problem: [`Self::restale_dynamic_injected`]
+    /// is a pure `StaleRoutes::entries` insert with NO `tick_stale`
+    /// push — deliberately, since a push from a site that can run
+    /// concurrently with a tick drain would reintroduce the documented
+    /// `run_and_broadcast` swallow race — so a re-staled dynamic injected
+    /// route can never reach
+    /// [`zfb_build::BuildOutcome::pages_stale`]. For a project whose
+    /// injected routes are ALL dynamic (`injected_static_seeds` empty),
+    /// that left every SSE-visible channel drained empty on a content
+    /// edit: `mark_injected_seeds_stale` early-returns, `lazy_render_tick`
+    /// finds no `routes_by_source` entry for the edited source, and
+    /// `outcome_to_events`'s `Page` gate never fires — while the very
+    /// next request already serves fresh bytes. An open tab stayed stale
+    /// forever; that is issue #2063's exact reported signature.
+    ///
+    /// This bit is the way to SAY so. Drained into
+    /// [`zfb_build::BuildOutcome::dynamic_injected_restaled`] (by the dev
+    /// pipeline's dynamic-injected probe on a watcher tick, or by the
+    /// boot hook's own drain at boot) so
+    /// `zfb_server::outcome_to_events` emits a `ReloadEvent::Page` — from
+    /// the SAME single gate `pages_stale` feeds, never a second one.
+    ///
+    /// Deliberately adds NO staleness machinery and triggers NO eager
+    /// render: `lazy_render_tick`'s `routes_by_source` miss path is
+    /// untouched, so the #958 / #1025 / #1583 narrowing stands.
+    dynamic_injected_restaled: std::sync::atomic::AtomicBool,
 
     /// Static injected-route seeds (epic #1228, S3 #1231). One
     /// [`RouteUniverseEntry`] per **static, SSG** package-owned injected
@@ -6102,6 +6575,61 @@ pub(crate) fn dev_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Format the lazy-render plan's input page count (issue #2097,
+/// reinstated from #2095's skipped scope).
+///
+/// `pages` is the length of the slice the orchestrator's plan handed to
+/// [`lazy_render_tick`] — i.e. the size of the tick's page set BEFORE any
+/// `routes_by_source` lookup. Together with
+/// [`format_lazy_route_miss_line`] this makes an empty
+/// `BuildOutcome::pages_stale` attributable: `pages=0` means the plan
+/// itself was empty, whereas `pages=N` with `misses=N` means every page
+/// in the plan was unknown to the renderer.
+///
+/// PURE — takes only the number and returns the line. Emission is gated
+/// on [`dev_timing_enabled`] at the call site, so no test needs to (or
+/// may) mutate `ZFB_DEV_TIMING` process-globally.
+#[cfg(feature = "embed_v8")]
+fn format_lazy_plan_pages_line(pages: usize) -> String {
+    format!("[zfb-timing] lazy-render plan: pages={pages}")
+}
+
+/// Format the lazy-render tick's `routes_by_source` MISS count (issue
+/// #2097, reinstated from #2095's skipped scope).
+///
+/// `misses` is how many of the tick's `pages` hit
+/// [`lazy_render_tick`]'s `None => continue` arm — the source is unknown
+/// to the renderer's SSG route table, so it contributes nothing to
+/// `stale` and nothing to `BuildOutcome::pages_stale`. This is the
+/// counter that makes an SSE-dark tick self-describing: a project whose
+/// only consumer of the edited content is a DYNAMIC INJECTED route (never
+/// a member of `routes_by_source`) reports `misses == pages`. It is also
+/// the counter that would have exposed issue #2094's vacuous pass
+/// immediately.
+///
+/// PURE — see [`format_lazy_plan_pages_line`].
+#[cfg(feature = "embed_v8")]
+fn format_lazy_route_miss_line(misses: usize, pages: usize) -> String {
+    format!("[zfb-timing] lazy-render tick: routes_by_source misses={misses}/{pages}")
+}
+
+/// Format the drained `pages_stale` length reported by the dev
+/// pipeline's stale probe (issue #2097, reinstated from #2095's skipped
+/// scope).
+///
+/// `len` is the length of the vector
+/// [`DevRenderInner::take_tick_stale`] just handed to
+/// [`zfb_build::BuildOutcome::pages_stale`] — the single most direct
+/// answer to "why did (or didn't) this tick emit a `page` SSE event",
+/// since a non-empty list is a member of `outcome_to_events`'s `Page`
+/// gate. Reported alongside the existing `tick()` line family.
+///
+/// PURE — see [`format_lazy_plan_pages_line`].
+#[cfg(feature = "embed_v8")]
+fn format_pages_stale_drain_line(len: usize) -> String {
+    format!("[zfb-timing] stale probe: drained pages_stale={len}")
+}
+
 /// Per-P1-sub-phase wall-clock durations collected inside
 /// [`assemble_and_bundle_dev`] when `ZFB_DEV_TIMING=1`. Only populated when
 /// `timing_enabled` is `true`; the caller always has `Some(...)` in that
@@ -7305,6 +7833,7 @@ fn boot_dev_renderer(
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — the static injected-route seeds + post-precedence
@@ -8178,6 +8707,15 @@ fn lazy_render_tick(
 ) -> Result<Vec<RenderedPage>> {
     let eager_sets = compute_lazy_eager_sets(session, narrowing);
 
+    // Issue #2097 (instrumentation reinstated from #2095) — the plan's
+    // input page count, before any `routes_by_source` lookup. Permanent,
+    // `ZFB_DEV_TIMING`-gated. Paired with the miss count emitted below.
+    let timing = dev_timing_enabled();
+    if timing {
+        eprintln!("{}", format_lazy_plan_pages_line(pages.len()));
+    }
+    let mut route_table_misses: usize = 0;
+
     let mut out: Vec<RenderedPage> = Vec::new();
     let mut stale: HashSet<PathBuf> = HashSet::new();
     let mut rendered_paths: Vec<PathBuf> = Vec::new();
@@ -8196,7 +8734,16 @@ fn lazy_render_tick(
                     .iter()
                     .map(|de| de.entry.output_path.clone())
                     .collect(),
-                None => continue, // unknown to the renderer — no-op
+                // Unknown to the renderer — no-op. Counted (issue #2097)
+                // but deliberately NOT staled: making this arm loud would
+                // reintroduce the fan-out storms the #958 / #1025 / #1583
+                // narrowing exists to prevent. The dynamic-injected case
+                // that lands here is signalled by
+                // `BuildOutcome::dynamic_injected_restaled` instead.
+                None => {
+                    route_table_misses += 1;
+                    continue;
+                }
             }
         };
         let eager = eager_sets.get(page.path());
@@ -8239,6 +8786,17 @@ fn lazy_render_tick(
     // this tick.
     session.inner.mark_stale(stale);
     session.inner.clear_stale(&rendered_paths);
+
+    // Issue #2097 (instrumentation reinstated from #2095) — how many of
+    // this tick's pages were unknown to `routes_by_source`. Permanent,
+    // `ZFB_DEV_TIMING`-gated. `misses == pages` on a tick whose edited
+    // content is consumed only by a dynamic injected route.
+    if timing {
+        eprintln!(
+            "{}",
+            format_lazy_route_miss_line(route_table_misses, pages.len())
+        );
+    }
     Ok(out)
 }
 
@@ -8636,6 +9194,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — adapter tests inject routes directly; no injected
@@ -9065,6 +9624,7 @@ mod tests {
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
@@ -9096,6 +9656,7 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
@@ -11999,6 +12560,326 @@ mod tests {
                 assert_eq!(still.generation, 1);
             }
 
+            // ── dynamic_injected_restaled signal (issue #2097, MDX
+            //    Reload Fix epic #2092) ──────────────────────────────
+
+            /// (v) RAISE CONDITION, positive half. A P4 swap that
+            /// re-stales a NON-EMPTY tracked dynamic-injected set raises
+            /// the bit, so `outcome_to_events`'s Page gate fires and the
+            /// open tab reloads. Before #2097 this tick was
+            /// indistinguishable from an empty one on every SSE-visible
+            /// channel — issue #2063's signature.
+            #[test]
+            fn restale_dynamic_injected_raises_the_bit_for_a_nonempty_set() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                assert!(
+                    inner.take_dynamic_injected_restaled(),
+                    "a swap that re-staled a tracked dynamic injected route must raise the \
+                     signal bit — otherwise the open tab is never told to reload (#2063)"
+                );
+            }
+
+            /// (v) RAISE CONDITION, negative half — the blast-radius
+            /// control. A project with NO dynamic injected routes must be
+            /// byte-identically unaffected: the swap still calls
+            /// `restale_dynamic_injected` unconditionally (it always has),
+            /// but with an empty tracked set it must raise nothing. This
+            /// is what stops the bit degrading into "every unrelated tick
+            /// reloads every open tab".
+            #[test]
+            fn restale_dynamic_injected_does_not_raise_for_an_empty_set() {
+                let inner = bare_inner();
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "a project with no dynamic injected routes must never raise the bit — \
+                     an empty re-stale set is not a reason to reload every tab"
+                );
+            }
+
+            /// (v) NEVER FROM A REQUEST THREAD, part 1.
+            /// `claim_or_mark_stale` runs on the HTTP request thread; it
+            /// must not touch the bit. Only the P4 swap (a tick-thread
+            /// site) may raise it — a raise from a request thread would
+            /// put this signal on the wrong side of the tick/request
+            /// boundary the whole design depends on.
+            #[test]
+            fn claim_or_mark_stale_never_raises_the_dynamic_injected_bit() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                let _claim =
+                    inner.claim_or_mark_stale(Path::new("preset-articles/feature/index.html"));
+
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "the request-time claim path must not raise the tick-scoped signal bit"
+                );
+            }
+
+            /// (v) NEVER FROM A REQUEST THREAD, part 2 —
+            /// `note_dynamic_injected`, the adapter's unconditional
+            /// per-request record. Merely LEARNING that a dynamic
+            /// injected route exists is not a re-stale and must raise
+            /// nothing; only an actual swap-time re-stale may.
+            #[test]
+            fn note_dynamic_injected_never_raises_the_dynamic_injected_bit() {
+                let inner = bare_inner();
+
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_dynamic_injected(Path::new("preset-articles/other/index.html"));
+
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "recording a dynamic injected route on the request thread must not raise \
+                     the bit — that would reload every tab on first render of any such route"
+                );
+            }
+
+            /// The drain is one-shot, mirroring `take_tick_stale` and
+            /// `take_ssr_routes_published`: `true` once per raising, then
+            /// `false`. Repeated raises before a drain collapse to one
+            /// (`store`, not a counter), so one tick can never produce two
+            /// `Page` events through this channel.
+            #[test]
+            fn take_dynamic_injected_restaled_drains_once() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+                inner.restale_dynamic_injected();
+
+                assert!(inner.take_dynamic_injected_restaled());
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "second drain for the same tick must be false"
+                );
+            }
+
+            /// (vii) FIRST-DRAIN-WINS. Two sites drain this bit — the
+            /// pipeline's per-tick probe and the boot hook's one-shot
+            /// fold — exactly like `take_tick_stale` /
+            /// `take_ssr_routes_published`. Whichever runs first for a
+            /// tick wins and the other sees `false`, so a single raise can
+            /// never be folded into two `BuildOutcome`s and broadcast
+            /// twice.
+            #[test]
+            fn dynamic_injected_bit_first_drain_wins() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                // Stand-in for whichever drain site runs first.
+                assert!(inner.take_dynamic_injected_restaled());
+                // Stand-in for the other one.
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "the second drain site for the same tick must see false"
+                );
+
+                // A fresh raise is observable again — the bit is per-tick,
+                // not a latch consumed for the session's life.
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+                assert!(inner.take_dynamic_injected_restaled());
+            }
+
+            /// (vii) STICKY ACROSS A FAILED TICK — the half-applied-tick
+            /// recovery guarantee. The raise sits at the P4 swap, BEFORE
+            /// `commit_skip_key` and before rendering. A tick that fails
+            /// after the raise returns `Err` from
+            /// `refresh_bundle_and_routes` and publishes NO `BuildOutcome`
+            /// at all, so nothing broadcasts a success-looking `page`
+            /// reload for it — and nothing drains the bit either. Because
+            /// the bit is a sticky `AtomicBool` drained by `swap(false)`,
+            /// the NEXT successful tick drains and broadcasts it. That is
+            /// the intended retryable behaviour: the re-stale really did
+            /// happen, so the tab really does need to reload eventually.
+            #[test]
+            fn dynamic_injected_bit_survives_a_failed_tick_to_the_next_success() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                // Tick 1 reaches P4 and raises...
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+                // ...then fails downstream: no outcome is published, so
+                // NO drain site runs for this tick at all.
+
+                // Tick 2 succeeds and drains normally.
+                assert!(
+                    inner.take_dynamic_injected_restaled(),
+                    "a raise stranded by a failed tick must survive to the next successful \
+                     drain — the re-stale happened, so the tab still needs the reload"
+                );
+            }
+
+            /// (vi) COUNT PINS. The fix is a signalling change only: it
+            /// must add nothing to the eager channels. Across a
+            /// `restale_dynamic_injected` call over a NON-EMPTY set:
+            ///
+            /// - `take_tick_stale().len()` is **0** — the direct proof no
+            ///   `tick_stale` push was added (constraint (i): a push from
+            ///   this site could let a non-tick drain swallow an in-flight
+            ///   tick's marks);
+            /// - the drained `pages_stale` this feeds is therefore also
+            ///   empty, i.e. UNCHANGED from pre-fix;
+            /// - `pages_written` is untouched — no eager render is
+            ///   triggered (nothing here renders at all).
+            #[test]
+            fn dynamic_injected_restale_adds_nothing_to_the_eager_channels() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_dynamic_injected(Path::new("preset-articles/other/index.html"));
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                let tick_stale = inner.take_tick_stale();
+                assert_eq!(
+                    tick_stale.len(),
+                    0,
+                    "restale_dynamic_injected must add ZERO tick_stale entries — the bit is \
+                     the remedy precisely so this channel stays untouched; observed: \
+                     {tick_stale:?}"
+                );
+
+                // The tab-facing outcome this drains into: the bit is the
+                // ONLY non-default member, and `pages_written` stays empty
+                // because nothing rendered.
+                let outcome = BuildOutcome {
+                    pages_stale: tick_stale,
+                    dynamic_injected_restaled: inner.take_dynamic_injected_restaled(),
+                    ..BuildOutcome::default()
+                };
+                assert_eq!(outcome.pages_stale.len(), 0);
+                assert_eq!(outcome.pages_written.len(), 0);
+                assert!(outcome.dynamic_injected_restaled);
+            }
+
+            /// (vi) THE 700-ROUTE NO-FAN-OUT PIN. The failure mode this
+            /// guards is the tempting-but-wrong fix: making
+            /// `lazy_render_tick`'s `routes_by_source` miss path loud, or
+            /// having `restale_dynamic_injected` push its set into
+            /// `tick_stale`, either of which reintroduces the fan-out
+            /// storms the #958 / #1025 / #1583 narrowing exists to
+            /// prevent (#1583 is CLOSED — do not regress behind it).
+            ///
+            /// Seeds a session whose route universe is 700 sources, marks
+            /// stale only the narrowed 2 a real tick would have marked,
+            /// and re-stales a non-empty dynamic injected set on top.
+            /// `pages_stale` must stay at the narrowed 2 — never 700, and
+            /// never 702.
+            ///
+            /// SCOPE: this pins the staleness-machinery half at
+            /// `DevRenderInner` level. It deliberately does not drive
+            /// `lazy_render_tick` itself, which needs a live V8 render
+            /// session; the e2e cells in
+            /// `crates/zfb/tests/dev_content_reload_2063_e2e.rs` cover
+            /// that path end to end.
+            #[test]
+            fn dynamic_injected_restale_does_not_fan_out_over_a_large_route_universe() {
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                for i in 0..700 {
+                    routes.insert(
+                        PathBuf::from(format!("pages/blog/post-{i}.tsx")),
+                        vec![DevRouteEntry {
+                            entry: RouteUniverseEntry {
+                                url_path: format!("/blog/post-{i}"),
+                                output_path: PathBuf::from(format!("blog/post-{i}/index.html")),
+                                route_key: format!("/blog/post-{i}"),
+                                static_html: false,
+                                source_path: None,
+                            },
+                            params: None,
+                        }],
+                    );
+                }
+                let inner = stub_dev_inner(routes, Vec::new());
+
+                // The narrowed set a real content-edit tick would mark.
+                inner.mark_stale([out("blog/post-0/index.html"), out("blog/post-1/index.html")]);
+                // A previously-rendered dynamic injected route, re-staled
+                // by the same swap.
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                let drained = inner.take_tick_stale();
+                assert_eq!(
+                    drained.len(),
+                    2,
+                    "pages_stale must stay at the NARROWED count over a 700-route universe — \
+                     neither the miss path nor the dynamic re-stale may fan out (#958 / \
+                     #1025 / #1583); observed {} entries",
+                    drained.len(),
+                );
+                assert!(
+                    inner.take_dynamic_injected_restaled(),
+                    "the signal bit still carries the dynamic injected re-stale — that is \
+                     what makes the narrowing affordable"
+                );
+            }
+
+            // ── ZFB_DEV_TIMING instrumentation format pins (issue
+            //    #2097, reinstated from #2095) ───────────────────────
+            //
+            // These target the PURE formatting helpers only. No test here
+            // mutates `ZFB_DEV_TIMING` — that is a process-global and
+            // would break parallel test-run safety for every other test
+            // in this binary.
+
+            #[test]
+            fn lazy_plan_pages_line_format_is_stable() {
+                assert_eq!(
+                    format_lazy_plan_pages_line(0),
+                    "[zfb-timing] lazy-render plan: pages=0"
+                );
+                assert_eq!(
+                    format_lazy_plan_pages_line(700),
+                    "[zfb-timing] lazy-render plan: pages=700"
+                );
+            }
+
+            #[test]
+            fn lazy_route_miss_line_format_is_stable() {
+                // The all-miss shape: every page in the plan was unknown
+                // to `routes_by_source` — what a project whose edited
+                // content is consumed only by a dynamic injected route
+                // reports, and the line that would have exposed #2094's
+                // vacuous pass immediately.
+                assert_eq!(
+                    format_lazy_route_miss_line(3, 3),
+                    "[zfb-timing] lazy-render tick: routes_by_source misses=3/3"
+                );
+                assert_eq!(
+                    format_lazy_route_miss_line(0, 12),
+                    "[zfb-timing] lazy-render tick: routes_by_source misses=0/12"
+                );
+            }
+
+            #[test]
+            fn pages_stale_drain_line_format_is_stable() {
+                assert_eq!(
+                    format_pages_stale_drain_line(0),
+                    "[zfb-timing] stale probe: drained pages_stale=0"
+                );
+                assert_eq!(
+                    format_pages_stale_drain_line(2),
+                    "[zfb-timing] stale probe: drained pages_stale=2"
+                );
+            }
+
             /// Vanished routes are also dropped from the CURRENT tick's
             /// stale buffer so `pages_stale` never announces a route
             /// that no longer resolves.
@@ -14129,6 +15010,390 @@ mod tests {
              does not actually CONTAIN the sibling .mdx would make the orchestrator gate \
              dead code in the very scenario #1819 is about. roots={roots:?}, path={}",
             sibling_mdx.display()
+        );
+    }
+
+    /// Serializes tests that mutate the process-wide panic hook (issue
+    /// #2104 codex review, finding 3). `std::panic::take_hook` /
+    /// `set_hook` mutate ONE global shared by the whole test binary — the
+    /// two `err_panic_surfaces_panic_payload_and_context` tests below
+    /// (one per supervised task) each do take → install a silent hook →
+    /// `.await` the panicking task → restore, and under the default
+    /// parallel test harness two such regions can interleave so one
+    /// test's restore clobbers the OTHER test's still-installed silent
+    /// hook, leaving panic reporting disabled for every later test in the
+    /// binary — a silent, confusing failure mode with no assertion to
+    /// catch it. `tokio::sync::Mutex` (not `std::sync::Mutex`) because the
+    /// guarded region spans an `.await` and tokio's mutex carries no
+    /// poisoning: an unrelated panic elsewhere can never leave a
+    /// poisoned guard here to break subsequent tests, which is the
+    /// "robust to a panic inside the region" requirement this exists to
+    /// satisfy.
+    async fn with_silenced_panic_hook<Fut, T>(fut: Fut) -> T
+    where
+        Fut: std::future::Future<Output = T>,
+    {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _guard = LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let out = fut.await;
+        std::panic::set_hook(default_hook);
+        out
+    }
+
+    // -----------------------------------------------------------------
+    // Dev Supervision Link (issue #2102, epic #2099 Wave 2) —
+    // `map_boot_task_join_result` pure-helper unit tests
+    // -----------------------------------------------------------------
+    //
+    // Red-tests-first (per the sub's own instructions): these were written
+    // and run against a not-yet-existing `map_boot_task_join_result`
+    // first (compile failure counts as red at this stage), then the
+    // helper above was written to make them pass. They cover all three
+    // reachable `JoinResult` shapes plus the cancellation-is-unreachable
+    // invariant.
+    mod boot_task_supervision {
+        use super::*;
+
+        /// `Ok(Ok(()))` — the watch channel closed silently. Must map to a
+        /// fatal error naming the dead task with a termination word,
+        /// matching `dev_supervision_e2e.rs`'s own wording contract.
+        #[test]
+        fn ok_ok_channel_close_maps_to_fatal_stopped_error() {
+            let err = map_boot_task_join_result(Ok(Ok(())));
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.to_lowercase().contains("stopped (channel closed)"),
+                "expected the literal 'stopped (channel closed)' wording per \
+                 the issue spec, got: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                lower.contains("watcher") || lower.contains("orchestrator"),
+                "must name the dead task: {rendered}"
+            );
+        }
+
+        /// `Ok(Err(e))` — the orchestrator's own error. Must be
+        /// re-wrapped/propagated as fatal, with context naming the dead
+        /// task attached (not just the bare orchestrator error).
+        #[test]
+        fn ok_err_orchestrator_error_is_propagated_with_context() {
+            let orchestrator_err = anyhow::anyhow!("watch backend exploded");
+            let err = map_boot_task_join_result(Ok(Err(orchestrator_err)));
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("watch backend exploded"),
+                "the underlying orchestrator error must survive in the chain: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                (lower.contains("watcher") || lower.contains("orchestrator"))
+                    && (lower.contains("died") || lower.contains("shutting down")),
+                "every fatal mapping — including Ok(Err(e)) — must attach \
+                 context naming the dead task: {rendered}"
+            );
+        }
+
+        /// `Err(join_err)` where `is_panic()` — the panic payload must be
+        /// extracted and surfaced, alongside the dead-task context.
+        #[tokio::test]
+        async fn err_panic_surfaces_panic_payload_and_context() {
+            let handle = tokio::spawn(async {
+                panic!("boom from the boot task");
+            });
+            // Swallow the default panic-hook println for this one panic so
+            // the test's own output stays legible; restore immediately
+            // after the task is joined. Serialized against the sibling
+            // `redirects_watch_task_supervision` test doing the same thing
+            // (see `with_silenced_panic_hook`'s doc comment, #2104 codex
+            // review finding 3).
+            let join_result: Result<anyhow::Result<()>, tokio::task::JoinError> =
+                with_silenced_panic_hook(async { handle.await.map(Ok) }).await;
+
+            assert!(
+                join_result.as_ref().err().is_some_and(|e| e.is_panic()),
+                "expected a panic-shaped JoinError to set up this test correctly"
+            );
+
+            let err = map_boot_task_join_result(join_result);
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("boom from the boot task"),
+                "the panic payload must be surfaced: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                (lower.contains("watcher") || lower.contains("orchestrator"))
+                    && (lower.contains("died") || lower.contains("shutting down")),
+                "the panic mapping must still attach dead-task context: {rendered}"
+            );
+        }
+
+        /// Cancellation invariant: `boot_task_join_result` must NEVER
+        /// silently treat a cancelled join as fatal or benign — its input
+        /// domain excludes cancellation entirely, enforced via
+        /// `unreachable!()`. This pins that a cancelled `JoinError`
+        /// reaching the helper panics loudly rather than being swallowed.
+        #[tokio::test]
+        async fn cancellation_is_structurally_unreachable() {
+            let handle = tokio::spawn(async {
+                // Long enough that the abort below always wins the race.
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            });
+            handle.abort();
+            let join_result: Result<anyhow::Result<()>, tokio::task::JoinError> =
+                handle.await.map(Ok);
+            let join_err = join_result.expect_err("aborted task must join as Err");
+            assert!(
+                join_err.is_cancelled(),
+                "test setup must actually produce a cancelled JoinError"
+            );
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                map_boot_task_join_result(Err(join_err))
+            }));
+            assert!(
+                outcome.is_err(),
+                "a cancelled JoinError must make map_boot_task_join_result panic \
+                 (unreachable!()) — cancellation is outside its documented input \
+                 domain and must never be silently mapped to fatal or benign"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // _redirects watcher supervision (issue #2103, epic #2099 Wave 3) —
+    // `map_redirects_watch_join_result` pure-helper unit tests. Mirrors
+    // `boot_task_supervision` above (minus the `Ok(Err(e))` case, which
+    // does not apply — see `map_redirects_watch_join_result`'s own doc
+    // comment for why), and pins the wording is DISTINCT from the
+    // orchestrator's own context string.
+    // -----------------------------------------------------------------
+    mod redirects_watch_task_supervision {
+        use super::*;
+
+        /// `Ok(())` — the watch channel closed silently. Must map to a
+        /// fatal error naming the `_redirects` watcher specifically, with
+        /// a termination word.
+        #[test]
+        fn ok_channel_close_maps_to_fatal_stopped_error() {
+            let err = map_redirects_watch_join_result(Ok(()));
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.to_lowercase().contains("stopped (channel closed)"),
+                "expected the literal 'stopped (channel closed)' wording, \
+                 got: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                lower.contains("_redirects") && lower.contains("watch"),
+                "must name the dead task specifically: {rendered}"
+            );
+        }
+
+        /// The rendered fatal message must be distinguishable from the
+        /// orchestrator's own — different wording, so stderr is
+        /// diagnostic about WHICH task died.
+        #[test]
+        fn wording_is_distinct_from_boot_task_context() {
+            let redirects_err = format!("{:#}", map_redirects_watch_join_result(Ok(())));
+            let boot_err = format!("{:#}", map_boot_task_join_result(Ok(Ok(()))));
+            assert_ne!(
+                redirects_err, boot_err,
+                "the _redirects watcher's fatal message must not be identical \
+                 to the orchestrator's — stderr needs to name which task died"
+            );
+        }
+
+        /// `Err(join_err)` where `is_panic()` — the panic payload must be
+        /// extracted and surfaced, alongside the dead-task context.
+        #[tokio::test]
+        async fn err_panic_surfaces_panic_payload_and_context() {
+            let handle = tokio::spawn(async {
+                panic!("boom from the redirects watch task");
+            });
+            // Serialized against the sibling `boot_task_supervision` test
+            // doing the same panic-hook dance (see
+            // `with_silenced_panic_hook`'s doc comment, #2104 codex review
+            // finding 3).
+            let join_result: Result<(), tokio::task::JoinError> =
+                with_silenced_panic_hook(handle).await;
+
+            assert!(
+                join_result.as_ref().err().is_some_and(|e| e.is_panic()),
+                "expected a panic-shaped JoinError to set up this test correctly"
+            );
+
+            let err = map_redirects_watch_join_result(join_result);
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("boom from the redirects watch task"),
+                "the panic payload must be surfaced: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                lower.contains("_redirects") && lower.contains("watch"),
+                "the panic mapping must still name the dead task: {rendered}"
+            );
+        }
+
+        /// Cancellation invariant, mirroring
+        /// `boot_task_supervision::cancellation_is_structurally_unreachable`:
+        /// `map_redirects_watch_join_result` must NEVER silently treat a
+        /// cancelled join as fatal or benign.
+        #[tokio::test]
+        async fn cancellation_is_structurally_unreachable() {
+            let handle = tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            });
+            handle.abort();
+            let join_result: Result<(), tokio::task::JoinError> = handle.await;
+            let join_err = join_result.expect_err("aborted task must join as Err");
+            assert!(
+                join_err.is_cancelled(),
+                "test setup must actually produce a cancelled JoinError"
+            );
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                map_redirects_watch_join_result(Err(join_err))
+            }));
+            assert!(
+                outcome.is_err(),
+                "a cancelled JoinError must make map_redirects_watch_join_result \
+                 panic (unreachable!()) — cancellation is outside its documented \
+                 input domain and must never be silently mapped to fatal or benign"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Dev-isolation regression pin for strictBrokenLinks (#2119, epic
+    // #2112)
+    // -----------------------------------------------------------------
+    //
+    // Isolation contract: `strictBrokenLinks` / `--strict-broken` are
+    // resolved and applied ONLY inside `commands/build.rs::run()` (see
+    // that fn's own `#2117` comment) — `resolve_strict_broken_links` and
+    // `apply_strict_broken_links_override` mutate the OWNED `Config`
+    // there, before any downstream build consumer reads it, and
+    // deliberately NEVER inside the shared `bundler_input.rs`. `zfb
+    // dev`'s config-construction path (`run()` above, just
+    // `config::load_from_dir(&project_root)` with no further mutation)
+    // must stay outside that mutation entirely: a project can set
+    // `strictBrokenLinks: true` in `zfb.config.*` for its `zfb build`
+    // CI gate while still running `zfb dev` day-to-day, and dev must
+    // keep warning-and-serving a broken anchor rather than `bail!`-ing.
+    //
+    // Why this matters: if a future refactor ever pulled the override
+    // into a path shared with `zfb dev` (moving it into
+    // `bundler_input.rs`, or copy-pasting the mutation into this file's
+    // own `run()`), a strict-configured project's `zfb dev` session
+    // would start hard-failing mid-edit-session the moment a broken
+    // anchor rendered — a regression that stays silent in review (dev
+    // still boots fine on a project with no broken links yet) and only
+    // surfaces as a wave of confused bug reports once someone actually
+    // authors one. This pin is a plain source-text guard on `run()`'s
+    // own body, so that regression fails loudly and immediately instead.
+    //
+    // Verified load-bearing: temporarily inserting
+    // `apply_strict_broken_links_override(&mut cfg);` right after the
+    // `config::load_from_dir` call in `run()` (~line 869) makes this
+    // test fail with the `apply_strict_broken_links_override` message
+    // below; reverting restores green.
+    #[test]
+    fn dev_run_never_applies_the_strict_broken_links_override() {
+        let src = include_str!("dev.rs");
+
+        // Scope the scan to `pub async fn run(args: &DevArgs)`'s own
+        // body — the actual config-construction path `zfb dev`
+        // executes (embed_v8 build) — rather than the whole file, so a
+        // legitimate mention of these names elsewhere (e.g. in this
+        // very doc comment, or in the V8-off stub below it) can never
+        // mask a real regression inside `run()` itself.
+        const RUN_MARKER: &str = "pub async fn run(args: &DevArgs) -> Result<()> {";
+        const V8_OFF_STUB_MARKER: &str = "pub async fn run(_args: &DevArgs) -> Result<()> {";
+
+        let start = src
+            .find(RUN_MARKER)
+            .expect("dev.rs must still define `pub async fn run(args: &DevArgs)`");
+        let body = &src[start..];
+        let end = body[1..]
+            .find(V8_OFF_STUB_MARKER)
+            .map(|i| i + 1)
+            .unwrap_or(body.len());
+        let run_body = &body[..end];
+
+        for banned in [
+            "resolve_strict_broken_links",
+            "apply_strict_broken_links_override",
+        ] {
+            assert!(
+                !run_body.contains(banned),
+                "dev.rs's `run()` must never call `{banned}` — strict-broken-links \
+                 enforcement is build-only (see commands/build.rs::run(), #2117); \
+                 pulling it into dev's shared config-construction path would hard-fail \
+                 `zfb dev` mid-edit-session on any strict-configured project instead of \
+                 warning-and-serving"
+            );
+        }
+    }
+
+    /// Codex review on #2119 (worth recording): the source-text guard above
+    /// only pins `run()`'s own body — it would miss the override being
+    /// smuggled into `commands::bundler_input::pipeline_spec_from_config`,
+    /// the ONE shared `Config` -> `PipelineSpec` assembly both `zfb build`
+    /// and `zfb dev` call (see that fn's own doc comment: "Both
+    /// `assemble_bundler_input` ... and the snapshot path ... call this").
+    /// A `fail_on_broken` override landing there would leak into dev too,
+    /// with neither banned name anywhere near `run()`.
+    ///
+    /// This test drives that shared function directly with a
+    /// `strictBrokenLinks: true` `Config` whose `link_validation` is
+    /// explicitly present but silent on `fail_on_broken` (`None`), and
+    /// asserts the assembled `PipelineSpec` still carries that same
+    /// `None` — i.e. `pipeline_spec_from_config` copies `markdown.features`
+    /// through verbatim and never itself consults `strict_broken_links`.
+    /// Together with the source-text guard above (which pins `run()`
+    /// never even reads `config.strict_broken_links`), this closes the
+    /// shared-path gap the source-text guard alone cannot see: the
+    /// override chain is provably confined to build's OWNED, post-load
+    /// config mutation (#2117), not to anything `zfb dev` also calls.
+    #[test]
+    fn shared_pipeline_spec_assembly_never_applies_the_strict_broken_links_override() {
+        let cfg = crate::config::Config {
+            strict_broken_links: true,
+            markdown: Some(crate::config::MarkdownConfig {
+                features: Some(crate::config::MarkdownFeaturesConfig {
+                    link_validation: Some(crate::config::LinkValidationConfig {
+                        fail_on_broken: None,
+                    }),
+                    ..crate::config::MarkdownFeaturesConfig::default()
+                }),
+                ..crate::config::MarkdownConfig::default()
+            }),
+            ..crate::config::Config::default()
+        };
+        let project_root = tempfile::tempdir().unwrap();
+
+        let spec =
+            crate::commands::bundler_input::pipeline_spec_from_config(project_root.path(), &cfg);
+
+        assert_eq!(
+            spec.features
+                .as_ref()
+                .and_then(|f| f.link_validation.as_ref())
+                .and_then(|lv| lv.fail_on_broken),
+            None,
+            "pipeline_spec_from_config must never apply the strict-broken-links override \
+             — it is the shared Config -> PipelineSpec assembly both `zfb build` and \
+             `zfb dev` call, and the override belongs ONLY to build's owned-config \
+             mutation in commands/build.rs::run() (#2117); leaking it here would hard-fail \
+             `zfb dev` for any strict-configured project"
         );
     }
 }

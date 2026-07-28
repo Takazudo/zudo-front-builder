@@ -104,6 +104,7 @@ Build the project for production. Emits static HTML (and, when an adapter is con
 
 ```sh
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
+          [--strict-broken | --no-strict-broken]
 ```
 
 ### Flags
@@ -113,8 +114,12 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--outdir` | path | config / `dist` | Output directory for the production build. Overrides config `outDir`; when both are absent, uses `dist`. |
 | `--minify-html` | boolean flag | config/default | Enable production HTML minification for this build. Overrides `minifyHtml: false` or an omitted config value. |
 | `--no-minify-html` | boolean flag | config/default | Disable production HTML minification for this build. Overrides `minifyHtml: true` from config or presets. |
+| `--strict-broken` | boolean flag | config/default | Fail this build (non-zero exit) when markdown link validation finds a broken link. Overrides `strictBrokenLinks: false` or an omitted config value. On a project with no `linkValidation` config at all, it force-enables link validation with its defaults rather than doing nothing. |
+| `--no-strict-broken` | boolean flag | config/default | Do not fail this build on broken links. Overrides `strictBrokenLinks: true` from config or presets. Disables the top-level strict overlay only — a `linkValidation` block that explicitly sets `failOnBroken: true` stays in effect. |
 
 HTML minification is off by default unless `minifyHtml: true` is set or `--minify-html` is passed. It runs inside zfb's Rust post-processing pipeline and does not spawn a Node.js minifier subprocess. The first version is conservative: rendered HTML pages are candidates, source `.html` passthrough pages remain verbatim, and non-HTML outputs are skipped.
+
+Strict broken-link gating is likewise off by default. `--strict-broken` and `--no-strict-broken` conflict — passing both is an error — and either one overrides the `strictBrokenLinks` config field, which in turn overrides the `false` default. Both flags affect `zfb build` only; `zfb dev` never sees the strict overlay and keeps whatever link-validation behavior your own `linkValidation` config gives it. See [Link validation — Strict mode](../markdown-features/link-validation.mdx) for the full behavior, including how this differs from `resolveMarkdownLinks.onBrokenLinks`.
 
 ### Example
 
@@ -123,6 +128,8 @@ zfb build
 zfb build --outdir public
 zfb build --minify-html
 zfb build --no-minify-html
+zfb build --strict-broken
+zfb build --no-strict-broken
 ```
 
 ## `zfb preview`

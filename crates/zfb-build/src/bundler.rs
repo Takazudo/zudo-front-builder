@@ -151,7 +151,8 @@ use crate::module_worker::{
     ModuleWorkerBuildContext, ModuleWorkerDependency,
 };
 use crate::raw_import_expand::{
-    expand_raw_imports_with_aliases, RawImportAliasContext, RawImportEdge,
+    expand_raw_imports_with_aliases, supported_raw_import_specifier_for_path,
+    RawImportAliasContext, RawImportEdge,
 };
 
 /// `import.meta.env.{PROD,DEV}` substitution mode.
@@ -2208,7 +2209,7 @@ pub fn bundle_with_session(
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
         writer: &writer,
-        glob_matched_files: RefCell::new(BTreeSet::new()),
+        glob_matched_files: GlobMatchQueue::default(),
         raw_import_edges: RefCell::new(BTreeSet::new()),
         raw_import_aliases: RawImportAliasContext::from_paths_and_project_base_url(
             &input.tsconfig_paths,
@@ -2415,56 +2416,11 @@ pub fn bundle_with_session(
         &input.plugin_alias_entries,
     );
 
-    // Issue #1724: make `mirror_sibling_root`'s own promise true — "reachable
-    // source files that DO need `?raw`/glob/worker rewrites are overwritten
-    // afterwards by the plugin-preprocessing pass". That pass materialises
-    // `plugin_preprocessing_files`, which a claimed sibling's macro-bearing
-    // source could never join: the exact-target loops above are gated to
-    // `project_root`, and `collect_runtime_alias_claim_graph` fail-closes on
-    // workspace membership (a bare `lib/shared` region is claimed by the
-    // mirror plan but is not a workspace package). So the mirror's RAW byte
-    // copy was the only pass those files ever saw and their
-    // `import.meta.glob` / module-worker `new URL(...)` macros reached
-    // esbuild literally — a GREEN build with unexpanded macro text in the
-    // bundle. Enrolling every mirrored SOURCE file here routes it through the
-    // same `materialise_source_file` every project file gets, which
-    // overwrites the raw copy in place. This is the same conclusion the #1695
-    // glob fixed-point queue already reached for glob matches inside a
-    // claimed region (see `stage_glob_matched_files_to_fixed_point`'s doc
-    // comment): a wholesale mirror is a byte copy, so macro expansion has to
-    // come from somewhere else. Non-source leaves (CSS/JSON/text) carry no
-    // macros and keep the pure mirror copy.
-    //
-    // A mirror root is claimed WHOLESALE, so this set includes files no
-    // import edge ever reaches — an unused fixture carrying an unsupported
-    // `SharedWorker` form or an unparseable snippet that esbuild would never
-    // load. Those must not become build failures they were not before, so
-    // the enrolments recorded here are marked NON-FATAL: if
-    // `materialise_source_file` rejects one, the pass below keeps the
-    // mirror's raw copy (already on disk and already recorded visited) and
-    // moves on, which is byte-for-byte the pre-#1724 outcome for that file.
-    // Every other membership in `plugin_preprocessing_files` — a discovered
-    // graph file, an exact alias target, a virtual-module import — stays a
-    // hard error, because those ARE reached and a silent non-expansion there
-    // is the very defect this issue fixes.
-    let mut mirror_derived_preprocessing_files = BTreeSet::new();
-    for mirror_root in sibling_mirror_plan.mirror_roots() {
-        for src in enumerate_mirror_root_files(mirror_root) {
-            // The mirror pass's own guards, so this set can never be wider
-            // than what was actually mirrored.
-            if !raw_source_extension(&src)
-                || path_is_inside_node_modules(&src)
-                || !src.starts_with(&first_party_root)
-                || src.starts_with(&project_root)
-                || bundle_exclude.is_excluded(&src, &project_root)
-            {
-                continue;
-            }
-            if plugin_preprocessing_files.insert(src.clone()) {
-                mirror_derived_preprocessing_files.insert(src);
-            }
-        }
-    }
+    // Issue #1724's mirror-derived preprocessing enrolment (what used to be a
+    // second walk of every mirror root, re-deriving `mirror_sibling_root`'s
+    // own guards) now happens as a post-filter over the SAME walk the actual
+    // wholesale-mirror copy pass performs below (issue #2051) — see the
+    // "2a-sibling" section and `mirror_derived_preprocessing_files`.
 
     // Seed the staged-dependency closure from the materialized project module
     // graph and the framework packages the generated entry/hydration shim
@@ -3006,9 +2962,10 @@ pub fn bundle_with_session(
     // `workspace_rel.is_some()` (⇔ the plan being non-empty requires a widened
     // first-party root), so a non-workspace build never enters here and stays
     // byte-identical.
+    let mut mirrored_sibling_files: Vec<PathBuf> = Vec::new();
     if workspace_rel.is_some() && !sibling_mirror_plan.is_empty() {
         for mirror_root in sibling_mirror_plan.mirror_roots() {
-            mirror_sibling_root(
+            let mirrored = mirror_sibling_root(
                 mirror_root,
                 &project_root,
                 &first_party_root,
@@ -3024,8 +2981,82 @@ pub fn bundle_with_session(
                     mirror_root.display()
                 )
             })?;
+            mirrored_sibling_files.extend(mirrored);
         }
     }
+
+    // Issue #1724: make `mirror_sibling_root`'s own promise true — "reachable
+    // source files that DO need `?raw`/glob/worker rewrites are overwritten
+    // afterwards by the plugin-preprocessing pass". That pass materialises
+    // `plugin_preprocessing_files`, which a claimed sibling's macro-bearing
+    // source could never join: the exact-target loops above are gated to
+    // `project_root`, and `collect_runtime_alias_claim_graph` fail-closes on
+    // workspace membership (a bare `lib/shared` region is claimed by the
+    // mirror plan but is not a workspace package). So the mirror's RAW byte
+    // copy was the only pass those files ever saw and their
+    // `import.meta.glob` / module-worker `new URL(...)` macros reached
+    // esbuild literally — a GREEN build with unexpanded macro text in the
+    // bundle. Enrolling every mirrored SOURCE file here routes it through the
+    // same `materialise_source_file` every project file gets, which
+    // overwrites the raw copy in place. This is the same conclusion the #1695
+    // glob fixed-point queue already reached for glob matches inside a
+    // claimed region (see `stage_glob_matched_files_to_fixed_point`'s doc
+    // comment): a wholesale mirror is a byte copy, so macro expansion has to
+    // come from somewhere else. Non-source leaves (CSS/JSON/text) carry no
+    // macros and keep the pure mirror copy.
+    //
+    // A mirror root is claimed WHOLESALE, so this set includes files no
+    // import edge ever reaches — an unused fixture carrying an unsupported
+    // `SharedWorker` form or an unparseable snippet that esbuild would never
+    // load. Those must not become build failures they were not before, so
+    // the enrolments recorded here are marked NON-FATAL: if
+    // `materialise_source_file` rejects one, the pass below keeps the
+    // mirror's raw copy (already on disk and already recorded visited) and
+    // moves on, which is byte-for-byte the pre-#1724 outcome for that file.
+    // Every other membership in `plugin_preprocessing_files` — a discovered
+    // graph file, an exact alias target, a virtual-module import — stays a
+    // hard error, because those ARE reached and a silent non-expansion there
+    // is the very defect this issue fixes.
+    //
+    // Issue #2051: this is a POST-FILTER over `mirrored_sibling_files` —
+    // exactly what the mirror copy pass above just walked and staged — rather
+    // than a second, independent walk of `mirror_root` re-deriving that same
+    // guard list (`path_is_inside_node_modules` / first-party-root /
+    // project-root / `bundle_exclude`) a second time. Only the
+    // `raw_source_extension` filter is unique to enrolment, so it is the only
+    // check still applied here.
+    let mut mirror_derived_preprocessing_files = BTreeSet::new();
+    for src in mirrored_sibling_files {
+        if !raw_source_extension(&src) {
+            continue;
+        }
+        if plugin_preprocessing_files.insert(src.clone()) {
+            // Issue #2085: THE single best-effort opt-in for the whole
+            // provenance lattice. `mirror_derived_preprocessing_files` gives
+            // this file's OWN materialisation the non-fatal arm below; this
+            // mark additionally makes everything that materialisation goes on
+            // to enqueue — its `import.meta.glob` matches, and anything
+            // transitively discovered from them — best-effort too (#2045).
+            // Both are populated from this one insertion so they cannot drift.
+            mat_ctx
+                .glob_matched_files
+                .mark_best_effort_source(src.clone());
+            mirror_derived_preprocessing_files.insert(src);
+        }
+    }
+    // The exact COMPLEMENT of the marks just recorded, and the reason
+    // `provenance_for_source` can tell "its only claim is the wholesale
+    // mirror" from "it was also reached". `plugin_preprocessing_files` takes
+    // no further insertions after this loop, so this is its final state:
+    // every membership that did NOT come from the mirror above arrived
+    // through a real claim (a discovered graph file, an exact alias target, a
+    // virtual-module import) and must propagate `Fatal`, whether or not a
+    // best-effort mirror source also happens to glob-match it.
+    mat_ctx.glob_matched_files.mark_reached_sources(
+        plugin_preprocessing_files
+            .difference(&mirror_derived_preprocessing_files)
+            .cloned(),
+    );
 
     // 2a-ws. Workspace-hoisted `node_modules` at the WORK root (issue #1668
     //     part 1; contract inverted by #1693). In a pnpm workspace the deps
@@ -3689,9 +3720,10 @@ pub fn bundle_with_session(
         match materialised {
             Ok(()) => {}
             // Issue #1724: a WHOLESALE mirror enrolment is best-effort — see
-            // the enrolment loop's comment. The mirror's raw copy is already
-            // on disk and already recorded visited, so falling back to it is
-            // exactly the pre-#1724 outcome for a file no import edge reaches.
+            // the enrolment comment in the "2a-sibling" section. The mirror's
+            // raw copy is already on disk and already recorded visited, so
+            // falling back to it is exactly the pre-#1724 outcome for a file
+            // no import edge reaches.
             Err(error) if mirror_derived_preprocessing_files.contains(physical) => {
                 // "Not reached by any import edge" is the JUSTIFICATION for
                 // the fallback, not something this code can verify — the
@@ -4008,6 +4040,33 @@ pub fn bundle_with_session(
                 &first_party_root,
             )
             .context("bundler: SSR work-mirror stage-escape audit failed")?;
+
+            // Acceptance ⇒ enrolment (issue #2089, epic #2078 Sub 10b —
+            // serving #2048), enforced fail-closed over the SAME metafile the
+            // audit just classified, with the SAME four arguments, so the two
+            // can never disagree about which inputs were accepted. Nested
+            // workspace members only: `first_party_root == project_root` is the
+            // exact condition under which `SiblingMirrorPlan::compute` returns
+            // an empty plan and `mirror_sibling_root` never runs, so there is
+            // no enrolment channel to couple to at a root-claimed workspace —
+            // #2048 scopes itself the same way. See
+            // [`enforce_accepted_package_enrolment`] for why this enforces the
+            // coupling rather than performing it.
+            if first_party_root != project_root {
+                let accepted = crate::metafile_deps::accepted_enrolment_set_at_path(
+                    meta_path,
+                    shadow,
+                    &[work],
+                    &first_party_root,
+                )
+                .context("bundler: enrolment-selection query failed")?;
+                enforce_accepted_package_enrolment(
+                    &accepted,
+                    &plugin_preprocessing_files,
+                    &input.project_root,
+                    &mat_ctx.worker_build_context,
+                )?;
+            }
         }
     }
 
@@ -5216,6 +5275,211 @@ impl SiblingMirrorPlan {
     }
 }
 
+/// Which of the three macro forms [`materialise_source_file`] expands does
+/// `path` carry, if any.
+///
+/// # A substring is not evidence here
+///
+/// The verdict gates a HARD build failure
+/// ([`enforce_accepted_package_enrolment`], whose `Err` propagates with a bare
+/// `?` — there is no warn-and-skip downgrade at that call site), on a file
+/// that is BY CONSTRUCTION one the stage-escape audit already ACCEPTED: a
+/// legitimate declared entry of a legitimately claimed workspace member. So a
+/// false positive here breaks a build that was green, naming a macro the
+/// user's file does not contain. Raw substring tests produce exactly that on
+/// ordinary code — `const u = "/api/asset?raw=1"`, a comment mentioning `?raw`,
+/// or an `interface WorkerPoolOptions` co-occurring with an unrelated
+/// `import.meta.url` (a common way to derive a package-relative asset URL).
+/// The sibling implementation in `crates/zfb/src/commands/build.rs` rejects
+/// substring detection for this identical question for the same reason.
+///
+/// Each arm therefore requires AGREEMENT from the SAME predicate the real
+/// expansion path uses, with the literal substring kept only as the cheap
+/// pre-filter that avoids a parse on the overwhelming majority of files:
+///
+/// * glob — [`crate::glob_expand::source_contains_import_meta_glob`], the AST
+///   collector [`expand_import_meta_glob_with_matches`] itself runs;
+/// * `?raw` — [`supported_raw_import_specifier_for_path`], the same
+///   `collect_raw_occurrences` AST pass [`expand_raw_imports_with_aliases`]
+///   opens with. Its alias/exclusion arguments are deliberately NOT plumbed
+///   in: they decide where a target RESOLVES, not whether the macro exists,
+///   and an unexpanded macro ships literally either way;
+/// * module worker — [`rewrite_module_worker_urls_with_context`] itself,
+///   keyed on the same `worker_edges.is_empty()` test `materialise_source_file`
+///   uses for its own `has_worker`.
+///
+/// # Fail-open
+///
+/// Every arm answers "no macro" when its predicate cannot reach a verdict — an
+/// unparseable file, an unsupported form, a worker URL that does not resolve.
+/// That mirrors `audit_unenrolled_first_party_macro_leak`'s own
+/// `continue // inert text … fail open, not closed`, and it costs nothing this
+/// pass could have delivered: a file whose macro cannot be recognised here is
+/// one whose expansion would have failed anyway, and this is a diagnostic, not
+/// a transform. The direction matters — closed would mean inventing build
+/// failures for files nobody can name.
+///
+/// A non-JS-like leaf (JSON, CSS, an asset) is never a macro carrier and a
+/// non-UTF-8 file cannot be scanned, so both answer `None`.
+fn unexpanded_macro_form(
+    path: &Path,
+    project_root: &Path,
+    worker_build_context: &ModuleWorkerBuildContext,
+) -> Option<&'static str> {
+    if !raw_source_extension(path) {
+        return None;
+    }
+    let source = fs::read_to_string(path).ok()?;
+    if source.contains("import.meta.glob")
+        && matches!(
+            crate::glob_expand::source_contains_import_meta_glob(&source),
+            Ok(true)
+        )
+    {
+        return Some("`import.meta.glob(...)`");
+    }
+    if source.contains("?raw")
+        && matches!(
+            supported_raw_import_specifier_for_path(&source, path),
+            Ok(Some(_))
+        )
+    {
+        return Some("a terminal `?raw` import");
+    }
+    if source.contains("Worker")
+        && source.contains("import.meta.url")
+        && matches!(
+            rewrite_module_worker_urls_with_context(
+                &source,
+                path,
+                project_root,
+                worker_build_context,
+            ),
+            Ok(rewrite) if !rewrite.worker_edges.is_empty()
+        )
+    {
+        return Some("a module-worker `new URL(..., import.meta.url)` macro");
+    }
+    None
+}
+
+/// Acceptance ⇒ enrolment, enforced fail-closed (issue #2089, epic #2078 Sub
+/// 10b — serving #2048).
+///
+/// # Why this is an enforcement and not a widening
+///
+/// The stage-escape audit ACCEPTS a workspace sibling consumed from source by
+/// bare package name (#2040's declared-entry rule): `@acme/ui`'s own manifest
+/// declares the resolved location, `pnpm-workspace.yaml` claims the package,
+/// and esbuild reached it through the wholesale `<work>/node_modules` link.
+/// Nothing staged it — the mirror plan never saw a claim for it, because a
+/// bare package name is resolved by esbuild, not by the Rust discovery that
+/// feeds [`SiblingMirrorPlan::compute`]. So the package's own
+/// `import.meta.glob` / `?raw` / module-worker macros reach esbuild LITERALLY
+/// and ship unexpanded in a GREEN build — exactly the #1724 defect class
+/// #1985 closed for alias-claimed siblings, re-opened through the
+/// package-name door.
+///
+/// The coupling this sub was asked for — make acceptance IMPLY mirror
+/// enrolment — is not reachable in this direction of the pipeline.
+/// "Accepted" is a fact about esbuild's METAFILE, which does not exist until
+/// after `run_esbuild` has already emitted the bundle; every enrolment seam
+/// ([`SiblingMirrorPlan::compute`], the wholesale mirror, the
+/// `plugin_preprocessing_files` materialise pass) runs before it. Bridging
+/// that gap would mean either predicting pre-esbuild which packages esbuild
+/// will resolve — the one thing this crate's hard constraint forbids (esbuild
+/// stays the only resolver; see the `l-lessons-client-bundling` project
+/// lessons on why "match what esbuild would resolve" has no finish line) — or
+/// re-running esbuild to a fixed point after each newly-discovered package.
+/// So epic #2078's sanctioned fallback applies: the defect becomes a LOUD,
+/// named build failure instead of a silent wrong bundle.
+///
+/// # Self-limiting by construction
+///
+/// The check is keyed on the reached input NOT being enrolled. An accepted
+/// package whose bundled sources DID go through
+/// [`materialise_source_file`] (its macros already expanded in the shadow)
+/// passes silently — so a later wave that genuinely couples acceptance to
+/// enrolment retires this diagnostic automatically rather than fighting it.
+///
+/// Widening which inputs reach case-2 acceptance does NOT retire it, and the
+/// original wording here claiming issue #2127 would was wrong: a wider
+/// acceptance set can only ever add candidates to this check, never remove
+/// them. #2127 was in fact measured to be behaviour-neutral here — its
+/// real-copy discriminator requires the input to canonicalise INSIDE a stage
+/// root, whereas at the nested-member topology this call site is gated to,
+/// a workspace-symlinked package canonicalises to LIVE source and takes the
+/// ordinary case-2 symlink path instead. Verified end-to-end against a
+/// nested member with a non-empty `bundle.exclude` and a macro-bearing
+/// declared sibling: this diagnostic fires, naming the LIVE source path — and
+/// the identical failure, naming the identical live path, reproduces with
+/// `metafile_deps.rs` restored to the pre-#2127 base commit (844edc5b). The
+/// failure is therefore entirely pre-existing; #2127 neither introduced nor
+/// widened it.
+///
+/// `enrolled` is `bundle_with_session`'s `plugin_preprocessing_files` — the
+/// single set every enrolment seam publishes into.
+fn enforce_accepted_package_enrolment(
+    accepted: &crate::metafile_deps::AcceptedEnrolmentSet,
+    enrolled: &BTreeSet<PathBuf>,
+    project_root: &Path,
+    worker_build_context: &ModuleWorkerBuildContext,
+) -> Result<()> {
+    if accepted.is_empty() {
+        return Ok(());
+    }
+    // The macro scan comes FIRST: it costs one read per accepted input (a
+    // handful of files) plus, only when that read turns up one of the three
+    // literal substrings, a parse of that one file — whereas canonicalising
+    // `enrolled` is a stat per preprocessing file (thousands on a real
+    // project). The ordinary consume-from-source sibling carries no macro at
+    // all, so neither cost is paid outside a build that is about to fail.
+    let mut candidates = Vec::new();
+    for package in accepted {
+        for input in accepted.reached_inputs(&package.name) {
+            if let Some(form) = unexpanded_macro_form(input, project_root, worker_build_context) {
+                candidates.push((&package.name, input, form));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(());
+    }
+
+    // The audit reports canonical paths; `plugin_preprocessing_files` holds
+    // whatever spelling the enqueuing claim source used, so compare canonical
+    // forms or a symlinked claim would read as "never enrolled".
+    let enrolled_canonical: BTreeSet<PathBuf> = enrolled
+        .iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect();
+    let offenders: Vec<String> = candidates
+        .into_iter()
+        .filter(|(_, input, _)| !enrolled_canonical.contains(*input))
+        .map(|(name, input, form)| format!("  - `{}` at {} uses {}", name, input.display(), form))
+        .collect();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "bundler: stage-escape audit accepted a workspace package consumed from \
+         source, but its sources are never mirror-enrolled, so the macros below \
+         reached esbuild literally and would ship UNEXPANDED in the emitted \
+         bundle (issue #2048 — the #1724 defect class, through the bare \
+         package-name door):\n{}\n\
+         Acceptance is only knowable from esbuild's own metafile, i.e. after the \
+         bundle is already emitted, so this pass cannot retroactively expand \
+         them; failing here is deliberate — a green build would emit a bundle \
+         whose macro calls do not exist at runtime.\n\
+         Reach the package through a claim the mirror plan can see BEFORE \
+         esbuild runs — a tsconfig or plugin alias into its source tree, which \
+         is mirrored and macro-expanded like any other workspace sibling \
+         (issues #1691/#1985) — or consume a pre-built entry whose sources carry \
+         none of these macros.",
+        offenders.join("\n")
+    ))
+}
+
 /// Wholesale-mirror one claimed sibling `mirror_root` into the SSR work mirror
 /// (issue #1692) — the sibling analogue of the project's exact-target dir
 /// staging ([`materialise_isolated_exact_dir`]): a RAW file copy of the whole
@@ -5225,11 +5489,18 @@ impl SiblingMirrorPlan {
 /// predict. Source files that DO need `?raw`/glob/worker rewrites are
 /// overwritten afterwards by the plugin-preprocessing pass: since issue #1724
 /// EVERY mirrored source file is enrolled in `plugin_preprocessing_files`
-/// (see the enrolment loop in [`bundle_with_session`]), because a claimed
-/// sibling region's macro-bearing file frequently reaches no other claim
-/// source and would otherwise ship its literal macro text. Every file lands at its
-/// workspace-relative slot via [`shadow_path_for_project_path`]
+/// (see the caller in [`bundle_with_session`]'s "2a-sibling" section), because
+/// a claimed sibling region's macro-bearing file frequently reaches no other
+/// claim source and would otherwise ship its literal macro text. Every file
+/// lands at its workspace-relative slot via [`shadow_path_for_project_path`]
 /// (`work.join(<rel>)`), so it never collides with the nested project mirror.
+///
+/// Returns every source path that cleared this function's own guards — i.e.
+/// the exact set that is now part of the mirror, whether this call actually
+/// rewrote its bytes or the incremental skip below left an already-correct
+/// copy in place. Issue #2051 (dedup + unify traversal): the caller derives
+/// the #1724 enrolment set from this returned list instead of re-walking
+/// `mirror_root` a second time with a duplicated copy of these same guards.
 #[allow(clippy::too_many_arguments)]
 fn mirror_sibling_root(
     mirror_root: &Path,
@@ -5240,7 +5511,8 @@ fn mirror_sibling_root(
     node_modules_isolation_root: Option<&Path>,
     writer: &ShadowWriter<'_>,
     bundle_exclude: &BundleExcludeMatcher,
-) -> Result<()> {
+) -> Result<Vec<PathBuf>> {
+    let mut mirrored = Vec::new();
     for src in enumerate_mirror_root_files(mirror_root) {
         // Defense in depth vs. the walk's own pruning: never mirror through a
         // node_modules component, out of the first-party region, or over the
@@ -5257,6 +5529,11 @@ fn mirror_sibling_root(
         if bundle_exclude.is_excluded(&src, project_root) {
             continue;
         }
+        // `src` cleared every guard above — record it as mirrored before the
+        // incremental-skip fast path below, so a skip (unchanged bytes,
+        // already-correct copy on disk) is still reported to the caller
+        // exactly like a fresh copy would be.
+        mirrored.push(src.clone());
         let dest = shadow_path_for_project_path(
             &src,
             project_root,
@@ -5322,7 +5599,7 @@ fn mirror_sibling_root(
             }
         }
     }
-    Ok(())
+    Ok(mirrored)
 }
 
 /// Drain [`MaterialiseCtx::glob_matched_files`] to a fixed point (issue
@@ -5395,20 +5672,30 @@ fn stage_glob_matched_files_to_fixed_point(
     work: &Path,
     node_modules_isolation_root: Option<&Path>,
 ) -> Result<()> {
-    let mut staged_glob_targets: BTreeSet<PathBuf> = BTreeSet::new();
+    // Issue #2085: the value is the provenance a target was LAST driven at.
+    // A target is re-driven only when a later enqueue UPGRADES it (an
+    // already-failed-and-skipped best-effort target that some reached path
+    // later claims as fatal must not stay suppressed just because this loop
+    // marks a target staged BEFORE materialising it).
+    let mut staged_glob_targets: BTreeMap<PathBuf, MaterialiseProvenance> = BTreeMap::new();
     loop {
-        let pending: Vec<PathBuf> = mat_ctx
+        let pending: Vec<(PathBuf, MaterialiseProvenance)> = mat_ctx
             .glob_matched_files
             .borrow()
             .iter()
-            .filter(|path| !staged_glob_targets.contains(*path))
-            .cloned()
+            .filter(
+                |(path, provenance)| match staged_glob_targets.get(path.as_path()) {
+                    Some(staged) => *provenance > *staged,
+                    None => true,
+                },
+            )
+            .map(|(path, provenance)| (path.clone(), provenance))
             .collect();
         if pending.is_empty() {
             break;
         }
-        for target in pending {
-            staged_glob_targets.insert(target.clone());
+        for (target, provenance) in pending {
+            staged_glob_targets.insert(target.clone(), provenance);
             // Defense in depth, mirroring `mirror_sibling_root`'s guard: a
             // glob match must be a real first-party file under the widened
             // first-party root, never through `node_modules` (vendored, not
@@ -5447,7 +5734,7 @@ fn stage_glob_matched_files_to_fixed_point(
                     )
                 })?;
             }
-            materialise_source_file(
+            let materialised = materialise_source_file(
                 &target,
                 &target,
                 &to,
@@ -5464,13 +5751,37 @@ fn stage_glob_matched_files_to_fixed_point(
                 &mat_ctx.module_worker_dependencies,
                 mat_ctx.project_root,
                 &mat_ctx.worker_build_context,
-            )
-            .with_context(|| {
-                format!(
-                    "bundler: materialise import.meta.glob matched file {}",
-                    target.display()
-                )
-            })?;
+            );
+            if let Err(error) = materialised {
+                // Issue #2045 (epic #2078): a match reached ONLY through a
+                // wholesale sibling-mirror enrolment inherits that
+                // enrolment's best-effort provenance, so its own broken /
+                // unsupported macro text must not fail a build it did not
+                // fail before #1724. Same tolerance, same warning shape, and
+                // the same caveat as the enrolment's own non-fatal arm: "no
+                // import edge reaches it" is the JUSTIFICATION, not something
+                // this code can verify, so leave a trace either way.
+                if provenance == MaterialiseProvenance::BestEffort {
+                    let msg = format!(
+                        "skipping the `import.meta.glob` matched file {} — preprocessing it \
+                         failed ({}). It was queued only by a wholesale sibling-mirror \
+                         enrolment no import edge is known to reach, so this is best-effort \
+                         (issue #2045). If an import edge DOES reach it, its \
+                         `import.meta.glob` / `?raw` / module-worker macros ship UNEXPANDED.",
+                        target.display(),
+                        format_args!("{error:#}"),
+                    );
+                    tracing::warn!("{msg}");
+                    eprintln!("zfb warn: {msg}");
+                    continue;
+                }
+                return Err(error).with_context(|| {
+                    format!(
+                        "bundler: materialise import.meta.glob matched file {}",
+                        target.display()
+                    )
+                });
+            }
 
             // codex-review P2: `materialise_source_file` only expands
             // glob/`?raw`/worker macros — it never walks plain `import`
@@ -5497,10 +5808,14 @@ fn stage_glob_matched_files_to_fixed_point(
                             target: edge.target,
                         }),
                 );
+                // Issue #2085: provenance propagates through this channel too,
+                // not just `materialise_source_file`'s own glob-match
+                // enqueue — a file discovered transitively from a best-effort
+                // target inherits best-effort.
                 mat_ctx
                     .glob_matched_files
                     .borrow_mut()
-                    .extend(discovery.files);
+                    .enqueue_all(discovery.files, provenance);
             }
         }
     }
@@ -5512,11 +5827,18 @@ fn stage_glob_matched_files_to_fixed_point(
 /// never overwrite one of these with a user file of the same name (the
 /// generated file wins; the user file is skipped with a debug note).
 fn is_reserved_shadow_root_name(name: &str) -> bool {
+    // The `.zfb-virtual-*.mjs` check here shares
+    // `zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX` rather than its own
+    // literal (issue #2108): `build_resolver_inputs` is called here with
+    // `shadow` as `working_dir` (see the call site around
+    // `zfb_plugin_resolver::build_resolver_inputs(...)` below), so this is
+    // the exact same in-shadow-root class the shared const documents, not a
+    // different directory or purpose.
     name == SHADOW_TSCONFIG_FILENAME
         || name == SHADOW_ENTRY_FILENAME
         || name == SHADOW_HYDRATE_FILENAME
         || name == ".zfb-metafile.json"
-        || name.starts_with(".zfb-virtual-")
+        || name.starts_with(zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX)
 }
 
 /// Stage the project-root LOOSE FILES into the shadow root (issue #1692) — the
@@ -6081,6 +6403,233 @@ fn materialise_isolated_exact_dir(
     Ok(())
 }
 
+/// Provenance of a piece of materialisation work — **who enqueued it**
+/// (issue #2085, epic #2078).
+///
+/// This is deliberately NOT a prediction of what esbuild will resolve. The
+/// crate's hard constraint is that esbuild stays the only resolver, so
+/// provenance records the enqueuing path's own status and nothing else.
+///
+/// It is a two-element lattice, `Fatal > BestEffort`:
+///
+/// - Duplicate enqueues of one target MERGE to the stronger provenance
+///   ([`GlobMatches::enqueue`]).
+/// - A target that already FAILED as `BestEffort` is RETRIED once a later
+///   enqueue upgrades it to `Fatal` (see
+///   [`stage_glob_matched_files_to_fixed_point`]). That rule is load-bearing:
+///   the fixed-point loop marks a target staged BEFORE materialising it, so
+///   without it a later fatal upgrade of an already-failed-and-skipped target
+///   would look "already handled" and be silently suppressed.
+/// - `Fatal` is the [`Default`], so any materialisation path that does not
+///   explicitly opt in — including a call site added after this issue's
+///   audit — fails SAFE, keeping #1724's hard-error guarantee.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum MaterialiseProvenance {
+    /// Enqueued (directly or transitively) by a WHOLESALE sibling-mirror
+    /// enrolment — a file no import edge is known to reach (#1724/#1985). A
+    /// failure warns and is skipped. Opt-in at exactly ONE insertion site:
+    /// [`GlobMatchQueue::mark_best_effort_source`].
+    BestEffort,
+    /// Enqueued by a reached path. A failure fails the build.
+    #[default]
+    Fatal,
+}
+
+/// The `import.meta.glob(...)` matched-file staging queue (issue #1695),
+/// each entry tagged with the [`MaterialiseProvenance`] of whoever enqueued
+/// it (issue #2085).
+#[derive(Debug, Default)]
+struct GlobMatches {
+    entries: BTreeMap<PathBuf, MaterialiseProvenance>,
+}
+
+impl GlobMatches {
+    /// Membership accessors used only by this module's tests — production
+    /// code reaches the queue through [`Self::enqueue_all`], [`Self::iter`],
+    /// and [`Self::provenance_of`] alone.
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[cfg(test)]
+    fn contains(&self, path: &Path) -> bool {
+        self.entries.contains_key(path)
+    }
+
+    fn provenance_of(&self, path: &Path) -> Option<MaterialiseProvenance> {
+        self.entries.get(path).copied()
+    }
+
+    /// Deterministic path order — the drain queue's iteration order must not
+    /// vary across ticks (the `BTreeMap` backing gives this for free).
+    fn iter(&self) -> impl Iterator<Item = (&PathBuf, MaterialiseProvenance)> + '_ {
+        self.entries
+            .iter()
+            .map(|(path, provenance)| (path, *provenance))
+    }
+
+    /// Enqueue `path`, MERGING to the STRONGER provenance when it is already
+    /// queued — the lattice join. A best-effort enqueue can never weaken a
+    /// target another path already claimed as fatal.
+    fn enqueue(&mut self, path: PathBuf, provenance: MaterialiseProvenance) {
+        self.entries
+            .entry(path)
+            .and_modify(|existing| *existing = (*existing).max(provenance))
+            .or_insert(provenance);
+    }
+
+    fn enqueue_all(
+        &mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        provenance: MaterialiseProvenance,
+    ) {
+        for path in paths {
+            self.enqueue(path, provenance);
+        }
+    }
+
+    /// Enqueue at the FAIL-SAFE default provenance ([`MaterialiseProvenance::Fatal`]).
+    /// Callers that mean best-effort must say so via [`Self::enqueue`].
+    /// Test-only seam for seeding the queue directly.
+    #[cfg(test)]
+    fn insert(&mut self, path: PathBuf) {
+        self.enqueue(path, MaterialiseProvenance::default());
+    }
+}
+
+/// [`MaterialiseCtx::glob_matched_files`] — the glob-match queue plus the
+/// best-effort SOURCE index that gives its entries their provenance
+/// (issue #2085).
+///
+/// Provenance is derived from this one index rather than passed as a
+/// per-call argument on purpose: a `materialise_source_file` call site added
+/// later cannot accidentally become best-effort, because becoming
+/// best-effort requires an explicit [`Self::mark_best_effort_source`] call
+/// somewhere else entirely. Silence means `Fatal`.
+#[derive(Debug, Default)]
+struct GlobMatchQueue {
+    matches: RefCell<GlobMatches>,
+    /// Source files enrolled as best-effort. Populated at exactly one site:
+    /// the wholesale sibling-mirror enrolment in [`bundle_with_session`]
+    /// (#1724's non-fatal arm).
+    best_effort_sources: RefCell<BTreeSet<PathBuf>>,
+    /// Source files with an explicit REACHED claim — a membership in
+    /// `plugin_preprocessing_files` that did NOT come from the wholesale
+    /// mirror enrolment (a discovered graph file, an exact alias target, a
+    /// virtual-module import). Populated at the same single site as
+    /// [`Self::mark_best_effort_source`], as that set's exact complement, so
+    /// the two cannot drift.
+    ///
+    /// This exists because best-effort is only ever correct for a file whose
+    /// ONLY claim is the wholesale mirror; see
+    /// [`Self::provenance_for_source`] for why a queue entry alone cannot
+    /// establish that.
+    reached_sources: RefCell<BTreeSet<PathBuf>>,
+}
+
+impl GlobMatchQueue {
+    fn borrow(&self) -> std::cell::Ref<'_, GlobMatches> {
+        self.matches.borrow()
+    }
+
+    fn borrow_mut(&self) -> std::cell::RefMut<'_, GlobMatches> {
+        self.matches.borrow_mut()
+    }
+
+    /// Seed the queue at the fail-safe default provenance (test convenience).
+    #[cfg(test)]
+    fn from_paths(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        let queue = Self::default();
+        for path in paths {
+            queue.borrow_mut().insert(path);
+        }
+        queue
+    }
+
+    /// THE best-effort opt-in. Everything `path`'s own materialisation goes
+    /// on to enqueue inherits [`MaterialiseProvenance::BestEffort`].
+    fn mark_best_effort_source(&self, path: PathBuf) {
+        self.best_effort_sources.borrow_mut().insert(path);
+    }
+
+    /// THE best-effort opt-OUT: record an explicit REACHED claim, which beats
+    /// any best-effort signal for the same source. See
+    /// [`Self::reached_sources`] and [`Self::provenance_for_source`].
+    fn mark_reached_sources(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.reached_sources.borrow_mut().extend(paths);
+    }
+
+    /// The provenance a materialisation of `physical_from` / `logical_from`
+    /// PROPAGATES to everything it enqueues — the join of every claim on this
+    /// source, defaulting to the fail-safe [`MaterialiseProvenance::Fatal`]
+    /// when there is none.
+    ///
+    /// Three claims can exist, and all three are consulted:
+    ///
+    /// 1. an explicit REACHED claim ([`Self::mark_reached_sources`]) — Fatal,
+    ///    and it wins OUTRIGHT;
+    /// 2. the queue entry, when this source was itself a glob target;
+    /// 3. the wholesale-mirror enrolment mark
+    ///    ([`Self::mark_best_effort_source`]) — BestEffort.
+    ///
+    /// # Why the queue entry does not win outright (issue #2085 follow-up)
+    ///
+    /// It used to, on the stated grounds that it "is already the lattice join
+    /// of every path that enqueued this target". It is not: the queue records
+    /// GLOB-TARGET ENQUEUES ONLY. Being reached by an ordinary import edge —
+    /// membership in `plugin_preprocessing_files`, or a `materialise_shadow`
+    /// walk — is not an enqueue and contributes nothing to that join. So a
+    /// file reached by a REAL import edge that a best-effort mirror source
+    /// also happened to glob-match read back `BestEffort`, its own glob
+    /// matches inherited `BestEffort`, and a materialisation failure for one
+    /// of THOSE warned-and-continued instead of failing the build — a
+    /// fail-open path that did not exist before the provenance lattice, since
+    /// pre-#2085 every such failure was a hard error.
+    ///
+    /// Claim 1 is that missing signal, and it is checked first because
+    /// `BestEffort` is only ever correct for a file whose ONLY claim is the
+    /// wholesale mirror. Claims 2 and 3 then join as before (`Fatal` is the
+    /// lattice maximum, so a fatally-queued source stays fatal and a
+    /// best-effort mark can never downgrade it).
+    ///
+    /// # Boundary
+    ///
+    /// Claim 1 covers the `plugin_preprocessing_files` channel, which is
+    /// where every non-mirror enrolment lands. A project file materialised
+    /// only by the ordinary `materialise_shadow` walk carries no such mark,
+    /// so if a best-effort mirror source's glob reaches back INTO the project
+    /// and matches it, that file still reads `BestEffort`. Closing that would
+    /// mean marking at every walk call site, which is precisely the
+    /// per-call-site argument #2085 rejected; it is left open deliberately.
+    fn provenance_for_source(
+        &self,
+        physical_from: &Path,
+        logical_from: &Path,
+    ) -> MaterialiseProvenance {
+        {
+            let reached = self.reached_sources.borrow();
+            if reached.contains(physical_from) || reached.contains(logical_from) {
+                return MaterialiseProvenance::Fatal;
+            }
+        }
+        let queued = {
+            let matches = self.matches.borrow();
+            matches
+                .provenance_of(physical_from)
+                .or_else(|| matches.provenance_of(logical_from))
+        };
+        if let Some(queued) = queued {
+            return queued;
+        }
+        let best_effort = self.best_effort_sources.borrow();
+        if best_effort.contains(physical_from) || best_effort.contains(logical_from) {
+            return MaterialiseProvenance::BestEffort;
+        }
+        MaterialiseProvenance::Fatal
+    }
+}
+
 /// Shared context passed to [`materialise_shadow`] and
 /// [`materialise_collection`].  All fields are invariant across every call
 /// within a single [`bundle`] invocation — they come from [`BundlerInput`]
@@ -6129,9 +6678,14 @@ struct MaterialiseCtx<'a, 's> {
     /// glob targets never enter the AST-based preprocessing-discovery graph
     /// the plan is built from — is staged on its own via the same
     /// `materialise_source_file` pass, which may in turn extend this set
-    /// with ITS OWN matched files. A `BTreeSet` keeps the drain queue's
-    /// iteration order deterministic across ticks.
-    glob_matched_files: RefCell<BTreeSet<PathBuf>>,
+    /// with ITS OWN matched files. A `BTreeMap` keyed on the target path
+    /// keeps the drain queue's iteration order deterministic across ticks.
+    ///
+    /// Issue #2085: each entry also carries the [`MaterialiseProvenance`] of
+    /// the path that enqueued it, and the queue doubles as the best-effort
+    /// SOURCE index the whole provenance lattice reads from — see
+    /// [`GlobMatchQueue`].
+    glob_matched_files: GlobMatchQueue,
     /// Raw terminal edges discovered while preprocessing source files in
     /// every materialise pass. Used after esbuild's metafile walk to map the
     /// generated `.zfb-raw-*.mjs` input back to the ORIGINAL target for dev
@@ -7683,6 +8237,20 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
     false
 }
 
+/// Per-call staging buffer for [`materialise_source_file`]'s four
+/// side-effect channels (issue #2085). Nothing here reaches shared state
+/// until that function's commit block; a transformation/parse rejection
+/// simply drops the whole buffer.
+#[derive(Default)]
+struct MaterialiseStaging {
+    /// `import.meta.glob` matches, published at the call's own provenance.
+    glob_matched_files: Vec<PathBuf>,
+    /// Generated `.zfb-raw-*.mjs` modules as `(destination, bytes)`.
+    generated_modules: Vec<(PathBuf, Vec<u8>)>,
+    raw_import_edges: Vec<RawImportEdge>,
+    module_worker_dependencies: Vec<ModuleWorkerDependency>,
+}
+
 /// Materialise a non-MDX source file into the shadow tree, applying the eager
 /// `import.meta.glob(...)`, terminal `?raw`, and module-worker URL pre-passes
 /// to JS/TS sources first.
@@ -7702,10 +8270,36 @@ fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
 ///
 /// `glob_matched_files` collects every target file
 /// [`expand_import_meta_glob_with_matches`] matches (issue #1695) — every
-/// call site shares the SAME `MaterialiseCtx::glob_matched_files` set, so
+/// call site shares the SAME `MaterialiseCtx::glob_matched_files` queue, so
 /// `bundle_with_session`'s post-pass fixed-point drain sees every match
 /// discovered anywhere in this call's materialise passes, not just the ones
-/// under whichever source root happened to be walked.
+/// under whichever source root happened to be walked. Each match is tagged
+/// with this call's own [`MaterialiseProvenance`], read back out of that same
+/// queue (issue #2085) — so a call site that opts into nothing propagates
+/// `Fatal`.
+///
+/// # Transactional scope (issue #2085 / epic #2078) — pinned and NARROW
+///
+/// This function mutates four channels: the `glob_matched_files` queue, the
+/// generated `.zfb-raw-*.mjs` modules on disk, `raw_import_edges`, and
+/// `module_worker_dependencies`. All four are BUFFERED into a per-call
+/// [`MaterialiseStaging`] and committed to the shared accumulators only once
+/// every transformation has succeeded. Buffer-then-commit (rather than
+/// commit-then-roll-back) is forced by order-dependence: an edge already
+/// consumed by [`raw_target_matches`] or `augment_route_deps_with_raw_targets`
+/// cannot be safely retracted after the fact.
+///
+/// The zero-residue guarantee this buys covers **pre-commit transformation /
+/// parse rejection ONLY** — exactly #2049's observed defect class (a late
+/// failure leaving orphan generated modules, extended accumulators, and a
+/// flipped `raw_target_matches` outcome for an unrelated file). It does **NOT**
+/// claim atomicity across the sequential [`ShadowWriter::write_if_changed`]
+/// commit itself: a mid-commit filesystem error (disk full mid-write, say) is
+/// explicitly OUT OF SCOPE and can still leave a partial write behind. The
+/// commit deliberately writes `to` FIRST and the generated satellite modules
+/// after, so the one structural failure this transaction actually guards
+/// against (a pre-existing directory in the destination slot) pre-empts every
+/// other side effect.
 ///
 /// `copy_mode` forces a real `fs::copy` for the non-transformed fallback
 /// instead of a symlink. When esbuild runs without `--preserve-symlinks`
@@ -7729,7 +8323,7 @@ fn materialise_source_file(
     is_excluded: &dyn Fn(&Path) -> bool,
     copy_mode: bool,
     writer: &ShadowWriter<'_>,
-    glob_matched_files: &RefCell<BTreeSet<PathBuf>>,
+    glob_matched_files: &GlobMatchQueue,
     raw_import_edges: &RefCell<BTreeSet<RawImportEdge>>,
     raw_import_aliases: &RawImportAliasContext,
     module_worker_dependencies: &RefCell<BTreeSet<ModuleWorkerDependency>>,
@@ -7834,6 +8428,11 @@ fn materialise_source_file(
             let has_query_syntax = source.contains('?');
             let has_worker_syntax = source.contains("Worker");
             if source.contains("import.meta.glob") || has_query_syntax || has_worker_syntax {
+                // Issue #2085: every side effect below lands in this per-call
+                // buffer, never in the shared accumulators, until the commit
+                // block at the end. See this function's doc comment for the
+                // (deliberately narrow) scope of the resulting guarantee.
+                let mut staging = MaterialiseStaging::default();
                 let mut expanded = source;
                 if expanded.contains("import.meta.glob") {
                     has_glob = true;
@@ -7848,14 +8447,14 @@ fn materialise_source_file(
                     // materialise pass — this is the ONLY place a glob's
                     // matched files become known, so a shared accumulator is
                     // the sole way the queue learns about them.
-                    glob_matched_files
-                        .borrow_mut()
+                    staging
+                        .glob_matched_files
                         .extend(glob_expansion.matched_files);
                     expanded = glob_expansion.expanded_source;
                 }
 
                 if has_query_syntax {
-                    let raw_expansion = expand_raw_imports_with_aliases(
+                    let mut raw_expansion = expand_raw_imports_with_aliases(
                         &expanded,
                         logical_from,
                         project_root,
@@ -7868,20 +8467,18 @@ fn materialise_source_file(
                     has_raw = !raw_expansion.generated_modules.is_empty();
                     if has_raw {
                         let generated_dir = to.parent().unwrap_or_else(|| Path::new("."));
-                        for module in &raw_expansion.generated_modules {
-                            let generated_path = generated_dir.join(&module.filename);
-                            writer
-                                .write_if_changed(&generated_path, module.source.as_bytes())
-                                .with_context(|| {
-                                    format!(
-                                        "write generated raw module {} for {}",
-                                        generated_path.display(),
-                                        logical_from.display()
-                                    )
-                                })?;
+                        // Move the generated sources into the buffer rather
+                        // than cloning them — a `?raw` payload is the whole
+                        // target file's bytes, so a clone here would double
+                        // peak memory for every large raw asset.
+                        for module in std::mem::take(&mut raw_expansion.generated_modules) {
+                            staging.generated_modules.push((
+                                generated_dir.join(&module.filename),
+                                module.source.into_bytes(),
+                            ));
                         }
-                        raw_import_edges
-                            .borrow_mut()
+                        staging
+                            .raw_import_edges
                             .extend(raw_expansion.edges.iter().cloned());
                     }
                     expanded = raw_expansion.expanded_source;
@@ -7899,14 +8496,25 @@ fn materialise_source_file(
                     })?;
                     has_worker = !worker_rewrite.worker_edges.is_empty();
                     if has_worker {
-                        let mut dependencies = module_worker_dependencies.borrow_mut();
-                        dependencies.extend(worker_rewrite.dependencies.iter().cloned());
-                        dependencies.extend(worker_rewrite.config_dependencies.iter().cloned());
+                        staging
+                            .module_worker_dependencies
+                            .extend(worker_rewrite.dependencies.iter().cloned());
+                        staging
+                            .module_worker_dependencies
+                            .extend(worker_rewrite.config_dependencies.iter().cloned());
                     }
                     expanded = worker_rewrite.expanded_source;
                 }
 
                 if has_glob || has_raw || has_worker {
+                    // ---- COMMIT (issue #2085) ----
+                    // Every transformation above succeeded, so this call's
+                    // buffered work is now published. `to` goes first: a
+                    // pre-existing directory in the destination slot is the
+                    // one structural failure a rejected call can hit here, and
+                    // pre-empting it keeps the satellite modules and the three
+                    // accumulators clean.
+                    //
                     // Cross-file transforms are recomputed from the LIVE project
                     // tree every call. `write_if_changed` still suppresses
                     // byte-identical writes while generated-module paths are
@@ -7914,6 +8522,31 @@ fn materialise_source_file(
                     writer
                         .write_if_changed(to, expanded.as_bytes())
                         .with_context(|| format!("write expanded source to {}", to.display()))?;
+                    for (generated_path, module_source) in &staging.generated_modules {
+                        writer
+                            .write_if_changed(generated_path, module_source)
+                            .with_context(|| {
+                                format!(
+                                    "write generated raw module {} for {}",
+                                    generated_path.display(),
+                                    logical_from.display()
+                                )
+                            })?;
+                    }
+                    // Provenance is read back out of the shared queue rather
+                    // than passed in, so a call site that opts into nothing
+                    // propagates `Fatal` (issue #2085's fail-safe default).
+                    let provenance =
+                        glob_matched_files.provenance_for_source(physical_from, logical_from);
+                    glob_matched_files
+                        .borrow_mut()
+                        .enqueue_all(staging.glob_matched_files, provenance);
+                    raw_import_edges
+                        .borrow_mut()
+                        .extend(staging.raw_import_edges);
+                    module_worker_dependencies
+                        .borrow_mut()
+                        .extend(staging.module_worker_dependencies);
                     store_source_skip_entry(
                         writer,
                         dest_rel,
@@ -8386,9 +9019,17 @@ fn project_path_is_inside_node_modules(path: &Path, project_root: &Path) -> bool
         .is_ok_and(path_is_inside_node_modules)
 }
 
+/// This file's name for [`zfb_types::has_node_modules_segment`], the canonical
+/// home for the predicate (issue #2051). Until now this carried its own copy
+/// of the component walk — a third one, which is why that function's docs no
+/// longer claim the dedup is finished.
+///
+/// Kept as a thin local alias rather than rewriting the call sites (10 direct,
+/// plus 9 more through [`project_path_is_inside_node_modules`] below): the
+/// short name reads better against the surrounding staging code, and
+/// delegating the BODY is the whole point of the dedup.
 fn path_is_inside_node_modules(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == std::ffi::OsStr::new("node_modules"))
+    zfb_types::has_node_modules_segment(path)
 }
 
 /// Map a logical path to its physical location in the re-rooted SSR shadow
@@ -13232,7 +13873,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -13300,7 +13941,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -14318,7 +14959,7 @@ mod tests {
         let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
         let writer = ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint)
             .expect("session writer construction");
-        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let glob_matched_files = GlobMatchQueue::default();
         let raw_import_edges = RefCell::new(BTreeSet::new());
         let module_worker_dependencies = RefCell::new(BTreeSet::new());
         for (from, dest_rel) in files {
@@ -14409,7 +15050,7 @@ mod tests {
             let fingerprint = spec_fingerprint(&zfb_content::PipelineSpec::default());
             let writer =
                 ShadowWriter::new(shadow_root.clone(), Some(session), false, fingerprint).unwrap();
-            let glob_matched_files = RefCell::new(BTreeSet::new());
+            let glob_matched_files = GlobMatchQueue::default();
             let raw_edges = RefCell::new(BTreeSet::new());
             let worker_dependencies = RefCell::new(BTreeSet::new());
             let staged = shadow_root.join(staged_rel);
@@ -14706,7 +15347,7 @@ mod tests {
         fs::write(&target, "aliased materialise raw").unwrap();
         let shadow = tempfile::tempdir().unwrap();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
-        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let glob_matched_files = GlobMatchQueue::default();
         let raw_edges = RefCell::new(BTreeSet::new());
         let worker_dependencies = RefCell::new(BTreeSet::new());
         let aliases = RawImportAliasContext::from_paths(&BTreeMap::from([(
@@ -14739,6 +15380,261 @@ mod tests {
             .contains(&RawImportEdge { importer, target }));
     }
 
+    // --- issue #2080 (epic #2078): rejected mirror-derived materialisation
+    // leaves shared-state residue ---
+    //
+    // `materialise_source_file` mutates FOUR pieces of shared state before it
+    // can fail: it writes generated `.zfb-raw-*.mjs` modules to disk
+    // (:7871-7882), and it extends `glob_matched_files` (:7851-7853),
+    // `raw_import_edges` (:7883-7885), and `module_worker_dependencies`
+    // (:7902-7904) — all BEFORE the final `writer.write_if_changed(to, ...)`
+    // commit. A late failure at that final step (the only point reachable
+    // after every one of those mutations has already run) leaves every
+    // mutation in place with no rollback — issue #2049's non-monotonicity.
+    // Fixed by issue #2085 (provenance threading), per epic #2078's pinned
+    // "transactional" scope: PRE-COMMIT transformation/parse rejection only,
+    // never the sequential `write_if_changed` commit's own atomicity.
+
+    /// Shared fixture for the residue tests below: an importer that exercises
+    /// all three cross-file transforms (`import.meta.glob`, terminal `?raw`,
+    /// and a module-worker URL macro) in one file, plus an unrelated sibling
+    /// (`victim.ts`) that ALSO uses `import.meta.glob` on its own — the file
+    /// whose outcome the sharpest residue pin (the "flip" test below) checks.
+    /// Returns `(project, root, importer, victim)`.
+    fn write_residue_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().to_path_buf();
+        let pages = root.join("pages");
+        fs::create_dir_all(pages.join("widgets-a")).unwrap();
+        fs::create_dir_all(pages.join("widgets-b")).unwrap();
+        fs::write(pages.join("widgets-a/a.tsx"), "export const a = 1;\n").unwrap();
+        fs::write(pages.join("widgets-b/b.tsx"), "export const b = 2;\n").unwrap();
+        fs::write(
+            pages.join("search.worker.ts"),
+            "self.postMessage('ready');\n",
+        )
+        .unwrap();
+        let importer = pages.join("importer.ts");
+        fs::write(
+            &importer,
+            "import text from './victim.ts?raw';\n\
+             const widgets = import.meta.glob('./widgets-a/*.tsx', { eager: true });\n\
+             new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });\n\
+             export default { widgets, text };\n",
+        )
+        .unwrap();
+        let victim = pages.join("victim.ts");
+        fs::write(
+            &victim,
+            "export const widgets = import.meta.glob('./widgets-b/*.tsx', { eager: true });\n",
+        )
+        .unwrap();
+        (project, root, importer, victim)
+    }
+
+    /// Orphan-detection helper: whether a `.zfb-raw-*.mjs` generated module
+    /// exists directly inside `dir`. Content-hash-independent so callers
+    /// don't need to reproduce the filename derivation to look for it.
+    fn generated_raw_module_exists(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        entries.filter_map(|entry| entry.ok()).any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(".zfb-raw-") && name.ends_with(".mjs")
+        })
+    }
+
+    #[test]
+    fn materialise_source_file_late_failure_leaves_orphan_module_and_extended_accumulators() {
+        let (_project, root, importer, _victim) = write_residue_fixture();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        writer.ensure_dir(&shadow_pages).unwrap();
+
+        let glob_matched_files = GlobMatchQueue::default();
+        let raw_edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
+
+        // Force the ONLY failure point reachable after every mutation below
+        // has already run: the final `write_if_changed(to, ...)` commit. A
+        // pre-existing DIRECTORY at `to` makes that specific write fail
+        // while every earlier mutation stays in place.
+        let staged = shadow_pages.join("importer.ts");
+        fs::create_dir_all(&staged).unwrap();
+
+        let result = materialise_source_file(
+            &importer,
+            &importer,
+            &staged,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        );
+        let err = result.expect_err("a directory at the destination must reject the final commit");
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("write expanded source to"),
+            "must fail at the FINAL write — after glob/raw/worker have already mutated shared \
+             state, not earlier: {err}"
+        );
+
+        // Desired post-fix state: a rejected call must not leave any of
+        // these three accumulators carrying its partial work.
+        assert!(
+            glob_matched_files.borrow().is_empty(),
+            "a rejected materialisation must not leave queued glob matches behind"
+        );
+        assert!(
+            raw_edges.borrow().is_empty(),
+            "a rejected materialisation must not leave a raw_import_edges residue behind"
+        );
+        assert!(
+            worker_dependencies.borrow().is_empty(),
+            "a rejected materialisation must not leave module_worker_dependencies residue behind"
+        );
+        assert!(
+            !generated_raw_module_exists(&shadow_pages),
+            "a rejected materialisation must not leave an orphan generated .zfb-raw-*.mjs module on disk"
+        );
+    }
+
+    #[test]
+    fn materialise_source_file_late_failure_residue_does_not_corrupt_unrelated_file_outcome() {
+        let (_project, root, importer, victim) = write_residue_fixture();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        writer.ensure_dir(&shadow_pages).unwrap();
+
+        let glob_matched_files = GlobMatchQueue::default();
+        let raw_edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
+
+        let staged_importer = shadow_pages.join("importer.ts");
+        fs::create_dir_all(&staged_importer).unwrap();
+        materialise_source_file(
+            &importer,
+            &importer,
+            &staged_importer,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect_err("importer's final commit must fail (destination is a directory)");
+
+        // The sharpest pin: the failed call above left a `raw_import_edges`
+        // entry targeting `victim.ts` (discovered via ITS OWN, unrelated
+        // `?raw` import in `importer.ts`). Materialising `victim.ts` next —
+        // sharing the SAME `raw_import_edges` set, exactly as one shared
+        // `MaterialiseCtx` does across a real walk — must not let that
+        // leftover entry flip `raw_target_matches` for it: victim.ts is
+        // never itself a surviving `?raw` target of anything.
+        let staged_victim = shadow_pages.join("victim.ts");
+        materialise_source_file(
+            &victim,
+            &victim,
+            &staged_victim,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap();
+
+        let victim_staged = fs::read_to_string(&staged_victim).unwrap();
+        assert!(
+            !victim_staged.contains("import.meta.glob("),
+            "victim.ts's own import.meta.glob must still be expanded normally — an unrelated \
+             rejected sibling call must not corrupt it into a terminal raw-copy; got:\n{victim_staged}"
+        );
+    }
+
+    /// Control (NOT ignored): a SUCCESSFUL materialisation of the same
+    /// importer fixture must still commit all four effects the residue tests
+    /// above pin as wrongly-surviving-a-rejection. This is the positive case
+    /// the eventual #2085 fix must not break.
+    #[test]
+    fn materialise_source_file_successful_call_commits_all_four_effects() {
+        let (_project, root, importer, _victim) = write_residue_fixture();
+        let shadow = tempfile::tempdir().unwrap();
+        let shadow_pages = shadow.path().join("pages");
+        let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, true, None).unwrap();
+        writer.ensure_dir(&shadow_pages).unwrap();
+
+        let glob_matched_files = GlobMatchQueue::default();
+        let raw_edges = RefCell::new(BTreeSet::new());
+        let worker_dependencies = RefCell::new(BTreeSet::new());
+        let staged = shadow_pages.join("importer.ts");
+
+        materialise_source_file(
+            &importer,
+            &importer,
+            &staged,
+            &|_| false,
+            true,
+            &writer,
+            &glob_matched_files,
+            &raw_edges,
+            &RawImportAliasContext::empty(),
+            &worker_dependencies,
+            &root,
+            &ModuleWorkerBuildContext::default(),
+        )
+        .unwrap();
+
+        assert!(
+            glob_matched_files
+                .borrow()
+                .contains(&root.join("pages/widgets-a/a.tsx")),
+            "a successful call must commit the glob match"
+        );
+        assert!(
+            generated_raw_module_exists(&shadow_pages),
+            "a successful call must commit the generated raw module to disk"
+        );
+        assert!(
+            raw_edges
+                .borrow()
+                .iter()
+                .any(|edge| edge.importer == importer),
+            "a successful call must commit the raw_import_edges entry"
+        );
+        assert!(
+            worker_dependencies
+                .borrow()
+                .iter()
+                .any(|dep| dep.importer == importer),
+            "a successful call must commit the module_worker_dependencies entry"
+        );
+        let staged_source = fs::read_to_string(&staged).unwrap();
+        assert!(!staged_source.contains("?raw"), "{staged_source}");
+        assert!(
+            !staged_source.contains("import.meta.glob("),
+            "{staged_source}"
+        );
+        assert!(staged_source.contains(".js?v="), "{staged_source}");
+    }
+
     #[test]
     fn ssr_terminal_js_raw_target_is_never_reparsed_by_broad_mirror() {
         let project = tempfile::tempdir().unwrap();
@@ -14764,7 +15660,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -14814,7 +15710,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -14871,7 +15767,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -14926,7 +15822,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -15068,7 +15964,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -15121,7 +16017,7 @@ mod tests {
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -15269,7 +16165,7 @@ mod tests {
                 bundle_exclude: &exclude,
                 project_root: root,
                 writer: &writer,
-                glob_matched_files: RefCell::new(BTreeSet::new()),
+                glob_matched_files: GlobMatchQueue::default(),
                 raw_import_edges: RefCell::new(BTreeSet::new()),
                 raw_import_aliases: RawImportAliasContext::empty(),
                 module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -15306,7 +16202,7 @@ mod tests {
         fs::write(&importer, "import text from './secret.txt?raw';\n").unwrap();
         let shadow = tempfile::tempdir().unwrap();
         let writer = ShadowWriter::new(shadow.path().to_path_buf(), None, false, None).unwrap();
-        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let glob_matched_files = GlobMatchQueue::default();
         let edges = RefCell::new(BTreeSet::new());
         let worker_dependencies = RefCell::new(BTreeSet::new());
         let matcher = BundleExcludeMatcher::new(&["components/*.txt".to_string()]).unwrap();
@@ -15497,7 +16393,7 @@ mod tests {
         )
         .expect("mirror_sibling_root tick");
 
-        let glob_matched_files = RefCell::new(BTreeSet::new());
+        let glob_matched_files = GlobMatchQueue::default();
         let raw_import_edges = RefCell::new(BTreeSet::new());
         let module_worker_dependencies = RefCell::new(BTreeSet::new());
         materialise_source_file(
@@ -18942,6 +19838,275 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Acceptance ⇒ enrolment (issue #2089, epic #2078 Sub 10b, serving
+    // #2048): the fail-closed coupling between what the stage-escape audit
+    // accepts and what the mirror-enrolment pass actually processed. The
+    // real-esbuild end-to-end proof is case (n) in
+    // `bundler_sibling_mirror_esbuild_regression.rs`; these pin the two
+    // pure halves the call site composes.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unexpanded_macro_form_detects_the_three_expanded_forms_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let probe = |name: &str, body: &str| {
+            let path = dir.join(name);
+            fs::write(&path, body).unwrap();
+            unexpanded_macro_form(&path, dir, &ModuleWorkerBuildContext::default())
+        };
+        // The worker arm now agrees with the real rewriter, which resolves the
+        // URL target — so the macro below needs a target that exists, exactly
+        // as a genuine one in user code would.
+        fs::write(dir.join("w.worker.ts"), "self.onmessage = () => {};\n").unwrap();
+
+        assert_eq!(
+            probe("glob.tsx", "const m = import.meta.glob('./d/*.json');\n"),
+            Some("`import.meta.glob(...)`")
+        );
+        assert_eq!(
+            probe("raw.ts", "import text from './note.md?raw';\n"),
+            Some("a terminal `?raw` import")
+        );
+        assert_eq!(
+            probe(
+                "worker.ts",
+                "new Worker(new URL('./w.worker.ts', import.meta.url), { type: 'module' });\n"
+            ),
+            Some("a module-worker `new URL(..., import.meta.url)` macro")
+        );
+
+        assert_eq!(
+            probe("plain.ts", "export const marker = 'CTA';\n"),
+            None,
+            "an ordinary source file carries no macro"
+        );
+        assert_eq!(
+            probe("ternary.ts", "export const v = cond ? 'a' : 'b';\n"),
+            None,
+            "a bare `?` must not read as a `?raw` import — `materialise_source_file`'s \
+             own gate opens on that, but here a false positive would hard-fail a \
+             legitimate build"
+        );
+        assert_eq!(
+            probe(
+                "webworker-doc.ts",
+                "// This module also runs inside a Worker.\nexport const v = 1;\n"
+            ),
+            None,
+            "`Worker` alone is not the macro — the supported spelling needs \
+             `import.meta.url` too"
+        );
+        assert_eq!(
+            probe(
+                "data.json",
+                r#"{"note":"import.meta.glob is just text here"}"#
+            ),
+            None,
+            "a non-JS-like leaf is never a macro carrier"
+        );
+    }
+
+    /// Build a real [`crate::metafile_deps::AcceptedEnrolmentSet`] the only way
+    /// production does — by querying a metafile — so these tests compose the
+    /// exact contract the call site consumes rather than a hand-built stand-in.
+    /// Returns `(accepted set, the sibling's own source file)`.
+    #[cfg(unix)]
+    fn accepted_sibling_fixture(
+        base: &Path,
+        cta_body: &str,
+    ) -> (crate::metafile_deps::AcceptedEnrolmentSet, PathBuf) {
+        let first_party = base.join("workspace");
+        fs::create_dir_all(&first_party).unwrap();
+        fs::write(
+            first_party.join("pnpm-workspace.yaml"),
+            "packages:\n  - '.'\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        let package = first_party.join("packages/ui");
+        fs::create_dir_all(package.join("src")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{ "name": "@acme/ui", "exports": { "./cta": "./src/cta.tsx" } }"#,
+        )
+        .unwrap();
+        let cta = package.join("src/cta.tsx");
+        fs::write(&cta, cta_body).unwrap();
+
+        let stage = base.join("stage");
+        let link = stage.join("node_modules/@acme/ui");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&package, &link).unwrap();
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/ui/src/cta.tsx": {"imports": []}
+        }}"#;
+        let accepted =
+            crate::metafile_deps::accepted_enrolment_set(metafile, &stage, &[&stage], &first_party)
+                .unwrap();
+        assert!(
+            accepted.contains("@acme/ui"),
+            "fixture precondition: the sibling must be ACCEPTED, or these tests \
+             would pass for the wrong reason"
+        );
+        (accepted, cta)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_package_with_unenrolled_macro_source_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, cta) = accepted_sibling_fixture(
+            &base,
+            "const m = import.meta.glob('./data/*.json');\nexport const cta = m;\n",
+        );
+
+        let error = enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect_err("an accepted-but-unenrolled macro source must fail the build");
+        let message = format!("{error:#}");
+        for expected in ["@acme/ui", "cta.tsx", "import.meta.glob", "UNEXPANDED"] {
+            assert!(
+                message.contains(expected),
+                "the diagnostic must contain {expected}: {message}"
+            );
+        }
+        assert!(cta.is_file());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_package_whose_macro_source_is_enrolled_is_accepted() {
+        // The self-limiting half: once a later wave genuinely enrols these
+        // sources (or #2127 widens which inputs reach case-2 acceptance), the
+        // diagnostic retires itself instead of having to be deleted.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, cta) = accepted_sibling_fixture(
+            &base,
+            "const m = import.meta.glob('./data/*.json');\nexport const cta = m;\n",
+        );
+
+        let enrolled = BTreeSet::from([cta]);
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &enrolled,
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
+            "an accepted package whose bundled source DID go through the \
+             materialise pass has no unexpanded macro left to report",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accepted_package_without_macros_is_accepted() {
+        // The ordinary consume-from-source idiom (#2040) — accepted, never
+        // enrolled, and entirely fine, because there is no macro to expand.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, _) =
+            accepted_sibling_fixture(&base, "export const cta = 'CTA_SOURCE_MARKER';\n");
+
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
+            "acceptance alone is never a rejection — only a macro that would \
+             ship unexpanded is",
+        );
+    }
+
+    /// A `?raw` substring that is not a `?raw` IMPORT must not fail the build.
+    ///
+    /// The offender is ordinary code — a URL query string — in a file the
+    /// stage-escape audit already ACCEPTED, so the substring test this arm
+    /// used to be would hard-fail a build that was green, naming a macro the
+    /// file does not contain. The AST predicate
+    /// ([`supported_raw_import_specifier_for_path`]) only ever inspects
+    /// import/re-export/dynamic-import/`require` specifiers, so a plain
+    /// string literal is invisible to it.
+    #[test]
+    #[cfg(unix)]
+    fn raw_substring_outside_an_import_specifier_does_not_fail_the_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, _) = accepted_sibling_fixture(
+            &base,
+            "// The ?raw import docs live at /docs/raw.\n\
+             export const endpoint = '/api/asset?raw=1';\n\
+             export const cta = 'CTA_SOURCE_MARKER';\n",
+        );
+
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
+            "a `?raw` substring in a string literal and a comment is not a terminal \
+             `?raw` import — failing here would break an ordinary build",
+        );
+    }
+
+    /// A `Worker` IDENTIFIER co-occurring with an unrelated `import.meta.url`
+    /// must not fail the build.
+    ///
+    /// `new URL('./asset', import.meta.url)` is the common way to derive a
+    /// package-relative asset URL, and `Worker` appears in ordinary type
+    /// names (`WorkerPoolOptions`, `ServiceWorkerRegistration`). Together they
+    /// satisfied the old two-substring test while carrying no module-worker
+    /// macro at all. The real rewriter
+    /// ([`rewrite_module_worker_urls_with_context`]) reports no `worker_edges`
+    /// without an actual `new Worker(...)` constructor.
+    #[test]
+    #[cfg(unix)]
+    fn worker_identifier_with_unrelated_import_meta_url_does_not_fail_the_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (accepted, _) = accepted_sibling_fixture(
+            &base,
+            "interface WorkerPoolOptions {\n  size: number;\n}\n\
+             export const logo = new URL('./logo.svg', import.meta.url).href;\n\
+             export const cta: WorkerPoolOptions = { size: 1 };\n",
+        );
+
+        enforce_accepted_package_enrolment(
+            &accepted,
+            &BTreeSet::new(),
+            &base.join("workspace"),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect(
+            "a `Worker`-bearing identifier plus an unrelated `import.meta.url` is \
+             not a module-worker macro — failing here would break an ordinary build",
+        );
+    }
+
+    #[test]
+    fn empty_accepted_set_enrols_nothing_and_rejects_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        enforce_accepted_package_enrolment(
+            &crate::metafile_deps::AcceptedEnrolmentSet::default(),
+            &BTreeSet::new(),
+            tmp.path(),
+            &ModuleWorkerBuildContext::default(),
+        )
+        .expect("a build that reached no accepted sibling is untouched by the coupling");
+    }
+
+    // -----------------------------------------------------------------
     // `import.meta.glob` matched-files fixed-point drain (#1695), driving
     // `stage_glob_matched_files_to_fixed_point` directly rather than the
     // full `bundle_with_session` orchestration — the queue's own shape
@@ -19238,7 +20403,7 @@ mod tests {
                 bundle_exclude: &exclude,
                 project_root: &project,
                 writer: &writer,
-                glob_matched_files: RefCell::new(BTreeSet::from([target.clone()])),
+                glob_matched_files: GlobMatchQueue::from_paths([target.clone()]),
                 raw_import_edges: RefCell::new(BTreeSet::new()),
                 raw_import_aliases: RawImportAliasContext::empty(),
                 module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -19269,7 +20434,7 @@ mod tests {
                 bundle_exclude: &exclude,
                 project_root: &project,
                 writer: &writer,
-                glob_matched_files: RefCell::new(BTreeSet::new()),
+                glob_matched_files: GlobMatchQueue::default(),
                 raw_import_edges: RefCell::new(BTreeSet::new()),
                 raw_import_aliases: RawImportAliasContext::empty(),
                 module_worker_dependencies: RefCell::new(BTreeSet::new()),
@@ -19285,6 +20450,265 @@ mod tests {
         assert!(
             !work.join(staged_rel).exists(),
             "tick 2: a vanished glob match must be pruned from the work mirror"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Issue #2085 (epic #2078) — the provenance lattice.
+    //
+    // `fatal > best-effort`; duplicate enqueues merge to the STRONGER
+    // claim; and a target that already FAILED as best-effort is RETRIED
+    // once a later enqueue upgrades it to fatal. That last rule is the
+    // subtle one: `stage_glob_matched_files_to_fixed_point` marks a target
+    // staged BEFORE materialising it, so without an explicit upgrade check
+    // the retry would look "already handled" and the fatal claim would be
+    // silently suppressed.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn glob_match_provenance_merges_to_the_stronger_claim_in_either_order() {
+        let target = PathBuf::from("/tmp/zfb-provenance/target.ts");
+
+        // Best-effort first, fatal later: the entry must UPGRADE.
+        let mut matches = GlobMatches::default();
+        matches.enqueue(target.clone(), MaterialiseProvenance::BestEffort);
+        assert_eq!(
+            matches.provenance_of(&target),
+            Some(MaterialiseProvenance::BestEffort)
+        );
+        matches.enqueue(target.clone(), MaterialiseProvenance::Fatal);
+        assert_eq!(
+            matches.provenance_of(&target),
+            Some(MaterialiseProvenance::Fatal),
+            "a later fatal enqueue must upgrade an existing best-effort entry"
+        );
+
+        // Fatal first, best-effort later: the entry must NOT be weakened.
+        let mut matches = GlobMatches::default();
+        matches.enqueue(target.clone(), MaterialiseProvenance::Fatal);
+        matches.enqueue(target.clone(), MaterialiseProvenance::BestEffort);
+        assert_eq!(
+            matches.provenance_of(&target),
+            Some(MaterialiseProvenance::Fatal),
+            "a best-effort enqueue must never downgrade an existing fatal entry"
+        );
+    }
+
+    #[test]
+    fn materialise_provenance_defaults_to_fatal_for_every_unmarked_source() {
+        assert_eq!(
+            MaterialiseProvenance::default(),
+            MaterialiseProvenance::Fatal,
+            "the type-level default must be the SAFE one — a call site that opts into \
+             nothing keeps #1724's hard-error guarantee"
+        );
+
+        let queue = GlobMatchQueue::default();
+        let unmarked = PathBuf::from("/tmp/zfb-provenance/unmarked.ts");
+        assert_eq!(
+            queue.provenance_for_source(&unmarked, &unmarked),
+            MaterialiseProvenance::Fatal,
+            "a source neither enrolled best-effort nor queued at all is fatal"
+        );
+
+        // The queue's provenance-less `insert` seam is fail-safe too.
+        let mut matches = GlobMatches::default();
+        matches.insert(unmarked.clone());
+        assert_eq!(
+            matches.provenance_of(&unmarked),
+            Some(MaterialiseProvenance::Fatal)
+        );
+
+        // Marking the source flips it, and ONLY it.
+        let marked = PathBuf::from("/tmp/zfb-provenance/marked.ts");
+        queue.mark_best_effort_source(marked.clone());
+        assert_eq!(
+            queue.provenance_for_source(&marked, &marked),
+            MaterialiseProvenance::BestEffort
+        );
+        assert_eq!(
+            queue.provenance_for_source(&unmarked, &unmarked),
+            MaterialiseProvenance::Fatal
+        );
+
+        // Lattice consistency: a source that is BOTH mirror-enrolled and
+        // queued by a reached path propagates the STRONGER claim. The
+        // enrolment mark must not downgrade it — the queue entry is already
+        // the join of every enqueuer, and `entry.max(BestEffort) == entry`.
+        queue
+            .borrow_mut()
+            .enqueue(marked.clone(), MaterialiseProvenance::Fatal);
+        assert_eq!(
+            queue.provenance_for_source(&marked, &marked),
+            MaterialiseProvenance::Fatal,
+            "a best-effort enrolment mark must never downgrade a fatally-queued source"
+        );
+    }
+
+    /// The queue records GLOB-TARGET ENQUEUES ONLY, so a `BestEffort` entry is
+    /// NOT evidence that the wholesale mirror is a file's only claim — being
+    /// reached by an ordinary import edge is not an enqueue and contributes
+    /// nothing to that join.
+    ///
+    /// Traced scenario: mirror source `M` is best-effort-marked; `M`'s glob
+    /// matches `F`; `F` is ALSO reached by a real import edge (so it is in
+    /// `plugin_preprocessing_files` outside the mirror enrolment, i.e.
+    /// `mark_reached_sources`); `F`'s own glob then matches `G`. Before the
+    /// explicit reached claim existed, `F` read back `BestEffort` from the
+    /// queue and `G` inherited it, so a materialisation failure for `G`
+    /// warned-and-continued instead of failing the build — a fail-open path
+    /// that did not exist before the provenance lattice.
+    #[test]
+    fn an_explicitly_reached_source_propagates_fatal_despite_a_best_effort_queue_entry() {
+        let mirror = PathBuf::from("/tmp/zfb-provenance/ws/lib/shared/M.ts");
+        let reached = PathBuf::from("/tmp/zfb-provenance/ws/lib/shared/F.ts");
+
+        // Control: with ONLY the mirror's glob enqueue, `F` is best-effort —
+        // the wholesale mirror genuinely is its only claim.
+        let control = GlobMatchQueue::default();
+        control.mark_best_effort_source(mirror.clone());
+        // Hoisted: `borrow_mut()` as a receiver outlives the argument
+        // expression, so an inline `provenance_for_source` call would
+        // re-borrow the same `RefCell`.
+        let from_mirror = control.provenance_for_source(&mirror, &mirror);
+        control.borrow_mut().enqueue(reached.clone(), from_mirror);
+        assert_eq!(
+            control.provenance_for_source(&reached, &reached),
+            MaterialiseProvenance::BestEffort,
+            "a file claimed only by a best-effort mirror source's glob stays best-effort"
+        );
+
+        // The scenario: the SAME queue state, plus the explicit reached claim
+        // an ordinary import edge records. `G` must now inherit `Fatal`.
+        let queue = GlobMatchQueue::default();
+        queue.mark_best_effort_source(mirror.clone());
+        let from_mirror = queue.provenance_for_source(&mirror, &mirror);
+        queue.borrow_mut().enqueue(reached.clone(), from_mirror);
+        queue.mark_reached_sources([reached.clone()]);
+        assert_eq!(
+            queue.provenance_for_source(&reached, &reached),
+            MaterialiseProvenance::Fatal,
+            "a real import edge reaches this file, so its own glob matches must be \
+             fatal — the queue entry only records that a mirror source also \
+             glob-matched it"
+        );
+
+        // ...and that is what `G` actually receives when `F` materialises.
+        let g = PathBuf::from("/tmp/zfb-provenance/ws/lib/shared/G.ts");
+        let propagated = queue.provenance_for_source(&reached, &reached);
+        queue.borrow_mut().enqueue(g.clone(), propagated);
+        assert_eq!(
+            queue.provenance_for_source(&g, &g),
+            MaterialiseProvenance::Fatal,
+            "a materialisation failure for a transitively-globbed target of a \
+             genuinely-reached file must fail the build, not warn and continue"
+        );
+
+        // The reached claim is scoped to the file that carries it: the mirror
+        // source itself is untouched and stays best-effort.
+        assert_eq!(
+            queue.provenance_for_source(&mirror, &mirror),
+            MaterialiseProvenance::BestEffort
+        );
+    }
+
+    /// Fixture for the two upgrade-and-retry tests below. `a-broken.ts`
+    /// carries the unparseable module-worker shape that makes
+    /// `materialise_source_file` reject it; `z-fatal-host.ts` glob-matches
+    /// it. The `a-` / `z-` prefixes are load-bearing: the drain queue is
+    /// path-ordered, so `a-broken.ts` is processed (and fails) BEFORE
+    /// `z-fatal-host.ts` gets a chance to re-enqueue it at fatal — which is
+    /// exactly the "best-effort first, fatal later" ordering under test.
+    fn write_provenance_retry_fixture(ws: &Path) -> (PathBuf, PathBuf) {
+        fs::create_dir_all(ws.join("other-lib")).unwrap();
+        let broken = ws.join("other-lib/a-broken.ts");
+        fs::write(
+            &broken,
+            "const broken = ;\nnew Worker(new URL('./a.worker.ts', import.meta.url));\n",
+        )
+        .unwrap();
+        let fatal_host = ws.join("other-lib/z-fatal-host.ts");
+        fs::write(
+            &fatal_host,
+            "export const mods = import.meta.glob('./a-*.ts', { eager: true });\n",
+        )
+        .unwrap();
+        (broken, fatal_host)
+    }
+
+    #[test]
+    fn best_effort_glob_match_failure_alone_is_skipped_and_the_drain_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+        let (broken, _fatal_host) = write_provenance_retry_fixture(ws);
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        ctx.glob_matched_files
+            .borrow_mut()
+            .enqueue(broken.clone(), MaterialiseProvenance::BestEffort);
+
+        stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None).expect(
+            "a best-effort match's own broken macro must warn-and-skip, never fail the build",
+        );
+        assert!(
+            !work.join("other-lib/a-broken.ts").exists(),
+            "the rejected best-effort match must not have been staged"
+        );
+    }
+
+    #[test]
+    fn best_effort_glob_match_that_fails_is_retried_and_fatal_once_a_reached_path_claims_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path();
+        let project = ws.join("app");
+        fs::create_dir_all(&project).unwrap();
+        let (broken, fatal_host) = write_provenance_retry_fixture(ws);
+
+        let out = tempfile::tempdir().unwrap();
+        let work = out.path().join("work");
+        let shadow = work.join("app");
+        fs::create_dir_all(&shadow).unwrap();
+
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(&project, &exclude);
+        {
+            let mut queue = ctx.glob_matched_files.borrow_mut();
+            // Round 1 drains `a-broken.ts` first (path order) and skips it
+            // best-effort; `z-fatal-host.ts` is staged next and its own glob
+            // re-enqueues `a-broken.ts` — this time at FATAL.
+            queue.enqueue(broken.clone(), MaterialiseProvenance::BestEffort);
+            queue.enqueue(fatal_host.clone(), MaterialiseProvenance::Fatal);
+        }
+
+        let error = stage_glob_matched_files_to_fixed_point(
+            &ctx, &project, ws, &shadow, &work, None,
+        )
+        .expect_err(
+            "the fatal upgrade must RE-DRIVE the already-failed-and-skipped best-effort target \
+             instead of leaving it suppressed as 'already staged'",
+        );
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("a-broken.ts"),
+            "the retry's failure must name the upgraded target: {error}"
+        );
+
+        assert_eq!(
+            ctx.glob_matched_files.borrow().provenance_of(&broken),
+            Some(MaterialiseProvenance::Fatal),
+            "the queue entry itself must have merged to the stronger provenance"
+        );
+        assert!(
+            work.join("other-lib/z-fatal-host.ts").exists(),
+            "the reached host that triggered the upgrade must still have been staged"
         );
     }
 
@@ -19540,7 +20964,7 @@ mod tests {
             bundle_exclude: exclude,
             project_root,
             writer: leaked_passthrough_writer(),
-            glob_matched_files: RefCell::new(BTreeSet::new()),
+            glob_matched_files: GlobMatchQueue::default(),
             raw_import_edges: RefCell::new(BTreeSet::new()),
             raw_import_aliases: RawImportAliasContext::empty(),
             module_worker_dependencies: RefCell::new(BTreeSet::new()),

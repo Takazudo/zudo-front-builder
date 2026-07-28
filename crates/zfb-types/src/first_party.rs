@@ -8,6 +8,7 @@
 //! `project_root` itself) whose `pnpm-workspace.yaml` actually **claims**
 //! the project as a member; without one, the boundary stays `project_root`.
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use crate::normalize_path_lexical;
@@ -292,6 +293,98 @@ fn glob_segment_matches(pattern: &str, segment: &str) -> bool {
     }
 }
 
+/// Every workspace member claimed by `workspace_root`'s `pnpm-workspace.yaml`,
+/// keyed by each member's own **declared** `package.json` `name`.
+///
+/// Added for the stage-escape audit-eligibility predicate's declared-identity
+/// recognition of a REAL (non-symlink) staged package copy (issue #2087) —
+/// see [`crate::audit_eligibility::stage_escape_audit_eligibility`]. Kept
+/// general enough for epic #2078's Sub 10a (the enrolment-selection contract)
+/// to reuse: the roster this returns is "every package the workspace
+/// declares", independent of any single bundle session's reachability.
+///
+/// This reads only declared data — `pnpm-workspace.yaml`'s `packages:` globs
+/// and each claimed directory's own `package.json` — and does no filesystem
+/// resolution beyond that:
+///
+/// - **Negations** (`!pattern`) in `packages:` are respected, via the same
+///   later-pattern-wins semantics [`workspace_claims_member`] already uses.
+/// - **Symlinks are never followed.** A symlinked directory is skipped
+///   outright — not descended into, and not itself counted as a member — so
+///   this can never be tricked into treating a link as a declared identity.
+/// - **`node_modules` is never traversed into**, at any depth (nor is
+///   `.git`, a pure-overhead VCS directory this same module already treats
+///   as a boundary marker elsewhere).
+/// - A directory without a `package.json`, or with one that fails to parse
+///   or carries no string `name`, is **skipped**, not treated as an error.
+/// - **Duplicate declared names are resolved deterministically**: candidate
+///   directories are sorted lexically before matching, and the first
+///   (lexically smallest path) to declare a given name wins; a later
+///   duplicate is silently dropped rather than overwriting it.
+pub fn claimed_workspace_member_names(workspace_root: &Path) -> BTreeMap<String, PathBuf> {
+    let workspace_root = normalize_path_lexical(workspace_root);
+    let mut by_name = BTreeMap::new();
+    let Ok(yaml) = std::fs::read_to_string(workspace_root.join("pnpm-workspace.yaml")) else {
+        return by_name;
+    };
+    let globs = workspace_package_globs(&yaml);
+    if globs.is_empty() {
+        return by_name;
+    }
+
+    let mut candidates = Vec::new();
+    collect_workspace_dirs(&workspace_root, &mut candidates);
+    candidates.sort();
+
+    for dir in candidates {
+        if !workspace_claims_member(&globs, &dir, &workspace_root) {
+            continue;
+        }
+        let Ok(manifest) = std::fs::read_to_string(dir.join("package.json")) else {
+            continue;
+        };
+        let Some(name) = package_json_name(&manifest) else {
+            continue;
+        };
+        by_name.entry(name).or_insert(dir);
+    }
+    by_name
+}
+
+/// Recursively collect every real (non-symlink) directory under `dir`,
+/// including `dir` itself. Never descends into a directory literally named
+/// `node_modules` or `.git`, and never follows a symlinked directory (it is
+/// skipped, not counted and not descended into).
+fn collect_workspace_dirs(dir: &Path, out: &mut Vec<PathBuf>) {
+    out.push(dir.to_path_buf());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        if name == "node_modules" || name == ".git" {
+            continue;
+        }
+        collect_workspace_dirs(&path, out);
+    }
+}
+
+/// Extract a `package.json`'s top-level `name` string field without any
+/// broader schema assumption. A parse failure, or a missing/non-string
+/// `name`, yields `None` — declared data only, fails closed rather than
+/// guessing.
+pub(crate) fn package_json_name(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    value.get("name")?.as_str().map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +599,153 @@ mod tests {
             first_party_root_for(&project),
             normalize_path_lexical(&inner)
         );
+    }
+
+    // ── claimed_workspace_member_names (issue #2087) ──────────────────────
+
+    #[test]
+    fn claimed_member_names_reads_declared_names_of_claimed_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages: ['.', 'packages/*']\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"host"}"#).unwrap();
+        std::fs::create_dir_all(root.join("packages/ui")).unwrap();
+        std::fs::write(
+            root.join("packages/ui/package.json"),
+            r#"{"name":"@scope/ui"}"#,
+        )
+        .unwrap();
+
+        let members = claimed_workspace_member_names(&root);
+        assert_eq!(members.get("host"), Some(&root));
+        assert_eq!(members.get("@scope/ui"), Some(&root.join("packages/ui")));
+        assert_eq!(members.len(), 2);
+    }
+
+    #[test]
+    fn claimed_member_names_never_follows_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages: ['packages/*']\n",
+        )
+        .unwrap();
+        let real_pkg = dir.path().join("elsewhere/real-ui");
+        std::fs::create_dir_all(&real_pkg).unwrap();
+        std::fs::write(real_pkg.join("package.json"), r#"{"name":"@scope/ui"}"#).unwrap();
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_pkg, root.join("packages/ui")).unwrap();
+
+        // The symlinked "member" must not be picked up even though its
+        // target declares a name that would otherwise match a claimed slot.
+        #[cfg(unix)]
+        assert!(!claimed_workspace_member_names(&root).contains_key("@scope/ui"));
+    }
+
+    #[test]
+    fn claimed_member_names_never_traverses_into_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("pnpm-workspace.yaml"), "packages: ['**']\n").unwrap();
+        // A nested package.json inside node_modules would otherwise match
+        // the wildcard `**` glob; it must never even be visited.
+        std::fs::create_dir_all(root.join("node_modules/sneaky")).unwrap();
+        std::fs::write(
+            root.join("node_modules/sneaky/package.json"),
+            r#"{"name":"sneaky"}"#,
+        )
+        .unwrap();
+
+        assert!(!claimed_workspace_member_names(&root).contains_key("sneaky"));
+    }
+
+    #[test]
+    fn claimed_member_names_skips_malformed_or_missing_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages: ['packages/*']\n",
+        )
+        .unwrap();
+        // Malformed JSON.
+        std::fs::create_dir_all(root.join("packages/broken")).unwrap();
+        std::fs::write(root.join("packages/broken/package.json"), "{ not json").unwrap();
+        // Missing package.json entirely.
+        std::fs::create_dir_all(root.join("packages/no-manifest")).unwrap();
+        // Valid sibling, to prove the malformed/missing entries don't abort
+        // enumeration of the rest.
+        std::fs::create_dir_all(root.join("packages/ok")).unwrap();
+        std::fs::write(root.join("packages/ok/package.json"), r#"{"name":"ok"}"#).unwrap();
+
+        let members = claimed_workspace_member_names(&root);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members.get("ok"), Some(&root.join("packages/ok")));
+    }
+
+    #[test]
+    fn claimed_member_names_resolves_duplicate_declared_names_deterministically() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages: ['packages/*']\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("packages/a-first")).unwrap();
+        std::fs::write(
+            root.join("packages/a-first/package.json"),
+            r#"{"name":"dup"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("packages/z-second")).unwrap();
+        std::fs::write(
+            root.join("packages/z-second/package.json"),
+            r#"{"name":"dup"}"#,
+        )
+        .unwrap();
+
+        // Deterministic: the lexically-first directory path wins.
+        let members = claimed_workspace_member_names(&root);
+        assert_eq!(members.get("dup"), Some(&root.join("packages/a-first")));
+    }
+
+    #[test]
+    fn claimed_member_names_respects_negations() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'apps/**'\n  - '!apps/legacy'\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("apps/legacy")).unwrap();
+        std::fs::write(
+            root.join("apps/legacy/package.json"),
+            r#"{"name":"legacy"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("apps/current")).unwrap();
+        std::fs::write(
+            root.join("apps/current/package.json"),
+            r#"{"name":"current"}"#,
+        )
+        .unwrap();
+
+        let members = claimed_workspace_member_names(&root);
+        assert!(!members.contains_key("legacy"));
+        assert_eq!(members.get("current"), Some(&root.join("apps/current")));
     }
 }
