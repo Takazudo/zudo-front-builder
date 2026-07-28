@@ -216,7 +216,7 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 20
+      # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 23
       # `#[ignore]`d tests (tagged `env-gate:` per CLAUDE.md's taxonomy) were
       # staged by the assert step above but never actually executed by any CI
       # step — `cargo test --workspace` below does not pass `--ignored`, so a
@@ -226,7 +226,12 @@ jobs:
       # `cargo test` runs each test binary with its CWD set to the package
       # directory (`crates/zfb-islands`), not the workspace root, so the
       # relative default never resolves.
-      # --tests scopes this to integration-test binaries only (where the 20
+      # (This count was re-measured, not incremented, during issue #2111 —
+      # it had already drifted stale to 21 by the time that issue started,
+      # before either of its own 2 additions: `grep -rn '#\[ignore = "'
+      # crates/zfb-islands/ | grep -v ':[0-9]*: *//' | wc -l` is the
+      # authoritative recount.)
+      # --tests scopes this to integration-test binaries only (where the 23
       # target tests live, in tests/integration.rs) — the unscoped `-p
       # zfb-islands` form also compiles+runs the crate's doctests, and 3 of
       # those are pre-existing broken/illustrative examples never meant to

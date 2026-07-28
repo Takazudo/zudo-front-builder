@@ -5827,11 +5827,18 @@ fn stage_glob_matched_files_to_fixed_point(
 /// never overwrite one of these with a user file of the same name (the
 /// generated file wins; the user file is skipped with a debug note).
 fn is_reserved_shadow_root_name(name: &str) -> bool {
+    // The `.zfb-virtual-*.mjs` check here shares
+    // `zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX` rather than its own
+    // literal (issue #2108): `build_resolver_inputs` is called here with
+    // `shadow` as `working_dir` (see the call site around
+    // `zfb_plugin_resolver::build_resolver_inputs(...)` below), so this is
+    // the exact same in-shadow-root class the shared const documents, not a
+    // different directory or purpose.
     name == SHADOW_TSCONFIG_FILENAME
         || name == SHADOW_ENTRY_FILENAME
         || name == SHADOW_HYDRATE_FILENAME
         || name == ".zfb-metafile.json"
-        || name.starts_with(".zfb-virtual-")
+        || name.starts_with(zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX)
 }
 
 /// Stage the project-root LOOSE FILES into the shadow root (issue #1692) — the
