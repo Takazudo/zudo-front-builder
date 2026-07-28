@@ -934,14 +934,14 @@ fn build_job_resolver_inputs(
     // `.zfb-client-script-tsconfig-*.json` class to look for.
     let tmp = if working_dir.is_dir() {
         tempfile::Builder::new()
-            .prefix(".zfb-worker-tsconfig-")
-            .suffix(".json")
+            .prefix(WORKER_TSCONFIG_PREFIX)
+            .suffix(TSCONFIG_TEMP_SUFFIX)
             .tempfile_in(working_dir)
             .context("failed to allocate module-worker tsconfig inside working_dir")?
     } else {
         tempfile::Builder::new()
             .prefix("zfb-worker-tsconfig-")
-            .suffix(".json")
+            .suffix(TSCONFIG_TEMP_SUFFIX)
             .tempfile()
             .context("failed to allocate module-worker tsconfig")?
     };
@@ -1018,22 +1018,24 @@ impl EsbuildSubprocessBundler {
         &self.config
     }
 
-    /// Reap `.zfb-esbuild-entry-*.tsx` files stranded in this project by an
-    /// earlier zfb process that died without unwinding (issue #1970 / #1976)
-    /// — see [`sweep_orphaned_in_project_entries`].
+    /// Reap every recognized in-project `.zfb-*` temp-file class
+    /// ([`IN_PROJECT_TEMP_CLASSES`]) stranded in this project by an earlier
+    /// zfb process that died without unwinding (issue #1970 / #1976, later
+    /// generalized to the tsconfig + virtual-module classes by issue #2109)
+    /// — see [`sweep_orphaned_in_project_temp_files`].
     ///
     /// Called ONCE per build, at the [`ClientBundler::bundle`] /
-    /// [`Self::bundle_per_island`] lifecycle boundary and strictly BEFORE the
-    /// first entry is allocated. It deliberately does not live in
-    /// [`Self::bundle_one_entry`], which runs once per island plus the runtime
-    /// pass: there, every sweep after the first is a full `read_dir` of the
-    /// project root that can only be a no-op, repeated on every `zfb dev`
-    /// rebuild.
+    /// [`Self::bundle_per_island`] / [`Self::bundle_client_script_file_with_workers`]
+    /// lifecycle boundary and strictly BEFORE the first entry is allocated. It
+    /// deliberately does not live in [`Self::bundle_one_entry`], which runs
+    /// once per island plus the runtime pass: there, every sweep after the
+    /// first is a full `read_dir` of the project root that can only be a
+    /// no-op, repeated on every `zfb dev` rebuild.
     fn sweep_stranded_entries(&self) {
         if self.config.mock_subprocess || !self.config.working_dir.is_dir() {
             return;
         }
-        sweep_orphaned_in_project_entries(&self.config.working_dir);
+        sweep_orphaned_in_project_temp_files(&self.config.working_dir);
     }
 
     /// Internal: produce the JS payload for the given islands. Split out so
@@ -1665,37 +1667,82 @@ const IN_PROJECT_ENTRY_SUFFIX: &str = ".tsx";
 /// instead of forever.
 const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-/// Delete `.zfb-esbuild-entry-*.tsx` files left in `working_dir` by an
-/// earlier zfb process that terminated without unwinding (issue #1970,
-/// fixed in #1976).
+/// Filename prefix of the synthetic per-job islands tsconfig
+/// [`build_plugin_tsconfig`] writes when called with `label = "islands"` —
+/// the crate's only call site for that function. Mirrors that function's own
+/// `format!(".zfb-{label}-tsconfig-")`; kept as a literal constant (rather
+/// than derived from the label at compile time) because that call site is
+/// the sole producer, and the pairing is pinned by
+/// `islands_tsconfig_is_locked_so_a_concurrent_exclusive_lock_attempt_fails_while_owned`,
+/// which asserts the produced filename actually starts with this prefix.
+const ISLANDS_TSCONFIG_PREFIX: &str = ".zfb-islands-tsconfig-";
+
+/// Filename prefix of the synthetic per-job tsconfig
+/// [`build_job_resolver_inputs`] writes for both module-worker and
+/// client-script entries (there is no separate client-script class — see
+/// that function's own comment).
+const WORKER_TSCONFIG_PREFIX: &str = ".zfb-worker-tsconfig-";
+
+/// Suffix shared by both synthetic tsconfig classes above.
+const TSCONFIG_TEMP_SUFFIX: &str = ".json";
+
+/// Every in-project `.zfb-*` temp-file class the sweep recognizes, as
+/// `(prefix, suffix)` pairs. Each class is allocated **inside `working_dir`**
+/// (the real project root — `zfb-islands` never shadow-copies the project,
+/// see the note on [`redact_temp_path`]) and locked with a *shared* `flock`
+/// by its producer, so the age+lock contract documented on
+/// [`sweep_orphaned_in_project_temp_files`] applies uniformly to all four:
 ///
-/// **Why this is needed at all.** The entry is a `tempfile::NamedTempFile`
-/// whose `Drop` removes it, and `bundle_one_entry` is synchronous with a
+/// - the synthesized esbuild entry ([`allocate_locked_entry_tmp`])
+/// - the islands-entry synthetic tsconfig ([`build_plugin_tsconfig`])
+/// - the worker/client-script synthetic tsconfig ([`build_job_resolver_inputs`])
+/// - the virtual-module materialization (`zfb_plugin_resolver::build_resolver_inputs`,
+///   locked by that crate — its shadow-side counterpart in `zfb-build`'s SSR
+///   bundler is a different producer writing into a different, already
+///   separately-swept `TempDir`, and stays out of this table)
+const IN_PROJECT_TEMP_CLASSES: &[(&str, &str)] = &[
+    (IN_PROJECT_ENTRY_PREFIX, IN_PROJECT_ENTRY_SUFFIX),
+    (ISLANDS_TSCONFIG_PREFIX, TSCONFIG_TEMP_SUFFIX),
+    (WORKER_TSCONFIG_PREFIX, TSCONFIG_TEMP_SUFFIX),
+    (
+        zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_PREFIX,
+        zfb_plugin_resolver::VIRTUAL_MODULE_TEMP_SUFFIX,
+    ),
+];
+
+/// Delete every recognized in-project `.zfb-*` temp-file class
+/// ([`IN_PROJECT_TEMP_CLASSES`]) left in `working_dir` by an earlier zfb
+/// process that terminated without unwinding (issue #1970 / #1976 for the
+/// original entry-only class; generalized to the other three classes by
+/// issue #2109).
+///
+/// **Why this is needed at all.** Every class here is a `tempfile::NamedTempFile`
+/// whose `Drop` removes it, and every producer is synchronous with a
 /// locally-owned handle, so the success path *and* every `?` error path
 /// already clean up (proved by `working_dir_is_clean_after_multi_entry_bundle`
 /// in `tests/integration.rs`). What `Drop` cannot cover is termination that
 /// never unwinds the stack: a `SIGTERM`/`SIGKILL`ed `zfb dev` session or an
-/// interrupted `zfb build` strands the entry beside the project, and until
-/// this sweep nothing ever removed it. Because the file is not covered by any
-/// `.gitignore`, it then surfaces as an untracked file in `git status` after
-/// the *next*, entirely successful build — which is exactly how #1970 was
-/// reported (two entries present, only the live build's own one removed).
+/// interrupted `zfb build` strands the file beside the project, and until
+/// this sweep nothing ever removed it. Because none of these files is covered
+/// by any `.gitignore`, one then surfaces as an untracked file in `git status`
+/// after the *next*, entirely successful build — which is exactly how #1970
+/// was reported (two entries present, only the live build's own one removed).
 ///
 /// **A candidate must clear two independent liveness checks**, and either one
 /// alone is enough to spare it:
 ///
-/// 1. Its mtime must be older than [`ORPHANED_ENTRY_GRACE`]. The entry is
-///    written once and then only read, so a live entry's mtime is at most the
-///    duration of one `bundle_one_entry` call.
-/// 2. An **exclusive** lock on it must be available. Every live
-///    `bundle_one_entry` holds a *shared* lock on its own entry until it
-///    returns, so a candidate we can lock exclusively is provably unowned.
-///    This covers what age cannot: a bundling process suspended or stuck
-///    inside a single esbuild invocation for longer than the grace period
-///    still holds its lock and is left alone.
+/// 1. Its mtime must be older than [`ORPHANED_ENTRY_GRACE`]. Every class here
+///    is written once and then only read, so a live file's mtime is at most
+///    the duration of one esbuild invocation.
+/// 2. An **exclusive** lock on it must be available. Every producer holds a
+///    *shared* lock on its own file until it returns, so a candidate we can
+///    lock exclusively is provably unowned. This covers what age cannot: a
+///    bundling process suspended or stuck inside a single esbuild invocation
+///    for longer than the grace period still holds its lock and is left
+///    alone.
 ///
 /// The lock is shared rather than exclusive on the owner's side because
-/// esbuild has to read the entry, and on Windows an exclusive lock would deny
+/// esbuild has to read the file, and on Windows an exclusive lock would deny
 /// it that read. Locks also survive nothing: the OS releases them when the
 /// owning process dies, which is precisely the case this sweep handles.
 ///
@@ -1723,7 +1770,7 @@ const ORPHANED_ENTRY_GRACE: std::time::Duration = std::time::Duration::from_secs
 ///
 /// The lock lets a concurrent process's sweep prove the entry is still live
 /// rather than inferring it from age alone (see
-/// [`sweep_orphaned_in_project_entries`]). It is *shared*, not exclusive:
+/// [`sweep_orphaned_in_project_temp_files`]). It is *shared*, not exclusive:
 /// esbuild only reads the entry, and on Windows an exclusive lock would deny
 /// it that read. It is released when the returned handle drops — including
 /// when the OS closes the handle for a process that never unwinds, which is
@@ -1752,7 +1799,7 @@ fn allocate_locked_entry_tmp(
     Ok(entry_tmp)
 }
 
-fn sweep_orphaned_in_project_entries(working_dir: &Path) {
+fn sweep_orphaned_in_project_temp_files(working_dir: &Path) {
     let Ok(dir) = std::fs::read_dir(working_dir) else {
         return;
     };
@@ -1762,7 +1809,10 @@ fn sweep_orphaned_in_project_entries(working_dir: &Path) {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !name.starts_with(IN_PROJECT_ENTRY_PREFIX) || !name.ends_with(IN_PROJECT_ENTRY_SUFFIX) {
+        let matches_a_recognized_class = IN_PROJECT_TEMP_CLASSES
+            .iter()
+            .any(|(prefix, suffix)| name.starts_with(prefix) && name.ends_with(suffix));
+        if !matches_a_recognized_class {
             continue;
         }
         let Ok(metadata) = dirent.metadata() else {
@@ -3057,6 +3107,13 @@ impl EsbuildSubprocessBundler {
 
     /// Bundle one client-script entry and all of its discovered module-worker
     /// entries into an in-memory entry plus strict contract-named companions.
+    ///
+    /// Sweeps stranded in-project temp files first (issue #2109), matching
+    /// [`ClientBundler::bundle`] and [`Self::bundle_per_island`] — otherwise a
+    /// client-script-only project (one that never runs an islands build)
+    /// would accumulate its own worker-tsconfig/virtual-module strays
+    /// indefinitely, only reaped whenever an unrelated islands build happens
+    /// to run.
     pub fn bundle_client_script_file_with_workers(
         &self,
         entry_name: &str,
@@ -3064,6 +3121,8 @@ impl EsbuildSubprocessBundler {
         workers: &[ClientScriptWorkerEntry],
         config: &BundleConfig,
     ) -> Result<ClientScriptBundleOutput> {
+        self.sweep_stranded_entries();
+
         let workers = validate_client_script_worker_entries(entry_name, workers)?;
         if self.config.mock_subprocess {
             let js = if !self.config.mock_output.is_empty() {
@@ -3227,7 +3286,7 @@ mod tests {
             ".zfb-esbuild-entry-plnMVZ.tsx",
             ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60),
         );
-        sweep_orphaned_in_project_entries(dir.path());
+        sweep_orphaned_in_project_temp_files(dir.path());
         assert!(
             !orphan.exists(),
             "an entry older than the grace period must be swept"
@@ -3245,7 +3304,7 @@ mod tests {
             ".zfb-esbuild-entry-trVVbc.tsx",
             std::time::Duration::from_secs(5),
         );
-        sweep_orphaned_in_project_entries(dir.path());
+        sweep_orphaned_in_project_temp_files(dir.path());
         assert!(
             live.exists(),
             "an entry inside the grace period must be left alone"
@@ -3271,7 +3330,7 @@ mod tests {
             .unwrap();
         owner.lock_shared().expect("take the owner's shared lock");
 
-        sweep_orphaned_in_project_entries(dir.path());
+        sweep_orphaned_in_project_temp_files(dir.path());
         assert!(
             owned.exists(),
             "an entry still locked by its owner must be spared however old it is"
@@ -3280,10 +3339,231 @@ mod tests {
         // Once the owner releases it — as the OS does for a process that dies
         // without unwinding — the next sweep reaps it.
         drop(owner);
-        sweep_orphaned_in_project_entries(dir.path());
+        sweep_orphaned_in_project_temp_files(dir.path());
         assert!(
             !owned.exists(),
             "an unlocked, past-grace entry must be swept"
+        );
+    }
+
+    // --- Per-class tests for the three classes joined by issue #2109 -------
+    //
+    // Each class below mirrors the three entry-class tests just above, ONE
+    // exception: only the stale+unlocked "reaped" case is genuinely
+    // RED-before/GREEN-after this sub's generalization (verified by running
+    // each on the pre-generalization `sweep_orphaned_in_project_entries`,
+    // which only recognized the entry class, and observing the expected
+    // failure, then again after widening `IN_PROJECT_TEMP_CLASSES` and
+    // observing the pass). The recent-spared and locked-spared cases are NOT
+    // naturally red the same way: before generalization an unrecognized class
+    // is skipped unconditionally, so those two assertions already "pass" —
+    // for the wrong reason (never matched at all, not "matched but
+    // protected"). Each is instead verified REVERT-PROOF by hand: temporarily
+    // stubbing out the specific safety gate it exercises (the
+    // `age >= ORPHANED_ENTRY_GRACE` check for the recent case, the
+    // `try_lock()` check for the locked case) — while leaving the class
+    // recognized — reproduces an INCORRECT sweep of that file, proving the
+    // real gate is what the passing assertion depends on rather than the
+    // class simply never matching.
+
+    #[test]
+    fn islands_tsconfig_sweep_removes_orphan_stranded_by_a_dead_process() {
+        // Genuinely red before #2109's generalization: `.zfb-islands-tsconfig-*.json`
+        // was not in `IN_PROJECT_TEMP_CLASSES`, so this file was never matched and
+        // survived regardless of age.
+        let dir = tempfile::tempdir().unwrap();
+        let orphan = write_entry_aged(
+            dir.path(),
+            ".zfb-islands-tsconfig-plnMVZ.json",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60),
+        );
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            !orphan.exists(),
+            "an islands-tsconfig file older than the grace period must be swept"
+        );
+    }
+
+    #[test]
+    fn islands_tsconfig_sweep_keeps_a_recent_file_a_concurrent_process_may_still_own() {
+        // Revert-proof: temporarily short-circuiting the sweep's `age >= ORPHANED_ENTRY_GRACE`
+        // check to always report "stale" (while leaving the class recognized) reaps this
+        // recent file — proving the age gate, not "class unmatched", is what spares it.
+        let dir = tempfile::tempdir().unwrap();
+        let live = write_entry_aged(
+            dir.path(),
+            ".zfb-islands-tsconfig-trVVbc.json",
+            std::time::Duration::from_secs(5),
+        );
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            live.exists(),
+            "an islands-tsconfig file inside the grace period must be left alone"
+        );
+    }
+
+    #[test]
+    fn islands_tsconfig_sweep_keeps_a_stale_file_whose_owner_still_holds_it() {
+        // Revert-proof: temporarily short-circuiting the sweep's `try_lock()` check to
+        // always report "lockable" (while leaving the class recognized) reaps this
+        // still-locked file — proving the lock gate, not "class unmatched", is what
+        // spares it.
+        let dir = tempfile::tempdir().unwrap();
+        let owned = write_entry_aged(
+            dir.path(),
+            ".zfb-islands-tsconfig-owned.json",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60 * 60),
+        );
+        let owner = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&owned)
+            .unwrap();
+        owner.lock_shared().expect("take the owner's shared lock");
+
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            owned.exists(),
+            "an islands-tsconfig file still locked by its owner must be spared however old it is"
+        );
+
+        drop(owner);
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            !owned.exists(),
+            "an unlocked, past-grace islands-tsconfig file must be swept"
+        );
+    }
+
+    #[test]
+    fn worker_tsconfig_sweep_removes_orphan_stranded_by_a_dead_process() {
+        // Genuinely red before #2109's generalization: `.zfb-worker-tsconfig-*.json`
+        // was not in `IN_PROJECT_TEMP_CLASSES`, so this file was never matched and
+        // survived regardless of age.
+        let dir = tempfile::tempdir().unwrap();
+        let orphan = write_entry_aged(
+            dir.path(),
+            ".zfb-worker-tsconfig-plnMVZ.json",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60),
+        );
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            !orphan.exists(),
+            "a worker-tsconfig file older than the grace period must be swept"
+        );
+    }
+
+    #[test]
+    fn worker_tsconfig_sweep_keeps_a_recent_file_a_concurrent_process_may_still_own() {
+        // Revert-proof: see the islands-tsconfig sibling above — the same age-gate
+        // stub reaps this recent file, proving the age gate is load-bearing here too.
+        let dir = tempfile::tempdir().unwrap();
+        let live = write_entry_aged(
+            dir.path(),
+            ".zfb-worker-tsconfig-trVVbc.json",
+            std::time::Duration::from_secs(5),
+        );
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            live.exists(),
+            "a worker-tsconfig file inside the grace period must be left alone"
+        );
+    }
+
+    #[test]
+    fn worker_tsconfig_sweep_keeps_a_stale_file_whose_owner_still_holds_it() {
+        // Revert-proof: see the islands-tsconfig sibling above — the same lock-gate
+        // stub reaps this still-locked file, proving the lock gate is load-bearing here too.
+        let dir = tempfile::tempdir().unwrap();
+        let owned = write_entry_aged(
+            dir.path(),
+            ".zfb-worker-tsconfig-owned.json",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60 * 60),
+        );
+        let owner = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&owned)
+            .unwrap();
+        owner.lock_shared().expect("take the owner's shared lock");
+
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            owned.exists(),
+            "a worker-tsconfig file still locked by its owner must be spared however old it is"
+        );
+
+        drop(owner);
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            !owned.exists(),
+            "an unlocked, past-grace worker-tsconfig file must be swept"
+        );
+    }
+
+    #[test]
+    fn virtual_module_sweep_removes_orphan_stranded_by_a_dead_process() {
+        // Genuinely red before #2109's generalization: `.zfb-virtual-*.mjs`
+        // was not in `IN_PROJECT_TEMP_CLASSES`, so this file was never matched and
+        // survived regardless of age.
+        let dir = tempfile::tempdir().unwrap();
+        let orphan = write_entry_aged(
+            dir.path(),
+            ".zfb-virtual-plnMVZ.mjs",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60),
+        );
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            !orphan.exists(),
+            "a virtual-module file older than the grace period must be swept"
+        );
+    }
+
+    #[test]
+    fn virtual_module_sweep_keeps_a_recent_file_a_concurrent_process_may_still_own() {
+        // Revert-proof: see the islands-tsconfig sibling above — the same age-gate
+        // stub reaps this recent file, proving the age gate is load-bearing here too.
+        let dir = tempfile::tempdir().unwrap();
+        let live = write_entry_aged(
+            dir.path(),
+            ".zfb-virtual-trVVbc.mjs",
+            std::time::Duration::from_secs(5),
+        );
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            live.exists(),
+            "a virtual-module file inside the grace period must be left alone"
+        );
+    }
+
+    #[test]
+    fn virtual_module_sweep_keeps_a_stale_file_whose_owner_still_holds_it() {
+        // Revert-proof: see the islands-tsconfig sibling above — the same lock-gate
+        // stub reaps this still-locked file, proving the lock gate is load-bearing here too.
+        let dir = tempfile::tempdir().unwrap();
+        let owned = write_entry_aged(
+            dir.path(),
+            ".zfb-virtual-owned.mjs",
+            ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60 * 60),
+        );
+        let owner = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&owned)
+            .unwrap();
+        owner.lock_shared().expect("take the owner's shared lock");
+
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            owned.exists(),
+            "a virtual-module file still locked by its owner must be spared however old it is"
+        );
+
+        drop(owner);
+        sweep_orphaned_in_project_temp_files(dir.path());
+        assert!(
+            !owned.exists(),
+            "an unlocked, past-grace virtual-module file must be swept"
         );
     }
 
@@ -3314,7 +3594,7 @@ mod tests {
             )
             .unwrap();
 
-        sweep_orphaned_in_project_entries(dir.path());
+        sweep_orphaned_in_project_temp_files(dir.path());
 
         assert!(
             path.exists(),
@@ -3376,30 +3656,66 @@ mod tests {
     }
 
     #[test]
-    fn sweep_touches_nothing_but_stale_entry_files() {
+    fn sweep_reaps_all_four_recognized_classes_but_spares_the_shadow_and_unrelated_files() {
+        // Issue #2109 (Temp Sweeper epic #2106): generalizes what used to be
+        // `sweep_touches_nothing_but_stale_entry_files`, which asserted the
+        // three sibling `.zfb-*` classes were "deliberately out of scope" —
+        // that was true only because the sweeper didn't recognize them yet.
+        // Now that the class table covers all four, a stale+unlocked file of
+        // ANY recognized class must be reaped.
         let dir = tempfile::tempdir().unwrap();
         let old = ORPHANED_ENTRY_GRACE + std::time::Duration::from_secs(60);
-        // Same age as the swept orphan above; only the entry naming scheme
-        // may be reaped. The sibling `.zfb-*` temp classes belong to other
-        // owners (`build_plugin_tsconfig`, `zfb_plugin_resolver`) and are
-        // deliberately out of scope here.
-        let kept = [
+
+        let reaped = [
+            write_entry_aged(dir.path(), ".zfb-esbuild-entry-abc.tsx", old),
             write_entry_aged(dir.path(), ".zfb-islands-tsconfig-abc.json", old),
+            write_entry_aged(dir.path(), ".zfb-worker-tsconfig-abc.json", old),
             write_entry_aged(dir.path(), ".zfb-virtual-abc.mjs", old),
-            write_entry_aged(dir.path(), ".zfb-esbuild-entry-abc.json", old),
+        ];
+
+        // Genuinely out of scope, unchanged by the generalization: a name
+        // whose suffix doesn't match any recognized class, an unrelated
+        // project file, and a directory that merely happens to share the
+        // entry class's name shape.
+        let kept = [
+            write_entry_aged(dir.path(), ".zfb-esbuild-entry-abc.json", old), // wrong suffix
             write_entry_aged(dir.path(), "page.tsx", old),
         ];
         let dir_shaped_like_an_entry = dir.path().join(".zfb-esbuild-entry-dir.tsx");
         std::fs::create_dir(&dir_shaped_like_an_entry).unwrap();
 
-        sweep_orphaned_in_project_entries(dir.path());
+        // The shadow-side virtual-module leak (zfb-build's SSR bundler,
+        // `bundler.rs`, passes a `shadow` dir inside its own
+        // `zfb-shadow-session-*` `TempDir`) is a DIFFERENT producer and stays
+        // out of scope per #2108's Part A — it is already covered by a
+        // separate stale-shadow sweep. This sweep is a non-recursive
+        // `read_dir` of `working_dir` alone, so a virtual-module-shaped file
+        // one level down (standing in for that nested shadow root) can never
+        // be reached regardless of naming.
+        let shadow_root = dir.path().join("zfb-shadow-session-stand-in");
+        std::fs::create_dir(&shadow_root).unwrap();
+        let shadow_virtual = write_entry_aged(&shadow_root, ".zfb-virtual-nested.mjs", old);
 
-        for path in kept {
+        sweep_orphaned_in_project_temp_files(dir.path());
+
+        for path in &reaped {
+            assert!(
+                !path.exists(),
+                "a stale, unlocked file of a recognized class must be swept: {}",
+                path.display()
+            );
+        }
+        for path in &kept {
             assert!(path.exists(), "must not sweep {}", path.display());
         }
         assert!(
             dir_shaped_like_an_entry.is_dir(),
             "a directory matching the entry name shape must not be touched"
+        );
+        assert!(
+            shadow_virtual.exists(),
+            "the shadow-side virtual-module class (a separate producer/TempDir, #2108 Part A) \
+             must stay out of this project-root-only sweep's scope"
         );
     }
 
