@@ -299,6 +299,17 @@ pub struct Config {
     /// handing the config to orchestration, so downstream code only sees the
     /// effective boolean.
     ///
+    /// Force-enable semantics: when `markdown.features.link_validation` is
+    /// absent entirely, enabling this force-enables link validation with its
+    /// defaults — a strict flag that silently did nothing on a bare project
+    /// would be a footgun (epic #2112, Decision 1).
+    ///
+    /// Scope: the `link_validation` mechanism only. The separate
+    /// `resolve_markdown_links.on_broken_links` mechanism keeps its own knob
+    /// and is not affected by this field.
+    ///
+    /// Build-only: it does not affect `zfb dev`.
+    ///
     /// Mirrors `ZfbConfig::strictBrokenLinks` in `packages/zfb/src/config.ts`.
     #[serde(default)]
     pub strict_broken_links: bool,

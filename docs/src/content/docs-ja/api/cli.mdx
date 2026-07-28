@@ -104,6 +104,7 @@ zfb dev --host 192.168.1.10 --port 4321
 
 ```sh
 zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
+          [--strict-broken | --no-strict-broken]
 ```
 
 ### フラグ
@@ -113,8 +114,12 @@ zfb build [--outdir <dir>] [--minify-html | --no-minify-html]
 | `--outdir` | path | config / `dist` | プロダクションビルドの出力ディレクトリ。config の `outDir` より優先され、どちらもない場合は `dist` を使います。 |
 | `--minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを有効にします。`minifyHtml: false` または設定の省略より優先されます。 |
 | `--no-minify-html` | boolean flag | config/default | このビルドでプロダクション HTML ミニファイを無効にします。config や preset の `minifyHtml: true` より優先されます。 |
+| `--strict-broken` | boolean flag | config/default | マークダウンのリンク検証が壊れたリンクを見つけたとき、このビルドを失敗させます（非ゼロ終了）。`strictBrokenLinks: false` または設定の省略より優先されます。`linkValidation` の設定がまったくないプロジェクトでは、何もしないのではなく、デフォルト設定でリンク検証を強制的に有効化します。 |
+| `--no-strict-broken` | boolean flag | config/default | このビルドを壊れたリンクで失敗させません。config や preset の `strictBrokenLinks: true` より優先されます。無効にするのはトップレベルの strict オーバーレイだけで、`failOnBroken: true` を明示的に設定した `linkValidation` ブロックは有効なままです。 |
 
 HTML ミニファイは、`minifyHtml: true` を設定するか `--minify-html` を渡さない限りデフォルトでオフです。zfb の Rust 側の後処理パイプライン内で実行され、Node.js のミニファイ subprocess は起動しません。初回バージョンは保守的で、レンダリングされた HTML ページだけを対象候補にし、ソースが `.html` の passthrough ページはそのまま残し、HTML 以外の出力はスキップします。
+
+壊れたリンクによる strict なゲートも同様にデフォルトではオフです。`--strict-broken` と `--no-strict-broken` は排他で、同時に渡すとエラーになります。どちらも `strictBrokenLinks` 設定フィールドより優先され、その設定フィールドがデフォルトの `false` より優先されます。どちらのフラグも `zfb build` にのみ影響します。`zfb dev` が strict オーバーレイを見ることはなく、自分で書いた `linkValidation` 設定どおりのリンク検証の挙動をそのまま保ちます。`resolveMarkdownLinks.onBrokenLinks` との違いを含む挙動の全体は[リンク検証 — strict モード](../markdown-features/link-validation.mdx)を参照してください。
 
 ### 例
 
@@ -123,6 +128,8 @@ zfb build
 zfb build --outdir public
 zfb build --minify-html
 zfb build --no-minify-html
+zfb build --strict-broken
+zfb build --no-strict-broken
 ```
 
 ## `zfb preview`
