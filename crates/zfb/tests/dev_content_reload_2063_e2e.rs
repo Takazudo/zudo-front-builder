@@ -43,9 +43,64 @@
 //! hunt, so the observed SSE sequence is printed either way rather than
 //! only asserted on.
 //!
-//! No permanent test registration (nextest `e2e-heavy` group, CLAUDE.md
-//! manifest row, `#[ignore]` tag, exam.yml wiring) is added here — that
-//! is Wave 5 / sub #2098's job (see epic #2092).
+//! Permanent registration (sub #2098, epic #2092 Wave 5): per
+//! zudo-test-wisdom's mechanical, first-match `#[ignore]` classification
+//! rules, none of the 6 fire here. Rule 1 (`env-gate:` — needs an env var
+//! / external binary the PR runner cannot provide) does NOT apply: every
+//! one of these functions already self-skips via `locate_esbuild()` at
+//! its own top (`let Some(esbuild) = locate_esbuild() else { ...; return; }`),
+//! exactly the convention `wasm_ssr_dev_smoke_e2e` and
+//! `embedded_host_request_time_e2e` use — both of which are documented in
+//! this file's own CLAUDE.md as "NOT `#[ignore]`d — it self-skips at
+//! runtime via `locate_esbuild()`". health.yml's T1 gate always stages a
+//! pinned esbuild, so the runner CAN provide it; the self-skip is a
+//! local-dev convenience only, not a CI blocker. Rule 3 (`heavy:` —
+//! runtime over budget) doesn't fire either: the Level-4 confirm run
+//! (below) measured **92.53s for the full 7-cell matrix** (~13-15s/test
+//! average), well under the per-test budgets other un-ignored real
+//! `zfb dev` e2e tests in this crate already carry (e.g. `dev_serve_e2e`'s
+//! own watchdogs run up to 280s). So **rule 7 applies: no `#[ignore]`,
+//! these run on every T1 gate** like their siblings. The binary IS still
+//! registered in `.config/nextest.toml`'s `[test-groups.e2e-heavy]` — that
+//! registration is about CPU/memory serialization against other real
+//! `zfb dev`/`zfb build` processes, completely orthogonal to `#[ignore]`
+//! status (several other group members, including the two named above,
+//! are un-ignored too). No exam.yml wiring or CLAUDE.md `#[ignore]`
+//! manifest row is needed, since there is nothing to schedule into a
+//! weekly allowed-to-fail lane — these tests already run, and are already
+//! required to pass, on every PR.
+//!
+//! `simulated_provenance_wipe_world_still_populates_pages_stale_and_emits_one_page_event`
+//! below is a plain unit test with no real `zfb dev` boot at all (see its
+//! own header comment) and was never a candidate for any tag.
+//!
+//! ## Revert-proof (sub #2098, per the #2002/#2004 idiom)
+//!
+//! Performed by the manager at Level 4 on this file's FINAL, sharpened
+//! fixture (`c073cd04`), not re-run by this sub — see issue #2097's
+//! closing comment for the full transcript.
+//!
+//! **Seam disabled**: `crates/zfb/src/commands/dev.rs`, the raise inside
+//! `DevRenderInner::restale_dynamic_injected`, changed to
+//! `if false && restaled_any { self.set_dynamic_injected_restaled(); }`.
+//!
+//! **Observed** (both boot modes, identically):
+//!
+//! ```text
+//! observed delivery: [zfb-timing] tick(): kinds=[alpha.mdx:Modified] eager_hint=true fan_out_safe=true
+//! observed SSE event sequence after the content edit: []
+//! panicked: expected at least one `page` SSE event ... observed sequence: []
+//! ```
+//!
+//! i.e. delivery proven, served bytes fresh, **zero SSE events** — the
+//! exact pre-fix #2063 symptom, reproduced in-harness on this epic's own
+//! shipping fixture (not a stubbed/simulated one).
+//!
+//! **Restored**: `git status` clean, `git diff` empty at `c073cd04`, then
+//! the full matrix run: **7 passed, 0 failed** (92.53s) — the two
+//! injected-fixture cells flipped `[]` -> `["page"]`; the other five
+//! (baseline + out-of-root, both boot modes, plus the plain unit test)
+//! were unchanged throughout.
 
 #![cfg(unix)]
 
