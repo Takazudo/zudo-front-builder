@@ -370,11 +370,11 @@ async fn collect_tick_events(
 /// that `restale_dynamic_injected` re-stales without ever pushing to
 /// `tick_stale`, so an SSE event is NOT a trustworthy "the watcher noticed
 /// my edit" signal there — the manager's own manual repro attempt (2026-
-/// 07) mistook an unrelated boot/deferred-publish tick for a
-/// `pkg/home.tsx` edit's own tick for exactly this reason, and confirmed
-/// separately that `pkg/` is not a watch root at all (only `pages/`,
-/// `content/`, `components/`, `layouts/`, `styles/`, `data/`, `src/`
-/// are). This helper instead proves delivery from the SAME tick the
+/// 07) mistook an unrelated boot/deferred-publish tick for the tick of an
+/// edit to a route source under `pkg/`, for exactly this reason, and
+/// confirmed separately that `pkg/` is not a watch root at all (only
+/// `pages/`, `content/`, `components/`, `layouts/`, `styles/`, `data/`,
+/// `src/` are). This helper instead proves delivery from the SAME tick the
 /// content-edit assertion below observes, via a channel (`ZFB_DEV_TIMING`
 /// stderr tracing) that is unaffected by the SSE-dark bug under test.
 async fn wait_for_tick_mentioning(session: &DevSession, filename: &str) -> String {
@@ -952,30 +952,58 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
 // Matrix cell (a)+(c2): dynamic INJECTED route over an out-of-root
 // collection, project has NO `pages/` directory at all.
 //
+// STEP 0 CORRECTION (issue #2097): this cell was a VACUOUS PASS as
+// originally written. Its fixture registered a STATIC injected `/` route
+// purely as the readiness probe, which put `/` into
+// `injected_static_seeds` — and `mark_injected_seeds_stale` pushes to
+// `tick_stale` unconditionally on EVERY route-table swap, so
+// `pages_stale` was non-empty on every full-refresh tick regardless of
+// the content edit. The `["page"]` #2094's matrix observed came from that
+// seed, not from the dynamic injected channel under test. (The tell was
+// in #2094's own output: this cell's header PREDICTED `[]` and OBSERVED
+// `["page"]`, and nobody explained the delta.)
+//
+// The probe route is now GONE entirely, not merely made dynamic. The
+// fixture registers EXACTLY ONE injected route and the readiness probe is
+// that same route (`GET /injected-posts/alpha`). A dynamic probe route
+// would have fixed `injected_static_seeds` but still joined
+// `stale.dynamic_injected` once requested, so a post-fix `page` event
+// would not have been attributable to the route under test alone — a
+// milder instance of the very contamination that produced the vacuous
+// pass. Now both sets contain only the route whose content this cell
+// edits. See `preset.mjs`.
+//
+// With that correction the cell was confirmed RED (both boot modes:
+// `observed SSE event sequence: []`, with the freshness poll passing and
+// the `tick()` delivery line present) BEFORE any production change, and
+// the fix below flipped it green with no assertion touched.
+//
 // RED -> INVERT CONVENTION: this test's assertions are written in DESIRED
 // POST-FIX FORM (assert exactly one `page` event), matching every other
 // cell/baseline test in this file. Per the epic's own world-fact #2 and
 // this fixture's header comment (`preset.mjs` /
-// `pkg/injected-post.tsx`), the PREDICTED result today is ZERO `page`
-// events:
+// `pkg/injected-post.tsx`), the PRE-FIX result was ZERO `page` events:
 //   - the project's whole known-page universe (`routes_by_source`) is
 //     empty (no `pages/` dir at all), so `lazy_render_tick`'s per-page
 //     loop over the `PageSelection::All` fallback (out-of-root edit, no
 //     `external_invalidation` hook configured) finds nothing and
 //     `pages_stale` stays empty;
-//   - `restale_dynamic_injected` (`crates/zfb/src/commands/dev.rs:3899`)
+//   - `restale_dynamic_injected` (`crates/zfb/src/commands/dev.rs`)
 //     re-stales the previously-rendered injected route at the table swap
 //     WITHOUT pushing to `tick_stale` (by its own doc comment), so it
 //     never reaches `BuildOutcome::pages_stale` either;
 //   - `outcome_to_events`'s `Page` gate (`crates/zfb-server/src/livereload.rs`)
-//     therefore never fires, even though the served bytes ARE fresh on
+//     therefore never fired, even though the served bytes ARE fresh on
 //     the next request (confirmed by this test's own freshness poll).
 //
-// If this test fails today with an OBSERVED SEQUENCE OF `[]` (zero
-// events), that is NOT a test bug — it is the epic's target regression.
-// A future wave (#2097, "the fix") should be able to flip this test green
-// WITHOUT touching any assertion below, only implementing the fix epic
-// #2092 Wave 3 (#2096) locks.
+// THE FIX (issue #2097): `restale_dynamic_injected` still performs no
+// `tick_stale` push — that shape is forbidden here, because a non-tick
+// drain can swallow an in-flight tick's marks (the documented
+// `run_and_broadcast` race). Instead it raises a separate sticky
+// `BuildOutcome::dynamic_injected_restaled` bit, drained per tick like
+// `ssr_routes_published` (#1826/#2002) and folded into the SAME single
+// `Page` gate — so this cell now sees exactly one `page` event, and the
+// #958/#1025/#1583 lazy-render narrowing is untouched.
 //
 // DOES NOT use `run_matrix_scenario`/`MatrixFixture`/`confirm_watcher_live`
 // (manager finding, 2026-07): an SSE-based watcher-liveness handshake is
@@ -983,7 +1011,7 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
 // dark for this collection. `pkg/` (the only place this fixture's route
 // sources live) is not a watch root at all (only `pages/`, `content/`,
 // `components/`, `layouts/`, `styles/`, `data/`, `src/` are), so an edit
-// to `pkg/home.tsx` is never observed by the watcher regardless of
+// to anything under `pkg/` is never observed by the watcher regardless of
 // rewrite interval — the manager's manual repro that seemed to show a
 // `page` event ~8s after such an edit was in fact the unrelated boot/
 // deferred-publish tick landing shortly after they subscribed, not a
@@ -1027,37 +1055,39 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
         let base = format!("http://localhost:{port}");
         let client = build_reqwest_client();
 
-        // GET / readiness — inlined rather than via `boot_and_handshake`,
+        // Readiness probe — inlined rather than via `boot_and_handshake`,
         // since this cell deliberately skips `confirm_watcher_live`'s
         // SSE-based liveness handshake entirely (see the header comment
-        // above).
+        // above), and since `boot_and_handshake`'s shared boot loop probes
+        // `GET /`, which this fixture deliberately does not serve.
+        //
+        // Probed at `/injected-posts/alpha` — the route UNDER TEST, not a
+        // dedicated probe route (issue #2097 Step 0). This fixture
+        // registers exactly one injected route, so `injected_static_seeds`
+        // is empty AND `stale.dynamic_injected` can only ever contain the
+        // route whose content the assertion below edits. Any separate probe
+        // route, static or dynamic, would contaminate one of those two sets
+        // — see `preset.mjs`'s header comment.
         let ready_start = Instant::now();
         loop {
             if matches!(
-                client.get(format!("{base}/")).send().await,
+                client.get(format!("{base}/injected-posts/alpha")).send().await,
                 Ok(response) if response.status().as_u16() == 200
             ) {
                 break;
             }
             assert!(
                 ready_start.elapsed() < BOOT_DEADLINE,
-                "[{label}] GET / never answered 200 within {}s after the ready banner.\n{}",
+                "[{label}] GET /injected-posts/alpha never answered 200 within {}s after the \
+                 ready banner.\n{}",
                 BOOT_DEADLINE.as_secs(),
                 session.logs(),
             );
             tokio::time::sleep(POLL_INTERVAL).await;
         }
 
-        poll_until_response_contains(
-            &client,
-            &format!("{base}/"),
-            "INJECTED_ROOT_OK",
-            &format!("[{label}] boot readiness probe (/)"),
-            &session,
-        )
-        .await;
-
         // Confirm the entry's initial content is served before editing it.
+        // This doubles as the readiness marker check — one route, one probe.
         poll_until_response_contains(
             &client,
             &format!("{base}/injected-posts/alpha"),

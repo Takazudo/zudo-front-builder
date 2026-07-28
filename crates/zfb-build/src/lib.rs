@@ -105,10 +105,11 @@ pub use orchestrator::{
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, validate_companion_file_set,
     AssetEmitter, AssetEmitterPayload, AssetKind, AssetPipeline, BuildContext, BuildMode,
-    BuildOutcome, ClientScriptsRunner, CssRunner, DevAssetPipeline, DevBuildContext, EmittedAsset,
-    IslandsBundleInfo, IslandsRunner, PageRenderer, ProdAssetEmitterInputs, ProdBuildContext,
-    ProdRenderedFile, ProductionAssetPipeline, ProductionEmitters, RefreshOutcome, RelDistPath,
-    RenderedPage, RendererReloader, SsrPublishProbe, StaleProbe,
+    BuildOutcome, ClientScriptsRunner, CssRunner, DevAssetPipeline, DevBuildContext,
+    DynamicInjectedProbe, EmittedAsset, IslandsBundleInfo, IslandsRunner, PageRenderer,
+    ProdAssetEmitterInputs, ProdBuildContext, ProdRenderedFile, ProductionAssetPipeline,
+    ProductionEmitters, RefreshOutcome, RelDistPath, RenderedPage, RendererReloader,
+    SsrPublishProbe, StaleProbe,
 };
 pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
 pub use plugin_registries::{
