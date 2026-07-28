@@ -2579,6 +2579,29 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // any warning, and teardown — lives inside `spawn_watcher_liveness_probe`
     // itself; `run()` only retains the handle so a graceful Ctrl+C can
     // cancel + await it below rather than leaking an orphaned probe dir.
+    //
+    // Disposition (issue #2104, Dev Supervision epic #2099, Wave 3): this
+    // probe is RETAINED AS-IS — no supervision arm was added for it, and
+    // none is needed. It is a BOUNDED DIAGNOSTIC: the handshake completes
+    // (success or a printed warning) on its own within its 10s deadline,
+    // then the task simply ends — it is not a long-lived task whose death
+    // mid-flight would need catching. Its outer `JoinHandle` is retained
+    // only so graceful Ctrl+C can cancel + await it (above), not because a
+    // spontaneous death needs a fatal supervision path.
+    //
+    // Post-#2102 consequence (intentional, not a regression to this
+    // probe's own correctness): #1718's probe was originally built to
+    // diagnose a HALF-ALIVE dev server — the HTTP listener still answering
+    // stale 200s while the watcher/orchestrator had silently died, with no
+    // other signal available. Epic #2099's supervision link (#2102) closed
+    // that half-alive state: a dead orchestrator now takes the whole
+    // process down (connection refused), which is a strictly louder signal
+    // than anything this probe could report. The probe's own value doesn't
+    // vanish — it still catches watcher misconfiguration / platform
+    // FS-event gaps (e.g. an inotify limit) that never even reach the
+    // orchestrator-death path this epic supervises — but its "half-alive"
+    // audience is narrower than when it was written. That narrowing is a
+    // deliberate outcome of this epic's work, not a defect in the probe.
     let liveness_probe_handle = spawn_watcher_liveness_probe(
         probe_project_root,
         probe_effective_watch_targets,
@@ -2679,6 +2702,64 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             Err(map_redirects_watch_join_result(res))
         }
     };
+
+    // Task-surface disposition audit (issue #2104, Dev Supervision epic
+    // #2099, Wave 3 — the epic's closing inventory). Every long-lived task
+    // this dev-server run spawns now has an explicit, recorded
+    // disposition: `boot_handle` and `redirects_watch_join` are SUPERVISED
+    // by the two `select!` arms above (#2102, #2103); the liveness probe
+    // is RETAINED AS-IS, documented at its own spawn site above (a bounded
+    // diagnostic, not a long-lived task); the plugin-host stdout/stderr
+    // reader tasks get a loud-EOF disposition at their own spawn sites in
+    // `crates/zfb-build/src/plugin_runner.rs`. The remaining surfaces below
+    // are TRANSITIVELY covered — they need no arm of their own because
+    // their failure already routes through one of the two supervised arms,
+    // or they are not a task at all:
+    //
+    // - The watcher's notify thread + debouncer bridge (`zfb-watcher`'s
+    //   `Watcher::start_with_debounce`, spawned inside `run_with_boot`):
+    //   if either half dies, the debounced-event channel it feeds closes,
+    //   `run_with_boot`'s drain loop sees the channel close and returns
+    //   `Ok(())`, `boot_handle` finishes, and the `res = &mut boot_handle`
+    //   arm above fires — the exact "silent Ok on channel close is fatal"
+    //   case `map_boot_task_join_result` exists for. No separate arm
+    //   needed: this dies through `boot_handle`, not around it.
+    //
+    // - SSE (`zfb-server`'s `livereload` module): a `tokio::sync::broadcast`
+    //   channel plus one `axum` response stream per open browser
+    //   connection. This is not a spawned task at all — there is no
+    //   background loop to supervise. A dropped receiver (a closed tab)
+    //   just stops getting broadcasts; the sender side lives as long as
+    //   the server does. Nothing here can "die" independently of the
+    //   process itself.
+    //
+    // - The CSS pass (`build_dev_css_and_publish_mirror_roots`, shared by
+    //   the boot hook above and the `run_css` watcher-tick closure): it
+    //   runs INLINE — once synchronously inside the boot hook (before
+    //   `run_with_boot`'s drain loop starts), and once per tick inside the
+    //   orchestrator's own dispatch, both already running on `boot_handle`'s
+    //   task. It is not a separate task and so is covered by whichever
+    //   call site it executes inline within — the boot hook's failure
+    //   surfaces through `boot_handle`'s `Result`, and a tick-time failure
+    //   is handled by the orchestrator's own per-tick error handling
+    //   inside that same supervised task.
+    //
+    // - `dispatch_outcome_events` (defined below, called from the
+    //   `on_outcome` closure passed into `run_with_boot`): this is a
+    //   genuinely DELIBERATE, PERMANENT fire-and-forget detach — every
+    //   call spawns a `tokio::task` whose `JoinHandle` is intentionally
+    //   dropped, because a reload broadcast must never block the tick
+    //   that produced it. Do NOT read this file as claiming "no detached
+    //   handles" anywhere in this epic — this one is named and justified
+    //   instead: `FlushOnDrop` (or the outcome-event task's equivalent
+    //   panic-safety wrapper) covers a panic inside the detached task, so
+    //   a panic there doesn't silently vanish with no trace at all — it
+    //   still surfaces (a captured panic message / log line), it just
+    //   doesn't take the process down, which is the intended shape for a
+    //   best-effort broadcast fan-out.
+    //
+    // Net: every deliberate detach is documented; every unexpected task
+    // termination has an explicit disposition.
 
     if let Some(session) = dev_session {
         session.shutdown_explicit();
