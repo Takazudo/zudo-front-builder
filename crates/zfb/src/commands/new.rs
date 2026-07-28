@@ -949,8 +949,21 @@ mod tests {
         // Belt-and-braces only: the bundler drops its own entry and sweeps
         // stale ones (issue #1970), so this glob just covers the window
         // between a zfb process being killed mid-bundle and the next build.
-        const EXPECTED_GLOBS: [&str; 2] =
-            ["**/zfb-tailwind-entry-*.css", ".zfb-esbuild-entry-*.tsx"];
+        // The islands/worker tsconfig globs are hand-derived from
+        // zfb-islands's build_plugin_tsconfig's in-project prefix
+        // (".zfb-{label}-tsconfig-") for the "islands" and "worker" labels
+        // (crates/zfb-islands/src/esbuild.rs), and the virtual-module glob
+        // from zfb-plugin-resolver's public VIRTUAL_MODULE_TEMP_PREFIX
+        // (".zfb-virtual-") / VIRTUAL_MODULE_TEMP_SUFFIX (".mjs") constants
+        // (crates/zfb-plugin-resolver/src/lib.rs). All three cover the same
+        // kind of window: after a zfb process is killed mid-bundle.
+        const EXPECTED_GLOBS: [&str; 5] = [
+            "**/zfb-tailwind-entry-*.css",
+            ".zfb-esbuild-entry-*.tsx",
+            ".zfb-islands-tsconfig-*.json",
+            ".zfb-worker-tsconfig-*.json",
+            ".zfb-virtual-*.mjs",
+        ];
         for template_name in ["basic-blog", "node-free"] {
             let dir = TEMPLATES
                 .get_dir(template_name)
