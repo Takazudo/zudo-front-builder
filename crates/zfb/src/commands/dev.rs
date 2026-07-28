@@ -731,12 +731,30 @@ impl RewritePrewarmWiring {
 /// in the first place. `None` disables it (non-Cold boot, renderer
 /// disabled, or the lazy switch off), and the pre-warm's own mode gate is
 /// a second line of defense.
+/// ## Supervision (issue #2103, epic #2099 Wave 3)
+///
+/// Returns the outer task's [`tokio::task::JoinHandle`] ADDITIVELY
+/// alongside the [`RedirectsHandle`] — it used to be discarded at the
+/// `tokio::spawn` call site below. Disposition, decided in the issue (see
+/// the call site in `run()` for where this is wired):
+///
+/// - **Startup failure (the `Err(e)` arm right below) stays UNCHANGED**:
+///   still a non-fatal degrade, still just a `tracing::warn!` — no watch
+///   task is ever started in that case, so there is nothing to
+///   supervise. The returned `JoinHandle` in that arm wraps a task that
+///   never completes on its own ([`std::future::pending`]), so wiring it
+///   into a supervision `select!` arm can never spuriously fire at boot.
+/// - **An unexpected death of an ALREADY-STARTED task is now supervised**
+///   — the caller feeds the returned handle into the same
+///   `tokio::select!` pattern issue #2102 built for `boot_handle`, via
+///   `map_redirects_watch_join_result` (declared beside
+///   `map_boot_task_join_result` further down this file).
 #[cfg(feature = "embed_v8")]
 fn spawn_redirects_watch(
     project_root: &Path,
     public_root: &Path,
     prewarm: Option<RewritePrewarmWiring>,
-) -> RedirectsHandle {
+) -> (RedirectsHandle, tokio::task::JoinHandle<()>) {
     let redirects_path = public_root.join("_redirects");
     let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
         &redirects_path,
@@ -758,7 +776,12 @@ fn spawn_redirects_watch(
                 "_redirects: failed to start targeted watcher; edits to public/_redirects \
                  will require a dev-server restart to take effect"
             );
-            return handle;
+            // Issue #2103 — no watch task was ever started here, so
+            // there is nothing to supervise. A task that never completes
+            // keeps the return shape uniform for the caller without ever
+            // making the supervision select arm fire spuriously.
+            let never_completes = tokio::spawn(std::future::pending::<()>());
+            return (handle, never_completes);
         }
     };
     // `public/` does not exist at all on a fresh project with no static
@@ -768,7 +791,13 @@ fn spawn_redirects_watch(
     watcher.watch_additional_files([redirects_path.clone()]);
 
     let handle_for_task = Arc::clone(&handle);
-    tokio::spawn(async move {
+    // Issue #2103 — the OUTER task spawned here is what `run()`'s
+    // supervision select arm now watches via the returned `JoinHandle`.
+    // The INNER `spawn_blocking` prewarm call below (issue #2004) is
+    // already awaited with its own printed join error on a panic — that
+    // inner join is NOT the gap this sub closes; this task's own
+    // `JoinHandle`, previously discarded entirely, is.
+    let join = tokio::spawn(async move {
         // Keep the watcher (and therefore the OS-level watch) alive for
         // as long as this task runs.
         let _watcher = watcher;
@@ -823,7 +852,7 @@ fn spawn_redirects_watch(
         }
     });
 
-    handle
+    (handle, join)
 }
 
 /// Entry point for `zfb dev`.
@@ -1962,7 +1991,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // (an empty ruleset when absent) and starts the targeted watch that
     // keeps it live for the rest of this session. Must run before
     // `project_root` / `public_root` are moved into `ServeOpts` below.
-    let redirects_handle =
+    // Issue #2103 (Dev Supervision epic #2099, Wave 3) — disposition
+    // decision recorded here: startup failure inside
+    // `spawn_redirects_watch` stays an unchanged non-fatal degrade (see
+    // that function's own doc comment); an unexpected death of an
+    // already-started watch task is now supervised via the retained
+    // `redirects_watch_join` handle below, wired into the same
+    // `tokio::select!` issue #2102 built for `boot_handle` (see the
+    // `res = &mut redirects_watch_join` arm further down).
+    let (redirects_handle, mut redirects_watch_join) =
         spawn_redirects_watch(&project_root, &public_root, rewrite_prewarm.clone());
     // Issue #2004 — the deferred boot task needs the same handle the
     // server reads from; clone before `ServeOpts` consumes the original.
@@ -2566,6 +2603,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let result = tokio::select! {
         res = serve_with_listener(opts, listener, ctrl_c) => {
             boot_handle.abort();
+            // Issue #2103 — abort the `_redirects` watch task alongside
+            // `boot_handle` on the graceful-shutdown path, for symmetry;
+            // this is what keeps a cancelled join on that task's supervision
+            // arm structurally unreachable (see
+            // `map_redirects_watch_join_result`'s doc comment).
+            redirects_watch_join.abort();
             // Issue #1718 — cancel the liveness probe's OUTER task and reap
             // it. Since the probe body now runs inside `spawn_blocking`
             // (see `run_watcher_liveness_probe_inner`), this abort cancels
@@ -2598,12 +2641,42 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // this function's result.
         //
         // `boot_handle.abort()` itself stays ONLY in the serve arm above —
-        // this arm never aborts `boot_handle` (it already finished, that's
-        // why it fired) and never duplicates that call.
+        // this arm never re-aborts `boot_handle` (it already finished,
+        // that's why it fired). It DOES abort `redirects_watch_join`
+        // (issue #2103, codex review finding): without this, a
+        // `boot_handle` death would begin renderer/plugin teardown and
+        // the final graph save below while the `_redirects` watch task
+        // is still detached and running, racing shutdown with whatever
+        // that task is mid-doing (a live reload broadcast, a prewarm
+        // render). Aborting it here — not just joining it — matches the
+        // serve arm's own teardown discipline.
         res = &mut boot_handle => {
+            redirects_watch_join.abort();
             liveness_probe_handle.abort();
             let _ = liveness_probe_handle.await;
             Err(map_boot_task_join_result(res))
+        }
+        // Issue #2103 (Dev Supervision epic #2099, Wave 3) — the same
+        // supervision link #2102 built for `boot_handle`, applied to the
+        // `_redirects` watch task's own outer `JoinHandle` (previously
+        // discarded at `spawn_redirects_watch`'s `tokio::spawn` call). A
+        // dead `_redirects` watch serves stale routing state — the same
+        // failure class the orchestrator link exists to catch — so its
+        // unexpected post-start death is fatal here too, via
+        // `map_redirects_watch_join_result` (distinct wording from
+        // `map_boot_task_join_result`'s, so stderr is diagnostic about
+        // WHICH task died). This arm never re-aborts `redirects_watch_join`
+        // itself (it already finished, that's why it fired). It DOES abort
+        // `boot_handle`, mirroring the arm above — a codex review finding
+        // during this sub: without it, the orchestrator watcher loop would
+        // keep running concurrently with the teardown below (renderer
+        // shutdown, plugin host shutdown, the final graph save), racing
+        // whatever tick it is mid-processing against that teardown.
+        res = &mut redirects_watch_join => {
+            boot_handle.abort();
+            liveness_probe_handle.abort();
+            let _ = liveness_probe_handle.await;
+            Err(map_redirects_watch_join_result(res))
         }
     };
 
@@ -2676,18 +2749,22 @@ const DEV_WATCHER_TASK_DIED_CONTEXT: &str =
 ///
 /// ## Cancellation is structurally excluded from this function's domain
 ///
-/// `boot_handle.abort()` is called from exactly ONE place in `run()`:
-/// inside the OTHER `tokio::select!` arm, the one that fires when
+/// `boot_handle.abort()` is called from TWO places in `run()` (issue
+/// #2103 added the second): the serve arm, which fires when
 /// `serve_with_listener` itself resolves (the Ctrl+C-initiated graceful
-/// shutdown path). By the time that abort could make `boot_handle`'s join
-/// result a cancelled `JoinError`, the serve arm has already won the
+/// shutdown path), and the `redirects_watch_join` supervision arm, which
+/// aborts `boot_handle` as part of its own teardown when the
+/// `_redirects` watch task dies first. Both are OTHER arms relative to
+/// this one: by the time either abort could make `boot_handle`'s join
+/// result a cancelled `JoinError`, that other arm has already won the
 /// `select!` race and the process is already tearing down through IT —
-/// the supervision arm that calls this function can therefore never
-/// observe a cancelled join in practice. A cancelled `JoinError` reaching
-/// this function would mean that invariant broke (e.g. a future change
-/// adding a second `abort()` call site reachable from this arm), which is
-/// a logic error to fix, not a runtime outcome to map to fatal or benign
-/// — so it panics loudly via `unreachable!()` instead. See
+/// the supervision arm THIS function's result feeds can therefore never
+/// observe a cancelled join in practice, in either case. A cancelled
+/// `JoinError` reaching this function would mean that invariant broke
+/// (e.g. a future change adding an `abort()` call site reachable from
+/// THIS arm itself), which is a logic error to fix, not a runtime
+/// outcome to map to fatal or benign — so it panics loudly via
+/// `unreachable!()` instead. See
 /// `boot_task_supervision::cancellation_is_structurally_unreachable` for the
 /// dedicated regression test pinning this invariant.
 fn map_boot_task_join_result(
@@ -2719,6 +2796,71 @@ fn map_boot_task_join_result(
             debug_assert!(join_err.is_panic(), "unexpected non-panic JoinError");
             let panic_msg = boot_task_panic_payload_message(join_err.into_panic());
             anyhow::anyhow!("panicked: {panic_msg}").context(DEV_WATCHER_TASK_DIED_CONTEXT)
+        }
+    }
+}
+
+/// Context string every fatal `redirects_watch_join` mapping attaches
+/// (issue #2103). Deliberately distinct wording from
+/// `DEV_WATCHER_TASK_DIED_CONTEXT` — it names the `_redirects` watcher
+/// specifically, so stderr is diagnostic about WHICH task died rather
+/// than reusing the orchestrator's message for a different task.
+const REDIRECTS_WATCH_TASK_DIED_CONTEXT: &str =
+    "_redirects watcher task died — shutting down the dev server";
+
+/// Maps the join result of `run()`'s `redirects_watch_join` (the
+/// dedicated `public/_redirects` watch task `spawn_redirects_watch`
+/// spawns) to a fatal error naming the dead task. Mirrors
+/// `map_boot_task_join_result`'s shape, cancellation reasoning, and panic
+/// extraction (reusing `boot_task_panic_payload_message` directly) — see
+/// that function's docs for the argument in full.
+///
+/// ## Where this genuinely diverges from `map_boot_task_join_result`
+///
+/// `boot_handle` wraps `anyhow::Result<()>` (the orchestrator's own
+/// `run_with_boot` can fail), so its mapping has a distinct `Ok(Err(e))`
+/// arm. The `_redirects` watch task's `tokio::spawn` body has no
+/// fallible inner return — it is a bare `JoinHandle<()>` — so there is
+/// no equivalent arm here: every non-panicking completion means the same
+/// single thing, that the watch channel closed with nothing left to
+/// drain (`rx.recv()` returned `None`), the SAME failure class
+/// `map_boot_task_join_result`'s `Ok(Ok(()))` arm treats as fatal for
+/// the orchestrator's own channel.
+///
+/// Note: the task's INNER prewarm `spawn_blocking` call (issue #2004,
+/// `dev.rs`'s `spawn_redirects_watch`) is ALREADY awaited with its own
+/// printed join error today — that inner join is NOT the gap this
+/// function closes. This function only fires when the OUTER task itself
+/// ends unexpectedly after a successful start.
+fn map_redirects_watch_join_result(result: Result<(), tokio::task::JoinError>) -> anyhow::Error {
+    match result {
+        Ok(()) => anyhow::anyhow!(
+            "_redirects watch stopped (channel closed) — this usually means \
+             the file-watch backend gave up (e.g. an OS inotify/FSEvents \
+             watch limit was hit) or the watch loop otherwise exited with \
+             nothing left to drain"
+        )
+        .context(REDIRECTS_WATCH_TASK_DIED_CONTEXT),
+        Err(join_err) if join_err.is_cancelled() => unreachable!(
+            "redirects_watch_join observed as CANCELLED by the supervision \
+             select arm — structurally impossible for the same reason \
+             `map_boot_task_join_result` documents: `redirects_watch_join.abort()` \
+             is called from two OTHER arms relative to this one (the serve \
+             arm's Ctrl+C shutdown path, and the `boot_handle` supervision \
+             arm's own teardown — issue #2103), never from within this arm \
+             itself, so by the time either abort could happen the process is \
+             already exiting through that other arm, never through this one. \
+             If this fired, a change made cancellation reachable here and the \
+             invariant this function documents needs re-verifying, not paving \
+             over."
+        ),
+        Err(join_err) => {
+            // `tokio::task::JoinError` has exactly two states: panicked or
+            // cancelled. Cancelled is excluded above, so this is always the
+            // panic case.
+            debug_assert!(join_err.is_panic(), "unexpected non-panic JoinError");
+            let panic_msg = boot_task_panic_payload_message(join_err.into_panic());
+            anyhow::anyhow!("panicked: {panic_msg}").context(REDIRECTS_WATCH_TASK_DIED_CONTEXT)
         }
     }
 }
@@ -14907,6 +15049,109 @@ mod tests {
                 "a cancelled JoinError must make map_boot_task_join_result panic \
                  (unreachable!()) — cancellation is outside its documented input \
                  domain and must never be silently mapped to fatal or benign"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // _redirects watcher supervision (issue #2103, epic #2099 Wave 3) —
+    // `map_redirects_watch_join_result` pure-helper unit tests. Mirrors
+    // `boot_task_supervision` above (minus the `Ok(Err(e))` case, which
+    // does not apply — see `map_redirects_watch_join_result`'s own doc
+    // comment for why), and pins the wording is DISTINCT from the
+    // orchestrator's own context string.
+    // -----------------------------------------------------------------
+    mod redirects_watch_task_supervision {
+        use super::*;
+
+        /// `Ok(())` — the watch channel closed silently. Must map to a
+        /// fatal error naming the `_redirects` watcher specifically, with
+        /// a termination word.
+        #[test]
+        fn ok_channel_close_maps_to_fatal_stopped_error() {
+            let err = map_redirects_watch_join_result(Ok(()));
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.to_lowercase().contains("stopped (channel closed)"),
+                "expected the literal 'stopped (channel closed)' wording, \
+                 got: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                lower.contains("_redirects") && lower.contains("watch"),
+                "must name the dead task specifically: {rendered}"
+            );
+        }
+
+        /// The rendered fatal message must be distinguishable from the
+        /// orchestrator's own — different wording, so stderr is
+        /// diagnostic about WHICH task died.
+        #[test]
+        fn wording_is_distinct_from_boot_task_context() {
+            let redirects_err = format!("{:#}", map_redirects_watch_join_result(Ok(())));
+            let boot_err = format!("{:#}", map_boot_task_join_result(Ok(Ok(()))));
+            assert_ne!(
+                redirects_err, boot_err,
+                "the _redirects watcher's fatal message must not be identical \
+                 to the orchestrator's — stderr needs to name which task died"
+            );
+        }
+
+        /// `Err(join_err)` where `is_panic()` — the panic payload must be
+        /// extracted and surfaced, alongside the dead-task context.
+        #[tokio::test]
+        async fn err_panic_surfaces_panic_payload_and_context() {
+            let handle = tokio::spawn(async {
+                panic!("boom from the redirects watch task");
+            });
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let join_result: Result<(), tokio::task::JoinError> = handle.await;
+            std::panic::set_hook(default_hook);
+
+            assert!(
+                join_result.as_ref().err().is_some_and(|e| e.is_panic()),
+                "expected a panic-shaped JoinError to set up this test correctly"
+            );
+
+            let err = map_redirects_watch_join_result(join_result);
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("boom from the redirects watch task"),
+                "the panic payload must be surfaced: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                lower.contains("_redirects") && lower.contains("watch"),
+                "the panic mapping must still name the dead task: {rendered}"
+            );
+        }
+
+        /// Cancellation invariant, mirroring
+        /// `boot_task_supervision::cancellation_is_structurally_unreachable`:
+        /// `map_redirects_watch_join_result` must NEVER silently treat a
+        /// cancelled join as fatal or benign.
+        #[tokio::test]
+        async fn cancellation_is_structurally_unreachable() {
+            let handle = tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            });
+            handle.abort();
+            let join_result: Result<(), tokio::task::JoinError> = handle.await;
+            let join_err = join_result.err().expect("aborted task must join as Err");
+            assert!(
+                join_err.is_cancelled(),
+                "test setup must actually produce a cancelled JoinError"
+            );
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                map_redirects_watch_join_result(Err(join_err))
+            }));
+            assert!(
+                outcome.is_err(),
+                "a cancelled JoinError must make map_redirects_watch_join_result \
+                 panic (unreachable!()) — cancellation is outside its documented \
+                 input domain and must never be silently mapped to fatal or benign"
             );
         }
     }
