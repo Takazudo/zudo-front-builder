@@ -182,8 +182,9 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # The reconciled manifest, env-gate + heavy tags only (43 tests as of
-      # issue #2020 — see CLAUDE.md's "`#[ignore]` manifest (Rust)" table for
+      # The reconciled manifest, env-gate + heavy tags only (49 tests as of
+      # issue #2098 — six `dev_content_reload_2063_e2e` tests joined, up from
+      # 43 as of issue #2020 — see CLAUDE.md's "`#[ignore]` manifest (Rust)" table for
       # the authoritative list; this filterset's own count has drifted from
       # that table's total before, so re-measure both rather than trusting
       # either — scripts/check-exam-ignore-parity.sh (issue #2072) now does
@@ -258,6 +259,12 @@ jobs:
               | test(=ssr_only_healthy_deferred_publish_reloads_open_tab)
               | test(=ssr_only_cold_bootstrap_recovery_reloads_open_tab)
               | test(=embedded_host_matches_real_workerd_for_supported_rows_and_documented_divergences)
+              | test(=content_edit_emits_exactly_one_page_event_default_boot)
+              | test(=content_edit_emits_exactly_one_page_event_cold_boot)
+              | test(=injected_dynamic_route_content_edit_emits_exactly_one_page_event_default_boot)
+              | test(=injected_dynamic_route_content_edit_emits_exactly_one_page_event_cold_boot)
+              | test(=ordinary_out_of_root_content_edit_emits_exactly_one_page_event_default_boot)
+              | test(=ordinary_out_of_root_content_edit_emits_exactly_one_page_event_cold_boot)
           ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
           rc=${PIPESTATUS[0]}
           set -e

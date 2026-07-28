@@ -43,9 +43,47 @@
 //! hunt, so the observed SSE sequence is printed either way rather than
 //! only asserted on.
 //!
-//! No permanent test registration (nextest `e2e-heavy` group, CLAUDE.md
-//! manifest row, `#[ignore]` tag, exam.yml wiring) is added here — that
-//! is Wave 5 / sub #2098's job (see epic #2092).
+//! Permanent registration (sub #2098, epic #2092 Wave 5): all 6
+//! `#[tokio::test]` functions below carry `#[ignore = "env-gate: esbuild
+//! — …"]`, matching the tier `client_bundling_cross_pipeline.rs`'s tests
+//! use (a real `zfb dev` process against a staged esbuild). They are
+//! wired into `.config/nextest.toml`'s `[test-groups.e2e-heavy]`
+//! override (this binary spawns `zfb dev` via `CrossBinaryE2eLock`, so it
+//! is flock-adopting like its siblings) and into
+//! `.github/workflows/exam.yml`'s `quarantine-heavy` exact-name
+//! filterset, so they still run somewhere (allowed-to-fail, weekly) even
+//! though they are too heavy for the T1 PR gate. `simulated_provenance_
+//! wipe_world_still_populates_pages_stale_and_emits_one_page_event` below
+//! stays UN-ignored — it is a plain unit test with no real `zfb dev` boot
+//! (see its own header comment), so it already runs on every gate.
+//!
+//! ## Revert-proof (sub #2098, per the #2002/#2004 idiom)
+//!
+//! Performed by the manager at Level 4 on this file's FINAL, sharpened
+//! fixture (`c073cd04`), not re-run by this sub — see issue #2097's
+//! closing comment for the full transcript.
+//!
+//! **Seam disabled**: `crates/zfb/src/commands/dev.rs`, the raise inside
+//! `DevRenderInner::restale_dynamic_injected`, changed to
+//! `if false && restaled_any { self.set_dynamic_injected_restaled(); }`.
+//!
+//! **Observed** (both boot modes, identically):
+//!
+//! ```text
+//! observed delivery: [zfb-timing] tick(): kinds=[alpha.mdx:Modified] eager_hint=true fan_out_safe=true
+//! observed SSE event sequence after the content edit: []
+//! panicked: expected at least one `page` SSE event ... observed sequence: []
+//! ```
+//!
+//! i.e. delivery proven, served bytes fresh, **zero SSE events** — the
+//! exact pre-fix #2063 symptom, reproduced in-harness on this epic's own
+//! shipping fixture (not a stubbed/simulated one).
+//!
+//! **Restored**: `git status` clean, `git diff` empty at `c073cd04`, then
+//! the full matrix run: **7 passed, 0 failed** (92.53s) — the two
+//! injected-fixture cells flipped `[]` -> `["page"]`; the other five
+//! (baseline + out-of-root, both boot modes, plus the plain unit test)
+//! were unchanged throughout.
 
 #![cfg(unix)]
 
@@ -718,6 +756,8 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn content_edit_emits_exactly_one_page_event_default_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -725,6 +765,8 @@ async fn content_edit_emits_exactly_one_page_event_default_boot() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn content_edit_emits_exactly_one_page_event_cold_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1176,6 +1218,8 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_default_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1183,6 +1227,8 @@ async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_defaul
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_cold_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1225,6 +1271,8 @@ fn out_of_root_matrix_fixture() -> MatrixFixture {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn ordinary_out_of_root_content_edit_emits_exactly_one_page_event_default_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1237,6 +1285,8 @@ async fn ordinary_out_of_root_content_edit_emits_exactly_one_page_event_default_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
+            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn ordinary_out_of_root_content_edit_emits_exactly_one_page_event_cold_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
