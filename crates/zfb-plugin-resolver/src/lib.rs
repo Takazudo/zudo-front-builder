@@ -58,6 +58,25 @@ pub use raw_alias::{
     validate_raw_candidate, RawImportAliasContext,
 };
 
+/// Filename prefix for the `.zfb-virtual-*.mjs` virtual-module temp-file
+/// class allocated *inside a project root or shadow directory* — the
+/// `working_dir.is_dir()` branch of [`build_resolver_inputs`]. Exported so
+/// downstream crates recognize the class by name instead of hand-duplicating
+/// the literal (`zfb-build`'s `is_reserved_shadow_root_name` consumes this;
+/// a future in-project temp sweeper is expected to as well).
+///
+/// The system-tempdir FALLBACK branch of `build_resolver_inputs` (taken only
+/// when `working_dir` is not a real directory — the unit-test environment)
+/// allocates under a bare, undotted `zfb-virtual-` prefix instead. That
+/// fallback never lands inside a project or shadow root, so it is a
+/// deliberately separate, out-of-scope literal — not an oversight — and is
+/// not covered by this const.
+pub const VIRTUAL_MODULE_TEMP_PREFIX: &str = ".zfb-virtual-";
+
+/// Filename suffix for the `.zfb-virtual-*.mjs` class (both branches of
+/// [`build_resolver_inputs`], in-project and system-tempdir-fallback alike).
+pub const VIRTUAL_MODULE_TEMP_SUFFIX: &str = ".mjs";
+
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -218,8 +237,8 @@ pub fn build_resolver_inputs(
     for (specifier, source) in virtual_modules {
         let tmp = if working_dir.is_dir() {
             tempfile::Builder::new()
-                .prefix(".zfb-virtual-")
-                .suffix(".mjs")
+                .prefix(VIRTUAL_MODULE_TEMP_PREFIX)
+                .suffix(VIRTUAL_MODULE_TEMP_SUFFIX)
                 .tempfile_in(working_dir)
                 .with_context(|| {
                     format!(
@@ -229,9 +248,14 @@ pub fn build_resolver_inputs(
                     )
                 })?
         } else {
+            // Deliberately separate, undotted prefix — see
+            // `VIRTUAL_MODULE_TEMP_PREFIX`'s doc comment. This branch only
+            // ever runs against the system tempdir (no real `working_dir`),
+            // so it is out of scope for the shared const and for the
+            // in-project temp sweeper (#2106).
             tempfile::Builder::new()
                 .prefix("zfb-virtual-")
-                .suffix(".mjs")
+                .suffix(VIRTUAL_MODULE_TEMP_SUFFIX)
                 .tempfile()
                 .with_context(|| {
                     format!(
@@ -247,6 +271,26 @@ pub fn build_resolver_inputs(
                 tmp.path().display()
             )
         })?;
+        // Shared (not exclusive) lock, same #1976 ownership protocol as
+        // `zfb-islands`'s `allocate_locked_entry_tmp`: the write above must
+        // happen BEFORE the lock (a shared Windows `LockFileEx` byte-range
+        // lock denies writes to the locked range), and shared rather than
+        // exclusive because esbuild only ever reads this file. It lets a
+        // future sweeper prove the file is still owned by a live process
+        // rather than inferring liveness from age alone. Best-effort: a
+        // filesystem without lock support just falls back to the sweeper's
+        // age gate.
+        //
+        // This benefits BOTH callers of this shared allocation function for
+        // free — `zfb-islands` (passes the real project root) AND
+        // `zfb-build`'s SSR bundler (passes a `shadow` dir inside a
+        // `zfb-shadow-session-*` `TempDir`) — since the lock sits in this one
+        // shared function. However, the eventual SWEEP (a later sub of
+        // epic #2106) stays PROJECT-ROOT-ONLY: the shadow-session case is
+        // already covered by a separate, pre-existing stale-shadow sweep, so
+        // its own leak surface is deliberately left untouched here — not an
+        // oversight.
+        let _ = tmp.as_file().lock_shared();
         let posix_target = path_to_posix_string(tmp.path());
         if user_claims_specifier(user_tsconfig_paths, specifier) {
             // The user's own `compilerOptions.paths` already claims this
@@ -1130,6 +1174,54 @@ mod tests {
             r.virtual_module_alias_flags(),
             vec![expected_flag],
             "virtual module must surface as a single --alias flag"
+        );
+    }
+
+    /// The virtual-module temp file `build_resolver_inputs` allocates is
+    /// held under a SHARED lock for as long as the returned
+    /// `ResolverInputs` (and thus its `_temp_files` handle) is alive — the
+    /// same #1976 ownership protocol `zfb-islands`'s
+    /// `allocate_locked_entry_tmp` uses for its own in-project temp class.
+    /// This is the RED-first lock test issue #2108 requires: it allocates
+    /// through the REAL production helper (never a hand-written file),
+    /// opens a SECOND handle to the same path, and proves an EXCLUSIVE
+    /// `try_lock()` on that second handle fails while the production
+    /// owner is alive, then succeeds once it drops.
+    ///
+    /// Before `.lock_shared()` was added to `build_resolver_inputs`, this
+    /// test failed at the first assertion (the second handle's exclusive
+    /// `try_lock()` unexpectedly succeeded, since nothing held the file
+    /// locked) — confirmed by temporarily removing the lock call and
+    /// re-running.
+    #[test]
+    fn virtual_module_temp_file_is_shared_locked_by_the_real_allocator() {
+        let dir = TempDir::new().unwrap();
+        let vms = vec![(
+            "virtual:meta".to_string(),
+            "export default { ok: true };".to_string(),
+        )];
+        let r = build_resolver_inputs(&[], &vms, dir.path(), &BTreeMap::new()).unwrap();
+        let tmp_path = r._temp_files[0].path().to_path_buf();
+
+        let second_handle = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&tmp_path)
+            .expect("open a second handle to the production-allocated file");
+        assert!(
+            second_handle.try_lock().is_err(),
+            "an exclusive try_lock() from a second handle must fail while the \
+             production allocator's shared lock is still held"
+        );
+
+        // Drop the production owner (the `ResolverInputs`, and with it the
+        // `NamedTempFile` holding the shared lock) — the same way the OS
+        // releases the lock for a process that dies without unwinding.
+        drop(r);
+        assert!(
+            second_handle.try_lock().is_ok(),
+            "the exclusive try_lock() must succeed once the production owner's \
+             lock is released"
         );
     }
 
