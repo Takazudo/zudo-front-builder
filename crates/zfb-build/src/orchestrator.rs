@@ -113,6 +113,103 @@ fn dev_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Pure parse for `ZFB_DEV_TEST_ORCH_PANIC_ON_TICK` (issue #2100, Dev
+/// Supervision epic #2099 Sub #2100 — deterministic fault-injection knobs).
+/// Mirrors the tolerant boolean idiom `dev_timing_enabled` above uses: unset,
+/// empty, `"0"`, or `"false"` (case-insensitive) is NOT armed; anything else
+/// is armed. No `cfg(test)` gate — read in production code, inert when unset.
+///
+/// When armed, [`BuildOrchestrator::run_with_boot`]'s drain loop panics
+/// INSIDE the `spawn_blocking` tick closure on the very next dispatched
+/// tick, exercising the `std::panic::resume_unwind` re-raise path a few
+/// lines below in this file — the same shape a genuine tick panic takes.
+///
+/// Marker lines this knob prints (exact wording; downstream e2e tests grep
+/// these verbatim — keep stable):
+///   armed: `"[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK"`
+///   fired: `"[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK"`
+fn orch_panic_on_tick_armed(raw: Option<&str>) -> bool {
+    match raw {
+        None => false,
+        Some(v) => {
+            let v = v.trim();
+            !(v.is_empty() || v.eq_ignore_ascii_case("0") || v.eq_ignore_ascii_case("false"))
+        }
+    }
+}
+
+/// Pure parse for `ZFB_DEV_TEST_ORCH_STOP_MS` (issue #2100, Dev Supervision
+/// epic #2099 Sub #2100). Returns `Some(ms)` when the raw value parses as a
+/// non-negative integer number of milliseconds (`"0"` is a valid, armed
+/// boundary value — see below); `None` when unset, empty, or unparsable
+/// (inert, matching the tolerant-parse idiom of `ZFB_DEV_TEST_SLOW_*`
+/// elsewhere in this codebase).
+///
+/// When `Some(ms)`, [`BuildOrchestrator::run_with_boot`]'s drain loop
+/// returns `Ok(())` (the same silent-channel-close shape an ordinary
+/// watcher-dropped-elsewhere exit takes) `ms` milliseconds after the boot
+/// hook completes — NOT `ms` after `run_with_boot` was entered, and never
+/// before the watcher's live handshake, so a slow boot can never make this
+/// fire before the watcher is actually observing. `ms = 0` fires on the
+/// very first drain-loop poll after the boot hook returns.
+///
+/// **Timing caveat (only checked between ticks, not preemptive):** the
+/// deadline is raced against the receiver only while the loop is idle,
+/// waiting for the *next* [`Change`] — see [`recv_with_stop_deadline`]. If a
+/// tick is already dispatched to `spawn_blocking` when the deadline elapses,
+/// the fault fires only once that tick's `spawn_blocking` future resolves,
+/// not mid-flight — tokio blocking tasks cannot be safely preempted without
+/// losing the orchestrator/session state the closure owns for that
+/// iteration, and the elapsed-but-not-yet-observed deadline is itself
+/// consistent with the "silent channel close" shape this knob emulates (an
+/// ordinary channel close is likewise only ever noticed between ticks, never
+/// mid-tick). A test relying on `ms` as a tight upper bound must keep the
+/// fixture idle (no watched-file churn) between the boot hook completing and
+/// the deadline elapsing.
+///
+/// Marker lines this knob prints (exact wording; downstream e2e tests grep
+/// these verbatim — keep stable):
+///   armed: `"[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_STOP_MS <ms>ms"`
+///   fired: `"[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_STOP_MS"`
+fn orch_stop_ms_decision(raw: Option<&str>) -> Option<u64> {
+    match raw {
+        None => None,
+        Some(v) => {
+            let v = v.trim();
+            if v.is_empty() {
+                None
+            } else {
+                v.parse::<u64>().ok()
+            }
+        }
+    }
+}
+
+/// Awaits the next [`Change`] off `rx`, but — when `stop_deadline` is set —
+/// races that against the deadline and returns `None` (the same shape as a
+/// closed channel) the instant the deadline elapses, printing the
+/// `ZFB_DEV_TEST_ORCH_STOP_MS` fired marker first. `biased` ensures an
+/// already-elapsed deadline (the `ms = 0` boundary) always wins over a
+/// simultaneously-ready `Change` rather than being starved by it.
+async fn recv_with_stop_deadline(
+    rx: &mut tokio::sync::mpsc::Receiver<Change>,
+    stop_deadline: Option<tokio::time::Instant>,
+) -> Option<Change> {
+    match stop_deadline {
+        None => rx.recv().await,
+        Some(deadline) => {
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    eprintln!("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_STOP_MS");
+                    None
+                }
+                change = rx.recv() => change,
+            }
+        }
+    }
+}
+
 /// Live watch-ADD discovery hook (issue #659).
 ///
 /// Invoked from [`BuildOrchestrator::tick_with_kinds`] /
@@ -1364,6 +1461,29 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             &self.config.css_mirror_skip_dir_names,
         );
 
+        // Deterministic fault-injection knobs (issue #2100, Dev Supervision
+        // epic #2099 Sub #2100). Both are read here — AFTER the boot hook
+        // has completed and the post-boot watch registration above has run
+        // — never earlier, so a slow boot can never make either fault fire
+        // before the watcher has performed its live handshake. See
+        // `orch_panic_on_tick_armed` / `orch_stop_ms_decision` for the pure
+        // parse/decision logic and the exact marker-line wording.
+        let panic_on_tick_armed = orch_panic_on_tick_armed(
+            std::env::var("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK")
+                .ok()
+                .as_deref(),
+        );
+        if panic_on_tick_armed {
+            eprintln!("[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK");
+        }
+        let stop_deadline = orch_stop_ms_decision(
+            std::env::var("ZFB_DEV_TEST_ORCH_STOP_MS").ok().as_deref(),
+        )
+        .map(|ms| {
+            eprintln!("[zfb-timing] fault armed: ZFB_DEV_TEST_ORCH_STOP_MS {ms}ms");
+            tokio::time::Instant::now() + Duration::from_millis(ms)
+        });
+
         // Drain loop: wait for the first event, then drain everything
         // currently in the channel so we coalesce concurrent bursts
         // into one tick.
@@ -1387,7 +1507,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         let mut this = self;
         let mut ctx = ctx;
         let mut discover = discover;
-        while let Some(first) = rx.recv().await {
+        while let Some(first) = recv_with_stop_deadline(&mut rx, stop_deadline).await {
             let mut batch: Vec<Change> = vec![first];
             while let Ok(c) = rx.try_recv() {
                 batch.push(c);
@@ -1396,6 +1516,15 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             let changes: Vec<(PathBuf, ChangeKind)> =
                 batch.iter().map(|c| (c.path.clone(), c.kind)).collect();
             let tick = tokio::task::spawn_blocking(move || {
+                // Fault injection (issue #2100): fires INSIDE this
+                // spawn_blocking closure, on the thread that would
+                // otherwise run `tick_with_kinds`, so the panic takes the
+                // exact `resume_unwind` re-raise path below that a genuine
+                // tick panic would.
+                if panic_on_tick_armed {
+                    eprintln!("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK");
+                    panic!("ZFB_DEV_TEST_ORCH_PANIC_ON_TICK fault injection");
+                }
                 let result = this.tick_with_kinds(changes, &ctx, discover.as_ref());
                 (result, this, ctx, discover)
             })
@@ -3651,5 +3780,91 @@ mod tests {
             orch.initial_build(&ctx).expect("must not error").is_none(),
             "empty graph must yield Ok(None)",
         );
+    }
+
+    // Issue #2100 (Dev Supervision epic #2099 Sub #2100): Level-1 unit
+    // coverage for the two fault-injection knobs' pure parse/decision
+    // functions, per zudo-test-wisdom — these don't need a booted dev
+    // server to exercise the parse/decision logic.
+
+    #[test]
+    fn orch_panic_on_tick_armed_unset_is_not_armed() {
+        assert!(!orch_panic_on_tick_armed(None));
+    }
+
+    #[test]
+    fn orch_panic_on_tick_armed_set_invalid_falsy_values_are_not_armed() {
+        assert!(!orch_panic_on_tick_armed(Some("")));
+        assert!(!orch_panic_on_tick_armed(Some("0")));
+        assert!(!orch_panic_on_tick_armed(Some("false")));
+        assert!(!orch_panic_on_tick_armed(Some("FALSE")));
+        assert!(!orch_panic_on_tick_armed(Some("  ")));
+    }
+
+    #[test]
+    fn orch_panic_on_tick_armed_set_valid_is_armed() {
+        assert!(orch_panic_on_tick_armed(Some("1")));
+        assert!(orch_panic_on_tick_armed(Some("true")));
+        assert!(orch_panic_on_tick_armed(Some("yes")));
+    }
+
+    #[test]
+    fn orch_stop_ms_decision_unset_is_none() {
+        assert_eq!(orch_stop_ms_decision(None), None);
+    }
+
+    #[test]
+    fn orch_stop_ms_decision_set_invalid_is_none() {
+        assert_eq!(orch_stop_ms_decision(Some("")), None);
+        assert_eq!(orch_stop_ms_decision(Some("  ")), None);
+        assert_eq!(orch_stop_ms_decision(Some("not-a-number")), None);
+        assert_eq!(orch_stop_ms_decision(Some("-5")), None);
+        assert_eq!(orch_stop_ms_decision(Some("12.5")), None);
+    }
+
+    #[test]
+    fn orch_stop_ms_decision_set_valid_parses() {
+        assert_eq!(orch_stop_ms_decision(Some("250")), Some(250));
+        assert_eq!(orch_stop_ms_decision(Some(" 250 ")), Some(250));
+    }
+
+    /// Boundary value: `STOP_MS=0` is a VALID, armed value (fires on the
+    /// very next drain-loop poll after the boot hook completes) — not
+    /// treated the same as unset.
+    #[test]
+    fn orch_stop_ms_decision_boundary_zero_is_armed() {
+        assert_eq!(orch_stop_ms_decision(Some("0")), Some(0));
+    }
+
+    /// `recv_with_stop_deadline` with no deadline is a plain passthrough to
+    /// `rx.recv()` — proves the knob is provably inert when unset, without
+    /// needing to boot a real orchestrator/watcher.
+    #[tokio::test]
+    async fn recv_with_stop_deadline_none_is_plain_passthrough() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Change>(1);
+        tx.send(Change {
+            path: PathBuf::from("/proj/pages/a.tsx"),
+            kind: ChangeKind::Modified,
+        })
+        .await
+        .expect("send");
+        let got = recv_with_stop_deadline(&mut rx, None).await;
+        assert_eq!(
+            got.map(|c| c.path),
+            Some(PathBuf::from("/proj/pages/a.tsx"))
+        );
+    }
+
+    /// The `STOP_MS=0` boundary: an elapsed (already-past) deadline wins
+    /// over the channel and returns `None` — the silent channel-close shape
+    /// — even though the channel is never closed and never receives an
+    /// item.
+    #[tokio::test]
+    async fn recv_with_stop_deadline_elapsed_deadline_returns_none() {
+        let (_tx, mut rx) = tokio::sync::mpsc::channel::<Change>(1);
+        let deadline = tokio::time::Instant::now();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let got = recv_with_stop_deadline(&mut rx, Some(deadline)).await;
+        assert!(got.is_none(), "an elapsed deadline must return None");
     }
 }
