@@ -6,6 +6,8 @@ tier: Opt-in
 
 The `linkValidation` feature walks every `<a href>` and `<img src>` in the build and validates that internal links and anchor fragments resolve correctly. Broken links produce build diagnostics — warnings by default, errors when `failOnBroken: true` is set.
 
+To gate CI on link integrity without editing the `linkValidation` block itself — useful when a preset owns it — use the top-level `strictBrokenLinks` config field or `zfb build --strict-broken`. See [Strict mode](#strict-mode) below.
+
 External URLs (`http://`, `https://`, `mailto:`, etc.) are silently skipped by default.
 
 ## Enable
@@ -43,7 +45,67 @@ Heading IDs come from [`HeadingLinksPlugin`](./heading-links.mdx), which runs ea
 
 ## Options
 
-- `failOnBroken` — when `true`, broken links emit `Error` diagnostics (build fails). Default: `false` (warnings only).
+- `failOnBroken` — when `true`, broken links emit `Error` diagnostics (build fails). Default: `false` (warnings only). It can also be turned on from outside this block — see [Strict mode](#strict-mode).
+
+## Strict mode
+
+`failOnBroken` lives inside the `linkValidation` block, which is not always yours to edit: a preset can own that block and bake `failOnBroken: false` into it. zfb therefore exposes a top-level switch that overrides it, as a config field and as a pair of `zfb build` flags:
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  strictBrokenLinks: true,
+});
+```
+
+```sh
+zfb build --strict-broken      # fail this build on broken links
+zfb build --no-strict-broken   # do not fail this build
+```
+
+See [`strictBrokenLinks`](../api/define-config.mdx) in the config reference and the `zfb build` flags in the [CLI reference](../api/cli.mdx).
+
+### It force-enables link validation
+
+Turning strict mode on for a project with **no** `linkValidation` configuration at all does not silently do nothing. It enables link validation with its default settings *and* makes broken links fail the build. A switch named "strict broken links" that quietly no-ops on a bare project would be a footgun, so it always has an effect.
+
+When `linkValidation` is already configured, only `failOnBroken` is overridden. Every other option in that block — and every sibling setting under `markdown` and `markdown.features` — is left untouched.
+
+### Precedence
+
+Three levels, highest first:
+
+1. An explicit CLI flag — `--strict-broken` or `--no-strict-broken`. The two conflict; passing both is an error.
+2. The `strictBrokenLinks` config field.
+3. The default, `false`.
+
+Omitting the flag is not the same as passing `--no-strict-broken`: an omitted flag falls through to the config value, while `--no-strict-broken` explicitly overrides it. This is the same tri-state `minifyHtml` uses with `--minify-html` / `--no-minify-html`.
+
+### Build only — `zfb dev` is never affected
+
+Strict mode is resolved inside `zfb build` and applies to that command alone. `zfb dev` never sees the strict overlay — link validation behaves there exactly as your own `linkValidation` configuration alone says it should. A project with no `linkValidation` block still has no link validation at all in dev, even with `strictBrokenLinks: true` set; a project that configures `failOnBroken: true` itself keeps that severity in dev, as it always did. The point is to gate CI, not to change the inner loop.
+
+### What `--no-strict-broken` does not do
+
+`--no-strict-broken` disables the top-level strict overlay only. It does **not** downgrade a `linkValidation` block that independently and explicitly sets `failOnBroken: true` — that is a separate, more specific knob, and it stays in effect regardless of the flag:
+
+```ts
+markdown: { features: { linkValidation: { failOnBroken: true } } },
+```
+
+A project configured that way still fails on broken links under `zfb build --no-strict-broken`. To relax it, change `failOnBroken` itself.
+
+### Unrelated to `resolveMarkdownLinks.onBrokenLinks`
+
+zfb has a second, entirely separate broken-link mechanism: [`resolveMarkdownLinks`](./resolve-links.mdx)'s `onBrokenLinks` option, which reports `.md`/`.mdx` links the resolver could not rewrite. The two are not unified and are not planned to be:
+
+| | This feature | `resolveMarkdownLinks` |
+|---|---|---|
+| Config path | `markdown.features.linkValidation` | `resolveMarkdownLinks` |
+| Severity knob | `failOnBroken`, plus `strictBrokenLinks` / `--strict-broken` | `onBrokenLinks: "warn" \| "error" \| "ignore"` |
+| Diagnostic wording | `broken link: …` | `broken markdown link in {file}: … could not be resolved…` |
+
+`strictBrokenLinks` and `--strict-broken` have no effect on `onBrokenLinks`. To make unresolvable markdown links fail the build too, set `onBrokenLinks: "error"` alongside them.
 
 ## Diagnostic format
 

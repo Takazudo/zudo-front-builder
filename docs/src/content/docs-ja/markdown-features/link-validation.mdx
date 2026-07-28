@@ -6,6 +6,8 @@ tier: Opt-in
 
 `linkValidation` 機能は、ビルド内のすべての `<a href>` と `<img src>` をたどり、内部リンクとアンカーフラグメントが正しく解決されるかを検証します。壊れたリンクはビルド診断を生成します — デフォルトでは警告、`failOnBroken: true` を設定するとエラーになります。
 
+`linkValidation` ブロック自体に手を入れずに CI をリンク整合性でゲートしたい場合（プリセットがそのブロックを所有しているときなど）は、トップレベルの `strictBrokenLinks` 設定フィールドか `zfb build --strict-broken` を使います。後述の [strict モード](#strict-モード)を参照してください。
+
 外部 URL（`http://`、`https://`、`mailto:` など）はデフォルトで黙ってスキップされます。
 
 ## 有効化
@@ -43,7 +45,67 @@ linkValidation: { failOnBroken: true },
 
 ## オプション
 
-- `failOnBroken` — `true` のとき、壊れたリンクは `Error` 診断を出力します（ビルドが失敗します）。デフォルト: `false`（警告のみ）。
+- `failOnBroken` — `true` のとき、壊れたリンクは `Error` 診断を出力します（ビルドが失敗します）。デフォルト: `false`（警告のみ）。このブロックの外から有効にすることもできます — [strict モード](#strict-モード)を参照してください。
+
+## strict モード
+
+`failOnBroken` は `linkValidation` ブロックの中にありますが、そのブロックが常に自分の手中にあるとは限りません。プリセットがそのブロックを所有し、`failOnBroken: false` を焼き込んでいることもあります。そのため zfb は、これを上書きするトップレベルのスイッチを、設定フィールドと `zfb build` のフラグの両方として提供しています。
+
+```ts
+// zfb.config.ts
+export default defineConfig({
+  strictBrokenLinks: true,
+});
+```
+
+```sh
+zfb build --strict-broken      # このビルドを壊れたリンクで失敗させる
+zfb build --no-strict-broken   # このビルドは失敗させない
+```
+
+設定リファレンスの [`strictBrokenLinks`](../api/define-config.mdx) と、[CLI リファレンス](../api/cli.mdx)の `zfb build` のフラグを参照してください。
+
+### リンク検証を強制的に有効化する
+
+`linkValidation` の設定が**まったくない**プロジェクトで strict モードを有効にしても、黙って何も起きないということはありません。デフォルト設定でリンク検証を有効にし、**かつ**壊れたリンクでビルドを失敗させます。「strict broken links」という名前のスイッチが素のプロジェクトで静かに何もしないのは落とし穴でしかないため、常に効果を持つようになっています。
+
+`linkValidation` がすでに設定されている場合は、上書きされるのは `failOnBroken` だけです。そのブロック内の他のオプションも、`markdown` および `markdown.features` 配下の兄弟設定も、いっさい変更されません。
+
+### 優先順位
+
+優先度の高い順に 3 段階です。
+
+1. 明示的な CLI フラグ — `--strict-broken` または `--no-strict-broken`。この 2 つは排他で、同時に渡すとエラーになります。
+2. `strictBrokenLinks` 設定フィールド。
+3. デフォルトの `false`。
+
+フラグを省略することと `--no-strict-broken` を渡すことは同じではありません。省略した場合は設定値にフォールスルーしますが、`--no-strict-broken` は設定値を明示的に上書きします。これは `minifyHtml` と `--minify-html` / `--no-minify-html` が使っているのと同じ 3 値の仕組みです。
+
+### build 専用 — `zfb dev` は影響を受けない
+
+strict モードは `zfb build` の内部で解決され、そのコマンドにのみ適用されます。`zfb dev` が strict オーバーレイを見ることはなく、リンク検証はあくまで自分で書いた `linkValidation` 設定どおりに振る舞います。`linkValidation` ブロックがないプロジェクトは、`strictBrokenLinks: true` を設定していても dev ではリンク検証がまったく行われませんし、自分で `failOnBroken: true` を設定しているプロジェクトは、従来どおり dev でもその severity を保ちます。狙いは CI をゲートすることであって、開発のインナーループを変えることではありません。
+
+### `--no-strict-broken` がしないこと
+
+`--no-strict-broken` が無効にするのは、トップレベルの strict オーバーレイだけです。`linkValidation` ブロック側で独立に、かつ明示的に `failOnBroken: true` が設定されている場合、それを引き下げることは**ありません**。そちらはより限定的な別のつまみであり、このフラグにかかわらず有効なままです。
+
+```ts
+markdown: { features: { linkValidation: { failOnBroken: true } } },
+```
+
+このように設定されたプロジェクトは、`zfb build --no-strict-broken` を付けても壊れたリンクで失敗します。緩めたい場合は `failOnBroken` 自体を変更してください。
+
+### `resolveMarkdownLinks.onBrokenLinks` とは無関係
+
+zfb には、壊れたリンクを扱う仕組みがもう 1 つ、完全に独立して存在します。[`resolveMarkdownLinks`](./resolve-links.mdx) の `onBrokenLinks` オプションで、リゾルバが書き換えられなかった `.md` / `.mdx` リンクを報告するものです。この 2 つは統合されていませんし、統合する予定もありません。
+
+| | この機能 | `resolveMarkdownLinks` |
+|---|---|---|
+| 設定パス | `markdown.features.linkValidation` | `resolveMarkdownLinks` |
+| severity のつまみ | `failOnBroken`、および `strictBrokenLinks` / `--strict-broken` | `onBrokenLinks: "warn" \| "error" \| "ignore"` |
+| 診断の文言 | `broken link: …` | `broken markdown link in {file}: … could not be resolved…` |
+
+`strictBrokenLinks` と `--strict-broken` は `onBrokenLinks` には影響しません。解決できないマークダウンリンクでもビルドを失敗させたい場合は、あわせて `onBrokenLinks: "error"` を設定してください。
 
 ## 診断フォーマット
 
