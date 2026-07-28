@@ -1,43 +1,91 @@
-//! Dev Supervision E2E — RED (issue #2101, Dev Supervision epic #2099
-//! Sub #2101, depends on #2100's fault-injection knobs).
+//! Dev Supervision E2E (issue #2101, Dev Supervision epic #2099 Sub #2101,
+//! depends on #2100's fault-injection knobs; flipped green by #2102, the
+//! supervision-link sub; confirmed by #2105, the epic's closing sub).
 //!
 //! ## Why this test exists
 //!
 //! `zfb dev`'s orchestrator drain loop (`BuildOrchestrator::run_with_boot`)
-//! runs inside a fire-and-forget `tokio::spawn` (`boot_handle` in
-//! `crates/zfb/src/commands/dev.rs`) that nothing ever joins or awaits for
-//! its outcome — only `boot_handle.abort()` is called, on the OTHER branch
-//! of the `tokio::select!` (when the HTTP server itself stops). If that
-//! task panics or silently returns, the process notices nothing: the HTTP
-//! listener stays open and keeps answering 200s with stale content forever.
-//! There is today no test proving the dev process actually goes down when
-//! its watcher/orchestrator task dies — this file is that regression net,
+//! used to run inside a fire-and-forget `tokio::spawn` (`boot_handle` in
+//! `crates/zfb/src/commands/dev.rs`) that nothing ever joined or awaited
+//! for its outcome — only `boot_handle.abort()` was called, on the OTHER
+//! branch of the `tokio::select!` (when the HTTP server itself stops). If
+//! that task panicked or silently returned, the process noticed nothing:
+//! the HTTP listener stayed open and kept answering 200s with stale
+//! content forever. This file is the regression net proving the dev
+//! process actually goes down when its watcher/orchestrator task dies,
 //! using the deterministic fault knobs #2100 added
 //! (`ZFB_DEV_TEST_ORCH_PANIC_ON_TICK`, `ZFB_DEV_TEST_ORCH_STOP_MS`) instead
 //! of a real (unreliable, hard-to-trigger-on-demand) production bug.
 //!
-//! ## RED today, by design
+//! ## Flipped green by #2102 — assertions unchanged
 //!
-//! Both assertions below are written in DESIRED POST-FIX form — the
-//! contract the dependency sub (#2102, Dev Supervision epic #2099 Wave 2,
-//! the supervision-link sub) must deliver: a dead orchestrator task takes
-//! the whole `zfb dev` process down (non-zero exit, listener actually
-//! dropped) with a stderr message naming the dead task. **Verified RED
-//! today** (2026-07, this sub, before #2102 lands): with either fault
+//! Both assertions below were written in DESIRED POST-FIX form from the
+//! start and are byte-identical to how #2101 wrote them — flipping (this
+//! sub, #2105) only removed the `#[ignore]` attribute and updated
+//! names/comments, per zudo-test-wisdom's flip protocol. The contract:
+//! a dead orchestrator task takes the whole `zfb dev` process down
+//! (non-zero exit, listener actually dropped) with a stderr message
+//! naming the dead task — delivered by #2102's supervision `select!` arm
+//! (`res = &mut boot_handle`, `crates/zfb/src/commands/dev.rs`).
+//!
+//! **Verified RED before #2102** (2026-07, #2101): with either fault
 //! armed and no supervision link in place, the fault's own `fault fired:`
 //! marker line (see #2100's doc comments in
 //! `crates/zfb-build/src/orchestrator.rs` for exact wording) reliably
-//! appears in captured stderr — proving the watcher delivered the event
+//! appeared in captured stderr — proving the watcher delivered the event
 //! and the fault seam actually fired — yet `GET /` against the still-live
-//! port keeps answering 200, and the child process never exits within the
-//! generous deadline below. Both tests therefore currently FAIL (the
-//! non-exit assertion times out) when run locally with `--ignored`; they
-//! are tagged `pending-feature: #2102` rather than left to fail the gate.
+//! port kept answering 200, and the child process never exited within the
+//! generous deadline below.
 //!
-//! Captured evidence from an actual local run (2026-07-28,
-//! `ZFB_ESBUILD_BIN=<path> cargo test -p zfb --test dev_supervision_e2e --
-//! --ignored --test-threads=1`, both tests FAILED as expected, total run
-//! time 70.06s for the pair):
+//! **Revert-proof, performed by #2105** (2026-07): with #2102's
+//! supervision arm temporarily commented out in
+//! `crates/zfb/src/commands/dev.rs` (the `res = &mut boot_handle => { ... }`
+//! `select!` arm), both tests below reproduced the EXACT pre-fix RED
+//! symptom in this same harness — the fault's `fault fired:` marker
+//! appeared in captured stderr, `GET /` kept answering 200, and the
+//! process never exited within `FAULT_EXIT_DEADLINE`, so `wait_for_exit`
+//! timed out and the diagnostic panic fired. The arm was then restored and
+//! `git diff` confirmed clean before committing. Captured evidence from
+//! that run (2026-07-28, `ZFB_ESBUILD_BIN=<path> cargo test -p zfb --test
+//! dev_supervision_e2e -- --test-threads=1`, arm disabled):
+//!
+//! ```text
+//! test orch_panic_on_tick_takes_the_whole_process_down ... FAILED
+//! thread '...' panicked at crates/zfb/tests/dev_supervision_e2e.rs:...:
+//! process never exited within the deadline.
+//! live-server probe: manual GET http://localhost:PORT/ still answered
+//! status 200 (first 200 bytes: "<!doctype html>...<h1>dev-loop-basic</h1>...")
+//! fault fired marker ("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_PANIC_ON_TICK")
+//! observed in captured output: true
+//!
+//! test orch_stop_ms_takes_the_whole_process_down ... FAILED
+//! thread '...' panicked at crates/zfb/tests/dev_supervision_e2e.rs:...:
+//! process never exited within the deadline.
+//! live-server probe: manual GET http://localhost:PORT/ still answered
+//! status 200 (first 200 bytes: "<!doctype html>...<h1>dev-loop-basic</h1>...")
+//! fault fired marker ("[zfb-timing] fault fired: ZFB_DEV_TEST_ORCH_STOP_MS")
+//! observed in captured output: true
+//!
+//! test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+//! ```
+//!
+//! With the arm restored (`git diff` on `crates/zfb/src/commands/dev.rs`
+//! confirmed empty before committing), all three tests in this file pass
+//! again (2026-07-28, same command without `-- <test names>`):
+//!
+//! ```text
+//! running 3 tests
+//! test graceful_sigint_exits_zero_and_persists_the_graph ... ok
+//! test orch_panic_on_tick_takes_the_whole_process_down ... ok
+//! test orch_stop_ms_takes_the_whole_process_down ... ok
+//!
+//! test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+//! ```
+//!
+//! Original captured evidence from the pre-#2102 RED baseline, #2101's own
+//! run (2026-07-28, `ZFB_ESBUILD_BIN=<path> cargo test -p zfb --test
+//! dev_supervision_e2e -- --ignored --test-threads=1`, both tests FAILED
+//! as expected, total run time 70.06s for the pair):
 //!
 //! ```text
 //! test orch_panic_on_tick_takes_the_whole_process_down ...
@@ -162,6 +210,12 @@ const FAULT_EXIT_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Deadline for the post-exit "port refuses new connections" check.
 const PORT_CLOSED_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Deadline for the process to exit after a real, graceful `SIGINT` —
+/// same value used by `cold_rewrite_prewarm_e2e.rs` and
+/// `dev_content_aggregate_cold_boot_e2e.rs` for the identical shutdown
+/// shape.
+const GRACEFUL_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(20);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -544,8 +598,8 @@ fn assert_desired_supervision_contract(
 // whole process down.
 // ---------------------------------------------------------------------------
 
-/// RED (issue #2101, depends on #2100; flips green once #2102 lands the
-/// supervision link).
+/// Issue #2101, depends on #2100; flipped green by #2102 (the
+/// supervision-link sub), confirmed by #2105.
 ///
 /// Boots a real `zfb dev` with `ZFB_DEV_TEST_ORCH_PANIC_ON_TICK` armed.
 /// The fault fires on the very NEXT dispatched tick after boot, so there
@@ -558,12 +612,13 @@ fn assert_desired_supervision_contract(
 /// since it proves a real filesystem event reached the orchestrator's
 /// channel and was drained into a dispatched tick.
 ///
-/// **Verified RED** (2026-07): with the fault armed and no supervision
-/// link, the marker fires (captured in stderr) but `GET /` keeps
-/// answering 200 and the process never exits — see the PR/commit message
-/// for the captured evidence.
+/// **Verified RED before #2102** (2026-07): with the fault armed and no
+/// supervision link, the marker fired (captured in stderr) but `GET /`
+/// kept answering 200 and the process never exited — see the module-level
+/// doc comment above for the captured evidence, and its revert-proof
+/// section for #2105's confirmation that disabling #2102's arm reproduces
+/// the exact same symptom today.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2102"]
 async fn orch_panic_on_tick_takes_the_whole_process_down() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
@@ -635,8 +690,8 @@ async fn orch_panic_on_tick_takes_the_whole_process_down() {
 // must ALSO take the whole process down.
 // ---------------------------------------------------------------------------
 
-/// RED (issue #2101, depends on #2100; flips green once #2102 lands the
-/// supervision link).
+/// Issue #2101, depends on #2100; flipped green by #2102 (the
+/// supervision-link sub), confirmed by #2105.
 ///
 /// Boots a real `zfb dev` with `ZFB_DEV_TEST_ORCH_STOP_MS` armed (its
 /// deadline is established only after the boot hook completes — see
@@ -651,12 +706,13 @@ async fn orch_panic_on_tick_takes_the_whole_process_down() {
 /// takes, which is exactly the shape that must ALSO take the whole
 /// process down, not just quietly end the drain loop.
 ///
-/// **Verified RED** (2026-07): with the fault armed and no supervision
-/// link, the marker fires (captured in stderr) but `GET /` keeps
-/// answering 200 and the process never exits — see the PR/commit message
-/// for the captured evidence.
+/// **Verified RED before #2102** (2026-07): with the fault armed and no
+/// supervision link, the marker fired (captured in stderr) but `GET /`
+/// kept answering 200 and the process never exited — see the module-level
+/// doc comment above for the captured evidence, and its revert-proof
+/// section for #2105's confirmation that disabling #2102's arm reproduces
+/// the exact same symptom today.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2102"]
 async fn orch_stop_ms_takes_the_whole_process_down() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let Some(esbuild) = locate_esbuild() else {
@@ -740,6 +796,170 @@ async fn orch_stop_ms_takes_the_whole_process_down() {
         "process exited but the ZFB_DEV_TEST_ORCH_STOP_MS fault's own \
          `fault fired:` marker never appeared — the exit must be caused BY \
          this fault, not some unrelated crash.\n{}",
+        session.logs(),
+    );
+
+    assert!(
+        overall_start.elapsed() < OVERALL_DEADLINE,
+        "test exceeded its overall {}s watchdog.\n{}",
+        OVERALL_DEADLINE.as_secs(),
+        session.logs(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 3 — a real SIGINT (not a guard-drop SIGKILL) must exit 0 and persist
+// the graph on the way out.
+// ---------------------------------------------------------------------------
+
+/// Issue #2105 (Dev Supervision epic #2099, the epic's closing confirm
+/// sub) — the explicit Ctrl+C/SIGINT exit-0 regression test #2102
+/// deliberately deferred. #2102's own PR did a local MANUAL SIGINT check
+/// (documented in its commit message) but correctly avoided claiming
+/// `dev_serve_e2e.rs` proves this: that file's `DevServerGuard` always
+/// group-SIGKILLs the child on `Drop` and never sends a graceful signal at
+/// all, so nothing in this crate's existing suite exercised the Ctrl+C
+/// path via a real signal before this test.
+///
+/// Sends a REAL `SIGINT` to the dev server's process group (the exact
+/// signal `tokio::signal::ctrl_c()` in `run()`'s `select!` listens for —
+/// see `crates/zfb/src/commands/dev.rs`), not a guard-drop `SIGKILL`, and
+/// asserts:
+///
+/// 1. clean exit — `ExitStatus::success()` (status code 0), within a
+///    generous deadline;
+/// 2. the port refuses new connections afterward (the listener was
+///    genuinely dropped via `serve_with_listener`'s graceful shutdown, not
+///    left with a dead accept loop);
+/// 3. `.zfb/graph.bin` is freshly written on the way out — the concrete,
+///    file-system-level signal #2102's own manual run used to confirm the
+///    graceful shutdown tail actually ran (`run()`'s final "persist the
+///    graph one more time before exit" step, `crates/zfb/src/commands/dev.rs`).
+///    This is deliberately a FILE-level check rather than a captured-log
+///    check: none of the three graceful-teardown steps this test's name
+///    alludes to (`DevRenderSession::shutdown_explicit`, `PluginHost::shutdown`,
+///    the final `save_to_disk` call) emit an info-level line on their
+///    SUCCESS path today — `dev.rs` only logs on FAILURE for each of them
+///    (e.g. `"graph persistence: shutdown write to {} failed (ignored)"`).
+///    A freshly-written `graph.bin` is the strongest signal actually
+///    available that the graceful tail — not just the process — ran to
+///    completion; asserting on absent log text would either be
+///    unfalsifiable (asserting nothing appeared) or dishonestly claim log
+///    lines this codebase does not emit.
+///
+/// The fixture carries no prior `.zfb/graph.bin` (a fresh `tempfile`
+/// copy), and a warmup-marker + SSE handshake (identical to Test 2's
+/// liveness proof) both proves the watcher is live and forces the graph
+/// to gain a genuinely new entry before shutdown — so a stale/absent file
+/// can never be mistaken for a fresh one.
+#[tokio::test(flavor = "multi_thread")]
+async fn graceful_sigint_exits_zero_and_persists_the_graph() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_supervision_e2e] esbuild not found; skipping test.");
+        return;
+    };
+    let _serial = SERIAL.lock().await;
+
+    let overall_start = Instant::now();
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let mut session = spawn_dev(&tmp, &esbuild, &[]);
+
+    let Some((base, client)) = boot_and_wait_ready(&mut session).await else {
+        return; // recognized environmental skip
+    };
+
+    let graph_path = session.root.join(".zfb").join("graph.bin");
+    assert!(
+        !graph_path.exists(),
+        "a fresh tempdir copy of the fixture must not already carry \
+         `.zfb/graph.bin` — otherwise a stale file could be mistaken for a \
+         freshly-written one below.\n{}",
+        session.logs(),
+    );
+
+    // Prove watcher liveness AND force the graph to gain a new entry
+    // before shutdown (same SSE-handshake shape as Test 2), so the
+    // post-exit `graph.bin` freshness check below cannot be satisfied by
+    // an empty/never-touched graph.
+    {
+        let sse = subscribe_sse(&client, &base).await;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let root = session.root.clone();
+            let stop = std::sync::Arc::clone(&stop);
+            let mut idx = 0u32;
+            tokio::spawn(async move {
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    write_warmup_marker(&root, idx);
+                    idx += 1;
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+            })
+        };
+        let first = zfb_test_utils::next_sse_event_name(sse, HANDSHAKE_DEADLINE)
+            .await
+            .expect("read SSE stream during watcher-live handshake");
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = writer.await;
+        assert!(
+            first.is_some(),
+            "watcher never became live: no warmup-induced SSE event within \
+             {}s.\n{}",
+            HANDSHAKE_DEADLINE.as_secs(),
+            session.logs(),
+        );
+    }
+
+    // The real signal `tokio::signal::ctrl_c()` listens for in `run()`'s
+    // `select!` — never a guard-drop `SIGKILL` (see `DevServerGuard::drop`
+    // above, which this test deliberately does NOT rely on for the
+    // assertions below; `Drop` still runs afterward as a safety net).
+    unsafe {
+        libc::kill(-session.guard.pgid, libc::SIGINT);
+    }
+
+    let status = wait_for_exit(&mut session, GRACEFUL_SHUTDOWN_DEADLINE).await;
+    let Some(status) = status else {
+        let diag = diagnose_non_exit(&client, &base, "SIGINT", &session).await;
+        panic!("{diag}");
+    };
+    assert!(
+        status.success(),
+        "the dev process must exit with status 0 after a graceful SIGINT \
+         (got {status:?}).\n{}",
+        session.logs(),
+    );
+
+    let port: u16 = base
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .expect("recover port from base URL");
+    let port_refused = wait_for_port_refused(port, PORT_CLOSED_DEADLINE).await;
+    assert!(
+        port_refused,
+        "the port must refuse new connections after a graceful SIGINT exit \
+         (proving the listener was actually dropped).\n{}",
+        session.logs(),
+    );
+
+    // Freshness is established by EXISTENCE, not by comparing mtime against
+    // `before_signal` (codex review, #2105): this session's `.zfb/graph.bin`
+    // was asserted ABSENT above, from a fresh `tempfile` copy of the
+    // fixture that carries no prior graph at all — so the file existing
+    // now is already sufficient proof the graceful persist step created it
+    // during this shutdown. A `modified >= before_signal` comparison would
+    // add nothing but flakiness risk on filesystems with coarse mtime
+    // granularity (e.g. a rounded-down write could land just under the
+    // high-resolution `before_signal` instant and fail a genuinely correct
+    // shutdown).
+    assert!(
+        graph_path.exists(),
+        "`.zfb/graph.bin` must exist after a graceful SIGINT shutdown — the \
+         concrete signal #2102's own manual verification used to confirm \
+         the graceful shutdown tail (session shutdown, plugin-host \
+         shutdown, graph persist) actually ran.\n{}",
         session.logs(),
     );
 
