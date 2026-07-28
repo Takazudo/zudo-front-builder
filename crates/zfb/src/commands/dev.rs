@@ -15013,6 +15013,38 @@ mod tests {
         );
     }
 
+    /// Serializes tests that mutate the process-wide panic hook (issue
+    /// #2104 codex review, finding 3). `std::panic::take_hook` /
+    /// `set_hook` mutate ONE global shared by the whole test binary — the
+    /// two `err_panic_surfaces_panic_payload_and_context` tests below
+    /// (one per supervised task) each do take → install a silent hook →
+    /// `.await` the panicking task → restore, and under the default
+    /// parallel test harness two such regions can interleave so one
+    /// test's restore clobbers the OTHER test's still-installed silent
+    /// hook, leaving panic reporting disabled for every later test in the
+    /// binary — a silent, confusing failure mode with no assertion to
+    /// catch it. `tokio::sync::Mutex` (not `std::sync::Mutex`) because the
+    /// guarded region spans an `.await` and tokio's mutex carries no
+    /// poisoning: an unrelated panic elsewhere can never leave a
+    /// poisoned guard here to break subsequent tests, which is the
+    /// "robust to a panic inside the region" requirement this exists to
+    /// satisfy.
+    async fn with_silenced_panic_hook<Fut, T>(fut: Fut) -> T
+    where
+        Fut: std::future::Future<Output = T>,
+    {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _guard = LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let out = fut.await;
+        std::panic::set_hook(default_hook);
+        out
+    }
+
     // -----------------------------------------------------------------
     // Dev Supervision Link (issue #2102, epic #2099 Wave 2) —
     // `map_boot_task_join_result` pure-helper unit tests
@@ -15076,12 +15108,12 @@ mod tests {
             });
             // Swallow the default panic-hook println for this one panic so
             // the test's own output stays legible; restore immediately
-            // after the task is joined.
-            let default_hook = std::panic::take_hook();
-            std::panic::set_hook(Box::new(|_| {}));
+            // after the task is joined. Serialized against the sibling
+            // `redirects_watch_task_supervision` test doing the same thing
+            // (see `with_silenced_panic_hook`'s doc comment, #2104 codex
+            // review finding 3).
             let join_result: Result<anyhow::Result<()>, tokio::task::JoinError> =
-                handle.await.map(Ok);
-            std::panic::set_hook(default_hook);
+                with_silenced_panic_hook(async { handle.await.map(Ok) }).await;
 
             assert!(
                 join_result.as_ref().err().is_some_and(|e| e.is_panic()),
@@ -15185,10 +15217,12 @@ mod tests {
             let handle = tokio::spawn(async {
                 panic!("boom from the redirects watch task");
             });
-            let default_hook = std::panic::take_hook();
-            std::panic::set_hook(Box::new(|_| {}));
-            let join_result: Result<(), tokio::task::JoinError> = handle.await;
-            std::panic::set_hook(default_hook);
+            // Serialized against the sibling `boot_task_supervision` test
+            // doing the same panic-hook dance (see
+            // `with_silenced_panic_hook`'s doc comment, #2104 codex review
+            // finding 3).
+            let join_result: Result<(), tokio::task::JoinError> =
+                with_silenced_panic_hook(handle).await;
 
             assert!(
                 join_result.as_ref().err().is_some_and(|e| e.is_panic()),
