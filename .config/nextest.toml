@@ -10,7 +10,7 @@
 # doctests. Do not assume a green nextest run covers doctest examples.
 
 # ── Cross-binary serialization of the heavy V8/esbuild e2e binaries ──────────
-# These 32 integration-test binaries (all in package `zfb`) each spawn a real
+# These 33 integration-test binaries (all in package `zfb`) each spawn a real
 # `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
 # shells out to esbuild. Booting two at once starves CPU/memory and turns
 # their generous boot-deadline watchdogs flaky. `cargo test` serialized these
@@ -18,15 +18,16 @@
 # binaries concurrently by default — so without this group these heavy
 # processes race each other for CPU/memory. The group makes the serialization
 # explicit at the runner level: at most ONE test from this group runs at a
-# time across all 32 binaries.
+# time across all 33 binaries.
 #
 # The set is two sub-groups sharing one test-group:
-#   • 20 flock-adopting binaries (client_bundling_cross_pipeline,
+#   • 21 flock-adopting binaries (client_bundling_cross_pipeline,
 #     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set,
 #     wasm_ssr_dev_smoke_e2e, page_extension_full_matrix_e2e,
 #     mirror_css_scan_mdx_e2e, cold_rewrite_prewarm_e2e,
 #     ssr_reload_self_heal_e2e, embedded_host_request_time_e2e,
-#     workerd_parity_e2e, and dev_content_reload_2063_e2e) — spawn
+#     workerd_parity_e2e, dev_content_reload_2063_e2e, and
+#     dev_supervision_e2e) — spawn
 #     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
 #     #1339's OS advisory flock (crates/zfb-test-utils/src/cross_binary_lock.rs),
 #     so for them the test-group is defense in depth (runner-level) on top of
@@ -116,7 +117,7 @@
 [test-groups.e2e-heavy]
 max-threads = 1
 
-# The override that assigns the 32 heavy binaries to the e2e-heavy group AND
+# The override that assigns the 33 heavy binaries to the e2e-heavy group AND
 # grants them a long per-test timeout lives in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
@@ -141,7 +142,32 @@ max-threads = 1
 # neither the `env-gate:` nor `heavy:` rule fires per zudo-test-wisdom's
 # classification rules; membership here is for CPU/memory serialization
 # only) — the 12 build-command binaries have no flock and rely on this
-# group alone.
+# group alone. `dev_supervision_e2e` (Dev Supervision epic #2099) is the
+# newest flock-adopting member, bringing the flock-adopting bucket to 21
+# (33 total heavy binaries here). It carries THREE real `zfb dev` E2E
+# tests: the two #2101 wrote RED and #2102 (the supervision-link sub)
+# flipped green — `orch_panic_on_tick_takes_the_whole_process_down` and
+# `orch_stop_ms_takes_the_whole_process_down`, neither `#[ignore]`d
+# anymore — plus a third, `graceful_sigint_exits_zero_and_persists_the_graph`
+# (issue #2105, the epic's closing confirm sub), proving a real SIGINT
+# exits 0 and persists `.zfb/graph.bin`. None of the three carry an
+# `#[ignore]` attribute — like `dev_serve_e2e`/`embedded_host_request_time_e2e`
+# above, the binary self-skips via `locate_esbuild()` when esbuild isn't
+# staged, so it runs on T1 whenever esbuild is present rather than being
+# relegated to the weekly quarantine lane. Membership in this group is for
+# CPU/memory serialization only.
+#
+# **Authoritative recount (issue #2105, 2026-07)**: this sub re-measured
+# the whole group from scratch — `cargo nextest show-config test-groups -p
+# zfb --lib` plus a manual `binary(=...)` count against the filter below —
+# and found the surrounding prose in this file (which said "32
+# heavy binaries" / "20 flock-adopting binaries" in several places) had
+# drifted stale by one even before this epic touched it (missing
+# `workerd_parity_e2e`, registered by issue #2020 but never counted in the
+# header prose). The true count at HEAD, with `dev_supervision_e2e`
+# folded in, is **33 total** (21 flock-adopting, 12 build-only). Every
+# "32"/"20" figure in this file's comments above has been corrected to
+# "33"/"21" to match.
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
@@ -185,7 +211,7 @@ max-threads = 1
 # (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
 # is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy

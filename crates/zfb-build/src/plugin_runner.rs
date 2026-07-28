@@ -312,6 +312,26 @@ struct HostInner {
     /// `invoke_dev_handler` on one clone from being pre-empted by another
     /// clone's `shutdown` `take()`ing the child out from under it.
     shutting_down: AtomicBool,
+    /// Set by [`PluginHost::force_kill_child`] (a deliberate, intentional
+    /// teardown fired when a hook times out — see
+    /// `request_typed_with_timeout`), *before* the kill so a reader task
+    /// observing the resulting pipe EOF can tell it apart from an
+    /// unannounced crash. Deliberately a SEPARATE flag from
+    /// `shutting_down`: `shutdown()`'s latch has its own idempotency
+    /// contract (first caller owns teardown, others no-op), and folding
+    /// force-kill into it would let a mid-timeout force-kill silently
+    /// satisfy a *different* caller's later `shutdown()` latch check (or
+    /// vice versa) — two independent "this termination was intentional"
+    /// facts stay independent flags (#2104 codex review, finding 1).
+    /// [`HostInner::is_expected_termination`] is the single place both
+    /// flags are read together.
+    force_killed: AtomicBool,
+    /// Latches the FIRST unexpected-death report so the stdout and stderr
+    /// readers — which independently observe the same child dying and
+    /// would otherwise each emit their own loud message — produce exactly
+    /// ONE user-facing message per crash (#2104 codex review, finding 2).
+    /// See [`HostInner::claim_death_report`].
+    death_reported: AtomicBool,
     /// Reader-task join handle, kept so teardown can be *bounded*: a hung
     /// child only closes stdout (and thus ends the reader loop) when it
     /// actually dies, so shutdown joins this with a deadline instead of
@@ -323,6 +343,27 @@ struct HostInner {
     /// host is force-killed and the build fails with a diagnostic error.
     /// Env: ZFB_PLUGIN_HOOK_TIMEOUT (seconds). Default: 120s.
     hook_timeout: std::time::Duration,
+}
+
+impl HostInner {
+    /// True when a pipe EOF is the expected result of a termination this
+    /// process itself initiated — either a normal `shutdown()` or a
+    /// hook-timeout `force_kill_child()` — as opposed to the child dying
+    /// on its own (crash, OOM-kill, etc.). Both readers consult this
+    /// through the single place so the two flags can never drift apart.
+    fn is_expected_termination(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire) || self.force_killed.load(Ordering::Acquire)
+    }
+
+    /// Claim the right to report an unexpected child death. Returns `true`
+    /// for exactly the first caller (across both readers); every
+    /// subsequent call — including from the *other* reader observing the
+    /// same crash — returns `false` and must stay silent. This is what
+    /// turns "stdout AND stderr both close on a crash" into one message,
+    /// not two (#2104 codex review, finding 2).
+    fn claim_death_report(&self) -> bool {
+        !self.death_reported.swap(true, Ordering::AcqRel)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -461,6 +502,8 @@ impl PluginHost {
             next_id: AtomicU64::new(1),
             child: Mutex::new(Some(child)),
             shutting_down: AtomicBool::new(false),
+            force_killed: AtomicBool::new(false),
+            death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
             _tempdir: tmp,
             hook_timeout,
@@ -468,40 +511,34 @@ impl PluginHost {
 
         // Reader task — drains stdout, dispatches replies to the
         // matching pending sender, and forwards log lines into tracing.
+        //
+        // Disposition (issue #2104, epic #2099): today, once this loop
+        // ends (EOF or a read error), pending/future hook calls just fail
+        // one request at a time via the synthetic "stdout closed before
+        // reply" error below — nothing announces the process actually
+        // died. `shutdown()` flips `shutting_down` to `true` *before* it
+        // kills the child, and a hook-timeout `force_kill_child()` flips
+        // the separate `force_killed` flag before ITS kill, so an EOF
+        // observed while either flag is set (`HostInner::
+        // is_expected_termination()`) is the expected close of an
+        // intentional termination and stays silent; an EOF observed with
+        // both still `false` means the child died unannounced (crash,
+        // OOM-kill, etc.). Of those unexpected closes, only whichever
+        // reader wins `HostInner::claim_death_report()` — this one or the
+        // sibling stderr reader below, both of which see the SAME crash —
+        // emits ONE loud `tracing::error!` (codex review, #2104: a
+        // force-kill must not pile a misleading death message on top of
+        // the accurate timeout diagnostic already being returned, and a
+        // crash closing both pipes must not double-report). (Not
+        // `zfb::output::error` — this crate sits below `zfb` in the
+        // dependency graph and can't reach its CLI-output helpers;
+        // `tracing::error!` is this crate's own convention for a loud
+        // signal, matching the plugin `"error"`-level log passthrough in
+        // `handle_line` above.) The loop body lives in
+        // [`Self::run_stdout_reader`] so the EOF-suppression logic is
+        // unit-testable without a real `node` child.
         let inner_for_reader = Arc::clone(&inner);
-        let reader_handle = tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        Self::handle_line(&inner_for_reader, &line).await;
-                    }
-                    Ok(None) => {
-                        debug!("plugin host: stdout closed");
-                        break;
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "plugin host: stdout read error");
-                        break;
-                    }
-                }
-            }
-            // Wake every still-pending caller with a synthetic close
-            // error so we don't deadlock on a child that died early.
-            let mut pend = inner_for_reader.pending.lock().await;
-            for (id, tx) in pend.drain() {
-                let _ = tx.send(HostReply {
-                    id,
-                    ok: false,
-                    result: serde_json::Value::Null,
-                    error: Some(HostErrorPayload {
-                        plugin: "(host)".into(),
-                        hook: "(none)".into(),
-                        message: "plugin host stdout closed before reply".into(),
-                    }),
-                });
-            }
-        });
+        let reader_handle = tokio::spawn(Self::run_stdout_reader(inner_for_reader, stdout));
         // Stash the reader handle so shutdown can join it with a bound
         // rather than leaving the task fully detached.
         *inner
@@ -513,14 +550,23 @@ impl PluginHost {
         // Stderr drain — the host should never write to stderr in
         // practice, but a programmer error there shouldn't deadlock
         // on a full pipe buffer.
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.trim().is_empty() {
-                    warn!(target: "zfb_plugin", "{line}");
-                }
-            }
-        });
+        //
+        // Disposition (issue #2104, epic #2099): this task is separately
+        // detached from the stdout reader above (no `JoinHandle` is
+        // stashed anywhere for it, and `shutdown()` never joins it) — but
+        // it gets the SAME EOF disposition as the stdout reader rather
+        // than a silently different one just because it's a separate
+        // task: silence when this pipe closes as the expected result of a
+        // `shutdown()` or hook-timeout `force_kill_child()` already in
+        // flight, and — of an unexpected close — a loud `tracing::error!`
+        // ONLY if this reader wins the `claim_death_report()` race against
+        // the stdout reader observing the same crash (codex review,
+        // #2104). It needs its own `Arc<HostInner>` clone purely to read
+        // that shared state. The loop body lives in
+        // [`Self::run_stderr_reader`] alongside its stdout counterpart for
+        // the same testability reason.
+        let inner_for_stderr = Arc::clone(&inner);
+        tokio::spawn(Self::run_stderr_reader(inner_for_stderr, stderr));
 
         let host = PluginHost { inner };
 
@@ -792,7 +838,17 @@ impl PluginHost {
     }
 
     /// Force-kill the child process. Used when a hook timeout fires.
+    ///
+    /// Deliberately intentional termination: flips `force_killed` *before*
+    /// killing (same ordering discipline as `shutdown()` flipping
+    /// `shutting_down` before its own teardown) so the reader tasks'
+    /// resulting EOF is recognised as expected rather than reported as an
+    /// unannounced crash on top of the timeout diagnostic
+    /// `request_typed_with_timeout` is about to return (#2104 codex
+    /// review, finding 1). Does NOT touch `shutting_down` — a force-kill
+    /// is not a `shutdown()` call and must not satisfy that latch.
     async fn force_kill_child(&self) {
+        self.inner.force_killed.store(true, Ordering::Release);
         let mut guard = self.inner.child.lock().await;
         if let Some(mut child) = guard.take() {
             let _ = child.kill().await;
@@ -964,6 +1020,105 @@ impl PluginHost {
         let typed: T = serde_json::from_value(reply.result)
             .context("plugin host: deserialise reply.result")?;
         Ok(typed)
+    }
+
+    /// Drain the child's stdout: dispatch replies/log lines to
+    /// [`Self::handle_line`], then on EOF (or a read error) emit the loud
+    /// death message — but only when the close is BOTH unexpected
+    /// (`HostInner::is_expected_termination()` is false, i.e. neither a
+    /// `shutdown()` nor a hook-timeout `force_kill_child()` is already in
+    /// flight) AND this reader wins the race to claim it
+    /// (`HostInner::claim_death_report()`) against the sibling stderr
+    /// reader observing the SAME crash. See the disposition comment at
+    /// the spawn site in [`Self::spawn_with_timeout`] for the full
+    /// rationale (#2104), and `HostInner`'s field docs for why
+    /// force-kill and the single-report claim are separate flags from
+    /// `shutting_down` (#2104 codex review, findings 1 and 2).
+    ///
+    /// Emitted through BOTH `tracing::error!` and `eprintln!`, matching
+    /// this crate's existing dual-channel convention for a loud message a
+    /// real `zfb` CLI user must see (see
+    /// `skip_dangling_symlink_or_fail` in `bundler.rs`): no
+    /// `tracing_subscriber` is installed anywhere in the `zfb` binary, so
+    /// a bare `tracing::error!` alone is a silent no-op in production —
+    /// only tests that install their own subscriber (`#[traced_test]`)
+    /// would ever see it. `eprintln!` is the channel production users
+    /// actually see (codex review, #2104).
+    async fn run_stdout_reader(inner: Arc<HostInner>, stdout: tokio::process::ChildStdout) {
+        let mut lines = BufReader::new(stdout).lines();
+        let unexpected_eof;
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    Self::handle_line(&inner, &line).await;
+                    continue;
+                }
+                Ok(None) => {
+                    debug!("plugin host: stdout closed");
+                    unexpected_eof = !inner.is_expected_termination();
+                }
+                Err(e) => {
+                    warn!(error = %e, "plugin host: stdout read error");
+                    unexpected_eof = !inner.is_expected_termination();
+                }
+            }
+            break;
+        }
+        if unexpected_eof && inner.claim_death_report() {
+            let msg = "plugin host: stdout reader ended unexpectedly (plugin-host process \
+                 likely died) — pending and future plugin hook calls will fail";
+            error!("{msg}");
+            eprintln!("zfb error: {msg}");
+        }
+        // Wake every still-pending caller with a synthetic close error so
+        // we don't deadlock on a child that died early.
+        let mut pend = inner.pending.lock().await;
+        for (id, tx) in pend.drain() {
+            let _ = tx.send(HostReply {
+                id,
+                ok: false,
+                result: serde_json::Value::Null,
+                error: Some(HostErrorPayload {
+                    plugin: "(host)".into(),
+                    hook: "(none)".into(),
+                    message: "plugin host stdout closed before reply".into(),
+                }),
+            });
+        }
+    }
+
+    /// Drain the child's stderr into `tracing::warn!` per line, with the
+    /// SAME EOF disposition as [`Self::run_stdout_reader`] — expected
+    /// (shutdown or force-kill) closes stay silent, and of the unexpected
+    /// closes only whichever reader wins `claim_death_report()` emits the
+    /// loud message (same dual `tracing::error!` + `eprintln!` channel,
+    /// same rationale) (#2104, codex review findings 1 and 2).
+    async fn run_stderr_reader(inner: Arc<HostInner>, stderr: tokio::process::ChildStderr) {
+        let mut lines = BufReader::new(stderr).lines();
+        let unexpected_eof;
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if !line.trim().is_empty() {
+                        warn!(target: "zfb_plugin", "{line}");
+                    }
+                    continue;
+                }
+                Ok(None) => {
+                    unexpected_eof = !inner.is_expected_termination();
+                }
+                Err(_) => {
+                    unexpected_eof = !inner.is_expected_termination();
+                }
+            }
+            break;
+        }
+        if unexpected_eof && inner.claim_death_report() {
+            let msg =
+                "plugin host: stderr reader ended unexpectedly (plugin-host process likely died)";
+            error!("{msg}");
+            eprintln!("zfb error: {msg}");
+        }
     }
 
     async fn handle_line(inner: &Arc<HostInner>, line: &str) {
@@ -2358,6 +2513,8 @@ mod tests {
             next_id: AtomicU64::new(1),
             child: Mutex::new(Some(child)),
             shutting_down: AtomicBool::new(false),
+            force_killed: AtomicBool::new(false),
+            death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
             _tempdir: tmp,
             hook_timeout: timeout,
@@ -2536,5 +2693,298 @@ mod tests {
         b.expect("clone B shutdown Ok");
         // No panic, no double-kill: reaching here with both Ok is the
         // assertion. (The child was already taken by whichever clone won.)
+    }
+
+    // --- Reader EOF disposition (#2104, no node required) --------------------
+    //
+    // `run_stdout_reader` / `run_stderr_reader` emit exactly one loud
+    // `tracing::error!` when their pipe closes unexpectedly (child died
+    // without `shutdown()` having flipped `shutting_down` first), and stay
+    // silent when the same EOF happens during a normal `shutdown()` call.
+    // These drive the extracted reader loops directly against a real but
+    // trivial child (`true`, which exits immediately and closes both
+    // pipes) so the EOF path fires deterministically without needing
+    // `node` — Level 1, T0.
+
+    /// Build a minimal `Arc<HostInner>` plus a `true`-child's stdout/stderr
+    /// pipes. `true` exits immediately, so both pipes hit EOF as soon as
+    /// the reader starts reading — no node, no fixed sleep.
+    #[cfg(unix)]
+    async fn stub_inner_with_true_child() -> Option<(
+        Arc<HostInner>,
+        tokio::process::ChildStdout,
+        tokio::process::ChildStderr,
+    )> {
+        let mut child = match tokio::process::Command::new("true")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return None, // `true` not available (extremely rare)
+        };
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = child.stdout.take().expect("stdout");
+        let stderr = child.stderr.take().expect("stderr");
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let inner = Arc::new(HostInner {
+            pending: Mutex::new(HashMap::new()),
+            stdin: Mutex::new(stdin),
+            next_id: AtomicU64::new(1),
+            child: Mutex::new(Some(child)),
+            shutting_down: AtomicBool::new(false),
+            force_killed: AtomicBool::new(false),
+            death_reported: AtomicBool::new(false),
+            reader_handle: Mutex::new(None),
+            _tempdir: tmp,
+            hook_timeout: std::time::Duration::from_secs(1),
+        });
+        Some((inner, stdout, stderr))
+    }
+
+    /// `shutting_down = false` (never called `shutdown()`) is the
+    /// unexpected-death case: the stdout EOF must produce exactly one
+    /// loud `tracing::error!` naming the reader as ended unexpectedly.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    async fn stdout_reader_logs_loud_error_on_eof_when_not_shutting_down() {
+        let Some((inner, stdout, _stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        assert!(!inner.shutting_down.load(Ordering::Acquire));
+        let watchdog = std::time::Duration::from_secs(5);
+        tokio::time::timeout(watchdog, PluginHost::run_stdout_reader(inner, stdout))
+            .await
+            .expect("stdout reader must return once the pipe closes");
+        assert!(
+            logs_contain("stdout reader ended unexpectedly"),
+            "an unexpected stdout EOF must produce exactly one loud error message"
+        );
+    }
+
+    /// Same EOF, but `shutting_down = true` (as `shutdown()` sets it
+    /// before tearing the child down) — the expected close of a normal,
+    /// intentional shutdown must NOT produce the loud error message.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    async fn stdout_reader_stays_silent_on_eof_during_shutdown() {
+        let Some((inner, stdout, _stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        inner.shutting_down.store(true, Ordering::Release);
+        let watchdog = std::time::Duration::from_secs(5);
+        tokio::time::timeout(watchdog, PluginHost::run_stdout_reader(inner, stdout))
+            .await
+            .expect("stdout reader must return once the pipe closes");
+        assert!(
+            !logs_contain("stdout reader ended unexpectedly"),
+            "a shutdown-initiated stdout EOF must not turn routine shutdown into noise"
+        );
+    }
+
+    /// The stderr reader gets the identical disposition treatment as the
+    /// stdout reader (#2104's requirement that both readers behave the
+    /// same, not silently diverge because they're separate tasks).
+    #[tokio::test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    async fn stderr_reader_logs_loud_error_on_eof_when_not_shutting_down() {
+        let Some((inner, _stdout, stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        assert!(!inner.shutting_down.load(Ordering::Acquire));
+        let watchdog = std::time::Duration::from_secs(5);
+        tokio::time::timeout(watchdog, PluginHost::run_stderr_reader(inner, stderr))
+            .await
+            .expect("stderr reader must return once the pipe closes");
+        assert!(
+            logs_contain("stderr reader ended unexpectedly"),
+            "an unexpected stderr EOF must produce exactly one loud error message"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    async fn stderr_reader_stays_silent_on_eof_during_shutdown() {
+        let Some((inner, _stdout, stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        inner.shutting_down.store(true, Ordering::Release);
+        let watchdog = std::time::Duration::from_secs(5);
+        tokio::time::timeout(watchdog, PluginHost::run_stderr_reader(inner, stderr))
+            .await
+            .expect("stderr reader must return once the pipe closes");
+        assert!(
+            !logs_contain("stderr reader ended unexpectedly"),
+            "a shutdown-initiated stderr EOF must not turn routine shutdown into noise"
+        );
+    }
+
+    // --- Force-kill / single-report EOF suppression (#2104 codex review) -----
+    //
+    // Finding 1: `force_kill_child()` (fired by a hook timeout) must not let
+    // the reader's resulting EOF pile a misleading "process likely died"
+    // alarm on top of the accurate timeout diagnostic already being
+    // returned. Finding 2: an unexpected crash closes BOTH stdout and
+    // stderr, but only ONE of the two readers may report it. Level 1, T0 —
+    // no `node` required.
+
+    /// `HostInner::claim_death_report` is the pure shared-state primitive
+    /// both readers race on: exactly the first caller gets `true`, every
+    /// later caller (including a differently-ordered interleaving) gets
+    /// `false`. Reuses the `true`-child stub purely for a valid
+    /// `Arc<HostInner>` — no reader task is driven here, this pins the
+    /// primitive in isolation from the I/O plumbing around it.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn claim_death_report_returns_true_exactly_once() {
+        let Some((inner, _stdout, _stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        assert!(
+            inner.claim_death_report(),
+            "the first claim must win the race"
+        );
+        assert!(
+            !inner.claim_death_report(),
+            "a second claim (the sibling reader observing the same crash) must lose"
+        );
+        assert!(
+            !inner.claim_death_report(),
+            "every subsequent claim must also lose — this is a one-shot latch"
+        );
+    }
+
+    /// `is_expected_termination` must recognise a force-kill as expected
+    /// even though `shutting_down` (the `shutdown()` latch) was never
+    /// touched — the two flags are deliberately independent (finding 1).
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn is_expected_termination_recognises_force_kill_independently_of_shutdown_latch() {
+        let Some((inner, _stdout, _stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        assert!(!inner.is_expected_termination());
+        inner.force_killed.store(true, Ordering::Release);
+        assert!(
+            inner.is_expected_termination(),
+            "force_killed alone must satisfy the expected-termination check"
+        );
+        assert!(
+            !inner.shutting_down.load(Ordering::Acquire),
+            "sanity: setting force_killed must not touch the separate shutdown() latch"
+        );
+    }
+
+    /// A hook timeout's `force_kill_child()` must suppress the stdout
+    /// reader's EOF alarm — the exact regression the codex review's
+    /// finding 1 named: a force-kill closing the pipe used to still look
+    /// like an unannounced crash on top of the timeout error already
+    /// returned to the caller.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    async fn force_kill_child_suppresses_the_stdout_eof_alarm() {
+        let Some((inner, stdout, _stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        let host = PluginHost {
+            inner: Arc::clone(&inner),
+        };
+        // Simulate the hook-timeout path: force-kill without ever calling
+        // `shutdown()` (`shutting_down` stays false the whole test).
+        host.force_kill_child().await;
+        assert!(
+            inner.force_killed.load(Ordering::Acquire),
+            "force_kill_child must flip force_killed before killing"
+        );
+        assert!(
+            !inner.shutting_down.load(Ordering::Acquire),
+            "force-kill must NOT satisfy the separate shutdown() latch"
+        );
+        let watchdog = std::time::Duration::from_secs(5);
+        tokio::time::timeout(watchdog, PluginHost::run_stdout_reader(inner, stdout))
+            .await
+            .expect("stdout reader must return once the pipe closes");
+        assert!(
+            !logs_contain("stdout reader ended unexpectedly"),
+            "a force-kill-initiated EOF must not be reported as an unannounced crash"
+        );
+    }
+
+    /// Same suppression, stderr side — the stderr reader must independently
+    /// honour the same force-kill flag.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    async fn force_kill_child_suppresses_the_stderr_eof_alarm() {
+        let Some((inner, _stdout, stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        let host = PluginHost {
+            inner: Arc::clone(&inner),
+        };
+        host.force_kill_child().await;
+        let watchdog = std::time::Duration::from_secs(5);
+        tokio::time::timeout(watchdog, PluginHost::run_stderr_reader(inner, stderr))
+            .await
+            .expect("stderr reader must return once the pipe closes");
+        assert!(
+            !logs_contain("stderr reader ended unexpectedly"),
+            "a force-kill-initiated EOF must not be reported as an unannounced crash"
+        );
+    }
+
+    /// An unexpected death closes BOTH stdout and stderr — codex review
+    /// finding 2 was that each reader independently reported it, producing
+    /// two near-identical user-facing errors for one crash. Running both
+    /// readers concurrently against the SAME `true`-child's pipes must
+    /// produce exactly ONE "process likely died" line, not two.
+    #[tokio::test]
+    #[cfg(unix)]
+    #[tracing_test::traced_test]
+    async fn unexpected_death_is_reported_exactly_once_not_twice() {
+        let Some((inner, stdout, stderr)) = stub_inner_with_true_child().await else {
+            eprintln!("skipping: `true` not available");
+            return;
+        };
+        assert!(!inner.shutting_down.load(Ordering::Acquire));
+        assert!(!inner.force_killed.load(Ordering::Acquire));
+        let inner_for_stdout = Arc::clone(&inner);
+        let watchdog = std::time::Duration::from_secs(5);
+        tokio::time::timeout(watchdog, async {
+            tokio::join!(
+                PluginHost::run_stdout_reader(inner_for_stdout, stdout),
+                PluginHost::run_stderr_reader(inner, stderr)
+            )
+        })
+        .await
+        .expect("both readers must return once their pipes close");
+        logs_assert(|lines| {
+            let hits = lines
+                .iter()
+                .filter(|line| line.contains("process likely died"))
+                .count();
+            if hits == 1 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "expected exactly one \"process likely died\" message, found {hits}: {lines:?}"
+                ))
+            }
+        });
     }
 }
