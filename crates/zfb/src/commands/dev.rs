@@ -2079,7 +2079,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //     on first request via the render-on-request hook installed in
     //     `ServeOpts` above (already live before the first accept, so a
     //     request can never race a not-yet-installed hook).
-    let boot_handle = tokio::spawn(async move {
+    // Issue #2102 (Dev Supervision epic #2099, Wave 2): this task's future
+    // now returns `anyhow::Result<()>` instead of printing-and-ending. Both
+    // an `Err` (the orchestrator's own failure) and a silent `Ok` (the
+    // watch channel closed with nothing left to drain) must produce a
+    // value the new supervision arm below can map to a fatal error — a
+    // dead watcher/orchestrator task must take the whole process down, not
+    // leave the HTTP listener answering stale 200s forever.
+    let mut boot_handle = tokio::spawn(async move {
         // Test-only slow-step injection (issue #1166 regression guard):
         // `ZFB_DEV_TEST_SLOW_DIGEST_MS` makes the deferred boot work
         // sleep BEFORE the digest walk, so a test can prove the port
@@ -2517,12 +2524,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Orchestrator watcher loop — registers the watch, runs the boot
         // hook above (steps 1-5), then drains change events until aborted on
         // shutdown.
-        if let Err(err) = orchestrator
+        //
+        // Issue #2102: `run_with_boot`'s own "Ok-on-close, caller decides"
+        // contract is untouched — we simply propagate its `Result` instead
+        // of printing it here. The supervision arm in `run()`'s
+        // `tokio::select!` is what decides an `Ok(())` here is fatal.
+        orchestrator
             .run_with_boot(ctx, discover_hook, on_outcome, Some(boot))
             .await
-        {
-            output::error(format!("build orchestrator stopped: {err:#}"));
-        }
     });
 
     // Issue #1718 (Watcher Liveness epic #1716) — spawn the watcher-
@@ -2574,6 +2583,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             let _ = liveness_probe_handle.await;
             res
         }
+        // Issue #2102 (Dev Supervision epic #2099, Wave 2) — the
+        // supervision link. `boot_handle` (the orchestrator watcher loop
+        // spawned above) previously ran fire-and-forget: nothing ever
+        // joined it, so a panic or a silent close of its watch channel
+        // left the HTTP listener answering stale 200s forever (issue
+        // #1718's liveness-probe audience intentionally now gets a DEAD
+        // server instead of a half-alive one — an intentional consequence
+        // of this epic, not a regression to soften). This arm fires the
+        // moment `boot_handle` finishes for ANY reason, maps its outcome
+        // to a fatal error via the pure `map_boot_task_join_result` helper
+        // (unit-tested below), and tears the liveness probe down the same
+        // way the serve arm above does before propagating the error as
+        // this function's result.
+        //
+        // `boot_handle.abort()` itself stays ONLY in the serve arm above —
+        // this arm never aborts `boot_handle` (it already finished, that's
+        // why it fired) and never duplicates that call.
+        res = &mut boot_handle => {
+            liveness_probe_handle.abort();
+            let _ = liveness_probe_handle.await;
+            Err(map_boot_task_join_result(res))
+        }
     };
 
     if let Some(session) = dev_session {
@@ -2614,6 +2645,97 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     }
 
     result
+}
+
+/// Context string every fatal `boot_handle` mapping attaches (issue
+/// #2102). Deliberately carries BOTH a component word ("watcher" /
+/// "orchestrator") and a termination word ("died" / "shutting down") in
+/// one string, so stderr always names what died regardless of which
+/// underlying cause produced the error — a bare Rust panic backtrace
+/// already prints "orchestrator.rs" and "panicked" on its own, so a
+/// genuine supervision message needs a word the backtrace doesn't already
+/// contain (see `dev_supervision_e2e.rs`'s `assert_desired_supervision_contract`).
+const DEV_WATCHER_TASK_DIED_CONTEXT: &str =
+    "dev watcher/orchestrator task died — shutting down the dev server";
+
+/// Maps the join result of `run()`'s `boot_handle` (the orchestrator
+/// watcher loop) to a fatal error naming the dead task. Pure and
+/// unit-tested (see `mod tests` below) — no I/O, no process exit; the
+/// caller (`run()`'s new supervision `tokio::select!` arm) decides what to
+/// do with the returned error, which today becomes `run()`'s `Err` result
+/// and, via `main`'s centralized error handling, a non-zero process exit.
+///
+/// Covers every `JoinResult` shape `boot_handle` can produce:
+/// - `Ok(Ok(()))` — the watch channel closed with nothing left to drain
+///   (a silent, otherwise-unnoticed death).
+/// - `Ok(Err(e))` — the orchestrator's own `run_with_boot` error,
+///   propagated as fatal (its "Ok-on-close, caller decides" return
+///   contract is untouched; THIS function is where "caller decides").
+/// - `Err(join_err)` with `join_err.is_panic()` — the task panicked;
+///   the panic payload is extracted and surfaced.
+///
+/// ## Cancellation is structurally excluded from this function's domain
+///
+/// `boot_handle.abort()` is called from exactly ONE place in `run()`:
+/// inside the OTHER `tokio::select!` arm, the one that fires when
+/// `serve_with_listener` itself resolves (the Ctrl+C-initiated graceful
+/// shutdown path). By the time that abort could make `boot_handle`'s join
+/// result a cancelled `JoinError`, the serve arm has already won the
+/// `select!` race and the process is already tearing down through IT —
+/// the supervision arm that calls this function can therefore never
+/// observe a cancelled join in practice. A cancelled `JoinError` reaching
+/// this function would mean that invariant broke (e.g. a future change
+/// adding a second `abort()` call site reachable from this arm), which is
+/// a logic error to fix, not a runtime outcome to map to fatal or benign
+/// — so it panics loudly via `unreachable!()` instead. See
+/// `boot_task_supervision::cancellation_is_structurally_unreachable` for the
+/// dedicated regression test pinning this invariant.
+fn map_boot_task_join_result(
+    result: Result<anyhow::Result<()>, tokio::task::JoinError>,
+) -> anyhow::Error {
+    match result {
+        Ok(Ok(())) => anyhow::anyhow!(
+            "dev watcher stopped (channel closed) — this usually means the \
+             file-watch backend gave up (e.g. an OS inotify/FSEvents watch \
+             limit was hit) or the watch loop otherwise exited with nothing \
+             left to drain"
+        )
+        .context(DEV_WATCHER_TASK_DIED_CONTEXT),
+        Ok(Err(orchestrator_err)) => orchestrator_err.context(DEV_WATCHER_TASK_DIED_CONTEXT),
+        Err(join_err) if join_err.is_cancelled() => unreachable!(
+            "boot_handle join observed as CANCELLED by the supervision select \
+             arm — this should be structurally impossible: `boot_handle.abort()` \
+             is only ever called from within the already-selected serve arm \
+             (the Ctrl+C shutdown path), so by the time cancellation could \
+             happen the process is already exiting through that other arm, \
+             never through this one. If this fired, a change made \
+             cancellation reachable here and the invariant this function \
+             documents needs re-verifying, not paving over."
+        ),
+        Err(join_err) => {
+            // `tokio::task::JoinError` has exactly two states: panicked or
+            // cancelled. Cancelled is excluded above, so this is always the
+            // panic case.
+            debug_assert!(join_err.is_panic(), "unexpected non-panic JoinError");
+            let panic_msg = boot_task_panic_payload_message(join_err.into_panic());
+            anyhow::anyhow!("panicked: {panic_msg}").context(DEV_WATCHER_TASK_DIED_CONTEXT)
+        }
+    }
+}
+
+/// Extracts a human-readable message from a `tokio::task::JoinError`'s
+/// panic payload — a `Box<dyn Any + Send>`, whose concrete type is almost
+/// always `&'static str` (a `panic!("literal")`) or `String` (a
+/// `panic!("{}", formatted)`), matching `std::panic::PanicHookInfo`'s own
+/// payload conventions.
+fn boot_task_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }
 
 /// Re-bundle the project's `"use client"` islands once and publish the
@@ -14666,5 +14788,126 @@ mod tests {
              dead code in the very scenario #1819 is about. roots={roots:?}, path={}",
             sibling_mdx.display()
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Dev Supervision Link (issue #2102, epic #2099 Wave 2) —
+    // `map_boot_task_join_result` pure-helper unit tests
+    // -----------------------------------------------------------------
+    //
+    // Red-tests-first (per the sub's own instructions): these were written
+    // and run against a not-yet-existing `map_boot_task_join_result`
+    // first (compile failure counts as red at this stage), then the
+    // helper above was written to make them pass. They cover all three
+    // reachable `JoinResult` shapes plus the cancellation-is-unreachable
+    // invariant.
+    mod boot_task_supervision {
+        use super::*;
+
+        /// `Ok(Ok(()))` — the watch channel closed silently. Must map to a
+        /// fatal error naming the dead task with a termination word,
+        /// matching `dev_supervision_e2e.rs`'s own wording contract.
+        #[test]
+        fn ok_ok_channel_close_maps_to_fatal_stopped_error() {
+            let err = map_boot_task_join_result(Ok(Ok(())));
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.to_lowercase().contains("stopped (channel closed)"),
+                "expected the literal 'stopped (channel closed)' wording per \
+                 the issue spec, got: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                lower.contains("watcher") || lower.contains("orchestrator"),
+                "must name the dead task: {rendered}"
+            );
+        }
+
+        /// `Ok(Err(e))` — the orchestrator's own error. Must be
+        /// re-wrapped/propagated as fatal, with context naming the dead
+        /// task attached (not just the bare orchestrator error).
+        #[test]
+        fn ok_err_orchestrator_error_is_propagated_with_context() {
+            let orchestrator_err = anyhow::anyhow!("watch backend exploded");
+            let err = map_boot_task_join_result(Ok(Err(orchestrator_err)));
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("watch backend exploded"),
+                "the underlying orchestrator error must survive in the chain: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                (lower.contains("watcher") || lower.contains("orchestrator"))
+                    && (lower.contains("died") || lower.contains("shutting down")),
+                "every fatal mapping — including Ok(Err(e)) — must attach \
+                 context naming the dead task: {rendered}"
+            );
+        }
+
+        /// `Err(join_err)` where `is_panic()` — the panic payload must be
+        /// extracted and surfaced, alongside the dead-task context.
+        #[tokio::test]
+        async fn err_panic_surfaces_panic_payload_and_context() {
+            let handle = tokio::spawn(async {
+                panic!("boom from the boot task");
+            });
+            // Swallow the default panic-hook println for this one panic so
+            // the test's own output stays legible; restore immediately
+            // after the task is joined.
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let join_result: Result<anyhow::Result<()>, tokio::task::JoinError> =
+                handle.await.map(Ok);
+            std::panic::set_hook(default_hook);
+
+            assert!(
+                join_result.as_ref().err().is_some_and(|e| e.is_panic()),
+                "expected a panic-shaped JoinError to set up this test correctly"
+            );
+
+            let err = map_boot_task_join_result(join_result);
+            let rendered = format!("{err:#}");
+            assert!(
+                rendered.contains("boom from the boot task"),
+                "the panic payload must be surfaced: {rendered}"
+            );
+            let lower = rendered.to_lowercase();
+            assert!(
+                (lower.contains("watcher") || lower.contains("orchestrator"))
+                    && (lower.contains("died") || lower.contains("shutting down")),
+                "the panic mapping must still attach dead-task context: {rendered}"
+            );
+        }
+
+        /// Cancellation invariant: `boot_task_join_result` must NEVER
+        /// silently treat a cancelled join as fatal or benign — its input
+        /// domain excludes cancellation entirely, enforced via
+        /// `unreachable!()`. This pins that a cancelled `JoinError`
+        /// reaching the helper panics loudly rather than being swallowed.
+        #[tokio::test]
+        async fn cancellation_is_structurally_unreachable() {
+            let handle = tokio::spawn(async {
+                // Long enough that the abort below always wins the race.
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            });
+            handle.abort();
+            let join_result: Result<anyhow::Result<()>, tokio::task::JoinError> =
+                handle.await.map(Ok);
+            let join_err = join_result.err().expect("aborted task must join as Err");
+            assert!(
+                join_err.is_cancelled(),
+                "test setup must actually produce a cancelled JoinError"
+            );
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                map_boot_task_join_result(Err(join_err))
+            }));
+            assert!(
+                outcome.is_err(),
+                "a cancelled JoinError must make map_boot_task_join_result panic \
+                 (unreachable!()) — cancellation is outside its documented input \
+                 domain and must never be silently mapped to fatal or benign"
+            );
+        }
     }
 }
