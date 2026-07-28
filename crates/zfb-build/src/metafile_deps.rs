@@ -3237,6 +3237,116 @@ mod tests {
         );
     }
 
+    /// The complete stage-escape failure message
+    /// [`audit_metafile_stage_escape`] emits, byte for byte, around the given
+    /// already-joined offender list — golden counterpart to the `contains`
+    /// assertions the surrounding tests use (issue #2141). Kept as one
+    /// literal so a wording drift in the production `bail!` fails here
+    /// exactly.
+    fn golden_stage_escape_message(offenders_joined: &str) -> String {
+        format!(
+            "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: \
+             {offenders_joined}\n\
+             For an offender named as a workspace sibling reached by PACKAGE NAME, the fix is in that \
+             package's own `package.json`, not in this project's staging or bundler config: either \
+             declare the imported location as an entry root under `exports` (or `main`), or import it \
+             through a path the package already declares. An undeclared deep import reaches live \
+             source nothing staged, which is what the audit is refusing."
+        )
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_failure_message_is_byte_identical_golden() {
+        // Golden for issue #2141's behavior-preserving contract: the
+        // surrounding tests assert offenders via `contains`, which proves an
+        // input is NAMED but not that the diagnostic's exact wording and
+        // structure survive a refactor — and tests plus real-world logs key
+        // on these strings. One pass, one offender of each of the two
+        // symlink-era detail formats (the real-copy format has its own
+        // deterministic golden below): an undeclared deep import into a
+        // dist-shipping sibling reached by package name (case 2, symlinked),
+        // and a `..`-climbing first-party input with no staged spelling
+        // (case 4). The declared `dist/index.js` input is accepted and must
+        // not appear in the message at all.
+        //
+        // Metafile inputs are traversed in `HashMap` key order, which is
+        // deliberately not pinned (the contract is "same traversal, same
+        // offender sequence", not a sorted report), so the assertion accepts
+        // the two offenders in either join order while still requiring every
+        // byte of both details and of the surrounding message.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "built",
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
+            &[
+                ("dist/index.js", "built"),
+                ("src/internal.ts", "internal source"),
+            ],
+        );
+        write(&first_party, "pages/other.tsx", "other");
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/built/dist/index.js": {"imports": []},
+            "node_modules/@acme/built/src/internal.ts": {"imports": []},
+            "../workspace/pages/other.tsx": {"imports": []}
+        }}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err("both the undeclared deep import and the case-4 climb must be offenders");
+        let msg = err.to_string();
+
+        let package_offender = format!(
+            "node_modules/@acme/built/src/internal.ts (package import resolved outside \
+             node_modules to workspace sibling {})",
+            first_party.join("packages/built/src/internal.ts").display()
+        );
+        let case_four_offender = "../workspace/pages/other.tsx (first-party input resolved \
+                                  outside every stage root, no staged spelling)";
+        let expected_ab =
+            golden_stage_escape_message(&format!("{package_offender}, {case_four_offender}"));
+        let expected_ba =
+            golden_stage_escape_message(&format!("{case_four_offender}, {package_offender}"));
+        assert!(
+            msg == expected_ab || msg == expected_ba,
+            "the stage-escape failure message must be byte-identical to the golden, in either \
+             traversal order;\n got: {msg}\nwant: {expected_ab}\n  or: {expected_ba}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_real_copy_failure_message_is_byte_identical_golden() {
+        // Golden sibling of the test above for the THIRD offender detail
+        // format — the real-copy staged shape (issue #2127) — which needs no
+        // symlink, so this one runs on every platform. A single-offender
+        // fixture makes the whole message deterministic, so plain equality
+        // works here.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_real_copy_stage(
+            &base,
+            "child",
+            r#"{ "name": "@scope/child", "private": true }"#,
+            &[("index.ts", "export const childMarker = 'CHILD';")],
+        );
+
+        let metafile = br#"{"inputs": {"node_modules/@scope/child/index.ts": {"imports": []}}}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err("the undeclared real-copy staged sibling must be an offender");
+        assert_eq!(
+            err.to_string(),
+            golden_stage_escape_message(
+                "node_modules/@scope/child/index.ts (package import resolved to a staged copy of \
+                 workspace package @scope/child at a location it does not declare)"
+            ),
+            "the real-copy offender detail and the outer message must be byte-identical to the \
+             golden"
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn stage_escape_allows_staged_symlink_reached_through_symlink_aliased_cwd() {
