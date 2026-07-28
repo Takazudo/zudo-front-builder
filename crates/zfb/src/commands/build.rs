@@ -75,7 +75,7 @@ use zfb_router::Router;
 
 use zfb_render::paths::PathsCache;
 
-use crate::cli::{BuildArgs, BuildMinifyHtml};
+use crate::cli::{BuildArgs, BuildMinifyHtml, BuildStrictBrokenLinks};
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
@@ -105,10 +105,30 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // routes were registered.
     let pages_dir = project_root.join("pages");
 
-    let config = crate::config::load_from_dir(&project_root)
+    let mut config = crate::config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
     let minify_html = resolve_minify_html(args.minify_html(), &config);
+
+    // #2117 — strict-broken-links override. Mutates the OWNED config in
+    // place, before any downstream consumer reads it. Every consumer
+    // below (preBuild JSON, `run_build`'s bundler-input assembly, the
+    // content-snapshot builder, postBuild JSON) reads this SAME
+    // `config` binding, so applying the override here — instead of
+    // inside the shared `bundler_input.rs` — keeps it build-only and
+    // never leaks into `zfb dev`.
+    //
+    // `config.strict_broken_links` itself is also reset to the
+    // resolved value (not just the nested `fail_on_broken` flag): the
+    // same `config` is serialised verbatim into the preBuild/postBuild
+    // plugin JSON below, and a plugin reading the top-level field
+    // should see the EFFECTIVE value CLI precedence produced, not the
+    // raw config-file value it overrode (codex review, #2117).
+    let strict_broken_links = resolve_strict_broken_links(args.strict_broken_links(), &config);
+    config.strict_broken_links = strict_broken_links;
+    if strict_broken_links {
+        apply_strict_broken_links_override(&mut config);
+    }
 
     let selected_outdir = resolve_outdir_arg(args.outdir.clone(), &config.out_dir);
     let outdir = resolve_outdir(&project_root, &selected_outdir);
@@ -419,6 +439,44 @@ pub(crate) fn resolve_v8_mode(
 /// boolean the build orchestration should carry.
 pub(crate) fn resolve_minify_html(cli: BuildMinifyHtml, config: &Config) -> bool {
     cli.as_option().unwrap_or(config.minify_html)
+}
+
+/// Resolve the effective strict-broken-links override (issue #2117).
+///
+/// Same tri-state precedence as [`resolve_minify_html`]: explicit CLI
+/// (`--strict-broken` / `--no-strict-broken`) beats the config
+/// `strictBrokenLinks` field, which beats the default (`false`).
+/// `Config::strict_broken_links` is already defaulted to `false` by
+/// serde, so this function returns the single boolean the caller uses
+/// to decide whether to force-enable link validation.
+pub(crate) fn resolve_strict_broken_links(cli: BuildStrictBrokenLinks, config: &Config) -> bool {
+    cli.as_option().unwrap_or(config.strict_broken_links)
+}
+
+/// Force-enable `markdown.features.linkValidation.failOnBroken` on the
+/// given (already resolved-true) config, in place (issue #2117).
+///
+/// `link_validation` has TWO optional ancestors — `Config::markdown`
+/// and `MarkdownConfig::features` — so the full chain is walked with
+/// `get_or_insert_default()` at each step:
+///
+/// - `markdown == None` → created with defaults.
+/// - `features == None` → created with defaults.
+/// - `link_validation == None` → created with defaults (epic #2112
+///   Decision 1: force-enable — a bare project with no link-validation
+///   config at all still gets validation turned on and failing).
+/// - `link_validation == Some(cfg)` → only `fail_on_broken` is
+///   overridden to `Some(true)`; every other field on `cfg`, and every
+///   sibling field on `markdown`/`features`, is left untouched.
+pub(crate) fn apply_strict_broken_links_override(config: &mut Config) {
+    config
+        .markdown
+        .get_or_insert_default()
+        .features
+        .get_or_insert_default()
+        .link_validation
+        .get_or_insert_default()
+        .fail_on_broken = Some(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -7685,6 +7743,188 @@ mod tests {
             ..Config::default()
         };
         assert!(!resolve_minify_html(BuildMinifyHtml::Disabled, &cfg));
+    }
+
+    #[test]
+    fn resolve_strict_broken_links_defaults_false_when_cli_and_config_omit() {
+        let cfg = Config::default();
+        assert!(!resolve_strict_broken_links(
+            BuildStrictBrokenLinks::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_broken_links_uses_config_when_cli_omits_true() {
+        let cfg = Config {
+            strict_broken_links: true,
+            ..Config::default()
+        };
+        assert!(resolve_strict_broken_links(
+            BuildStrictBrokenLinks::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_broken_links_uses_config_when_cli_omits_false() {
+        let cfg = Config {
+            strict_broken_links: false,
+            ..Config::default()
+        };
+        assert!(!resolve_strict_broken_links(
+            BuildStrictBrokenLinks::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_broken_links_cli_enable_beats_config_false() {
+        let cfg = Config::default();
+        assert!(resolve_strict_broken_links(
+            BuildStrictBrokenLinks::Enabled,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_broken_links_cli_disable_beats_config_true() {
+        let cfg = Config {
+            strict_broken_links: true,
+            ..Config::default()
+        };
+        assert!(!resolve_strict_broken_links(
+            BuildStrictBrokenLinks::Disabled,
+            &cfg
+        ));
+    }
+
+    // --- apply_strict_broken_links_override mutation-shape cases (#2117) ---
+
+    #[test]
+    fn apply_strict_broken_links_override_creates_markdown_when_absent() {
+        let mut cfg = Config {
+            markdown: None,
+            ..Config::default()
+        };
+        apply_strict_broken_links_override(&mut cfg);
+        assert_eq!(
+            cfg.markdown
+                .as_ref()
+                .and_then(|m| m.features.as_ref())
+                .and_then(|f| f.link_validation.as_ref())
+                .and_then(|lv| lv.fail_on_broken),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn apply_strict_broken_links_override_creates_features_when_absent() {
+        let mut cfg = Config {
+            markdown: Some(crate::config::MarkdownConfig {
+                features: None,
+                ..crate::config::MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        apply_strict_broken_links_override(&mut cfg);
+        assert_eq!(
+            cfg.markdown
+                .as_ref()
+                .and_then(|m| m.features.as_ref())
+                .and_then(|f| f.link_validation.as_ref())
+                .and_then(|lv| lv.fail_on_broken),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn apply_strict_broken_links_override_creates_link_validation_when_absent() {
+        let mut cfg = Config {
+            markdown: Some(crate::config::MarkdownConfig {
+                features: Some(crate::config::MarkdownFeaturesConfig {
+                    link_validation: None,
+                    ..crate::config::MarkdownFeaturesConfig::default()
+                }),
+                ..crate::config::MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        apply_strict_broken_links_override(&mut cfg);
+        assert_eq!(
+            cfg.markdown
+                .as_ref()
+                .and_then(|m| m.features.as_ref())
+                .and_then(|f| f.link_validation.as_ref())
+                .and_then(|lv| lv.fail_on_broken),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn apply_strict_broken_links_override_flips_existing_fail_on_broken_false() {
+        let mut cfg = Config {
+            markdown: Some(crate::config::MarkdownConfig {
+                features: Some(crate::config::MarkdownFeaturesConfig {
+                    link_validation: Some(crate::config::LinkValidationConfig {
+                        fail_on_broken: Some(false),
+                    }),
+                    ..crate::config::MarkdownFeaturesConfig::default()
+                }),
+                ..crate::config::MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        apply_strict_broken_links_override(&mut cfg);
+        assert_eq!(
+            cfg.markdown
+                .as_ref()
+                .and_then(|m| m.features.as_ref())
+                .and_then(|f| f.link_validation.as_ref())
+                .and_then(|lv| lv.fail_on_broken),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn apply_strict_broken_links_override_preserves_sibling_markdown_and_features_fields() {
+        let mut cfg = Config {
+            markdown: Some(crate::config::MarkdownConfig {
+                gfm: Some(crate::config::GfmFlag::All(true)),
+                hard_breaks: Some(true),
+                features: Some(crate::config::MarkdownFeaturesConfig {
+                    reading_time: Some(crate::config::ReadingTimeFeature::Bool(true)),
+                    link_validation: Some(crate::config::LinkValidationConfig {
+                        fail_on_broken: None,
+                    }),
+                    ..crate::config::MarkdownFeaturesConfig::default()
+                }),
+                ..crate::config::MarkdownConfig::default()
+            }),
+            ..Config::default()
+        };
+        let before = cfg.markdown.clone().unwrap();
+
+        apply_strict_broken_links_override(&mut cfg);
+
+        let after = cfg.markdown.clone().unwrap();
+        assert_eq!(after.gfm, before.gfm);
+        assert_eq!(after.hard_breaks, before.hard_breaks);
+        assert_eq!(
+            after.features.as_ref().and_then(|f| f.reading_time.clone()),
+            before
+                .features
+                .as_ref()
+                .and_then(|f| f.reading_time.clone())
+        );
+        assert_eq!(
+            after
+                .features
+                .as_ref()
+                .and_then(|f| f.link_validation.as_ref())
+                .and_then(|lv| lv.fail_on_broken),
+            Some(true)
+        );
     }
 
     #[test]
