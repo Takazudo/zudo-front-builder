@@ -15270,4 +15270,130 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------
+    // Dev-isolation regression pin for strictBrokenLinks (#2119, epic
+    // #2112)
+    // -----------------------------------------------------------------
+    //
+    // Isolation contract: `strictBrokenLinks` / `--strict-broken` are
+    // resolved and applied ONLY inside `commands/build.rs::run()` (see
+    // that fn's own `#2117` comment) — `resolve_strict_broken_links` and
+    // `apply_strict_broken_links_override` mutate the OWNED `Config`
+    // there, before any downstream build consumer reads it, and
+    // deliberately NEVER inside the shared `bundler_input.rs`. `zfb
+    // dev`'s config-construction path (`run()` above, just
+    // `config::load_from_dir(&project_root)` with no further mutation)
+    // must stay outside that mutation entirely: a project can set
+    // `strictBrokenLinks: true` in `zfb.config.*` for its `zfb build`
+    // CI gate while still running `zfb dev` day-to-day, and dev must
+    // keep warning-and-serving a broken anchor rather than `bail!`-ing.
+    //
+    // Why this matters: if a future refactor ever pulled the override
+    // into a path shared with `zfb dev` (moving it into
+    // `bundler_input.rs`, or copy-pasting the mutation into this file's
+    // own `run()`), a strict-configured project's `zfb dev` session
+    // would start hard-failing mid-edit-session the moment a broken
+    // anchor rendered — a regression that stays silent in review (dev
+    // still boots fine on a project with no broken links yet) and only
+    // surfaces as a wave of confused bug reports once someone actually
+    // authors one. This pin is a plain source-text guard on `run()`'s
+    // own body, so that regression fails loudly and immediately instead.
+    //
+    // Verified load-bearing: temporarily inserting
+    // `apply_strict_broken_links_override(&mut cfg);` right after the
+    // `config::load_from_dir` call in `run()` (~line 869) makes this
+    // test fail with the `apply_strict_broken_links_override` message
+    // below; reverting restores green.
+    #[test]
+    fn dev_run_never_applies_the_strict_broken_links_override() {
+        let src = include_str!("dev.rs");
+
+        // Scope the scan to `pub async fn run(args: &DevArgs)`'s own
+        // body — the actual config-construction path `zfb dev`
+        // executes (embed_v8 build) — rather than the whole file, so a
+        // legitimate mention of these names elsewhere (e.g. in this
+        // very doc comment, or in the V8-off stub below it) can never
+        // mask a real regression inside `run()` itself.
+        const RUN_MARKER: &str = "pub async fn run(args: &DevArgs) -> Result<()> {";
+        const V8_OFF_STUB_MARKER: &str = "pub async fn run(_args: &DevArgs) -> Result<()> {";
+
+        let start = src
+            .find(RUN_MARKER)
+            .expect("dev.rs must still define `pub async fn run(args: &DevArgs)`");
+        let body = &src[start..];
+        let end = body[1..]
+            .find(V8_OFF_STUB_MARKER)
+            .map(|i| i + 1)
+            .unwrap_or(body.len());
+        let run_body = &body[..end];
+
+        for banned in [
+            "resolve_strict_broken_links",
+            "apply_strict_broken_links_override",
+        ] {
+            assert!(
+                !run_body.contains(banned),
+                "dev.rs's `run()` must never call `{banned}` — strict-broken-links \
+                 enforcement is build-only (see commands/build.rs::run(), #2117); \
+                 pulling it into dev's shared config-construction path would hard-fail \
+                 `zfb dev` mid-edit-session on any strict-configured project instead of \
+                 warning-and-serving"
+            );
+        }
+    }
+
+    /// Codex review on #2119 (worth recording): the source-text guard above
+    /// only pins `run()`'s own body — it would miss the override being
+    /// smuggled into `commands::bundler_input::pipeline_spec_from_config`,
+    /// the ONE shared `Config` -> `PipelineSpec` assembly both `zfb build`
+    /// and `zfb dev` call (see that fn's own doc comment: "Both
+    /// `assemble_bundler_input` ... and the snapshot path ... call this").
+    /// A `fail_on_broken` override landing there would leak into dev too,
+    /// with neither banned name anywhere near `run()`.
+    ///
+    /// This test drives that shared function directly with a
+    /// `strictBrokenLinks: true` `Config` whose `link_validation` is
+    /// explicitly present but silent on `fail_on_broken` (`None`), and
+    /// asserts the assembled `PipelineSpec` still carries that same
+    /// `None` — i.e. `pipeline_spec_from_config` copies `markdown.features`
+    /// through verbatim and never itself consults `strict_broken_links`.
+    /// Together with the source-text guard above (which pins `run()`
+    /// never even reads `config.strict_broken_links`), this closes the
+    /// shared-path gap the source-text guard alone cannot see: the
+    /// override chain is provably confined to build's OWNED, post-load
+    /// config mutation (#2117), not to anything `zfb dev` also calls.
+    #[test]
+    fn shared_pipeline_spec_assembly_never_applies_the_strict_broken_links_override() {
+        let cfg = crate::config::Config {
+            strict_broken_links: true,
+            markdown: Some(crate::config::MarkdownConfig {
+                features: Some(crate::config::MarkdownFeaturesConfig {
+                    link_validation: Some(crate::config::LinkValidationConfig {
+                        fail_on_broken: None,
+                    }),
+                    ..crate::config::MarkdownFeaturesConfig::default()
+                }),
+                ..crate::config::MarkdownConfig::default()
+            }),
+            ..crate::config::Config::default()
+        };
+        let project_root = tempfile::tempdir().unwrap();
+
+        let spec =
+            crate::commands::bundler_input::pipeline_spec_from_config(project_root.path(), &cfg);
+
+        assert_eq!(
+            spec.features
+                .as_ref()
+                .and_then(|f| f.link_validation.as_ref())
+                .and_then(|lv| lv.fail_on_broken),
+            None,
+            "pipeline_spec_from_config must never apply the strict-broken-links override \
+             — it is the shared Config -> PipelineSpec assembly both `zfb build` and \
+             `zfb dev` call, and the override belongs ONLY to build's owned-config \
+             mutation in commands/build.rs::run() (#2117); leaking it here would hard-fail \
+             `zfb dev` for any strict-configured project"
+        );
+    }
 }
