@@ -10,7 +10,7 @@
 # doctests. Do not assume a green nextest run covers doctest examples.
 
 # ── Cross-binary serialization of the heavy V8/esbuild e2e binaries ──────────
-# These 33 integration-test binaries (all in package `zfb`) each spawn a real
+# These 34 integration-test binaries (all in package `zfb`) each spawn a real
 # `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
 # shells out to esbuild. Booting two at once starves CPU/memory and turns
 # their generous boot-deadline watchdogs flaky. `cargo test` serialized these
@@ -77,13 +77,14 @@
 #     byte-identical for supported contract rows, and exactly the
 #     documented D7/D8 divergences (legacy MD5 digest; key-bearing
 #     SubtleCrypto) where they are expected to differ.
-#   • 12 build-command binaries (build_cleans_outdir, build_package_routes,
+#   • 13 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
 #     end_to_end_basic_blog_build, gfm_footnotes_tasklists_confirm_build,
 #     html_minify_build,
 #     page_extension_route_table_build, wasm_ssr_adapter_e2e,
-#     sibling_css_module_command_layer_build) — each runs `zfb build`,
+#     sibling_css_module_command_layer_build, strict_broken_links_e2e) —
+#     each runs `zfb build`,
 #     which likewise boots the embedded V8 host and shells out to esbuild.
 #     These are NOT
 #     part of #1339's dev-server flock, so the nextest test-group is their
@@ -102,7 +103,15 @@
 #     (including a repeated reference) render identically regardless of
 #     file extension, plus a `.mdx`-only fixture proving footnote/task-list
 #     nested inside a custom JSX component's children resolves through the
-#     same document-level footnote model. This bucket is now 12 — Wave 4's
+#     same document-level footnote model. `strict_broken_links_e2e` (issue
+#     #2118, Link Gating epic #2112 — the integration proof for sub #2117's
+#     `--strict-broken`/`--no-strict-broken` wiring) joined next: five real
+#     `zfb build` invocations per test run, each proving one cell of the
+#     CLI-flag/config-field precedence matrix (main case, control, force-enable
+#     with no linkValidation config at all, config-only `strictBrokenLinks`,
+#     and `--no-strict-broken` never downgrading an independently-configured
+#     nested `failOnBroken`) exits with the correct status and names the
+#     broken hrefs. This bucket is now 13 — Wave 4's
 #     new binary ALSO spawns `zfb dev`, so it joins the flock-adopting
 #     bucket above instead.
 #
@@ -169,6 +178,12 @@ max-threads = 1
 # "32"/"20" figure in this file's comments above has been corrected to
 # "33"/"21" to match.
 #
+# Issue #2118 (2026-07, Link Gating epic #2112 Wave 2b) added
+# `strict_broken_links_e2e` to the build-only bucket, bringing the total to
+# **34** (21 flock-adopting, 13 build-only). Re-measured with the same
+# `binary(=...)` count against the filter below — do not trust either figure
+# without re-running that count; it has drifted stale before.
+#
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
 # esbuild subprocess + embedded V8 isolate (see CLAUDE.md's `#[ignore]`
@@ -211,7 +226,7 @@ max-threads = 1
 # (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
 # is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_reload_self_heal_e2e) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy
