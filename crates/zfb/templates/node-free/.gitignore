@@ -12,3 +12,21 @@ dist
 # bundler removes it on Drop and sweeps stale ones, so this only covers the
 # window after a zfb process is killed mid-bundle (issue #1970).
 .zfb-esbuild-entry-*.tsx
+
+# Islands plugin tsconfig temp file synthesised by zfb-islands in the project
+# root (see zfb-islands's build_plugin_tsconfig, "islands" label). Removed on
+# Drop, so this only covers the window after a zfb process is killed
+# mid-bundle.
+.zfb-islands-tsconfig-*.json
+
+# Module-worker plugin tsconfig temp file synthesised by zfb-islands in the
+# project root (see zfb-islands's build_plugin_tsconfig, "worker" label).
+# Removed on Drop, so this only covers the window after a zfb process is
+# killed mid-bundle.
+.zfb-worker-tsconfig-*.json
+
+# Virtual-module temp file synthesised by zfb-plugin-resolver in the project
+# root (see zfb-plugin-resolver's VIRTUAL_MODULE_TEMP_PREFIX/
+# VIRTUAL_MODULE_TEMP_SUFFIX). Removed on Drop, so this only covers the
+# window after a zfb process is killed mid-bundle.
+.zfb-virtual-*.mjs
