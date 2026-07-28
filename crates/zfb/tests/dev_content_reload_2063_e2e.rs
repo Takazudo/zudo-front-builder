@@ -43,19 +43,36 @@
 //! hunt, so the observed SSE sequence is printed either way rather than
 //! only asserted on.
 //!
-//! Permanent registration (sub #2098, epic #2092 Wave 5): all 6
-//! `#[tokio::test]` functions below carry `#[ignore = "env-gate: esbuild
-//! — …"]`, matching the tier `client_bundling_cross_pipeline.rs`'s tests
-//! use (a real `zfb dev` process against a staged esbuild). They are
-//! wired into `.config/nextest.toml`'s `[test-groups.e2e-heavy]`
-//! override (this binary spawns `zfb dev` via `CrossBinaryE2eLock`, so it
-//! is flock-adopting like its siblings) and into
-//! `.github/workflows/exam.yml`'s `quarantine-heavy` exact-name
-//! filterset, so they still run somewhere (allowed-to-fail, weekly) even
-//! though they are too heavy for the T1 PR gate. `simulated_provenance_
-//! wipe_world_still_populates_pages_stale_and_emits_one_page_event` below
-//! stays UN-ignored — it is a plain unit test with no real `zfb dev` boot
-//! (see its own header comment), so it already runs on every gate.
+//! Permanent registration (sub #2098, epic #2092 Wave 5): per
+//! zudo-test-wisdom's mechanical, first-match `#[ignore]` classification
+//! rules, none of the 6 fire here. Rule 1 (`env-gate:` — needs an env var
+//! / external binary the PR runner cannot provide) does NOT apply: every
+//! one of these functions already self-skips via `locate_esbuild()` at
+//! its own top (`let Some(esbuild) = locate_esbuild() else { ...; return; }`),
+//! exactly the convention `wasm_ssr_dev_smoke_e2e` and
+//! `embedded_host_request_time_e2e` use — both of which are documented in
+//! this file's own CLAUDE.md as "NOT `#[ignore]`d — it self-skips at
+//! runtime via `locate_esbuild()`". health.yml's T1 gate always stages a
+//! pinned esbuild, so the runner CAN provide it; the self-skip is a
+//! local-dev convenience only, not a CI blocker. Rule 3 (`heavy:` —
+//! runtime over budget) doesn't fire either: the Level-4 confirm run
+//! (below) measured **92.53s for the full 7-cell matrix** (~13-15s/test
+//! average), well under the per-test budgets other un-ignored real
+//! `zfb dev` e2e tests in this crate already carry (e.g. `dev_serve_e2e`'s
+//! own watchdogs run up to 280s). So **rule 7 applies: no `#[ignore]`,
+//! these run on every T1 gate** like their siblings. The binary IS still
+//! registered in `.config/nextest.toml`'s `[test-groups.e2e-heavy]` — that
+//! registration is about CPU/memory serialization against other real
+//! `zfb dev`/`zfb build` processes, completely orthogonal to `#[ignore]`
+//! status (several other group members, including the two named above,
+//! are un-ignored too). No exam.yml wiring or CLAUDE.md `#[ignore]`
+//! manifest row is needed, since there is nothing to schedule into a
+//! weekly allowed-to-fail lane — these tests already run, and are already
+//! required to pass, on every PR.
+//!
+//! `simulated_provenance_wipe_world_still_populates_pages_stale_and_emits_one_page_event`
+//! below is a plain unit test with no real `zfb dev` boot at all (see its
+//! own header comment) and was never a candidate for any tag.
 //!
 //! ## Revert-proof (sub #2098, per the #2002/#2004 idiom)
 //!
@@ -756,8 +773,6 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn content_edit_emits_exactly_one_page_event_default_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -765,8 +780,6 @@ async fn content_edit_emits_exactly_one_page_event_default_boot() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn content_edit_emits_exactly_one_page_event_cold_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1218,8 +1231,6 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_default_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1227,8 +1238,6 @@ async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_defaul
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn injected_dynamic_route_content_edit_emits_exactly_one_page_event_cold_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1271,8 +1280,6 @@ fn out_of_root_matrix_fixture() -> MatrixFixture {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn ordinary_out_of_root_content_edit_emits_exactly_one_page_event_default_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
@@ -1285,8 +1292,6 @@ async fn ordinary_out_of_root_content_edit_emits_exactly_one_page_event_default_
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "env-gate: esbuild — ZFB_ESBUILD_BIN=<absolute path to pinned esbuild> \
-            cargo test -p zfb --test dev_content_reload_2063_e2e -- --ignored"]
 async fn ordinary_out_of_root_content_edit_emits_exactly_one_page_event_cold_boot() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
     let _serial = SERIAL.lock().await;
