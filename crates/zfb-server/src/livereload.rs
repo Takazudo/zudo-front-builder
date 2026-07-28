@@ -37,7 +37,8 @@
 //! - `outcome.pages_written.len() > 0` **or** `outcome.pages_stale.len() > 0`
 //!   **or** `outcome.pages_pruned.len() > 0` **or**
 //!   `outcome.client_scripts_changed` **or**
-//!   `outcome.ssr_routes_published`
+//!   `outcome.ssr_routes_published` **or**
+//!   `outcome.dynamic_injected_restaled`
 //!   ⇒  emit one [`ReloadEvent::Page`] (deduplicated — at most one per tick).
 //!   `pages_stale` (issue #1027) covers the lazy dev-render default: a tick
 //!   that rendered nothing eagerly but marked routes stale must still tell
@@ -54,6 +55,14 @@
 //!   self-heal channels set — the healthy deferred boot publish and the
 //!   cold-bootstrap recovery seam — so the two paths heal an open tab
 //!   identically instead of one healing better than the other.
+//!   `dynamic_injected_restaled` (issue #2097) is the structural mirror
+//!   of that for DYNAMIC plugin-injected routes: such a route IS keyed on
+//!   a `dist/` output path, but it is re-staled by a channel that
+//!   deliberately performs no `tick_stale` push (pushing there could let
+//!   a non-tick drain swallow an in-flight tick's marks), so it can never
+//!   reach `pages_stale` either. Without it, a project whose injected
+//!   routes are all dynamic never reloaded an open tab on a content edit
+//!   even though the next GET already served fresh bytes — issue #2063.
 //! - `outcome.css_changed`              ⇒  emit one [`ReloadEvent::Css`].
 //! - `outcome.islands_bundle.is_some()` ⇒  emit one
 //!   [`ReloadEvent::Islands`] per re-bundled component, carrying the
@@ -173,15 +182,25 @@ pub fn outcome_to_events(outcome: &BuildOutcome) -> Vec<ReloadEvent> {
     // `dist/` output path and so can never reach `pages_stale`, which is
     // why an SSR-only project's self-heal never told the tab anything;
     // this is the shared bit BOTH deferred-window channels set, so the
-    // healthy publish and the cold-bootstrap recovery heal identically).
-    // All five conditions feed ONE `push`, so a mixed SSG/SSR tick that
-    // sets `pages_stale` AND `ssr_routes_published` still emits exactly
-    // one `Page` event.
+    // healthy publish and the cold-bootstrap recovery heal identically),
+    // OR this tick re-staled at least one previously-rendered DYNAMIC
+    // injected route (issue #2097, MDX Reload Fix epic #2092 — the exact
+    // structural mirror of the SSR case above: a dynamic injected route
+    // is re-staled by `restale_dynamic_injected`, a pure staleness-map
+    // insert that deliberately performs NO `tick_stale` push, so it can
+    // never reach `pages_stale` either; for a project whose injected
+    // routes are ALL dynamic that left every SSE-visible channel empty
+    // while the next GET already served fresh bytes, so an open tab never
+    // reloaded — issue #2063's signature).
+    // All six conditions feed ONE `push`, so a mixed tick that sets
+    // `pages_stale` AND `ssr_routes_published` AND
+    // `dynamic_injected_restaled` still emits exactly one `Page` event.
     if !outcome.pages_written.is_empty()
         || !outcome.pages_stale.is_empty()
         || !outcome.pages_pruned.is_empty()
         || outcome.client_scripts_changed
         || outcome.ssr_routes_published
+        || outcome.dynamic_injected_restaled
     {
         events.push(ReloadEvent::Page);
     }
@@ -512,6 +531,126 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(outcome_to_events(&everything), vec![ReloadEvent::Page]);
+    }
+
+    // ── dynamic_injected_restaled (issue #2097, MDX Reload Fix epic
+    //    #2092) ──────────────────────────────────────────────────────
+
+    /// Issue #2097 — the structural mirror of the `#1826` pin above,
+    /// for the channel #2063 actually reported. `restale_dynamic_injected`
+    /// (`crates/zfb/src/commands/dev.rs`) re-stales a previously-rendered
+    /// DYNAMIC injected route with a pure staleness-map insert and NO
+    /// `tick_stale` push — deliberately, since pushing from a site that
+    /// can race a tick drain would let the drain swallow the tick's own
+    /// marks. So such a route can never reach `pages_stale`. In a project
+    /// whose injected routes are ALL dynamic (`injected_static_seeds`
+    /// empty) that left the whole outcome indistinguishable from an empty
+    /// tick: the server re-rendered and the next GET served fresh bytes,
+    /// but the open tab was never told to reload.
+    ///
+    /// `dynamic_injected_restaled` is the bit that closes that gap. This
+    /// pins the exact `BuildOutcome` shape such a tick now produces —
+    /// every path list empty, no client scripts, no SSR publication, only
+    /// the new bit — and asserts exactly one `ReloadEvent::Page`. The bit
+    /// alone is sufficient: nothing else here is non-default.
+    #[test]
+    fn dynamic_injected_restale_outcome_emits_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_written: Vec::new(),
+            pages_stale: Vec::new(),
+            pages_pruned: Vec::new(),
+            client_scripts_changed: false,
+            ssr_routes_published: false,
+            dynamic_injected_restaled: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_to_events(&outcome),
+            vec![ReloadEvent::Page],
+            "a tick that re-staled a dynamic injected route must tell the open tab to \
+             reload — the whole point of issue #2097 / #2063"
+        );
+    }
+
+    /// Issue #2097 — the no-regression half, mirroring
+    /// `ssg_only_outcomes_are_unchanged_without_the_ssr_bit`. A project
+    /// with no dynamic injected routes never raises the bit at all
+    /// (`restale_dynamic_injected` raises only when the re-staled set is
+    /// non-empty), so its outcomes are byte-identical to before the fix:
+    /// a stale-marking tick still emits exactly one `Page`, and a
+    /// genuinely empty tick still emits nothing. Pinned here so a future
+    /// change that raises the bit unconditionally — e.g. on every P4 swap
+    /// regardless of the tracked set — is caught immediately.
+    #[test]
+    fn ssg_only_outcomes_are_unchanged_without_the_dynamic_injected_bit() {
+        let stale_tick = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            dynamic_injected_restaled: false,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&stale_tick), vec![ReloadEvent::Page]);
+
+        let empty_tick = BuildOutcome {
+            dynamic_injected_restaled: false,
+            ..Default::default()
+        };
+        assert!(
+            outcome_to_events(&empty_tick).is_empty(),
+            "a tick that re-staled no dynamic injected route and changed nothing must \
+             stay silent"
+        );
+    }
+
+    /// Issue #2097 — a project with BOTH ordinary SSG pages and a
+    /// dynamic injected route sets `pages_stale` AND
+    /// `dynamic_injected_restaled` on the same tick. Both feed the SAME
+    /// single `push`, so the tab must receive exactly ONE `Page` event,
+    /// never two — the "no duplicate events" invariant, and the reason
+    /// the fix widened the existing gate instead of adding a second emit
+    /// site.
+    #[test]
+    fn mixed_ssg_and_dynamic_injected_signals_dedupe_to_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            dynamic_injected_restaled: true,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&outcome), vec![ReloadEvent::Page]);
+
+        // Same for every other member of the Page gate — no combination
+        // of them can produce a second Page event.
+        let everything = BuildOutcome {
+            pages_written: vec![pid("pages/index.tsx")],
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            pages_pruned: vec![std::path::PathBuf::from("dist/old/index.html")],
+            client_scripts_rerun: true,
+            client_scripts_changed: true,
+            ssr_routes_published: true,
+            dynamic_injected_restaled: true,
+            ..Default::default()
+        };
+        assert_eq!(outcome_to_events(&everything), vec![ReloadEvent::Page]);
+    }
+
+    /// Issue #2097 — the THREE-WAY mixed case called out explicitly,
+    /// because it is the one combination that exercises all three
+    /// "structurally cannot reach `pages_stale`"-era signals at once:
+    /// the SSG stale list, the SSR publication bit (#1826), and the
+    /// dynamic-injected re-stale bit. Still exactly one `Page`.
+    #[test]
+    fn ssg_ssr_and_dynamic_injected_signals_dedupe_to_single_page_event() {
+        let outcome = BuildOutcome {
+            pages_stale: vec![std::path::PathBuf::from("index.html")],
+            ssr_routes_published: true,
+            dynamic_injected_restaled: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            outcome_to_events(&outcome),
+            vec![ReloadEvent::Page],
+            "a tick carrying all three Page-gate signals must still emit exactly one \
+             `Page` event"
+        );
     }
 
     /// Issue #1027 — stale marks combine with the other event kinds the
