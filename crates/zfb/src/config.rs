@@ -290,6 +290,30 @@ pub struct Config {
     #[serde(default)]
     pub minify_html: bool,
 
+    /// Whether broken links found by markdown link validation should fail
+    /// the build.
+    ///
+    /// Default: `false` (off) for compatibility. `zfb build
+    /// --strict-broken` / `--no-strict-broken` can override this value for a
+    /// single build; the build command resolves that CLI tri-state before
+    /// handing the config to orchestration, so downstream code only sees the
+    /// effective boolean.
+    ///
+    /// Force-enable semantics: when `markdown.features.link_validation` is
+    /// absent entirely, enabling this force-enables link validation with its
+    /// defaults — a strict flag that silently did nothing on a bare project
+    /// would be a footgun (epic #2112, Decision 1).
+    ///
+    /// Scope: the `link_validation` mechanism only. The separate
+    /// `resolve_markdown_links.on_broken_links` mechanism keeps its own knob
+    /// and is not affected by this field.
+    ///
+    /// Build-only: it does not affect `zfb dev`.
+    ///
+    /// Mirrors `ZfbConfig::strictBrokenLinks` in `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub strict_broken_links: bool,
+
     /// Bundler options. `bundle.exclude` lists project-relative globs of
     /// source files the bundler must keep out of the esbuild graph (see
     /// [`BundleConfig::exclude`]). Absent / `None` → no files are skipped
@@ -599,6 +623,7 @@ impl Default for Config {
             tailwind: None,
             prefetch: None,
             minify_html: false,
+            strict_broken_links: false,
             bundle: None,
             plugins: Vec::new(),
             adapter: None,
@@ -3419,6 +3444,10 @@ mod tests {
             !cfg.minify_html,
             "omitted minifyHtml must default to compatibility-off"
         );
+        assert!(
+            !cfg.strict_broken_links,
+            "omitted strictBrokenLinks must default to compatibility-off"
+        );
     }
 
     #[tokio::test]
@@ -3445,6 +3474,32 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert!(!cfg.minify_html);
+    }
+
+    #[tokio::test]
+    async fn loads_strict_broken_links_true_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "strictBrokenLinks": true }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.strict_broken_links);
+    }
+
+    #[tokio::test]
+    async fn loads_strict_broken_links_false_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "strictBrokenLinks": false }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(!cfg.strict_broken_links);
     }
 
     #[tokio::test]

@@ -248,6 +248,28 @@ export type ZfbConfig = {
    */
   minifyHtml?: boolean;
   /**
+   * Raise broken-link diagnostics to errors during `zfb build`, failing the
+   * build (exit non-zero) instead of merely warning. Default: `false`.
+   *
+   * This is the effective boolean the CLI's `--strict-broken` /
+   * `--no-strict-broken` tri-state resolves against. Precedence: explicit
+   * CLI flag > this config field > default `false`.
+   *
+   * Force-enable semantics: if `markdown.features.linkValidation` is absent
+   * entirely, enabling this force-enables link validation with its
+   * defaults — a strict flag that silently did nothing on a bare project
+   * would be a footgun.
+   *
+   * Scope: the `linkValidation` mechanism only. The separate
+   * `resolveMarkdownLinks.onBrokenLinks` mechanism keeps its own knob and is
+   * not affected by this field.
+   *
+   * Build-only: it does not affect `zfb dev`.
+   *
+   * Mirrors `Config::strict_broken_links` in `crates/zfb/src/config.rs`.
+   */
+  strictBrokenLinks?: boolean;
+  /**
    * Bundler options. `bundle.exclude` lists project-relative globs of
    * source files to keep out of the esbuild graph (e.g.
    * `["components/*.stories.tsx"]`) — see {@link BundleConfig.exclude} for
