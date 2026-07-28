@@ -26,7 +26,8 @@ use zfb_graph::PageId;
 
 use crate::atomic::{atomic_write, validate_output_path};
 use crate::pipeline::{
-    AssetPipeline, BuildContext, BuildOutcome, RefreshOutcome, SsrPublishProbe, StaleProbe,
+    AssetPipeline, BuildContext, BuildOutcome, DynamicInjectedProbe, RefreshOutcome,
+    SsrPublishProbe, StaleProbe,
 };
 use crate::plan::{PageSelection, RebuildPlan};
 
@@ -407,6 +408,11 @@ pub struct DevAssetPipeline {
     /// [`BuildOutcome::ssr_routes_published`]. `None` (tests,
     /// production-shaped callers) leaves the field `false`.
     ssr_publish_probe: Option<SsrPublishProbe>,
+    /// Issue #2097 (MDX Reload Fix epic #2092): optional probe draining
+    /// the "dynamic injected routes were re-staled this tick" one-shot
+    /// flag into [`BuildOutcome::dynamic_injected_restaled`]. `None`
+    /// (tests, production-shaped callers) leaves the field `false`.
+    dynamic_injected_probe: Option<DynamicInjectedProbe>,
 }
 
 impl std::fmt::Debug for DevAssetPipeline {
@@ -420,6 +426,10 @@ impl std::fmt::Debug for DevAssetPipeline {
             .field(
                 "ssr_publish_probe",
                 &self.ssr_publish_probe.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "dynamic_injected_probe",
+                &self.dynamic_injected_probe.as_ref().map(|_| "<callback>"),
             )
             .finish()
     }
@@ -438,6 +448,7 @@ impl DevAssetPipeline {
             shared: Arc::default(),
             stale_probe: Some(probe),
             ssr_publish_probe: None,
+            dynamic_injected_probe: None,
         }
     }
 
@@ -448,6 +459,17 @@ impl DevAssetPipeline {
     /// signals drained side by side.
     pub fn with_ssr_publish_probe(mut self, probe: SsrPublishProbe) -> Self {
         self.ssr_publish_probe = Some(probe);
+        self
+    }
+
+    /// Attach the probe that fills
+    /// [`BuildOutcome::dynamic_injected_restaled`] after every tick
+    /// (issue #2097 — dynamic-injected reload self-heal). Chainable onto
+    /// [`Self::with_stale_probe`] beside
+    /// [`Self::with_ssr_publish_probe`]; all three probes are
+    /// independent signals drained side by side.
+    pub fn with_dynamic_injected_probe(mut self, probe: DynamicInjectedProbe) -> Self {
+        self.dynamic_injected_probe = Some(probe);
         self
     }
 
@@ -944,6 +966,19 @@ impl AssetPipeline for DevAssetPipeline {
         // on every caller that wired no probe.
         if let Some(probe) = &self.ssr_publish_probe {
             outcome.ssr_routes_published = probe();
+        }
+
+        // 7. Dynamic injected route re-staling (issue #2097 — MDX Reload
+        // Fix epic #2092). Drained beside the two probes above, for the
+        // same structural reason: a dynamic injected route is re-staled
+        // through a channel that performs no `tick_stale` push, so it can
+        // never show up in `pages_stale`, and without this bit an
+        // all-dynamic-injected project's outcome is indistinguishable
+        // from an empty tick. `false` on every tick that re-staled no
+        // dynamic injected route, and on every caller that wired no
+        // probe.
+        if let Some(probe) = &self.dynamic_injected_probe {
+            outcome.dynamic_injected_restaled = probe();
         }
 
         Ok(outcome)

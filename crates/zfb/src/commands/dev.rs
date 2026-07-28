@@ -1184,14 +1184,31 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Some(session) => {
             let probe_session = session.clone();
             let ssr_probe_session = session.clone();
+            let dynamic_injected_probe_session = session.clone();
             // Issue #1826 — the SSR-publication signal rides the same
             // per-tick drain discipline as `pages_stale`, on its own
             // probe because SSR routes have no output path to report.
+            // Issue #2097 — likewise for the dynamic-injected re-stale
+            // signal, whose routes have an output path but reach it
+            // through a channel that performs no `tick_stale` push.
             DevAssetPipeline::with_stale_probe(Arc::new(move || {
-                probe_session.inner.take_tick_stale()
+                let drained = probe_session.inner.take_tick_stale();
+                // Issue #2097 (instrumentation reinstated from #2095) —
+                // the drained `pages_stale` length, the most direct
+                // answer to why a tick did or did not emit a `page` SSE
+                // event. Permanent, `ZFB_DEV_TIMING`-gated.
+                if dev_timing_enabled() {
+                    eprintln!("{}", format_pages_stale_drain_line(drained.len()));
+                }
+                drained
             }))
             .with_ssr_publish_probe(Arc::new(move || {
                 ssr_probe_session.inner.take_ssr_routes_published()
+            }))
+            .with_dynamic_injected_probe(Arc::new(move || {
+                dynamic_injected_probe_session
+                    .inner
+                    .take_dynamic_injected_restaled()
             }))
         }
         None => DevAssetPipeline::new(),
@@ -2434,6 +2451,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .as_ref()
                 .map(|s| s.inner.take_ssr_routes_published())
                 .unwrap_or(false);
+            // Issue #2097 (MDX Reload Fix epic #2092) — drain the
+            // dynamic-injected re-stale bit the same way and at the same
+            // point, for the same reason: a boot that re-staled dynamic
+            // injected routes without running a pipeline `apply` would
+            // otherwise leave the bit raised until the next watcher tick.
+            // Same first-drain-wins contract as the two above.
+            let boot_dynamic_injected_restaled: bool = dev_session_for_boot
+                .as_ref()
+                .map(|s| s.inner.take_dynamic_injected_restaled())
+                .unwrap_or(false);
 
             let mut outcome = match (render_outcome, islands_info) {
                 (Some(mut outcome), Some(info)) => {
@@ -2468,6 +2495,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     None => {
                         outcome = Some(BuildOutcome {
                             ssr_routes_published: true,
+                            ..BuildOutcome::default()
+                        })
+                    }
+                }
+            }
+            if boot_dynamic_injected_restaled {
+                match &mut outcome {
+                    Some(o) => o.dynamic_injected_restaled = true,
+                    None => {
+                        outcome = Some(BuildOutcome {
+                            dynamic_injected_restaled: true,
                             ..BuildOutcome::default()
                         })
                     }
@@ -3762,6 +3800,28 @@ impl DevRenderInner {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Raise the one-shot "dynamic injected routes were re-staled" flag
+    /// (issue #2097). Stored (never swapped) so repeated raises before a
+    /// drain are idempotent — the drain is what makes it one-shot, and
+    /// what makes it STICKY across a tick that fails after the raise:
+    /// such a tick publishes no `BuildOutcome` at all, so nothing drains
+    /// the bit and the next SUCCESSFUL tick broadcasts it instead.
+    fn set_dynamic_injected_restaled(&self) {
+        self.dynamic_injected_restaled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Drain the "dynamic injected routes were re-staled this tick" flag
+    /// into [`zfb_build::BuildOutcome::dynamic_injected_restaled`]
+    /// (consumed by the dev pipeline's dynamic-injected probe on a
+    /// watcher tick, or by the boot hook's own drain at boot — whichever
+    /// runs first for the tick, exactly like `take_tick_stale`).
+    /// One-shot: `true` once per raising, then `false`.
+    fn take_dynamic_injected_restaled(&self) -> bool {
+        self.dynamic_injected_restaled
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Mark `output_paths` stale at the current generation and queue
     /// them for this tick's [`zfb_build::BuildOutcome::pages_stale`]
     /// signal. Re-marking an already-stale route bumps its recorded
@@ -3896,12 +3956,48 @@ impl DevRenderInner {
     /// The next request re-renders them lazily against the fresh snapshot.
     /// The bumped generation defeats the claim/clear ABA race exactly as
     /// the static seed re-stale does.
+    ///
+    /// SIGNALLING (issue #2097, MDX Reload Fix epic #2092): re-staling
+    /// alone made the next REQUEST serve fresh bytes but told an
+    /// already-open tab nothing, because the pure `entries` insert above
+    /// reaches no SSE-visible channel. For a project whose injected
+    /// routes are ALL dynamic (`injected_static_seeds` empty) that meant
+    /// zero `page` events for a content edit — issue #2063. So this
+    /// function additionally raises the one-shot
+    /// [`Self::set_dynamic_injected_restaled`] bit, which is drained into
+    /// [`zfb_build::BuildOutcome::dynamic_injected_restaled`] and folded
+    /// into `outcome_to_events`'s EXISTING single `Page` gate. Still no
+    /// `tick_stale` push — that shape is forbidden here (a drain from a
+    /// site that can race an in-flight tick can swallow the tick's own
+    /// marks), and it would also fan out to routes that have no
+    /// `routes_by_source` entry to fan out to.
+    ///
+    /// The raise is conditional on the re-staled set being NON-EMPTY, so
+    /// a project with no dynamic injected routes is byte-identically
+    /// unaffected. This is deliberately the dynamic mirror of what
+    /// [`DevRenderSession::mark_injected_seeds_stale`] has always done
+    /// for STATIC injected seeds: that function pushes to `tick_stale`
+    /// unconditionally on every swap for every seed, so a static-injected
+    /// project has always reloaded open tabs on every full-refresh tick.
+    /// This does not make the dynamic case MORE aggressive than the
+    /// long-shipping static case — it makes them equal. It is not a
+    /// blanket "reload everything" flag: it raises only for sessions that
+    /// have actually rendered a dynamic injected route, and only on ticks
+    /// that reached P4, i.e. performed a real full refresh (a Phase-B
+    /// skip returns before P4 and never calls this at all).
     fn restale_dynamic_injected(&self) {
-        let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
-        let generation = stale.generation;
-        let paths: Vec<PathBuf> = stale.dynamic_injected.iter().cloned().collect();
-        for path in paths {
-            stale.entries.insert(path, generation);
+        let restaled_any = {
+            let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
+            let generation = stale.generation;
+            let paths: Vec<PathBuf> = stale.dynamic_injected.iter().cloned().collect();
+            let any = !paths.is_empty();
+            for path in paths {
+                stale.entries.insert(path, generation);
+            }
+            any
+        };
+        if restaled_any {
+            self.set_dynamic_injected_restaled();
         }
     }
 
@@ -4321,6 +4417,38 @@ struct DevRenderInner {
     /// `DevRenderSession::recover_cold_bootstrap_after_publish` — so
     /// neither path self-heals better than the other.
     ssr_routes_published: std::sync::atomic::AtomicBool,
+
+    /// One-shot per-tick flag: this session's P4 route-table swap
+    /// re-staled at least one previously-rendered DYNAMIC injected route
+    /// (issue #2097, MDX Reload Fix epic #2092).
+    ///
+    /// The dynamic-injected counterpart of `ssr_routes_published` above,
+    /// and structurally the same problem: [`Self::restale_dynamic_injected`]
+    /// is a pure `StaleRoutes::entries` insert with NO `tick_stale`
+    /// push — deliberately, since a push from a site that can run
+    /// concurrently with a tick drain would reintroduce the documented
+    /// `run_and_broadcast` swallow race — so a re-staled dynamic injected
+    /// route can never reach
+    /// [`zfb_build::BuildOutcome::pages_stale`]. For a project whose
+    /// injected routes are ALL dynamic (`injected_static_seeds` empty),
+    /// that left every SSE-visible channel drained empty on a content
+    /// edit: `mark_injected_seeds_stale` early-returns, `lazy_render_tick`
+    /// finds no `routes_by_source` entry for the edited source, and
+    /// `outcome_to_events`'s `Page` gate never fires — while the very
+    /// next request already serves fresh bytes. An open tab stayed stale
+    /// forever; that is issue #2063's exact reported signature.
+    ///
+    /// This bit is the way to SAY so. Drained into
+    /// [`zfb_build::BuildOutcome::dynamic_injected_restaled`] (by the dev
+    /// pipeline's dynamic-injected probe on a watcher tick, or by the
+    /// boot hook's own drain at boot) so
+    /// `zfb_server::outcome_to_events` emits a `ReloadEvent::Page` — from
+    /// the SAME single gate `pages_stale` feeds, never a second one.
+    ///
+    /// Deliberately adds NO staleness machinery and triggers NO eager
+    /// render: `lazy_render_tick`'s `routes_by_source` miss path is
+    /// untouched, so the #958 / #1025 / #1583 narrowing stands.
+    dynamic_injected_restaled: std::sync::atomic::AtomicBool,
 
     /// Static injected-route seeds (epic #1228, S3 #1231). One
     /// [`RouteUniverseEntry`] per **static, SSG** package-owned injected
@@ -6102,6 +6230,61 @@ pub(crate) fn dev_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Format the lazy-render plan's input page count (issue #2097,
+/// reinstated from #2095's skipped scope).
+///
+/// `pages` is the length of the slice the orchestrator's plan handed to
+/// [`lazy_render_tick`] — i.e. the size of the tick's page set BEFORE any
+/// `routes_by_source` lookup. Together with
+/// [`format_lazy_route_miss_line`] this makes an empty
+/// `BuildOutcome::pages_stale` attributable: `pages=0` means the plan
+/// itself was empty, whereas `pages=N` with `misses=N` means every page
+/// in the plan was unknown to the renderer.
+///
+/// PURE — takes only the number and returns the line. Emission is gated
+/// on [`dev_timing_enabled`] at the call site, so no test needs to (or
+/// may) mutate `ZFB_DEV_TIMING` process-globally.
+#[cfg(feature = "embed_v8")]
+fn format_lazy_plan_pages_line(pages: usize) -> String {
+    format!("[zfb-timing] lazy-render plan: pages={pages}")
+}
+
+/// Format the lazy-render tick's `routes_by_source` MISS count (issue
+/// #2097, reinstated from #2095's skipped scope).
+///
+/// `misses` is how many of the tick's `pages` hit
+/// [`lazy_render_tick`]'s `None => continue` arm — the source is unknown
+/// to the renderer's SSG route table, so it contributes nothing to
+/// `stale` and nothing to `BuildOutcome::pages_stale`. This is the
+/// counter that makes an SSE-dark tick self-describing: a project whose
+/// only consumer of the edited content is a DYNAMIC INJECTED route (never
+/// a member of `routes_by_source`) reports `misses == pages`. It is also
+/// the counter that would have exposed issue #2094's vacuous pass
+/// immediately.
+///
+/// PURE — see [`format_lazy_plan_pages_line`].
+#[cfg(feature = "embed_v8")]
+fn format_lazy_route_miss_line(misses: usize, pages: usize) -> String {
+    format!("[zfb-timing] lazy-render tick: routes_by_source misses={misses}/{pages}")
+}
+
+/// Format the drained `pages_stale` length reported by the dev
+/// pipeline's stale probe (issue #2097, reinstated from #2095's skipped
+/// scope).
+///
+/// `len` is the length of the vector
+/// [`DevRenderInner::take_tick_stale`] just handed to
+/// [`zfb_build::BuildOutcome::pages_stale`] — the single most direct
+/// answer to "why did (or didn't) this tick emit a `page` SSE event",
+/// since a non-empty list is a member of `outcome_to_events`'s `Page`
+/// gate. Reported alongside the existing `tick()` line family.
+///
+/// PURE — see [`format_lazy_plan_pages_line`].
+#[cfg(feature = "embed_v8")]
+fn format_pages_stale_drain_line(len: usize) -> String {
+    format!("[zfb-timing] stale probe: drained pages_stale={len}")
+}
+
 /// Per-P1-sub-phase wall-clock durations collected inside
 /// [`assemble_and_bundle_dev`] when `ZFB_DEV_TIMING=1`. Only populated when
 /// `timing_enabled` is `true`; the caller always has `Some(...)` in that
@@ -7305,6 +7488,7 @@ fn boot_dev_renderer(
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — the static injected-route seeds + post-precedence
@@ -8178,6 +8362,15 @@ fn lazy_render_tick(
 ) -> Result<Vec<RenderedPage>> {
     let eager_sets = compute_lazy_eager_sets(session, narrowing);
 
+    // Issue #2097 (instrumentation reinstated from #2095) — the plan's
+    // input page count, before any `routes_by_source` lookup. Permanent,
+    // `ZFB_DEV_TIMING`-gated. Paired with the miss count emitted below.
+    let timing = dev_timing_enabled();
+    if timing {
+        eprintln!("{}", format_lazy_plan_pages_line(pages.len()));
+    }
+    let mut route_table_misses: usize = 0;
+
     let mut out: Vec<RenderedPage> = Vec::new();
     let mut stale: HashSet<PathBuf> = HashSet::new();
     let mut rendered_paths: Vec<PathBuf> = Vec::new();
@@ -8196,7 +8389,16 @@ fn lazy_render_tick(
                     .iter()
                     .map(|de| de.entry.output_path.clone())
                     .collect(),
-                None => continue, // unknown to the renderer — no-op
+                // Unknown to the renderer — no-op. Counted (issue #2097)
+                // but deliberately NOT staled: making this arm loud would
+                // reintroduce the fan-out storms the #958 / #1025 / #1583
+                // narrowing exists to prevent. The dynamic-injected case
+                // that lands here is signalled by
+                // `BuildOutcome::dynamic_injected_restaled` instead.
+                None => {
+                    route_table_misses += 1;
+                    continue;
+                }
             }
         };
         let eager = eager_sets.get(page.path());
@@ -8239,6 +8441,17 @@ fn lazy_render_tick(
     // this tick.
     session.inner.mark_stale(stale);
     session.inner.clear_stale(&rendered_paths);
+
+    // Issue #2097 (instrumentation reinstated from #2095) — how many of
+    // this tick's pages were unknown to `routes_by_source`. Permanent,
+    // `ZFB_DEV_TIMING`-gated. `misses == pages` on a tick whose edited
+    // content is consumed only by a dynamic injected route.
+    if timing {
+        eprintln!(
+            "{}",
+            format_lazy_route_miss_line(route_table_misses, pages.len())
+        );
+    }
     Ok(out)
 }
 
@@ -8636,6 +8849,7 @@ pub(crate) fn stub_session_for_adapter_tests(
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — adapter tests inject routes directly; no injected
@@ -9065,6 +9279,7 @@ mod tests {
             cold_bootstrap_pending: std::sync::atomic::AtomicBool::new(false),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
@@ -9096,6 +9311,7 @@ mod tests {
             boot_render_done: std::sync::atomic::AtomicBool::new(true),
             // Issue #1826 — raised only by a live SSR route-handle publish.
             ssr_routes_published: std::sync::atomic::AtomicBool::new(false),
+            dynamic_injected_restaled: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "embed_v8")]
             rewrite_prewarm_pending: std::sync::atomic::AtomicBool::new(false),
             // S3 (#1231) — route-plumbing seam tests inject routes directly.
@@ -11997,6 +12213,326 @@ mod tests {
                     .claim(Path::new("preset-articles/feature/index.html"))
                     .expect("the dynamic re-stale at a newer generation must survive an old clear");
                 assert_eq!(still.generation, 1);
+            }
+
+            // ── dynamic_injected_restaled signal (issue #2097, MDX
+            //    Reload Fix epic #2092) ──────────────────────────────
+
+            /// (v) RAISE CONDITION, positive half. A P4 swap that
+            /// re-stales a NON-EMPTY tracked dynamic-injected set raises
+            /// the bit, so `outcome_to_events`'s Page gate fires and the
+            /// open tab reloads. Before #2097 this tick was
+            /// indistinguishable from an empty one on every SSE-visible
+            /// channel — issue #2063's signature.
+            #[test]
+            fn restale_dynamic_injected_raises_the_bit_for_a_nonempty_set() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                assert!(
+                    inner.take_dynamic_injected_restaled(),
+                    "a swap that re-staled a tracked dynamic injected route must raise the \
+                     signal bit — otherwise the open tab is never told to reload (#2063)"
+                );
+            }
+
+            /// (v) RAISE CONDITION, negative half — the blast-radius
+            /// control. A project with NO dynamic injected routes must be
+            /// byte-identically unaffected: the swap still calls
+            /// `restale_dynamic_injected` unconditionally (it always has),
+            /// but with an empty tracked set it must raise nothing. This
+            /// is what stops the bit degrading into "every unrelated tick
+            /// reloads every open tab".
+            #[test]
+            fn restale_dynamic_injected_does_not_raise_for_an_empty_set() {
+                let inner = bare_inner();
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "a project with no dynamic injected routes must never raise the bit — \
+                     an empty re-stale set is not a reason to reload every tab"
+                );
+            }
+
+            /// (v) NEVER FROM A REQUEST THREAD, part 1.
+            /// `claim_or_mark_stale` runs on the HTTP request thread; it
+            /// must not touch the bit. Only the P4 swap (a tick-thread
+            /// site) may raise it — a raise from a request thread would
+            /// put this signal on the wrong side of the tick/request
+            /// boundary the whole design depends on.
+            #[test]
+            fn claim_or_mark_stale_never_raises_the_dynamic_injected_bit() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                let _claim =
+                    inner.claim_or_mark_stale(Path::new("preset-articles/feature/index.html"));
+
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "the request-time claim path must not raise the tick-scoped signal bit"
+                );
+            }
+
+            /// (v) NEVER FROM A REQUEST THREAD, part 2 —
+            /// `note_dynamic_injected`, the adapter's unconditional
+            /// per-request record. Merely LEARNING that a dynamic
+            /// injected route exists is not a re-stale and must raise
+            /// nothing; only an actual swap-time re-stale may.
+            #[test]
+            fn note_dynamic_injected_never_raises_the_dynamic_injected_bit() {
+                let inner = bare_inner();
+
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_dynamic_injected(Path::new("preset-articles/other/index.html"));
+
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "recording a dynamic injected route on the request thread must not raise \
+                     the bit — that would reload every tab on first render of any such route"
+                );
+            }
+
+            /// The drain is one-shot, mirroring `take_tick_stale` and
+            /// `take_ssr_routes_published`: `true` once per raising, then
+            /// `false`. Repeated raises before a drain collapse to one
+            /// (`store`, not a counter), so one tick can never produce two
+            /// `Page` events through this channel.
+            #[test]
+            fn take_dynamic_injected_restaled_drains_once() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+                inner.restale_dynamic_injected();
+
+                assert!(inner.take_dynamic_injected_restaled());
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "second drain for the same tick must be false"
+                );
+            }
+
+            /// (vii) FIRST-DRAIN-WINS. Two sites drain this bit — the
+            /// pipeline's per-tick probe and the boot hook's one-shot
+            /// fold — exactly like `take_tick_stale` /
+            /// `take_ssr_routes_published`. Whichever runs first for a
+            /// tick wins and the other sees `false`, so a single raise can
+            /// never be folded into two `BuildOutcome`s and broadcast
+            /// twice.
+            #[test]
+            fn dynamic_injected_bit_first_drain_wins() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                // Stand-in for whichever drain site runs first.
+                assert!(inner.take_dynamic_injected_restaled());
+                // Stand-in for the other one.
+                assert!(
+                    !inner.take_dynamic_injected_restaled(),
+                    "the second drain site for the same tick must see false"
+                );
+
+                // A fresh raise is observable again — the bit is per-tick,
+                // not a latch consumed for the session's life.
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+                assert!(inner.take_dynamic_injected_restaled());
+            }
+
+            /// (vii) STICKY ACROSS A FAILED TICK — the half-applied-tick
+            /// recovery guarantee. The raise sits at the P4 swap, BEFORE
+            /// `commit_skip_key` and before rendering. A tick that fails
+            /// after the raise returns `Err` from
+            /// `refresh_bundle_and_routes` and publishes NO `BuildOutcome`
+            /// at all, so nothing broadcasts a success-looking `page`
+            /// reload for it — and nothing drains the bit either. Because
+            /// the bit is a sticky `AtomicBool` drained by `swap(false)`,
+            /// the NEXT successful tick drains and broadcasts it. That is
+            /// the intended retryable behaviour: the re-stale really did
+            /// happen, so the tab really does need to reload eventually.
+            #[test]
+            fn dynamic_injected_bit_survives_a_failed_tick_to_the_next_success() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+
+                // Tick 1 reaches P4 and raises...
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+                // ...then fails downstream: no outcome is published, so
+                // NO drain site runs for this tick at all.
+
+                // Tick 2 succeeds and drains normally.
+                assert!(
+                    inner.take_dynamic_injected_restaled(),
+                    "a raise stranded by a failed tick must survive to the next successful \
+                     drain — the re-stale happened, so the tab still needs the reload"
+                );
+            }
+
+            /// (vi) COUNT PINS. The fix is a signalling change only: it
+            /// must add nothing to the eager channels. Across a
+            /// `restale_dynamic_injected` call over a NON-EMPTY set:
+            ///
+            /// - `take_tick_stale().len()` is **0** — the direct proof no
+            ///   `tick_stale` push was added (constraint (i): a push from
+            ///   this site could let a non-tick drain swallow an in-flight
+            ///   tick's marks);
+            /// - the drained `pages_stale` this feeds is therefore also
+            ///   empty, i.e. UNCHANGED from pre-fix;
+            /// - `pages_written` is untouched — no eager render is
+            ///   triggered (nothing here renders at all).
+            #[test]
+            fn dynamic_injected_restale_adds_nothing_to_the_eager_channels() {
+                let inner = bare_inner();
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_dynamic_injected(Path::new("preset-articles/other/index.html"));
+
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                let tick_stale = inner.take_tick_stale();
+                assert_eq!(
+                    tick_stale.len(),
+                    0,
+                    "restale_dynamic_injected must add ZERO tick_stale entries — the bit is \
+                     the remedy precisely so this channel stays untouched; observed: \
+                     {tick_stale:?}"
+                );
+
+                // The tab-facing outcome this drains into: the bit is the
+                // ONLY non-default member, and `pages_written` stays empty
+                // because nothing rendered.
+                let outcome = BuildOutcome {
+                    pages_stale: tick_stale,
+                    dynamic_injected_restaled: inner.take_dynamic_injected_restaled(),
+                    ..BuildOutcome::default()
+                };
+                assert_eq!(outcome.pages_stale.len(), 0);
+                assert_eq!(outcome.pages_written.len(), 0);
+                assert!(outcome.dynamic_injected_restaled);
+            }
+
+            /// (vi) THE 700-ROUTE NO-FAN-OUT PIN. The failure mode this
+            /// guards is the tempting-but-wrong fix: making
+            /// `lazy_render_tick`'s `routes_by_source` miss path loud, or
+            /// having `restale_dynamic_injected` push its set into
+            /// `tick_stale`, either of which reintroduces the fan-out
+            /// storms the #958 / #1025 / #1583 narrowing exists to
+            /// prevent (#1583 is CLOSED — do not regress behind it).
+            ///
+            /// Seeds a session whose route universe is 700 sources, marks
+            /// stale only the narrowed 2 a real tick would have marked,
+            /// and re-stales a non-empty dynamic injected set on top.
+            /// `pages_stale` must stay at the narrowed 2 — never 700, and
+            /// never 702.
+            ///
+            /// SCOPE: this pins the staleness-machinery half at
+            /// `DevRenderInner` level. It deliberately does not drive
+            /// `lazy_render_tick` itself, which needs a live V8 render
+            /// session; the e2e cells in
+            /// `crates/zfb/tests/dev_content_reload_2063_e2e.rs` cover
+            /// that path end to end.
+            #[test]
+            fn dynamic_injected_restale_does_not_fan_out_over_a_large_route_universe() {
+                let mut routes: HashMap<PathBuf, Vec<DevRouteEntry>> = HashMap::new();
+                for i in 0..700 {
+                    routes.insert(
+                        PathBuf::from(format!("pages/blog/post-{i}.tsx")),
+                        vec![DevRouteEntry {
+                            entry: RouteUniverseEntry {
+                                url_path: format!("/blog/post-{i}"),
+                                output_path: PathBuf::from(format!("blog/post-{i}/index.html")),
+                                route_key: format!("/blog/post-{i}"),
+                                static_html: false,
+                                source_path: None,
+                            },
+                            params: None,
+                        }],
+                    );
+                }
+                let inner = stub_dev_inner(routes, Vec::new());
+
+                // The narrowed set a real content-edit tick would mark.
+                inner.mark_stale([out("blog/post-0/index.html"), out("blog/post-1/index.html")]);
+                // A previously-rendered dynamic injected route, re-staled
+                // by the same swap.
+                inner.note_dynamic_injected(Path::new("preset-articles/feature/index.html"));
+                inner.note_table_swap(&[]);
+                inner.restale_dynamic_injected();
+
+                let drained = inner.take_tick_stale();
+                assert_eq!(
+                    drained.len(),
+                    2,
+                    "pages_stale must stay at the NARROWED count over a 700-route universe — \
+                     neither the miss path nor the dynamic re-stale may fan out (#958 / \
+                     #1025 / #1583); observed {} entries",
+                    drained.len(),
+                );
+                assert!(
+                    inner.take_dynamic_injected_restaled(),
+                    "the signal bit still carries the dynamic injected re-stale — that is \
+                     what makes the narrowing affordable"
+                );
+            }
+
+            // ── ZFB_DEV_TIMING instrumentation format pins (issue
+            //    #2097, reinstated from #2095) ───────────────────────
+            //
+            // These target the PURE formatting helpers only. No test here
+            // mutates `ZFB_DEV_TIMING` — that is a process-global and
+            // would break parallel test-run safety for every other test
+            // in this binary.
+
+            #[test]
+            fn lazy_plan_pages_line_format_is_stable() {
+                assert_eq!(
+                    format_lazy_plan_pages_line(0),
+                    "[zfb-timing] lazy-render plan: pages=0"
+                );
+                assert_eq!(
+                    format_lazy_plan_pages_line(700),
+                    "[zfb-timing] lazy-render plan: pages=700"
+                );
+            }
+
+            #[test]
+            fn lazy_route_miss_line_format_is_stable() {
+                // The all-miss shape: every page in the plan was unknown
+                // to `routes_by_source` — what a project whose edited
+                // content is consumed only by a dynamic injected route
+                // reports, and the line that would have exposed #2094's
+                // vacuous pass immediately.
+                assert_eq!(
+                    format_lazy_route_miss_line(3, 3),
+                    "[zfb-timing] lazy-render tick: routes_by_source misses=3/3"
+                );
+                assert_eq!(
+                    format_lazy_route_miss_line(0, 12),
+                    "[zfb-timing] lazy-render tick: routes_by_source misses=0/12"
+                );
+            }
+
+            #[test]
+            fn pages_stale_drain_line_format_is_stable() {
+                assert_eq!(
+                    format_pages_stale_drain_line(0),
+                    "[zfb-timing] stale probe: drained pages_stale=0"
+                );
+                assert_eq!(
+                    format_pages_stale_drain_line(2),
+                    "[zfb-timing] stale probe: drained pages_stale=2"
+                );
             }
 
             /// Vanished routes are also dropped from the CURRENT tick's
