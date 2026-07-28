@@ -141,7 +141,14 @@ max-threads = 1
 # neither the `env-gate:` nor `heavy:` rule fires per zudo-test-wisdom's
 # classification rules; membership here is for CPU/memory serialization
 # only) — the 12 build-command binaries have no flock and rely on this
-# group alone.
+# group alone. `dev_supervision_e2e` (issue #2101, Dev Supervision epic
+# #2099 Sub #2101) is the newest flock-adopting member: two real `zfb dev`
+# E2E tests, both `#[ignore]`d `pending-feature: #2102` (RED today — the
+# dependency sub's fault-injection knobs fire but nothing yet supervises
+# the dead orchestrator task, so the process never exits as these tests'
+# desired-post-fix assertions require). This registration is PROVISIONAL
+# (per this sub's own scope) — the epic's final confirm sub performs the
+# authoritative recount of this group's pre-existing count drift.
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
@@ -185,7 +192,7 @@ max-threads = 1
 # (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
 # is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy
