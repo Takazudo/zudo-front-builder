@@ -75,6 +75,21 @@ if (!existsSync(binPath)) {
   process.exit(1);
 }
 
+// Node-wrapper divergence audit (issue #2104, Dev Supervision epic #2099):
+// the signal forwarding below covers wrapper→child SIGNALS, but there is no
+// channel covering wrapper PROCESS DEATH by other means (an ungraceful
+// `process.exit()` bypassing the `on("exit")` re-raise below, an out-of-band
+// `kill -9` targeted at the wrapper's own pid, a Node-level crash). In every
+// one of those cases the Rust child — spawned as its own OS process, not a
+// child the OS tears down with its parent — keeps running with the dev
+// server's port still bound. Epic #2099's supervision work (the orchestrator
+// task supervision link and the `_redirects` watcher supervision) is entirely
+// INSIDE the Rust process and does not, and cannot, reach across this
+// wrapper/child process boundary. Fixing this divergence (e.g. a
+// child-side "wrapper still alive?" heartbeat, or process-group/job-object
+// wiring) is explicitly OUT OF SCOPE for this epic — documented here as a
+// known, accepted gap so this epic's supervision work is never mistaken for
+// covering it.
 const child = spawn(binPath, process.argv.slice(2), { stdio: "inherit" });
 
 // Forward termination signals to the child. Supervisors (concurrently
