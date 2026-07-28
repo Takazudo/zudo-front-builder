@@ -516,7 +516,7 @@ async fn diagnose_non_exit(
             format!(
                 "manual GET {base}/ still answered status {status} \
                  (first 200 bytes: {:?})",
-                &body.chars().take(200).collect::<String>(),
+                body.chars().take(200).collect::<String>(),
             )
         }
         Err(e) => format!("manual GET {base}/ failed: {e}"),

@@ -15148,7 +15148,7 @@ mod tests {
             handle.abort();
             let join_result: Result<anyhow::Result<()>, tokio::task::JoinError> =
                 handle.await.map(Ok);
-            let join_err = join_result.err().expect("aborted task must join as Err");
+            let join_err = join_result.expect_err("aborted task must join as Err");
             assert!(
                 join_err.is_cancelled(),
                 "test setup must actually produce a cancelled JoinError"
@@ -15253,7 +15253,7 @@ mod tests {
             });
             handle.abort();
             let join_result: Result<(), tokio::task::JoinError> = handle.await;
-            let join_err = join_result.err().expect("aborted task must join as Err");
+            let join_err = join_result.expect_err("aborted task must join as Err");
             assert!(
                 join_err.is_cancelled(),
                 "test setup must actually produce a cancelled JoinError"
