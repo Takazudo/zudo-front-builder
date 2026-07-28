@@ -1,38 +1,39 @@
 export default {
   name: "content-reload-2063-injected-preset",
   setup({ injectRoute }) {
-    // Readiness-probe route. This fixture deliberately has NO `pages/`
-    // directory at all (the #1518 zero-pages consumer shape, proven
-    // bootable in `dev_serve_injected_routes_e2e.rs`), so the harness's
-    // boot readiness probe needs an injected route to answer it.
+    // EXACTLY ONE injected route, and it is DYNAMIC. Both properties are
+    // load-bearing for issue #2097's cell; do not add a second route here
+    // for any reason, including "the harness needs something to probe".
     //
-    // It MUST be a DYNAMIC pattern, never a static one (issue #2097,
-    // Step 0). A static `injectRoute("/")` becomes a member of
+    // Why nothing STATIC: a static `injectRoute("/")` becomes a member of
     // `injected_static_seeds` (`crates/zfb/src/commands/package_routes.rs`
-    // `static_injected_seeds`, which filters on `!is_dynamic_pattern`),
-    // and `DevRenderSession::mark_injected_seeds_stale`
+    // `static_injected_seeds`, which filters on `!is_dynamic_pattern`), and
+    // `DevRenderSession::mark_injected_seeds_stale`
     // (`crates/zfb/src/commands/dev.rs`) runs UNCONDITIONALLY after every
     // successful P4 route-table swap — content-independently — pushing to
     // `tick_stale` via `mark_stale`. That drains into
     // `BuildOutcome::pages_stale` and vacuously satisfies
-    // `outcome_to_events`'s Page gate on every full-refresh tick, so the
-    // cell below would observe a `page` event that says NOTHING about the
-    // dynamic injected channel it exists to test. Issue #2094's matrix
-    // read exactly that vacuous pass as a real pass; see the correction
-    // comment on #2094 and the decision on #2092.
+    // `outcome_to_events`'s Page gate on EVERY full-refresh tick, so the
+    // cell would observe a `page` event that says nothing whatsoever about
+    // the dynamic injected channel it exists to test. This fixture
+    // previously carried exactly such a route as a `GET /` readiness probe,
+    // and issue #2094's matrix read the resulting vacuous pass as a real
+    // pass. See the correction comment on #2094 and the decision on #2092.
     //
-    // A dynamic route never enters `injected_static_seeds`, so with this
-    // spelling that set is EMPTY for this project — the precondition the
-    // cell needs. Its `paths()` deliberately does not read the `posts`
-    // collection, so it stays genuinely inert with respect to the
-    // content-edit assertion.
-    injectRoute("/home/[slug]", "./pkg/home.tsx");
-    // The cell under test (issue #2094, matrix cell (a) combined with
-    // (c)'s empty-pages shape): a DYNAMIC injected route — the
-    // zudo-doc-style "route-injecting consumer" the epic names as the
-    // single most #2063-relevant shape — whose `paths()` reads a
-    // collection with NO in-project `pages/` consumer at all, so the
-    // dependency graph's known-page universe is empty for this project.
+    // Why nothing else DYNAMIC either: any second injected route, however
+    // inert its `paths()`, joins `stale.dynamic_injected` the moment it is
+    // requested — so a post-fix `page` event would no longer be
+    // attributable to the route under test alone. The readiness probe is
+    // therefore the route under test itself (`GET /injected-posts/alpha`),
+    // which needs no extra route at all.
+    //
+    // The project has NO `pages/` directory (the #1518 zero-pages consumer
+    // shape, proven bootable in `dev_serve_injected_routes_e2e.rs`), so this
+    // one route is the entire route universe: `routes_by_source` never
+    // carries an entry for the `posts` collection. That is exactly the
+    // #2063 shape — a zudo-doc-style route-injecting consumer whose MDX
+    // route universe comes from a dynamic injected route rather than from
+    // the project's own `pages/`.
     injectRoute("/injected-posts/[slug]", "./pkg/injected-post.tsx");
   },
 };
