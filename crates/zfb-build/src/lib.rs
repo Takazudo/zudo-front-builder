@@ -60,6 +60,7 @@ pub mod module_worker;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
+pub mod plugin_refresh;
 pub mod plugin_registries;
 pub mod plugin_runner;
 pub mod policy;
@@ -111,6 +112,9 @@ pub use pipeline::{
     SsrPublishProbe, StaleProbe,
 };
 pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
+pub use plugin_refresh::{
+    PluginRefreshOutcome, PluginRefreshState, PluginVirtualModuleStore, PluginWatchOwnership,
+};
 pub use plugin_registries::{
     run_preview_setup, AliasEntry, AliasMap, ClientEntry, ClientEntryList, InjectedRoute,
     InjectedRouteList, SetupCommand, SetupRegistries, SetupRegistryError, VirtualLoaderId,

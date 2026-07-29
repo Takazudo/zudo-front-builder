@@ -1044,6 +1044,32 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // #1196 — package-registered client entries from addClientEntry.
     let registered_client_entries = setup_registries.client_entries.clone();
 
+    // Issue #2168 (epic #2166 Sub 2 "Dev Refresh State") — session-lifetime
+    // live-refresh state for plugin virtual modules: ONE shared interior-
+    // mutable source-text store, seeded here from the boot-time setup
+    // prefetch above, plus the ownership map (watched path -> owning
+    // loaders) derived from the SAME `setup_registries.virtual_modules`
+    // registry the prefetch just walked. Every consumer that used to hold
+    // its own frozen copy of `dev_plugin_virtual_modules` (the
+    // `DevRebuildInputs` field, the restarted V8 host's plugin hooks, and
+    // the islands/CSS rebuild closures below) now snapshots THIS store at
+    // use time — updating only one of them would ship a split-brain source
+    // between the bundle and the V8 host / islands scan. `refresh` itself
+    // is NOT called from a live watcher tick anywhere yet: wiring it into
+    // the dev orchestrator's watch loop is the next sub-issue's job.
+    let plugin_watch_ownership =
+        zfb_build::PluginWatchOwnership::from_registry(&setup_registries.virtual_modules);
+    // Extracted before `plugin_watch_ownership` moves into `plugin_refresh`
+    // below; consumed further down once `raw_import_invalidation` exists.
+    let plugin_watch_files = plugin_watch_ownership.watched_paths();
+    let plugin_virtual_module_store =
+        zfb_build::PluginVirtualModuleStore::seeded(dev_plugin_virtual_modules.iter().cloned());
+    let plugin_refresh = zfb_build::PluginRefreshState::new(
+        plugin_host.clone(),
+        plugin_watch_ownership,
+        plugin_virtual_module_store,
+    );
+
     // Issue #1182 — decide whether the eager dev bundle is DEFERRED past
     // `TcpListener::bind`. Only in boot-lazy mode with a servable prebuilt
     // `dist/`, and not opted out (#1188): then the prebuilt `dist/` serves every
@@ -1096,6 +1122,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         v8_plugin_hooks,
         dev_plugin_alias_entries.clone(),
         dev_plugin_virtual_modules.clone(),
+        // Issue #2168 — the shared refresh state constructed above, stashed
+        // on `DevRebuildInputs` so it is reachable from the same struct the
+        // three plugin-data consumers below already read from.
+        plugin_refresh.clone(),
         // S2 (#1230) — the package-owned injected routes registered during
         // setup. Boot materialises the survivor set into a session-lifetime
         // staging dir and threads it into the dev bundler so the injected
@@ -1364,6 +1394,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     }
     let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+    // Issue #2168 — populate the plugin watch-file registry ONCE, here at
+    // boot. Unlike the client-script / islands sets this same
+    // `RawImportInvalidation` also carries, plugin registrations are frozen
+    // after `setup` runs, so there is no later successful-bundle tick that
+    // would call `replace_plugin_watch_files` again.
+    raw_import_invalidation.replace_plugin_watch_files(plugin_watch_files);
 
     // #1581 — seed the session-live known-content registry from the boot
     // collection MEMBERSHIP walk (not the frontmatter-hash map, which drops
@@ -1472,7 +1508,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #1189/#1501: write islands.js + companions to the isolated
         // dev-assets root, not the build-shared `dist/`.
         let dev_assets_root_for_islands = dev_assets_root.clone();
-        let plugin_cfg = islands_plugin_config.clone();
+        // Aliases never change after setup — only capture those once.
+        let plugin_alias_entries_for_islands = islands_plugin_config.alias_entries.clone();
+        // Issue #2168: virtual-module SOURCE is re-read from the shared
+        // store on every call (the store handle itself is cheap to clone —
+        // an `Arc` — so this is not a boot-time freeze), so a forced plugin
+        // reload (wired by the next sub-issue) is visible on the islands
+        // bundle's very next tick rather than only at boot.
+        let plugin_virtual_module_store_for_islands = plugin_refresh.store().clone();
         let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
         let url_prefix = dev_islands_url_prefix.clone();
@@ -1487,6 +1530,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // should fail loudly); the boot path catches it and warns-and-
         // continues (see step 7b).
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
+            let plugin_cfg = crate::commands::build::IslandsPluginConfig {
+                alias_entries: plugin_alias_entries_for_islands.clone(),
+                virtual_modules: plugin_virtual_module_store_for_islands.snapshot_pairs(),
+            };
             rebundle_islands(
                 &project_root,
                 &dev_assets_root_for_islands,
@@ -1569,7 +1616,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let dev_assets_root_for_css = dev_assets_root.clone();
         let cfg_for_css = cfg.clone();
         let plugin_alias_entries_for_css = islands_plugin_config.alias_entries.clone();
-        let plugin_virtual_modules_for_css = islands_plugin_config.virtual_modules.clone();
+        // Issue #2168: re-read from the shared store at use time (see the
+        // matching change to `run_islands` above) instead of freezing
+        // `islands_plugin_config.virtual_modules` at closure-construction
+        // time.
+        let plugin_virtual_module_store_for_css = plugin_refresh.store().clone();
         let url_prefix = dev_css_url_prefix.clone();
         let url_handle = Arc::clone(&css_bundle_url_handle);
         // Issue #1802: share the same mirror-root publication seam the boot
@@ -1577,6 +1628,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // the dev-watch registration's source plan current.
         let raw_import_invalidation_for_css = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
+            let plugin_virtual_modules_for_css =
+                plugin_virtual_module_store_for_css.snapshot_pairs();
             let payload = build_dev_css_and_publish_mirror_roots(
                 &project_root_for_css,
                 &dev_assets_root_for_css,
@@ -4473,9 +4526,18 @@ struct DevRouteTables {
 #[cfg(feature = "embed_v8")]
 struct DevRebuildInputs {
     cfg: config::Config,
+    /// Boot-time BASELINE hooks — aliases (which never change after setup)
+    /// plus each registered specifier's plugin-name/shape. Never read
+    /// directly for a tick restart; see [`Self::live_v8_plugin_hooks`].
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
     plugin_alias_entries: Vec<(String, String)>,
-    plugin_virtual_modules: Vec<(String, String)>,
+    /// Issue #2168: replaces the old frozen `plugin_virtual_modules:
+    /// Vec<(String, String)>` field. Holds the shared virtual-module
+    /// source store + watch ownership map + a `PluginHost` clone, so a
+    /// forced reload (wired by the next sub-issue) publishes to the SAME
+    /// store every consumer below reads from at use time — see
+    /// [`Self::plugin_virtual_modules`] and [`Self::live_v8_plugin_hooks`].
+    plugin_refresh: zfb_build::PluginRefreshState,
     /// Process-lifetime embedded-esbuild extraction (#994 item A): the
     /// `(TempDir, PathBuf)` pair from one boot-time
     /// [`crate::render_pipeline::embedded_binary`] call, threaded into
@@ -4522,6 +4584,31 @@ struct DevRebuildInputs {
 
 #[cfg(feature = "embed_v8")]
 impl DevRebuildInputs {
+    /// Fresh `(specifier, source)` pairs for the main bundler's
+    /// `BundlerInput::plugin_virtual_modules` (issue #2168) — read from the
+    /// live shared store rather than a boot-time freeze, so a forced
+    /// virtual-module reload is embedded in the very next re-bundle.
+    fn plugin_virtual_modules(&self) -> Vec<(String, String)> {
+        self.plugin_refresh.store().snapshot_pairs()
+    }
+
+    /// Fresh V8 plugin-registry hooks for the restarted renderer (issue
+    /// #2168). `refresh_bundle_and_routes` restarts the embedded V8 host on
+    /// EVERY tick already; without this the restarted host would keep
+    /// serving `v8_plugin_hooks`' boot-time frozen virtual-module source
+    /// text forever, split-brained against whatever the bundle above just
+    /// embedded. The alias map and each specifier's plugin-name/shape never
+    /// change after setup, so only `source` is re-read from the live store.
+    fn live_v8_plugin_hooks(&self) -> zfb_render::PluginRegistryHooks {
+        let mut hooks = self.v8_plugin_hooks.clone();
+        for (specifier, source) in self.plugin_refresh.store().snapshot() {
+            if let Some(entry) = hooks.virtual_modules.get_mut(&specifier) {
+                entry.source = source;
+            }
+        }
+        hooks
+    }
+
     /// Path of the boot-time extracted esbuild binary (#994 item A), if any.
     fn esbuild_path(&self) -> Option<&Path> {
         self.esbuild.as_ref().map(|(_, path)| path.as_path())
@@ -5868,7 +5955,7 @@ impl DevRenderSession {
                 project_root,
                 &inputs.cfg,
                 inputs.plugin_alias_entries.clone(),
-                inputs.plugin_virtual_modules.clone(),
+                inputs.plugin_virtual_modules(),
                 timing_enabled,
                 session_guard.as_mut(),
                 inputs.esbuild_path(),
@@ -5956,7 +6043,7 @@ impl DevRenderSession {
             backend: Backend::EmbeddedV8 {
                 host_factory:
                     crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
-                        inputs.v8_plugin_hooks.clone(),
+                        inputs.live_v8_plugin_hooks(),
                         trace_wrapper_source,
                     ),
             },
@@ -7448,7 +7535,7 @@ fn ensure_dev_routes_available(
 // backed by the in-process V8 host. Compiled in only when the
 // `embed_v8` feature is on (issue #371, sub-task 4.1a).
 #[cfg(feature = "embed_v8")]
-#[allow(clippy::too_many_arguments)] // 8 params: #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); a struct would just shuffle the same threaded fields
+#[allow(clippy::too_many_arguments)] // 9 params: #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); #2168 added plugin_refresh (the shared refresh state stashed onto DevRebuildInputs); a struct would just shuffle the same threaded fields
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
@@ -7464,9 +7551,16 @@ fn boot_dev_renderer(
     // esbuild invocation can resolve plugin aliases from pages / layouts /
     // shared modules (#268).
     plugin_alias_entries: Vec<(String, String)>,
-    // Plugin-registered virtual-module `(specifier, source)` pairs.
+    // Plugin-registered virtual-module `(specifier, source)` pairs — used
+    // directly for the BOOT bundle only (this call happens synchronously
+    // right after `plugin_refresh`'s store is seeded from the same setup
+    // prefetch, so the two are byte-identical at this point).
     // Threaded into `BundlerInput::plugin_virtual_modules` (#268).
     plugin_virtual_modules: Vec<(String, String)>,
+    // Issue #2168 — the shared refresh state (source store + watch
+    // ownership + `PluginHost` clone), stashed onto `DevRebuildInputs` so
+    // every POST-boot tick reads the live store instead of a frozen copy.
+    plugin_refresh: zfb_build::PluginRefreshState,
     // S2 (#1230) — package-owned injected routes registered during setup.
     // Materialised ONCE here into a session-lifetime staging dir (the B1
     // multi-root mechanism) whose root is threaded into the dev bundler via
@@ -7601,7 +7695,10 @@ fn boot_dev_renderer(
         cfg: cfg.clone(),
         v8_plugin_hooks: v8_plugin_hooks.clone(),
         plugin_alias_entries: plugin_alias_entries.clone(),
-        plugin_virtual_modules: plugin_virtual_modules.clone(),
+        // Issue #2168 — replaces the old `plugin_virtual_modules:
+        // plugin_virtual_modules.clone()` field: every POST-boot consumer
+        // reads the live store via `plugin_refresh` instead.
+        plugin_refresh: plugin_refresh.clone(),
         // #994 item A — extract the embedded esbuild binary ONCE here;
         // the handle lives on `DevRebuildInputs` for the whole dev
         // session, so every tick's `assemble_bundler_input` skips its
@@ -9171,7 +9268,7 @@ pub(crate) fn stub_session_for_adapter_tests(
                 cfg: config::Config::default(),
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
-                plugin_virtual_modules: Vec::new(),
+                plugin_refresh: zfb_build::PluginRefreshState::default(),
                 esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
@@ -9602,7 +9699,7 @@ mod tests {
                 cfg,
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
-                plugin_virtual_modules: Vec::new(),
+                plugin_refresh: zfb_build::PluginRefreshState::default(),
                 esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
@@ -15394,6 +15491,118 @@ mod tests {
              `zfb dev` call, and the override belongs ONLY to build's owned-config \
              mutation in commands/build.rs::run() (#2117); leaking it here would hard-fail \
              `zfb dev` for any strict-configured project"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Dev refresh state (issue #2168, epic #2166 Sub 2) — no split-brain
+    // between the three plugin-virtual-module consumers.
+    // -----------------------------------------------------------------
+    //
+    // Exercises the exact production accessor functions, not a
+    // reimplementation of them:
+    //  - `DevRebuildInputs::plugin_virtual_modules` (the main bundler's
+    //    `plugin_virtual_modules` input, read in `refresh_bundle_and_routes`).
+    //  - `DevRebuildInputs::live_v8_plugin_hooks` (the restarted V8 host's
+    //    plugin-registry hooks).
+    //  - The islands/CSS rebuild closures' own snapshot expression
+    //    (`plugin_refresh.store().snapshot_pairs()`, mirrored here to
+    //    prove it agrees with the other two without spinning up a real
+    //    islands/CSS bundle — see `run_islands` / `run_css` in `run()`).
+    //
+    // Publishes directly via `PluginVirtualModuleStore::publish` (skipping
+    // a real `PluginHost`) to simulate a completed refresh — the atomicity
+    // / failure-handling contract of `PluginRefreshState::refresh` itself is
+    // covered by `zfb_build::plugin_refresh`'s own tests (real `PluginHost`
+    // + Node subprocess), which is the appropriate crate for that.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn plugin_refresh_store_update_is_observed_identically_by_all_three_consumers() {
+        let store = zfb_build::PluginVirtualModuleStore::seeded([(
+            "virtual:data".to_string(),
+            "export default 1".to_string(),
+        )]);
+        let plugin_refresh = zfb_build::PluginRefreshState::new(
+            None,
+            zfb_build::PluginWatchOwnership::default(),
+            store,
+        );
+
+        let mut v8_plugin_hooks = zfb_render::PluginRegistryHooks::new();
+        v8_plugin_hooks.add_virtual_module("virtual:data", "export default 1", "test-plugin");
+
+        let inputs = DevRebuildInputs {
+            cfg: config::Config::default(),
+            v8_plugin_hooks,
+            plugin_alias_entries: Vec::new(),
+            plugin_refresh,
+            esbuild: None,
+            injected_pages_root: None,
+            empty_user_pages_root: None,
+        };
+
+        // Pre-refresh: all three consumers agree on the SEEDED value.
+        assert_eq!(
+            inputs.plugin_virtual_modules(),
+            vec![("virtual:data".to_string(), "export default 1".to_string())]
+        );
+        assert_eq!(
+            inputs
+                .live_v8_plugin_hooks()
+                .virtual_modules
+                .get("virtual:data")
+                .map(|hook| hook.source.as_str()),
+            Some("export default 1")
+        );
+        let islands_virtual_modules = inputs.plugin_refresh.store().snapshot_pairs();
+        assert_eq!(
+            islands_virtual_modules,
+            vec![("virtual:data".to_string(), "export default 1".to_string())]
+        );
+
+        // Simulate a completed refresh (issue #2168's forced-reload publish)
+        // by publishing directly to the shared store.
+        inputs
+            .plugin_refresh
+            .store()
+            .publish([("virtual:data".to_string(), "export default 2".to_string())]);
+
+        // Post-refresh: all three consumers observe the SAME new value —
+        // the property the shared store exists to guarantee. Updating only
+        // one of them (the split-brain this issue fixes) would fail this
+        // assertion for the other two.
+        assert_eq!(
+            inputs.plugin_virtual_modules(),
+            vec![("virtual:data".to_string(), "export default 2".to_string())],
+            "the main bundler's plugin_virtual_modules input must observe the refresh"
+        );
+        assert_eq!(
+            inputs
+                .live_v8_plugin_hooks()
+                .virtual_modules
+                .get("virtual:data")
+                .map(|hook| hook.source.as_str()),
+            Some("export default 2"),
+            "the restarted V8 host's plugin hooks must observe the refresh, not the \
+             boot-time frozen source `v8_plugin_hooks` was constructed with"
+        );
+        let islands_virtual_modules = inputs.plugin_refresh.store().snapshot_pairs();
+        assert_eq!(
+            islands_virtual_modules,
+            vec![("virtual:data".to_string(), "export default 2".to_string())],
+            "the islands/CSS rebuild closures' snapshot must observe the refresh"
+        );
+
+        // The V8 hooks' alias/plugin-name shape (the part that never
+        // changes after setup) must survive `live_v8_plugin_hooks`
+        // untouched — only `source` is re-derived from the live store.
+        assert_eq!(
+            inputs
+                .live_v8_plugin_hooks()
+                .virtual_modules
+                .get("virtual:data")
+                .map(|hook| hook.plugin.as_str()),
+            Some("test-plugin")
         );
     }
 }
