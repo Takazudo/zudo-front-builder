@@ -2,13 +2,13 @@
 //!
 //! These exercise the engine trait, the CSS Modules processor, and the
 //! top-level `CssPipeline`. Tests that need the real Tailwind v4 binary
-//! are gated by `#[ignore]` (`env-gate:`, see CLAUDE.md's taxonomy) — the
+//! are gated by `#[ignore]` (`env-gate:`, see crates/CLAUDE.md's taxonomy) — the
 //! binary IS staged at `crates/zfb/binaries/tailwindcss-v4` in CI
 //! (`crates/zfb/build.rs` downloads it as a side effect of building the
-//! `zfb` crate), but no CI step runs with `--ignored`/`--include-ignored`
-//! yet, so these tests stay local-only. Run locally with
-//! `cargo test -- --include-ignored` once a build has staged the slot, or
-//! set `ZFB_TAILWIND_BIN` explicitly.
+//! `zfb` crate), and health.yml runs this suite with `--include-ignored`
+//! on every PR (issue #1393; see crates/CLAUDE.md's manifest row). Run
+//! locally with `cargo test -- --include-ignored` once a build has staged
+//! the slot, or set `ZFB_TAILWIND_BIN` explicitly.
 
 use std::path::{Path, PathBuf};
 

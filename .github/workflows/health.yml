@@ -217,7 +217,7 @@ jobs:
           "$TAILWIND_SLOT" --version
 
       # Run the zfb-islands esbuild-gated suite (issue #1337): the package's 23
-      # `#[ignore]`d tests (tagged `env-gate:` per CLAUDE.md's taxonomy) were
+      # `#[ignore]`d tests (tagged `env-gate:` per crates/CLAUDE.md's taxonomy) were
       # staged by the assert step above but never actually executed by any CI
       # step — `cargo test --workspace` below does not pass `--ignored`, so a
       # green run proved nothing about them. `ZFB_ESBUILD_BIN` must be an
@@ -351,7 +351,7 @@ jobs:
       # CWD set to the owning package directory, not the workspace root.
       # Three crate-scoped steps keep failures attributable; the zfb step runs
       # all three command-layer env-gates with both binary paths pinned,
-      # mirroring the `#[ignore]` manifest table in CLAUDE.md.
+      # mirroring the `#[ignore]` manifest table in crates/CLAUDE.md.
       - name: Run zfb-css tailwindcss-v4 env-gate integration test
         env:
           ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4

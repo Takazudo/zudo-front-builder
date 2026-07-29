@@ -62,7 +62,7 @@
 //! `zfb-test-utils/src/cross_binary_lock.rs` for the lock-ordering
 //! rationale. This binary is a new member of `.config/nextest.toml`'s
 //! `e2e-heavy` test-group (flock-adopting bucket) — see that file's
-//! comments and `CLAUDE.md`'s nextest inventory prose, both updated
+//! comments and `crates/CLAUDE.md`'s nextest inventory prose, both updated
 //! alongside this test. NOT `#[ignore]`d: it runs in T1 (`health.yml`)
 //! like its siblings.
 //!

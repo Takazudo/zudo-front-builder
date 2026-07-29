@@ -333,7 +333,7 @@ fn node_modules_child_dir(node_modules: &Path) -> std::path::PathBuf {
 /// #2081 wrote both assertions below in their desired post-fix form, and
 /// **not one byte of them has been edited since** — the flip was the fix
 /// landing under them, never an assertion being rewritten to suit it
-/// (CLAUDE.md rule 8). It was first tagged `pending-feature: #2087`, on the
+/// (root CLAUDE.md rule 8). It was first tagged `pending-feature: #2087`, on the
 /// assumption that arming eligibility alone would close this; #2087 landed,
 /// armed eligibility correctly, and this test still failed, which is what
 /// surfaced the separate classification gap #2127 (see this file's header
