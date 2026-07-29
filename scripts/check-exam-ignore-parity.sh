@@ -3,17 +3,17 @@
 # scripts/check-exam-ignore-parity.sh — mechanical reconciliation guard for
 # issue #2072.
 #
-# CLAUDE.md's "`#[ignore]` manifest (Rust)" section requires every
+# crates/CLAUDE.md's "`#[ignore]` manifest table" section requires every
 # `env-gate:`/`heavy:`-tagged `#[ignore]`d Rust test to be reachable by
 # EITHER an exact-name entry in exam.yml's weekly quarantine-heavy filterset
 # OR a health.yml `-- --ignored` T1 step whose scope actually covers it. That
 # rule had drifted before (issue #2058) because nothing recomputed it — the
-# CLAUDE.md manifest table was a point-in-time manual audit, not a live
+# crates/CLAUDE.md manifest table was a point-in-time manual audit, not a live
 # check. This script recomputes the diff FRESH every time it runs, by
 # actually parsing:
 #
 #   1. every `#[ignore = "<tag>: ..."]`d test under crates/ (same convention
-#      as CLAUDE.md's own audit grep: `grep -rn '#\[ignore = "' crates/ |
+#      as crates/CLAUDE.md's own audit grep: `grep -rn '#\[ignore = "' crates/ |
 #      grep -v ':[0-9]*: *//'` — a `//`-commented mention of the attribute
 #      text does not count as a real `#[ignore]`);
 #   2. exam.yml's quarantine-heavy `-E '...'` filterset (every `test(=NAME)`
@@ -78,7 +78,7 @@ done
 
 # Tag prefixes exempt from the "must be reachable by exam.yml or health.yml"
 # rule — DATA read from the tag text, never a hard-coded test name. Mirrors
-# CLAUDE.md's `#[ignore]` taxonomy: `verification:` is a one-time proof, and
+# crates/CLAUDE.md's `#[ignore]` taxonomy: `verification:` is a one-time proof, and
 # a future `pending-feature:` test is blocked on an unimplemented product
 # feature, not on scheduling.
 EXCEPTION_TAGS="verification pending-feature"
@@ -269,7 +269,7 @@ if ((TOTAL == 0)); then
   exit 1
 fi
 
-# Cross-check against CLAUDE.md's own raw audit grep (`grep -rn '#\[ignore =
+# Cross-check against crates/CLAUDE.md's own raw audit grep (`grep -rn '#\[ignore =
 # "' crates/ | grep -v ':[0-9]*: *//'`). The walk above only recognizes
 # `<pkg>/tests/<bin>.rs` and `<pkg>/src/**.rs` — a future #[ignore]d test
 # placed under e.g. `<pkg>/examples/` or `<pkg>/benches/` would silently

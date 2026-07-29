@@ -2,7 +2,7 @@
 #
 # Weekly "exam" lane (issue #1344, zudo-test-wisdom T3 scheduled exam). Gives
 # the #[ignore]d quarantine/heavy manifest (audited + tagged by issue #1337,
-# see CLAUDE.md's "`#[ignore]` manifest (Rust)" table) a scheduled home where
+# see crates/CLAUDE.md's "`#[ignore]` manifest table") a scheduled home where
 # it "must still run somewhere, allowed-to-fail" — today these tests only run
 # ad hoc on a developer's machine. It also adds the ONE platform-bound
 # coverage zfb otherwise lacks entirely: a full-workspace test run on macOS.
@@ -27,7 +27,7 @@
 #     excluded. As of #1504's reconciliation, none remain: the former #1354
 #     pending-feature tests were either activated (un-ignored) or, for the
 #     render_pipeline case, retagged `heavy` and folded into this filterset —
-#     see CLAUDE.md's manifest table. Every test name below was verified
+#     see crates/CLAUDE.md's manifest table. Every test name below was verified
 #     workspace-unique
 #     (`grep -rln 'fn <name>' crates/` → exactly one file each), so the
 #     exact-match filterset alone is sufficient scoping — no `-p`/package
@@ -183,7 +183,7 @@ jobs:
           "$TAILWIND_SLOT" --version
 
       # The reconciled manifest, env-gate + heavy tags only (43 tests as of
-      # issue #2020 — see CLAUDE.md's "`#[ignore]` manifest (Rust)" table for
+      # issue #2020 — see crates/CLAUDE.md's manifest table for
       # the authoritative list; this filterset's own count has drifted from
       # that table's total before, so re-measure both rather than trusting
       # either — scripts/check-exam-ignore-parity.sh (issue #2072) now does
@@ -398,7 +398,7 @@ jobs:
       #
       # rc is captured explicitly (not via continue-on-error) for each of the
       # two commands, combined, and the step always exits 0 — see the header
-      # comment for why. nextest does not run doctests (CLAUDE.md), hence the
+      # comment for why. nextest does not run doctests (crates/CLAUDE.md), hence the
       # separate `cargo test --workspace --doc` leg, same as health.yml.
       - name: Run full workspace suite (nextest + doctests), allowed-to-fail
         id: run_macos_suite

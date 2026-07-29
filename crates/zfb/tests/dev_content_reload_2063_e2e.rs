@@ -51,7 +51,7 @@
 //! its own top (`let Some(esbuild) = locate_esbuild() else { ...; return; }`),
 //! exactly the convention `wasm_ssr_dev_smoke_e2e` and
 //! `embedded_host_request_time_e2e` use — both of which are documented in
-//! this file's own CLAUDE.md as "NOT `#[ignore]`d — it self-skips at
+//! crates/CLAUDE.md as "NOT `#[ignore]`d — it self-skips at
 //! runtime via `locate_esbuild()`". health.yml's T1 gate always stages a
 //! pinned esbuild, so the runner CAN provide it; the self-skip is a
 //! local-dev convenience only, not a CI blocker. Rule 3 (`heavy:` —
@@ -65,7 +65,7 @@
 //! registration is about CPU/memory serialization against other real
 //! `zfb dev`/`zfb build` processes, completely orthogonal to `#[ignore]`
 //! status (several other group members, including the two named above,
-//! are un-ignored too). No exam.yml wiring or CLAUDE.md `#[ignore]`
+//! are un-ignored too). No exam.yml wiring or crates/CLAUDE.md `#[ignore]`
 //! manifest row is needed, since there is nothing to schedule into a
 //! weekly allowed-to-fail lane — these tests already run, and are already
 //! required to pass, on every PR.
