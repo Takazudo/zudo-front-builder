@@ -321,11 +321,14 @@ struct GuardedNotifyWatcher {
     inner: Box<dyn NotifyWatcher + Send>,
     /// `true` when `inner` is the poll backend, whose `unwatch` removes
     /// ONLY the exact registered key — never nested registrations the way
-    /// inotify's recursive unwatch does. The retirement coverage-transfer
-    /// branch in [`Watcher::sync_recursive_dir_watches`] consults this: a
-    /// transferred root must be unwatched eagerly there, or its leftover
-    /// scan entry would keep delivering after the covering ancestor
-    /// retires.
+    /// inotify's recursive unwatch does. Two retirement paths in
+    /// [`Watcher::sync_recursive_dir_watches`] consult this: the
+    /// coverage-transfer branch (a transferred root must be unwatched
+    /// eagerly there, or its leftover scan entry would keep delivering
+    /// after the covering ancestor retires) and the collateral-repair
+    /// bypass (a repair `watch()` would REPLACE a surviving nested
+    /// registration with a freshly scanned baseline, silently absorbing
+    /// its not-yet-delivered events).
     poll_backend: bool,
     filter: Arc<Mutex<RecursiveDirFilterCore>>,
     /// Test-only observability (issue #1843): when armed via
@@ -813,7 +816,11 @@ impl Watcher {
     /// registrations are independent streams, the re-registration is a
     /// redundant stream rebuild — briefly re-entering that stream's startup
     /// dead window — which is the accepted cost of keeping Linux coverage
-    /// correct.)
+    /// correct.) The POLL backend skips the repair entirely: its `unwatch`
+    /// removes only the exact retired key, so nested registrations survive
+    /// intact, and a repair `watch()` there would replace one with a
+    /// freshly scanned baseline that silently absorbs its undelivered
+    /// events.
     pub fn sync_recursive_dir_watches<I, P, N, S>(
         &mut self,
         desired_roots: I,
@@ -1012,6 +1019,22 @@ impl Watcher {
                 // below cannot re-watch this identity under another
                 // spelling in the same pass.
                 repaired_non_recursive.insert(canonical_identity(&root));
+            }
+            // POLL BACKEND EXCEPTION (codex review, sub-issue #2173):
+            // skip the collateral-repair loops below. PollWatcher's
+            // unwatch above removed ONLY the exact retired key — nested
+            // registrations (surviving synced roots, boot roots,
+            // dependency parents) were never touched, so there is no
+            // collateral to repair. Worse, a repair `watch()` on the poll
+            // backend REPLACES the existing registration with a baseline
+            // freshly scanned inside the call, silently absorbing any
+            // not-yet-delivered change under the surviving root (event
+            // loss in exactly the coverage-narrowing window). The
+            // dependency-parent restoration above still runs: it repairs
+            // THIS root's own just-removed registration, which the poll
+            // backend needs too.
+            if self._notify.poll_backend {
+                continue;
             }
             // Collateral repair (inotify): unwatching a recursive root
             // removes every notify watch entry beneath it, including entries
