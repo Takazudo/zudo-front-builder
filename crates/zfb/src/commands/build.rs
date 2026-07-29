@@ -2151,28 +2151,21 @@ fn raw_mirrored_import_meta_glob_offender(path: &Path, parse_error: Option<Strin
 /// expansion is fed [`matched_target_under_pruned_build_output`] as its
 /// `is_excluded` predicate to drop the same files — the two MUST stay in
 /// sync or the expander references a target the mirror never materialises.
-fn is_islands_shadow_pruned_dir(entry: &walkdir::DirEntry) -> bool {
+///
+/// Single source of truth since issue #1726/sub #2160:
+/// [`zfb_build::shadow_mirror_prunes_path`] owns the actual DEPTH-DEPENDENT
+/// rule (named infra dirs at any depth, `dist`/`target` only at depth 1, a
+/// hidden dir at any depth below the root) so the SSR shadow-remap
+/// diagnostic and this islands-shadow walk can never drift apart. `entry`
+/// carries its own depth relative to `mirror_root` implicitly (`entry.path()`
+/// is `mirror_root` joined with the walked-so-far relative path), so passing
+/// it straight through reproduces the exact walkdir-depth semantics this
+/// function used to compute inline.
+fn is_islands_shadow_pruned_dir(mirror_root: &Path, entry: &walkdir::DirEntry) -> bool {
     if !entry.file_type().is_dir() {
         return false;
     }
-    let name = entry.file_name().to_string_lossy();
-    if matches!(
-        name.as_ref(),
-        "node_modules" | ".git" | ".next" | ".turbo" | ".vercel"
-    ) {
-        return true;
-    }
-    // Top-level build outputs only (depth 1 under the walk root) — a nested
-    // `dist/`/`target/` source dir is still mirrored (same caveat as
-    // zfb-build's prune list).
-    if entry.depth() == 1 && matches!(name.as_ref(), "dist" | "target") {
-        return true;
-    }
-    // Any hidden dir below the root (`.zfb-build`, `.cache`, `.vite`, …).
-    if entry.depth() > 0 && name.starts_with('.') {
-        return true;
-    }
-    false
+    zfb_build::shadow_mirror_prunes_path(mirror_root, entry.path())
 }
 
 /// Companion to [`is_islands_shadow_pruned_dir`] for the glob EXPANSION
@@ -3018,7 +3011,7 @@ fn materialise_islands_shadow_with_worker_context(
         for entry in walkdir::WalkDir::new(dir)
             .follow_links(false)
             .into_iter()
-            .filter_entry(|e| !is_islands_shadow_pruned_dir(e))
+            .filter_entry(|e| !is_islands_shadow_pruned_dir(dir, e))
         {
             let entry =
                 entry.with_context(|| format!("walking glob module subtree {}", dir.display()))?;
@@ -5060,7 +5053,7 @@ fn stage_client_script_preprocessing_with_worker_context(
         .sort_by_file_name()
         .into_iter()
         .filter_entry(|entry| {
-            if is_islands_shadow_pruned_dir(entry) {
+            if is_islands_shadow_pruned_dir(project_root, entry) {
                 return false;
             }
             if entry.depth() == 1 && entry.file_type().is_dir() {
@@ -5114,7 +5107,7 @@ fn stage_client_script_preprocessing_with_worker_context(
                 .follow_links(true)
                 .sort_by_file_name()
                 .into_iter()
-                .filter_entry(|nested| !is_islands_shadow_pruned_dir(nested))
+                .filter_entry(|nested| !is_islands_shadow_pruned_dir(&physical_root, nested))
             {
                 let nested = nested.with_context(|| {
                     format!(
