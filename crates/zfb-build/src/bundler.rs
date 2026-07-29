@@ -956,6 +956,45 @@ const KNOWN_FIRST_PARTY_STAGING_DIRS: &[&str] = &[".zudo-doc/routes-src"];
 /// `is_reserved_shadow_root_name` (reserved `.zfb-*` FILE names at the shadow
 /// root, not a `.zfb/` dir).
 const KNOWN_FIRST_PARTY_STAGING_JSON_DIRS: &[&str] = &[".zfb"];
+
+/// True when `relative` (a canonical, project-root-relative path — the same
+/// form `module_worker::stable_project_virtual_specifier` builds its `"./rel"`
+/// replacement from) names a location the dot-path staging allowlist above
+/// actually materializes into the shadow DESPITE being hidden: the whole
+/// [`KNOWN_FIRST_PARTY_STAGING_DIRS`] subtree, or a DEPTH-1 `*.json` file
+/// directly inside a [`KNOWN_FIRST_PARTY_STAGING_JSON_DIRS`] dir (never a
+/// nested or non-JSON file — this narrow compatibility surface stages
+/// neither).
+///
+/// The SSR project-tier virtual-module remap diagnostic (issue #1726, sub
+/// #2160) consults this so a codegen plugin importing zudo-doc-compat
+/// generated source is not rejected as "the shadow mirror prunes this" —
+/// codex-review caught this diagnostic false-positive rejecting a location
+/// this very allowlist deliberately stages. Kept crate-internal:
+/// `module_worker`'s SSR remap is the only consumer; the islands shadow
+/// (`crates/zfb/src/commands/build.rs`) has no equivalent staging pass, so
+/// this exemption must NOT be folded into the shared
+/// `shadow_mirror_prunes_path` prune rule both shadows consult.
+pub(crate) fn is_first_party_staging_allowlist_target(relative: &Path) -> bool {
+    if KNOWN_FIRST_PARTY_STAGING_DIRS
+        .iter()
+        .any(|dir| relative.starts_with(Path::new(dir)))
+    {
+        return true;
+    }
+    KNOWN_FIRST_PARTY_STAGING_JSON_DIRS.iter().any(|dir| {
+        let Ok(rest) = relative.strip_prefix(Path::new(dir)) else {
+            return false;
+        };
+        let mut components = rest.components();
+        let Some(std::path::Component::Normal(name)) = components.next() else {
+            return false;
+        };
+        // Depth-1 only — a further component means this is nested.
+        components.next().is_none() && name.to_string_lossy().ends_with(".json")
+    })
+}
+
 /// Filename of the project-root global override map (sub-issue #616). Both
 /// the on-disk source convention and the materialised shadow copy use this
 /// exact name; it is the public file-convention contract relied on by #618.

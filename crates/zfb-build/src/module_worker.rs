@@ -1704,7 +1704,20 @@ pub fn shadow_mirror_prunes_path(mirror_root: &Path, candidate_path: &Path) -> b
 /// This scans every absolute-import occurrence the project tier is about to
 /// rewrite and fails closed with an explicit diagnostic BEFORE the silent
 /// rewrite happens — leaving `stable_project_virtual_specifier` itself
-/// (also used for cache-key normalization) infallible and untouched.
+/// (also used for cache-key normalization) infallible and untouched. Two
+/// details codex-review caught in an earlier version:
+///
+/// - It checks the [`canonical_project_relative_target`] — the SAME
+///   canonicalized, symlink-resolved target `stable_project_virtual_specifier`
+///   builds its replacement from — rather than the lexical specifier text,
+///   so an in-project symlink is judged by where it actually points, not by
+///   what its own path looks like.
+/// - It exempts [`crate::bundler::is_first_party_staging_allowlist_target`]
+///   locations: the SSR shadow's dot-path staging pass (issue #1840)
+///   deliberately materializes `.zudo-doc/routes-src/**` and a depth-1
+///   `.zfb/*.json` despite both being hidden, so treating every hidden dir
+///   as pruned would reject a virtual module reaching genuinely staged
+///   zudo-doc-compat source.
 fn reject_pruned_project_tier_virtual_imports(source: &str, project_root: &Path) -> Result<()> {
     let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
     let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
@@ -1718,21 +1731,21 @@ fn reject_pruned_project_tier_virtual_imports(source: &str, project_root: &Path)
         if !Path::new(&occurrence.specifier).is_absolute() {
             continue;
         }
-        if stable_project_virtual_specifier(&occurrence.specifier, &project_root).is_none() {
+        let Some(relative_target) =
+            canonical_project_relative_target(&occurrence.specifier, &project_root)
+        else {
             // Not something the project tier is about to rewrite (outside
-            // the project, under node_modules, a `?`/`#`-suffixed specifier
-            // `stable_project_virtual_specifier` never handles, or the
-            // target doesn't resolve at all) — no rewrite, no risk of a
-            // broken one.
+            // the project post-canonicalization, under node_modules, a
+            // `?`/`#`-suffixed specifier, or the target doesn't resolve at
+            // all) — no rewrite, no risk of a broken one.
+            continue;
+        };
+        if crate::bundler::is_first_party_staging_allowlist_target(&relative_target) {
             continue;
         }
-        // `stable_project_virtual_specifier` returning `Some` above already
-        // proves this specifier carries no `?`/`#` suffix (its own first
-        // check), so the raw specifier IS the path.
-        let candidate = normalize_path_lexical(Path::new(&occurrence.specifier));
-        let candidate_dir = candidate
+        let candidate_dir = relative_target
             .parent()
-            .map(Path::to_path_buf)
+            .map(|parent| project_root.join(parent))
             .unwrap_or_else(|| project_root.clone());
         if shadow_mirror_prunes_path(&project_root, &candidate_dir) {
             bail!(
@@ -1963,7 +1976,22 @@ fn stable_workspace_virtual_cache_specifier(
     Some(format!("\u{0}workspace\u{0}{relative}"))
 }
 
-fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {
+/// Shared canonicalization core for [`stable_project_virtual_specifier`] and
+/// its prune-aware guard, [`reject_pruned_project_tier_virtual_imports`]
+/// (issue #1726, sub #2160): resolves `specifier` (absolute, or an in-source
+/// `./`/`../` relative form) against `project_root`, following any symlink
+/// via `canonicalize()`, and returns the CANONICAL path relative to the
+/// canonical project root — the exact location `stable_project_virtual_specifier`'s
+/// `"./rel"` rewrite actually references. Extracting this keeps both
+/// consumers looking at the identical resolved target: codex-review caught
+/// an earlier version of the guard checking the LEXICAL specifier path
+/// instead, which disagreed with this canonicalization for an in-project
+/// symlink (a non-hidden-looking specifier that resolves into a pruned
+/// directory went unchecked, and vice versa). `None` for anything the
+/// project tier does not touch: a `?`/`#`-suffixed specifier, a bare
+/// package name, `node_modules`, an unresolvable target, or a target that
+/// canonicalizes outside the project.
+fn canonical_project_relative_target(specifier: &str, project_root: &Path) -> Option<PathBuf> {
     if specifier.contains('?') || specifier.contains('#') {
         return None;
     }
@@ -1984,7 +2012,14 @@ fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Opt
     if !canonical.starts_with(&canonical_root) || is_inside_node_modules(&canonical) {
         return None;
     }
-    let relative = canonical.strip_prefix(&canonical_root).ok()?;
+    canonical
+        .strip_prefix(&canonical_root)
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {
+    let relative = canonical_project_relative_target(specifier, project_root)?;
     let relative = relative
         .components()
         .filter_map(|component| match component {
@@ -3935,6 +3970,125 @@ mod tests {
             message.contains(&pruned_target.to_string_lossy().to_string()),
             "{message}"
         );
+        assert!(message.contains("shadow mirror prunes"), "{message}");
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_zudo_doc_routes_src_staging_allowlist_is_not_rejected()
+    {
+        // codex-review (issue #1726, sub #2160): `.zudo-doc/routes-src/**` is
+        // hidden, but bundler.rs's dot-path staging allowlist (issue #1840)
+        // deliberately materializes it into the shadow anyway — the guard
+        // must exempt it rather than treating every hidden dir as pruned.
+        let project = tempfile::tempdir().unwrap();
+        let staged_target = project
+            .path()
+            .join(".zudo-doc/routes-src/generated-route.tsx");
+        write(&staged_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&staged_target.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap();
+
+        assert!(
+            remapped.contains(
+                "export { generated } from \"./.zudo-doc/routes-src/generated-route.tsx\";"
+            ),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_zfb_top_level_json_staging_allowlist_is_not_rejected() {
+        // Companion to the zudo-doc test above: a depth-1 `.zfb/*.json` meta
+        // file is the other narrow staging allowlist entry (issue #1840).
+        let project = tempfile::tempdir().unwrap();
+        let staged_target = project.path().join(".zfb/doc-history-meta.json");
+        write(&staged_target, "{}\n");
+        let source = format!(
+            "import meta from {};\n",
+            serde_json::to_string(&staged_target.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap();
+
+        assert!(
+            remapped.contains("import meta from \"./.zfb/doc-history-meta.json\";"),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_zfb_nested_json_is_still_rejected() {
+        // Negative control: the `.zfb` staging allowlist is DEPTH-1 ONLY
+        // (issue #1840's "narrow compatibility surface") — a nested `.zfb`
+        // file is not staged and must still be rejected as pruned.
+        let project = tempfile::tempdir().unwrap();
+        let pruned_target = project.path().join(".zfb/nested/other.json");
+        write(&pruned_target, "{}\n");
+        let source = format!(
+            "import meta from {};\n",
+            serde_json::to_string(&pruned_target.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("shadow mirror prunes"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_project_virtual_import_through_symlink_is_checked_against_the_resolved_target() {
+        // codex-review (issue #1726, sub #2160): the guard must judge an
+        // in-project symlink by its RESOLVED (canonical) target, the same
+        // path `stable_project_virtual_specifier` builds its "./rel"
+        // replacement from — not by the symlink's own lexical location.
+        // `src/aliased.ts` looks like an ordinary, non-pruned location, but
+        // it actually resolves into the pruned `.cache/` directory, so the
+        // rewrite it would otherwise produce ("./src/aliased.ts") is wrong:
+        // the shadow mirror never materializes `.cache/`, only the alias's
+        // OWN (non-existent, pre-rewrite) path.
+        let project = tempfile::tempdir().unwrap();
+        let real_target = project.path().join(".cache/real.ts");
+        write(&real_target, "export const real = 1;\n");
+        let alias = project.path().join("src/aliased.ts");
+        std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_target, &alias).unwrap();
+        let source = format!(
+            "export {{ real }} from {};\n",
+            serde_json::to_string(&alias.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
         assert!(message.contains("shadow mirror prunes"), "{message}");
     }
 
