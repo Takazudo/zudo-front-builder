@@ -65,9 +65,12 @@ use zfb_css::{
     css_relative_path, is_tailwind_import_line, AuthoredCssEngine, CssEngine, CssPipeline,
     CssPipelineConfig, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
+#[cfg(test)]
+use zfb_islands::scan_islands_with_meta;
 use zfb_islands::{
     build_production_client_scripts_with_workers, build_production_islands_asset,
-    discover_client_scripts, scan_islands_with_meta, scan_reachable_modules_with_meta,
+    discover_client_scripts, scan_islands_with_meta_and_first_party_root,
+    scan_reachable_modules_with_meta, scan_reachable_modules_with_meta_and_first_party_root,
     BundleConfig, ClientScriptWorkerEntry, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
     FrameworkKind, FsResolver, StageAuditPolicy,
 };
@@ -4060,7 +4063,18 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     let resolver = FsResolver::new()
         .with_project_root(project_root)
         .with_injected_route_roots(package_route_entrypoints);
-    let (islands_set, scan_meta) = match scan_islands_with_meta(&entries, &resolver) {
+    // Issue #2161: scope Guard (a)'s workspace-package edge detection (used
+    // by `materialise_islands_shadow_with_worker_context` below, via
+    // `scan_meta.workspace_package_edges_from_islands`) to the first-party
+    // boundary — an npm-link/`file:` dependency pointing outside it is a
+    // legitimate external dependency, not a workspace sibling (issue #1731),
+    // and must never be recorded as a `WorkspacePackageImportEdge`.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let (islands_set, scan_meta) = match scan_islands_with_meta_and_first_party_root(
+        &entries,
+        &resolver,
+        Some(&first_party_root),
+    ) {
         Ok(result) => result,
         Err(
             error @ (zfb_islands::ScanError::ImportQuery { .. }
@@ -4706,8 +4720,19 @@ fn stage_client_script_preprocessing_with_worker_context(
         .map(|entry| entry.source_path.clone())
         .collect();
     let resolver = FsResolver::new().with_project_root(project_root);
-    let graph = scan_reachable_modules_with_meta(&roots, &resolver)
-        .context("scan client-script graph for ?raw and module-worker preprocessing")?;
+    // Issue #2161: compute the first-party boundary up front so Guard (a)'s
+    // workspace-package edge detection below is scoped to it from the
+    // start — an npm-link/`file:` dependency pointing outside this boundary
+    // is a legitimate external dependency, not a workspace sibling (issue
+    // #1731), and must never be recorded as a `WorkspacePackageImportEdge`
+    // here.
+    let first_party_root = zfb_types::first_party_root_for(project_root);
+    let graph = scan_reachable_modules_with_meta_and_first_party_root(
+        &roots,
+        &resolver,
+        Some(&first_party_root),
+    )
+    .context("scan client-script graph for ?raw and module-worker preprocessing")?;
     let mut plugin_preprocessing = discover_plugin_preprocessing(
         project_root,
         std::iter::empty(),
@@ -4758,8 +4783,8 @@ fn stage_client_script_preprocessing_with_worker_context(
     // (`materialise_islands_shadow_with_worker_context`). Without a workspace
     // marker `first_party_root == project_root` (lexically) and every path
     // computation below collapses to the pre-#1674 single-package behavior, so
-    // non-workspace projects stage byte-identically.
-    let first_party_root = zfb_types::first_party_root_for(project_root);
+    // non-workspace projects stage byte-identically. `first_party_root` was
+    // already computed above (issue #2161) to scope Guard (a)'s scan.
     let paths = IslandsShadowPaths::new(&first_party_root);
     // The #1500 worker-companion naming contract and the "which files does the
     // full-tree walk cover" question stay PROJECT-scoped: the walk mirrors the
@@ -11293,6 +11318,77 @@ mod tests {
         assert!(
             message.contains("not supported once staging is active"),
             "{message}"
+        );
+    }
+
+    /// Issue #1731 / #2161: an `npm link` / `file:` dependency whose
+    /// `node_modules/<pkg>` symlink resolves OUTSIDE the project's
+    /// first-party boundary is a legitimate external dependency, not a
+    /// workspace sibling — unlike the genuine in-root sibling fixture
+    /// above (which must keep hard-erroring), this package lives in a
+    /// wholly separate temp directory. Driving the exact production call
+    /// shape `build_default_islands_payload_with_bundle_options` uses
+    /// (`scan_islands_with_meta_and_first_party_root` scoped to
+    /// `first_party_root`, then `materialise_islands_shadow`) must
+    /// SUCCEED rather than hard-erroring — a scanner-only test cannot
+    /// prove this, since Guard (a)'s hard-fail lives here, at the build
+    /// layer, and only fires once `materialise_islands_shadow_with_worker_context`
+    /// actually runs.
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_accepts_external_linked_package_outside_first_party_root() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        let external_tmp = tempdir().unwrap();
+        let external_pkg = external_tmp.path().join("linked");
+        std::fs::create_dir_all(external_pkg.join("src")).unwrap();
+        std::fs::write(
+            external_pkg.join("package.json"),
+            r#"{"name":"@acme/external","source":"src/index.ts"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            external_pkg.join("src/index.ts"),
+            "export const helper = 1;\n",
+        )
+        .unwrap();
+        let scope_dir = root.join("node_modules/@acme");
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        std::os::unix::fs::symlink(&external_pkg, scope_dir.join("external")).unwrap();
+
+        std::fs::create_dir_all(root.join("components")).unwrap();
+        let island_src = root.join("components/gallery.tsx");
+        std::fs::write(
+            &island_src,
+            "'use client';\n\
+             import { helper } from '@acme/external';\n\
+             import text from './message.txt?raw';\n\
+             export function Gallery() { console.log(helper, text); return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("components/message.txt"), "hello").unwrap();
+
+        let (islands, scan_meta) = scan_islands_with_meta_and_first_party_root(
+            std::slice::from_ref(&island_src),
+            &FsResolver::new(),
+            Some(root),
+        )
+        .unwrap();
+        assert_eq!(
+            islands.len(),
+            1,
+            "the \"use client\" component must still be discovered as a real island"
+        );
+        assert!(
+            scan_meta.workspace_package_edges_from_islands.is_empty(),
+            "an npm-link/file: dependency outside first_party_root must not be recorded as a \
+             workspace-package edge: {:?}",
+            scan_meta.workspace_package_edges_from_islands
+        );
+
+        materialise_islands_shadow(root, &islands, &scan_meta).expect(
+            "Guard (a) must not reject an external-linked dependency outside \
+             first_party_root, even though the closure needs ?raw staging",
         );
     }
 
