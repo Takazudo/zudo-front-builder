@@ -46,7 +46,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tracing::{debug, info, warn};
 use zfb_graph::{DependencyGraph, PageId};
-use zfb_watcher::{Change, ChangeKind, Watcher};
+use zfb_watcher::{Change, ChangeKind, WatchBackend, WatchOptions, Watcher};
 
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
@@ -464,6 +464,15 @@ pub struct OrchestratorConfig {
     /// `zfb_watcher::DEFAULT_DEBOUNCE` (50ms).
     pub debounce: Option<Duration>,
 
+    /// Which [`WatchBackend`] the dev-loop watcher drives (issue #2174).
+    ///
+    /// Sourced from `Config::watch_poll_fallback` /
+    /// `Config::watch_poll_interval_ms` — the caller (the `zfb dev`
+    /// command layer) is responsible for translating those two config
+    /// fields into a [`WatchBackend`] value before populating this.
+    /// Default: [`WatchBackend::Native`], matching pre-#2174 behavior.
+    pub backend: WatchBackend,
+
     /// Opt-in external-change narrowing hook (issue #1038).
     ///
     /// `None` (the default) keeps the conservative contract: every
@@ -496,6 +505,7 @@ impl std::fmt::Debug for OrchestratorConfig {
             .field("policy", &self.policy)
             .field("css_mirror_skip_dir_names", &self.css_mirror_skip_dir_names)
             .field("debounce", &self.debounce)
+            .field("backend", &self.backend)
             .field(
                 "external_invalidation",
                 &self.external_invalidation.as_ref().map(|_| "<hook>"),
@@ -520,6 +530,7 @@ impl OrchestratorConfig {
             policy: GranularityPolicy::default(),
             css_mirror_skip_dir_names: Vec::new(),
             debounce: None,
+            backend: WatchBackend::default(),
             external_invalidation: None,
             pre_tick_refresh: None,
         }
@@ -541,6 +552,13 @@ impl OrchestratorConfig {
     /// Override the debounce window (chainable).
     pub fn with_debounce(mut self, debounce: Duration) -> Self {
         self.debounce = Some(debounce);
+        self
+    }
+
+    /// Override the watch backend (chainable, issue #2174). See
+    /// [`Self::backend`].
+    pub fn with_backend(mut self, backend: WatchBackend) -> Self {
+        self.backend = backend;
         self
     }
 
@@ -567,6 +585,18 @@ impl OrchestratorConfig {
         self.pre_tick_refresh = Some(hook);
         self
     }
+}
+
+/// Pure derivation of the [`WatchOptions`] used to start the dev-loop
+/// watcher (issue #2174): the configured debounce (or
+/// [`zfb_watcher::DEFAULT_DEBOUNCE`] when absent) plus the configured
+/// backend. Split out of [`BuildOrchestrator::run_with_boot`] so backend
+/// selection is unit-testable without booting a real watcher.
+fn watch_options_for(config: &OrchestratorConfig) -> WatchOptions {
+    let debounce = config.debounce.unwrap_or(zfb_watcher::DEFAULT_DEBOUNCE);
+    WatchOptions::default()
+        .with_debounce(debounce)
+        .with_backend(config.backend)
 }
 
 /// The dev-loop orchestrator.
@@ -1633,15 +1663,11 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         B: FnOnce(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>,
         P: 'static,
     {
-        let debounce = self
-            .config
-            .debounce
-            .unwrap_or(zfb_watcher::DEFAULT_DEBOUNCE);
-        let (mut watcher, mut rx) = Watcher::start_with_extras(
+        let (mut watcher, mut rx) = Watcher::start_with_options(
             &self.config.project_root,
             self.config.watch_roots.iter().map(|p| p.as_path()),
             self.config.extra_watch_paths.iter().map(|p| p.as_path()),
-            debounce,
+            watch_options_for(&self.config),
         )?;
 
         info!(
@@ -1859,6 +1885,41 @@ mod tests {
             make_graph(),
             pipeline,
         )
+    }
+
+    // -----------------------------------------------------------------
+    // Watch backend selection (issue #2174, constructor-selection site a)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn watch_options_for_defaults_to_native_backend() {
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]);
+        let options = watch_options_for(&config);
+        assert_eq!(options.backend, WatchBackend::Native);
+    }
+
+    #[test]
+    fn watch_options_for_selects_poll_backend_when_configured() {
+        let poll_backend = WatchBackend::Poll {
+            interval: Duration::from_millis(250),
+        };
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+            .with_backend(poll_backend);
+        let options = watch_options_for(&config);
+        assert_eq!(options.backend, poll_backend);
+    }
+
+    #[test]
+    fn watch_options_for_carries_the_configured_debounce_alongside_the_backend() {
+        let poll_backend = WatchBackend::Poll {
+            interval: Duration::from_millis(250),
+        };
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+            .with_debounce(Duration::from_millis(10))
+            .with_backend(poll_backend);
+        let options = watch_options_for(&config);
+        assert_eq!(options.debounce, Duration::from_millis(10));
+        assert_eq!(options.backend, poll_backend);
     }
 
     #[test]
