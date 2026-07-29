@@ -93,25 +93,25 @@ pub fn path_to_posix_string(p: &Path) -> String {
 /// refinement (UNC prefixes, case-insensitive volumes, a nested-install
 /// carve-out) would silently miss.
 ///
-/// Migration is still NOT complete, and this doc deliberately does not claim
-/// otherwise (issue #2128: it went stale twice already — once when the earlier
-/// doc enumerated #2051's two sites as "the" implementation and a third turned
-/// up in `zfb-build`'s `bundler.rs`, and again when #2128 itself assumed the
-/// three copies it named were the last ones). As of #2128's fix, every site in
-/// `zfb-build` (`bundler.rs`, `module_worker.rs`) and `zfb-islands`
-/// (`scanner.rs` — all four of its component-walk sites, including two the
-/// #2128 audit missed: `is_workspace_package` and
-/// `is_within_injected_route_closure`) delegates. One hand-written boolean
-/// copy is known to remain: `crates/zfb/src/commands/build.rs`'s
-/// `usable_rel`. It was left alone deliberately — folding it in means editing
-/// and rebuilding the `zfb` crate (the one that embeds V8; a 15–30 min
-/// compile), out of scope for the `zfb-build`/`zfb-islands`-only pass that
-/// produced this doc update — not because it's exempt from the rule above.
-/// Don't trust this paragraph either: re-run the audit and read every hit
-/// yourself, since index/position-based lookups (e.g. `rposition` to find the
-/// *last* `node_modules` segment for path-splitting, or a `.next()` check for
-/// whether the *first* component is `node_modules`) are a different question
-/// and legitimately don't delegate here:
+/// As of #2128's fix, this is believed to be the only hand-written boolean
+/// implementation left: every delegating site in `zfb-build` (`bundler.rs`,
+/// `module_worker.rs`), `zfb-islands` (`scanner.rs` — all four of its
+/// component-walk sites, including two the #2128 audit missed:
+/// `is_workspace_package` and `is_within_injected_route_closure`), and `zfb`
+/// (`commands/build.rs`'s `usable_rel`, the fourth copy #2128's own audit had
+/// also missed) now calls this function.
+///
+/// Treat that claim with suspicion rather than as settled fact — it has gone
+/// stale twice before (issue #2128: once when the earlier doc enumerated
+/// #2051's two sites as "the" implementation and a third turned up in
+/// `zfb-build`'s `bundler.rs`, and again when #2128 itself assumed the three
+/// copies it named were the last ones — the `usable_rel` copy above is
+/// precisely what that second assumption missed). Re-run the audit and read
+/// every hit yourself rather than believing this list, and note that
+/// index/position-based lookups (e.g. `rposition` to find the *last*
+/// `node_modules` segment for path-splitting, or a `.next()` check for whether
+/// the *first* component is `node_modules`) are a different question and
+/// legitimately don't delegate here:
 ///
 /// ```sh
 /// grep -rn -A2 'components()' crates/ --include='*.rs' | grep node_modules
