@@ -140,6 +140,13 @@ pub(crate) async fn run_plugin_setup(
     // hooks (#260), so a single async loop here invokes each loader exactly
     // once per build/dev-boot.  `invoke_virtual_loader` is async; the plain
     // strings are then forwarded into the synchronous bundler path.
+    //
+    // This deliberately calls the UNFORCED `invoke_virtual_loader` — this
+    // boot-time prefetch is the "exactly once" case, not a reload. A
+    // `vm_entry.watch_files` entry (#2167) and the forced variant
+    // (`invoke_virtual_loader_forced`) exist on the wire/registry today but
+    // are not consumed here; wiring an actual dev-server watch that forces
+    // a reload when one of those files changes is a later sub-issue.
     let mut virtual_sources: BTreeMap<String, String> = BTreeMap::new();
     if let Some(host) = plugin_host.as_ref() {
         for (specifier, vm_entry) in setup_registries.virtual_modules.iter() {

@@ -62,6 +62,20 @@ pub struct VirtualModuleEntry {
     /// Opaque handle into the plugin host's loader map. Wave 2 callers
     /// invoke the loader via [`crate::PluginHost::invoke_virtual_loader`].
     pub loader_id: VirtualLoaderId,
+    /// Extra absolute filesystem paths a `zfb dev` watcher should track
+    /// on this loader's behalf (#2167), from `addVirtualModule`'s
+    /// optional `{ watchFiles }` registration option — for a loader
+    /// whose output depends on files it reads directly (e.g. via
+    /// `node:fs`) rather than static ESM imports the dev bundler would
+    /// otherwise notice on its own. Absolute-only is enforced on the JS
+    /// host side (`plugin-host.mjs`'s `addVirtualModule`), mirroring
+    /// `extraWatchPaths`'s absolute-only rule (`crates/zfb/src/config.rs`)
+    /// — these paths are stored verbatim, never resolved against the
+    /// project root like `AliasEntry::target` / `InjectedRoute::entrypoint`
+    /// are. This sub-issue is protocol/registry plumbing only: nothing
+    /// yet reads this field to register an actual dev-server watch, or
+    /// to call the forced-reload variant of `invoke_virtual_loader`.
+    pub watch_files: Vec<PathBuf>,
 }
 
 /// Map from bare specifier (exact match) → registered loader.
@@ -380,6 +394,11 @@ pub(crate) enum RawSetupRegistration {
     VirtualModule {
         specifier: String,
         loader_id: VirtualLoaderId,
+        /// Absolute filesystem paths from `addVirtualModule`'s optional
+        /// `{ watchFiles }` option (#2167). Already validated
+        /// non-empty-string + absolute on the JS host side; stored
+        /// verbatim, no `resolve_against_root` join.
+        watch_files: Vec<String>,
     },
     InjectRoute {
         pattern: String,
@@ -509,6 +528,7 @@ impl<'a> PluginSetupAccumulator<'a> {
                 RawSetupRegistration::VirtualModule {
                     specifier,
                     loader_id,
+                    watch_files,
                 } => {
                     if let Some(first_plugin) = self.virtual_origin.get(&specifier) {
                         if first_plugin != &output.plugin {
@@ -519,7 +539,8 @@ impl<'a> PluginSetupAccumulator<'a> {
                             });
                         }
                         // Same plugin re-registering the same specifier
-                        // overwrites the loader_id (last write wins).
+                        // overwrites the loader_id (last write wins) —
+                        // watch_files overwrites the same way (#2167).
                     }
                     self.virtual_origin
                         .insert(specifier.clone(), output.plugin.clone());
@@ -527,6 +548,7 @@ impl<'a> PluginSetupAccumulator<'a> {
                         specifier,
                         plugin: output.plugin.clone(),
                         loader_id,
+                        watch_files: watch_files.into_iter().map(PathBuf::from).collect(),
                     });
                 }
                 RawSetupRegistration::InjectRoute {
@@ -760,6 +782,7 @@ mod tests {
             registrations: vec![RawSetupRegistration::VirtualModule {
                 specifier: specifier.into(),
                 loader_id: VirtualLoaderId(loader_id.into()),
+                watch_files: vec![],
             }],
         }
     }
@@ -847,6 +870,64 @@ mod tests {
             .unwrap();
         let (_, _, routes, _) = acc.finish();
         assert_eq!(routes.len(), 1);
+    }
+
+    #[test]
+    fn virtual_module_watch_files_survive_ingest() {
+        // #2167: `watch_files` is stored verbatim (as `PathBuf`s), with no
+        // `resolve_against_root` join — unlike `AliasEntry::target` /
+        // `InjectedRoute::entrypoint`, watchFiles entries are already
+        // required to be absolute by the time they reach the accumulator.
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        acc.ingest(RawPluginSetupOutput {
+            plugin: "p".into(),
+            registrations: vec![RawSetupRegistration::VirtualModule {
+                specifier: "virtual:data".into(),
+                loader_id: VirtualLoaderId("v0".into()),
+                watch_files: vec!["/abs/data.json".into(), "/abs/other.json".into()],
+            }],
+        })
+        .unwrap();
+        let (_, virtual_modules, _, _) = acc.finish();
+        let entry = virtual_modules.get("virtual:data").unwrap();
+        assert_eq!(
+            entry.watch_files,
+            vec![
+                PathBuf::from("/abs/data.json"),
+                PathBuf::from("/abs/other.json")
+            ]
+        );
+    }
+
+    #[test]
+    fn virtual_module_reregistration_overwrites_watch_files() {
+        // Mirrors the pre-existing "last write wins" loader_id behavior
+        // for the same-plugin re-registration path (#2167).
+        let root = PathBuf::from("/proj");
+        let mut acc = PluginSetupAccumulator::new(&root, SetupCommand::Build);
+        acc.ingest(RawPluginSetupOutput {
+            plugin: "p".into(),
+            registrations: vec![RawSetupRegistration::VirtualModule {
+                specifier: "virtual:data".into(),
+                loader_id: VirtualLoaderId("v0".into()),
+                watch_files: vec!["/abs/a.json".into()],
+            }],
+        })
+        .unwrap();
+        acc.ingest(RawPluginSetupOutput {
+            plugin: "p".into(),
+            registrations: vec![RawSetupRegistration::VirtualModule {
+                specifier: "virtual:data".into(),
+                loader_id: VirtualLoaderId("v1".into()),
+                watch_files: vec!["/abs/b.json".into()],
+            }],
+        })
+        .unwrap();
+        let (_, virtual_modules, _, _) = acc.finish();
+        let entry = virtual_modules.get("virtual:data").unwrap();
+        assert_eq!(entry.loader_id.as_str(), "v1");
+        assert_eq!(entry.watch_files, vec![PathBuf::from("/abs/b.json")]);
     }
 
     #[test]
