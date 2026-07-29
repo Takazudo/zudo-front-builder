@@ -31,9 +31,9 @@ proposed two possibilities and demanded one be ruled in: (1) test-harness timing
 ### Approach we tried first
 
 The issue's own "Recommended remediation" — written by an agent correctly following
-CLAUDE.md's `flaky:` quarantine pipeline — said: tag the test
-`#[ignore = "flaky: <url>"]`, add a manifest row, add it to `exam.yml`'s
-`quarantine-heavy` filterset, investigate later.
+root CLAUDE.md's `flaky:` quarantine pipeline — said: tag the test
+`#[ignore = "flaky: <url>"]`, add a `crates/CLAUDE.md` manifest row, add it
+to `exam.yml`'s `quarantine-heavy` filterset, investigate later.
 
 **Following that would have buried a real bug behind a paper trail that looked
 responsible.** Quarantine suspends PRODUCT coverage, and the product was the thing

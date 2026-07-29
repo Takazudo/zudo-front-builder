@@ -63,7 +63,7 @@
 //! ## `#[ignore]`
 //!
 //! Tagged `heavy` per this repo's `#[ignore]` manifest convention
-//! (`CLAUDE.md`): a real `zfb dev --port 0` E2E. It is no longer RED —
+//! (`crates/CLAUDE.md`): a real `zfb dev --port 0` E2E. It is no longer RED —
 //! it passes — but it stays out of the T1 gate on cost, like every other
 //! real-dev-server E2E in this crate. Epic #1999's Wave 6 central-gate
 //! pass (#2007) owns wiring it into `exam.yml`'s weekly filterset; it must

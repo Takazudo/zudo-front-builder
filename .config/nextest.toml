@@ -18,7 +18,7 @@
 # binaries concurrently by default — so without this group these heavy
 # processes race each other for CPU/memory. The group makes the serialization
 # explicit at the runner level: at most ONE test from this group runs at a
-# time across all 33 binaries.
+# time across all 34 binaries.
 #
 # The set is two sub-groups sharing one test-group:
 #   • 21 flock-adopting binaries (client_bundling_cross_pipeline,
@@ -186,7 +186,7 @@ max-threads = 1
 #
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
-# esbuild subprocess + embedded V8 isolate (see CLAUDE.md's `#[ignore]`
+# esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
 # manifest, tagged `heavy`) but is NOT its own binary — it lives inside the
 # `zfb` crate's shared lib-test target (`render_pipeline::tests`) alongside
 # hundreds of ordinary, non-heavy unit tests, so `binary(=...)` cannot target
@@ -199,7 +199,7 @@ max-threads = 1
 #
 # A SECOND `test(=...)` predicate (issue #1394) joins the same OR:
 # `version_stamp_from_env` (crates/zfb/tests/version_stamp.rs, tagged `heavy`
-# in CLAUDE.md's manifest) shells out to a fresh `cargo run` recompile and was
+# in crates/CLAUDE.md's manifest) shells out to a fresh `cargo run` recompile and was
 # clocked at 134s in exam.yml's quarantine-heavy job — well within this
 # group's watchdog budget, and exactly the kind of CPU/memory-heavy process
 # this group exists to keep off the CPU at the same time as the rest of the

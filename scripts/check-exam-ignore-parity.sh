@@ -3,17 +3,17 @@
 # scripts/check-exam-ignore-parity.sh — mechanical reconciliation guard for
 # issue #2072.
 #
-# CLAUDE.md's "`#[ignore]` manifest (Rust)" section requires every
+# crates/CLAUDE.md's "`#[ignore]` manifest table" section requires every
 # `env-gate:`/`heavy:`-tagged `#[ignore]`d Rust test to be reachable by
 # EITHER an exact-name entry in exam.yml's weekly quarantine-heavy filterset
 # OR a health.yml `-- --ignored` T1 step whose scope actually covers it. That
 # rule had drifted before (issue #2058) because nothing recomputed it — the
-# CLAUDE.md manifest table was a point-in-time manual audit, not a live
+# crates/CLAUDE.md manifest table was a point-in-time manual audit, not a live
 # check. This script recomputes the diff FRESH every time it runs, by
 # actually parsing:
 #
 #   1. every `#[ignore = "<tag>: ..."]`d test under crates/ (same convention
-#      as CLAUDE.md's own audit grep: `grep -rn '#\[ignore = "' crates/ |
+#      as crates/CLAUDE.md's own audit grep: `grep -rn '#\[ignore = "' crates/ |
 #      grep -v ':[0-9]*: *//'` — a `//`-commented mention of the attribute
 #      text does not count as a real `#[ignore]`);
 #   2. exam.yml's quarantine-heavy `-E '...'` filterset (every `test(=NAME)`
@@ -78,7 +78,7 @@ done
 
 # Tag prefixes exempt from the "must be reachable by exam.yml or health.yml"
 # rule — DATA read from the tag text, never a hard-coded test name. Mirrors
-# CLAUDE.md's `#[ignore]` taxonomy: `verification:` is a one-time proof, and
+# crates/CLAUDE.md's `#[ignore]` taxonomy: `verification:` is a one-time proof, and
 # a future `pending-feature:` test is blocked on an unimplemented product
 # feature, not on scheduling.
 EXCEPTION_TAGS="verification pending-feature"
@@ -93,13 +93,30 @@ list_contains() {
 
 # ── 1. exam.yml quarantine-heavy filterset ──────────────────────────────────
 
-declare -A EXAM_SET=()
+# bash 3.2 (stock macOS /bin/bash) has no associative arrays, so the dedup set
+# is a newline-delimited list instead, with exact-line (never substring)
+# membership checks via `grep -qxF` — see exam_set_contains below.
+EXAM_SET_LIST=""
 while IFS= read -r name; do
-  [[ -n "$name" ]] && EXAM_SET["$name"]=1
+  [[ -n "$name" ]] && EXAM_SET_LIST="$EXAM_SET_LIST
+$name"
 done < <(grep -vE '^[[:space:]]*#' "$EXAM_WORKFLOW" \
   | grep -oE 'test\(=[A-Za-z0-9_:]+\)' \
   | sed -E 's/test\(=([A-Za-z0-9_:]+)\)/\1/' \
   | sort -u || true)
+
+exam_set_contains() {
+  # -x: whole-line match only. A bare `grep -qF` would let one test name
+  # match as a substring of another (e.g. "foo" inside "foo_extended").
+  # A here-string, not a `printf | grep -q` pipe: under `set -o pipefail`
+  # (this script has `set -euo pipefail`), grep -q can exit as soon as it
+  # finds a match, SIGPIPE-killing a still-writing producer on the other
+  # end of a real pipe — pipefail then reports the pipeline as failed even
+  # though the match was found, misclassifying a covered test as UNCOVERED
+  # (reproduces with a large enough exam.yml filterset). A here-string has
+  # no live producer process to SIGPIPE, so this can't happen.
+  grep -qxF -- "$1" <<< "$EXAM_SET_LIST"
+}
 
 # ── 2. health.yml `-- --ignored` step scopes ────────────────────────────────
 
@@ -162,7 +179,13 @@ EXCEPTIONS=0
 UNCOVERED=0
 
 while IFS= read -r -d '' file; do
-  mapfile -t LINES < "$file"
+  # bash 3.2 has no `mapfile`/`readarray`; slurp the file into a plain indexed
+  # array by hand instead. The `|| [[ -n "$line" ]]` tail preserves a final
+  # unterminated line (read fails at EOF but still populates $line).
+  LINES=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    LINES+=("$line")
+  done < "$file"
   total=${#LINES[@]}
 
   rel="${file#"$CRATES_ROOT"/}"
@@ -220,7 +243,7 @@ while IFS= read -r -d '' file; do
     if list_contains "$tag" "$EXCEPTION_TAGS"; then
       echo "EXCEPTION($tag): $qualified ($loc)"
       EXCEPTIONS=$((EXCEPTIONS + 1))
-    elif [[ -n "${EXAM_SET[$qualified]+x}" ]]; then
+    elif exam_set_contains "$qualified"; then
       echo "COVERED-BY-EXAM: $qualified ($loc)"
       COVERED_EXAM=$((COVERED_EXAM + 1))
     elif health_scope_covers "$pkg" "$kind" "$binary" "$qualified"; then
@@ -246,7 +269,7 @@ if ((TOTAL == 0)); then
   exit 1
 fi
 
-# Cross-check against CLAUDE.md's own raw audit grep (`grep -rn '#\[ignore =
+# Cross-check against crates/CLAUDE.md's own raw audit grep (`grep -rn '#\[ignore =
 # "' crates/ | grep -v ':[0-9]*: *//'`). The walk above only recognizes
 # `<pkg>/tests/<bin>.rs` and `<pkg>/src/**.rs` — a future #[ignore]d test
 # placed under e.g. `<pkg>/examples/` or `<pkg>/benches/` would silently

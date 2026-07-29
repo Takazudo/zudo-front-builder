@@ -439,25 +439,20 @@ fn nearest_package_root_for_canonical(
 ///    node_modules-keyed rule above, no relaxation.
 ///
 /// Fail-closed throughout: any missing `package.json`, unclaimed root, or
-/// uncovered subpath returns `false` and the caller's case-4 rejection
+/// uncovered subpath yields `None`, and the caller's case-4 rejection
 /// stands. This is additive only — it never widens what the node_modules-
 /// keyed rule already accepts, and it does not replace the case-4 rejection
 /// for anything it does not itself cover (e.g. an undeclared deep import
 /// reached via a canonicalized key stays rejected, same as before).
-fn canonical_input_is_declared_first_party_entry(
-    canonical: &Path,
-    canonical_first_party_root: &Path,
-) -> bool {
-    declared_first_party_package_identity_from_canonical(canonical, canonical_first_party_root)
-        .is_some()
-}
-
-/// Identity-bearing twin of [`canonical_input_is_declared_first_party_entry`]
-/// above: the same four conditions, returning the accepted package's identity
-/// instead of a bare `bool`. Added for epic #2078 Sub 10a's
-/// [`accepted_enrolment_set`], the same reason
+///
+/// Carries the accepted package's identity rather than a bare `bool` for
+/// epic #2078 Sub 10a's [`accepted_enrolment_set`], the same reason
 /// [`declared_first_party_package_identity_from_key`] carries the identity
-/// shape for the node_modules-keyed rule.
+/// shape for the node_modules-keyed rule. (Through issue #2141 a
+/// `canonical_input_is_declared_first_party_entry` predicate wrapper stood
+/// in front of this for the audit's own call site; the shared classifier
+/// ([`MetafileInputClassifier::classify_metafile_input`]) needs the identity
+/// itself, so the wrapper is gone and its documentation lives here.)
 fn declared_first_party_package_identity_from_canonical(
     canonical: &Path,
     canonical_first_party_root: &Path,
@@ -492,15 +487,23 @@ fn declared_first_party_package_identity_from_canonical(
 }
 
 /// The declared-name roster of every package the governing
-/// `pnpm-workspace.yaml` claims, computed at most once per audit/query pass.
+/// `pnpm-workspace.yaml` claims, computed at most once per
+/// [`MetafileInputClassifier`] — i.e. per shared classification pass over one
+/// parsed metafile, not per projection consumed from it (issue #2142).
 ///
 /// [`zfb_types::first_party::claimed_workspace_member_names`] walks the whole
-/// workspace tree — measured on this repo at ~6600 directories / ~0.48s warm,
-/// since it prunes only `node_modules` and `.git` and so descends `target/`,
-/// `dist/` and `worktrees/`. That is far too expensive to pay per input, or
-/// per ordinary build, so it is built lazily and at most once per pass, the
-/// same shape `zfb_types::audit_eligibility`'s own declared-identity branch
-/// uses for the identical reason.
+/// workspace tree. Before issue #2142 taught its own `collect_workspace_dirs`
+/// helper to prune glob-aware, that walk descended every non-`node_modules`/
+/// `.git` directory unconditionally — measured on this repo at ~6600
+/// directories / ~0.48s warm, since nothing stopped it walking `target/`,
+/// `dist/` and `worktrees/` in full. The pruning added since is glob-aware
+/// rather than a hardcoded basename skip — none of those three names is
+/// reserved by pnpm, so an external workspace legitimately claiming `dist/*`
+/// or `worktrees/*` as a real package location must still be discoverable —
+/// but for a workspace whose own globs never reach those trees (this repo's
+/// among them) it now skips descending into them entirely. Either way this
+/// remains far too expensive to pay per input, or per ordinary build, so it
+/// is still built lazily and at most once per classification pass.
 ///
 /// Laziness alone would not have been enough: every ordinary third-party
 /// input reaches [`classify_package_shaped_input`] with a `node_modules`
@@ -511,22 +514,71 @@ fn declared_first_party_package_identity_from_canonical(
 /// tree, so third-party inputs canonicalise OUTSIDE every stage root and exit
 /// before the roster is ever consulted. Measured directly with a temporary
 /// probe: **zero** roster builds for the empty-`bundle.exclude` fixture,
-/// exactly **one** for the real-copy fixture that needs it. A project with no
-/// governing `pnpm-workspace.yaml` costs one failed read and no walk at all —
-/// `claimed_workspace_member_names` returns empty before walking anything.
+/// exactly **one** for the real-copy fixture that needs it — pinned
+/// permanently by this module's own
+/// `roster_materializes_at_most_once_per_shared_classification_pass_and_never_on_the_ordinary_path`
+/// test (issue #2142), rather than trusted from a one-time investigation. A
+/// project with no governing `pnpm-workspace.yaml` costs one failed read and
+/// no walk at all — `claimed_workspace_member_names` returns empty before
+/// walking anything.
 ///
-/// The remaining cost — one walk per audit pass and one per enrolment query,
-/// i.e. twice per SSR bundle, on builds that genuinely real-copy-stage — is
-/// accepted rather than shared through a threaded roster, which would mean
-/// widening two public function signatures for a cost only paid by the
-/// configuration that needs the check.
-struct ClaimedMemberRoster<'a> {
-    workspace_root: &'a Path,
+/// # The real trigger-frequency difference from `audit_eligibility`'s own roster
+///
+/// This roster is NOT "the same shape `zfb_types::audit_eligibility`'s own
+/// declared-identity branch uses, for the identical reason" — that phrasing
+/// (this doc's own, before issue #2142) elided a real difference in WHEN each
+/// one fires. `audit_eligibility`'s lazy roster backs a single upstream ARMING
+/// decision — "should the stage-escape audit run for this bundle at all" —
+/// decided once, before any metafile input is ever classified. This roster
+/// instead backs the classification itself, so its trigger frequency tracks
+/// how many times a real esbuild subprocess's metafile is actually classified
+/// here, not how many bundles get built.
+///
+/// Before issue #2142, that meant **twice per SSR bundle** on a build that
+/// genuinely real-copy-stages: `audit_metafile_stage_escape` and
+/// `accepted_enrolment_set` each built their OWN [`MetafileInputClassifier`],
+/// and so their own roster, re-parsing the very metafile the other one had
+/// just parsed. #2142 folds that down to **at most once per SSR bundle** —
+/// [`audit_and_enrol_metafile_stage_escape`][`_at_path`] threads ONE
+/// classifier (and so one roster) through both the audit and the
+/// enrolment-selection query at bundler.rs's SSR call site, over one read and
+/// one parse of the metafile. `audit_metafile_stage_escape` and
+/// `accepted_enrolment_set` still exist as single-purpose entry points — for
+/// islands' per-job call site and this module's own single-projection unit
+/// tests — and each still builds its own roster when called standalone; the
+/// saving is specific to the call site that genuinely needs both projections
+/// from the SAME metafile.
+///
+/// The one call site this does NOT cover is the islands/client per-job path
+/// (`bundle_per_island`, `crates/zfb-islands/src/esbuild.rs`): it still runs
+/// N+1 independent subprocess audits (one per island entry plus the runtime
+/// bundle), each building its own roster, because that call site reaches this
+/// module only through the public, single-purpose
+/// `audit_metafile_stage_escape_at_path` across a crate boundary — sharing a
+/// roster there would need new cross-crate session/cache plumbing that
+/// conflicts with epic #2140's narrowing goal for a later wave. That is a
+/// deliberate, documented exception, not an oversight this doc is hiding.
+///
+/// [`_at_path`]: audit_and_enrol_metafile_stage_escape_at_path
+struct ClaimedMemberRoster {
+    workspace_root: PathBuf,
     members: Option<BTreeMap<String, PathBuf>>,
 }
 
-impl<'a> ClaimedMemberRoster<'a> {
-    fn new(workspace_root: &'a Path) -> Self {
+// Test-only instrumentation counting real invocations of
+// `zfb_types::first_party::claimed_workspace_member_names` via
+// `ClaimedMemberRoster::claimed_member_dir` — how this module pins its own
+// materialization contract (issue #2142) without trusting the refactor by
+// inspection. Never compiled into a release build; a `thread_local` is
+// safely test-isolated since the default test harness runs each test on its
+// own OS thread.
+#[cfg(test)]
+thread_local! {
+    static ROSTER_BUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl ClaimedMemberRoster {
+    fn new(workspace_root: PathBuf) -> Self {
         Self {
             workspace_root,
             members: None,
@@ -538,20 +590,30 @@ impl<'a> ClaimedMemberRoster<'a> {
     fn claimed_member_dir(&mut self, name: &str) -> Option<&Path> {
         self.members
             .get_or_insert_with(|| {
-                zfb_types::first_party::claimed_workspace_member_names(self.workspace_root)
+                #[cfg(test)]
+                ROSTER_BUILD_COUNT.with(|count| count.set(count.get() + 1));
+                zfb_types::first_party::claimed_workspace_member_names(&self.workspace_root)
             })
             .get(name)
             .map(PathBuf::as_path)
     }
 }
 
-/// Where a metafile input's canonical path sits, relative to the three
-/// boundaries [`classify_package_shaped_input`] discriminates on. Both call
-/// sites compute these identically; grouping them keeps the classifier's
-/// signature readable and makes it impossible for one site to pass them in a
-/// different order than the other.
+/// Where a metafile input sits, relative to the four boundaries
+/// [`MetafileInputClassifier::classify_metafile_input`] and its
+/// package-shaped gate ([`classify_package_shaped_input`]) discriminate on.
+///
+/// Computed in exactly ONE place — [`InputLocality::of`], from the shared
+/// classification context plus the resolved record — never caller-supplied
+/// (issue #2141): before the routing loop was consolidated, the audit and
+/// the enrolment query each derived these four booleans by hand, and a
+/// divergence there was exactly the accepted-but-not-enrolled #2048 defect
+/// class.
 #[derive(Debug, Clone, Copy)]
 struct InputLocality {
+    /// The metafile KEY string contains a `node_modules` segment — the input
+    /// was reached through a bare package specifier.
+    package_shaped: bool,
     /// The canonical (symlink-resolved) path still contains a `node_modules`
     /// segment.
     canonical_in_node_modules: bool,
@@ -559,6 +621,24 @@ struct InputLocality {
     in_stage: bool,
     /// The canonical path is inside `first_party_root`.
     in_first_party: bool,
+}
+
+impl InputLocality {
+    fn of(
+        ctx: &MetafileInputClassifier,
+        record: &MetafileInputResolution<'_>,
+        canonical: &Path,
+    ) -> Self {
+        Self {
+            package_shaped: has_node_modules_segment(Path::new(record.key)),
+            canonical_in_node_modules: has_node_modules_segment(canonical),
+            in_stage: ctx
+                .canonical_stage_roots
+                .iter()
+                .any(|root| canonical.starts_with(root)),
+            in_first_party: canonical.starts_with(&ctx.canonical_first_party_root),
+        }
+    }
 }
 
 /// How a package-shaped metafile input classifies under the stage-escape
@@ -664,9 +744,12 @@ fn classify_package_shaped_input(
     canonical: &Path,
     canonical_first_party_root: &Path,
     locality: InputLocality,
-    claimed_members: &mut ClaimedMemberRoster<'_>,
+    claimed_members: &mut ClaimedMemberRoster,
 ) -> PackageShapedInput {
     let InputLocality {
+        // Reached only through the classifier's package-shaped branch, so
+        // this bool is already known true here.
+        package_shaped: _,
         canonical_in_node_modules,
         in_stage,
         in_first_party,
@@ -1124,7 +1207,7 @@ fn resolve_metafile_inputs<'a>(
 /// predicate (e.g. a closure over the compiled glob matcher), taking an
 /// absolute path and answering whether it matches an exclude pattern
 /// relative to `project_root`.
-pub fn audit_metafile_exclusions(
+pub(crate) fn audit_metafile_exclusions(
     metafile_bytes: &[u8],
     is_excluded: &dyn Fn(&Path) -> bool,
     shadow_root: &Path,
@@ -1166,7 +1249,7 @@ pub fn audit_metafile_exclusions(
 /// from `metafile_path` first. Fail-closed extends to the read itself — a
 /// missing or unreadable metafile is a build error, exactly like malformed
 /// JSON, whenever the caller is auditing active exclusions.
-pub fn audit_metafile_exclusions_at_path(
+pub(crate) fn audit_metafile_exclusions_at_path(
     metafile_path: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
     shadow_root: &Path,
@@ -1179,6 +1262,194 @@ pub fn audit_metafile_exclusions_at_path(
         )
     })?;
     audit_metafile_exclusions(&bytes, is_excluded, shadow_root, project_root)
+}
+
+/// How one resolved metafile input classifies under the stage-escape
+/// predicate's shared per-input routing
+/// ([`MetafileInputClassifier::classify_metafile_input`], issue #2141).
+///
+/// Projection stays with the callers, which each consume ONE arm and ignore
+/// the other: [`audit_metafile_stage_escape`] collects [`Offender`] details
+/// into its failure message (an accepted package is the enrolment query's
+/// concern, not a failure), while [`accepted_enrolment_set`] records
+/// [`Accepted`] packages (a rejected input has no separate channel there —
+/// reporting it remains the audit's job).
+///
+/// [`Offender`]: InputVerdict::Offender
+/// [`Accepted`]: InputVerdict::Accepted
+enum InputVerdict {
+    /// Nothing either entry point acts on: ordinary staged source, an
+    /// ordinary third-party dependency, or a path outside the predicate's
+    /// four-case scope entirely.
+    Ignore,
+    /// A first-party workspace package reached at a location it declares —
+    /// case 2's declared-entry acceptance in any of its three key/staging
+    /// shapes (symlinked, real-copy staged, or the canonical-key copy-mode
+    /// sibling of issues #2047/#2086).
+    Accepted(AcceptedPackage),
+    /// A stage escape, carrying the exact offender detail string the audit's
+    /// failure message names it by.
+    Offender(String),
+}
+
+/// The shared classification context [`audit_metafile_stage_escape`] and
+/// [`accepted_enrolment_set`] both route every metafile input through
+/// (issue #2141).
+///
+/// Until this type existed, each entry point carried its own copy of the
+/// same preamble (canonical stage roots, lexical stage roots, canonical
+/// first-party root, lazy [`ClaimedMemberRoster`]) and of the per-input
+/// routing loop around the shared leaf predicates — behavior-equal, but
+/// with nothing mechanically holding them together: a short-circuit, an
+/// early `continue`, or a reordering added to one copy had to be mirrored
+/// in the other by hand, and a miss there is exactly the
+/// accepted-but-not-enrolled #2048 defect class. Owning the preamble here
+/// and classifying through one [`classify_metafile_input`] makes that
+/// divergence structurally impossible.
+///
+/// [`classify_metafile_input`]: MetafileInputClassifier::classify_metafile_input
+struct MetafileInputClassifier {
+    canonical_stage_roots: Vec<PathBuf>,
+    /// Lexically (not canonically — no symlink-following, no disk lookup)
+    /// normalised stage roots, for the case-1-vs-case-4 "did a staged
+    /// spelling ever exist" check. Must NOT be the canonical roots above:
+    /// the whole point is to compare against the pre-symlink-resolution
+    /// shape of both sides.
+    lexical_stage_roots: Vec<PathBuf>,
+    canonical_first_party_root: PathBuf,
+    claimed_members: ClaimedMemberRoster,
+}
+
+impl MetafileInputClassifier {
+    /// Build the shared preamble state from the entry points' own argument
+    /// shape (see [`audit_metafile_stage_escape`]'s docs for what
+    /// `stage_roots` and `first_party_root` mean).
+    fn new(stage_roots: &[&Path], first_party_root: &Path) -> Self {
+        let canonical_stage_roots: Vec<PathBuf> = stage_roots
+            .iter()
+            .map(|root| canonical_or_self(root).unwrap_or_else(|| root.to_path_buf()))
+            .collect();
+        let canonical_first_party_root =
+            canonical_or_self(first_party_root).unwrap_or_else(|| first_party_root.to_path_buf());
+        let lexical_stage_roots: Vec<PathBuf> = stage_roots
+            .iter()
+            .map(|root| normalize_path_lexical(root))
+            .collect();
+        let claimed_members = ClaimedMemberRoster::new(canonical_first_party_root.clone());
+        Self {
+            canonical_stage_roots,
+            lexical_stage_roots,
+            canonical_first_party_root,
+            claimed_members,
+        }
+    }
+
+    /// Classify one resolved metafile input under the four-case predicate
+    /// [`audit_metafile_stage_escape`]'s docs spell out. `canonical` is
+    /// `record`'s already-unwrapped canonical path — an input that resolves
+    /// to no real on-disk path at all is outside the predicate's scope, and
+    /// both callers skip it before ever calling here (mirrors
+    /// [`route_module_deps`]'s "skip, don't invent" posture).
+    fn classify_metafile_input(
+        &mut self,
+        record: &MetafileInputResolution<'_>,
+        canonical: &Path,
+    ) -> InputVerdict {
+        let locality = InputLocality::of(self, record, canonical);
+
+        if locality.package_shaped {
+            // Cases 2/3: resolved via a bare package specifier through some
+            // node_modules root. Both staging shapes — a symlink that
+            // canonicalises out of node_modules, and a real staged copy that
+            // stays inside one — are told apart by
+            // [`classify_package_shaped_input`].
+            return match classify_package_shaped_input(
+                record.key,
+                canonical,
+                &self.canonical_first_party_root,
+                locality,
+                &mut self.claimed_members,
+            ) {
+                PackageShapedInput::DeclaredFirstPartyEntry(package) => {
+                    InputVerdict::Accepted(package)
+                }
+                PackageShapedInput::UndeclaredFirstPartyEscape { detail } => {
+                    InputVerdict::Offender(detail)
+                }
+                PackageShapedInput::ThirdPartyDependency | PackageShapedInput::OutOfScope => {
+                    InputVerdict::Ignore
+                }
+            };
+        }
+
+        if locality.in_stage {
+            return InputVerdict::Ignore; // ordinary staged source, still inside the stage.
+        }
+
+        // The canonical (symlink-followed) path escaped the stage. Case 1
+        // vs case 4 hinges on whether a genuine staged spelling ever
+        // existed: does the LOGICAL path (`metafile_cwd.join(key)`,
+        // lexically normalised — `..` collapsed WITHOUT touching the
+        // filesystem, so a symlink target is never followed here) still
+        // land inside a stage root? A key like "components/Header.tsx"
+        // does (the symlink itself is a real filesystem entry inside the
+        // stage) — case 1, allowed. A key like
+        // "../../workspace/packages/shared/index.ts", OR an equivalent
+        // already-absolute key, lexically escapes the stage before any
+        // canonicalisation even happens — case 4, no staged spelling was
+        // ever produced, flag it regardless of which spelling esbuild used.
+        let logical_in_stage = self
+            .lexical_stage_roots
+            .iter()
+            .any(|root| normalize_path_lexical(&record.logical_path).starts_with(root));
+
+        if logical_in_stage {
+            return InputVerdict::Ignore; // case 1: allowed by design.
+        }
+
+        // The lexical pass above is symlink-blind in BOTH directions: a
+        // symlink-aliased `metafile_cwd` spelling at a different depth than
+        // its resolved location (macOS `/var` -> `/private/var`) makes it
+        // fail for a genuinely staged entry. Ask the filesystem before
+        // flagging: canonicalise the logical path's parent and accept iff
+        // the named entry physically sits inside a canonical stage root.
+        // Kept AFTER the cheap lexical pass so the syscall only runs for
+        // inputs whose canonical path already left the stage.
+        if logical_path_names_staged_entry(&record.logical_path, &self.canonical_stage_roots) {
+            return InputVerdict::Ignore; // still case 1, through an aliased cwd spelling.
+        }
+
+        if !locality.in_first_party {
+            // A path outside first-party territory entirely — out of this
+            // predicate's four-case scope, left unflagged.
+            return InputVerdict::Ignore;
+        }
+
+        // Canonical-key sibling of the case-2 declared-entry exemption
+        // (issue #2047/#2086): `package_shaped` above is checked against
+        // the metafile KEY string, but under copy-mode staging esbuild
+        // can canonicalise a staged `node_modules/<pkg>` symlink back to
+        // a `..`-climbing relative key instead of a `node_modules/...`-
+        // shaped one, so this input never entered the case-2/3 branch at
+        // all even though its canonical target is a declared, claimed,
+        // covered first-party package entry. Resolve package identity
+        // from the CANONICAL PATH instead, via the same declared-data-
+        // only rule, fail-closed — see
+        // [`declared_first_party_package_identity_from_canonical`].
+        match declared_first_party_package_identity_from_canonical(
+            canonical,
+            &self.canonical_first_party_root,
+        ) {
+            Some(package) => InputVerdict::Accepted(package),
+            // case 4: esbuild never produced a staged spelling for this
+            // input at all — it recorded the live first-party path
+            // directly, whether as an absolute key or a `..`-climbing one.
+            None => InputVerdict::Offender(format!(
+                "{} (first-party input resolved outside every stage root, no staged spelling)",
+                record.key
+            )),
+        }
+    }
 }
 
 /// Guard (b) primitive (issue #1704, epic #1702): fail-closed stage-escape
@@ -1278,141 +1549,63 @@ pub fn audit_metafile_exclusions_at_path(
 /// widened stage, immediately after that subprocess succeeds — wiring which
 /// call sites invoke it, and when a stage counts as "widened", is wave 2/3
 /// (#1705/#1707), not this primitive.
-pub fn audit_metafile_stage_escape(
-    metafile_bytes: &[u8],
+///
+/// One pass over `meta`'s inputs through the shared classifier (issue
+/// #2141/#2142): both projections — the audit's offender details and the
+/// enrolment-selection query's accepted packages — are collected in the SAME
+/// loop, over the SAME [`MetafileInputClassifier`] (and so the same
+/// [`ClaimedMemberRoster`], built at most once). [`audit_metafile_stage_escape`]
+/// and [`accepted_enrolment_set`] each still exist as single-purpose,
+/// single-parse entry points for callers that only need one projection
+/// (islands' per-job audit; this module's own single-projection unit tests) —
+/// they delegate here too, so there is exactly one place the per-input loop
+/// is written, and [`audit_and_enrol_metafile_stage_escape`] can hand a caller
+/// both projections from one parse without a second roster build.
+fn classify_metafile_inputs(
+    meta: &Metafile,
     metafile_cwd: &Path,
     stage_roots: &[&Path],
     first_party_root: &Path,
-) -> Result<()> {
-    let meta: Metafile = serde_json::from_slice(metafile_bytes)
-        .map_err(|e| anyhow!("zfb bundler: stage-escape audit failed to parse metafile: {e}"))?;
-
-    let canonical_stage_roots: Vec<PathBuf> = stage_roots
-        .iter()
-        .map(|root| canonical_or_self(root).unwrap_or_else(|| root.to_path_buf()))
-        .collect();
-    let canonical_first_party_root =
-        canonical_or_self(first_party_root).unwrap_or_else(|| first_party_root.to_path_buf());
-    // Lexically (not canonically — no symlink-following, no disk lookup)
-    // normalised stage roots, for the case-1-vs-case-4 "did a staged
-    // spelling ever exist" check below. Must NOT be the canonical roots
-    // above: the whole point is to compare against the pre-symlink-
-    // resolution shape of both sides.
-    let lexical_stage_roots: Vec<PathBuf> = stage_roots
-        .iter()
-        .map(|root| normalize_path_lexical(root))
-        .collect();
-
-    let mut claimed_members = ClaimedMemberRoster::new(&canonical_first_party_root);
+) -> (Vec<String>, AcceptedEnrolmentSet) {
+    let mut classifier = MetafileInputClassifier::new(stage_roots, first_party_root);
     let mut offenders: Vec<String> = Vec::new();
-    for record in resolve_metafile_inputs(&meta, metafile_cwd, &[metafile_cwd]) {
-        let Some(canonical) = record.canonical_path else {
+    let mut by_name: BTreeMap<String, AcceptedPackage> = BTreeMap::new();
+    let mut inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+
+    for record in resolve_metafile_inputs(meta, metafile_cwd, &[metafile_cwd]) {
+        let Some(canonical) = record.canonical_path.as_deref() else {
             continue;
         };
-
-        let package_shaped = has_node_modules_segment(Path::new(record.key));
-        let canonical_in_node_modules = has_node_modules_segment(&canonical);
-        let in_stage = canonical_stage_roots
-            .iter()
-            .any(|root| canonical.starts_with(root));
-        let in_first_party = canonical.starts_with(&canonical_first_party_root);
-
-        if package_shaped {
-            // Cases 2/3: resolved via a bare package specifier through some
-            // node_modules root. Both staging shapes — a symlink that
-            // canonicalises out of node_modules, and a real staged copy that
-            // stays inside one — are told apart by
-            // [`classify_package_shaped_input`], the single gate
-            // [`accepted_enrolment_set`] classifies through too.
-            if let PackageShapedInput::UndeclaredFirstPartyEscape { detail } =
-                classify_package_shaped_input(
-                    record.key,
-                    &canonical,
-                    &canonical_first_party_root,
-                    InputLocality {
-                        canonical_in_node_modules,
-                        in_stage,
-                        in_first_party,
-                    },
-                    &mut claimed_members,
-                )
-            {
-                offenders.push(detail);
+        match classifier.classify_metafile_input(&record, canonical) {
+            InputVerdict::Offender(detail) => offenders.push(detail),
+            InputVerdict::Accepted(pkg) => {
+                inputs_by_name
+                    .entry(pkg.name.clone())
+                    .or_default()
+                    .insert(canonical.to_path_buf());
+                by_name.entry(pkg.name.clone()).or_insert(pkg);
             }
-            continue;
+            InputVerdict::Ignore => {}
         }
-
-        if in_stage {
-            continue; // ordinary staged source, still inside the stage.
-        }
-
-        // The canonical (symlink-followed) path escaped the stage. Case 1
-        // vs case 4 hinges on whether a genuine staged spelling ever
-        // existed: does the LOGICAL path (`metafile_cwd.join(key)`,
-        // lexically normalised — `..` collapsed WITHOUT touching the
-        // filesystem, so a symlink target is never followed here) still
-        // land inside a stage root? A key like "components/Header.tsx"
-        // does (the symlink itself is a real filesystem entry inside the
-        // stage) — case 1, allowed. A key like
-        // "../../workspace/packages/shared/index.ts", OR an equivalent
-        // already-absolute key, lexically escapes the stage before any
-        // canonicalisation even happens — case 4, no staged spelling was
-        // ever produced, flag it regardless of which spelling esbuild used.
-        let logical_in_stage = lexical_stage_roots
-            .iter()
-            .any(|root| normalize_path_lexical(&record.logical_path).starts_with(root));
-
-        if logical_in_stage {
-            continue; // case 1: allowed by design.
-        }
-
-        // The lexical pass above is symlink-blind in BOTH directions: a
-        // symlink-aliased `metafile_cwd` spelling at a different depth than
-        // its resolved location (macOS `/var` -> `/private/var`) makes it
-        // fail for a genuinely staged entry. Ask the filesystem before
-        // flagging: canonicalise the logical path's parent and accept iff
-        // the named entry physically sits inside a canonical stage root.
-        // Kept AFTER the cheap lexical pass so the syscall only runs for
-        // inputs whose canonical path already left the stage.
-        if logical_path_names_staged_entry(&record.logical_path, &canonical_stage_roots) {
-            continue; // still case 1, through an aliased cwd spelling.
-        }
-
-        if in_first_party {
-            // Canonical-key sibling of the case-2 declared-entry exemption
-            // (issue #2047/#2086): `package_shaped` above is checked against
-            // the metafile KEY string, but under copy-mode staging esbuild
-            // can canonicalise a staged `node_modules/<pkg>` symlink back to
-            // a `..`-climbing relative key instead of a `node_modules/...`-
-            // shaped one, so this input never entered the case-2/3 branch at
-            // all even though its canonical target is a declared, claimed,
-            // covered first-party package entry. Resolve package identity
-            // from the CANONICAL PATH instead, via the same declared-data-
-            // only rule, fail-closed — see
-            // [`canonical_input_is_declared_first_party_entry`].
-            if canonical_input_is_declared_first_party_entry(
-                &canonical,
-                &canonical_first_party_root,
-            ) {
-                continue;
-            }
-
-            // case 4: esbuild never produced a staged spelling for this
-            // input at all — it recorded the live first-party path
-            // directly, whether as an absolute key or a `..`-climbing one.
-            offenders.push(format!(
-                "{} (first-party input resolved outside every stage root, no staged spelling)",
-                record.key
-            ));
-        }
-        // Otherwise: a path outside first-party territory entirely — out of
-        // this predicate's four-case scope, left unflagged.
     }
 
+    (
+        offenders,
+        AcceptedEnrolmentSet {
+            by_name,
+            inputs_by_name,
+        },
+    )
+}
+
+/// Turn a [`classify_metafile_inputs`] offender list into the audit's
+/// `Result<()>` and shared failure message — written once so
+/// [`audit_metafile_stage_escape`] and [`audit_and_enrol_metafile_stage_escape`]
+/// cannot drift on wording.
+fn offenders_to_audit_result(offenders: Vec<String>) -> Result<()> {
     if offenders.is_empty() {
         return Ok(());
     }
-
     bail!(
         "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: \
          {}\n\
@@ -1423,6 +1616,25 @@ pub fn audit_metafile_stage_escape(
          source nothing staged, which is what the audit is refusing.",
         offenders.join(", ")
     );
+}
+
+/// The per-input classification itself lives in
+/// [`MetafileInputClassifier::classify_metafile_input`], shared with
+/// [`accepted_enrolment_set`] (issue #2141) and, over one shared parse and
+/// roster, with [`audit_and_enrol_metafile_stage_escape`] (issue #2142); this
+/// function's own contribution is the offender projection and the failure
+/// message.
+pub fn audit_metafile_stage_escape(
+    metafile_bytes: &[u8],
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<()> {
+    let meta: Metafile = serde_json::from_slice(metafile_bytes)
+        .map_err(|e| anyhow!("zfb bundler: stage-escape audit failed to parse metafile: {e}"))?;
+    let (offenders, _) =
+        classify_metafile_inputs(&meta, metafile_cwd, stage_roots, first_party_root);
+    offenders_to_audit_result(offenders)
 }
 
 /// Convenience wrapper over [`audit_metafile_stage_escape`]: read the
@@ -1444,6 +1656,59 @@ pub fn audit_metafile_stage_escape_at_path(
     audit_metafile_stage_escape(&bytes, metafile_cwd, stage_roots, first_party_root)
 }
 
+/// Shared entry point (issue #2142) for a caller that needs BOTH the
+/// stage-escape audit and the enrolment-selection query over the SAME bundle
+/// session's metafile — bundler.rs's SSR call site is the one production
+/// caller: the enrolment query only matters at nested workspace members, but
+/// when it runs, it must never pay for a second read, a second parse, or a
+/// second [`ClaimedMemberRoster`] beyond what the audit already built.
+///
+/// Unlike [`audit_metafile_stage_escape`]/[`accepted_enrolment_set`] — which
+/// each stay single-purpose for callers that only need one projection — this
+/// always computes both: [`classify_metafile_inputs`]'s per-input loop
+/// produces the [`AcceptedEnrolmentSet`] at no extra cost once the audit's own
+/// offender pass is already running (the roster, when locality requires it
+/// at all, is consulted identically either way). The caller decides whether
+/// the returned set is worth consuming — a root-claimed workspace has no
+/// enrolment channel to couple it to, so it is fine to build and discard.
+///
+/// Returns `Err` under exactly the same conditions
+/// [`audit_metafile_stage_escape`] would (a stage escape, or a read/parse
+/// failure); on success, the enrolment-selection query's result over that
+/// same classification pass.
+pub(crate) fn audit_and_enrol_metafile_stage_escape(
+    metafile_bytes: &[u8],
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<AcceptedEnrolmentSet> {
+    let meta: Metafile = serde_json::from_slice(metafile_bytes)
+        .map_err(|e| anyhow!("zfb bundler: stage-escape audit failed to parse metafile: {e}"))?;
+    let (offenders, enrolment) =
+        classify_metafile_inputs(&meta, metafile_cwd, stage_roots, first_party_root);
+    offenders_to_audit_result(offenders)?;
+    Ok(enrolment)
+}
+
+/// Convenience wrapper over [`audit_and_enrol_metafile_stage_escape`]: read
+/// the metafile from `metafile_path` first, mirroring
+/// [`audit_metafile_stage_escape_at_path`]'s own read-then-classify shape —
+/// ONE read feeding the ONE shared classification pass.
+pub(crate) fn audit_and_enrol_metafile_stage_escape_at_path(
+    metafile_path: &Path,
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<AcceptedEnrolmentSet> {
+    let bytes = std::fs::read(metafile_path).map_err(|e| {
+        anyhow!(
+            "zfb bundler: stage-escape audit failed to read metafile {}: {e}",
+            metafile_path.display()
+        )
+    })?;
+    audit_and_enrol_metafile_stage_escape(&bytes, metafile_cwd, stage_roots, first_party_root)
+}
+
 // ── Enrolment-selection contract (epic #2078 Sub 10a) ──────────────────────
 //
 // Sub 9 (#2087) added `zfb_types::first_party::claimed_workspace_member_names`
@@ -1462,7 +1727,7 @@ pub fn audit_metafile_stage_escape_at_path(
 /// [`declared_first_party_package_identity_from_key`]'s case-2
 /// node_modules-keyed symlink form,
 /// [`staged_copy_declared_first_party_identity`]'s real-copy form (issue
-/// #2127), or [`canonical_input_is_declared_first_party_entry`]'s
+/// #2127), or [`declared_first_party_package_identity_from_canonical`]'s
 /// canonical-key sibling for copy-mode staging (issues #2047/#2086). See
 /// [`accepted_enrolment_set`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1506,36 +1771,46 @@ pub struct AcceptedPackage {
 /// more than one metafile input (e.g. two separate subpaths of the same
 /// sibling) is still exactly one entry here, not one per input.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AcceptedEnrolmentSet {
+pub(crate) struct AcceptedEnrolmentSet {
     by_name: BTreeMap<String, AcceptedPackage>,
     inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>>,
 }
 
 impl AcceptedEnrolmentSet {
     /// Whether nothing was reached and accepted this session.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
 
     /// How many distinct packages were reached and accepted this session.
-    pub fn len(&self) -> usize {
+    ///
+    /// Issue #2143: only `is_empty`/`reached_inputs` are called from
+    /// production (bundler.rs's SSR enrolment coupling); `len`/`contains`/
+    /// `get`/`iter` are exercised only by this module's own unit tests now
+    /// that `AcceptedEnrolmentSet` is `pub(crate)`. Kept (allowed dead) as
+    /// part of the type's documented query surface rather than removed.
+    #[allow(dead_code)]
+    pub(crate) fn len(&self) -> usize {
         self.by_name.len()
     }
 
     /// Whether `name` — a package's declared `package.json` `name` — was
     /// reached and accepted this session.
-    pub fn contains(&self, name: &str) -> bool {
+    #[allow(dead_code)] // issue #2143 — see `len`'s doc above
+    pub(crate) fn contains(&self, name: &str) -> bool {
         self.by_name.contains_key(name)
     }
 
     /// The accepted package record for `name`, if it was reached and
     /// accepted this session.
-    pub fn get(&self, name: &str) -> Option<&AcceptedPackage> {
+    #[allow(dead_code)] // issue #2143 — see `len`'s doc above
+    pub(crate) fn get(&self, name: &str) -> Option<&AcceptedPackage> {
         self.by_name.get(name)
     }
 
     /// Every accepted package, in declared-name order.
-    pub fn iter(&self) -> impl Iterator<Item = &AcceptedPackage> {
+    #[allow(dead_code)] // issue #2143 — see `len`'s doc above
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &AcceptedPackage> {
         self.by_name.values()
     }
 
@@ -1563,7 +1838,7 @@ impl AcceptedEnrolmentSet {
     /// rather than assume containment.
     ///
     /// Empty for a name that was not accepted this session.
-    pub fn reached_inputs(&self, name: &str) -> impl Iterator<Item = &Path> {
+    pub(crate) fn reached_inputs(&self, name: &str) -> impl Iterator<Item = &Path> {
         self.inputs_by_name
             .get(name)
             .into_iter()
@@ -1594,32 +1869,24 @@ impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
 /// must never grow into a second resolver). esbuild stays the only resolver;
 /// this only reclassifies what esbuild already recorded.
 ///
-/// # What is shared with the audit, and what is merely duplicated
+/// # What is shared with the audit
 ///
-/// SHARED — one implementation, so these cannot drift:
-///
-/// * the case-2/case-3 GATE, [`classify_package_shaped_input`], which each
-///   side carried its own copy of until issue #2127 hoisted it. It decides
-///   both staging shapes in one place, so widening what the audit accepts (as
-///   #2127 did for real-copy-staged workspace siblings) cannot produce a
-///   package the audit accepts but this query skips;
-/// * the identity-bearing leaf rules
-///   (`declared_first_party_package_identity_from_key`/`_from_canonical`),
-///   shared since Sub 10a.
-///
-/// DUPLICATED — written out twice, in this function and in
-/// [`audit_metafile_stage_escape`]: the per-input ROUTING LOOP around that
-/// gate, plus the preamble that sets it up (the canonical/lexical stage roots,
-/// the [`ClaimedMemberRoster`], and the four per-record locality bools). The
-/// non-package-shaped tail — the `in_stage` early-out, the `logical_in_stage`
-/// / [`logical_path_names_staged_entry`] case-1 early-out, and the
-/// `in_first_party` scope check — is two independent copies of the same
-/// sequence. A reviewer diffed every branch when this note was written and
-/// found no live divergence, but nothing MECHANICALLY holds them together:
-/// **a short-circuit, an early `continue`, or a reordering added to one copy
-/// must be mirrored in the other by hand.** Consolidating the loop behind a
-/// single per-input classifier is tracked separately and deliberately out of
-/// scope here.
+/// Everything except the projection (issue #2141). This function and
+/// [`audit_metafile_stage_escape`] route every input through the SAME
+/// [`MetafileInputClassifier::classify_metafile_input`] — which owns the
+/// preamble (the canonical/lexical stage roots, the canonical first-party
+/// root, the lazy [`ClaimedMemberRoster`]), computes the per-record
+/// locality bools in one place ([`InputLocality::of`]), and routes through
+/// the shared case-2/case-3 gate ([`classify_package_shaped_input`], hoisted
+/// by issue #2127) and the identity-bearing leaf rules
+/// (`declared_first_party_package_identity_from_key`/`_from_canonical`,
+/// shared since Sub 10a). Each entry point then consumes ONE
+/// [`InputVerdict`] arm and ignores the other: the audit collects
+/// `Offender`, this query records `Accepted`. Widening what the audit
+/// accepts therefore structurally cannot produce a package the audit
+/// accepts but this query skips (accepted-but-not-enrolled, the #2048
+/// defect class) — the two can no longer diverge on classification, only on
+/// projection.
 ///
 /// # The bounded-set guarantee — never "every claimed workspace member"
 ///
@@ -1653,7 +1920,15 @@ impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
 /// sibling-mirrored build). Callers that already invoke
 /// `audit_metafile_stage_escape[_at_path]` for the same bundle session pass
 /// it the exact same arguments.
-pub fn accepted_enrolment_set(
+///
+/// Issue #2143: this single-projection entry point (narrowed to
+/// `pub(crate)` — zero cross-crate consumers) is no longer called by any
+/// production call site now that bundler.rs's SSR coupling shares one
+/// classification pass via `audit_and_enrol_metafile_stage_escape_at_path`
+/// (issue #2142); it stays live for this module's own single-projection
+/// unit tests, per the doc above `ClaimedMemberRoster`.
+#[allow(dead_code)]
+pub(crate) fn accepted_enrolment_set(
     metafile_bytes: &[u8],
     metafile_cwd: &Path,
     stage_roots: &[&Path],
@@ -1662,95 +1937,14 @@ pub fn accepted_enrolment_set(
     let meta: Metafile = serde_json::from_slice(metafile_bytes).map_err(|e| {
         anyhow!("zfb bundler: enrolment-selection query failed to parse metafile: {e}")
     })?;
-
-    let canonical_stage_roots: Vec<PathBuf> = stage_roots
-        .iter()
-        .map(|root| canonical_or_self(root).unwrap_or_else(|| root.to_path_buf()))
-        .collect();
-    let canonical_first_party_root =
-        canonical_or_self(first_party_root).unwrap_or_else(|| first_party_root.to_path_buf());
-    let lexical_stage_roots: Vec<PathBuf> = stage_roots
-        .iter()
-        .map(|root| normalize_path_lexical(root))
-        .collect();
-
-    let mut claimed_members = ClaimedMemberRoster::new(&canonical_first_party_root);
-    let mut by_name: BTreeMap<String, AcceptedPackage> = BTreeMap::new();
-    let mut inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    for record in resolve_metafile_inputs(&meta, metafile_cwd, &[metafile_cwd]) {
-        let Some(canonical) = record.canonical_path else {
-            continue;
-        };
-
-        let package_shaped = has_node_modules_segment(Path::new(record.key));
-        let canonical_in_node_modules = has_node_modules_segment(&canonical);
-        let in_stage = canonical_stage_roots
-            .iter()
-            .any(|root| canonical.starts_with(root));
-        let in_first_party = canonical.starts_with(&canonical_first_party_root);
-
-        if package_shaped {
-            // Classified through the SAME gate the audit uses
-            // ([`classify_package_shaped_input`], issue #2127) rather than a
-            // second copy of it, so a package the audit accepts can never be
-            // one this query silently skips. Case 3 (ordinary third-party
-            // dep) and anything out of the four-case scope carry no package
-            // identity this contract cares about; an offender (rejected by
-            // the audit) is simply not enrolled — this contract has no
-            // separate "rejected" channel to report to, that remains
-            // `audit_metafile_stage_escape`'s job.
-            if let PackageShapedInput::DeclaredFirstPartyEntry(pkg) = classify_package_shaped_input(
-                record.key,
-                &canonical,
-                &canonical_first_party_root,
-                InputLocality {
-                    canonical_in_node_modules,
-                    in_stage,
-                    in_first_party,
-                },
-                &mut claimed_members,
-            ) {
-                inputs_by_name
-                    .entry(pkg.name.clone())
-                    .or_default()
-                    .insert(canonical);
-                by_name.entry(pkg.name.clone()).or_insert(pkg);
-            }
-            continue;
-        }
-
-        if in_stage {
-            continue; // ordinary staged source — not a package boundary at all.
-        }
-
-        let logical_in_stage = lexical_stage_roots
-            .iter()
-            .any(|root| normalize_path_lexical(&record.logical_path).starts_with(root));
-        if logical_in_stage
-            || logical_path_names_staged_entry(&record.logical_path, &canonical_stage_roots)
-        {
-            continue; // case 1: ordinary staged source, through an aliased cwd spelling.
-        }
-
-        if !in_first_party {
-            continue; // outside first-party territory entirely — out of scope.
-        }
-        if let Some(pkg) = declared_first_party_package_identity_from_canonical(
-            &canonical,
-            &canonical_first_party_root,
-        ) {
-            inputs_by_name
-                .entry(pkg.name.clone())
-                .or_default()
-                .insert(canonical);
-            by_name.entry(pkg.name.clone()).or_insert(pkg);
-        }
-    }
-
-    Ok(AcceptedEnrolmentSet {
-        by_name,
-        inputs_by_name,
-    })
+    // The enrolment projection: [`classify_metafile_inputs`] records
+    // [`InputVerdict::Accepted`] regardless of caller — this discards its
+    // sibling offender list, since an offender (rejected by the audit) is
+    // simply not enrolled; reporting it remains `audit_metafile_stage_escape`'s
+    // job, not this contract's.
+    let (_offenders, enrolment) =
+        classify_metafile_inputs(&meta, metafile_cwd, stage_roots, first_party_root);
+    Ok(enrolment)
 }
 
 /// Declared-data-only package identity for a first-party **source path** the
@@ -1786,7 +1980,11 @@ pub fn declared_first_party_package_for_source(
 /// Convenience wrapper over [`accepted_enrolment_set`]: read the metafile
 /// from `metafile_path` first, mirroring
 /// [`audit_metafile_stage_escape_at_path`]'s own read-then-classify shape.
-pub fn accepted_enrolment_set_at_path(
+///
+/// Issue #2143: same test-only status as [`accepted_enrolment_set`] — see
+/// its doc for why this is `#[allow(dead_code)]` rather than removed.
+#[allow(dead_code)]
+pub(crate) fn accepted_enrolment_set_at_path(
     metafile_path: &Path,
     metafile_cwd: &Path,
     stage_roots: &[&Path],
@@ -3237,6 +3435,116 @@ mod tests {
         );
     }
 
+    /// The complete stage-escape failure message
+    /// [`audit_metafile_stage_escape`] emits, byte for byte, around the given
+    /// already-joined offender list — golden counterpart to the `contains`
+    /// assertions the surrounding tests use (issue #2141). Kept as one
+    /// literal so a wording drift in the production `bail!` fails here
+    /// exactly.
+    fn golden_stage_escape_message(offenders_joined: &str) -> String {
+        format!(
+            "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: \
+             {offenders_joined}\n\
+             For an offender named as a workspace sibling reached by PACKAGE NAME, the fix is in that \
+             package's own `package.json`, not in this project's staging or bundler config: either \
+             declare the imported location as an entry root under `exports` (or `main`), or import it \
+             through a path the package already declares. An undeclared deep import reaches live \
+             source nothing staged, which is what the audit is refusing."
+        )
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stage_escape_failure_message_is_byte_identical_golden() {
+        // Golden for issue #2141's behavior-preserving contract: the
+        // surrounding tests assert offenders via `contains`, which proves an
+        // input is NAMED but not that the diagnostic's exact wording and
+        // structure survive a refactor — and tests plus real-world logs key
+        // on these strings. One pass, one offender of each of the two
+        // symlink-era detail formats (the real-copy format has its own
+        // deterministic golden below): an undeclared deep import into a
+        // dist-shipping sibling reached by package name (case 2, symlinked),
+        // and a `..`-climbing first-party input with no staged spelling
+        // (case 4). The declared `dist/index.js` input is accepted and must
+        // not appear in the message at all.
+        //
+        // Metafile inputs are traversed in `HashMap` key order, which is
+        // deliberately not pinned (the contract is "same traversal, same
+        // offender sequence", not a sorted report), so the assertion accepts
+        // the two offenders in either join order while still requiring every
+        // byte of both details and of the surrounding message.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_stage(
+            &base,
+            "built",
+            r#"{ "name": "@acme/built", "main": "dist/index.js" }"#,
+            &[
+                ("dist/index.js", "built"),
+                ("src/internal.ts", "internal source"),
+            ],
+        );
+        write(&first_party, "pages/other.tsx", "other");
+
+        let metafile = br#"{"inputs": {
+            "node_modules/@acme/built/dist/index.js": {"imports": []},
+            "node_modules/@acme/built/src/internal.ts": {"imports": []},
+            "../workspace/pages/other.tsx": {"imports": []}
+        }}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err("both the undeclared deep import and the case-4 climb must be offenders");
+        let msg = err.to_string();
+
+        let package_offender = format!(
+            "node_modules/@acme/built/src/internal.ts (package import resolved outside \
+             node_modules to workspace sibling {})",
+            first_party.join("packages/built/src/internal.ts").display()
+        );
+        let case_four_offender = "../workspace/pages/other.tsx (first-party input resolved \
+                                  outside every stage root, no staged spelling)";
+        let expected_ab =
+            golden_stage_escape_message(&format!("{package_offender}, {case_four_offender}"));
+        let expected_ba =
+            golden_stage_escape_message(&format!("{case_four_offender}, {package_offender}"));
+        assert!(
+            msg == expected_ab || msg == expected_ba,
+            "the stage-escape failure message must be byte-identical to the golden, in either \
+             traversal order;\n got: {msg}\nwant: {expected_ab}\n  or: {expected_ba}"
+        );
+    }
+
+    #[test]
+    fn stage_escape_real_copy_failure_message_is_byte_identical_golden() {
+        // Golden sibling of the test above for the THIRD offender detail
+        // format — the real-copy staged shape (issue #2127) — which needs no
+        // symlink, so this one runs on every platform. A single-offender
+        // fixture makes the whole message deterministic, so plain equality
+        // works here.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let (stage, first_party) = write_workspace_sibling_real_copy_stage(
+            &base,
+            "child",
+            r#"{ "name": "@scope/child", "private": true }"#,
+            &[("index.ts", "export const childMarker = 'CHILD';")],
+        );
+
+        let metafile = br#"{"inputs": {"node_modules/@scope/child/index.ts": {"imports": []}}}"#;
+
+        let err = audit_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+            .expect_err("the undeclared real-copy staged sibling must be an offender");
+        assert_eq!(
+            err.to_string(),
+            golden_stage_escape_message(
+                "node_modules/@scope/child/index.ts (package import resolved to a staged copy of \
+                 workspace package @scope/child at a location it does not declare)"
+            ),
+            "the real-copy offender detail and the outer message must be byte-identical to the \
+             golden"
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn stage_escape_allows_staged_symlink_reached_through_symlink_aliased_cwd() {
@@ -3865,5 +4173,104 @@ mod tests {
         assert!(set.get("anything").is_none());
         assert_eq!(set.iter().count(), 0);
         assert_eq!((&set).into_iter().count(), 0);
+    }
+
+    // ── roster materialization contract (issue #2142) ──────────────────────
+
+    /// Pins the actual perf-sensitive contract issue #2142 exists for:
+    /// [`ClaimedMemberRoster::new`] is free (no walk happens at construction),
+    /// and the expensive part — `claimed_workspace_member_names` actually
+    /// walking the workspace tree — must be invoked at most ONCE per shared
+    /// classification pass when locality requires it at all, and ZERO times
+    /// on the ordinary empty-`bundle.exclude` path. This measures the real
+    /// invocation count via [`ROSTER_BUILD_COUNT`] rather than trusting the
+    /// refactor by inspection: before this issue,
+    /// `audit_metafile_stage_escape` and `accepted_enrolment_set` each built
+    /// their OWN roster, so a caller needing both projections (bundler.rs's
+    /// SSR call site, at a nested workspace member) paid for it TWICE per
+    /// bundle on a build that genuinely real-copy-stages.
+    #[cfg(unix)]
+    #[test]
+    fn roster_materializes_at_most_once_per_shared_classification_pass_and_never_on_the_ordinary_path(
+    ) {
+        // Ordinary path: an empty `bundle.exclude` shape — the project's own
+        // staged source plus a genuine third-party dependency reached
+        // through a wholesale `<work>/node_modules` symlink pointing at a
+        // LIVE tree entirely OUTSIDE the stage. Gate 1 (locality) must let
+        // the third-party input exit as an ordinary dependency before the
+        // roster is ever consulted; the roster build count must stay at 0.
+        ROSTER_BUILD_COUNT.with(|count| count.set(0));
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().canonicalize().unwrap();
+            let work = base.join("work");
+            let shadow = work.join("host");
+            std::fs::create_dir_all(&shadow).unwrap();
+            std::fs::write(shadow.join("app.ts"), "export const a = 1;\n").unwrap();
+
+            let live_node_modules = base.join("live/node_modules");
+            std::fs::create_dir_all(live_node_modules.join("left-pad")).unwrap();
+            std::fs::write(
+                live_node_modules.join("left-pad/index.js"),
+                "module.exports = 1;\n",
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(&live_node_modules, work.join("node_modules")).unwrap();
+
+            let metafile = br#"{"inputs": {
+                "app.ts": {"imports": []},
+                "../node_modules/left-pad/index.js": {"imports": []}
+            }}"#;
+            let no_such_workspace = base.join("no-such-workspace");
+
+            audit_and_enrol_metafile_stage_escape(
+                metafile,
+                &shadow,
+                &[work.as_path()],
+                &no_such_workspace,
+            )
+            .expect("staged project source + an ordinary third-party dep must pass");
+        }
+        assert_eq!(
+            ROSTER_BUILD_COUNT.with(|count| count.get()),
+            0,
+            "an ordinary third-party dependency canonicalising outside every stage root must \
+             never reach the roster (gate 1 — locality)"
+        );
+
+        // Real-copy path: the roster IS consulted (gate 1 requires it), but
+        // sharing one classifier across the audit and the enrolment query
+        // must build it exactly ONCE, not once per projection.
+        ROSTER_BUILD_COUNT.with(|count| count.set(0));
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().canonicalize().unwrap();
+            let (stage, first_party) = write_workspace_sibling_real_copy_stage(
+                &base,
+                "ui",
+                r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+                &[("src/cta.tsx", "cta")],
+            );
+            let metafile = br#"{"inputs": {
+                "node_modules/@acme/ui/src/cta.tsx": {"imports": []}
+            }}"#;
+
+            let enrolled =
+                audit_and_enrol_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+                    .expect(
+                        "a declared consume-from-source sibling staged as a real copy must pass",
+                    );
+            assert!(
+                enrolled.contains("@acme/ui"),
+                "fixture precondition: the sibling must be accepted and enrolled"
+            );
+        }
+        assert_eq!(
+            ROSTER_BUILD_COUNT.with(|count| count.get()),
+            1,
+            "a build that genuinely real-copy-stages must build the roster exactly ONCE for the \
+             whole shared pass — sharing one classifier across the audit and the enrolment query \
+             is the whole point of issue #2142"
+        );
     }
 }

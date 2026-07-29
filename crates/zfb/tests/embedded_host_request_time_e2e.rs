@@ -84,7 +84,7 @@
 //! exits with a known environment-gate indicator (`embed_v8` cfg off,
 //! "no esbuild"). It spawns a real `zfb dev` AND a real `zfb build`, so
 //! it joins the flock-adopting bucket of `.config/nextest.toml`'s
-//! `e2e-heavy` test-group (see that file and CLAUDE.md's nextest
+//! `e2e-heavy` test-group (see that file and crates/CLAUDE.md's nextest
 //! inventory, both updated alongside this test) and acquires
 //! `zfb_test_utils::CrossBinaryE2eLock` for the whole test, matching
 //! `preview_cross_mode_e2e.rs`'s convention of one lock-holding test per

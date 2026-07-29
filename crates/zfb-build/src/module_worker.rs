@@ -566,10 +566,11 @@ fn is_css_like(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("css"))
 }
 
+/// This file's name for [`zfb_types::has_node_modules_segment`], the
+/// canonical home for the predicate (issue #2051/#2128). Kept as a thin
+/// local alias rather than rewriting the ~12 call sites in this file.
 fn is_inside_node_modules(path: &Path) -> bool {
-    path.components().any(
-        |component| matches!(component, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules")),
-    )
+    zfb_types::has_node_modules_segment(path)
 }
 
 fn validate_first_party_path(path: &Path, project_root: &Path, context: &str) -> Result<PathBuf> {

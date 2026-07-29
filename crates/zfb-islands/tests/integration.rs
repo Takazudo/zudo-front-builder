@@ -2,7 +2,7 @@
 //!
 //! These exercise the bundler trait, the subprocess engine, and the URL
 //! helper. Tests that need the real esbuild binary are gated by `#[ignore]`
-//! (`env-gate:`, see CLAUDE.md's taxonomy) — `crates/zfb/build.rs` stages
+//! (`env-gate:`, see crates/CLAUDE.md's taxonomy) — `crates/zfb/build.rs` stages
 //! the pinned esbuild binary at `crates/zfb/binaries/esbuild/esbuild` as a
 //! side effect of building the `zfb` crate, and `.github/workflows/health.yml`
 //! runs this suite with `--ignored` right after asserting that staging step
