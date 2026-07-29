@@ -487,15 +487,23 @@ fn declared_first_party_package_identity_from_canonical(
 }
 
 /// The declared-name roster of every package the governing
-/// `pnpm-workspace.yaml` claims, computed at most once per audit/query pass.
+/// `pnpm-workspace.yaml` claims, computed at most once per
+/// [`MetafileInputClassifier`] — i.e. per shared classification pass over one
+/// parsed metafile, not per projection consumed from it (issue #2142).
 ///
 /// [`zfb_types::first_party::claimed_workspace_member_names`] walks the whole
-/// workspace tree — measured on this repo at ~6600 directories / ~0.48s warm,
-/// since it prunes only `node_modules` and `.git` and so descends `target/`,
-/// `dist/` and `worktrees/`. That is far too expensive to pay per input, or
-/// per ordinary build, so it is built lazily and at most once per pass, the
-/// same shape `zfb_types::audit_eligibility`'s own declared-identity branch
-/// uses for the identical reason.
+/// workspace tree. Before issue #2142 taught its own `collect_workspace_dirs`
+/// helper to prune glob-aware, that walk descended every non-`node_modules`/
+/// `.git` directory unconditionally — measured on this repo at ~6600
+/// directories / ~0.48s warm, since nothing stopped it walking `target/`,
+/// `dist/` and `worktrees/` in full. The pruning added since is glob-aware
+/// rather than a hardcoded basename skip — none of those three names is
+/// reserved by pnpm, so an external workspace legitimately claiming `dist/*`
+/// or `worktrees/*` as a real package location must still be discoverable —
+/// but for a workspace whose own globs never reach those trees (this repo's
+/// among them) it now skips descending into them entirely. Either way this
+/// remains far too expensive to pay per input, or per ordinary build, so it
+/// is still built lazily and at most once per classification pass.
 ///
 /// Laziness alone would not have been enough: every ordinary third-party
 /// input reaches [`classify_package_shaped_input`] with a `node_modules`
@@ -506,18 +514,67 @@ fn declared_first_party_package_identity_from_canonical(
 /// tree, so third-party inputs canonicalise OUTSIDE every stage root and exit
 /// before the roster is ever consulted. Measured directly with a temporary
 /// probe: **zero** roster builds for the empty-`bundle.exclude` fixture,
-/// exactly **one** for the real-copy fixture that needs it. A project with no
-/// governing `pnpm-workspace.yaml` costs one failed read and no walk at all —
-/// `claimed_workspace_member_names` returns empty before walking anything.
+/// exactly **one** for the real-copy fixture that needs it — pinned
+/// permanently by this module's own
+/// `roster_materializes_at_most_once_per_shared_classification_pass_and_never_on_the_ordinary_path`
+/// test (issue #2142), rather than trusted from a one-time investigation. A
+/// project with no governing `pnpm-workspace.yaml` costs one failed read and
+/// no walk at all — `claimed_workspace_member_names` returns empty before
+/// walking anything.
 ///
-/// The remaining cost — one walk per audit pass and one per enrolment query,
-/// i.e. twice per SSR bundle, on builds that genuinely real-copy-stage — is
-/// accepted rather than shared through a threaded roster, which would mean
-/// widening two public function signatures for a cost only paid by the
-/// configuration that needs the check.
+/// # The real trigger-frequency difference from `audit_eligibility`'s own roster
+///
+/// This roster is NOT "the same shape `zfb_types::audit_eligibility`'s own
+/// declared-identity branch uses, for the identical reason" — that phrasing
+/// (this doc's own, before issue #2142) elided a real difference in WHEN each
+/// one fires. `audit_eligibility`'s lazy roster backs a single upstream ARMING
+/// decision — "should the stage-escape audit run for this bundle at all" —
+/// decided once, before any metafile input is ever classified. This roster
+/// instead backs the classification itself, so its trigger frequency tracks
+/// how many times a real esbuild subprocess's metafile is actually classified
+/// here, not how many bundles get built.
+///
+/// Before issue #2142, that meant **twice per SSR bundle** on a build that
+/// genuinely real-copy-stages: `audit_metafile_stage_escape` and
+/// `accepted_enrolment_set` each built their OWN [`MetafileInputClassifier`],
+/// and so their own roster, re-parsing the very metafile the other one had
+/// just parsed. #2142 folds that down to **at most once per SSR bundle** —
+/// [`audit_and_enrol_metafile_stage_escape`][`_at_path`] threads ONE
+/// classifier (and so one roster) through both the audit and the
+/// enrolment-selection query at bundler.rs's SSR call site, over one read and
+/// one parse of the metafile. `audit_metafile_stage_escape` and
+/// `accepted_enrolment_set` still exist as single-purpose entry points — for
+/// islands' per-job call site and this module's own single-projection unit
+/// tests — and each still builds its own roster when called standalone; the
+/// saving is specific to the call site that genuinely needs both projections
+/// from the SAME metafile.
+///
+/// The one call site this does NOT cover is the islands/client per-job path
+/// (`bundle_per_island`, `crates/zfb-islands/src/esbuild.rs`): it still runs
+/// N+1 independent subprocess audits (one per island entry plus the runtime
+/// bundle), each building its own roster, because that call site reaches this
+/// module only through the public, single-purpose
+/// `audit_metafile_stage_escape_at_path` across a crate boundary — sharing a
+/// roster there would need new cross-crate session/cache plumbing that
+/// conflicts with epic #2140's narrowing goal for a later wave. That is a
+/// deliberate, documented exception, not an oversight this doc is hiding.
+///
+/// [`_at_path`]: audit_and_enrol_metafile_stage_escape_at_path
 struct ClaimedMemberRoster {
     workspace_root: PathBuf,
     members: Option<BTreeMap<String, PathBuf>>,
+}
+
+// Test-only instrumentation counting real invocations of
+// `zfb_types::first_party::claimed_workspace_member_names` via
+// `ClaimedMemberRoster::claimed_member_dir` — how this module pins its own
+// materialization contract (issue #2142) without trusting the refactor by
+// inspection. Never compiled into a release build; a `thread_local` is
+// safely test-isolated since the default test harness runs each test on its
+// own OS thread.
+#[cfg(test)]
+thread_local! {
+    static ROSTER_BUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl ClaimedMemberRoster {
@@ -533,6 +590,8 @@ impl ClaimedMemberRoster {
     fn claimed_member_dir(&mut self, name: &str) -> Option<&Path> {
         self.members
             .get_or_insert_with(|| {
+                #[cfg(test)]
+                ROSTER_BUILD_COUNT.with(|count| count.set(count.get() + 1));
                 zfb_types::first_party::claimed_workspace_member_names(&self.workspace_root)
             })
             .get(name)
@@ -1491,39 +1550,62 @@ impl MetafileInputClassifier {
 /// call sites invoke it, and when a stage counts as "widened", is wave 2/3
 /// (#1705/#1707), not this primitive.
 ///
-/// The per-input classification itself lives in
-/// [`MetafileInputClassifier::classify_metafile_input`], shared with
-/// [`accepted_enrolment_set`] (issue #2141); this function's own
-/// contribution is the offender projection and the failure message.
-pub fn audit_metafile_stage_escape(
-    metafile_bytes: &[u8],
+/// One pass over `meta`'s inputs through the shared classifier (issue
+/// #2141/#2142): both projections — the audit's offender details and the
+/// enrolment-selection query's accepted packages — are collected in the SAME
+/// loop, over the SAME [`MetafileInputClassifier`] (and so the same
+/// [`ClaimedMemberRoster`], built at most once). [`audit_metafile_stage_escape`]
+/// and [`accepted_enrolment_set`] each still exist as single-purpose,
+/// single-parse entry points for callers that only need one projection
+/// (islands' per-job audit; this module's own single-projection unit tests) —
+/// they delegate here too, so there is exactly one place the per-input loop
+/// is written, and [`audit_and_enrol_metafile_stage_escape`] can hand a caller
+/// both projections from one parse without a second roster build.
+fn classify_metafile_inputs(
+    meta: &Metafile,
     metafile_cwd: &Path,
     stage_roots: &[&Path],
     first_party_root: &Path,
-) -> Result<()> {
-    let meta: Metafile = serde_json::from_slice(metafile_bytes)
-        .map_err(|e| anyhow!("zfb bundler: stage-escape audit failed to parse metafile: {e}"))?;
-
+) -> (Vec<String>, AcceptedEnrolmentSet) {
     let mut classifier = MetafileInputClassifier::new(stage_roots, first_party_root);
     let mut offenders: Vec<String> = Vec::new();
-    for record in resolve_metafile_inputs(&meta, metafile_cwd, &[metafile_cwd]) {
+    let mut by_name: BTreeMap<String, AcceptedPackage> = BTreeMap::new();
+    let mut inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+
+    for record in resolve_metafile_inputs(meta, metafile_cwd, &[metafile_cwd]) {
         let Some(canonical) = record.canonical_path.as_deref() else {
             continue;
         };
-        // The audit's projection: collect [`InputVerdict::Offender`], ignore
-        // [`InputVerdict::Accepted`] — an accepted package is the enrolment
-        // query's concern, not a failure.
-        if let InputVerdict::Offender(detail) =
-            classifier.classify_metafile_input(&record, canonical)
-        {
-            offenders.push(detail);
+        match classifier.classify_metafile_input(&record, canonical) {
+            InputVerdict::Offender(detail) => offenders.push(detail),
+            InputVerdict::Accepted(pkg) => {
+                inputs_by_name
+                    .entry(pkg.name.clone())
+                    .or_default()
+                    .insert(canonical.to_path_buf());
+                by_name.entry(pkg.name.clone()).or_insert(pkg);
+            }
+            InputVerdict::Ignore => {}
         }
     }
 
+    (
+        offenders,
+        AcceptedEnrolmentSet {
+            by_name,
+            inputs_by_name,
+        },
+    )
+}
+
+/// Turn a [`classify_metafile_inputs`] offender list into the audit's
+/// `Result<()>` and shared failure message — written once so
+/// [`audit_metafile_stage_escape`] and [`audit_and_enrol_metafile_stage_escape`]
+/// cannot drift on wording.
+fn offenders_to_audit_result(offenders: Vec<String>) -> Result<()> {
     if offenders.is_empty() {
         return Ok(());
     }
-
     bail!(
         "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: \
          {}\n\
@@ -1534,6 +1616,25 @@ pub fn audit_metafile_stage_escape(
          source nothing staged, which is what the audit is refusing.",
         offenders.join(", ")
     );
+}
+
+/// The per-input classification itself lives in
+/// [`MetafileInputClassifier::classify_metafile_input`], shared with
+/// [`accepted_enrolment_set`] (issue #2141) and, over one shared parse and
+/// roster, with [`audit_and_enrol_metafile_stage_escape`] (issue #2142); this
+/// function's own contribution is the offender projection and the failure
+/// message.
+pub fn audit_metafile_stage_escape(
+    metafile_bytes: &[u8],
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<()> {
+    let meta: Metafile = serde_json::from_slice(metafile_bytes)
+        .map_err(|e| anyhow!("zfb bundler: stage-escape audit failed to parse metafile: {e}"))?;
+    let (offenders, _) =
+        classify_metafile_inputs(&meta, metafile_cwd, stage_roots, first_party_root);
+    offenders_to_audit_result(offenders)
 }
 
 /// Convenience wrapper over [`audit_metafile_stage_escape`]: read the
@@ -1553,6 +1654,59 @@ pub fn audit_metafile_stage_escape_at_path(
         )
     })?;
     audit_metafile_stage_escape(&bytes, metafile_cwd, stage_roots, first_party_root)
+}
+
+/// Shared entry point (issue #2142) for a caller that needs BOTH the
+/// stage-escape audit and the enrolment-selection query over the SAME bundle
+/// session's metafile — bundler.rs's SSR call site is the one production
+/// caller: the enrolment query only matters at nested workspace members, but
+/// when it runs, it must never pay for a second read, a second parse, or a
+/// second [`ClaimedMemberRoster`] beyond what the audit already built.
+///
+/// Unlike [`audit_metafile_stage_escape`]/[`accepted_enrolment_set`] — which
+/// each stay single-purpose for callers that only need one projection — this
+/// always computes both: [`classify_metafile_inputs`]'s per-input loop
+/// produces the [`AcceptedEnrolmentSet`] at no extra cost once the audit's own
+/// offender pass is already running (the roster, when locality requires it
+/// at all, is consulted identically either way). The caller decides whether
+/// the returned set is worth consuming — a root-claimed workspace has no
+/// enrolment channel to couple it to, so it is fine to build and discard.
+///
+/// Returns `Err` under exactly the same conditions
+/// [`audit_metafile_stage_escape`] would (a stage escape, or a read/parse
+/// failure); on success, the enrolment-selection query's result over that
+/// same classification pass.
+pub fn audit_and_enrol_metafile_stage_escape(
+    metafile_bytes: &[u8],
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<AcceptedEnrolmentSet> {
+    let meta: Metafile = serde_json::from_slice(metafile_bytes)
+        .map_err(|e| anyhow!("zfb bundler: stage-escape audit failed to parse metafile: {e}"))?;
+    let (offenders, enrolment) =
+        classify_metafile_inputs(&meta, metafile_cwd, stage_roots, first_party_root);
+    offenders_to_audit_result(offenders)?;
+    Ok(enrolment)
+}
+
+/// Convenience wrapper over [`audit_and_enrol_metafile_stage_escape`]: read
+/// the metafile from `metafile_path` first, mirroring
+/// [`audit_metafile_stage_escape_at_path`]'s own read-then-classify shape —
+/// ONE read feeding the ONE shared classification pass.
+pub fn audit_and_enrol_metafile_stage_escape_at_path(
+    metafile_path: &Path,
+    metafile_cwd: &Path,
+    stage_roots: &[&Path],
+    first_party_root: &Path,
+) -> Result<AcceptedEnrolmentSet> {
+    let bytes = std::fs::read(metafile_path).map_err(|e| {
+        anyhow!(
+            "zfb bundler: stage-escape audit failed to read metafile {}: {e}",
+            metafile_path.display()
+        )
+    })?;
+    audit_and_enrol_metafile_stage_escape(&bytes, metafile_cwd, stage_roots, first_party_root)
 }
 
 // ── Enrolment-selection contract (epic #2078 Sub 10a) ──────────────────────
@@ -1765,33 +1919,14 @@ pub fn accepted_enrolment_set(
     let meta: Metafile = serde_json::from_slice(metafile_bytes).map_err(|e| {
         anyhow!("zfb bundler: enrolment-selection query failed to parse metafile: {e}")
     })?;
-
-    let mut classifier = MetafileInputClassifier::new(stage_roots, first_party_root);
-    let mut by_name: BTreeMap<String, AcceptedPackage> = BTreeMap::new();
-    let mut inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    for record in resolve_metafile_inputs(&meta, metafile_cwd, &[metafile_cwd]) {
-        let Some(canonical) = record.canonical_path.as_deref() else {
-            continue;
-        };
-        // The enrolment projection: record [`InputVerdict::Accepted`], ignore
-        // [`InputVerdict::Offender`] — an offender (rejected by the audit) is
-        // simply not enrolled; this contract has no separate "rejected"
-        // channel to report to, that remains
-        // `audit_metafile_stage_escape`'s job.
-        if let InputVerdict::Accepted(pkg) = classifier.classify_metafile_input(&record, canonical)
-        {
-            inputs_by_name
-                .entry(pkg.name.clone())
-                .or_default()
-                .insert(canonical.to_path_buf());
-            by_name.entry(pkg.name.clone()).or_insert(pkg);
-        }
-    }
-
-    Ok(AcceptedEnrolmentSet {
-        by_name,
-        inputs_by_name,
-    })
+    // The enrolment projection: [`classify_metafile_inputs`] records
+    // [`InputVerdict::Accepted`] regardless of caller — this discards its
+    // sibling offender list, since an offender (rejected by the audit) is
+    // simply not enrolled; reporting it remains `audit_metafile_stage_escape`'s
+    // job, not this contract's.
+    let (_offenders, enrolment) =
+        classify_metafile_inputs(&meta, metafile_cwd, stage_roots, first_party_root);
+    Ok(enrolment)
 }
 
 /// Declared-data-only package identity for a first-party **source path** the
@@ -4016,5 +4151,104 @@ mod tests {
         assert!(set.get("anything").is_none());
         assert_eq!(set.iter().count(), 0);
         assert_eq!((&set).into_iter().count(), 0);
+    }
+
+    // ── roster materialization contract (issue #2142) ──────────────────────
+
+    /// Pins the actual perf-sensitive contract issue #2142 exists for:
+    /// [`ClaimedMemberRoster::new`] is free (no walk happens at construction),
+    /// and the expensive part — `claimed_workspace_member_names` actually
+    /// walking the workspace tree — must be invoked at most ONCE per shared
+    /// classification pass when locality requires it at all, and ZERO times
+    /// on the ordinary empty-`bundle.exclude` path. This measures the real
+    /// invocation count via [`ROSTER_BUILD_COUNT`] rather than trusting the
+    /// refactor by inspection: before this issue,
+    /// `audit_metafile_stage_escape` and `accepted_enrolment_set` each built
+    /// their OWN roster, so a caller needing both projections (bundler.rs's
+    /// SSR call site, at a nested workspace member) paid for it TWICE per
+    /// bundle on a build that genuinely real-copy-stages.
+    #[cfg(unix)]
+    #[test]
+    fn roster_materializes_at_most_once_per_shared_classification_pass_and_never_on_the_ordinary_path(
+    ) {
+        // Ordinary path: an empty `bundle.exclude` shape — the project's own
+        // staged source plus a genuine third-party dependency reached
+        // through a wholesale `<work>/node_modules` symlink pointing at a
+        // LIVE tree entirely OUTSIDE the stage. Gate 1 (locality) must let
+        // the third-party input exit as an ordinary dependency before the
+        // roster is ever consulted; the roster build count must stay at 0.
+        ROSTER_BUILD_COUNT.with(|count| count.set(0));
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().canonicalize().unwrap();
+            let work = base.join("work");
+            let shadow = work.join("host");
+            std::fs::create_dir_all(&shadow).unwrap();
+            std::fs::write(shadow.join("app.ts"), "export const a = 1;\n").unwrap();
+
+            let live_node_modules = base.join("live/node_modules");
+            std::fs::create_dir_all(live_node_modules.join("left-pad")).unwrap();
+            std::fs::write(
+                live_node_modules.join("left-pad/index.js"),
+                "module.exports = 1;\n",
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(&live_node_modules, work.join("node_modules")).unwrap();
+
+            let metafile = br#"{"inputs": {
+                "app.ts": {"imports": []},
+                "../node_modules/left-pad/index.js": {"imports": []}
+            }}"#;
+            let no_such_workspace = base.join("no-such-workspace");
+
+            audit_and_enrol_metafile_stage_escape(
+                metafile,
+                &shadow,
+                &[work.as_path()],
+                &no_such_workspace,
+            )
+            .expect("staged project source + an ordinary third-party dep must pass");
+        }
+        assert_eq!(
+            ROSTER_BUILD_COUNT.with(|count| count.get()),
+            0,
+            "an ordinary third-party dependency canonicalising outside every stage root must \
+             never reach the roster (gate 1 — locality)"
+        );
+
+        // Real-copy path: the roster IS consulted (gate 1 requires it), but
+        // sharing one classifier across the audit and the enrolment query
+        // must build it exactly ONCE, not once per projection.
+        ROSTER_BUILD_COUNT.with(|count| count.set(0));
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().canonicalize().unwrap();
+            let (stage, first_party) = write_workspace_sibling_real_copy_stage(
+                &base,
+                "ui",
+                r#"{ "name": "@acme/ui", "exports": { "./*": "./src/*" } }"#,
+                &[("src/cta.tsx", "cta")],
+            );
+            let metafile = br#"{"inputs": {
+                "node_modules/@acme/ui/src/cta.tsx": {"imports": []}
+            }}"#;
+
+            let enrolled =
+                audit_and_enrol_metafile_stage_escape(metafile, &stage, &[&stage], &first_party)
+                    .expect(
+                        "a declared consume-from-source sibling staged as a real copy must pass",
+                    );
+            assert!(
+                enrolled.contains("@acme/ui"),
+                "fixture precondition: the sibling must be accepted and enrolled"
+            );
+        }
+        assert_eq!(
+            ROSTER_BUILD_COUNT.with(|count| count.get()),
+            1,
+            "a build that genuinely real-copy-stages must build the roster exactly ONCE for the \
+             whole shared pass — sharing one classifier across the audit and the enrolment query \
+             is the whole point of issue #2142"
+        );
     }
 }
