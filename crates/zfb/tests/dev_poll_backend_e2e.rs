@@ -505,13 +505,47 @@ async fn e2e_poll_backend_content_edit_and_new_entry_discovery() {
     backdate(&root.join("content/posts/a.md"));
     backdate(&root.join("content/posts/b.md"));
 
-    let mut session = spawn_dev(root, &esbuild, &[]);
+    // ZFB_DEV_TIMING=1 (codex review finding, issue #2175): without this,
+    // the native FSEvents/inotify backend observes the exact same
+    // edit/create events the scenarios below assert on, so a revert of
+    // `watch_backend_from_config`'s config-to-backend threading would leave
+    // this test silently green even though the poll backend was never
+    // actually selected. The timing line is the only way to prove WHICH
+    // backend a session picked, not merely that something observed the FS.
+    let mut session = spawn_dev(root, &esbuild, &[("ZFB_DEV_TIMING", "1")]);
     let pgid = session.guard.pgid;
 
     let body = async {
         let Some((base, client)) = boot_and_handshake(&mut session).await else {
             return ScenarioOutcome::Skipped;
         };
+
+        // ------------------------------------------------------------------
+        // THE DISCRIMINATOR (codex review finding, issue #2175): assert the
+        // dev server actually selected the POLL backend, not merely that it
+        // observed the handshake's warmup writes — the native backend would
+        // observe those identically, so without this check a revert of
+        // `watch_backend_from_config`'s config-to-backend threading would
+        // leave every scenario below silently green for the wrong reason.
+        // ------------------------------------------------------------------
+        {
+            let combined = format!(
+                "{}{}",
+                read_log(&session.stdout_path),
+                read_log(&session.stderr_path)
+            );
+            assert!(
+                combined.contains(&format!(
+                    "[zfb-timing] watch backend: poll interval={WATCH_POLL_INTERVAL_MS}ms"
+                )),
+                "expected the dev server to report selecting the POLL watch \
+                 backend (watchPollFallback: true / watchPollIntervalMs: {WATCH_POLL_INTERVAL_MS} \
+                 in zfb.config.json) via the ZFB_DEV_TIMING signal, but no such \
+                 line was found — either the config-to-backend threading \
+                 regressed, or the session fell back to the native backend.\n{}",
+                session.logs(),
+            );
+        }
 
         // Baseline: the boot render served the fixture's original markers.
         poll_until_contains(
