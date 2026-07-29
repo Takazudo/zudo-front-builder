@@ -1,0 +1,10 @@
+{
+  "framework": "preact",
+  "plugins": [{ "name": "./preset.mjs" }],
+  "collections": [
+    {
+      "name": "posts",
+      "path": "content/posts"
+    }
+  ]
+}
