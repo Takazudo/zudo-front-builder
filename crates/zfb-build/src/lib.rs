@@ -100,7 +100,7 @@ pub use module_worker::{
 };
 pub use orchestrator::{
     BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, ExternalInvalidationHook,
-    OrchestratorConfig,
+    OrchestratorConfig, PreTickRefreshFuture, PreTickRefreshHook,
 };
 pub use pipeline::{
     apply_prod_asset_pipeline, synthesize_page_id_from_output, validate_companion_file_set,

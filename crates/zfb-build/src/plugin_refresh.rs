@@ -30,11 +30,12 @@
 //!   and exposes [`PluginRefreshState::refresh`], the actual "changed paths
 //!   -> re-invoke the owning loaders -> publish" function.
 //!
-//! **Nothing calls [`PluginRefreshState::refresh`] from a live watcher tick
-//! yet.** Wiring it into the dev orchestrator's watch loop — deciding which
-//! changed paths to hand it and what to do with the outcome — is the next
-//! sub-issue's job. This sub only builds the state, the function, and wires
-//! every existing consumer to read the shared store.
+//! [`PluginRefreshState::refresh`] is called from the live watcher loop
+//! since issue #2169: the orchestrator's pre-tick hook
+//! (`crate::orchestrator::PreTickRefreshHook`, installed by `zfb`'s
+//! `commands/dev.rs`) awaits it with the batch's changed paths before
+//! dispatching any tick that touches the plugin watch-file set, so the
+//! refreshed source ships in the same tick as the watched file's change.
 //!
 //! ## Atomicity contract
 //!
@@ -288,9 +289,9 @@ impl PluginRefreshState {
     /// whatever triggered it — retries them too, alongside anything the
     /// caller directly asked for this time.
     ///
-    /// **NOT wired to a live watcher tick anywhere yet** — see the module
-    /// doc. This is the function the next sub-issue's orchestrator hook is
-    /// expected to call with each tick's changed paths.
+    /// Called from the live watcher loop via the orchestrator's pre-tick
+    /// hook (issue #2169) with each qualifying tick's changed paths — see
+    /// the module doc.
     pub async fn refresh(&self, changed_paths: &[PathBuf]) -> PluginRefreshOutcome {
         let mut affected = self.ownership.affected(changed_paths);
         {

@@ -276,6 +276,108 @@ pub type DiscoveryHook =
 pub type ExternalInvalidationHook =
     std::sync::Arc<dyn Fn(&Path) -> Option<Vec<PageId>> + Send + Sync + 'static>;
 
+/// The boxed future a [`PreTickRefreshHook`] invocation returns. Owned
+/// (`'static`): the hook takes its path batch by value so the loop can
+/// await the future without borrowing loop state across the await.
+pub type PreTickRefreshFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'static>>;
+
+/// Optional async pre-tick plugin-refresh hook (issue #2169, epic #2166
+/// "Plugin Watch Hook").
+///
+/// Consulted from [`BuildOrchestrator::run_with_boot`]'s drain loop once
+/// per debounced batch, BEFORE the tick is dispatched to the blocking
+/// pool — and only when at least one of the batch's paths is a registered
+/// plugin virtual-module watch file
+/// ([`crate::policy::RawImportInvalidation::is_plugin_watch_target`], the
+/// `watchFiles` registry issue #2168 populates once at boot from #2167's
+/// `addVirtualModule(..., { watchFiles })` option; see
+/// `pre_tick_refresh_applies` for the exact gate). The hook receives
+/// the batch's FULL changed-path set (its implementation resolves
+/// ownership itself — `PluginRefreshState::refresh` in
+/// `crate::plugin_refresh` ignores paths no loader watches) and is
+/// AWAITED to completion before `tick_with_kinds` runs, so the tick's
+/// islands / client-scripts / CSS closures — which snapshot the shared
+/// `PluginVirtualModuleStore` at use time — already see the freshly
+/// re-invoked loader output. The refreshed source ships in the SAME tick
+/// as the watched file's change, never one tick late.
+///
+/// Mirrors the [`ExternalInvalidationHook`] pattern in shape (an opaque
+/// `Arc` closure installed on [`OrchestratorConfig`] by the `zfb` command
+/// layer, `None` = no behavior change), but differs in kind: that hook is
+/// a pure path→pages query used to NARROW the plan; this one MUTATES
+/// session state and never influences page selection at all. Whatever the
+/// batch classifies to — typically `PageSelection::All` via the
+/// `External` arm, since watch files usually sit outside the source roots
+/// — is deliberately left unchanged: the All fallback is the accepted
+/// first cut (issue #2169), and narrowing `dirty_pages` here would trade
+/// a perf bug for an aggregate-page under-render (see issue #1583).
+///
+/// The hook is awaited directly on the orchestrator's async task (the
+/// underlying plugin-host call is async — no `spawn_blocking` wrapper).
+/// An `Err` is logged and the tick proceeds anyway: a failed refresh
+/// leaves the store serving its last-good memo, which is exactly what the
+/// tick should render (the atomicity contract of
+/// `PluginRefreshState::refresh`, which reports per-loader failures via
+/// its outcome rather than `Err`).
+pub type PreTickRefreshHook =
+    std::sync::Arc<dyn Fn(Vec<PathBuf>) -> PreTickRefreshFuture + Send + Sync + 'static>;
+
+/// Pure gate for [`PreTickRefreshHook`] invocation: does this batch touch
+/// the plugin virtual-module watch set at all? Split out of
+/// [`BuildOrchestrator::run_with_boot`]'s drain loop (mirroring
+/// `orch_panic_on_tick_armed` / `orch_stop_ms_decision`) so the decision
+/// is unit-testable without spinning up a watcher.
+///
+/// Kind-agnostic on purpose: a `Removed` watched path must still trigger
+/// the refresh — the owning loader's re-invocation fails (its read
+/// throws), the store keeps the last-good memo, and the failure is queued
+/// for retry on the next refresh call (the delete→recreate recovery
+/// `plugin_refresh.rs`'s tests pin). The watch set itself is STATIC —
+/// populated once at boot, never purged by the #1581 `Removed` fold
+/// (which owns `known_content`, a different registry) — so gating on
+/// membership is stable across removal ticks; see
+/// `plugin_watch_set_is_static_across_removed_ticks`.
+fn pre_tick_refresh_applies(policy: &GranularityPolicy, changes: &[(PathBuf, ChangeKind)]) -> bool {
+    changes
+        .iter()
+        .any(|(path, _)| policy.is_plugin_watch_target(path))
+}
+
+/// Await the configured [`PreTickRefreshHook`] when `changes` touches the
+/// plugin watch set; a no-op otherwise (issue #2169).
+///
+/// Extracted from [`BuildOrchestrator::run_with_boot`]'s drain loop so the
+/// hook contract — awaited to completion, full batch handed over, `Err`
+/// logged and swallowed — is unit-testable without a live watcher. The
+/// loop-level integration test
+/// (`pre_tick_hook_gates_the_tick_dispatch_in_the_live_loop`) separately
+/// pins that the drain loop actually calls this BEFORE the tick dispatch —
+/// a helper nobody awaits at the right seam would read as coverage while
+/// guarding nothing (the #1058/#1581 dead-guard lesson).
+async fn maybe_pre_tick_refresh(config: &OrchestratorConfig, changes: &[(PathBuf, ChangeKind)]) {
+    let Some(hook) = config.pre_tick_refresh.as_ref() else {
+        return;
+    };
+    if !pre_tick_refresh_applies(&config.policy, changes) {
+        return;
+    }
+    let paths: Vec<PathBuf> = changes.iter().map(|(path, _)| path.clone()).collect();
+    let refresh_result = hook(paths).await;
+    if dev_timing_enabled() {
+        eprintln!(
+            "[zfb-timing] plugin-refresh: pre-tick refresh completed ok={}",
+            refresh_result.is_ok()
+        );
+    }
+    if let Err(err) = refresh_result {
+        warn!(
+            error = %err,
+            "pre-tick plugin refresh failed; ticking on last-good sources"
+        );
+    }
+}
+
 /// What a [`DiscoveryHook`] invocation did for this tick.
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryOutcome {
@@ -367,6 +469,17 @@ pub struct OrchestratorConfig {
     /// hook only ever narrows the page set; the SSR host reload still
     /// fires for every external change.
     pub external_invalidation: Option<ExternalInvalidationHook>,
+
+    /// Optional async pre-tick plugin-refresh hook (issue #2169).
+    ///
+    /// `None` (the default) keeps the pre-#2169 behavior: a plugin
+    /// virtual-module watch-file change ticks on whatever source text the
+    /// shared store already holds. `Some(hook)` makes the drain loop
+    /// await the hook to completion before dispatching any tick whose
+    /// batch touches the plugin watch set — see [`PreTickRefreshHook`]
+    /// for the full contract (state-mutating, never narrows the plan,
+    /// errors are logged and the tick proceeds).
+    pub pre_tick_refresh: Option<PreTickRefreshHook>,
 }
 
 impl std::fmt::Debug for OrchestratorConfig {
@@ -381,6 +494,10 @@ impl std::fmt::Debug for OrchestratorConfig {
             .field(
                 "external_invalidation",
                 &self.external_invalidation.as_ref().map(|_| "<hook>"),
+            )
+            .field(
+                "pre_tick_refresh",
+                &self.pre_tick_refresh.as_ref().map(|_| "<hook>"),
             )
             .finish()
     }
@@ -399,6 +516,7 @@ impl OrchestratorConfig {
             css_mirror_skip_dir_names: Vec::new(),
             debounce: None,
             external_invalidation: None,
+            pre_tick_refresh: None,
         }
     }
 
@@ -433,6 +551,15 @@ impl OrchestratorConfig {
     /// changes keep the conservative `PageSelection::All` default.
     pub fn with_external_invalidation(mut self, hook: ExternalInvalidationHook) -> Self {
         self.external_invalidation = Some(hook);
+        self
+    }
+
+    /// Set the async pre-tick plugin-refresh hook (chainable, issue
+    /// #2169). See [`PreTickRefreshHook`]. Without this, plugin
+    /// virtual-module watch-file changes tick on the store's existing
+    /// (possibly stale) source text.
+    pub fn with_pre_tick_refresh(mut self, hook: PreTickRefreshHook) -> Self {
+        self.pre_tick_refresh = Some(hook);
         self
     }
 }
@@ -848,6 +975,27 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 || self.config.policy.is_client_script_sibling_target(&path)
             {
                 plan.mark_client_scripts();
+            }
+            // Issue #2169 — a plugin virtual-module watch file (a loader's
+            // `watchFiles` entry) is a dependency of whatever imports the
+            // loader's virtual module: the SSR bundle, islands, client
+            // scripts, and the CSS content scan all consume the shared
+            // store's source text. The pre-tick refresh updates the STORE;
+            // only these flags make the tick rebuild the consumers that
+            // read it — without them an `External`-classified watch file
+            // never reruns islands/client-scripts/CSS, and an
+            // `Asset`-classified one produces a no-op plan, leaving the
+            // freshly refreshed source unshipped (codex review, #2169).
+            // WHICH consumers import a given specifier is unknown at this
+            // layer, so conservatively rerun them all — the same
+            // blunt-but-correct first cut as the External arm's
+            // `PageSelection::All`. Page selection itself is deliberately
+            // left untouched (issues #2169 / #1583).
+            if self.config.policy.is_plugin_watch_target(&path) {
+                plan.mark_islands();
+                plan.mark_client_scripts();
+                plan.mark_css();
+                plan.mark_ssr_reload_needed();
             }
         }
 
@@ -1515,6 +1663,18 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
 
             let changes: Vec<(PathBuf, ChangeKind)> =
                 batch.iter().map(|c| (c.path.clone(), c.kind)).collect();
+
+            // Pre-tick plugin refresh (issue #2169) — awaited HERE, before
+            // the tick is dispatched to the blocking pool, so the shared
+            // virtual-module store already holds the re-invoked loader
+            // output when the tick's snapshot-at-use-time consumers read
+            // it. Awaited directly (the plugin-host call is async, not
+            // blocking work); an `Err` is logged inside the helper and the
+            // tick proceeds on the store's last-good memo — a refresh
+            // failure must never kill the dev loop. See
+            // [`PreTickRefreshHook`] / [`maybe_pre_tick_refresh`].
+            maybe_pre_tick_refresh(&this.config, &changes).await;
+
             let tick = tokio::task::spawn_blocking(move || {
                 // Fault injection (issue #2100): fires INSIDE this
                 // spawn_blocking closure, on the thread that would
@@ -3866,5 +4026,585 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(5)).await;
         let got = recv_with_stop_deadline(&mut rx, Some(deadline)).await;
         assert!(got.is_none(), "an elapsed deadline must return None");
+    }
+
+    // ── Pre-tick plugin-refresh hook (issue #2169, epic #2166) ──────────
+
+    /// Policy whose plugin watch-file registry contains exactly `paths`.
+    fn policy_with_plugin_watch_files(
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> crate::policy::GranularityPolicy {
+        let invalidation = crate::policy::RawImportInvalidation::default();
+        invalidation.replace_plugin_watch_files(paths);
+        crate::policy::GranularityPolicy::default().with_raw_import_invalidation(invalidation)
+    }
+
+    #[test]
+    fn pre_tick_refresh_applies_only_for_registered_plugin_watch_paths() {
+        let watched = PathBuf::from("/ext/data/watched.json");
+        let policy = policy_with_plugin_watch_files([watched.clone()]);
+        let unrelated = PathBuf::from("/proj/pages/index.tsx");
+
+        // Kind-agnostic: a Removed watched path still gates the refresh in
+        // (the failing loader re-invocation + pending-retry queueing is the
+        // refresh fn's own delete→recreate recovery contract).
+        for kind in [
+            ChangeKind::Created,
+            ChangeKind::Modified,
+            ChangeKind::Removed,
+        ] {
+            assert!(
+                pre_tick_refresh_applies(&policy, &[(watched.clone(), kind)]),
+                "a watched path must gate the refresh in regardless of kind ({kind:?})"
+            );
+        }
+        // A mixed batch with one watched member applies.
+        assert!(pre_tick_refresh_applies(
+            &policy,
+            &[
+                (unrelated.clone(), ChangeKind::Modified),
+                (watched.clone(), ChangeKind::Modified),
+            ]
+        ));
+        // No watched member — skip.
+        assert!(!pre_tick_refresh_applies(
+            &policy,
+            &[(unrelated.clone(), ChangeKind::Modified)]
+        ));
+        // Empty registry (pluginless project, or no loader declared
+        // `watchFiles`) — never applies.
+        let empty_policy = crate::policy::GranularityPolicy::default();
+        assert!(!pre_tick_refresh_applies(
+            &empty_policy,
+            &[(watched, ChangeKind::Modified)]
+        ));
+    }
+
+    /// A plugin watch-file change must conservatively rerun every
+    /// virtual-module consumer (islands, client scripts, CSS scan, SSR
+    /// reload) regardless of the path's class — the pre-tick refresh only
+    /// updates the STORE; these flags are what ship the refreshed source
+    /// (codex review, #2169). Page selection stays whatever classification
+    /// yields — never narrowed, never widened here.
+    #[test]
+    fn plugin_watch_file_change_reruns_all_virtual_module_consumers() {
+        let watched_external = PathBuf::from("/ext/data/watched.json");
+        let watched_asset = PathBuf::from("/proj/public/blob.bin");
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(policy_with_plugin_watch_files([
+                watched_external.clone(),
+                watched_asset.clone(),
+            ])),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+
+        // Out-of-root watch file: External classification — All pages +
+        // SSR reload as before, PLUS all three consumer flags.
+        let plan = orch.plan_for_changes(vec![watched_external]);
+        assert!(plan.pages.is_all(), "External page selection must stay All");
+        assert!(plan.ssr_reload_needed);
+        assert!(plan.rerun_islands, "islands consume virtual-module source");
+        assert!(
+            plan.rerun_client_scripts,
+            "client scripts consume virtual-module source"
+        );
+        assert!(
+            plan.rerun_css,
+            "the CSS scan consumes virtual-module source"
+        );
+
+        // In-root `public/**` watch file: Asset classification alone would
+        // be a NO-OP plan — the refreshed store would never ship.
+        let plan = orch.plan_for_changes(vec![watched_asset]);
+        assert!(
+            !plan.is_noop(),
+            "an Asset-classified watch file must still produce a rebuilding tick"
+        );
+        assert!(plan.rerun_islands && plan.rerun_client_scripts && plan.rerun_css);
+        assert!(plan.ssr_reload_needed);
+
+        // Control: a NON-watched asset stays a no-op (the flags come from
+        // watch-set membership, not from a loosened Asset arm).
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/public/other.bin")]);
+        assert!(plan.is_noop());
+    }
+
+    /// The plugin watch set is STATIC: populated once at boot, and — unlike
+    /// `known_content`, which `tick_with_kinds`'s #1581 fold purges on every
+    /// `Removed` — never ejected by a removal tick. Asserting this here pins
+    /// the assumption the pre-tick gate relies on: after a watched file is
+    /// deleted, the recreate event must still gate the refresh in (that
+    /// recovery is what `plugin_refresh.rs`'s forced-failure tests exercise
+    /// downstream of the gate).
+    #[test]
+    fn plugin_watch_set_is_static_across_removed_ticks() {
+        let watched = PathBuf::from("/proj/data/watched.json");
+        let pipeline = CountingPipeline::default();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(policy_with_plugin_watch_files([watched.clone()])),
+            make_graph(),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(watched.clone(), ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            orch.policy().is_plugin_watch_target(&watched),
+            "a Removed tick must not purge the plugin watch set — it is boot-populated \
+             and static (the #1581 Removed fold owns known_content, a different registry)"
+        );
+        assert!(
+            pre_tick_refresh_applies(orch.policy(), &[(watched.clone(), ChangeKind::Created)]),
+            "the delete→recreate event must still gate the pre-tick refresh in"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_pre_tick_refresh_awaits_hook_to_completion_with_the_full_batch() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let watched = PathBuf::from("/proj/data/watched.json");
+        let unrelated = PathBuf::from("/proj/pages/index.tsx");
+        let completed = Arc::new(AtomicBool::new(false));
+        let seen: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook: PreTickRefreshHook = {
+            let completed = Arc::clone(&completed);
+            let seen = Arc::clone(&seen);
+            Arc::new(move |paths: Vec<PathBuf>| {
+                let completed = Arc::clone(&completed);
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    // Suspend a few times so returning from the helper
+                    // genuinely requires polling this future to the end —
+                    // an unawaited (fire-and-forget) call would leave
+                    // `completed` false.
+                    for _ in 0..3 {
+                        tokio::task::yield_now().await;
+                    }
+                    seen.lock().unwrap().extend(paths);
+                    completed.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+        };
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+            .with_policy(policy_with_plugin_watch_files([watched.clone()]))
+            .with_pre_tick_refresh(hook);
+
+        maybe_pre_tick_refresh(
+            &config,
+            &[
+                (unrelated.clone(), ChangeKind::Modified),
+                (watched.clone(), ChangeKind::Modified),
+            ],
+        )
+        .await;
+
+        assert!(
+            completed.load(Ordering::SeqCst),
+            "the helper must await the hook future to completion before returning"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![unrelated, watched],
+            "the hook receives the batch's FULL path set, in batch order — ownership \
+             resolution is the refresh fn's job, not the gate's"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_pre_tick_refresh_skips_non_matching_batches_and_absent_hook() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let watched = PathBuf::from("/proj/data/watched.json");
+        let unrelated = PathBuf::from("/proj/pages/index.tsx");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook: PreTickRefreshHook = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_paths: Vec<PathBuf>| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+        };
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+            .with_policy(policy_with_plugin_watch_files([watched.clone()]))
+            .with_pre_tick_refresh(hook);
+
+        maybe_pre_tick_refresh(&config, &[(unrelated.clone(), ChangeKind::Modified)]).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a batch with no watched member must not invoke the hook"
+        );
+
+        maybe_pre_tick_refresh(&config, &[(watched.clone(), ChangeKind::Modified)]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // No hook configured (the default) — a watched batch is a no-op.
+        let hookless = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+            .with_policy(policy_with_plugin_watch_files([watched.clone()]));
+        maybe_pre_tick_refresh(&hookless, &[(watched, ChangeKind::Modified)]).await;
+    }
+
+    #[tokio::test]
+    async fn maybe_pre_tick_refresh_swallows_hook_errors() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let watched = PathBuf::from("/proj/data/watched.json");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook: PreTickRefreshHook = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |_paths: Vec<PathBuf>| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Err(anyhow::anyhow!("synthetic refresh failure"))
+                })
+            })
+        };
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+            .with_policy(policy_with_plugin_watch_files([watched.clone()]))
+            .with_pre_tick_refresh(hook);
+
+        // Returning normally IS the assertion — an `Err` must be logged and
+        // swallowed, never propagated (the loop would otherwise die and the
+        // dev server would stop rebuilding).
+        maybe_pre_tick_refresh(&config, &[(watched, ChangeKind::Modified)]).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Records every pipeline apply as a `"tick"` entry in a shared,
+    /// interleaved event log the pre-tick hook also writes to — the
+    /// loop-level ordering evidence for the live-loop test below.
+    #[derive(Debug, Clone)]
+    struct LoggingPipeline {
+        log: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl AssetPipeline for LoggingPipeline {
+        fn apply(&self, _plan: &RebuildPlan, _ctx: &BuildContext) -> Result<BuildOutcome> {
+            self.log.lock().unwrap().push("tick");
+            Ok(BuildOutcome::default())
+        }
+    }
+
+    /// Poll `probe` every 10ms until it returns true or `secs` elapse.
+    /// Condition-keyed (never a bare settle sleep): the caller's assertion
+    /// message names what never became true.
+    async fn wait_until(secs: u64, mut probe: impl FnMut() -> bool) -> bool {
+        tokio::time::timeout(Duration::from_secs(secs), async {
+            loop {
+                if probe() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    /// The live-loop wiring proof for issue #2169: `run_with_boot`'s drain
+    /// loop must AWAIT the pre-tick hook to completion before dispatching
+    /// the tick. The unit tests above prove `maybe_pre_tick_refresh`'s own
+    /// contract; without this test a helper nobody calls at the right seam
+    /// would read as coverage (the #1058/#1581 dead-guard lesson).
+    ///
+    /// Determinism: the hook suspends on a zero-permit semaphore the TEST
+    /// releases. While the hook is suspended the drain loop is suspended
+    /// with it (`spawn_blocking` for the tick has not been reached), so a
+    /// correctly-wired loop can NEVER log a `"tick"` inside a
+    /// refresh-start→refresh-complete window — no timing margin involved.
+    /// A fire-and-forget regression dispatches the tick while the gate is
+    /// still closed, landing a `"tick"` inside the first window (or before
+    /// the first `"refresh-start"`), and fails the scan below.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pre_tick_hook_gates_the_tick_dispatch_in_the_live_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project_root = root.join("proj");
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        let ext_dir = root.join("ext");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        let watched = ext_dir.join("watched.json");
+        std::fs::write(&watched, "v-boot").unwrap();
+
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+
+        let hook: PreTickRefreshHook = {
+            let log = Arc::clone(&log);
+            let seen = Arc::clone(&seen);
+            let gate = Arc::clone(&gate);
+            Arc::new(move |paths: Vec<PathBuf>| {
+                let log = Arc::clone(&log);
+                let seen = Arc::clone(&seen);
+                let gate = Arc::clone(&gate);
+                Box::pin(async move {
+                    log.lock().unwrap().push("refresh-start");
+                    let _permit = gate.acquire().await.expect("gate never closed");
+                    seen.lock().unwrap().extend(paths);
+                    log.lock().unwrap().push("refresh-complete");
+                    Ok(())
+                })
+            })
+        };
+
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(&project_root, vec![PathBuf::from("pages")])
+                .with_policy(policy_with_plugin_watch_files([watched.clone()]))
+                .with_debounce(Duration::from_millis(25))
+                .with_pre_tick_refresh(hook),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            LoggingPipeline {
+                log: Arc::clone(&log),
+            },
+        );
+        let dist = tempfile::tempdir().unwrap();
+        let run = tokio::spawn(orch.run(noop_ctx(dist.path()), None, |_: &BuildOutcome| {}));
+
+        // Write fresh watched-file content until the loop demonstrably
+        // reached the hook (proves the dynamic parent watch is live AND the
+        // gate is reached — no fixed settle sleep).
+        let log_probe = Arc::clone(&log);
+        let watched_writer = watched.clone();
+        let res = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+            move |idx| {
+                std::fs::write(&watched_writer, format!("v{idx}")).expect("write watched file");
+            },
+            move || log_probe.lock().unwrap().contains(&"refresh-start"),
+        )
+        .await;
+        assert!(
+            res.live,
+            "the watched file's dynamic watch never delivered an event that reached the \
+             pre-tick hook within {:?} ({} markers written)",
+            res.elapsed, res.markers_written,
+        );
+
+        // Open the gate for this and every subsequent hook invocation, then
+        // wait for a completed refresh followed by its tick.
+        gate.add_permits(1_000_000);
+        let log_probe = Arc::clone(&log);
+        let done = wait_until(10, move || {
+            let log = log_probe.lock().unwrap();
+            let first_complete = log.iter().position(|entry| *entry == "refresh-complete");
+            match first_complete {
+                Some(idx) => log[idx..].contains(&"tick"),
+                None => false,
+            }
+        })
+        .await;
+        assert!(
+            done,
+            "after opening the gate, a refresh-complete followed by its tick never appeared"
+        );
+
+        let snapshot = log.lock().unwrap().clone();
+        // The load-bearing scan: no tick may land while a refresh window is
+        // open, and — because the ONLY file ever written in this fixture is
+        // the watched one, so every batch must contain it — no tick may
+        // precede the first refresh-start either.
+        let mut in_window = false;
+        let mut seen_first_start = false;
+        for entry in &snapshot {
+            match *entry {
+                "refresh-start" => {
+                    in_window = true;
+                    seen_first_start = true;
+                }
+                "refresh-complete" => in_window = false,
+                "tick" => {
+                    assert!(
+                        !in_window,
+                        "a tick landed while the pre-tick hook was still suspended — the \
+                         loop is not awaiting the hook before dispatch: {snapshot:?}"
+                    );
+                    assert!(
+                        seen_first_start,
+                        "a tick landed before the first refresh-start, but every batch in \
+                         this fixture contains the watched file: {snapshot:?}"
+                    );
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|path| path.ends_with("watched.json")),
+            "the hook must receive the batch's changed paths"
+        );
+
+        run.abort();
+        let _ = run.await;
+    }
+
+    /// An erroring hook must not kill the drain loop: ticks keep landing
+    /// and the hook keeps being consulted on subsequent batches (the store
+    /// side of "tick proceeds on last-good memo" is pinned by
+    /// `plugin_refresh.rs`'s own forced-failure tests).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pre_tick_hook_error_does_not_kill_the_live_loop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project_root = root.join("proj");
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        let ext_dir = root.join("ext");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        let watched = ext_dir.join("watched.json");
+        std::fs::write(&watched, "v-boot").unwrap();
+
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let hook: PreTickRefreshHook = {
+            let hook_calls = Arc::clone(&hook_calls);
+            Arc::new(move |_paths: Vec<PathBuf>| {
+                let hook_calls = Arc::clone(&hook_calls);
+                Box::pin(async move {
+                    hook_calls.fetch_add(1, Ordering::SeqCst);
+                    Err(anyhow::anyhow!("synthetic pre-tick refresh failure"))
+                })
+            })
+        };
+
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(&project_root, vec![PathBuf::from("pages")])
+                .with_policy(policy_with_plugin_watch_files([watched.clone()]))
+                .with_debounce(Duration::from_millis(25))
+                .with_pre_tick_refresh(hook),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+        let run = tokio::spawn(orch.run(noop_ctx(dist.path()), None, |_: &BuildOutcome| {}));
+
+        // Two full error rounds: hook_calls >= 2 proves the loop survived
+        // the first Err and consulted the hook again; applies >= 2 proves
+        // the ticks themselves kept dispatching. Fresh content per marker
+        // keeps events coming for as long as the condition needs.
+        let hook_calls_probe = Arc::clone(&hook_calls);
+        let applies_probe = Arc::clone(&applies);
+        let watched_writer = watched.clone();
+        let res = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+            move |idx| {
+                std::fs::write(&watched_writer, format!("v{idx}")).expect("write watched file");
+            },
+            move || {
+                hook_calls_probe.load(Ordering::SeqCst) >= 2
+                    && applies_probe.lock().unwrap().len() >= 2
+            },
+        )
+        .await;
+        assert!(
+            res.live,
+            "the loop never reached 2 hook calls + 2 ticks after an erroring hook within \
+             {:?} ({} markers written) — an Err is killing the drain loop",
+            res.elapsed, res.markers_written,
+        );
+
+        run.abort();
+        let _ = run.await;
+    }
+
+    /// Batches with no plugin-watch member never consult the hook, even
+    /// with a NON-EMPTY registry (an empty registry would make this pass
+    /// trivially). Race-free by construction: the watched file is created
+    /// before the watcher boots and never touched again, so no batch can
+    /// ever legitimately contain it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pre_tick_hook_is_not_consulted_for_non_matching_batches_in_the_live_loop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project_root = root.join("proj");
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        let ext_dir = root.join("ext");
+        std::fs::create_dir_all(&ext_dir).unwrap();
+        let watched = ext_dir.join("watched.json");
+        std::fs::write(&watched, "v-boot").unwrap();
+
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let hook: PreTickRefreshHook = {
+            let hook_calls = Arc::clone(&hook_calls);
+            Arc::new(move |_paths: Vec<PathBuf>| {
+                let hook_calls = Arc::clone(&hook_calls);
+                Box::pin(async move {
+                    hook_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            })
+        };
+
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(&project_root, vec![PathBuf::from("pages")])
+                .with_policy(policy_with_plugin_watch_files([watched.clone()]))
+                .with_debounce(Duration::from_millis(25))
+                .with_pre_tick_refresh(hook),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+        let run = tokio::spawn(orch.run(noop_ctx(dist.path()), None, |_: &BuildOutcome| {}));
+
+        // Fresh page files (a boot-watched recursive root) until a tick
+        // lands — proving the loop processed at least one full non-matching
+        // batch end to end.
+        let applies_probe = Arc::clone(&applies);
+        let pages_dir = project_root.join("pages");
+        let res = zfb_test_utils::watcher_live_handshake(
+            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
+            move |idx| {
+                std::fs::write(
+                    pages_dir.join(format!("probe-{idx}.tsx")),
+                    "export default () => null;\n",
+                )
+                .expect("write page file");
+            },
+            move || !applies_probe.lock().unwrap().is_empty(),
+        )
+        .await;
+        assert!(
+            res.live,
+            "no tick ever landed for the page-file batches within {:?} ({} markers written)",
+            res.elapsed, res.markers_written,
+        );
+
+        assert_eq!(
+            hook_calls.load(Ordering::SeqCst),
+            0,
+            "a batch with no plugin-watch member must never consult the pre-tick hook"
+        );
+
+        run.abort();
+        let _ = run.await;
     }
 }
