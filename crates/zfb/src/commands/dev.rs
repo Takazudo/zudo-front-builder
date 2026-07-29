@@ -1052,11 +1052,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // registry the prefetch just walked. Every consumer that used to hold
     // its own frozen copy of `dev_plugin_virtual_modules` (the
     // `DevRebuildInputs` field, the restarted V8 host's plugin hooks, and
-    // the islands/CSS rebuild closures below) now snapshots THIS store at
-    // use time — updating only one of them would ship a split-brain source
-    // between the bundle and the V8 host / islands scan. `refresh` itself
-    // is NOT called from a live watcher tick anywhere yet: wiring it into
-    // the dev orchestrator's watch loop is the next sub-issue's job.
+    // the islands/CSS/client-scripts rebuild closures below) now snapshots
+    // THIS store at use time — updating only one of them would ship a
+    // split-brain source between the bundle and the V8 host / islands
+    // scan. `refresh` IS called from the live watcher loop since #2169:
+    // the orchestrator's pre-tick hook (installed on `orch_config` below)
+    // awaits it before dispatching any tick whose batch touches the
+    // plugin watch-file set.
     let plugin_watch_ownership =
         zfb_build::PluginWatchOwnership::from_registry(&setup_registries.virtual_modules);
     // Extracted before `plugin_watch_ownership` moves into `plugin_refresh`
@@ -1432,7 +1434,34 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .iter()
                 .map(|name| name.to_string())
                 .collect(),
-        );
+        )
+        // Issue #2169 (epic #2166 Sub 3) — the live-watcher wiring #2168
+        // deliberately left out: when a tick's batch touches the plugin
+        // watch-file set registered above, the orchestrator awaits this
+        // hook BEFORE dispatching the tick, so the re-invoked loader
+        // output is already in the shared store when the tick's
+        // snapshot-at-use-time consumers (main bundler, V8 host hooks,
+        // islands/CSS/client-scripts closures) read it. `refresh` reports
+        // per-loader failures via its outcome (logging them itself, and
+        // keeping the store's last-good memo — its atomicity contract),
+        // so this closure always returns `Ok`; the orchestrator's own
+        // error tolerance is for hook-infrastructure failures only.
+        .with_pre_tick_refresh({
+            let plugin_refresh_for_hook = plugin_refresh.clone();
+            Arc::new(move |changed_paths: Vec<PathBuf>| {
+                let refresh = plugin_refresh_for_hook.clone();
+                Box::pin(async move {
+                    let outcome = refresh.refresh(&changed_paths).await;
+                    if !outcome.refreshed.is_empty() {
+                        tracing::debug!(
+                            refreshed = ?outcome.refreshed,
+                            "plugin virtual modules refreshed before tick"
+                        );
+                    }
+                    Ok(())
+                }) as zfb_build::PreTickRefreshFuture
+            })
+        });
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
@@ -1513,8 +1542,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #2168: virtual-module SOURCE is re-read from the shared
         // store on every call (the store handle itself is cheap to clone —
         // an `Arc` — so this is not a boot-time freeze), so a forced plugin
-        // reload (wired by the next sub-issue) is visible on the islands
-        // bundle's very next tick rather than only at boot.
+        // reload (wired to the live watcher by #2169's pre-tick hook) is
+        // visible on the islands bundle's very next tick rather than only
+        // at boot.
         let plugin_virtual_module_store_for_islands = plugin_refresh.store().clone();
         let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
@@ -1722,7 +1752,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let output_filenames = Arc::clone(&live_client_script_outputs);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
-        let plugin_config_for_cs = islands_plugin_config.clone();
+        // Aliases never change after setup — capture those once (mirrors
+        // `run_islands` above).
+        let plugin_alias_entries_for_cs = islands_plugin_config.alias_entries.clone();
+        // Issue #2169 — this closure had the same boot-time freeze the
+        // islands/CSS closures shed in #2168: cloning the whole
+        // `islands_plugin_config` here pinned `virtual_modules` to the
+        // setup-time prefetch, so a pre-tick plugin refresh would have
+        // shipped a split-brain source (fresh islands/CSS/SSR, stale
+        // client scripts). Snapshot the shared store at use time instead.
+        let plugin_virtual_module_store_for_cs = plugin_refresh.store().clone();
         let raw_invalidation = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
             let prev = output_filenames
@@ -1735,6 +1774,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     p.into_inner()
                 })
                 .clone();
+            let plugin_config_for_cs = crate::commands::build::IslandsPluginConfig {
+                alias_entries: plugin_alias_entries_for_cs.clone(),
+                virtual_modules: plugin_virtual_module_store_for_cs.snapshot_pairs(),
+            };
             let outcome =
                 crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
                     &project_root_for_cs,
@@ -4534,9 +4577,10 @@ struct DevRebuildInputs {
     /// Issue #2168: replaces the old frozen `plugin_virtual_modules:
     /// Vec<(String, String)>` field. Holds the shared virtual-module
     /// source store + watch ownership map + a `PluginHost` clone, so a
-    /// forced reload (wired by the next sub-issue) publishes to the SAME
-    /// store every consumer below reads from at use time — see
-    /// [`Self::plugin_virtual_modules`] and [`Self::live_v8_plugin_hooks`].
+    /// forced reload (wired to the live watcher by #2169's pre-tick hook)
+    /// publishes to the SAME store every consumer below reads from at use
+    /// time — see [`Self::plugin_virtual_modules`] and
+    /// [`Self::live_v8_plugin_hooks`].
     plugin_refresh: zfb_build::PluginRefreshState,
     /// Process-lifetime embedded-esbuild extraction (#994 item A): the
     /// `(TempDir, PathBuf)` pair from one boot-time
@@ -15496,7 +15540,7 @@ mod tests {
 
     // -----------------------------------------------------------------
     // Dev refresh state (issue #2168, epic #2166 Sub 2) — no split-brain
-    // between the three plugin-virtual-module consumers.
+    // between the plugin-virtual-module consumers.
     // -----------------------------------------------------------------
     //
     // Exercises the exact production accessor functions, not a
@@ -15505,10 +15549,13 @@ mod tests {
     //    `plugin_virtual_modules` input, read in `refresh_bundle_and_routes`).
     //  - `DevRebuildInputs::live_v8_plugin_hooks` (the restarted V8 host's
     //    plugin-registry hooks).
-    //  - The islands/CSS rebuild closures' own snapshot expression
-    //    (`plugin_refresh.store().snapshot_pairs()`, mirrored here to
-    //    prove it agrees with the other two without spinning up a real
-    //    islands/CSS bundle — see `run_islands` / `run_css` in `run()`).
+    //  - The islands/CSS/client-scripts rebuild closures' shared snapshot
+    //    expression (`plugin_refresh.store().snapshot_pairs()`, mirrored
+    //    here to prove it agrees with the other two without spinning up a
+    //    real bundle — see `run_islands` / `run_css` /
+    //    `run_client_scripts` in `run()`; the client-scripts closure
+    //    joined the pattern in #2169, shedding its boot-time
+    //    `islands_plugin_config` freeze).
     //
     // Publishes directly via `PluginVirtualModuleStore::publish` (skipping
     // a real `PluginHost`) to simulate a completed refresh — the atomicity
@@ -15517,7 +15564,7 @@ mod tests {
     // + Node subprocess), which is the appropriate crate for that.
     #[cfg(feature = "embed_v8")]
     #[test]
-    fn plugin_refresh_store_update_is_observed_identically_by_all_three_consumers() {
+    fn plugin_refresh_store_update_is_observed_identically_by_all_consumers() {
         let store = zfb_build::PluginVirtualModuleStore::seeded([(
             "virtual:data".to_string(),
             "export default 1".to_string(),
@@ -15590,7 +15637,7 @@ mod tests {
         assert_eq!(
             islands_virtual_modules,
             vec![("virtual:data".to_string(), "export default 2".to_string())],
-            "the islands/CSS rebuild closures' snapshot must observe the refresh"
+            "the islands/CSS/client-scripts rebuild closures' snapshot must observe the refresh"
         );
 
         // The V8 hooks' alias/plugin-name shape (the part that never
