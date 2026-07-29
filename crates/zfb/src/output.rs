@@ -80,7 +80,10 @@ pub(crate) fn fmt_watcher_liveness_timed_out() -> String {
      trigger a rebuild until you restart `zfb dev`.\n  Common causes: a \
      stalled fseventsd (macOS — try `sudo killall fseventsd`), a \
      Dropbox/OneDrive/iCloud-synced project directory intercepting file \
-     events, or antivirus/EDR software hooking filesystem calls."
+     events, or antivirus/EDR software hooking filesystem calls.\n  If \
+     the problem persists, try setting `watchPollFallback: true` in \
+     `zfb.config.ts` to fall back to a poll-based watcher instead of \
+     relying on native filesystem-change notifications."
         .to_string()
 }
 
@@ -614,6 +617,11 @@ mod tests {
         assert!(
             !text.contains("pages/, content/"),
             "must not hardcode the default watch-dir list, got: {text}"
+        );
+        // Issue #2174 — the remedy line naming the poll-backend opt-out.
+        assert!(
+            text.contains("watchPollFallback: true"),
+            "expected a remedy line naming watchPollFallback: true, got: {text}"
         );
     }
 

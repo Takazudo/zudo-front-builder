@@ -211,6 +211,27 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
     roots
 }
 
+/// Derive the [`zfb_watcher::WatchBackend`] the dev server's watchers
+/// should drive from `Config`'s poll-fallback fields (issue #2174).
+///
+/// `watchPollFallback: false` (the default) keeps
+/// [`zfb_watcher::WatchBackend::Native`]. `true` selects
+/// [`zfb_watcher::WatchBackend::Poll`] at `watchPollIntervalMs`
+/// (falling back to `zfb_watcher::DEFAULT_POLL_INTERVAL` when absent) —
+/// config-load validation (`crate::config::validate`) already bounds the
+/// interval to 50..=10_000ms and warns when it is set but dormant.
+fn watch_backend_from_config(cfg: &config::Config) -> zfb_watcher::WatchBackend {
+    if !cfg.watch_poll_fallback {
+        return zfb_watcher::WatchBackend::Native;
+    }
+    let interval_ms = cfg
+        .watch_poll_interval_ms
+        .unwrap_or(zfb_watcher::DEFAULT_POLL_INTERVAL.as_millis() as u64);
+    zfb_watcher::WatchBackend::Poll {
+        interval: std::time::Duration::from_millis(interval_ms),
+    }
+}
+
 /// Does a project-root-relative collection path escape the project root
 /// via `..`? A purely LEXICAL check (no filesystem access): walk the
 /// components tracking depth, and report an escape the moment a
@@ -749,21 +770,39 @@ impl RewritePrewarmWiring {
 ///   `tokio::select!` pattern issue #2102 built for `boot_handle`, via
 ///   `map_redirects_watch_join_result` (declared beside
 ///   `map_boot_task_join_result` further down this file).
+///
+/// ## Watch backend (issue #2174)
+///
+/// `backend` is threaded explicitly from the caller (derived via
+/// [`watch_backend_from_config`]) rather than read from `Config` here —
+/// this fn has no access to the project config, only the two resolved
+/// paths and the prewarm wiring. `watchPollFallback` selects
+/// [`zfb_watcher::WatchBackend::Poll`] for this targeted `_redirects`
+/// watch too, matching the orchestrator's own dev-loop watcher.
+#[cfg(feature = "embed_v8")]
+fn redirects_watch_options(backend: zfb_watcher::WatchBackend) -> zfb_watcher::WatchOptions {
+    zfb_watcher::WatchOptions::default()
+        .with_debounce(zfb_watcher::DEFAULT_DEBOUNCE)
+        .with_backend(backend)
+}
+
 #[cfg(feature = "embed_v8")]
 fn spawn_redirects_watch(
     project_root: &Path,
     public_root: &Path,
     prewarm: Option<RewritePrewarmWiring>,
+    backend: zfb_watcher::WatchBackend,
 ) -> (RedirectsHandle, tokio::task::JoinHandle<()>) {
     let redirects_path = public_root.join("_redirects");
     let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
         &redirects_path,
     )));
 
-    let (mut watcher, mut rx) = match zfb_watcher::Watcher::start_with_debounce(
+    let (mut watcher, mut rx) = match zfb_watcher::Watcher::start_with_options(
         project_root,
         std::iter::empty::<&Path>(),
-        zfb_watcher::DEFAULT_DEBOUNCE,
+        std::iter::empty::<&Path>(),
+        redirects_watch_options(backend),
     ) {
         Ok(pair) => pair,
         Err(e) => {
@@ -1419,6 +1458,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
+        // Issue #2174 — `watchPollFallback`/`watchPollIntervalMs` select
+        // the poll watch backend as a fallback for hosts where the
+        // native backend (FSEvents/inotify) is unavailable or unreliable.
+        .with_backend(watch_backend_from_config(&cfg))
         .with_policy(
             zfb_build::GranularityPolicy::default()
                 .with_content_roots(content_roots)
@@ -2095,8 +2138,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // `redirects_watch_join` handle below, wired into the same
     // `tokio::select!` issue #2102 built for `boot_handle` (see the
     // `res = &mut redirects_watch_join` arm further down).
-    let (redirects_handle, mut redirects_watch_join) =
-        spawn_redirects_watch(&project_root, &public_root, rewrite_prewarm.clone());
+    let (redirects_handle, mut redirects_watch_join) = spawn_redirects_watch(
+        &project_root,
+        &public_root,
+        rewrite_prewarm.clone(),
+        watch_backend_from_config(&cfg),
+    );
     // Issue #2004 — the deferred boot task needs the same handle the
     // server reads from; clone before `ServeOpts` consumes the original.
     let redirects_handle_for_boot = Arc::clone(&redirects_handle);
@@ -2698,10 +2745,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // orchestrator-death path this epic supervises — but its "half-alive"
     // audience is narrower than when it was written. That narrowing is a
     // deliberate outcome of this epic's work, not a defect in the probe.
+    // Issue #2174 — probe the SAME backend the real session watchers
+    // drive: a `watchPollFallback`-configured session running the poll
+    // backend must have its liveness self-check probe the poll backend
+    // too, not the native one (a native-backed probe would report on
+    // FSEvents/inotify health, which says nothing about the backend
+    // actually in use).
     let liveness_probe_handle = spawn_watcher_liveness_probe(
         probe_project_root,
         probe_effective_watch_targets,
-        zfb_watcher::LivenessOpts::default(),
+        zfb_watcher::LivenessOpts::default().with_backend(watch_backend_from_config(&cfg)),
     );
 
     // Announce the ACTUAL bound port, not the requested one: with
@@ -9353,6 +9406,112 @@ mod tests {
         resolve_probe_parent_dir, unique_probe_session_dir_name,
     };
     use std::path::PathBuf;
+
+    // -----------------------------------------------------------------
+    // Watch backend selection (issue #2174)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn watch_backend_from_config_defaults_to_native() {
+        let cfg = config::Config::default();
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Native
+        );
+    }
+
+    #[test]
+    fn watch_backend_from_config_selects_poll_with_configured_interval() {
+        let cfg = config::Config {
+            watch_poll_fallback: true,
+            watch_poll_interval_ms: Some(250),
+            ..config::Config::default()
+        };
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Poll {
+                interval: std::time::Duration::from_millis(250)
+            }
+        );
+    }
+
+    #[test]
+    fn watch_backend_from_config_selects_poll_with_default_interval_when_ms_absent() {
+        let cfg = config::Config {
+            watch_poll_fallback: true,
+            watch_poll_interval_ms: None,
+            ..config::Config::default()
+        };
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Poll {
+                interval: zfb_watcher::DEFAULT_POLL_INTERVAL
+            }
+        );
+    }
+
+    #[test]
+    fn watch_backend_from_config_stays_native_when_interval_set_without_fallback() {
+        // Dormant-but-set case (config.rs warns, does not error): the
+        // interval alone must never flip the backend.
+        let cfg = config::Config {
+            watch_poll_fallback: false,
+            watch_poll_interval_ms: Some(250),
+            ..config::Config::default()
+        };
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Native
+        );
+    }
+
+    /// Constructor-selection site (b): the targeted `_redirects` watch's
+    /// own `WatchOptions` construction picks up the poll backend.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn redirects_watch_options_selects_poll_backend_when_configured() {
+        let poll_backend = zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_millis(250),
+        };
+        let options = redirects_watch_options(poll_backend);
+        assert_eq!(options.backend, poll_backend);
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn redirects_watch_options_defaults_to_native_backend() {
+        let options = redirects_watch_options(zfb_watcher::WatchBackend::Native);
+        assert_eq!(options.backend, zfb_watcher::WatchBackend::Native);
+    }
+
+    /// Constructor-selection site (c): the watcher-liveness probe's own
+    /// `LivenessOpts` picks up the same backend the real session
+    /// watchers drive, via `with_backend` (never a new positional arg on
+    /// `check_liveness`/`spawn_watcher_liveness_probe`).
+    #[test]
+    fn liveness_opts_select_poll_backend_from_poll_flagged_config() {
+        let cfg = config::Config {
+            watch_poll_fallback: true,
+            watch_poll_interval_ms: Some(250),
+            ..config::Config::default()
+        };
+        let opts =
+            zfb_watcher::LivenessOpts::default().with_backend(watch_backend_from_config(&cfg));
+        assert_eq!(
+            opts.backend,
+            zfb_watcher::WatchBackend::Poll {
+                interval: std::time::Duration::from_millis(250)
+            }
+        );
+    }
+
+    #[test]
+    fn liveness_opts_stay_native_from_default_config() {
+        let cfg = config::Config::default();
+        let opts =
+            zfb_watcher::LivenessOpts::default().with_backend(watch_backend_from_config(&cfg));
+        assert_eq!(opts.backend, zfb_watcher::WatchBackend::Native);
+    }
 
     // -----------------------------------------------------------------
     // No-spurious-rebuild proof (issue #1719, epic #1716)
