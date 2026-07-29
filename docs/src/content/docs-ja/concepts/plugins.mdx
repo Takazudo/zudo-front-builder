@@ -13,7 +13,7 @@ zfb プラグインは、デフォルトエクスポートが `ZfbPlugin` オブ
 
 `setup` が提供する 4 つの機能のいずれかが必要になったときにプラグインを使ってください。以下のセクションで説明するのと同じ 4 つです。どれにも当てはまらない場合は、素のスクリプトのほうが適した道具です（後述の [必要ないとき — レシピを書く](#必要ないとき-—-レシピを書く) を参照）。エンジン対スクリプトという広い観点でのメンタルモデルについては [設計哲学](./design-philosophy.mdx) を参照してください。
 
-- **合成データソースを裏付ける仮想モジュール。** ページがディスク上に実ファイルを持たない specifier から `import` する必要がある場合 — メタデータ DB、コンテンツインデックス、生成された設定ブロブなど — そのソースをモジュールグラフに注入する唯一の手段が `addVirtualModule` です。例: 全ページにわたる `import metadata from "virtual:metadata-db"`。
+- **合成データソースを裏付ける仮想モジュール。** ページがディスク上に実ファイルを持たない specifier から `import` する必要がある場合 — メタデータ DB、コンテンツインデックス、生成された設定ブロブなど — そのソースをモジュールグラフに注入する唯一の手段が `addVirtualModule` です。例: 全ページにわたる `import metadata from "virtual:metadata-db"`。loader がそのソースを実ファイルから組み立てるなら、登録時の `watchFiles` オプションでそれらのファイルを挙げておくと、変更されたときに `zfb dev` が loader を再実行します。
 - **すべてのバンドラに適用しなければならないエイリアス書き換え。** `addAlias` は完全一致のインポート書き換えを登録し、これは 3 つすべての利用者（組み込み V8 ホスト、メインのページ／レイアウトバンドラ、islands esbuild バンドラ）が尊重します。`tsconfig.json` の `paths` エントリは型チェッカにしか届きません。エイリアスを 3 つすべてのバンドラで実行時に効かせる必要があるなら、それはプラグインの領域です。
 - **`pages/` の外に存在する注入ページルート。** `injectRoute` は、URL パターンの下に ESM ページモジュールを登録します。entrypoint はソース TSX/TS モジュールでも、パッケージが公開するコンパイル済み ESM `.js` モジュールでも構いません。build と dev のどちらでも、ページパイプラインが一致する静的 / 動的な注入ルートをレンダリングします。そのルートが本当に dev 専用のときだけ、`command === "dev"` で呼び出しをガードしてください。
 - **Package-owned client entry。** `addClientEntry` は、プロジェクトの client scripts と一緒にバンドルされる `*.client.{ts,tsx,js,jsx}` の side-effect entry を登録します。
@@ -39,7 +39,9 @@ export default definePlugin({
 
 ## `setup` — 仮想モジュール、エイリアス、注入ルート、client entry の登録
 
-`zfb build` ホストの起動ごとに **一度**、`zfb dev` ホストの起動ごとに一度、そして `zfb preview`（静的モード）ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）、合成ページルート、package-owned client entry に寄与する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。
+`zfb build` ホストの起動ごとに **一度**、`zfb dev` ホストの起動ごとに一度、そして `zfb preview`（静的モード）ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）、合成ページルート、package-owned client entry に寄与する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。以降に走るものが登録を追加したり、削除したり、差し替えたりすることはできません。
+
+凍結されるのは登録であって、登録が生み出すものすべてではありません。`watchFiles` を宣言した仮想モジュールは、`zfb dev` 中にそのファイルのいずれかが変更されると **loader が再実行されます**。ただし、それが属するレジストリのエントリ自体は `setup` が作ったままです。後述の `addVirtualModule` を参照してください。
 
 `zfb preview` では、`setup` は最小限の非 V8 経路で実行されます — preview は再ビルドを行わないため `preBuild` はそこでは決して実行されません。また `addAlias`/`addVirtualModule`/`injectRoute`/`addClientEntry` の呼び出しは形の一貫性のために受け付けられますが、**無効（inert）** です。preview はすでにビルド済みの `dist/` をそのまま配信するだけで、これらのレジストリが供給する scan → bundle → render パイプラインに再突入することは決してありません。`"preview"` の下で意味を持つのは、フック自身の副作用（例えば `previewMiddleware` 用の設定を計算するためにファイルを読むなど）と `previewMiddleware` の登録そのものだけです。
 
@@ -82,7 +84,7 @@ addAlias("@/components/foo", "./src/components/foo.tsx");
 
 **衝突検出。** 2 つのプラグインが同じ `from` を異なる `to` で登録すると `AliasConflict` が発生し、両方の問題プラグインを名指ししてビルドを中断します。冪等な再登録（同じプラグイン、同じ `to`）は許可されます。
 
-### `addVirtualModule(specifier, loader)` — 合成モジュールソース
+### `addVirtualModule(specifier, loader, options?)` — 合成モジュールソース
 
 ソーステキストが `loader` によってオンデマンドで生成される bare specifier を登録します。推奨されるプレフィックスは `virtual:` ですが強制ではありません。実モジュールの specifier と衝突しないものなら何でも使えます。
 
@@ -95,6 +97,27 @@ addVirtualModule("virtual:metadata-db", () =>
 `loader` は **完全な ESM ソーステキスト** を文字列として返します。バンドラ／組み込み V8 ホストは、返された文字列をそのモジュールのソースとしてそのまま使います。loader は **遅延実行ではなく、即時に実行されます** — `zfb build` の実行ごとに 1 回、`zfb dev` のホスト起動ごとに 1 回、すべてのプラグインの `setup` フックが返り終えた直後の setup フェーズで実行されます。登録された specifier がどのページ／モジュールからも import されなくても実行されます。生成されたソースはメモ化され、以降その specifier を import するたびに再利用されます。（`zfb preview` の下では、この登録は形の一貫性のために受け付けられますが無効です — 前述の `setup` セクションを参照してください — そのため loader はそこでは決して実行されません。）
 
 loader のコントラクトは **1 つ** だけです。「loader が JSON を返し zfb がそれをラップする」という代替モードはありません。JSON を公開したいなら、自分で `() => "export default " + JSON.stringify(data)` としてください。
+
+**`options.watchFiles` — `zfb dev` 中にメモ化を更新する。** このメモ化は、ディスク上の実ファイルを読む loader が `zfb dev` で必ずぶつかる壁です。loader は起動時に一度走ったきりなので、そのファイルを編集してもページが import する内容は変わりません。loader が読むファイルを登録時に宣言しておくと、これを解消できます。
+
+```ts
+const dataFile = join(projectRoot, "data/metadata.json");
+
+addVirtualModule(
+  "virtual:metadata-db",
+  () => `export default ${readFileSync(dataFile, "utf-8")}`,
+  { watchFiles: [dataFile] },
+);
+```
+
+`zfb dev` はこれらのパスを監視します。いずれかが変更されると、**その loader だけ** がメモ化をバイパスして再実行され、メモ化されたソースが新しい結果で置き換わり、再レンダリングされます。ライブリロードが届けるページは、編集後のファイルから組み立てられたものになります。宣言したファイルが変更されなかった loader は、再実行されることはありません。
+
+- **絶対パスのみ。** 相対パスや空文字のエントリは `setup` の時点で throw し、起動を中断します。エントリは dev ウォッチャーへそのまま渡され、プロジェクトルートを基準に解決されることは決してないため、相対パスには解決の起点がありません。[`extraWatchPaths`](../api/define-config.mdx) と同じ理由による、同じルールです。
+- **登録時の宣言であって、自動検出ではない。** 一覧は `setup` が返った時点で確定します。ディレクトリを列挙する loader が監視するのは起動時に存在したファイルだけで、その後に作られたファイルは監視対象の外です。監視対象に加えるには `zfb dev` の再起動が必要です。loader の実行中に呼べる `addWatchFile()` のようなものはありません。
+- **登録自体は依然として凍結されている。** リフレッシュが置き換えるのは loader の **結果** です。specifier を追加することも、削除することも、loader 関数を差し替えることもできません。仮想モジュールの集合は `setup` が登録したものがすべてです。
+- **再実行に失敗したときは直前の正常なソースを保持する。** 再実行した loader が throw した場合（書き込み途中のファイル、保存中に読んでしまった不完全な JSON など）、zfb は直前にメモ化したソースをそのまま保持し、エラーをログに出し、監視を続けます。次に正常にロードできた変更でメモが置き換わるため、ファイルを削除して作り直せば自力で復帰します。
+- **dev 専用。** `zfb build` は各 loader をちょうど一度だけ実行し、再実行することはないため、`watchFiles` は出荷される成果物に影響しません。無条件に宣言して構いません。
+- **`extraWatchPaths` とは別物。** [`extraWatchPaths`](../api/define-config.mdx) は、プロジェクトルート外のファイルの変更を dev ウォッチャーに **気づかせ**、リビルドを起こします。しかしリビルドだけでは、メモ化された loader のソースがそのまま再生されるだけです。loader を無効化するのは `watchFiles` の役目であり、しかもパスの監視自体も `watchFiles` が引き受けます。ここで宣言したファイルに対応する `extraWatchPaths` のエントリは不要です。
 
 **衝突検出。** 2 つのプラグインが同じ `specifier` を登録すると `VirtualModuleConflict` が発生し、ビルドを中断します。
 
@@ -159,6 +182,8 @@ addClientEntry("./client/analytics.client.ts");
 - `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor` はなし、
 - `addModuleLoader` / `addModuleTransform` はなし、
 - `onConfigResolved` / `onModuleLoad` はなし。
+
+`addVirtualModule` の任意オプション `watchFiles` は、これを 5 つにするものではありません。すでに存在するメソッドの登録 **オプション** であり、得られるものも意図的に狭く抑えられています。loader が読むファイルを宣言すれば、その loader が再実行される — それだけです。汎用のホットアップデート面（Vite の `handleHotUpdate` / `invalidate` や、loader の実行中に呼べる `addWatchFile()` など）は、上の一覧にある他のものとまったく同じ理由で、省かれる側に属します。
 
 マークダウンの拡張性は zfb のツリー **内部** に in-tree な Rust ビジター（TOC、外部リンク、CJK 処理など）として存在します。将来のマークダウン機能は JS プラグインポイントとして公開されるのではなく、エンジンに追加されます。これにより v1 のコントラクトは狭く保たれ、ビルドパイプラインは監査可能になります。
 
@@ -376,6 +401,27 @@ export default function Home() {
 ```
 
 loader は `zfb build` の最初に一度実行されます。バンドラは結果をキャッシュし、`virtual:metadata-db` のすべての `import` が同じソースを見ます。次の `zfb build` では loader が再び実行されます — ビルド間のディスク上キャッシュはありません。
+
+`zfb dev` でも同じメモ化が効くため、これらの `.mdx` ファイルを編集しても、`virtual:metadata-db` は起動時に構築したインデックスを export し続けます。対象ファイルを先に列挙して宣言すれば、インデックスが入力に追随するようになります。
+
+```ts
+setup({ projectRoot, addVirtualModule }) {
+  const dir = join(projectRoot, "src/content/docs");
+  const files = readdirSync(dir, { recursive: true })
+    .filter((p) => typeof p === "string" && p.endsWith(".mdx"))
+    .map((p) => join(dir, p as string));
+
+  addVirtualModule(
+    "virtual:metadata-db",
+    () => {
+      // ... same body as above, reading each entry of `files`
+    },
+    { watchFiles: files },
+  );
+}
+```
+
+これらのファイルを編集すれば loader が再実行されます。新しいファイルを追加した場合は再実行されません。`files` が列挙されたのは `setup` の実行中なので、その後に作られたページが監視対象に入るのは次に `zfb dev` を再起動したときです。
 
 ## 衝突検出のまとめ
 

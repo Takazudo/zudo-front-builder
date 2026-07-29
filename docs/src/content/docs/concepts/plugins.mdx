@@ -13,7 +13,7 @@ This page documents the contract for plugin authors. The companion API reference
 
 Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-don-t-—-write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](./design-philosophy.mdx).
 
-- **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page.
+- **Virtual module backing a synthetic data source.** If your pages need to `import` from a specifier that has no real file on disk — a metadata DB, a content index, a generated config blob — `addVirtualModule` is the only way to inject that source into the module graph. Example: `import metadata from "virtual:metadata-db"` across every page. If the loader derives that source from real files, name them in the registration's `watchFiles` option so `zfb dev` re-runs the loader when they change.
 - **Alias rewrite that must apply across all bundlers.** `addAlias` registers an exact-match import rewrite that is honored by all three consumers: the embedded V8 host, the main page/layout bundler, and the islands esbuild bundler. A `tsconfig.json` `paths` entry only reaches the type-checker. If the alias has to work at runtime in all three bundlers, it belongs in a plugin.
 - **Injected page route that lives outside `pages/`.** `injectRoute` registers an ESM page module under a URL pattern. Entrypoints can be source TSX/TS modules or compiled ESM `.js` modules published by a package. In build and dev, the page pipeline renders matching static and dynamic injected routes. Gate the call on `command === "dev"` only when the route is truly dev-only.
 - **Package-owned client entry.** `addClientEntry` registers a `*.client.{ts,tsx,js,jsx}` side-effect entry that should be bundled with the project's client scripts.
@@ -39,7 +39,9 @@ Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins
 
 ## `setup` — register virtual modules, aliases, injected routes, and client entries
 
-Runs **once** per `zfb build` host boot, once per `zfb dev` host boot, and once per `zfb preview` (static mode) host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases), synthetic page routes, and package-owned client entries. After `setup` completes, the registries are frozen for the remainder of the run.
+Runs **once** per `zfb build` host boot, once per `zfb dev` host boot, and once per `zfb preview` (static mode) host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases), synthetic page routes, and package-owned client entries. After `setup` completes, the registries are frozen for the remainder of the run — nothing that runs later can add a registration, drop one, or replace one.
+
+Freezing covers the registrations, not everything they produce. A virtual module whose registration declared `watchFiles` has its **loader re-invoked** when one of those files changes during `zfb dev`; the registry entry it belongs to is still the one `setup` created. See `addVirtualModule` below.
 
 Under `zfb preview`, `setup` fires through a minimal, non-V8 path — `preBuild` never runs there (preview does no rebuild), and `addAlias`/`addVirtualModule`/`injectRoute`/`addClientEntry` calls are accepted for shape-consistency but are **inert**: preview serves an already-built `dist/` verbatim and never re-enters the scan → bundle → render pipeline those registries feed. Only a hook's own side effects (e.g. reading a file to compute config for `previewMiddleware`) and a `previewMiddleware` registration itself do anything meaningful under `"preview"`.
 
@@ -82,7 +84,7 @@ Subpath imports do NOT match: `import "@/components/foo/bar"` is not rewritten a
 
 **Conflict detection.** Two plugins registering the same `from` with different `to` raises `AliasConflict` and aborts the build, naming both offending plugins. Idempotent re-registration (same plugin, same `to`) is allowed.
 
-### `addVirtualModule(specifier, loader)` — synthetic module sources
+### `addVirtualModule(specifier, loader, options?)` — synthetic module sources
 
 Registers a bare specifier whose source text is produced on-demand by `loader`. The recommended prefix is `virtual:` but it is not enforced — anything that does not collide with a real module specifier works.
 
@@ -95,6 +97,27 @@ addVirtualModule("virtual:metadata-db", () =>
 `loader` returns the **complete ESM source text** as a string. The bundler / embedded V8 host feeds the returned string in as the module's source verbatim. The loader runs **eagerly, not lazily on import**: exactly once per `zfb build` run and once per `zfb dev` host boot, during the setup phase right after every plugin's `setup` hook has returned — even if the registered specifier is never imported by any page or module. The resulting source is memoised; every subsequent import of that specifier reuses it. (Under `zfb preview`, the registration is accepted for shape-consistency but is inert — see the `setup` section above — so the loader never runs there.)
 
 There is **one** loader contract. There is no alternate "loader returns JSON and zfb wraps it" mode — if you want to expose JSON, do `() => "export default " + JSON.stringify(data)` yourself.
+
+**`options.watchFiles` — refresh the memo during `zfb dev`.** That memo is what a loader reading real files off disk runs into under `zfb dev`: the loader ran at boot, so editing one of those files changes nothing your pages import. Naming the files on the registration is the opt-in that fixes it:
+
+```ts
+const dataFile = join(projectRoot, "data/metadata.json");
+
+addVirtualModule(
+  "virtual:metadata-db",
+  () => `export default ${readFileSync(dataFile, "utf-8")}`,
+  { watchFiles: [dataFile] },
+);
+```
+
+`zfb dev` watches those paths. A change to one re-invokes **that loader alone** with the memo bypassed, replaces the memoised source with the fresh result, and re-renders, so live reload delivers a page built from the edited file. Loaders whose declared files did not change are never re-invoked.
+
+- **Absolute paths only.** A relative or empty entry throws during `setup` and aborts the boot. Entries reach the dev watcher verbatim and are never resolved against the project root, so a relative entry has no anchor to resolve against — the same rule, for the same reason, as [`extraWatchPaths`](../api/define-config.mdx).
+- **Declared at registration, not discovered.** The list is fixed once `setup` returns. A loader that enumerates a directory watches only the files that existed at boot; a file created afterwards is outside the watch set and needs a `zfb dev` restart to enter it. There is no `addWatchFile()` a loader can call while it runs.
+- **Registrations are still frozen.** A refresh replaces a loader's *result*. It cannot add a specifier, remove one, or swap the loader function — the set of virtual modules is whatever `setup` registered.
+- **A failed re-invoke keeps the last good source.** If the re-invoked loader throws — a half-written file, JSON caught mid-save — zfb retains the previously memoised source, logs the error, and keeps watching. The next change that loads cleanly replaces the memo, so deleting and recreating a file recovers on its own.
+- **Dev-only.** `zfb build` invokes each loader exactly once and never re-invokes it, so `watchFiles` has no effect on shipped output. Declaring it unconditionally is fine.
+- **Distinct from `extraWatchPaths`.** [`extraWatchPaths`](../api/define-config.mdx) makes the dev watcher *notice* an out-of-root file and rebuild — but a rebuild on its own still replays the memoised loader source. `watchFiles` is the part that invalidates the loader, and it gets the path watched too: a file declared here needs no matching `extraWatchPaths` entry.
 
 **Conflict detection.** Two plugins registering the same `specifier` raises `VirtualModuleConflict` and aborts the build.
 
@@ -159,6 +182,8 @@ The same choice applies to `zfb preview` via `previewMiddleware` — it is `devM
 - no `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor`,
 - no `addModuleLoader` / `addModuleTransform`,
 - no `onConfigResolved` / `onModuleLoad`.
+
+`addVirtualModule`'s optional `watchFiles` does not make it five. It is a registration *option* on a method that already exists, and what it buys is deliberately narrow: name the files a loader reads, get that loader re-run. A general hot-update surface — Vite's `handleHotUpdate`/`invalidate`, or an `addWatchFile()` a loader could call while it runs — belongs on the omissions list above, for the same reason as the rest of it.
 
 Markdown extensibility lives **inside** zfb's tree as in-tree Rust visitors (TOC, external links, CJK handling, etc.); future markdown features are added to the engine, not exposed as JS plugin points. This keeps the v1 contract narrow and the build pipeline auditable.
 
@@ -376,6 +401,27 @@ export default function Home() {
 ```
 
 The loader runs once at the start of `zfb build`; the bundler caches the result and every `import` of `virtual:metadata-db` sees the same source. On the next `zfb build` the loader runs again — there is no on-disk cache between builds.
+
+Under `zfb dev` that same memo means editing one of those `.mdx` files leaves `virtual:metadata-db` exporting the index built at boot. Enumerate the files up front and declare them to make the index track its inputs:
+
+```ts
+setup({ projectRoot, addVirtualModule }) {
+  const dir = join(projectRoot, "src/content/docs");
+  const files = readdirSync(dir, { recursive: true })
+    .filter((p) => typeof p === "string" && p.endsWith(".mdx"))
+    .map((p) => join(dir, p as string));
+
+  addVirtualModule(
+    "virtual:metadata-db",
+    () => {
+      // ... same body as above, reading each entry of `files`
+    },
+    { watchFiles: files },
+  );
+}
+```
+
+Editing any of those files now re-runs the loader. Adding a new one does not: `files` was enumerated while `setup` ran, so a page created afterwards enters the watch set only on the next `zfb dev` restart.
 
 ## Conflict-detection summary
 
