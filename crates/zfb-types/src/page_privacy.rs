@@ -92,9 +92,7 @@ mod tests {
         )));
         // Nested deeper than one level — every ancestor is checked, not just
         // the immediate parent.
-        assert!(path_has_private_prefix_component(Path::new(
-            "a/b/_c/d.tsx"
-        )));
+        assert!(path_has_private_prefix_component(Path::new("a/b/_c/d.tsx")));
         // The private component need not be the LAST ancestor either.
         assert!(path_has_private_prefix_component(Path::new(
             "_lib/nested/leaf.tsx"
@@ -120,9 +118,7 @@ mod tests {
         assert!(!path_has_private_prefix_component(Path::new(
             "blog/[slug].tsx"
         )));
-        assert!(!path_has_private_prefix_component(Path::new(
-            "a/b/c.tsx"
-        )));
+        assert!(!path_has_private_prefix_component(Path::new("a/b/c.tsx")));
     }
 
     #[test]
