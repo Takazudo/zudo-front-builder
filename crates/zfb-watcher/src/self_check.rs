@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::error::TryRecvError;
 use tracing::warn;
 
-use crate::Watcher;
+use crate::{WatchBackend, WatchOptions, Watcher};
 
 /// What the injected signal source reports on a single poll from
 /// [`run_liveness_loop`].
@@ -76,7 +76,9 @@ enum LoopOutcome {
 /// Mirrors `zfb_test_utils::watcher_handshake::HandshakeOpts` in shape
 /// (deadline + marker-write interval + poll interval) but is an
 /// independent copy — see the module docs for why this crate does not
-/// share that type.
+/// share that type. Additionally carries the probe watcher's
+/// [`WatchBackend`] so the check probes the same mechanism the caller's
+/// real watcher uses.
 #[derive(Debug, Clone)]
 pub struct LivenessOpts {
     /// Overall wall-clock budget. When it elapses without observing a
@@ -88,6 +90,11 @@ pub struct LivenessOpts {
     pub marker_interval: Duration,
     /// How often to re-check for an observed marker between writes.
     pub poll_interval: Duration,
+    /// Which [`WatchBackend`] the probe watcher drives. A session running
+    /// its real watcher on the poll backend must probe the poll backend
+    /// too — a native-backed probe would report on FSEvents/inotify
+    /// health, which says nothing about the backend actually in use.
+    pub backend: WatchBackend,
 }
 
 impl LivenessOpts {
@@ -99,6 +106,7 @@ impl LivenessOpts {
             deadline,
             marker_interval: Duration::from_millis(400),
             poll_interval: Duration::from_millis(25),
+            backend: WatchBackend::Native,
         }
     }
 
@@ -111,6 +119,14 @@ impl LivenessOpts {
     /// Override the marker-observed poll interval.
     pub fn with_poll_interval(mut self, interval: Duration) -> Self {
         self.poll_interval = interval;
+        self
+    }
+
+    /// Override the probe watcher's backend (default
+    /// [`WatchBackend::Native`]). Pass the backend the real session
+    /// watcher uses so the check probes the mechanism actually in play.
+    pub fn with_backend(mut self, backend: WatchBackend) -> Self {
+        self.backend = backend;
         self
     }
 }
@@ -182,11 +198,15 @@ pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: LivenessOpts) ->
 
     // Small debounce: this is a dedicated, single-purpose probe directory,
     // so we want the fastest possible signal rather than editor-save-burst
-    // coalescing.
-    let (watcher, mut rx) = match Watcher::start_with_debounce(
+    // coalescing. The backend mirrors `opts.backend` so a poll-backed
+    // session probes the poll backend, not the native stream.
+    let (watcher, mut rx) = match Watcher::start_with_options(
         probe_dir,
         std::iter::once("."),
-        Duration::from_millis(10),
+        std::iter::empty::<&Path>(),
+        WatchOptions::default()
+            .with_debounce(Duration::from_millis(10))
+            .with_backend(opts.backend),
     ) {
         Ok(pair) => pair,
         Err(error) => {
@@ -532,6 +552,33 @@ mod tests {
             outcome,
             LivenessOutcome::Live,
             "a healthy host should observe its own probe marker well within 10s"
+        );
+    }
+
+    /// The probe honors [`LivenessOpts::backend`]: a poll-backed check goes
+    /// Live on a healthy host too. Short test interval (not the production
+    /// [`crate::DEFAULT_POLL_INTERVAL`]) so the marker is observed within
+    /// one or two scans; the deadline stays condition-keyed and generous.
+    #[tokio::test]
+    async fn live_fast_on_a_healthy_host_with_poll_backend() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let probe_dir = tmp.path().join("liveness-probe");
+
+        let outcome = check_liveness(
+            &probe_dir,
+            LivenessOpts::new(Duration::from_secs(10))
+                .with_marker_interval(Duration::from_millis(200))
+                .with_poll_interval(Duration::from_millis(10))
+                .with_backend(WatchBackend::Poll {
+                    interval: Duration::from_millis(100),
+                }),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            LivenessOutcome::Live,
+            "a poll-backed probe should observe its own marker well within 10s"
         );
     }
 
