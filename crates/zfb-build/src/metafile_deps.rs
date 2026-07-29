@@ -1207,7 +1207,7 @@ fn resolve_metafile_inputs<'a>(
 /// predicate (e.g. a closure over the compiled glob matcher), taking an
 /// absolute path and answering whether it matches an exclude pattern
 /// relative to `project_root`.
-pub fn audit_metafile_exclusions(
+pub(crate) fn audit_metafile_exclusions(
     metafile_bytes: &[u8],
     is_excluded: &dyn Fn(&Path) -> bool,
     shadow_root: &Path,
@@ -1249,7 +1249,7 @@ pub fn audit_metafile_exclusions(
 /// from `metafile_path` first. Fail-closed extends to the read itself — a
 /// missing or unreadable metafile is a build error, exactly like malformed
 /// JSON, whenever the caller is auditing active exclusions.
-pub fn audit_metafile_exclusions_at_path(
+pub(crate) fn audit_metafile_exclusions_at_path(
     metafile_path: &Path,
     is_excluded: &dyn Fn(&Path) -> bool,
     shadow_root: &Path,
@@ -1676,7 +1676,7 @@ pub fn audit_metafile_stage_escape_at_path(
 /// [`audit_metafile_stage_escape`] would (a stage escape, or a read/parse
 /// failure); on success, the enrolment-selection query's result over that
 /// same classification pass.
-pub fn audit_and_enrol_metafile_stage_escape(
+pub(crate) fn audit_and_enrol_metafile_stage_escape(
     metafile_bytes: &[u8],
     metafile_cwd: &Path,
     stage_roots: &[&Path],
@@ -1694,7 +1694,7 @@ pub fn audit_and_enrol_metafile_stage_escape(
 /// the metafile from `metafile_path` first, mirroring
 /// [`audit_metafile_stage_escape_at_path`]'s own read-then-classify shape —
 /// ONE read feeding the ONE shared classification pass.
-pub fn audit_and_enrol_metafile_stage_escape_at_path(
+pub(crate) fn audit_and_enrol_metafile_stage_escape_at_path(
     metafile_path: &Path,
     metafile_cwd: &Path,
     stage_roots: &[&Path],
@@ -1771,36 +1771,46 @@ pub struct AcceptedPackage {
 /// more than one metafile input (e.g. two separate subpaths of the same
 /// sibling) is still exactly one entry here, not one per input.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AcceptedEnrolmentSet {
+pub(crate) struct AcceptedEnrolmentSet {
     by_name: BTreeMap<String, AcceptedPackage>,
     inputs_by_name: BTreeMap<String, BTreeSet<PathBuf>>,
 }
 
 impl AcceptedEnrolmentSet {
     /// Whether nothing was reached and accepted this session.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.by_name.is_empty()
     }
 
     /// How many distinct packages were reached and accepted this session.
-    pub fn len(&self) -> usize {
+    ///
+    /// Issue #2143: only `is_empty`/`reached_inputs` are called from
+    /// production (bundler.rs's SSR enrolment coupling); `len`/`contains`/
+    /// `get`/`iter` are exercised only by this module's own unit tests now
+    /// that `AcceptedEnrolmentSet` is `pub(crate)`. Kept (allowed dead) as
+    /// part of the type's documented query surface rather than removed.
+    #[allow(dead_code)]
+    pub(crate) fn len(&self) -> usize {
         self.by_name.len()
     }
 
     /// Whether `name` — a package's declared `package.json` `name` — was
     /// reached and accepted this session.
-    pub fn contains(&self, name: &str) -> bool {
+    #[allow(dead_code)] // issue #2143 — see `len`'s doc above
+    pub(crate) fn contains(&self, name: &str) -> bool {
         self.by_name.contains_key(name)
     }
 
     /// The accepted package record for `name`, if it was reached and
     /// accepted this session.
-    pub fn get(&self, name: &str) -> Option<&AcceptedPackage> {
+    #[allow(dead_code)] // issue #2143 — see `len`'s doc above
+    pub(crate) fn get(&self, name: &str) -> Option<&AcceptedPackage> {
         self.by_name.get(name)
     }
 
     /// Every accepted package, in declared-name order.
-    pub fn iter(&self) -> impl Iterator<Item = &AcceptedPackage> {
+    #[allow(dead_code)] // issue #2143 — see `len`'s doc above
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &AcceptedPackage> {
         self.by_name.values()
     }
 
@@ -1828,7 +1838,7 @@ impl AcceptedEnrolmentSet {
     /// rather than assume containment.
     ///
     /// Empty for a name that was not accepted this session.
-    pub fn reached_inputs(&self, name: &str) -> impl Iterator<Item = &Path> {
+    pub(crate) fn reached_inputs(&self, name: &str) -> impl Iterator<Item = &Path> {
         self.inputs_by_name
             .get(name)
             .into_iter()
@@ -1910,7 +1920,15 @@ impl<'a> IntoIterator for &'a AcceptedEnrolmentSet {
 /// sibling-mirrored build). Callers that already invoke
 /// `audit_metafile_stage_escape[_at_path]` for the same bundle session pass
 /// it the exact same arguments.
-pub fn accepted_enrolment_set(
+///
+/// Issue #2143: this single-projection entry point (narrowed to
+/// `pub(crate)` — zero cross-crate consumers) is no longer called by any
+/// production call site now that bundler.rs's SSR coupling shares one
+/// classification pass via `audit_and_enrol_metafile_stage_escape_at_path`
+/// (issue #2142); it stays live for this module's own single-projection
+/// unit tests, per the doc above `ClaimedMemberRoster`.
+#[allow(dead_code)]
+pub(crate) fn accepted_enrolment_set(
     metafile_bytes: &[u8],
     metafile_cwd: &Path,
     stage_roots: &[&Path],
@@ -1962,7 +1980,11 @@ pub fn declared_first_party_package_for_source(
 /// Convenience wrapper over [`accepted_enrolment_set`]: read the metafile
 /// from `metafile_path` first, mirroring
 /// [`audit_metafile_stage_escape_at_path`]'s own read-then-classify shape.
-pub fn accepted_enrolment_set_at_path(
+///
+/// Issue #2143: same test-only status as [`accepted_enrolment_set`] — see
+/// its doc for why this is `#[allow(dead_code)]` rather than removed.
+#[allow(dead_code)]
+pub(crate) fn accepted_enrolment_set_at_path(
     metafile_path: &Path,
     metafile_cwd: &Path,
     stage_roots: &[&Path],
