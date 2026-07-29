@@ -292,7 +292,7 @@ pub type PreTickRefreshFuture =
 /// ([`crate::policy::RawImportInvalidation::is_plugin_watch_target`], the
 /// `watchFiles` registry issue #2168 populates once at boot from #2167's
 /// `addVirtualModule(..., { watchFiles })` option; see
-/// [`pre_tick_refresh_applies`] for the exact gate). The hook receives
+/// `pre_tick_refresh_applies` for the exact gate). The hook receives
 /// the batch's FULL changed-path set (its implementation resolves
 /// ownership itself — `PluginRefreshState::refresh` in
 /// `crate::plugin_refresh` ignores paths no loader watches) and is
@@ -975,6 +975,27 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 || self.config.policy.is_client_script_sibling_target(&path)
             {
                 plan.mark_client_scripts();
+            }
+            // Issue #2169 — a plugin virtual-module watch file (a loader's
+            // `watchFiles` entry) is a dependency of whatever imports the
+            // loader's virtual module: the SSR bundle, islands, client
+            // scripts, and the CSS content scan all consume the shared
+            // store's source text. The pre-tick refresh updates the STORE;
+            // only these flags make the tick rebuild the consumers that
+            // read it — without them an `External`-classified watch file
+            // never reruns islands/client-scripts/CSS, and an
+            // `Asset`-classified one produces a no-op plan, leaving the
+            // freshly refreshed source unshipped (codex review, #2169).
+            // WHICH consumers import a given specifier is unknown at this
+            // layer, so conservatively rerun them all — the same
+            // blunt-but-correct first cut as the External arm's
+            // `PageSelection::All`. Page selection itself is deliberately
+            // left untouched (issues #2169 / #1583).
+            if self.config.policy.is_plugin_watch_target(&path) {
+                plan.mark_islands();
+                plan.mark_client_scripts();
+                plan.mark_css();
+                plan.mark_ssr_reload_needed();
             }
         }
 
@@ -4057,6 +4078,60 @@ mod tests {
             &empty_policy,
             &[(watched, ChangeKind::Modified)]
         ));
+    }
+
+    /// A plugin watch-file change must conservatively rerun every
+    /// virtual-module consumer (islands, client scripts, CSS scan, SSR
+    /// reload) regardless of the path's class — the pre-tick refresh only
+    /// updates the STORE; these flags are what ship the refreshed source
+    /// (codex review, #2169). Page selection stays whatever classification
+    /// yields — never narrowed, never widened here.
+    #[test]
+    fn plugin_watch_file_change_reruns_all_virtual_module_consumers() {
+        let watched_external = PathBuf::from("/ext/data/watched.json");
+        let watched_asset = PathBuf::from("/proj/public/blob.bin");
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(policy_with_plugin_watch_files([
+                watched_external.clone(),
+                watched_asset.clone(),
+            ])),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+
+        // Out-of-root watch file: External classification — All pages +
+        // SSR reload as before, PLUS all three consumer flags.
+        let plan = orch.plan_for_changes(vec![watched_external]);
+        assert!(plan.pages.is_all(), "External page selection must stay All");
+        assert!(plan.ssr_reload_needed);
+        assert!(plan.rerun_islands, "islands consume virtual-module source");
+        assert!(
+            plan.rerun_client_scripts,
+            "client scripts consume virtual-module source"
+        );
+        assert!(
+            plan.rerun_css,
+            "the CSS scan consumes virtual-module source"
+        );
+
+        // In-root `public/**` watch file: Asset classification alone would
+        // be a NO-OP plan — the refreshed store would never ship.
+        let plan = orch.plan_for_changes(vec![watched_asset]);
+        assert!(
+            !plan.is_noop(),
+            "an Asset-classified watch file must still produce a rebuilding tick"
+        );
+        assert!(plan.rerun_islands && plan.rerun_client_scripts && plan.rerun_css);
+        assert!(plan.ssr_reload_needed);
+
+        // Control: a NON-watched asset stays a no-op (the flags come from
+        // watch-set membership, not from a loosened Asset arm).
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/public/other.bin")]);
+        assert!(plan.is_noop());
     }
 
     /// The plugin watch set is STATIC: populated once at boot, and — unlike
