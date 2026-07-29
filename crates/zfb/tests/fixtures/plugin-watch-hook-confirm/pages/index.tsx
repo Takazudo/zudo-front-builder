@@ -1,11 +1,11 @@
 import { note } from "virtual:note";
 
-// SSR-only (not prerendered): a plugin watch-file edit under
-// `plugin-watched/` (an unrecognized-segment, in-project path) does not
-// mark a PRERENDERED page's on-disk output stale — only CSS/islands/
-// client-scripts consumers and SSR-only routes actually see fresh content
-// on the next request. See the test file's header comment for the traced
-// classification/finding this fixture is built around.
+// SSR-only (not prerendered) ON PURPOSE — the counterpart to the sibling
+// `prerendered.tsx`. This route has no committed HTML and no staleness
+// bookkeeping, so it is insensitive to page SELECTION and isolates the
+// store-refresh half of the contract (#2168/#2169). `prerendered.tsx`
+// isolates the page-invalidation half (#2181). See the test file's header
+// comment for the traced classification finding behind the split.
 export const prerender = false;
 
 /**

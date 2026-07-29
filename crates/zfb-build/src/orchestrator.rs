@@ -306,12 +306,17 @@ pub type PreTickRefreshFuture =
 /// `Arc` closure installed on [`OrchestratorConfig`] by the `zfb` command
 /// layer, `None` = no behavior change), but differs in kind: that hook is
 /// a pure path→pages query used to NARROW the plan; this one MUTATES
-/// session state and never influences page selection at all. Whatever the
-/// batch classifies to — typically `PageSelection::All` via the
-/// `External` arm, since watch files usually sit outside the source roots
-/// — is deliberately left unchanged: the All fallback is the accepted
-/// first cut (issue #2169), and narrowing `dirty_pages` here would trade
-/// a perf bug for an aggregate-page under-render (see issue #1583).
+/// session state and never influences page selection at all. Page
+/// selection for a watched path is decided in
+/// [`BuildOrchestrator::plan_for_changes`] (and, for a removal, in
+/// [`BuildOrchestrator::tick_with_kinds`]'s removed-path fold), which
+/// marks `PageSelection::All` for every plugin watch target regardless of
+/// how the path classifies — an in-root watch file under an unrecognized
+/// directory classifies `Unclassified` with no dependency edge, so
+/// `dirty_pages` alone would leave a prerendered consumer page stale
+/// forever (issue #2181). The All fallback is the accepted first cut
+/// (issue #2169); narrowing `dirty_pages` here would trade a perf bug for
+/// an aggregate-page under-render (see issue #1583).
 ///
 /// The hook is awaited directly on the orchestrator's async task (the
 /// underlying plugin-host call is async — no `spawn_blocking` wrapper).
@@ -979,19 +984,30 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             // Issue #2169 — a plugin virtual-module watch file (a loader's
             // `watchFiles` entry) is a dependency of whatever imports the
             // loader's virtual module: the SSR bundle, islands, client
-            // scripts, and the CSS content scan all consume the shared
-            // store's source text. The pre-tick refresh updates the STORE;
-            // only these flags make the tick rebuild the consumers that
-            // read it — without them an `External`-classified watch file
-            // never reruns islands/client-scripts/CSS, and an
-            // `Asset`-classified one produces a no-op plan, leaving the
-            // freshly refreshed source unshipped (codex review, #2169).
-            // WHICH consumers import a given specifier is unknown at this
-            // layer, so conservatively rerun them all — the same
-            // blunt-but-correct first cut as the External arm's
-            // `PageSelection::All`. Page selection itself is deliberately
-            // left untouched (issues #2169 / #1583).
+            // scripts, the CSS content scan, and any PRERENDERED page whose
+            // committed HTML embeds the virtual module's value. The pre-tick
+            // refresh updates the STORE; only these flags make the tick
+            // rebuild the consumers that read it — without them an
+            // `External`-classified watch file never reruns islands/
+            // client-scripts/CSS, and an `Asset`-classified one produces a
+            // no-op plan, leaving the freshly refreshed source unshipped
+            // (codex review, #2169). WHICH consumers import a given
+            // specifier is unknown at this layer, so conservatively rerun
+            // them all.
+            //
+            // Page selection is `All` for exactly the same reason (issue
+            // #2181, codex review of #2169): a watch file living inside the
+            // project root under an unrecognized directory (e.g.
+            // `plugin-watched/note.txt`) classifies as `Unclassified`, and
+            // the loader reads it through `node:fs` — a read no dependency
+            // edge can ever record — so that arm's `graph.dirty_pages` is
+            // empty and a prerendered consumer page would re-serve its stale
+            // committed HTML indefinitely. `All` is the same
+            // blunt-but-correct first cut the `External` arm already takes;
+            // narrowing it would need per-specifier consumer provenance the
+            // orchestrator does not have (issue #1583).
             if self.config.policy.is_plugin_watch_target(&path) {
+                plan.mark_pages(PageSelection::All);
                 plan.mark_islands();
                 plan.mark_client_scripts();
                 plan.mark_css();
@@ -1328,6 +1344,25 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
                 || self.config.policy.is_client_script_sibling_target(path)
             {
                 plan.mark_client_scripts();
+            }
+            // Issue #2181 — mirror `plan_for_changes`'s plugin-watch-target
+            // block, which a removed path never reaches (the `plan_paths`
+            // filter above excludes every `Removed` change to keep the
+            // All-fallback away from deletions). The pre-tick refresh gate
+            // IS kind-agnostic, so the loader is re-invoked for a deleted
+            // watch file too: a loader that intentionally handles a missing
+            // optional file publishes fallback source into the shared store,
+            // and without these flags nothing rebuilds the consumers that
+            // read it — the fallback is published but never shipped. Same
+            // conservative `All` page selection as the live-edit block, for
+            // the same reason (the loader's `node:fs` read leaves no
+            // dependency edge, so `removed_consumers` is empty here).
+            if self.config.policy.is_plugin_watch_target(path) {
+                plan.mark_pages(PageSelection::All);
+                plan.mark_islands();
+                plan.mark_client_scripts();
+                plan.mark_css();
+                plan.mark_ssr_reload_needed();
             }
         }
 
@@ -4084,8 +4119,10 @@ mod tests {
     /// virtual-module consumer (islands, client scripts, CSS scan, SSR
     /// reload) regardless of the path's class — the pre-tick refresh only
     /// updates the STORE; these flags are what ship the refreshed source
-    /// (codex review, #2169). Page selection stays whatever classification
-    /// yields — never narrowed, never widened here.
+    /// (codex review, #2169). Page selection is widened to
+    /// `PageSelection::All` for the same reason (#2181) — see
+    /// `plugin_watch_file_change_invalidates_prerendered_pages` for the
+    /// in-root `Unclassified` shape that made it necessary.
     #[test]
     fn plugin_watch_file_change_reruns_all_virtual_module_consumers() {
         let watched_external = PathBuf::from("/ext/data/watched.json");
@@ -4132,6 +4169,138 @@ mod tests {
         // watch-set membership, not from a loosened Asset arm).
         let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/public/other.bin")]);
         assert!(plan.is_noop());
+    }
+
+    /// Issue #2181 — the in-root `Unclassified` shape that the #2170
+    /// confirm e2e traced and deliberately routed around by making its
+    /// fixture page SSR-only.
+    ///
+    /// A watch file under a project-root child directory that is not one of
+    /// the recognized top segments (`pages`/`content`/`styles`/`data`/
+    /// `public`/`components`/`layouts`/`lib`/`src`) and whose extension is
+    /// not on the sniffing whitelist classifies as `PathClass::Unclassified`
+    /// — NOT `External`, which is reserved for paths that fail
+    /// `strip_prefix(project_root)`. That arm consults `graph.dirty_pages`
+    /// only, and the loader reads the file through `node:fs`, so no
+    /// dependency edge exists to consult: page selection came out EMPTY and
+    /// a prerendered consumer page kept re-serving its stale committed HTML
+    /// indefinitely. The plugin-watch block must therefore widen to
+    /// `PageSelection::All` itself rather than relying on the class arms.
+    #[test]
+    fn plugin_watch_file_change_invalidates_prerendered_pages() {
+        let watched = PathBuf::from("/proj/plugin-watched/note.txt");
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(policy_with_plugin_watch_files([watched.clone()])),
+            make_graph(),
+            CountingPipeline::default(),
+        );
+
+        // Precondition: the graph knows nothing about this path, so the
+        // `Unclassified` arm's `dirty_pages` contributes nothing. Asserted
+        // directly so a future graph change can never make this test pass
+        // for the wrong reason (an edge silently supplying the pages).
+        assert_eq!(
+            orch.graph.lock().unwrap().dirty_pages(&watched).as_pages(),
+            Some(Vec::new()),
+            "the fixture shape requires an edge-less watch file — the loader reads it via \
+             `node:fs`, which no dependency edge can record"
+        );
+
+        let plan = orch.plan_for_changes(vec![watched]);
+        assert!(
+            plan.pages.is_all(),
+            "an in-root Unclassified plugin watch file must invalidate every page — a \
+             prerendered consumer of the refreshed virtual module has no other route to \
+             staleness (issue #2181)"
+        );
+        assert!(plan.rerun_islands && plan.rerun_client_scripts && plan.rerun_css);
+        assert!(plan.ssr_reload_needed);
+
+        // Control: an unwatched sibling under the SAME unrecognized
+        // directory stays a no-op with no pages at all — the widening comes
+        // from watch-set membership, not from a loosened `Unclassified` arm.
+        let plan = orch.plan_for_changes(vec![PathBuf::from("/proj/plugin-watched/other.txt")]);
+        assert!(
+            plan.is_noop(),
+            "an unwatched in-root .txt must stay a no-op"
+        );
+        assert!(!plan.pages.is_all());
+    }
+
+    /// Issue #2181 (P2) — a `Removed` watch file gets the same treatment.
+    ///
+    /// `tick_with_kinds` excludes every `Removed` path from
+    /// `plan_for_changes` (the All-fallback would be wrong for a deletion),
+    /// so the live-edit plugin-watch block is unreachable for a removal and
+    /// the removed-path fold must mirror it. This matters because the
+    /// pre-tick refresh gate is KIND-AGNOSTIC: the loader is re-invoked for
+    /// a deleted watch file too, and one that intentionally handles a
+    /// missing optional file publishes fallback source into the shared
+    /// store — which nothing would rebuild or ship without these flags.
+    ///
+    /// Asserted through `CountingPipeline`'s recorded plan (the removal
+    /// plan is built inside `tick_with_kinds` and never returned). Pages
+    /// arrive already resolved by `resolve_all`, so the observable form of
+    /// `All` is "every page the graph knows".
+    #[test]
+    fn removed_plugin_watch_file_reruns_consumers_and_invalidates_pages() {
+        let watched = PathBuf::from("/proj/plugin-watched/note.txt");
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(policy_with_plugin_watch_files([watched.clone()])),
+            make_graph(),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(watched, ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        let plan = plans
+            .last()
+            .expect("a removed plugin watch file must produce a non-noop tick, not be skipped");
+        assert!(plan.rerun_islands, "islands consume virtual-module source");
+        assert!(
+            plan.rerun_client_scripts,
+            "client scripts consume virtual-module source"
+        );
+        assert!(
+            plan.rerun_css,
+            "the CSS scan consumes virtual-module source"
+        );
+        assert!(plan.ssr_reload_needed);
+        match &plan.pages {
+            PageSelection::Specific(pages) => {
+                let expected: std::collections::BTreeSet<PageId> = [
+                    pid("/proj/pages/a.tsx"),
+                    pid("/proj/pages/b.tsx"),
+                    pid("/proj/pages/c.tsx"),
+                ]
+                .into_iter()
+                .collect();
+                assert_eq!(
+                    *pages, expected,
+                    "a removed watch file must invalidate every page (the resolved form of \
+                     PageSelection::All) — `removed_consumers` is empty for an edge-less \
+                     watch file, so nothing else would mark a prerendered consumer stale"
+                );
+            }
+            PageSelection::All => unreachable!("resolve_all runs before the pipeline apply"),
+        }
     }
 
     /// The plugin watch set is STATIC: populated once at boot, and — unlike
