@@ -34,6 +34,34 @@
 //!   shape changes happen. Re-appearance of a sub-directory under an
 //!   already-watched parent is handled automatically by recursive
 //!   watching.)
+//!
+//! ## Backend selection & poll-backend parity limitations
+//!
+//! By default the watcher drives notify's platform-recommended backend
+//! (FSEvents on macOS, inotify on Linux, ...). [`Watcher::start_with_options`]
+//! can select [`WatchBackend::Poll`] instead — notify's [`PollWatcher`],
+//! which re-scans the watched roots on a fixed interval. Intended for hosts
+//! where the native stream never delivers (issue #1687's dead-FSEvents
+//! case). Everything downstream of event delivery — classification,
+//! debouncing, dynamic watch registration — is shared between backends;
+//! the delivery semantics themselves differ in four documented ways:
+//!
+//! - **Latency ≈ the poll interval** (production default
+//!   [`DEFAULT_POLL_INTERVAL`], 500ms) plus the debounce window, rather
+//!   than milliseconds after the OS event.
+//! - **A create-then-delete completed within one interval is lost
+//!   entirely** — the scan never observes the path, so neither event fires.
+//! - **Modification detection is mtime-based at whole-second granularity**
+//!   (notify's `PollWatcher` truncates mtimes to seconds, and
+//!   `compare_contents` stays at its default `false`): an overwrite that
+//!   leaves the file's mtime second unchanged goes undetected until a
+//!   later mtime bump.
+//! - **A created directory's children each surface as their own `Created`
+//!   event** on the next scan. This is an intentional divergence — better
+//!   than native, which can report a created directory whose children
+//!   never surface as individual events.
+//!
+//! [`PollWatcher`]: notify::PollWatcher
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
@@ -42,7 +70,7 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
+use notify::{Event, EventKind, RecursiveMode, Watcher as NotifyWatcher};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -54,6 +82,79 @@ pub use self_check::{check_liveness, LivenessOpts, LivenessOutcome};
 /// (~one frame at 60fps + a bit) but long enough to coalesce typical
 /// editor save bursts on Linux/macOS/Windows.
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// Default re-scan interval for [`WatchBackend::Poll`]. Chosen as a
+/// balance between hot-reload latency (each edit waits up to one interval
+/// before it is even observed) and scan cost on large trees. Tests should
+/// use a much shorter interval so their condition-keyed waits stay fast.
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Which OS-facing `notify` backend a [`Watcher`] drives.
+///
+/// The choice affects only how raw events are OBSERVED; classification,
+/// debouncing, and every dynamic-watch API behave identically on top of
+/// either backend. See the module docs ("Backend selection & poll-backend
+/// parity limitations") for the delivery-semantics differences of `Poll`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WatchBackend {
+    /// notify's platform-recommended backend (FSEvents on macOS, inotify
+    /// on Linux, ...). The production default.
+    #[default]
+    Native,
+    /// notify's [`PollWatcher`](notify::PollWatcher): re-scans the watched
+    /// roots every `interval`. `compare_contents` is deliberately left at
+    /// its default `false` — scans compare mtimes (whole-second
+    /// granularity), never file contents.
+    Poll {
+        /// Re-scan cadence. See [`DEFAULT_POLL_INTERVAL`].
+        interval: Duration,
+    },
+}
+
+impl WatchBackend {
+    /// The poll backend at the production-default cadence
+    /// ([`DEFAULT_POLL_INTERVAL`]).
+    pub fn poll_default() -> Self {
+        Self::Poll {
+            interval: DEFAULT_POLL_INTERVAL,
+        }
+    }
+}
+
+/// Construction options for [`Watcher::start_with_options`].
+///
+/// `Default` mirrors [`Watcher::start`]: the default debounce window on
+/// the native backend.
+#[derive(Debug, Clone)]
+pub struct WatchOptions {
+    /// Debounce window for coalescing event bursts per path.
+    pub debounce: Duration,
+    /// Which OS-facing notify backend to drive.
+    pub backend: WatchBackend,
+}
+
+impl Default for WatchOptions {
+    fn default() -> Self {
+        Self {
+            debounce: DEFAULT_DEBOUNCE,
+            backend: WatchBackend::Native,
+        }
+    }
+}
+
+impl WatchOptions {
+    /// Override the debounce window.
+    pub fn with_debounce(mut self, debounce: Duration) -> Self {
+        self.debounce = debounce;
+        self
+    }
+
+    /// Override the watch backend.
+    pub fn with_backend(mut self, backend: WatchBackend) -> Self {
+        self.backend = backend;
+        self
+    }
+}
 
 /// Normalised filesystem change kind.
 ///
@@ -210,7 +311,11 @@ impl SharedPathSet {
 ///
 /// Everything else passes straight through.
 struct GuardedNotifyWatcher {
-    inner: RecommendedWatcher,
+    // Boxed so one handle type drives whichever backend construction
+    // selected (see `WatchBackend`); only the object-safe trait methods
+    // `watch`/`unwatch` are ever called. `Send` because the Watcher moves
+    // into tokio tasks with the handle.
+    inner: Box<dyn NotifyWatcher + Send>,
     filter: Arc<Mutex<RecursiveDirFilterCore>>,
     /// Test-only observability (issue #1843): when armed via
     /// [`Watcher::enable_watch_call_log`], every `(path, recursive)` arg
@@ -401,6 +506,31 @@ impl Watcher {
         J: IntoIterator<Item = T>,
         T: AsRef<Path>,
     {
+        Self::start_with_options(
+            project_root,
+            relative_paths,
+            extra_absolute_paths,
+            WatchOptions::default().with_debounce(debounce),
+        )
+    }
+
+    /// Variant of [`Watcher::start_with_extras`] that takes the full
+    /// [`WatchOptions`] — the only constructor exposing backend selection
+    /// ([`WatchBackend`]). The other constructors delegate here with
+    /// [`WatchBackend::Native`].
+    pub fn start_with_options<P, I, S, J, T>(
+        project_root: P,
+        relative_paths: I,
+        extra_absolute_paths: J,
+        options: WatchOptions,
+    ) -> notify::Result<(Self, mpsc::Receiver<Change>)>
+    where
+        P: AsRef<Path>,
+        I: IntoIterator<Item = S>,
+        S: AsRef<Path>,
+        J: IntoIterator<Item = T>,
+        T: AsRef<Path>,
+    {
         let root = project_root.as_ref();
 
         // notify hands us events on a sync channel from a thread it owns.
@@ -413,7 +543,7 @@ impl Watcher {
         let watched_dependency_dirs = SharedPathSet::default();
         let filter_for_events = Arc::clone(&recursive_dir_filter);
         let dependency_dirs_for_events = watched_dependency_dirs.clone();
-        let mut notify_watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+        let event_handler = move |res: notify::Result<Event>| {
             let res = match res {
                 Ok(mut evt) => {
                     if !evt.paths.is_empty() {
@@ -439,7 +569,18 @@ impl Watcher {
             // Best-effort send; if the receiver is gone the watcher is
             // shutting down and we should quietly stop pushing.
             let _ = raw_tx.send(res);
-        })?;
+        };
+        // One shared event-handler closure, whichever backend observes the
+        // raw events. No `with_initial_scan` on the poll backend: an
+        // initial scan would fire a Create for every pre-existing file at
+        // boot, storming the dev server with phantom changes.
+        let mut notify_watcher: Box<dyn NotifyWatcher + Send> = match options.backend {
+            WatchBackend::Native => Box::new(notify::recommended_watcher(event_handler)?),
+            WatchBackend::Poll { interval } => Box::new(notify::PollWatcher::new(
+                event_handler,
+                notify::Config::default().with_poll_interval(interval),
+            )?),
+        };
         let mut watched_recursive_roots = BTreeSet::new();
         let mut boot_root_registrations: Vec<(PathBuf, BTreeSet<PathBuf>)> = Vec::new();
 
@@ -494,7 +635,12 @@ impl Watcher {
         let (out_tx, out_rx) = mpsc::channel::<Change>(256);
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let debouncer = tokio::spawn(debouncer_task(raw_rx, out_tx, debounce, shutdown_rx));
+        let debouncer = tokio::spawn(debouncer_task(
+            raw_rx,
+            out_tx,
+            options.debounce,
+            shutdown_rx,
+        ));
 
         Ok((
             Self {
