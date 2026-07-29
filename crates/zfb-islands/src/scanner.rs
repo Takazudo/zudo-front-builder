@@ -1733,7 +1733,7 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
 /// caller-supplied `first_party_root` lines up with the already-canonicalised
 /// `package_dir` a [`Resolver::workspace_package_root`] impl returns.
 fn canonicalize_or_self(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    std::fs::canonicalize(path).unwrap_or_else(|_| normalize_path_lexical(path))
 }
 
 /// True when `package_dir` — the resolved workspace-package root a scanner
@@ -1753,11 +1753,18 @@ fn canonicalize_or_self(path: &Path) -> PathBuf {
 /// `first_party_root: None` disables filtering, preserving the historical
 /// behavior for every caller that doesn't pass one (non-build callers, e.g.
 /// tests). Callers pass an already-canonicalised root (see
-/// [`canonicalize_or_self`]) so this is a plain lexical `starts_with`.
+/// [`canonicalize_or_self`]). `package_dir` itself is canonicalised here too
+/// (codex review, PR for issue #2161) rather than trusted as-is: the
+/// [`Resolver::workspace_package_root`] contract does not require canonical
+/// output — [`FsResolver`]'s impl happens to canonicalise, but
+/// `InMemoryResolver::with_workspace_package` deliberately preserves whatever
+/// lexical spelling a test registers — so comparing a raw, un-normalised
+/// `package_dir` (e.g. one containing a `..` segment) against the
+/// canonicalised root could misclassify it in either direction.
 fn workspace_package_edge_in_scope(package_dir: &Path, first_party_root: Option<&Path>) -> bool {
     match first_party_root {
         None => true,
-        Some(root) => package_dir.starts_with(root),
+        Some(root) => canonicalize_or_self(package_dir).starts_with(root),
     }
 }
 
