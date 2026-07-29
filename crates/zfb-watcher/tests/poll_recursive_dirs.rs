@@ -11,6 +11,13 @@
 //! API's replace semantics ("a root dropped by a plan change stops
 //! delivering").
 //!
+//! The same exact-key property means retirement must NOT run the native
+//! collateral-repair loops on the poll backend: a repair `watch()` on a
+//! surviving nested registration would REPLACE it with a baseline freshly
+//! scanned inside the call (notify poll.rs `watch_inner` scans
+//! synchronously; `watches.insert` replaces), silently absorbing any
+//! pending, not-yet-delivered edit under it.
+//!
 //! Deliberately SEPARATE from `recursive_dirs.rs`, which pins the
 //! inotify/FSEvents-specific retirement-repair machinery with no polling
 //! analogue and stays native-only.
@@ -145,4 +152,69 @@ async fn transferred_root_stops_delivering_after_covering_ancestor_retires() {
             Err(_) => break, // quiet until the deadline — the desired outcome
         }
     }
+}
+
+/// Retiring an ancestor root must not lose a pending edit under a
+/// surviving descendant registration (the boot root here).
+///
+/// PollWatcher's `unwatch` removes only the exact retired key, so the
+/// native collateral-repair loops have nothing to repair — but if they run
+/// anyway, the repair `watch()` on the nested boot root REPLACES its live
+/// registration with a baseline scanned synchronously inside the retiring
+/// sync call. An edit made just before that call — still undelivered,
+/// because the next poll tick (≤100ms out) has not scanned yet — is
+/// absorbed into the fresh baseline and never emitted. With the poll
+/// bypass in place the boot root's original registration survives
+/// retirement untouched, and its next tick diffs the edit against the old
+/// baseline and delivers it.
+///
+/// The file's mtime is backdated before the watcher starts (the
+/// `real_fs_behavior.rs` technique): notify's poll backend compares mtimes
+/// truncated to WHOLE SECONDS with no content fallback, so the edit's
+/// fresh mtime must be deterministically newer than the baselined one.
+#[tokio::test]
+async fn pending_edit_under_boot_root_survives_ancestor_retirement() {
+    let tmp = tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize root");
+    let src = root.join("src");
+    fs::create_dir_all(&src).expect("mkdir src");
+
+    let pending = src.join("pending.md");
+    fs::write(&pending, b"# v1\n").expect("create pending.md before watch");
+    fs::File::options()
+        .write(true)
+        .open(&pending)
+        .expect("open for backdate")
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(600))
+        .expect("backdate mtime");
+
+    let (mut watcher, mut rx) = Watcher::start_with_options(
+        &root,
+        std::iter::once("src"),
+        std::iter::empty::<&Path>(),
+        WatchOptions::default().with_backend(common::poll_backend()),
+    )
+    .expect("start poll watcher");
+    handshake_live(&src, &mut rx).await;
+
+    // Register the tempdir root — an ANCESTOR of the boot root `src`.
+    let newly = watcher
+        .sync_recursive_dir_watches(std::iter::once(root.as_path()), std::iter::empty::<&str>());
+    assert_eq!(newly, vec![root.clone()], "ancestor is newly watched");
+
+    // The lost-event scenario: edit, then retire the ancestor IMMEDIATELY,
+    // while the edit is still pending (undelivered until the next tick).
+    fs::write(&pending, b"# v2\n").expect("edit pending.md");
+    let newly =
+        watcher.sync_recursive_dir_watches(std::iter::empty::<&Path>(), std::iter::empty::<&str>());
+    assert!(newly.is_empty(), "retiring registers nothing new");
+
+    assert!(
+        wait_for(&mut rx, &pending, Duration::from_secs(5))
+            .await
+            .is_some(),
+        "an edit pending under the boot root when its covering ancestor retires \
+         must still be delivered (a collateral-repair re-watch would absorb it \
+         into a fresh poll baseline)",
+    );
 }
