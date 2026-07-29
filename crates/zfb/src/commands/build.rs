@@ -2912,6 +2912,11 @@ fn materialise_islands_shadow_with_worker_context(
     let first_party_root = zfb_types::first_party_root_for(project_root);
     let root = first_party_root.as_path();
     let paths = IslandsShadowPaths::new(root);
+    // Issue #2163: the project's OWN boundary, kept separate from the
+    // widened first-party root above so the copy-mode trigger below can tell
+    // "project-local" apart from "workspace sibling" — mirrors the
+    // client-script preprocessing stage's `paths`/`project_paths` pair.
+    let project_paths = IslandsShadowPaths::new(project_root);
 
     // Issue #1703, Stage Escape Guards — Guard (a): a bare package-name
     // import of a first-party workspace sibling resolves through the
@@ -3267,6 +3272,18 @@ fn materialise_islands_shadow_with_worker_context(
         return Ok(IslandsShadowOutcome::KeepStopgap(offenders));
     }
 
+    // Issue #2163: a genuine workspace sibling anywhere in the mirrored
+    // closure (`to_mirror` is complete at this point) forces real-file
+    // materialisation below, regardless of `node_modules`/tsconfig `paths` —
+    // nothing in the copy path requires `node_modules` to exist. Same
+    // containment test `consider_sibling` uses on the client-script
+    // preprocessing stage: project-local under the widened first-party root,
+    // but outside the project's own root.
+    let sibling_present = to_mirror.iter().any(|physical| {
+        paths.project_local_rel(physical).is_some()
+            && project_paths.project_local_rel(physical).is_none()
+    });
+
     // Mirror the closest config for every executable source plus its relative
     // extends chain. Configs are real copies, not symlinks: their `baseUrl`
     // and `paths` substitutions must be anchored in the rewritten shadow so
@@ -3301,8 +3318,8 @@ fn materialise_islands_shadow_with_worker_context(
         detect_project_node_modules(project_root)
     };
     let has_node_modules = first_party_node_modules.is_some() || project_node_modules.is_some();
-    let source_copy_mode =
-        has_node_modules && shadow_config_scope_uses_paths(root, &shadow_configs);
+    let source_copy_mode = sibling_present
+        || (has_node_modules && shadow_config_scope_uses_paths(root, &shadow_configs));
     let preserve_symlinks = !source_copy_mode;
 
     for from in &to_mirror {
@@ -5047,6 +5064,33 @@ fn stage_client_script_preprocessing_with_worker_context(
         .collect();
     let client_configs = collect_islands_shadow_configs(&first_party_root, &client_config_sources)?;
 
+    // Issue #2163: compute the sibling closure now, ahead of the copy-mode
+    // decision below — every input it needs (`config_source_candidates`,
+    // `all_raw_edges`, `worker_dependency_physicals`) is already final at
+    // this point, and the decision must see `sibling_present` before the
+    // stage root is even allocated. The materialisation loop further below
+    // reuses this same set instead of recomputing it.
+    let mut sibling_closure: std::collections::BTreeSet<PathBuf> =
+        std::collections::BTreeSet::new();
+    let mut consider_sibling = |physical: &Path| {
+        if paths.project_local_rel(physical).is_some()
+            && project_paths.project_local_rel(physical).is_none()
+        {
+            sibling_closure.insert(physical.to_path_buf());
+        }
+    };
+    for source in &config_source_candidates {
+        consider_sibling(source);
+    }
+    for edge in &all_raw_edges {
+        consider_sibling(&edge.importer);
+        consider_sibling(&edge.target);
+    }
+    for dependency in &worker_dependency_physicals {
+        consider_sibling(dependency);
+    }
+    let sibling_present = !sibling_closure.is_empty();
+
     let tempdir = tempfile::Builder::new()
         .prefix("zfb-client-preprocess-")
         .tempdir()
@@ -5070,8 +5114,13 @@ fn stage_client_script_preprocessing_with_worker_context(
         detect_project_node_modules(project_root)
     };
     let has_node_modules = first_party_node_modules.is_some() || project_node_modules.is_some();
-    let copy_mode =
-        has_node_modules && shadow_config_scope_uses_paths(&first_party_root, &client_configs);
+    // Issue #2163: a genuine workspace sibling anywhere in this closure forces
+    // real-file materialisation on its own — nothing in the copy path
+    // requires `node_modules` to exist, so keeping it as an outer conjunct
+    // here would make the sibling case a fragile side effect of the
+    // paths+node_modules trigger below rather than a first-class rule.
+    let copy_mode = sibling_present
+        || (has_node_modules && shadow_config_scope_uses_paths(&first_party_root, &client_configs));
 
     for entry in walkdir::WalkDir::new(project_root)
         .follow_links(false)
@@ -5212,25 +5261,9 @@ fn stage_client_script_preprocessing_with_worker_context(
     // `raw_targets`/`worker_targets`, so editing one does not yet rebuild the
     // client script in `zfb dev`. Sibling `?raw` targets and worker deps do
     // invalidate.
-    let mut sibling_closure: std::collections::BTreeSet<PathBuf> =
-        std::collections::BTreeSet::new();
-    let mut consider_sibling = |physical: &Path| {
-        if paths.project_local_rel(physical).is_some()
-            && project_paths.project_local_rel(physical).is_none()
-        {
-            sibling_closure.insert(physical.to_path_buf());
-        }
-    };
-    for source in &config_source_candidates {
-        consider_sibling(source);
-    }
-    for edge in &all_raw_edges {
-        consider_sibling(&edge.importer);
-        consider_sibling(&edge.target);
-    }
-    for dependency in &worker_dependency_physicals {
-        consider_sibling(dependency);
-    }
+    //
+    // `sibling_closure` was already computed above, ahead of the copy-mode
+    // decision (issue #2163) — reused here rather than recomputed.
     for physical in &sibling_closure {
         let rel = paths.project_local_rel(physical).ok_or_else(|| {
             anyhow!(
@@ -13962,7 +13995,16 @@ mod tests {
     }
 
     #[test]
-    fn client_script_stage_reroots_at_workspace_and_materialises_sibling_closure() {
+    fn client_script_stage_reroots_at_workspace_and_materialises_sibling_closure_as_copy() {
+        // Issue #2163: this test used to assert the staged sibling was a
+        // SYMLINK in the no-node_modules, no-tsconfig-paths mode — the
+        // fixture (`write_reroot_workspace_client_fixture`) ships neither.
+        // The sibling-closure copy-mode disjunct now forces real-file
+        // materialisation whenever the closure reaches a workspace sibling
+        // at all, regardless of node_modules/tsconfig paths, so the
+        // assertion is inverted here (not merely relaxed) — this is the
+        // direct counter-assertion to that fix, recorded here and in the PR
+        // body per the project's "never game the gate silently" rule.
         let workspace = tempdir().unwrap();
         let (project_root, entries) = write_reroot_workspace_client_fixture(workspace.path());
 
@@ -13986,16 +14028,23 @@ mod tests {
             stage.bundle_working_dir.join("pages/widget.client.ts")
         );
 
-        // The sibling normal-import module is materialised at its
-        // workspace-relative location (symlink in the default no-node_modules
-        // mode).
-        let staged_plain = stage.root.join("lib/shared/plain.ts");
+        // A workspace sibling anywhere in the closure now selects copy mode
+        // on its own, with no node_modules and no tsconfig `paths` present.
         assert!(
-            std::fs::symlink_metadata(&staged_plain)
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "a sibling normal module must be staged (symlinked) at its workspace-relative path"
+            !stage.preserve_symlinks,
+            "a workspace-sibling closure must select copy mode even without node_modules or \
+             tsconfig paths"
+        );
+
+        // The sibling normal-import module is materialised as a real file at
+        // its workspace-relative location, not a symlink back to the live
+        // tree.
+        let staged_plain = stage.root.join("lib/shared/plain.ts");
+        let metadata = std::fs::symlink_metadata(&staged_plain).unwrap();
+        assert!(
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+            "a sibling normal module must be staged as a real file, not a symlink, once the \
+             closure forces copy mode"
         );
 
         // The sibling `?raw` importer is rewritten in place with a generated
@@ -14052,23 +14101,17 @@ mod tests {
         // entry lives under `pages/`, a discovery root, so it is picked up by
         // `discover_client_scripts` without needing a registered entry.
         //
-        // Forced into copy mode (workspace node_modules + a project tsconfig
-        // with `paths`, same recipe as
-        // `client_script_stage_widened_root_uses_copy_mode_for_sibling`):
-        // symlink mode stages the sibling as a real symlink back to the live
-        // tree, which the embedded (non-system) esbuild binary used by this
-        // non-ignored test resolves to its real path and the stage-escape
-        // audit (#1705) then rejects as unstaged — the same real-esbuild-vs-
-        // workspace-symlink gap the `client_bundling_cross_pipeline` env-gate
-        // tests exist to cover with a real system esbuild instead.
+        // Issue #2163: this test used to force copy mode by adding a
+        // workspace `node_modules` dir plus a project tsconfig with `paths`
+        // (symlink mode stages the sibling as a real symlink back to the
+        // live tree, which the embedded, non-system esbuild binary used by
+        // this non-ignored test resolves to its real path, tripping the
+        // stage-escape audit (#1705) as unstaged). The sibling-closure
+        // disjunct now selects copy mode on its own — the workaround is
+        // removed, and this is precisely the in-repo e2e workaround the
+        // epic set out to make unnecessary.
         let workspace = tempdir().unwrap();
         let (project_root, _entries) = write_reroot_workspace_client_fixture(workspace.path());
-        std::fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
-        write_reroot_ws_file(
-            workspace.path(),
-            "sub-packages/host/tsconfig.json",
-            r#"{"compilerOptions":{"baseUrl":".","paths":{"@shared/*":["../../lib/shared/*"]}}}"#,
-        );
         let assets_root = project_root.join("dev-assets");
         let registered = zfb_build::ClientEntryList::new();
         let outcome = build_dev_client_scripts_to_disk(
@@ -14188,10 +14231,18 @@ mod tests {
     }
 
     #[test]
-    fn client_script_stage_widened_root_uses_copy_mode_for_sibling() {
-        // node_modules present at the workspace root + a project tsconfig with
-        // `paths` selects copy mode; the sibling normal module must then be a
-        // real copy in the stage, not a symlink back to the live tree.
+    fn client_script_stage_widened_root_uses_copy_mode_with_paths_and_node_modules() {
+        // Issue #2163: this fixture (`write_reroot_workspace_client_fixture`)
+        // ships a genuine workspace sibling, so the sibling-closure disjunct
+        // alone now selects copy mode for it — this test no longer isolates
+        // "paths + node_modules triggers copy mode" the way its original
+        // name claimed (renamed from `..._uses_copy_mode_for_sibling`).
+        // Kept as a regression pin for the SECOND disjunct
+        // (`has_node_modules && shadow_config_scope_uses_paths(..)`) so that
+        // arm stays exercised too, redundantly with the sibling-driven first
+        // disjunct on this same fixture; the isolated sibling-only proof
+        // (no node_modules, no tsconfig paths) lives in
+        // `client_script_stage_reroots_at_workspace_and_materialises_sibling_closure_as_copy`.
         let workspace = tempdir().unwrap();
         let (project_root, entries) = write_reroot_workspace_client_fixture(workspace.path());
         std::fs::create_dir_all(workspace.path().join("node_modules")).unwrap();
@@ -14652,6 +14703,80 @@ mod tests {
         assert!(
             meta.file_type().is_file() && !meta.file_type().is_symlink(),
             "plain source is a real copied file in copy-mode"
+        );
+    }
+
+    #[test]
+    fn materialise_islands_shadow_uses_copy_mode_for_workspace_sibling() {
+        // Issue #2163: the positive control for the sibling-closure copy-mode
+        // disjunct on the islands site — a genuine workspace sibling in the
+        // mirrored closure, with NO node_modules and NO tsconfig `paths`
+        // anywhere in this fixture, must still select copy mode on its own.
+        // The existing negative,
+        // `materialise_islands_shadow_mirrors_glob_target_transitive_project_imports`,
+        // only proves a project-LOCAL helper still mirrors — its fixture has
+        // no workspace/siblings at all, so it cannot exercise this disjunct.
+        let workspace = tempdir().unwrap();
+        write_shadow_fixture(
+            workspace.path(),
+            "pnpm-workspace.yaml",
+            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+        );
+        let sibling_src = write_shadow_fixture(
+            workspace.path(),
+            "lib/shared/helper.ts",
+            "export const helper = 'ISLANDS_SIBLING';\n",
+        );
+        let project_root = workspace.path().join("sub-packages/host");
+        let island_src = write_shadow_fixture(
+            &project_root,
+            "components/gallery.tsx",
+            "\"use client\";\n\
+             import { helper } from \"../../../lib/shared/helper\";\n\
+             export function Gallery() { console.log(helper); return null; }\n",
+        );
+
+        let islands = vec![zfb_islands::Island::new("Gallery", island_src.clone())];
+        let scan_meta = zfb_islands::ScanMeta {
+            uses_client_router: false,
+            near_miss_candidates: 0,
+            glob_reachable_from_islands: Vec::new(),
+            island_reachable_modules: vec![island_src.clone(), sibling_src.clone()],
+            raw_import_edges_from_islands: Vec::new(),
+            module_worker_edges_from_islands: Vec::new(),
+            workspace_package_edges_from_islands: Vec::new(),
+        };
+
+        let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta)
+            .expect("shadow materialisation must not IO-error");
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => {
+                panic!("a workspace-sibling closure must not keep stopgap: {o:?}")
+            }
+        };
+        assert!(
+            !shadow.preserve_symlinks,
+            "a workspace sibling in the mirrored closure must select copy mode even without \
+             node_modules or tsconfig paths"
+        );
+
+        // `bundle_working_dir` is the mirrored PROJECT dir
+        // (`<shadow_root>/sub-packages/host`); pop the two project-relative
+        // components to reach the shadow root, mirroring how the sibling
+        // closure test does it on the client-script preprocessing stage.
+        let shadow_root = shadow
+            .bundle_working_dir
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let staged_sibling = shadow_root.join("lib/shared/helper.ts");
+        let metadata = std::fs::symlink_metadata(&staged_sibling).unwrap();
+        assert!(
+            metadata.file_type().is_file() && !metadata.file_type().is_symlink(),
+            "the workspace sibling must be mirrored as a real file, not a symlink, once the \
+             closure forces copy mode"
         );
     }
 
