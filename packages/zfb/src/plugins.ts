@@ -198,7 +198,15 @@ export type ZfbPreviewMiddlewareContext = {
  * host boot, during the setup phase right after every plugin's
  * `setup` hook has returned — even if the registered specifier is
  * never imported by any page or module. The resulting source is
- * memoised; every subsequent import of that specifier reuses it.
+ * memoised; every subsequent import of that specifier reuses it,
+ * **unless a forced reload is requested** (#2167) — the plugin-host
+ * protocol now supports bypassing the memo and re-invoking the loader,
+ * intended for a loader whose registration also declares
+ * [`watchFiles`](#watchFiles) and needs a fresh read after one of
+ * those files changes on disk. Wiring an actual `zfb dev` watch that
+ * triggers this is a separate, later concern — registering
+ * `watchFiles` here only tells the host which paths a future watcher
+ * should track.
  * (Under `zfb preview`, `addVirtualModule` registrations are accepted
  * but inert — see [`ZfbSetupContext.command`](#command) — so the
  * loader never runs there.)
@@ -212,6 +220,26 @@ export type ZfbPreviewMiddlewareContext = {
  * ```
  */
 export type ZfbVirtualModuleLoader = () => string | Promise<string>;
+
+/**
+ * Optional third argument to `addVirtualModule` (#2167).
+ */
+export type ZfbVirtualModuleOptions = {
+  /**
+   * Extra absolute filesystem paths a `zfb dev` watcher should track on
+   * this loader's behalf — useful when the loader's output depends on
+   * files it reads directly (e.g. via `node:fs`) rather than static ESM
+   * imports the dev bundler would otherwise notice on its own.
+   *
+   * Every entry **must be an absolute path**: this mirrors
+   * `extraWatchPaths`'s absolute-only rule in `zfb.config.ts`, and for
+   * the same reason — `watchFiles` entries are never resolved against
+   * the project root, so a relative entry has no defined base directory
+   * to resolve against. A relative (or otherwise malformed) entry throws
+   * at `setup` time.
+   */
+  watchFiles?: string[];
+};
 
 /**
  * Context passed to the new `setup` hook (#255). Runs once per host
@@ -236,7 +264,10 @@ export type ZfbVirtualModuleLoader = () => string | Promise<string>;
  * The hook's surface is intentionally **closed**: only `injectRoute`,
  * `addVirtualModule`, `addAlias`, and `addClientEntry`. There is no
  * `addRemarkPlugin` / `addRehypePlugin` / `addMarkdownVisitor` — by
- * design (see the concept doc for the rationale).
+ * design (see the concept doc for the rationale). `addVirtualModule`'s
+ * optional `watchFiles` argument (#2167) is a registration OPTION on
+ * that existing method, not a new closed-surface method — the closed
+ * set of four stays exactly four.
  */
 export type ZfbSetupContext = {
   /**
@@ -286,12 +317,22 @@ export type ZfbSetupContext = {
    * specifier (recommended `virtual:` prefix, not enforced).
    * `loader` returns the complete ESM source text as a string and
    * runs **eagerly, once per build/dev-boot during setup** — not
-   * lazily at first import (see [`ZfbVirtualModuleLoader`]).
+   * lazily at first import (see [`ZfbVirtualModuleLoader`], including
+   * its forced-reload amendment).
+   *
+   * The optional third argument's `watchFiles` (#2167) declares extra
+   * absolute filesystem paths a `zfb dev` watcher should track on this
+   * loader's behalf — see [`ZfbVirtualModuleOptions`]. Every entry must
+   * be an absolute path; a relative entry throws.
    *
    * Two plugins registering the same `specifier` raises
    * `VirtualModuleConflict` and aborts the build.
    */
-  addVirtualModule(specifier: string, loader: ZfbVirtualModuleLoader): void;
+  addVirtualModule(
+    specifier: string,
+    loader: ZfbVirtualModuleLoader,
+    options?: ZfbVirtualModuleOptions,
+  ): void;
 
   /**
    * Register a synthetic / package-owned page route. `pattern` uses the

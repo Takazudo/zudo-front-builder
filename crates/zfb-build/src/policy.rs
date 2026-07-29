@@ -88,6 +88,21 @@ pub struct RawImportInvalidation {
     /// so no per-path alias expansion happens at this layer (contrast with
     /// `Self::replace`/`Self::aliases` above, used by the file-shaped sets).
     css_mirror_roots: Arc<RwLock<BTreeSet<PathBuf>>>,
+
+    /// Absolute filesystem paths a plugin virtual-module loader registered
+    /// via `addVirtualModule`'s optional `{ watchFiles }` option (issue
+    /// #2167 / #2168) — a loader whose output depends on files it reads
+    /// directly (e.g. via `node:fs`) rather than static ESM imports the dev
+    /// bundler would otherwise notice on its own. Distinct in KIND from the
+    /// four sets above: those track BROWSER dependency closures discovered
+    /// by the scanner/bundler on every successful pass; this tracks paths a
+    /// plugin loader declared once at `setup` time — plugin registrations
+    /// are frozen after `setup` runs, so unlike the sets above this is
+    /// populated exactly ONCE, at boot, never replaced again mid-session.
+    /// File-shaped like the first three sets (exact-path containment via
+    /// `is_plugin_watch_target`, folded into `dynamic_dependency_paths()`),
+    /// not directory-shaped like `css_mirror_roots`.
+    plugin_watch_files: Arc<RwLock<BTreeSet<PathBuf>>>,
 }
 
 impl RawImportInvalidation {
@@ -305,6 +320,29 @@ impl RawImportInvalidation {
     /// `/var/...`, or vice versa) instead of re-deriving a second one.
     pub fn path_aliases(path: &Path) -> Vec<PathBuf> {
         Self::aliases(path.to_path_buf()).collect()
+    }
+
+    /// Atomically replace the plugin virtual-module watch-file set (issue
+    /// #2168). Populated exactly ONCE, at boot, from every registered
+    /// loader's `watch_files` — plugin registrations are frozen after
+    /// `setup` runs, so unlike `replace_islands` / `replace_client_scripts`
+    /// there is no later tick that would call this again.
+    pub fn replace_plugin_watch_files(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        Self::replace(&self.plugin_watch_files, paths);
+    }
+
+    /// Snapshot the current plugin watch-file aliases for dynamic watcher
+    /// registration (folded into [`GranularityPolicy::dynamic_dependency_paths`]).
+    pub fn plugin_watch_file_paths(&self) -> BTreeSet<PathBuf> {
+        self.plugin_watch_files
+            .read()
+            .map(|paths| paths.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether `path` is a registered plugin virtual-module watch file.
+    pub fn is_plugin_watch_target(&self, path: &Path) -> bool {
+        Self::contains(&self.plugin_watch_files, path)
     }
 }
 
@@ -711,17 +749,31 @@ impl GranularityPolicy {
     /// Snapshot the browser dependency aliases that need dynamic parent
     /// watches. Invalidation predicates remain pipeline-specific; this union
     /// only controls which filesystem events can reach the orchestrator.
+    ///
+    /// Also folds in the plugin virtual-module watch-file set (issue #2168)
+    /// — those paths are file-shaped exactly like the three browser-closure
+    /// sets above, so `register_dynamic_dependency_watches`
+    /// (`crate::orchestrator`) offers them to `watch_additional_files` with
+    /// no watcher-crate changes needed.
     pub fn dynamic_dependency_paths(&self) -> BTreeSet<PathBuf> {
         let mut paths = self.raw_import_invalidation.islands_paths();
         paths.extend(self.raw_import_invalidation.client_script_paths());
         paths.extend(self.raw_import_invalidation.client_script_worker_paths());
         paths.extend(self.raw_import_invalidation.client_script_sibling_paths());
+        paths.extend(self.raw_import_invalidation.plugin_watch_file_paths());
         paths
     }
 
     /// Whether this exact changed path is a client-script terminal raw target.
     pub fn is_client_script_raw_target(&self, path: &Path) -> bool {
         self.raw_import_invalidation.is_client_script_target(path)
+    }
+
+    /// Whether this exact changed path is a registered plugin virtual-module
+    /// watch file (issue #2168) — a loader's `addVirtualModule(..., {
+    /// watchFiles })` entry (issue #2167).
+    pub fn is_plugin_watch_target(&self, path: &Path) -> bool {
+        self.raw_import_invalidation.is_plugin_watch_target(path)
     }
 
     /// Whether this exact changed path belongs to a client-script module
@@ -994,6 +1046,7 @@ mod tests {
         let client_raw = PathBuf::from("/proj/lib/client-payload.txt");
         let client_helper = PathBuf::from("/proj/lib/client-helper.ts");
         let client_sibling = PathBuf::from("/workspace/lib/shared/plain.ts");
+        let plugin_watch = PathBuf::from("/proj/data/plugin-source.json");
         let next_client_raw = PathBuf::from("/proj/lib/next-client-payload.txt");
         let next_client_helper = PathBuf::from("/proj/lib/next-client-helper.ts");
         let next_client_sibling = PathBuf::from("/workspace/lib/shared/next-plain.ts");
@@ -1001,6 +1054,7 @@ mod tests {
         invalidation.replace_client_scripts([client_raw.clone()]);
         invalidation.replace_client_script_workers([client_helper.clone()]);
         invalidation.replace_client_script_siblings([client_sibling.clone()]);
+        invalidation.replace_plugin_watch_files([plugin_watch.clone()]);
         let policy =
             GranularityPolicy::default().with_raw_import_invalidation(invalidation.clone());
 
@@ -1009,20 +1063,30 @@ mod tests {
         assert!(first.contains(&client_raw));
         assert!(first.contains(&client_helper));
         assert!(first.contains(&client_sibling));
+        assert!(first.contains(&plugin_watch));
         assert!(policy.is_islands_dependency(&island_helper));
         assert!(!policy.is_islands_dependency(&client_raw));
         assert!(!policy.is_islands_dependency(&client_helper));
         assert!(!policy.is_islands_dependency(&client_sibling));
+        assert!(!policy.is_islands_dependency(&plugin_watch));
         assert!(policy.is_client_script_raw_target(&client_raw));
         assert!(!policy.is_client_script_raw_target(&island_helper));
         assert!(!policy.is_client_script_raw_target(&client_sibling));
+        assert!(!policy.is_client_script_raw_target(&plugin_watch));
         assert!(policy.is_client_script_worker_target(&client_helper));
         assert!(!policy.is_client_script_worker_target(&island_helper));
         assert!(!policy.is_client_script_worker_target(&client_sibling));
+        assert!(!policy.is_client_script_worker_target(&plugin_watch));
         assert!(policy.is_client_script_sibling_target(&client_sibling));
         assert!(!policy.is_client_script_sibling_target(&island_helper));
         assert!(!policy.is_client_script_sibling_target(&client_raw));
         assert!(!policy.is_client_script_sibling_target(&client_helper));
+        assert!(!policy.is_client_script_sibling_target(&plugin_watch));
+        assert!(policy.is_plugin_watch_target(&plugin_watch));
+        assert!(!policy.is_plugin_watch_target(&island_helper));
+        assert!(!policy.is_plugin_watch_target(&client_raw));
+        assert!(!policy.is_plugin_watch_target(&client_helper));
+        assert!(!policy.is_plugin_watch_target(&client_sibling));
 
         invalidation.replace_client_scripts([next_client_raw.clone()]);
         invalidation.replace_client_script_workers([next_client_helper.clone()]);
@@ -1032,6 +1096,11 @@ mod tests {
         assert!(second.contains(&next_client_raw));
         assert!(second.contains(&next_client_helper));
         assert!(second.contains(&next_client_sibling));
+        assert!(
+            second.contains(&plugin_watch),
+            "the plugin watch-file set is populated once at boot and is never \
+             replaced again mid-session, unlike the browser-closure sets"
+        );
         assert!(
             !second.contains(&client_raw),
             "a replaced client raw graph must not retain stale watch aliases"
