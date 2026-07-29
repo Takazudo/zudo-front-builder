@@ -745,11 +745,12 @@ impl PluginHost {
     /// fresh result.
     ///
     /// Intended for a loader whose `addVirtualModule` registration also
-    /// declared `{ watchFiles }` — a future dev-server watch (not wired
-    /// by this sub-issue; this is protocol/registry plumbing only) would
-    /// call this when one of those files changes on disk, so the next
-    /// import of the virtual module sees the fresh content instead of
+    /// declared `{ watchFiles }` — [`crate::plugin_refresh::PluginRefreshState::refresh`]
+    /// (issue #2168) calls this when one of those files changes, so the
+    /// next import of the virtual module sees the fresh content instead of
     /// the first-call-wins cached value `invoke_virtual_loader` returns.
+    /// `refresh` itself is not yet wired to a live watcher tick — see that
+    /// module's doc comment.
     pub async fn invoke_virtual_loader_forced(
         &self,
         loader_id: &VirtualLoaderId,
