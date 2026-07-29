@@ -93,13 +93,30 @@ list_contains() {
 
 # ── 1. exam.yml quarantine-heavy filterset ──────────────────────────────────
 
-declare -A EXAM_SET=()
+# bash 3.2 (stock macOS /bin/bash) has no associative arrays, so the dedup set
+# is a newline-delimited list instead, with exact-line (never substring)
+# membership checks via `grep -qxF` — see exam_set_contains below.
+EXAM_SET_LIST=""
 while IFS= read -r name; do
-  [[ -n "$name" ]] && EXAM_SET["$name"]=1
+  [[ -n "$name" ]] && EXAM_SET_LIST="$EXAM_SET_LIST
+$name"
 done < <(grep -vE '^[[:space:]]*#' "$EXAM_WORKFLOW" \
   | grep -oE 'test\(=[A-Za-z0-9_:]+\)' \
   | sed -E 's/test\(=([A-Za-z0-9_:]+)\)/\1/' \
   | sort -u || true)
+
+exam_set_contains() {
+  # -x: whole-line match only. A bare `grep -qF` would let one test name
+  # match as a substring of another (e.g. "foo" inside "foo_extended").
+  # A here-string, not a `printf | grep -q` pipe: under `set -o pipefail`
+  # (this script has `set -euo pipefail`), grep -q can exit as soon as it
+  # finds a match, SIGPIPE-killing a still-writing producer on the other
+  # end of a real pipe — pipefail then reports the pipeline as failed even
+  # though the match was found, misclassifying a covered test as UNCOVERED
+  # (reproduces with a large enough exam.yml filterset). A here-string has
+  # no live producer process to SIGPIPE, so this can't happen.
+  grep -qxF -- "$1" <<< "$EXAM_SET_LIST"
+}
 
 # ── 2. health.yml `-- --ignored` step scopes ────────────────────────────────
 
@@ -162,7 +179,13 @@ EXCEPTIONS=0
 UNCOVERED=0
 
 while IFS= read -r -d '' file; do
-  mapfile -t LINES < "$file"
+  # bash 3.2 has no `mapfile`/`readarray`; slurp the file into a plain indexed
+  # array by hand instead. The `|| [[ -n "$line" ]]` tail preserves a final
+  # unterminated line (read fails at EOF but still populates $line).
+  LINES=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    LINES+=("$line")
+  done < "$file"
   total=${#LINES[@]}
 
   rel="${file#"$CRATES_ROOT"/}"
@@ -220,7 +243,7 @@ while IFS= read -r -d '' file; do
     if list_contains "$tag" "$EXCEPTION_TAGS"; then
       echo "EXCEPTION($tag): $qualified ($loc)"
       EXCEPTIONS=$((EXCEPTIONS + 1))
-    elif [[ -n "${EXAM_SET[$qualified]+x}" ]]; then
+    elif exam_set_contains "$qualified"; then
       echo "COVERED-BY-EXAM: $qualified ($loc)"
       COVERED_EXAM=$((COVERED_EXAM + 1))
     elif health_scope_covers "$pkg" "$kind" "$binary" "$qualified"; then

@@ -88,7 +88,7 @@ use zfb_plugin_resolver::{
     read_tsconfig_paths, resolve_raw_target_with_aliases, RawImportAliasContext, TsConfigPaths,
     TsPathAlias,
 };
-use zfb_types::normalize_path_lexical;
+use zfb_types::{has_node_modules_segment, normalize_path_lexical};
 
 use crate::bundler::Island;
 
@@ -678,14 +678,7 @@ impl FsResolver {
             Ok(p) => p,
             Err(_) => return false,
         };
-        for comp in canon.components() {
-            if let Component::Normal(name) = comp {
-                if name == std::ffi::OsStr::new("node_modules") {
-                    return false;
-                }
-            }
-        }
-        true
+        !has_node_modules_segment(&canon)
     }
 
     /// True when `dir` has any `node_modules` path component — i.e. the
@@ -698,9 +691,7 @@ impl FsResolver {
     /// regular npm package. Mirrors the `node_modules`-segment heuristic
     /// [`Self::is_workspace_package`] already uses.
     fn is_inside_node_modules(dir: &Path) -> bool {
-        dir.components().any(|comp| {
-            matches!(comp, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules"))
-        })
+        has_node_modules_segment(dir)
     }
 
     /// Reduce an injected-route entrypoint path to the canonical
@@ -774,9 +765,7 @@ impl FsResolver {
             // the first allowed bare hop chain into that dependency's OWN
             // bare imports, defeating the single-hop stop and walking the
             // transitive framework-dependency graph the gate exists to block.
-            !rel.components().any(|c| {
-                matches!(c, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules"))
-            })
+            !has_node_modules_segment(rel)
         })
     }
 
@@ -2336,9 +2325,7 @@ fn collect_worker_constructors(
 }
 
 fn path_is_inside_node_modules(path: &Path) -> bool {
-    path.components().any(
-        |component| matches!(component, Component::Normal(name) if name == std::ffi::OsStr::new("node_modules")),
-    )
+    has_node_modules_segment(path)
 }
 
 #[derive(Default)]

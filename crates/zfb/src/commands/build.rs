@@ -2092,7 +2092,7 @@ impl<'a> IslandsShadowPaths<'a> {
         // Any `node_modules` segment disqualifies — in a workspace-widened
         // root (issue #1664) an installed-package path can carry the segment
         // mid-path (`sub-packages/host/node_modules/...`), not just first.
-        if rel.components().any(|c| c.as_os_str() == "node_modules") {
+        if zfb_types::has_node_modules_segment(rel) {
             return None;
         }
         Some(rel.to_path_buf())

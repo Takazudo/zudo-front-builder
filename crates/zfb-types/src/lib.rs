@@ -11,6 +11,7 @@ pub mod first_party;
 pub mod helpers;
 pub mod module_workers;
 pub mod page_extensions;
+pub mod page_privacy;
 pub mod segment;
 
 pub use asset_urls::{
@@ -35,4 +36,5 @@ pub use module_workers::{
     MODULE_WORKER_CSP_GLOB, MODULE_WORKER_FILENAME_PREFIX,
 };
 pub use page_extensions::{is_page_sidecar_file, ROUTABLE_PAGE_EXTENSIONS, SCRIPT_PAGE_EXTENSIONS};
+pub use page_privacy::path_has_private_prefix_component;
 pub use segment::Segment;

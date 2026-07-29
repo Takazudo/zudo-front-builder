@@ -15,7 +15,10 @@
 //! | `pages/docs/[[...slug]].tsx`        | `/docs/:slug{.+}?` | optional catchall: also `/docs`|
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug`     |                                |
 //!
-//! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) are ignored.
+//! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`), and any page
+//! nested under a directory starting with `_` (e.g. `_components/foo.tsx`),
+//! are ignored — see [`zfb_types::path_has_private_prefix_component`], the
+//! single source of truth shared with the bundler's `derive_route`.
 //! Accepted page extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`,
 //! `.html` (see [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`], the single source of
 //! truth shared with the bundler). Files with any other extension are
@@ -139,31 +142,27 @@ fn scan_pages_inner(pages_dir: &Path) -> Result<(Vec<Route>, Vec<String>), Route
 
         let ext = path.extension().and_then(|e| e.to_str());
 
-        // Skip files whose stem starts with '_' (framework internals) before
-        // the extension check so we don't warn about private helper files.
-        let stem = match path.file_stem().and_then(|s| s.to_str()) {
-            Some(s) => s,
-            None => continue,
-        };
-        if stem.starts_with('_') {
+        // Skip files whose stem cannot be decoded as UTF-8 before running
+        // the shared privacy check below — this is the router's own
+        // long-standing posture (unlike `derive_route`, which falls through
+        // to a lossy conversion instead; see
+        // `zfb_types::path_has_private_prefix_component`'s doc for why the
+        // two layers are allowed to diverge here).
+        if path.file_stem().and_then(|s| s.to_str()).is_none() {
             continue;
         }
 
-        // Also skip routes that traverse a directory whose name starts with
-        // '_' — these are conventionally private (e.g. `pages/_components/`).
         let rel = path.strip_prefix(pages_dir).map_err(|_| RouterError::Io {
             path: path.to_path_buf(),
             source: std::io::Error::other("entry path was outside pages_dir"),
         })?;
 
-        if rel
-            .components()
-            .filter_map(|c| match c {
-                Component::Normal(s) => s.to_str(),
-                _ => None,
-            })
-            .any(|name| name.starts_with('_'))
-        {
+        // Skip files whose stem starts with '_' (framework internals), or
+        // that traverse a directory whose name starts with '_' — these are
+        // conventionally private (e.g. `pages/_components/`, `_app.tsx`).
+        // Shared with `zfb-build`'s `derive_route` so the two layers cannot
+        // silently drift apart again (issue #2123 / #2148).
+        if zfb_types::path_has_private_prefix_component(rel) {
             continue;
         }
 
@@ -929,6 +928,26 @@ mod tests {
         assert!(
             keys.is_empty(),
             "non-page files must be excluded; got {keys:?}"
+        );
+    }
+
+    /// A page nested two levels under a `_`-prefixed directory must be
+    /// skipped — the privacy check walks every ancestor, not just the
+    /// immediate parent — while an ordinary (non-`_`) sibling directory at
+    /// the same depth still routes. Shared with `zfb-build`'s
+    /// `derive_route` via `zfb_types::path_has_private_prefix_component`
+    /// (issue #2123 / #2148).
+    #[test]
+    fn scan_pages_skips_nested_private_directory_with_positive_control() {
+        let routes = scan_tree(&["_components/nested/api.tsx", "lib/nested/api.tsx"]).unwrap();
+        let templates: Vec<String> = routes.iter().map(Route::template).collect();
+        assert!(
+            !templates.iter().any(|t| t == "/components/nested/api"),
+            "page under a nested `_`-prefixed directory must not route; got {templates:?}"
+        );
+        assert!(
+            templates.iter().any(|t| t == "/lib/nested/api"),
+            "ordinary sibling directory at the same depth must still route; got {templates:?}"
         );
     }
 
