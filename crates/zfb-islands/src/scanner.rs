@@ -1727,6 +1727,40 @@ pub fn scan_islands<R: Resolver>(pages: &[PathBuf], resolver: &R) -> ScanResult<
     scan_islands_with_meta(pages, resolver).map(|(islands, _meta)| islands)
 }
 
+/// Canonicalise `path`, falling back to `path` itself when the filesystem
+/// call fails — e.g. a synthetic path in an in-memory test harness that has
+/// no real entry on disk. Mirrors `zfb-build`'s `canonical_or_self` so a
+/// caller-supplied `first_party_root` lines up with the already-canonicalised
+/// `package_dir` a [`Resolver::workspace_package_root`] impl returns.
+fn canonicalize_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// True when `package_dir` — the resolved workspace-package root a scanner
+/// edge names — lies inside `first_party_root`.
+///
+/// Issue #1731 / #2161: an `npm link` / `file:` dependency whose
+/// `node_modules/<pkg>` symlink target canonicalises OUTSIDE the first-party
+/// boundary is a legitimate external dependency, not a workspace sibling —
+/// [`FsResolver::workspace_package_root`] cannot tell the two apart (its only
+/// signal is "symlink with no `node_modules` segment in the canonical
+/// target"), so the distinction is made here, at the point each candidate
+/// edge is about to be inserted. A dropped edge here means the `build.rs`
+/// Guard (a) consumers (`materialise_islands_shadow_with_worker_context`,
+/// `stage_client_script_preprocessing_with_worker_context`) simply never see
+/// it, rather than hard-erroring a valid external-linked dependency.
+///
+/// `first_party_root: None` disables filtering, preserving the historical
+/// behavior for every caller that doesn't pass one (non-build callers, e.g.
+/// tests). Callers pass an already-canonicalised root (see
+/// [`canonicalize_or_self`]) so this is a plain lexical `starts_with`.
+fn workspace_package_edge_in_scope(package_dir: &Path, first_party_root: Option<&Path>) -> bool {
+    match first_party_root {
+        None => true,
+        Some(root) => package_dir.starts_with(root),
+    }
+}
+
 /// Walk ordinary JS/TS module imports from arbitrary roots and return the
 /// sorted, deduped resolved module closure.
 ///
@@ -1755,6 +1789,22 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
     roots: &[PathBuf],
     resolver: &R,
 ) -> ScanResult<ReachableModulesMeta> {
+    scan_reachable_modules_with_meta_and_first_party_root(roots, resolver, None)
+}
+
+/// Like [`scan_reachable_modules_with_meta`], but scopes every recorded
+/// [`WorkspacePackageImportEdge`] to `first_party_root` (issue #2161): an
+/// edge whose canonicalised `package_dir` resolves outside `first_party_root`
+/// is dropped before insertion instead of being recorded — see
+/// [`workspace_package_edge_in_scope`]. `first_party_root: None` disables
+/// filtering, matching [`scan_reachable_modules_with_meta`]'s historical
+/// behavior.
+pub fn scan_reachable_modules_with_meta_and_first_party_root<R: Resolver>(
+    roots: &[PathBuf],
+    resolver: &R,
+    first_party_root: Option<&Path>,
+) -> ScanResult<ReachableModulesMeta> {
+    let canonical_first_party_root = first_party_root.map(canonicalize_or_self);
     let mut reachable: BTreeSet<PathBuf> = BTreeSet::new();
     let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
     // Issue #1703, Guard (a): bare package-name imports reachable from
@@ -1800,11 +1850,16 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
                         if let Some(package_dir) =
                             resolver.workspace_package_root(&importer_dir, &specifier)
                         {
-                            workspace_package_edges.insert(WorkspacePackageImportEdge {
-                                importer: current.clone(),
-                                specifier: specifier.clone(),
-                                package_dir,
-                            });
+                            if workspace_package_edge_in_scope(
+                                &package_dir,
+                                canonical_first_party_root.as_deref(),
+                            ) {
+                                workspace_package_edges.insert(WorkspacePackageImportEdge {
+                                    importer: current.clone(),
+                                    specifier: specifier.clone(),
+                                    package_dir,
+                                });
+                            }
                         }
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
@@ -1831,7 +1886,8 @@ pub fn scan_reachable_modules_with_meta<R: Resolver>(
     }
 
     let modules: Vec<PathBuf> = reachable.into_iter().collect();
-    let worker_discovery = discover_module_workers(&modules, resolver)?;
+    let worker_discovery =
+        discover_module_workers(&modules, resolver, canonical_first_party_root.as_deref())?;
     raw_import_edges.extend(worker_discovery.raw_import_edges);
     workspace_package_edges.extend(worker_discovery.workspace_package_edges);
     Ok(ReachableModulesMeta {
@@ -1853,6 +1909,21 @@ pub fn scan_islands_with_meta<R: Resolver>(
     pages: &[PathBuf],
     resolver: &R,
 ) -> ScanResult<(IslandsSet, ScanMeta)> {
+    scan_islands_with_meta_and_first_party_root(pages, resolver, None)
+}
+
+/// Like [`scan_islands_with_meta`], but scopes every recorded
+/// [`WorkspacePackageImportEdge`] to `first_party_root` (issue #2161): an
+/// edge whose canonicalised `package_dir` resolves outside `first_party_root`
+/// is dropped before insertion instead of being recorded — see
+/// [`workspace_package_edge_in_scope`]. `first_party_root: None` disables
+/// filtering, matching [`scan_islands_with_meta`]'s historical behavior.
+pub fn scan_islands_with_meta_and_first_party_root<R: Resolver>(
+    pages: &[PathBuf],
+    resolver: &R,
+    first_party_root: Option<&Path>,
+) -> ScanResult<(IslandsSet, ScanMeta)> {
+    let canonical_first_party_root = first_party_root.map(canonicalize_or_self);
     // BTreeMap keyed by (path, name) gives us natural sort order on output
     // and dedup for free.
     let mut found: BTreeMap<(PathBuf, String), Island> = BTreeMap::new();
@@ -2000,14 +2071,21 @@ pub fn scan_islands_with_meta<R: Resolver>(
                             .or_default()
                             .push(resolved.clone());
                         // Issue #1703, Guard (a): same "record regardless of
-                        // visited" rationale as above.
+                        // visited" rationale as above. Issue #2161: dropped
+                        // here (never recorded) when it resolves outside
+                        // `first_party_root`.
                         if let Some(package_dir) =
                             resolver.workspace_package_root(&importer_dir, &specifier)
                         {
-                            workspace_package_edges
-                                .entry(current.clone())
-                                .or_default()
-                                .push((specifier.clone(), package_dir));
+                            if workspace_package_edge_in_scope(
+                                &package_dir,
+                                canonical_first_party_root.as_deref(),
+                            ) {
+                                workspace_package_edges
+                                    .entry(current.clone())
+                                    .or_default()
+                                    .push((specifier.clone(), package_dir));
+                            }
                         }
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
@@ -2091,7 +2169,11 @@ pub fn scan_islands_with_meta<R: Resolver>(
     }
 
     let island_reachable_modules: Vec<PathBuf> = island_reachable_modules.into_iter().collect();
-    let worker_discovery = discover_module_workers(&island_reachable_modules, resolver)?;
+    let worker_discovery = discover_module_workers(
+        &island_reachable_modules,
+        resolver,
+        canonical_first_party_root.as_deref(),
+    )?;
     raw_import_edges_from_islands.extend(worker_discovery.raw_import_edges);
     workspace_package_edges_from_islands.extend(worker_discovery.workspace_package_edges);
 
@@ -2384,9 +2466,17 @@ fn collect_global_require_specifiers(
 /// onto this private discovery stack and never into the caller's ordinary
 /// module closure. Real `node_modules` modules are a documented boundary; zfb
 /// does not rewrite or emit third-party-transitive workers.
+///
+/// `first_party_root` (already canonicalised by the caller, or `None`)
+/// scopes recorded [`WorkspacePackageImportEdge`]s to the first-party
+/// boundary — issue #2161. This is the third of the scanner's three edge-
+/// insertion sites; its edges merge into both [`scan_reachable_modules_with_meta`]'s
+/// and [`scan_islands_with_meta`]'s public results, so a worker-imported
+/// external link must be filtered here too, not just at the other two sites.
 fn discover_module_workers<R: Resolver>(
     roots: &[PathBuf],
     resolver: &R,
+    first_party_root: Option<&Path>,
 ) -> ScanResult<ModuleWorkerDiscovery> {
     let mut found: BTreeSet<ModuleWorkerEdge> = BTreeSet::new();
     let mut raw_import_edges: BTreeSet<RawImportEdge> = BTreeSet::new();
@@ -2461,11 +2551,13 @@ fn discover_module_workers<R: Resolver>(
                         if let Some(package_dir) =
                             resolver.workspace_package_root(&importer_dir, &specifier)
                         {
-                            workspace_package_edges.insert(WorkspacePackageImportEdge {
-                                importer: current.clone(),
-                                specifier: specifier.clone(),
-                                package_dir,
-                            });
+                            if workspace_package_edge_in_scope(&package_dir, first_party_root) {
+                                workspace_package_edges.insert(WorkspacePackageImportEdge {
+                                    importer: current.clone(),
+                                    specifier: specifier.clone(),
+                                    package_dir,
+                                });
+                            }
                         }
                         if !visited.contains(&resolved) {
                             stack.push(resolved);
@@ -8688,6 +8780,186 @@ mod tests {
         );
     }
 
+    /// Issue #1731 / #2161: the `scan_islands_with_meta` main-DFS
+    /// insertion site (the second of the scanner's three) must drop an
+    /// edge whose canonicalised `package_dir` resolves outside
+    /// `first_party_root` — the npm-link/`file:` shape.
+    #[test]
+    fn scan_islands_with_meta_and_first_party_root_filters_edge_outside_root() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Demo } from "../components/demo";
+                   export default function Home() { return <Demo/>; }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client";
+                   import { helper } from "@acme/linked";
+                   export function Demo() { return helper; }"#,
+            )
+            .with_file(
+                PathBuf::from("/external/acme-linked/src/index.ts"),
+                "export const helper = 1;",
+            )
+            .with_workspace_package(
+                "@acme/linked",
+                PathBuf::from("/external/acme-linked/src/index.ts"),
+                PathBuf::from("/external/acme-linked"),
+            );
+
+        let (_islands, meta) = scan_islands_with_meta_and_first_party_root(
+            &[root().join("pages/home.tsx")],
+            &resolver,
+            Some(&root()),
+        )
+        .unwrap();
+        assert!(
+            meta.workspace_package_edges_from_islands.is_empty(),
+            "an npm-link/file: dependency resolving outside first_party_root must not be \
+             recorded as a workspace-package edge: {:?}",
+            meta.workspace_package_edges_from_islands
+        );
+    }
+
+    /// Companion positive control: a genuine in-root workspace sibling must
+    /// still produce its edge once `first_party_root` scoping is active.
+    #[test]
+    fn scan_islands_with_meta_and_first_party_root_keeps_edge_inside_root() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Demo } from "../components/demo";
+                   export default function Home() { return <Demo/>; }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client";
+                   import { helper } from "@acme/shared";
+                   export function Demo() { return helper; }"#,
+            )
+            .with_file(
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                "export const helper = 1;",
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+
+        let (_islands, meta) = scan_islands_with_meta_and_first_party_root(
+            &[root().join("pages/home.tsx")],
+            &resolver,
+            Some(&root()),
+        )
+        .unwrap();
+        assert_eq!(
+            meta.workspace_package_edges_from_islands,
+            vec![WorkspacePackageImportEdge {
+                importer: root().join("components/demo.tsx"),
+                specifier: "@acme/shared".to_string(),
+                package_dir: root().join("node_modules/@acme/shared"),
+            }]
+        );
+    }
+
+    /// Issue #1731 / #2161: the module-worker discovery site
+    /// (`discover_module_workers`, the third of the scanner's three edge-
+    /// insertion sites) merges its edges into both public scan results — a
+    /// worker-imported external link must be filtered there too, not just
+    /// at the other two sites.
+    #[test]
+    fn scan_islands_with_meta_and_first_party_root_filters_worker_closure_edge_outside_root() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Demo } from "../components/demo";
+                   export default function Home() { return <Demo/>; }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client";
+                   const worker = new Worker(new URL("./demo-worker.ts", import.meta.url), { type: "module" });
+                   export function Demo() { return worker; }"#,
+            )
+            .with_file(
+                root().join("components/demo-worker.ts"),
+                r#"import { helper } from "@acme/linked";
+                   self.postMessage(helper);"#,
+            )
+            .with_file(
+                PathBuf::from("/external/acme-linked/src/index.ts"),
+                "export const helper = 1;",
+            )
+            .with_workspace_package(
+                "@acme/linked",
+                PathBuf::from("/external/acme-linked/src/index.ts"),
+                PathBuf::from("/external/acme-linked"),
+            );
+
+        let (_islands, meta) = scan_islands_with_meta_and_first_party_root(
+            &[root().join("pages/home.tsx")],
+            &resolver,
+            Some(&root()),
+        )
+        .unwrap();
+        assert!(
+            meta.workspace_package_edges_from_islands.is_empty(),
+            "an npm-link/file: dependency imported from inside an island's worker graph must \
+             not be recorded as a workspace-package edge when it resolves outside \
+             first_party_root: {:?}",
+            meta.workspace_package_edges_from_islands
+        );
+    }
+
+    /// Companion positive control for the worker-closure fixture above: a
+    /// genuine in-root workspace sibling reached through a worker import
+    /// must still produce its edge once `first_party_root` scoping is
+    /// active.
+    #[test]
+    fn scan_islands_with_meta_and_first_party_root_keeps_worker_closure_edge_inside_root() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/home.tsx"),
+                r#"import { Demo } from "../components/demo";
+                   export default function Home() { return <Demo/>; }"#,
+            )
+            .with_file(
+                root().join("components/demo.tsx"),
+                r#""use client";
+                   const worker = new Worker(new URL("./demo-worker.ts", import.meta.url), { type: "module" });
+                   export function Demo() { return worker; }"#,
+            )
+            .with_file(
+                root().join("components/demo-worker.ts"),
+                r#"import { helper } from "@acme/shared";
+                   self.postMessage(helper);"#,
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+
+        let (_islands, meta) = scan_islands_with_meta_and_first_party_root(
+            &[root().join("pages/home.tsx")],
+            &resolver,
+            Some(&root()),
+        )
+        .unwrap();
+        assert_eq!(
+            meta.workspace_package_edges_from_islands,
+            vec![WorkspacePackageImportEdge {
+                importer: root().join("components/demo-worker.ts"),
+                specifier: "@acme/shared".to_string(),
+                package_dir: root().join("node_modules/@acme/shared"),
+            }],
+            "a package-name import inside an island's worker graph, resolving inside \
+             first_party_root, must still be recorded"
+        );
+    }
+
     #[test]
     fn scan_reachable_modules_with_meta_records_workspace_package_edge() {
         let resolver = InMemoryResolver::new()
@@ -8713,6 +8985,90 @@ mod tests {
         let meta =
             scan_reachable_modules_with_meta(&[root().join("pages/widget.client.ts")], &resolver)
                 .unwrap();
+        assert_eq!(
+            meta.workspace_package_edges,
+            vec![WorkspacePackageImportEdge {
+                importer: root().join("src/helper.ts"),
+                specifier: "@acme/shared".to_string(),
+                package_dir: root().join("node_modules/@acme/shared"),
+            }]
+        );
+    }
+
+    /// Issue #1731 / #2161: an `npm link` / `file:` dependency whose
+    /// `node_modules/<pkg>` symlink canonicalises OUTSIDE `first_party_root`
+    /// is a legitimate external dependency, not a workspace sibling —
+    /// `scan_reachable_modules_with_meta_and_first_party_root` (the scanner's
+    /// first edge-insertion site) must drop the edge rather than record it,
+    /// so the `build.rs` Guard (a) consumer never sees it.
+    #[test]
+    fn scan_reachable_modules_with_meta_and_first_party_root_filters_edge_outside_root() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/widget.client.ts"),
+                r#"import { helper } from "../src/helper";
+                   console.log(helper);"#,
+            )
+            .with_file(
+                root().join("src/helper.ts"),
+                r#"import { linked } from "@acme/linked";
+                   export const helper = linked;"#,
+            )
+            .with_file(
+                PathBuf::from("/external/acme-linked/src/index.ts"),
+                "export const linked = 1;",
+            )
+            .with_workspace_package(
+                "@acme/linked",
+                PathBuf::from("/external/acme-linked/src/index.ts"),
+                PathBuf::from("/external/acme-linked"),
+            );
+        let meta = scan_reachable_modules_with_meta_and_first_party_root(
+            &[root().join("pages/widget.client.ts")],
+            &resolver,
+            Some(&root()),
+        )
+        .unwrap();
+        assert!(
+            meta.workspace_package_edges.is_empty(),
+            "an npm-link/file: dependency resolving outside first_party_root must not be \
+             recorded as a workspace-package edge: {:?}",
+            meta.workspace_package_edges
+        );
+    }
+
+    /// Companion positive control for the test above: a genuine in-root
+    /// workspace sibling must still produce its edge once `first_party_root`
+    /// scoping is active — the filter must not become a blanket "never
+    /// record anything" regression.
+    #[test]
+    fn scan_reachable_modules_with_meta_and_first_party_root_keeps_edge_inside_root() {
+        let resolver = InMemoryResolver::new()
+            .with_file(
+                root().join("pages/widget.client.ts"),
+                r#"import { helper } from "../src/helper";
+                   console.log(helper);"#,
+            )
+            .with_file(
+                root().join("src/helper.ts"),
+                r#"import { shared } from "@acme/shared";
+                   export const helper = shared;"#,
+            )
+            .with_file(
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                "export const shared = 1;",
+            )
+            .with_workspace_package(
+                "@acme/shared",
+                root().join("node_modules/@acme/shared/src/index.ts"),
+                root().join("node_modules/@acme/shared"),
+            );
+        let meta = scan_reachable_modules_with_meta_and_first_party_root(
+            &[root().join("pages/widget.client.ts")],
+            &resolver,
+            Some(&root()),
+        )
+        .unwrap();
         assert_eq!(
             meta.workspace_package_edges,
             vec![WorkspacePackageImportEdge {
