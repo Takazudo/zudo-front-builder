@@ -263,16 +263,30 @@ impl Drop for ProbeSessionGuard {
 /// `crate::output`) so a test can assert on the decision for each verdict
 /// by injecting it directly, without booting a real dev server or
 /// simulating a broken host.
-fn watcher_liveness_warning_for(outcome: &zfb_watcher::LivenessOutcome) -> Option<String> {
+///
+/// `backend` is the [`zfb_watcher::WatchBackend`] the probe actually
+/// drove (issue #2174, codex review finding) — threaded straight into
+/// [`output::fmt_watcher_liveness_timed_out`] so a poll-backed session's
+/// `TimedOut` verdict isn't told to enable `watchPollFallback`, which is
+/// already active.
+fn watcher_liveness_warning_for(
+    outcome: &zfb_watcher::LivenessOutcome,
+    backend: zfb_watcher::WatchBackend,
+) -> Option<String> {
     match outcome {
-        zfb_watcher::LivenessOutcome::TimedOut => Some(output::fmt_watcher_liveness_timed_out()),
+        zfb_watcher::LivenessOutcome::TimedOut => {
+            Some(output::fmt_watcher_liveness_timed_out(backend))
+        }
         zfb_watcher::LivenessOutcome::Live | zfb_watcher::LivenessOutcome::SetupFailed(_) => None,
     }
 }
 
 /// Print/log the side effect for a completed liveness check.
-fn react_to_liveness_outcome(outcome: zfb_watcher::LivenessOutcome) {
-    if let Some(warning) = watcher_liveness_warning_for(&outcome) {
+fn react_to_liveness_outcome(
+    outcome: zfb_watcher::LivenessOutcome,
+    backend: zfb_watcher::WatchBackend,
+) {
+    if let Some(warning) = watcher_liveness_warning_for(&outcome, backend) {
         output::warn(warning);
     }
     match outcome {
@@ -428,8 +442,12 @@ fn run_watcher_liveness_probe_blocking(
         lock_file: Some(lock_file),
     };
 
+    // Captured before `opts` moves into `check_liveness` below (`WatchBackend`
+    // is `Copy`) so the post-check reaction can name the backend that was
+    // actually probed (issue #2174, codex review finding).
+    let backend = opts.backend;
     let outcome = handle.block_on(zfb_watcher::check_liveness(&session_dir, opts));
-    react_to_liveness_outcome(outcome);
+    react_to_liveness_outcome(outcome, backend);
     // `_guard` drops here on every return path above: unlocks + removes
     // `session_dir` regardless of verdict. Because this runs on a
     // `spawn_blocking` thread — which is NOT cancelled when `run()`'s
@@ -657,20 +675,43 @@ mod tests {
 
     #[test]
     fn timed_out_verdict_produces_the_loud_warning_text() {
-        let warning = watcher_liveness_warning_for(&zfb_watcher::LivenessOutcome::TimedOut);
+        let warning = watcher_liveness_warning_for(
+            &zfb_watcher::LivenessOutcome::TimedOut,
+            zfb_watcher::WatchBackend::Native,
+        );
         let text = warning.expect("TimedOut must produce a warning");
         assert!(text.contains("hot-reload"), "got: {text}");
     }
 
+    /// Codex review finding (issue #2174): the TimedOut warning must name
+    /// the backend that was ACTUALLY probed, not always the native one.
+    #[test]
+    fn timed_out_verdict_on_poll_backend_does_not_recommend_enabling_it_again() {
+        let warning = watcher_liveness_warning_for(
+            &zfb_watcher::LivenessOutcome::TimedOut,
+            zfb_watcher::WatchBackend::Poll {
+                interval: std::time::Duration::from_millis(500),
+            },
+        );
+        let text = warning.expect("TimedOut must produce a warning");
+        assert!(
+            !text.contains("watchPollFallback: true"),
+            "must not recommend enabling an already-active poll fallback, got: {text}"
+        );
+    }
+
     #[test]
     fn live_and_setup_failed_verdicts_produce_no_warning() {
-        assert!(watcher_liveness_warning_for(&zfb_watcher::LivenessOutcome::Live).is_none());
-        assert!(
-            watcher_liveness_warning_for(&zfb_watcher::LivenessOutcome::SetupFailed(
-                "disk full".to_string()
-            ))
-            .is_none()
-        );
+        assert!(watcher_liveness_warning_for(
+            &zfb_watcher::LivenessOutcome::Live,
+            zfb_watcher::WatchBackend::Native
+        )
+        .is_none());
+        assert!(watcher_liveness_warning_for(
+            &zfb_watcher::LivenessOutcome::SetupFailed("disk full".to_string()),
+            zfb_watcher::WatchBackend::Native
+        )
+        .is_none());
     }
 
     /// Deterministic proof that spawning the probe never delays whatever

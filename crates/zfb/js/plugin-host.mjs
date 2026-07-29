@@ -1,7 +1,9 @@
 // AUTO-LOADED by zfb-build's plugin runner (Phase B Sub 3 / issue #108,
-// extended for the new `setup` hook in epic #253 / sub-issue #255, and
-// for the `previewMiddleware` hook + `"preview"` setup command in the
-// Preview Parity epic #1541 / sub-issue #1542).
+// extended for the new `setup` hook in epic #253 / sub-issue #255, for
+// the `previewMiddleware` hook + `"preview"` setup command in the
+// Preview Parity epic #1541 / sub-issue #1542, and for the
+// `addVirtualModule` `watchFiles` option + forced `virtualLoad` reload
+// in the Plugin Watch Hook epic #2166 / sub-issue #2167).
 // Do not edit unless you also update the Rust caller in
 // `crates/zfb-build/src/plugin_runner.rs`.
 //
@@ -61,12 +63,20 @@
 //           registered preview-middleware handler; reply contains the
 //           response. Same wire shape as `devInvoke`.
 //
-//   { "id": <number>, "kind": "virtualLoad", "loaderId": "<id>" }
+//   { "id": <number>, "kind": "virtualLoad", "loaderId": "<id>",
+//        "force"?: boolean }
 //        -- invokes a virtual-module loader registered via setup's
 //           addVirtualModule and returns the produced ESM source.
 //           Loader output is cached after the first call so the same
 //           specifier produces a byte-identical module on subsequent
-//           imports.
+//           imports, UNLESS the request carries `"force": true`
+//           (#2167): that bypasses `virtualCache` and re-invokes the
+//           loader, refreshing the memoised entry with the fresh
+//           result. Meant for a loader whose `addVirtualModule`
+//           registration also declared `{ watchFiles }` and needs a
+//           re-read after one of those files changes on disk — wiring
+//           an actual `zfb dev` watch that triggers this is a later
+//           sub-issue; this host only implements the protocol.
 //
 //   { "id": <number>, "kind": "shutdown" }
 //
@@ -86,6 +96,7 @@
 // take pains never to embed a literal newline in a payload (JSON
 // stringification escapes them as `\n` inside strings).
 
+import { isAbsolute } from "node:path";
 import process from "node:process";
 import readline from "node:readline";
 
@@ -106,10 +117,22 @@ const previewHandlers = new Map(); // handlerId -> { plugin, handler }
 // opaque loaderId the Rust side stores on each `VirtualModuleEntry`;
 // `virtualCache` memoises the first invocation's result so a loader
 // runs exactly once per build / per dev-host boot, matching the
-// "loader runs exactly once" contract documented in the spec.
+// "loader runs exactly once" contract documented in the spec — amended
+// in #2167 so a `virtualLoad` request carrying `force: true` bypasses
+// this cache and refreshes the entry (see `handleVirtualLoad`).
 const virtualLoaders = new Map(); // loaderId -> { plugin, loader }
 const virtualCache = new Map(); // loaderId -> string (cached source)
 let nextLoaderId = 0;
+// #2167 codex review: serializes `virtualLoad` requests PER loaderId so
+// two overlapping calls for the same loader (e.g. two forced reloads
+// issued back-to-back as a watched file changes twice in quick
+// succession) are always processed in receipt order. Without this, an
+// earlier-started-but-later-resolving loader() call could overwrite
+// `virtualCache` with a stale result after a newer call already landed
+// the fresh one. Keyed by loaderId so unrelated virtual modules never
+// block on each other. Holds the tail promise of each loader's queue;
+// reset alongside `virtualLoaders`/`virtualCache` in `handleSetup`.
+const virtualLoadQueues = new Map(); // loaderId -> Promise<void>, the queue tail
 
 function send(envelope) {
   stdout.write(JSON.stringify(envelope) + "\n");
@@ -208,6 +231,7 @@ async function handleSetup(id, msg) {
   // doesn't surface stale loaders / routes from the previous run.
   virtualLoaders.clear();
   virtualCache.clear();
+  virtualLoadQueues.clear();
   nextLoaderId = 0;
   const command = msg.ctx && msg.ctx.command;
   if (command !== "build" && command !== "dev" && command !== "preview") {
@@ -260,7 +284,7 @@ async function handleSetup(id, msg) {
         }
         registrations.push({ kind: "alias", from, to });
       },
-      addVirtualModule(specifier, loader) {
+      addVirtualModule(specifier, loader, options) {
         if (typeof specifier !== "string" || specifier.length === 0) {
           throw new Error(
             `addVirtualModule: \`specifier\` must be a non-empty string (got ${JSON.stringify(specifier)})`,
@@ -271,9 +295,56 @@ async function handleSetup(id, msg) {
             `addVirtualModule: \`loader\` must be a function returning a string or Promise<string> (got ${typeof loader})`,
           );
         }
+        // #2167: optional third arg `{ watchFiles }` — extra filesystem
+        // paths a `zfb dev` watcher should track on this loader's behalf,
+        // for a loader whose output depends on files it reads directly
+        // (e.g. via node:fs) rather than static ESM imports the dev
+        // bundler would otherwise notice on its own. Absolute-only is
+        // enforced HERE, host-side, mirroring `extraWatchPaths`'s
+        // absolute-only rule (`crates/zfb/src/config.rs`'s
+        // `validate_config`) — unlike `addAlias`/`injectRoute`/
+        // `addClientEntry` paths, `watchFiles` entries are never resolved
+        // against the project root downstream, so a relative entry would
+        // have no defined base directory to resolve against.
+        let watchFiles = [];
+        if (options != null) {
+          if (typeof options !== "object") {
+            throw new Error(
+              `addVirtualModule: \`options\` must be an object (got ${JSON.stringify(options)})`,
+            );
+          }
+          if (options.watchFiles !== undefined) {
+            if (!Array.isArray(options.watchFiles)) {
+              throw new Error(
+                `addVirtualModule: \`options.watchFiles\` must be an array of absolute path strings (got ${typeof options.watchFiles})`,
+              );
+            }
+            for (const entry of options.watchFiles) {
+              if (typeof entry !== "string" || entry.length === 0) {
+                throw new Error(
+                  `addVirtualModule: \`options.watchFiles\` entries must be non-empty strings (got ${JSON.stringify(entry)})`,
+                );
+              }
+              if (!isAbsolute(entry)) {
+                throw new Error(
+                  `addVirtualModule: \`options.watchFiles\` entries must be absolute paths ` +
+                    `(got ${JSON.stringify(entry)}); zfb does not resolve watchFiles against the project root`,
+                );
+              }
+            }
+            // Copy rather than alias the caller's array (codex review,
+            // #2167): the registration is only serialized at the end of
+            // the whole `setup` round, so an aliased reference would let
+            // a plugin that reuses/mutates the same array across
+            // multiple `addVirtualModule` calls (or mutates it after
+            // registering, bypassing the validation above) silently
+            // corrupt an already-registered entry's watchFiles.
+            watchFiles = options.watchFiles.slice();
+          }
+        }
         const loaderId = `v${nextLoaderId++}`;
         virtualLoaders.set(loaderId, { plugin: p.name, loader });
-        registrations.push({ kind: "virtualModule", specifier, loaderId });
+        registrations.push({ kind: "virtualModule", specifier, loaderId, watchFiles });
       },
       injectRoute(pattern, entrypoint, opts) {
         if (typeof pattern !== "string" || !pattern.startsWith("/")) {
@@ -381,11 +452,32 @@ async function handleVirtualLoad(id, msg) {
     );
     return;
   }
+  // Serialize on the per-loaderId queue (codex review, #2167) so an
+  // overlapping call for the SAME loader can never resolve out of
+  // order and clobber `virtualCache` with a stale result. `.catch` on
+  // the previous tail keeps one failed load from wedging the queue for
+  // every subsequent request against this loaderId.
+  const previous = virtualLoadQueues.get(msg.loaderId) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(() => runVirtualLoad(id, msg, entry));
+  virtualLoadQueues.set(msg.loaderId, next);
+  await next;
+}
+
+async function runVirtualLoad(id, msg, entry) {
   // First-call wins: subsequent invocations return the memoised
   // source string verbatim. Matches the "loader runs exactly once
   // per build" contract from #255 and the cache check in the V8 host
   // (#260) / esbuild plugin (#261).
-  if (virtualCache.has(msg.loaderId)) {
+  //
+  // #2167 amendment: `force: true` bypasses this cache-hit and falls
+  // through to re-invoke the loader below, refreshing the memoised
+  // entry with the fresh result. The "exactly once" contract now reads
+  // "exactly once, unless a forced reload was explicitly requested".
+  // Running inside the per-loaderId queue above guarantees this whole
+  // check-then-refresh sequence never races another call for the same
+  // loaderId.
+  const force = msg.force === true;
+  if (!force && virtualCache.has(msg.loaderId)) {
     sendOk(id, { source: virtualCache.get(msg.loaderId) });
     return;
   }

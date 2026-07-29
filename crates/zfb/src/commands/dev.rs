@@ -211,6 +211,84 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
     roots
 }
 
+/// Derive the [`zfb_watcher::WatchBackend`] the dev server's watchers
+/// should drive from `Config`'s poll-fallback fields (issue #2174).
+///
+/// `watchPollFallback: false` (the default) keeps
+/// [`zfb_watcher::WatchBackend::Native`]. `true` selects
+/// [`zfb_watcher::WatchBackend::Poll`] at `watchPollIntervalMs`
+/// (falling back to `zfb_watcher::DEFAULT_POLL_INTERVAL` when absent) —
+/// config-load validation (`crate::config::validate`) already bounds the
+/// interval to 50..=10_000ms and warns when it is set but dormant.
+///
+/// **`ZFB_DEV_TIMING`-gated observable signal (issue #2175, codex review
+/// finding):** without a way to see WHICH backend a session actually
+/// selected, an e2e over `watchPollFallback: true` cannot distinguish "the
+/// poll backend is live" from "the native backend happens to still work" —
+/// both observe the same edit/create events, so a revert of this exact
+/// config-to-backend threading would leave such a test silently green.
+/// Prints `"[zfb-timing] watch backend: poll interval=<ms>ms"` or
+/// `"[zfb-timing] watch backend: native"` once per call (this fn runs at
+/// each of the three watch-construction call sites), same env var and
+/// truthy parse as every other `ZFB_DEV_TIMING` line in this file.
+fn watch_backend_from_config(cfg: &config::Config) -> zfb_watcher::WatchBackend {
+    let backend = if !cfg.watch_poll_fallback {
+        zfb_watcher::WatchBackend::Native
+    } else {
+        let interval_ms = cfg
+            .watch_poll_interval_ms
+            .unwrap_or(zfb_watcher::DEFAULT_POLL_INTERVAL.as_millis() as u64);
+        zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_millis(interval_ms),
+        }
+    };
+    if dev_timing_enabled() {
+        match backend {
+            zfb_watcher::WatchBackend::Native => {
+                eprintln!("[zfb-timing] watch backend: native");
+            }
+            zfb_watcher::WatchBackend::Poll { interval } => {
+                eprintln!(
+                    "[zfb-timing] watch backend: poll interval={}ms",
+                    interval.as_millis()
+                );
+            }
+        }
+    }
+    backend
+}
+
+/// Deadline-margin multiplier applied to the watcher-liveness probe when
+/// it drives the poll backend (issue #2174, codex review finding).
+///
+/// [`zfb_watcher::WatchBackend::Poll`] only observes changes at its own
+/// re-scan cadence: a marker the probe writes just after a scan may not
+/// be picked up until roughly the NEXT scan, nearly a full `interval`
+/// later. At the maximum configured `watchPollIntervalMs` (10_000ms),
+/// the probe's default 10s deadline alone would race a genuinely healthy
+/// poll backend into a false `TimedOut` verdict. `3` gives comfortable
+/// room for a full scan cycle plus scheduling jitter without ever
+/// SHRINKING the deadline below the native-backend default (below) for
+/// a short poll interval.
+const LIVENESS_POLL_DEADLINE_INTERVAL_MULTIPLIER: u32 = 3;
+
+/// Build the watcher-liveness probe's [`zfb_watcher::LivenessOpts`] for
+/// `backend` (issue #2174): same as [`zfb_watcher::LivenessOpts::default`]
+/// on [`zfb_watcher::WatchBackend::Native`], but with the deadline scaled
+/// up per [`LIVENESS_POLL_DEADLINE_INTERVAL_MULTIPLIER`] when `backend`
+/// is [`zfb_watcher::WatchBackend::Poll`] — never below the default,
+/// since a short poll interval needs no extra margin.
+fn liveness_opts_for_backend(backend: zfb_watcher::WatchBackend) -> zfb_watcher::LivenessOpts {
+    let default_deadline = zfb_watcher::LivenessOpts::default().deadline;
+    let deadline = match backend {
+        zfb_watcher::WatchBackend::Native => default_deadline,
+        zfb_watcher::WatchBackend::Poll { interval } => {
+            default_deadline.max(interval * LIVENESS_POLL_DEADLINE_INTERVAL_MULTIPLIER)
+        }
+    };
+    zfb_watcher::LivenessOpts::new(deadline).with_backend(backend)
+}
+
 /// Does a project-root-relative collection path escape the project root
 /// via `..`? A purely LEXICAL check (no filesystem access): walk the
 /// components tracking depth, and report an escape the moment a
@@ -749,21 +827,39 @@ impl RewritePrewarmWiring {
 ///   `tokio::select!` pattern issue #2102 built for `boot_handle`, via
 ///   `map_redirects_watch_join_result` (declared beside
 ///   `map_boot_task_join_result` further down this file).
+///
+/// ## Watch backend (issue #2174)
+///
+/// `backend` is threaded explicitly from the caller (derived via
+/// [`watch_backend_from_config`]) rather than read from `Config` here —
+/// this fn has no access to the project config, only the two resolved
+/// paths and the prewarm wiring. `watchPollFallback` selects
+/// [`zfb_watcher::WatchBackend::Poll`] for this targeted `_redirects`
+/// watch too, matching the orchestrator's own dev-loop watcher.
+#[cfg(feature = "embed_v8")]
+fn redirects_watch_options(backend: zfb_watcher::WatchBackend) -> zfb_watcher::WatchOptions {
+    zfb_watcher::WatchOptions::default()
+        .with_debounce(zfb_watcher::DEFAULT_DEBOUNCE)
+        .with_backend(backend)
+}
+
 #[cfg(feature = "embed_v8")]
 fn spawn_redirects_watch(
     project_root: &Path,
     public_root: &Path,
     prewarm: Option<RewritePrewarmWiring>,
+    backend: zfb_watcher::WatchBackend,
 ) -> (RedirectsHandle, tokio::task::JoinHandle<()>) {
     let redirects_path = public_root.join("_redirects");
     let handle: RedirectsHandle = Arc::new(std::sync::RwLock::new(load_redirects_at_boot(
         &redirects_path,
     )));
 
-    let (mut watcher, mut rx) = match zfb_watcher::Watcher::start_with_debounce(
+    let (mut watcher, mut rx) = match zfb_watcher::Watcher::start_with_options(
         project_root,
         std::iter::empty::<&Path>(),
-        zfb_watcher::DEFAULT_DEBOUNCE,
+        std::iter::empty::<&Path>(),
+        redirects_watch_options(backend),
     ) {
         Ok(pair) => pair,
         Err(e) => {
@@ -1044,6 +1140,34 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // #1196 — package-registered client entries from addClientEntry.
     let registered_client_entries = setup_registries.client_entries.clone();
 
+    // Issue #2168 (epic #2166 Sub 2 "Dev Refresh State") — session-lifetime
+    // live-refresh state for plugin virtual modules: ONE shared interior-
+    // mutable source-text store, seeded here from the boot-time setup
+    // prefetch above, plus the ownership map (watched path -> owning
+    // loaders) derived from the SAME `setup_registries.virtual_modules`
+    // registry the prefetch just walked. Every consumer that used to hold
+    // its own frozen copy of `dev_plugin_virtual_modules` (the
+    // `DevRebuildInputs` field, the restarted V8 host's plugin hooks, and
+    // the islands/CSS/client-scripts rebuild closures below) now snapshots
+    // THIS store at use time — updating only one of them would ship a
+    // split-brain source between the bundle and the V8 host / islands
+    // scan. `refresh` IS called from the live watcher loop since #2169:
+    // the orchestrator's pre-tick hook (installed on `orch_config` below)
+    // awaits it before dispatching any tick whose batch touches the
+    // plugin watch-file set.
+    let plugin_watch_ownership =
+        zfb_build::PluginWatchOwnership::from_registry(&setup_registries.virtual_modules);
+    // Extracted before `plugin_watch_ownership` moves into `plugin_refresh`
+    // below; consumed further down once `raw_import_invalidation` exists.
+    let plugin_watch_files = plugin_watch_ownership.watched_paths();
+    let plugin_virtual_module_store =
+        zfb_build::PluginVirtualModuleStore::seeded(dev_plugin_virtual_modules.iter().cloned());
+    let plugin_refresh = zfb_build::PluginRefreshState::new(
+        plugin_host.clone(),
+        plugin_watch_ownership,
+        plugin_virtual_module_store,
+    );
+
     // Issue #1182 — decide whether the eager dev bundle is DEFERRED past
     // `TcpListener::bind`. Only in boot-lazy mode with a servable prebuilt
     // `dist/`, and not opted out (#1188): then the prebuilt `dist/` serves every
@@ -1096,6 +1220,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         v8_plugin_hooks,
         dev_plugin_alias_entries.clone(),
         dev_plugin_virtual_modules.clone(),
+        // Issue #2168 — the shared refresh state constructed above, stashed
+        // on `DevRebuildInputs` so it is reachable from the same struct the
+        // three plugin-data consumers below already read from.
+        plugin_refresh.clone(),
         // S2 (#1230) — the package-owned injected routes registered during
         // setup. Boot materialises the survivor set into a session-lifetime
         // staging dir and threads it into the dev bundler so the injected
@@ -1364,6 +1492,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         }
     }
     let raw_import_invalidation = zfb_build::RawImportInvalidation::default();
+    // Issue #2168 — populate the plugin watch-file registry ONCE, here at
+    // boot. Unlike the client-script / islands sets this same
+    // `RawImportInvalidation` also carries, plugin registrations are frozen
+    // after `setup` runs, so there is no later successful-bundle tick that
+    // would call `replace_plugin_watch_files` again.
+    raw_import_invalidation.replace_plugin_watch_files(plugin_watch_files);
 
     // #1581 — seed the session-live known-content registry from the boot
     // collection MEMBERSHIP walk (not the frontmatter-hash map, which drops
@@ -1381,6 +1515,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
+        // Issue #2174 — `watchPollFallback`/`watchPollIntervalMs` select
+        // the poll watch backend as a fallback for hosts where the
+        // native backend (FSEvents/inotify) is unavailable or unreliable.
+        .with_backend(watch_backend_from_config(&cfg))
         .with_policy(
             zfb_build::GranularityPolicy::default()
                 .with_content_roots(content_roots)
@@ -1396,7 +1534,34 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .iter()
                 .map(|name| name.to_string())
                 .collect(),
-        );
+        )
+        // Issue #2169 (epic #2166 Sub 3) — the live-watcher wiring #2168
+        // deliberately left out: when a tick's batch touches the plugin
+        // watch-file set registered above, the orchestrator awaits this
+        // hook BEFORE dispatching the tick, so the re-invoked loader
+        // output is already in the shared store when the tick's
+        // snapshot-at-use-time consumers (main bundler, V8 host hooks,
+        // islands/CSS/client-scripts closures) read it. `refresh` reports
+        // per-loader failures via its outcome (logging them itself, and
+        // keeping the store's last-good memo — its atomicity contract),
+        // so this closure always returns `Ok`; the orchestrator's own
+        // error tolerance is for hook-infrastructure failures only.
+        .with_pre_tick_refresh({
+            let plugin_refresh_for_hook = plugin_refresh.clone();
+            Arc::new(move |changed_paths: Vec<PathBuf>| {
+                let refresh = plugin_refresh_for_hook.clone();
+                Box::pin(async move {
+                    let outcome = refresh.refresh(&changed_paths).await;
+                    if !outcome.refreshed.is_empty() {
+                        tracing::debug!(
+                            refreshed = ?outcome.refreshed,
+                            "plugin virtual modules refreshed before tick"
+                        );
+                    }
+                    Ok(())
+                }) as zfb_build::PreTickRefreshFuture
+            })
+        });
     let orchestrator = BuildOrchestrator::new(orch_config, graph, pipeline);
 
     let render_pages: PageRenderer = match dev_session.as_ref() {
@@ -1472,7 +1637,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #1189/#1501: write islands.js + companions to the isolated
         // dev-assets root, not the build-shared `dist/`.
         let dev_assets_root_for_islands = dev_assets_root.clone();
-        let plugin_cfg = islands_plugin_config.clone();
+        // Aliases never change after setup — only capture those once.
+        let plugin_alias_entries_for_islands = islands_plugin_config.alias_entries.clone();
+        // Issue #2168: virtual-module SOURCE is re-read from the shared
+        // store on every call (the store handle itself is cheap to clone —
+        // an `Arc` — so this is not a boot-time freeze), so a forced plugin
+        // reload (wired to the live watcher by #2169's pre-tick hook) is
+        // visible on the islands bundle's very next tick rather than only
+        // at boot.
+        let plugin_virtual_module_store_for_islands = plugin_refresh.store().clone();
         let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
         let url_prefix = dev_islands_url_prefix.clone();
@@ -1487,6 +1660,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // should fail loudly); the boot path catches it and warns-and-
         // continues (see step 7b).
         Some(Arc::new(move || -> Result<Option<IslandsBundleInfo>> {
+            let plugin_cfg = crate::commands::build::IslandsPluginConfig {
+                alias_entries: plugin_alias_entries_for_islands.clone(),
+                virtual_modules: plugin_virtual_module_store_for_islands.snapshot_pairs(),
+            };
             rebundle_islands(
                 &project_root,
                 &dev_assets_root_for_islands,
@@ -1569,7 +1746,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let dev_assets_root_for_css = dev_assets_root.clone();
         let cfg_for_css = cfg.clone();
         let plugin_alias_entries_for_css = islands_plugin_config.alias_entries.clone();
-        let plugin_virtual_modules_for_css = islands_plugin_config.virtual_modules.clone();
+        // Issue #2168: re-read from the shared store at use time (see the
+        // matching change to `run_islands` above) instead of freezing
+        // `islands_plugin_config.virtual_modules` at closure-construction
+        // time.
+        let plugin_virtual_module_store_for_css = plugin_refresh.store().clone();
         let url_prefix = dev_css_url_prefix.clone();
         let url_handle = Arc::clone(&css_bundle_url_handle);
         // Issue #1802: share the same mirror-root publication seam the boot
@@ -1577,6 +1758,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // the dev-watch registration's source plan current.
         let raw_import_invalidation_for_css = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
+            let plugin_virtual_modules_for_css =
+                plugin_virtual_module_store_for_css.snapshot_pairs();
             let payload = build_dev_css_and_publish_mirror_roots(
                 &project_root_for_css,
                 &dev_assets_root_for_css,
@@ -1669,7 +1852,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let output_filenames = Arc::clone(&live_client_script_outputs);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
-        let plugin_config_for_cs = islands_plugin_config.clone();
+        // Aliases never change after setup — capture those once (mirrors
+        // `run_islands` above).
+        let plugin_alias_entries_for_cs = islands_plugin_config.alias_entries.clone();
+        // Issue #2169 — this closure had the same boot-time freeze the
+        // islands/CSS closures shed in #2168: cloning the whole
+        // `islands_plugin_config` here pinned `virtual_modules` to the
+        // setup-time prefetch, so a pre-tick plugin refresh would have
+        // shipped a split-brain source (fresh islands/CSS/SSR, stale
+        // client scripts). Snapshot the shared store at use time instead.
+        let plugin_virtual_module_store_for_cs = plugin_refresh.store().clone();
         let raw_invalidation = raw_import_invalidation.clone();
         Some(Arc::new(move || -> Result<bool> {
             let prev = output_filenames
@@ -1682,6 +1874,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     p.into_inner()
                 })
                 .clone();
+            let plugin_config_for_cs = crate::commands::build::IslandsPluginConfig {
+                alias_entries: plugin_alias_entries_for_cs.clone(),
+                virtual_modules: plugin_virtual_module_store_for_cs.snapshot_pairs(),
+            };
             let outcome =
                 crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
                     &project_root_for_cs,
@@ -1999,8 +2195,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // `redirects_watch_join` handle below, wired into the same
     // `tokio::select!` issue #2102 built for `boot_handle` (see the
     // `res = &mut redirects_watch_join` arm further down).
-    let (redirects_handle, mut redirects_watch_join) =
-        spawn_redirects_watch(&project_root, &public_root, rewrite_prewarm.clone());
+    let (redirects_handle, mut redirects_watch_join) = spawn_redirects_watch(
+        &project_root,
+        &public_root,
+        rewrite_prewarm.clone(),
+        watch_backend_from_config(&cfg),
+    );
     // Issue #2004 — the deferred boot task needs the same handle the
     // server reads from; clone before `ServeOpts` consumes the original.
     let redirects_handle_for_boot = Arc::clone(&redirects_handle);
@@ -2602,10 +2802,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // orchestrator-death path this epic supervises — but its "half-alive"
     // audience is narrower than when it was written. That narrowing is a
     // deliberate outcome of this epic's work, not a defect in the probe.
+    // Issue #2174 — probe the SAME backend the real session watchers
+    // drive: a `watchPollFallback`-configured session running the poll
+    // backend must have its liveness self-check probe the poll backend
+    // too, not the native one (a native-backed probe would report on
+    // FSEvents/inotify health, which says nothing about the backend
+    // actually in use). `liveness_opts_for_backend` also scales the
+    // deadline up for the poll backend — see its doc comment for why
+    // the default 10s deadline alone can false-positive at the maximum
+    // configured poll interval.
     let liveness_probe_handle = spawn_watcher_liveness_probe(
         probe_project_root,
         probe_effective_watch_targets,
-        zfb_watcher::LivenessOpts::default(),
+        liveness_opts_for_backend(watch_backend_from_config(&cfg)),
     );
 
     // Announce the ACTUAL bound port, not the requested one: with
@@ -4473,9 +4682,19 @@ struct DevRouteTables {
 #[cfg(feature = "embed_v8")]
 struct DevRebuildInputs {
     cfg: config::Config,
+    /// Boot-time BASELINE hooks — aliases (which never change after setup)
+    /// plus each registered specifier's plugin-name/shape. Never read
+    /// directly for a tick restart; see [`Self::live_v8_plugin_hooks`].
     v8_plugin_hooks: zfb_render::PluginRegistryHooks,
     plugin_alias_entries: Vec<(String, String)>,
-    plugin_virtual_modules: Vec<(String, String)>,
+    /// Issue #2168: replaces the old frozen `plugin_virtual_modules:
+    /// Vec<(String, String)>` field. Holds the shared virtual-module
+    /// source store + watch ownership map + a `PluginHost` clone, so a
+    /// forced reload (wired to the live watcher by #2169's pre-tick hook)
+    /// publishes to the SAME store every consumer below reads from at use
+    /// time — see [`Self::plugin_virtual_modules`] and
+    /// [`Self::live_v8_plugin_hooks`].
+    plugin_refresh: zfb_build::PluginRefreshState,
     /// Process-lifetime embedded-esbuild extraction (#994 item A): the
     /// `(TempDir, PathBuf)` pair from one boot-time
     /// [`crate::render_pipeline::embedded_binary`] call, threaded into
@@ -4522,6 +4741,31 @@ struct DevRebuildInputs {
 
 #[cfg(feature = "embed_v8")]
 impl DevRebuildInputs {
+    /// Fresh `(specifier, source)` pairs for the main bundler's
+    /// `BundlerInput::plugin_virtual_modules` (issue #2168) — read from the
+    /// live shared store rather than a boot-time freeze, so a forced
+    /// virtual-module reload is embedded in the very next re-bundle.
+    fn plugin_virtual_modules(&self) -> Vec<(String, String)> {
+        self.plugin_refresh.store().snapshot_pairs()
+    }
+
+    /// Fresh V8 plugin-registry hooks for the restarted renderer (issue
+    /// #2168). `refresh_bundle_and_routes` restarts the embedded V8 host on
+    /// EVERY tick already; without this the restarted host would keep
+    /// serving `v8_plugin_hooks`' boot-time frozen virtual-module source
+    /// text forever, split-brained against whatever the bundle above just
+    /// embedded. The alias map and each specifier's plugin-name/shape never
+    /// change after setup, so only `source` is re-read from the live store.
+    fn live_v8_plugin_hooks(&self) -> zfb_render::PluginRegistryHooks {
+        let mut hooks = self.v8_plugin_hooks.clone();
+        for (specifier, source) in self.plugin_refresh.store().snapshot() {
+            if let Some(entry) = hooks.virtual_modules.get_mut(&specifier) {
+                entry.source = source;
+            }
+        }
+        hooks
+    }
+
     /// Path of the boot-time extracted esbuild binary (#994 item A), if any.
     fn esbuild_path(&self) -> Option<&Path> {
         self.esbuild.as_ref().map(|(_, path)| path.as_path())
@@ -5868,7 +6112,7 @@ impl DevRenderSession {
                 project_root,
                 &inputs.cfg,
                 inputs.plugin_alias_entries.clone(),
-                inputs.plugin_virtual_modules.clone(),
+                inputs.plugin_virtual_modules(),
                 timing_enabled,
                 session_guard.as_mut(),
                 inputs.esbuild_path(),
@@ -5956,7 +6200,7 @@ impl DevRenderSession {
             backend: Backend::EmbeddedV8 {
                 host_factory:
                     crate::v8_host_adapter::make_v8_host_factory_with_dev_content_trace_wrapper(
-                        inputs.v8_plugin_hooks.clone(),
+                        inputs.live_v8_plugin_hooks(),
                         trace_wrapper_source,
                     ),
             },
@@ -6563,7 +6807,9 @@ export default {{
 /// Truthy values: `1`, `true` (case-insensitive). Everything else — including
 /// unset, empty, and unrecognized values — is off, so the hot path has zero
 /// overhead.
-#[cfg(feature = "embed_v8")]
+///
+/// Not `embed_v8`-gated: `watch_backend_from_config` consults it in every
+/// build flavor, including no-v8.
 pub(crate) fn dev_timing_enabled() -> bool {
     std::env::var("ZFB_DEV_TIMING")
         .ok()
@@ -7448,7 +7694,7 @@ fn ensure_dev_routes_available(
 // backed by the in-process V8 host. Compiled in only when the
 // `embed_v8` feature is on (issue #371, sub-task 4.1a).
 #[cfg(feature = "embed_v8")]
-#[allow(clippy::too_many_arguments)] // 8 params: #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); a struct would just shuffle the same threaded fields
+#[allow(clippy::too_many_arguments)] // 9 params: #1550 added collection_roots (index-aligned resolved absolute roots for canonical-path matching); #2168 added plugin_refresh (the shared refresh state stashed onto DevRebuildInputs); a struct would just shuffle the same threaded fields
 fn boot_dev_renderer(
     project_root: &Path,
     cfg: &config::Config,
@@ -7464,9 +7710,16 @@ fn boot_dev_renderer(
     // esbuild invocation can resolve plugin aliases from pages / layouts /
     // shared modules (#268).
     plugin_alias_entries: Vec<(String, String)>,
-    // Plugin-registered virtual-module `(specifier, source)` pairs.
+    // Plugin-registered virtual-module `(specifier, source)` pairs — used
+    // directly for the BOOT bundle only (this call happens synchronously
+    // right after `plugin_refresh`'s store is seeded from the same setup
+    // prefetch, so the two are byte-identical at this point).
     // Threaded into `BundlerInput::plugin_virtual_modules` (#268).
     plugin_virtual_modules: Vec<(String, String)>,
+    // Issue #2168 — the shared refresh state (source store + watch
+    // ownership + `PluginHost` clone), stashed onto `DevRebuildInputs` so
+    // every POST-boot tick reads the live store instead of a frozen copy.
+    plugin_refresh: zfb_build::PluginRefreshState,
     // S2 (#1230) — package-owned injected routes registered during setup.
     // Materialised ONCE here into a session-lifetime staging dir (the B1
     // multi-root mechanism) whose root is threaded into the dev bundler via
@@ -7601,7 +7854,10 @@ fn boot_dev_renderer(
         cfg: cfg.clone(),
         v8_plugin_hooks: v8_plugin_hooks.clone(),
         plugin_alias_entries: plugin_alias_entries.clone(),
-        plugin_virtual_modules: plugin_virtual_modules.clone(),
+        // Issue #2168 — replaces the old `plugin_virtual_modules:
+        // plugin_virtual_modules.clone()` field: every POST-boot consumer
+        // reads the live store via `plugin_refresh` instead.
+        plugin_refresh: plugin_refresh.clone(),
         // #994 item A — extract the embedded esbuild binary ONCE here;
         // the handle lives on `DevRebuildInputs` for the whole dev
         // session, so every tick's `assemble_bundler_input` skips its
@@ -9171,7 +9427,7 @@ pub(crate) fn stub_session_for_adapter_tests(
                 cfg: config::Config::default(),
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
-                plugin_virtual_modules: Vec::new(),
+                plugin_refresh: zfb_build::PluginRefreshState::default(),
                 esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
@@ -9212,6 +9468,146 @@ mod tests {
         resolve_probe_parent_dir, unique_probe_session_dir_name,
     };
     use std::path::PathBuf;
+
+    // -----------------------------------------------------------------
+    // Watch backend selection (issue #2174)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn watch_backend_from_config_defaults_to_native() {
+        let cfg = config::Config::default();
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Native
+        );
+    }
+
+    #[test]
+    fn watch_backend_from_config_selects_poll_with_configured_interval() {
+        let cfg = config::Config {
+            watch_poll_fallback: true,
+            watch_poll_interval_ms: Some(250),
+            ..config::Config::default()
+        };
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Poll {
+                interval: std::time::Duration::from_millis(250)
+            }
+        );
+    }
+
+    #[test]
+    fn watch_backend_from_config_selects_poll_with_default_interval_when_ms_absent() {
+        let cfg = config::Config {
+            watch_poll_fallback: true,
+            watch_poll_interval_ms: None,
+            ..config::Config::default()
+        };
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Poll {
+                interval: zfb_watcher::DEFAULT_POLL_INTERVAL
+            }
+        );
+    }
+
+    #[test]
+    fn watch_backend_from_config_stays_native_when_interval_set_without_fallback() {
+        // Dormant-but-set case (config.rs warns, does not error): the
+        // interval alone must never flip the backend.
+        let cfg = config::Config {
+            watch_poll_fallback: false,
+            watch_poll_interval_ms: Some(250),
+            ..config::Config::default()
+        };
+        assert_eq!(
+            watch_backend_from_config(&cfg),
+            zfb_watcher::WatchBackend::Native
+        );
+    }
+
+    /// Constructor-selection site (b): the targeted `_redirects` watch's
+    /// own `WatchOptions` construction picks up the poll backend.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn redirects_watch_options_selects_poll_backend_when_configured() {
+        let poll_backend = zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_millis(250),
+        };
+        let options = redirects_watch_options(poll_backend);
+        assert_eq!(options.backend, poll_backend);
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn redirects_watch_options_defaults_to_native_backend() {
+        let options = redirects_watch_options(zfb_watcher::WatchBackend::Native);
+        assert_eq!(options.backend, zfb_watcher::WatchBackend::Native);
+    }
+
+    /// Constructor-selection site (c): the watcher-liveness probe's own
+    /// `LivenessOpts` picks up the same backend the real session
+    /// watchers drive, via `with_backend` (never a new positional arg on
+    /// `check_liveness`/`spawn_watcher_liveness_probe`).
+    #[test]
+    fn liveness_opts_select_poll_backend_from_poll_flagged_config() {
+        let cfg = config::Config {
+            watch_poll_fallback: true,
+            watch_poll_interval_ms: Some(250),
+            ..config::Config::default()
+        };
+        let opts = liveness_opts_for_backend(watch_backend_from_config(&cfg));
+        assert_eq!(
+            opts.backend,
+            zfb_watcher::WatchBackend::Poll {
+                interval: std::time::Duration::from_millis(250)
+            }
+        );
+    }
+
+    #[test]
+    fn liveness_opts_stay_native_from_default_config() {
+        let cfg = config::Config::default();
+        let opts = liveness_opts_for_backend(watch_backend_from_config(&cfg));
+        assert_eq!(opts.backend, zfb_watcher::WatchBackend::Native);
+    }
+
+    /// Codex review finding (issue #2174): a poll-backed liveness probe
+    /// must extend its deadline well beyond the configured poll
+    /// interval, or a healthy poll backend at the maximum allowed
+    /// interval (10s) can false-positive into a `TimedOut` verdict
+    /// before the probe's own `PollWatcher` has even completed its
+    /// first re-scan.
+    #[test]
+    fn liveness_opts_for_backend_keeps_default_deadline_for_native() {
+        let opts = liveness_opts_for_backend(zfb_watcher::WatchBackend::Native);
+        assert_eq!(opts.backend, zfb_watcher::WatchBackend::Native);
+        assert_eq!(opts.deadline, zfb_watcher::LivenessOpts::default().deadline);
+    }
+
+    #[test]
+    fn liveness_opts_for_backend_scales_deadline_with_a_long_poll_interval() {
+        let backend = zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_secs(10),
+        };
+        let opts = liveness_opts_for_backend(backend);
+        assert_eq!(opts.backend, backend);
+        assert!(
+            opts.deadline >= std::time::Duration::from_secs(10) * 3,
+            "deadline must scale with the configured poll interval, got {:?}",
+            opts.deadline
+        );
+    }
+
+    #[test]
+    fn liveness_opts_for_backend_never_shrinks_deadline_below_default_for_a_short_poll_interval() {
+        let backend = zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_millis(100),
+        };
+        let opts = liveness_opts_for_backend(backend);
+        assert_eq!(opts.deadline, zfb_watcher::LivenessOpts::default().deadline);
+    }
 
     // -----------------------------------------------------------------
     // No-spurious-rebuild proof (issue #1719, epic #1716)
@@ -9602,7 +9998,7 @@ mod tests {
                 cfg,
                 v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
                 plugin_alias_entries: Vec::new(),
-                plugin_virtual_modules: Vec::new(),
+                plugin_refresh: zfb_build::PluginRefreshState::default(),
                 esbuild: None,
                 injected_pages_root: None,
                 empty_user_pages_root: None,
@@ -15394,6 +15790,121 @@ mod tests {
              `zfb dev` call, and the override belongs ONLY to build's owned-config \
              mutation in commands/build.rs::run() (#2117); leaking it here would hard-fail \
              `zfb dev` for any strict-configured project"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Dev refresh state (issue #2168, epic #2166 Sub 2) — no split-brain
+    // between the plugin-virtual-module consumers.
+    // -----------------------------------------------------------------
+    //
+    // Exercises the exact production accessor functions, not a
+    // reimplementation of them:
+    //  - `DevRebuildInputs::plugin_virtual_modules` (the main bundler's
+    //    `plugin_virtual_modules` input, read in `refresh_bundle_and_routes`).
+    //  - `DevRebuildInputs::live_v8_plugin_hooks` (the restarted V8 host's
+    //    plugin-registry hooks).
+    //  - The islands/CSS/client-scripts rebuild closures' shared snapshot
+    //    expression (`plugin_refresh.store().snapshot_pairs()`, mirrored
+    //    here to prove it agrees with the other two without spinning up a
+    //    real bundle — see `run_islands` / `run_css` /
+    //    `run_client_scripts` in `run()`; the client-scripts closure
+    //    joined the pattern in #2169, shedding its boot-time
+    //    `islands_plugin_config` freeze).
+    //
+    // Publishes directly via `PluginVirtualModuleStore::publish` (skipping
+    // a real `PluginHost`) to simulate a completed refresh — the atomicity
+    // / failure-handling contract of `PluginRefreshState::refresh` itself is
+    // covered by `zfb_build::plugin_refresh`'s own tests (real `PluginHost`
+    // + Node subprocess), which is the appropriate crate for that.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn plugin_refresh_store_update_is_observed_identically_by_all_consumers() {
+        let store = zfb_build::PluginVirtualModuleStore::seeded([(
+            "virtual:data".to_string(),
+            "export default 1".to_string(),
+        )]);
+        let plugin_refresh = zfb_build::PluginRefreshState::new(
+            None,
+            zfb_build::PluginWatchOwnership::default(),
+            store,
+        );
+
+        let mut v8_plugin_hooks = zfb_render::PluginRegistryHooks::new();
+        v8_plugin_hooks.add_virtual_module("virtual:data", "export default 1", "test-plugin");
+
+        let inputs = DevRebuildInputs {
+            cfg: config::Config::default(),
+            v8_plugin_hooks,
+            plugin_alias_entries: Vec::new(),
+            plugin_refresh,
+            esbuild: None,
+            injected_pages_root: None,
+            empty_user_pages_root: None,
+        };
+
+        // Pre-refresh: all three consumers agree on the SEEDED value.
+        assert_eq!(
+            inputs.plugin_virtual_modules(),
+            vec![("virtual:data".to_string(), "export default 1".to_string())]
+        );
+        assert_eq!(
+            inputs
+                .live_v8_plugin_hooks()
+                .virtual_modules
+                .get("virtual:data")
+                .map(|hook| hook.source.as_str()),
+            Some("export default 1")
+        );
+        let islands_virtual_modules = inputs.plugin_refresh.store().snapshot_pairs();
+        assert_eq!(
+            islands_virtual_modules,
+            vec![("virtual:data".to_string(), "export default 1".to_string())]
+        );
+
+        // Simulate a completed refresh (issue #2168's forced-reload publish)
+        // by publishing directly to the shared store.
+        inputs
+            .plugin_refresh
+            .store()
+            .publish([("virtual:data".to_string(), "export default 2".to_string())]);
+
+        // Post-refresh: all three consumers observe the SAME new value —
+        // the property the shared store exists to guarantee. Updating only
+        // one of them (the split-brain this issue fixes) would fail this
+        // assertion for the other two.
+        assert_eq!(
+            inputs.plugin_virtual_modules(),
+            vec![("virtual:data".to_string(), "export default 2".to_string())],
+            "the main bundler's plugin_virtual_modules input must observe the refresh"
+        );
+        assert_eq!(
+            inputs
+                .live_v8_plugin_hooks()
+                .virtual_modules
+                .get("virtual:data")
+                .map(|hook| hook.source.as_str()),
+            Some("export default 2"),
+            "the restarted V8 host's plugin hooks must observe the refresh, not the \
+             boot-time frozen source `v8_plugin_hooks` was constructed with"
+        );
+        let islands_virtual_modules = inputs.plugin_refresh.store().snapshot_pairs();
+        assert_eq!(
+            islands_virtual_modules,
+            vec![("virtual:data".to_string(), "export default 2".to_string())],
+            "the islands/CSS/client-scripts rebuild closures' snapshot must observe the refresh"
+        );
+
+        // The V8 hooks' alias/plugin-name shape (the part that never
+        // changes after setup) must survive `live_v8_plugin_hooks`
+        // untouched — only `source` is re-derived from the live store.
+        assert_eq!(
+            inputs
+                .live_v8_plugin_hooks()
+                .virtual_modules
+                .get("virtual:data")
+                .map(|hook| hook.plugin.as_str()),
+            Some("test-plugin")
         );
     }
 }

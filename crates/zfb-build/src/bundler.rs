@@ -956,6 +956,95 @@ const KNOWN_FIRST_PARTY_STAGING_DIRS: &[&str] = &[".zudo-doc/routes-src"];
 /// `is_reserved_shadow_root_name` (reserved `.zfb-*` FILE names at the shadow
 /// root, not a `.zfb/` dir).
 const KNOWN_FIRST_PARTY_STAGING_JSON_DIRS: &[&str] = &[".zfb"];
+
+/// True when `relative` (a canonical, project-root-relative path to a FILE —
+/// the same form `module_worker::stable_project_virtual_specifier` builds its
+/// `"./rel"` replacement from) names a location the dot-path staging allowlist
+/// above actually materializes into the shadow DESPITE being hidden: a file
+/// the [`KNOWN_FIRST_PARTY_STAGING_DIRS`] walk reaches, or a DEPTH-1 `*.json`
+/// file directly inside a [`KNOWN_FIRST_PARTY_STAGING_JSON_DIRS`] dir (never a
+/// nested or non-JSON file — this narrow compatibility surface stages
+/// neither).
+///
+/// "The walk reaches" is narrower than "is under the allowlisted root":
+/// `materialise_shadow` runs each allowlisted dir through the SAME
+/// `filter_entry(|e| !is_pruned_infra_dir(e))` as every other source root, so
+/// a nested `node_modules` / `.git` / `.cache` INSIDE the subtree is still
+/// omitted. Granting the exemption for the whole subtree would let a
+/// virtual-module import targeting such a nested path pass the prune guard and
+/// then fail with the opaque esbuild "Could not resolve" the guard exists to
+/// prevent — so [`staging_walk_materialises_file`] replays the materialiser's
+/// nested prune rules on the components between the root and the file.
+///
+/// The SSR project-tier virtual-module remap diagnostic (issue #1726, sub
+/// #2160) consults this so a codegen plugin importing zudo-doc-compat
+/// generated source is not rejected as "the shadow mirror prunes this" —
+/// codex-review caught this diagnostic false-positive rejecting a location
+/// this very allowlist deliberately stages. Kept crate-internal:
+/// `module_worker`'s SSR remap is the only consumer; the islands shadow
+/// (`crates/zfb/src/commands/build.rs`) has no equivalent staging pass, so
+/// this exemption must NOT be folded into the shared
+/// `shadow_mirror_prunes_path` prune rule both shadows consult.
+pub(crate) fn is_first_party_staging_allowlist_target(relative: &Path) -> bool {
+    if KNOWN_FIRST_PARTY_STAGING_DIRS
+        .iter()
+        .any(|dir| staging_walk_materialises_file(Path::new(dir), relative))
+    {
+        return true;
+    }
+    KNOWN_FIRST_PARTY_STAGING_JSON_DIRS.iter().any(|dir| {
+        let Ok(rest) = relative.strip_prefix(Path::new(dir)) else {
+            return false;
+        };
+        let mut components = rest.components();
+        let Some(Component::Normal(name)) = components.next() else {
+            return false;
+        };
+        // Depth-1 only — a further component means this is nested.
+        components.next().is_none() && name.to_string_lossy().ends_with(".json")
+    })
+}
+
+/// True when the `materialise_shadow` walk rooted at `staging_root` (a
+/// [`KNOWN_FIRST_PARTY_STAGING_DIRS`] entry, project-relative) actually
+/// materializes the FILE at `relative` (also project-relative): it lies inside
+/// the subtree, and no directory between the walk root and it is one
+/// [`is_pruned_infra_dir`] prunes.
+///
+/// Mirrors the materialiser exactly rather than approximating it:
+///
+/// - Only ANCESTOR DIRECTORIES are consulted. `is_pruned_infra_dir` returns
+///   `false` for every non-directory, so a hidden FILE (`.hidden.tsx`) inside
+///   an otherwise-materialized directory IS staged.
+/// - Depth counts from the STAGING ROOT, not the project root — the root is
+///   walkdir depth 0, which `is_pruned_infra_dir`'s depth-0 guard never
+///   prunes, and a direct child is depth 1.
+/// - `dist` / `target` are NOT pruned here. `is_pruned_infra_dir` deliberately
+///   leaves them alone at depth (#428's caveat); the depth-1 dist/target rule
+///   in `module_worker::shadow_mirror_prunes_path` mirrors the separate
+///   top-level extra-dirs skip list, which never applies inside this walk.
+fn staging_walk_materialises_file(staging_root: &Path, relative: &Path) -> bool {
+    let Ok(rest) = relative.strip_prefix(staging_root) else {
+        return false;
+    };
+    let mut names = Vec::new();
+    for component in rest.components() {
+        let Component::Normal(name) = component else {
+            // Fail closed — a `..`/root/prefix component is not a plain path
+            // the walk would ever yield under the staging root.
+            return false;
+        };
+        names.push(name.to_string_lossy());
+    }
+    // Drop the file's own basename; the rest are the directories the walk had
+    // to descend into to reach it.
+    names.pop();
+    !names
+        .iter()
+        .enumerate()
+        .any(|(index, name)| is_pruned_infra_dir_name(name, index + 1))
+}
+
 /// Filename of the project-root global override map (sub-issue #616). Both
 /// the on-disk source convention and the materialised shadow copy use this
 /// exact name; it is the public file-convention contract relied on by #618.
@@ -4438,10 +4527,18 @@ pub(crate) fn is_pruned_infra_dir(entry: &walkdir::DirEntry) -> bool {
     if !entry.file_type().is_dir() {
         return false;
     }
-    let name = entry.file_name().to_string_lossy();
+    is_pruned_infra_dir_name(&entry.file_name().to_string_lossy(), entry.depth())
+}
+
+/// The name+depth half of [`is_pruned_infra_dir`], split out so
+/// [`staging_walk_materialises_file`] — which replays the walk over path
+/// COMPONENTS and has no `walkdir::DirEntry` to hand — applies the identical
+/// rule instead of a second copy that could drift from it. `depth` is the
+/// walkdir depth of the directory named `name`.
+fn is_pruned_infra_dir_name(name: &str, depth: usize) -> bool {
     // Always-prune named infra dirs at any depth.
     if matches!(
-        name.as_ref(),
+        name,
         "node_modules" | ".git" | ".next" | ".turbo" | ".vercel"
     ) {
         return true;
@@ -4455,7 +4552,7 @@ pub(crate) fn is_pruned_infra_dir(entry: &walkdir::DirEntry) -> bool {
     // etc. without naming each one. NOTE: depth-0 is the walker root
     // itself; we deliberately do NOT prune the root even if it is named
     // (e.g.) `.foo`, because the caller chose to walk it.
-    if entry.depth() > 0 && name.starts_with('.') {
+    if depth > 0 && name.starts_with('.') {
         return true;
     }
     // Conservative: do NOT prune "dist" / "target" at depth (per #428
@@ -11099,17 +11196,18 @@ fn run_esbuild(
         .plugin_virtual_modules
         .iter()
         .map(|(specifier, source)| {
-            (
-                specifier.clone(),
-                remap_virtual_module_project_imports_to_shadow(
-                    source,
-                    &input.project_root,
-                    first_party_root,
-                    work_root,
-                ),
+            let remapped = remap_virtual_module_project_imports_to_shadow(
+                source,
+                &input.project_root,
+                first_party_root,
+                work_root,
             )
+            .with_context(|| {
+                format!("bundler: failed remapping virtual module {specifier:?} for the SSR shadow")
+            })?;
+            Ok((specifier.clone(), remapped))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
         &effective_plugin_aliases,
         &effective_plugin_virtual_modules,
@@ -19380,6 +19478,99 @@ mod tests {
             ],
             "lexicographic order must be preserved and node_modules must be absent; got {walked:?}"
         );
+    }
+
+    /// The staging exemption's central claim, checked against the materialiser
+    /// itself rather than against a re-reading of its rules (codex-review, epic
+    /// PR #2177). A real `materialise_shadow` walk over a `.zudo-doc/routes-src`
+    /// fixture decides which of these nested shapes reach the shadow; the
+    /// predicate must return the same verdict for every one, so a future edit to
+    /// `is_pruned_infra_dir` that the exemption fails to track fails here.
+    #[test]
+    fn staging_allowlist_exemption_matches_what_the_staging_walk_materialises() {
+        let staging_root_rel = Path::new(".zudo-doc/routes-src");
+        // (path under `.zudo-doc/routes-src/`, why it is interesting)
+        let cases = [
+            "generated-route.tsx",         // the flat case #1840 shipped for
+            "pages/nested-route.tsx",      // ordinary nesting — descended into
+            "pages/deep/deeper/route.tsx", // ordinary nesting, several levels
+            "dist/route.tsx",              // dist is NOT pruned at depth (#428)
+            "target/route.tsx",            // ditto for target
+            ".hidden-route.tsx",           // hidden FILE — never a pruned dir
+            "pages/.hidden-route.tsx",     // hidden FILE nested one level down
+            ".cache/route.tsx",            // hidden DIR — pruned
+            "pages/.cache/route.tsx",      // hidden DIR at depth — pruned
+            "node_modules/pkg/route.tsx",  // named infra dir — pruned
+            ".git/route.tsx",              // named infra dir, also hidden
+            "pages/.turbo/route.tsx",      // named infra dir at depth
+        ];
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path();
+        let src = project_root.join(staging_root_rel);
+        for case in cases {
+            let file = src.join(case);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, "export const generated = 1;\n").unwrap();
+        }
+
+        // The production staging pass (block "2a-dot") walks each allowlisted
+        // dir through `materialise_shadow` exactly like this.
+        let dest = project_root.join("shadow").join(staging_root_rel);
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(project_root, &exclude);
+        materialise_shadow(
+            &src,
+            &dest,
+            &mut Vec::new(),
+            &ctx,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let staged = collect_dest_files(&dest);
+
+        for case in cases {
+            let materialised = staged.contains(&case.replace('\\', "/"));
+            let exempt = is_first_party_staging_allowlist_target(&staging_root_rel.join(case));
+            assert_eq!(
+                exempt, materialised,
+                "exemption for {case:?} disagrees with the staging walk \
+                 (walk staged: {materialised}); staged set: {staged:?}"
+            );
+        }
+
+        // Guard the matrix itself: a run where the walk staged everything (or
+        // nothing) would make the equality above vacuous.
+        assert!(
+            staged.contains(&"generated-route.tsx".to_string()),
+            "fixture staged nothing; got {staged:?}"
+        );
+        assert!(
+            !staged.contains(&".cache/route.tsx".to_string()),
+            "fixture pruned nothing; got {staged:?}"
+        );
+    }
+
+    #[test]
+    fn staging_allowlist_exemption_ignores_paths_outside_the_allowlisted_roots() {
+        // Unchanged behaviour, re-pinned beside the nested-prune matrix: only
+        // the two allowlisted roots are ever exempt.
+        assert!(!is_first_party_staging_allowlist_target(Path::new(
+            ".zudo-doc/cache/route.tsx"
+        )));
+        assert!(!is_first_party_staging_allowlist_target(Path::new(
+            "components/route.tsx"
+        )));
+        // `.zfb` stays depth-1 `*.json` only.
+        assert!(is_first_party_staging_allowlist_target(Path::new(
+            ".zfb/doc-history-meta.json"
+        )));
+        assert!(!is_first_party_staging_allowlist_target(Path::new(
+            ".zfb/nested/doc-history-meta.json"
+        )));
     }
 
     // --- enumerate_extra_top_level_dirs tests (#433) --------------------------

@@ -1636,6 +1636,135 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
     stable
 }
 
+/// `(mirror_root, candidate_path)` reshaping of the shadow mirror's
+/// directory-prune rule (issue #1726, sub #2160). The canonical DirEntry×
+/// walkdir-depth form of this rule is `is_islands_shadow_pruned_dir`
+/// (`crates/zfb/src/commands/build.rs`), which this crate's SSR project
+/// shadow mirrors behaviourally (the top-level extra-dir enumeration plus
+/// `is_pruned_infra_dir` in `bundler.rs` combine to the identical rule) —
+/// this is the single shared definition both consume.
+///
+/// Rules, DEPTH-DEPENDENT — do not overstate this as "all `dist/` and
+/// `target/`":
+/// - `node_modules`, `.git`, `.next`, `.turbo`, `.vercel` are pruned at ANY
+///   depth.
+/// - A hidden directory (name starts with `.`) is pruned at any depth below
+///   `mirror_root`.
+/// - `dist` / `target` are pruned ONLY at depth 1 — a direct child of
+///   `mirror_root`. A NESTED `dist`/`target` is NOT pruned.
+///
+/// `candidate_path` is evaluated as a DIRECTORY: pass a file's own
+/// containing directory (never the file itself) when asking whether that
+/// file is reachable through the mirror — only directories gate the walk's
+/// descent, so a hidden *file* is never itself pruned. Walks the FULL
+/// ancestor chain from `mirror_root` down to `candidate_path` inclusive
+/// (unlike a live `walkdir::DirEntry` check, which only ever needs to test
+/// the current entry, since `filter_entry` guarantees no ancestor above it
+/// was already pruned — a resolved path carries no such guarantee).
+/// `candidate_path` outside `mirror_root` entirely is never this
+/// predicate's concern (`false`).
+pub fn shadow_mirror_prunes_path(mirror_root: &Path, candidate_path: &Path) -> bool {
+    let Ok(relative) = candidate_path.strip_prefix(mirror_root) else {
+        return false;
+    };
+    for (index, component) in relative.components().enumerate() {
+        let Component::Normal(raw_name) = component else {
+            continue;
+        };
+        let name = raw_name.to_string_lossy();
+        let depth = index + 1; // walkdir depth: a direct child of the root is depth 1.
+        if matches!(
+            name.as_ref(),
+            "node_modules" | ".git" | ".next" | ".turbo" | ".vercel"
+        ) {
+            return true;
+        }
+        if depth == 1 && matches!(name.as_ref(), "dist" | "target") {
+            return true;
+        }
+        if name.starts_with('.') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Prune-aware guard for the project tier of
+/// [`remap_virtual_module_project_imports_to_shadow`] (issue #1726, sub
+/// #2160). `stable_project_virtual_specifier` checks only
+/// `is_inside_node_modules` before rewriting an under-project absolute
+/// virtual-module import to the `"./rel"` spelling a virtual module
+/// materialized at the shadow root resolves through — it never asks whether
+/// the shadow mirror actually MATERIALIZES the target's directory. When the
+/// target sits inside a directory the mirror prunes (see
+/// [`shadow_mirror_prunes_path`]), that rewrite produces a `"./rel"`
+/// specifier resolving to nothing, and esbuild fails with a bare `Could not
+/// resolve` naming neither the virtual module nor the actual cause.
+///
+/// This scans every absolute-import occurrence the project tier is about to
+/// rewrite and fails closed with an explicit diagnostic BEFORE the silent
+/// rewrite happens — leaving `stable_project_virtual_specifier` itself
+/// (also used for cache-key normalization) infallible and untouched. Two
+/// details codex-review caught in an earlier version:
+///
+/// - It checks the [`canonical_project_relative_target`] — the SAME
+///   canonicalized, symlink-resolved target `stable_project_virtual_specifier`
+///   builds its replacement from — rather than the lexical specifier text,
+///   so an in-project symlink is judged by where it actually points, not by
+///   what its own path looks like.
+/// - It exempts [`crate::bundler::is_first_party_staging_allowlist_target`]
+///   locations: the SSR shadow's dot-path staging pass (issue #1840)
+///   deliberately materializes `.zudo-doc/routes-src/**` and a depth-1
+///   `.zfb/*.json` despite both being hidden, so treating every hidden dir
+///   as pruned would reject a virtual module reaching genuinely staged
+///   zudo-doc-compat source. That exemption is itself prune-aware WITHIN the
+///   allowlisted subtree — the staging pass walks it with the same
+///   `is_pruned_infra_dir` filter, so a nested `.cache/`/`node_modules/`
+///   inside it is still unstaged and still rejected here.
+fn reject_pruned_project_tier_virtual_imports(source: &str, project_root: &Path) -> Result<()> {
+    let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
+    let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
+        // An unparsable source is a no-op passthrough for the remap itself
+        // (see `remap_virtual_module_imports_to_shadow_inner`) — nothing to
+        // reject.
+        return Ok(());
+    };
+    let project_root = normalize_path_lexical(project_root);
+    for occurrence in collect_import_specifier_occurrences(&module, base, unresolved_ctxt) {
+        if !Path::new(&occurrence.specifier).is_absolute() {
+            continue;
+        }
+        let Some(relative_target) =
+            canonical_project_relative_target(&occurrence.specifier, &project_root)
+        else {
+            // Not something the project tier is about to rewrite (outside
+            // the project post-canonicalization, under node_modules, a
+            // `?`/`#`-suffixed specifier, or the target doesn't resolve at
+            // all) — no rewrite, no risk of a broken one.
+            continue;
+        };
+        if crate::bundler::is_first_party_staging_allowlist_target(&relative_target) {
+            continue;
+        }
+        let candidate_dir = relative_target
+            .parent()
+            .map(|parent| project_root.join(parent))
+            .unwrap_or_else(|| project_root.clone());
+        if shadow_mirror_prunes_path(&project_root, &candidate_dir) {
+            bail!(
+                "zfb bundler: virtual module imports {}, but the SSR shadow mirror prunes \
+                 that location and never materializes it there — the rewritten \"./rel\" \
+                 specifier would resolve to nothing. The shadow mirror never stages \
+                 node_modules/.git/.next/.turbo/.vercel, any hidden directory, or a \
+                 top-level dist/target directory; a codegen plugin registering this virtual \
+                 module must emit its imports into a location the mirror actually stages.",
+                occurrence.specifier
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Remap literal absolute imports inside a virtual module to a spelling that
 /// resolves through the bundler shadow layout. Two tiers, mutually exclusive
 /// by construction (issue #1700):
@@ -1658,19 +1787,28 @@ fn stable_virtual_module_source(source: &str, project_root: &Path) -> String {
 /// [`remap_virtual_module_workspace_sibling_imports_to_shadow`] instead, so
 /// they do not inherit the project tier's `<project>/pruned-dir/x.ts` →
 /// `"./pruned-dir/x.ts"` rewrite for a directory their stage prunes.
+///
+/// Fallible since issue #1726/sub #2160: the project tier is prune-aware via
+/// [`reject_pruned_project_tier_virtual_imports`], which fails closed with an
+/// explicit diagnostic instead of silently emitting a `"./rel"` spelling the
+/// shadow mirror can never resolve. `stable_project_virtual_specifier` itself
+/// stays infallible (it also serves cache-key normalization); only this
+/// wrapper gained the `Result`. The sole production caller is `run_esbuild`
+/// (`bundler.rs`), which already returns `Result` and propagates via `?`.
 pub fn remap_virtual_module_project_imports_to_shadow(
     source: &str,
     project_root: &Path,
     first_party_root: &Path,
     work_root: &Path,
-) -> String {
-    remap_virtual_module_imports_to_shadow_inner(
+) -> Result<String> {
+    reject_pruned_project_tier_virtual_imports(source, project_root)?;
+    Ok(remap_virtual_module_imports_to_shadow_inner(
         source,
         project_root,
         first_party_root,
         work_root,
         true,
-    )
+    ))
 }
 
 /// Workspace-tier-only variant of
@@ -1841,7 +1979,22 @@ fn stable_workspace_virtual_cache_specifier(
     Some(format!("\u{0}workspace\u{0}{relative}"))
 }
 
-fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {
+/// Shared canonicalization core for [`stable_project_virtual_specifier`] and
+/// its prune-aware guard, [`reject_pruned_project_tier_virtual_imports`]
+/// (issue #1726, sub #2160): resolves `specifier` (absolute, or an in-source
+/// `./`/`../` relative form) against `project_root`, following any symlink
+/// via `canonicalize()`, and returns the CANONICAL path relative to the
+/// canonical project root — the exact location `stable_project_virtual_specifier`'s
+/// `"./rel"` rewrite actually references. Extracting this keeps both
+/// consumers looking at the identical resolved target: codex-review caught
+/// an earlier version of the guard checking the LEXICAL specifier path
+/// instead, which disagreed with this canonicalization for an in-project
+/// symlink (a non-hidden-looking specifier that resolves into a pruned
+/// directory went unchecked, and vice versa). `None` for anything the
+/// project tier does not touch: a `?`/`#`-suffixed specifier, a bare
+/// package name, `node_modules`, an unresolvable target, or a target that
+/// canonicalizes outside the project.
+fn canonical_project_relative_target(specifier: &str, project_root: &Path) -> Option<PathBuf> {
     if specifier.contains('?') || specifier.contains('#') {
         return None;
     }
@@ -1862,7 +2015,14 @@ fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Opt
     if !canonical.starts_with(&canonical_root) || is_inside_node_modules(&canonical) {
         return None;
     }
-    let relative = canonical.strip_prefix(&canonical_root).ok()?;
+    canonical
+        .strip_prefix(&canonical_root)
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+fn stable_project_virtual_specifier(specifier: &str, project_root: &Path) -> Option<String> {
+    let relative = canonical_project_relative_target(specifier, project_root)?;
     let relative = relative
         .components()
         .filter_map(|component| match component {
@@ -2519,6 +2679,56 @@ mod tests {
     fn write(path: &Path, source: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, source).unwrap();
+    }
+
+    #[test]
+    fn shadow_mirror_prunes_path_named_infra_dir_at_any_depth() {
+        let root = Path::new("/mirror");
+        assert!(shadow_mirror_prunes_path(
+            root,
+            &root.join("node_modules/pkg")
+        ));
+        assert!(shadow_mirror_prunes_path(
+            root,
+            &root.join("components/nested/.git/hooks")
+        ));
+    }
+
+    #[test]
+    fn shadow_mirror_prunes_path_dist_target_only_at_top_level() {
+        let root = Path::new("/mirror");
+        assert!(shadow_mirror_prunes_path(root, &root.join("dist")));
+        assert!(shadow_mirror_prunes_path(root, &root.join("target")));
+        assert!(!shadow_mirror_prunes_path(
+            root,
+            &root.join("components/dist")
+        ));
+        assert!(!shadow_mirror_prunes_path(
+            root,
+            &root.join("src/nested/target")
+        ));
+    }
+
+    #[test]
+    fn shadow_mirror_prunes_path_hidden_dir_at_any_depth() {
+        let root = Path::new("/mirror");
+        assert!(shadow_mirror_prunes_path(root, &root.join(".cache")));
+        assert!(shadow_mirror_prunes_path(
+            root,
+            &root.join("components/.cache/nested")
+        ));
+    }
+
+    #[test]
+    fn shadow_mirror_prunes_path_ordinary_nested_dir_is_untouched() {
+        let root = Path::new("/mirror");
+        assert!(!shadow_mirror_prunes_path(root, &root.join("components")));
+        assert!(!shadow_mirror_prunes_path(
+            root,
+            &root.join("components/deeply/nested/dir")
+        ));
+        // Outside the mirror root entirely is never this predicate's concern.
+        assert!(!shadow_mirror_prunes_path(root, Path::new("/elsewhere")));
     }
 
     #[test]
@@ -3472,7 +3682,8 @@ mod tests {
             project.path(),
             project.path(),
             project.path(),
-        );
+        )
+        .unwrap();
 
         assert!(
             remapped.contains("export { bindings } from \"./src/host-bindings.tsx\";"),
@@ -3503,7 +3714,8 @@ mod tests {
             &project_root,
             workspace.path(),
             &work_root,
-        );
+        )
+        .unwrap();
 
         let expected = work_root.join("packages/shared/util.ts");
         let expected_specifier = serde_json::to_string(&expected.to_string_lossy()).unwrap();
@@ -3532,7 +3744,8 @@ mod tests {
             &project_root,
             workspace.path(),
             &work_root,
-        );
+        )
+        .unwrap();
         let expected_raw = format!(
             "{}?raw",
             work_root
@@ -3554,7 +3767,8 @@ mod tests {
             &project_root,
             workspace.path(),
             &work_root,
-        );
+        )
+        .unwrap();
         let expected_frag = format!(
             "{}#frag",
             work_root
@@ -3576,7 +3790,8 @@ mod tests {
             &project_root,
             workspace.path(),
             &work_root,
-        );
+        )
+        .unwrap();
         let expected_bare = work_root.join("packages/shared/payload.txt");
         assert!(
             bare_remapped
@@ -3602,7 +3817,8 @@ mod tests {
             &project_root,
             workspace.path(),
             &work_root,
-        );
+        )
+        .unwrap();
 
         assert_eq!(remapped, source);
     }
@@ -3632,7 +3848,8 @@ mod tests {
             &project_root,
             workspace.path(),
             &work_root,
-        );
+        )
+        .unwrap();
 
         assert_eq!(remapped, source);
     }
@@ -3657,7 +3874,8 @@ mod tests {
             project.path(),
             project.path(),
             project.path(),
-        );
+        )
+        .unwrap();
 
         assert!(
             remapped.contains("export { bindings } from \"./src/host-bindings.tsx\";"),
@@ -3667,6 +3885,281 @@ mod tests {
             remapped.contains(&serde_json::to_string(&outside.path().to_string_lossy()).unwrap()),
             "{remapped}"
         );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_top_level_pruned_dir_is_rejected() {
+        // Issue #1726, sub #2160: a codegen plugin's virtual module absolute-
+        // imports a file that genuinely exists under the project root, but in
+        // a TOP-LEVEL `dist/` — a directory the shadow mirror prunes (depth
+        // 1). Silently rewriting to "./dist/generated.tsx" would produce a
+        // specifier the mirror never materializes; this must fail closed
+        // with a diagnostic instead of an opaque esbuild "Could not resolve".
+        let project = tempfile::tempdir().unwrap();
+        let pruned_target = project.path().join("dist/generated.tsx");
+        write(&pruned_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&pruned_target.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&pruned_target.to_string_lossy().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("shadow mirror prunes"), "{message}");
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_nested_dist_is_still_remapped() {
+        // Companion to the rejection test above: the shadow mirror's
+        // dist/target prune is DEPTH-DEPENDENT — only a TOP-LEVEL dist/target
+        // is pruned, so a NESTED one (e.g. `components/dist/x.tsx`) is still
+        // materialized and must keep remapping to "./rel" exactly as before.
+        let project = tempfile::tempdir().unwrap();
+        let nested_target = project.path().join("components/dist/generated.tsx");
+        write(&nested_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&nested_target.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap();
+
+        assert!(
+            remapped.contains("export { generated } from \"./components/dist/generated.tsx\";"),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_hidden_dir_is_rejected() {
+        // Same failure mode as the top-level dist/ case, but via the
+        // hidden-directory rule instead of the depth-1 dist/target rule —
+        // pruned at ANY depth, unlike dist/target.
+        let project = tempfile::tempdir().unwrap();
+        let pruned_target = project.path().join("components/.cache/generated.tsx");
+        write(&pruned_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&pruned_target.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&pruned_target.to_string_lossy().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("shadow mirror prunes"), "{message}");
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_zudo_doc_routes_src_staging_allowlist_is_not_rejected()
+    {
+        // codex-review (issue #1726, sub #2160): `.zudo-doc/routes-src/**` is
+        // hidden, but bundler.rs's dot-path staging allowlist (issue #1840)
+        // deliberately materializes it into the shadow anyway — the guard
+        // must exempt it rather than treating every hidden dir as pruned.
+        let project = tempfile::tempdir().unwrap();
+        let staged_target = project
+            .path()
+            .join(".zudo-doc/routes-src/generated-route.tsx");
+        write(&staged_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&staged_target.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap();
+
+        assert!(
+            remapped.contains(
+                "export { generated } from \"./.zudo-doc/routes-src/generated-route.tsx\";"
+            ),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_nested_dir_under_staging_allowlist_is_not_rejected() {
+        // The exemption must survive nesting that the staging walk actually
+        // materializes — `.zudo-doc/routes-src/` is a `materialise_shadow`
+        // walk ROOT, and an ordinary subdirectory inside it is descended into
+        // exactly like `components/ui/`.
+        let project = tempfile::tempdir().unwrap();
+        let staged_target = project
+            .path()
+            .join(".zudo-doc/routes-src/pages/generated-route.tsx");
+        write(&staged_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&staged_target.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap();
+
+        assert!(
+            remapped.contains(
+                "export { generated } from \"./.zudo-doc/routes-src/pages/generated-route.tsx\";"
+            ),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_pruned_dir_under_staging_allowlist_is_rejected() {
+        // codex-review (epic PR #2177): the staging exemption is NOT a blanket
+        // pass for the whole allowlisted subtree. `materialise_shadow` runs
+        // the allowlisted dir through the same
+        // `filter_entry(|e| !is_pruned_infra_dir(e))` as every other source
+        // root, so a nested `.cache/` inside it is still omitted from the
+        // shadow. Exempting it would let the rewrite through and surface the
+        // opaque esbuild "Could not resolve" this guard exists to replace.
+        let project = tempfile::tempdir().unwrap();
+        let pruned_target = project
+            .path()
+            .join(".zudo-doc/routes-src/.cache/generated-route.tsx");
+        write(&pruned_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&pruned_target.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&pruned_target.to_string_lossy().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("shadow mirror prunes"), "{message}");
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_zfb_top_level_json_staging_allowlist_is_not_rejected() {
+        // Companion to the zudo-doc test above: a depth-1 `.zfb/*.json` meta
+        // file is the other narrow staging allowlist entry (issue #1840).
+        let project = tempfile::tempdir().unwrap();
+        let staged_target = project.path().join(".zfb/doc-history-meta.json");
+        write(&staged_target, "{}\n");
+        let source = format!(
+            "import meta from {};\n",
+            serde_json::to_string(&staged_target.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap();
+
+        assert!(
+            remapped.contains("import meta from \"./.zfb/doc-history-meta.json\";"),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_zfb_nested_json_is_still_rejected() {
+        // Negative control: the `.zfb` staging allowlist is DEPTH-1 ONLY
+        // (issue #1840's "narrow compatibility surface") — a nested `.zfb`
+        // file is not staged and must still be rejected as pruned.
+        let project = tempfile::tempdir().unwrap();
+        let pruned_target = project.path().join(".zfb/nested/other.json");
+        write(&pruned_target, "{}\n");
+        let source = format!(
+            "import meta from {};\n",
+            serde_json::to_string(&pruned_target.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("shadow mirror prunes"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_project_virtual_import_through_symlink_is_checked_against_the_resolved_target() {
+        // codex-review (issue #1726, sub #2160): the guard must judge an
+        // in-project symlink by its RESOLVED (canonical) target, the same
+        // path `stable_project_virtual_specifier` builds its "./rel"
+        // replacement from — not by the symlink's own lexical location.
+        // `src/aliased.ts` looks like an ordinary, non-pruned location, but
+        // it actually resolves into the pruned `.cache/` directory, so the
+        // rewrite it would otherwise produce ("./src/aliased.ts") is wrong:
+        // the shadow mirror never materializes `.cache/`, only the alias's
+        // OWN (non-existent, pre-rewrite) path.
+        let project = tempfile::tempdir().unwrap();
+        let real_target = project.path().join(".cache/real.ts");
+        write(&real_target, "export const real = 1;\n");
+        let alias = project.path().join("src/aliased.ts");
+        std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_target, &alias).unwrap();
+        let source = format!(
+            "export {{ real }} from {};\n",
+            serde_json::to_string(&alias.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("shadow mirror prunes"), "{message}");
     }
 
     #[test]

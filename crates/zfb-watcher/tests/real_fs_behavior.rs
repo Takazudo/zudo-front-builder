@@ -16,6 +16,17 @@
 //!      the change channel CLOSES and no further events arrive. The close is a
 //!      POSITIVE signal (`recv()` returns `None`), not a fixed-sleep guess.
 //!
+//! ## Backend parameterization
+//!
+//! Families 1 and 2 run against BOTH [`WatchBackend`]s where the pinned
+//! contract is shared (delivery-after-handshake, canonical identification,
+//! case preservation). Where the poll backend GENUINELY diverges — path
+//! SPELLING for symlinked watch roots — the expectation is split into a
+//! separate poll test with the divergence documented inline: the poll
+//! backend walks the registered root spelling, while FSEvents reports
+//! canonical paths. Family 3 (shutdown/drop) exercises the debouncer
+//! teardown, which is backend-independent — it stays native-only.
+//!
 //! ## No bare sleeps
 //!
 //! Every "is the watcher live yet?" wait goes through
@@ -33,7 +44,21 @@ use std::time::Duration;
 use tempfile::tempdir;
 use tokio::sync::mpsc::Receiver;
 
-use zfb_watcher::{Change, ChangeKind, Watcher};
+use zfb_watcher::{Change, ChangeKind, WatchBackend, WatchOptions, Watcher};
+
+mod common;
+
+/// Start a watcher rooted at `root` (watching `.`) on the given backend,
+/// with the default debounce — the parameterized twin of `Watcher::start`.
+fn start_with(root: &Path, backend: WatchBackend) -> (Watcher, Receiver<Change>) {
+    Watcher::start_with_options(
+        root,
+        std::iter::once("."),
+        std::iter::empty::<&Path>(),
+        WatchOptions::default().with_backend(backend),
+    )
+    .expect("start")
+}
 
 /// Prove the watcher's event stream is live before the real edit under test,
 /// using the shared #1338 condition-keyed handshake. Writes fresh-named marker
@@ -85,14 +110,28 @@ async fn wait_for(rx: &mut Receiver<Change>, target: &Path, deadline: Duration) 
 /// A MODIFY of a file that already existed before the watch started is
 /// delivered once the handshake confirms liveness. (The file pre-exists, so
 /// this isolates the modify path from the create-keyed dead window.)
-#[tokio::test]
-async fn modify_of_preexisting_file_after_handshake_is_delivered() {
+async fn modify_of_preexisting_file_after_handshake_with(backend: WatchBackend) {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize root");
     let target = root.join("edit_me.md");
     fs::write(&target, b"# v1\n").expect("create before watch");
 
-    let (_watcher, mut rx) = Watcher::start(&root, std::iter::once(".")).expect("start");
+    // notify's PollWatcher stores mtimes truncated to WHOLE SECONDS
+    // (poll.rs `system_time_to_seconds`) and, with `compare_contents` at
+    // its default `false`, has no content/size fallback — so an overwrite
+    // landing in the same wall-clock second as the baseline scan is
+    // invisible to the poll backend. Backdate the pre-existing file BEFORE
+    // the watcher's baseline scan so the overwrite below is
+    // deterministically "newer". A no-op for the native backend (FSEvents/
+    // inotify never consult mtimes), so the shared body stays identical.
+    fs::File::options()
+        .write(true)
+        .open(&target)
+        .expect("open for backdate")
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(2))
+        .expect("backdate mtime");
+
+    let (_watcher, mut rx) = start_with(&root, backend);
     handshake_live(&root, &mut rx).await;
 
     fs::write(&target, b"# v2\n").expect("overwrite");
@@ -106,15 +145,26 @@ async fn modify_of_preexisting_file_after_handshake_is_delivered() {
     );
 }
 
+#[tokio::test]
+async fn modify_of_preexisting_file_after_handshake_is_delivered() {
+    modify_of_preexisting_file_after_handshake_with(WatchBackend::Native).await;
+}
+
+#[tokio::test]
+async fn modify_of_preexisting_file_after_handshake_is_delivered_poll_backend() {
+    modify_of_preexisting_file_after_handshake_with(common::poll_backend()).await;
+}
+
 /// A brand-new CREATE after the handshake is delivered. This is the case the
 /// startup dead window specifically drops (a create landing in the warmup
 /// window); pinning it proves the handshake closes that window in practice.
-#[tokio::test]
-async fn create_of_new_file_after_handshake_is_delivered() {
+/// (The poll backend detects creates by presence, not by a stream event, so
+/// the same contract holds there without a dead-window caveat.)
+async fn create_of_new_file_after_handshake_with(backend: WatchBackend) {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize root");
 
-    let (_watcher, mut rx) = Watcher::start(&root, std::iter::once(".")).expect("start");
+    let (_watcher, mut rx) = start_with(&root, backend);
     handshake_live(&root, &mut rx).await;
 
     let target = root.join("brand_new.md");
@@ -127,20 +177,30 @@ async fn create_of_new_file_after_handshake_is_delivered() {
     );
 }
 
+#[tokio::test]
+async fn create_of_new_file_after_handshake_is_delivered() {
+    create_of_new_file_after_handshake_with(WatchBackend::Native).await;
+}
+
+#[tokio::test]
+async fn create_of_new_file_after_handshake_is_delivered_poll_backend() {
+    create_of_new_file_after_handshake_with(common::poll_backend()).await;
+}
+
 // ---------------------------------------------------------------------------
 // 2. Canonical-path reporting — symlink + case handling (platform-gated).
 // ---------------------------------------------------------------------------
 
 /// The reported path, canonicalized, identifies the edited file — pinned on
-/// every platform (watching an already-canonical root).
-#[tokio::test]
-async fn reported_path_canonicalizes_to_edited_file() {
+/// every platform and BOTH backends (watching an already-canonical root, so
+/// no spelling divergence is in play).
+async fn reported_path_canonicalizes_to_edited_file_with(backend: WatchBackend) {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize root");
     let sub = root.join("content");
     fs::create_dir_all(&sub).expect("mkdir content");
 
-    let (_watcher, mut rx) = Watcher::start(&root, std::iter::once(".")).expect("start");
+    let (_watcher, mut rx) = start_with(&root, backend);
     handshake_live(&root, &mut rx).await;
 
     let target = sub.join("page.md");
@@ -154,9 +214,21 @@ async fn reported_path_canonicalizes_to_edited_file() {
     assert_eq!(got, want, "reported path must identify the edited file");
 }
 
+#[tokio::test]
+async fn reported_path_canonicalizes_to_edited_file() {
+    reported_path_canonicalizes_to_edited_file_with(WatchBackend::Native).await;
+}
+
+#[tokio::test]
+async fn reported_path_canonicalizes_to_edited_file_poll_backend() {
+    reported_path_canonicalizes_to_edited_file_with(common::poll_backend()).await;
+}
+
 /// macOS: `/var/folders/...` tempdirs are symlinks to `/private/var/folders/...`.
 /// Watching the NON-canonical `/var` root, FSEvents still reports the canonical
 /// `/private` path. Pin that quirk (the smoke test and dev command work around it).
+/// NATIVE-ONLY — the poll backend genuinely diverges here; see the
+/// `..._poll_backend_...` twin below for the split expectation.
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn macos_reports_canonical_private_path_for_symlinked_tempdir_root() {
@@ -186,13 +258,49 @@ async fn macos_reports_canonical_private_path_for_symlinked_tempdir_root() {
     );
 }
 
-/// unix: watch through a symlinked directory root; the reported path,
-/// canonicalized, must resolve to the real file. The strong "reports the
-/// resolved (non-symlink) path" assertion is macOS-only (FSEvents canonicalizes;
-/// inotify may report as-watched), so it is gated inside.
-#[cfg(unix)]
+/// The poll-backend twin of the test above — a GENUINE, intentional
+/// divergence, not a shared contract: the poll backend re-walks the root
+/// under its REGISTERED spelling, so watching the symlinked `/var/...`
+/// form reports `/var/...` paths, where FSEvents reports the canonical
+/// `/private/...` form. Canonicalizing consumers (`wait_for` here, the dev
+/// command layer in production) absorb either spelling, which is why this
+/// stays a documented divergence rather than something the crate papers
+/// over.
+#[cfg(target_os = "macos")]
 #[tokio::test]
-async fn symlinked_watch_root_reports_path_identifying_real_file() {
+async fn macos_poll_backend_reports_as_watched_path_for_symlinked_tempdir_root() {
+    let tmp = tempdir().expect("tempdir");
+    let raw_root = tmp.path().to_path_buf(); // /var/folders/... (a symlink on macOS)
+    let canon_root = raw_root.canonicalize().expect("canonicalize root");
+    assert_ne!(
+        raw_root, canon_root,
+        "precondition: macOS tempdir root is a symlink (/var → /private/var)",
+    );
+
+    // Deliberately watch the symlinked (non-canonical) form.
+    let (_watcher, mut rx) = start_with(&raw_root, common::poll_backend());
+    handshake_live(&raw_root, &mut rx).await;
+
+    let target = raw_root.join("probe.md");
+    fs::write(&target, b"# probe\n").expect("write");
+
+    let change = wait_for(&mut rx, &target, Duration::from_secs(5))
+        .await
+        .expect("edit must be delivered");
+    assert!(
+        change.path.starts_with(&raw_root),
+        "the poll backend must report the as-watched /var spelling (it walks the \
+         registered root), got {:?}",
+        change.path,
+    );
+}
+
+/// unix: watch through a symlinked directory root; the reported path,
+/// canonicalized, must resolve to the real file — the SHARED contract both
+/// backends honor. Returns the matching `Change` so each backend's wrapper
+/// can additionally pin its own (divergent) spelling behavior.
+#[cfg(unix)]
+async fn symlinked_watch_root_reports_real_file_with(backend: WatchBackend) -> Change {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize root");
     let real = root.join("realdir");
@@ -201,7 +309,7 @@ async fn symlinked_watch_root_reports_path_identifying_real_file() {
     std::os::unix::fs::symlink(&real, &link).expect("symlink linkdir → realdir");
 
     // Watch via the symlink path.
-    let (_watcher, mut rx) = Watcher::start(&link, std::iter::once(".")).expect("start");
+    let (_watcher, mut rx) = start_with(&link, backend);
     handshake_live(&link, &mut rx).await;
 
     let target = link.join("note.md");
@@ -215,11 +323,43 @@ async fn symlinked_watch_root_reports_path_identifying_real_file() {
     let want = fs::canonicalize(real.join("note.md")).expect("canonicalize real target");
     assert_eq!(got, want, "reported path must resolve to the real file");
 
+    change
+}
+
+/// The strong "reports the resolved (non-symlink) path" assertion is
+/// macOS-only (FSEvents canonicalizes; inotify may report as-watched), so it
+/// is gated inside.
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_watch_root_reports_path_identifying_real_file() {
+    // Underscore-named: off macOS no further assertion consumes the
+    // returned change (the shared body already asserted the shared
+    // contract).
+    let _change = symlinked_watch_root_reports_real_file_with(WatchBackend::Native).await;
+
     #[cfg(target_os = "macos")]
     assert!(
-        !change.path.to_string_lossy().contains("linkdir"),
+        !_change.path.to_string_lossy().contains("linkdir"),
         "macOS FSEvents must report the resolved directory, not the symlink \
          component, got {:?}",
+        _change.path,
+    );
+}
+
+/// Poll-backend twin: the spelling expectation INVERTS (an intentional
+/// divergence, on every unix — not macOS-gated — because the walk is
+/// platform-independent): the poll backend walks the registered `linkdir`
+/// spelling, so the symlink component IS present in the reported path. The
+/// shared canonicalized-identification contract was already asserted inside
+/// the shared body.
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_watch_root_poll_backend_reports_as_watched_symlink_spelling() {
+    let change = symlinked_watch_root_reports_real_file_with(common::poll_backend()).await;
+
+    assert!(
+        change.path.to_string_lossy().contains("linkdir"),
+        "the poll backend must report the as-watched symlink spelling, got {:?}",
         change.path,
     );
 }
@@ -227,13 +367,14 @@ async fn symlinked_watch_root_reports_path_identifying_real_file() {
 /// The reported file name preserves the original case. This is the meaningful
 /// case on macOS's case-INSENSITIVE-but-case-PRESERVING default filesystem
 /// (the name is never folded to lowercase); it is trivially true on
-/// case-sensitive Linux, so the pin holds on both.
-#[tokio::test]
-async fn reported_path_preserves_filename_case() {
+/// case-sensitive Linux, so the pin holds on both — and on both backends
+/// (the poll backend reads real directory-entry names, which are likewise
+/// case-preserved).
+async fn reported_path_preserves_filename_case_with(backend: WatchBackend) {
     let tmp = tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize root");
 
-    let (_watcher, mut rx) = Watcher::start(&root, std::iter::once(".")).expect("start");
+    let (_watcher, mut rx) = start_with(&root, backend);
     handshake_live(&root, &mut rx).await;
 
     let target = root.join("MixedCase.md");
@@ -248,6 +389,16 @@ async fn reported_path_preserves_filename_case() {
         "reported file name must preserve original case, got {:?}",
         change.path,
     );
+}
+
+#[tokio::test]
+async fn reported_path_preserves_filename_case() {
+    reported_path_preserves_filename_case_with(WatchBackend::Native).await;
+}
+
+#[tokio::test]
+async fn reported_path_preserves_filename_case_poll_backend() {
+    reported_path_preserves_filename_case_with(common::poll_backend()).await;
 }
 
 // ---------------------------------------------------------------------------

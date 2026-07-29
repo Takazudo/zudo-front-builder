@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 
 use zfb_islands::{
     bundle_link_href, manifest_json, module_worker_filename, scan_islands, scan_islands_with_meta,
-    BundleConfig, BundleOutput, ClientBundler, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    FrameworkKind, FsResolver, Island, Manifest, ModuleWorkerBundleEntry, NativeRustBundler,
-    StageAuditPolicy, WorkspacePackageImportEdge,
+    scan_islands_with_meta_and_first_party_root, BundleConfig, BundleOutput, ClientBundler,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, Island, Manifest,
+    ModuleWorkerBundleEntry, NativeRustBundler, StageAuditPolicy, WorkspacePackageImportEdge,
 };
 
 fn island(name: &str, path: &str) -> Island {
@@ -1878,6 +1878,145 @@ fn pnpm_workspace_consumer_fixture_yields_workspace_package_islands() {
             importer: expected,
             specifier: "@takazudo/zfb-blog-shared".to_string(),
             package_dir: expected_shared_dir,
+        }],
+        "got: {:?}",
+        meta.workspace_package_edges_from_islands
+    );
+}
+
+/// Issue #1731 / #2161: an `npm link` / `file:` dependency's
+/// `node_modules/<pkg>` symlink points at a package living in a WHOLLY
+/// SEPARATE directory tree — not inside the consuming project, and not a
+/// pnpm-workspace sibling of it. That's structurally indistinguishable from
+/// a genuine workspace sibling to `FsResolver::workspace_package_root`'s own
+/// heuristic (a symlink whose canonical target carries no `node_modules`
+/// segment — see `is_workspace_package`'s doc comment); the fix is to filter
+/// by `first_party_root` at the scanner's edge-insertion sites instead.
+///
+/// Unscoped (`scan_islands_with_meta`, `first_party_root: None`) still
+/// records the edge — a sanity check that this fixture genuinely trips the
+/// workspace-package probe and isn't accidentally missing it some other
+/// way. Scoped to the project's own root via
+/// `scan_islands_with_meta_and_first_party_root`, the edge must be absent.
+#[cfg(unix)]
+#[test]
+fn workspace_package_edge_outside_first_party_root_is_filtered_from_real_fs_scan() {
+    let project_tmp = tempfile::tempdir().expect("tempdir");
+    let project = project_tmp.path();
+    std::fs::create_dir_all(project.join("pages")).unwrap();
+    std::fs::create_dir_all(project.join("components")).unwrap();
+
+    // A package living entirely outside the project — the shape `npm
+    // link` / a `file:` dependency produces on disk.
+    let external_tmp = tempfile::tempdir().expect("tempdir");
+    let external_pkg = external_tmp.path().join("linked-pkg");
+    std::fs::create_dir_all(&external_pkg).unwrap();
+    std::fs::write(
+        external_pkg.join("package.json"),
+        r#"{"name":"@acme/linked","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(external_pkg.join("index.js"), "export const helper = 1;\n").unwrap();
+    let scope_dir = project.join("node_modules/@acme");
+    std::fs::create_dir_all(&scope_dir).unwrap();
+    std::os::unix::fs::symlink(&external_pkg, scope_dir.join("linked")).unwrap();
+
+    std::fs::write(
+        project.join("pages/home.tsx"),
+        r#"import { Demo } from "../components/demo";
+           export default function Home() { return <Demo/>; }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("components/demo.tsx"),
+        r#""use client";
+           import { helper } from "@acme/linked";
+           export function Demo() { return helper; }"#,
+    )
+    .unwrap();
+
+    let pages = vec![project.join("pages/home.tsx")];
+    let resolver = FsResolver::new();
+
+    let (_islands, unscoped_meta) = scan_islands_with_meta(&pages, &resolver).expect("scan");
+    assert_eq!(
+        unscoped_meta.workspace_package_edges_from_islands.len(),
+        1,
+        "sanity check: the fixture must trip the workspace-package probe when unscoped \
+         (first_party_root: None): {:?}",
+        unscoped_meta.workspace_package_edges_from_islands
+    );
+
+    let (_islands, scoped_meta) =
+        scan_islands_with_meta_and_first_party_root(&pages, &resolver, Some(project))
+            .expect("scan");
+    assert!(
+        scoped_meta.workspace_package_edges_from_islands.is_empty(),
+        "an npm-link/file: dependency outside first_party_root must not be recorded as a \
+         workspace-package edge: {:?}",
+        scoped_meta.workspace_package_edges_from_islands
+    );
+}
+
+/// Positive-control companion to the test above: a genuine pnpm-workspace
+/// sibling — physically INSIDE the workspace root that's passed as
+/// `first_party_root` — must still produce its edge once scoping is active.
+/// Proves the filter targets the first-party BOUNDARY, not "every
+/// `node_modules` symlink".
+#[cfg(unix)]
+#[test]
+fn workspace_package_edge_inside_first_party_root_is_kept_by_real_fs_scan() {
+    let workspace_tmp = tempfile::tempdir().expect("tempdir");
+    let workspace_root = workspace_tmp.path();
+    let host = workspace_root.join("packages/host");
+    let sibling = workspace_root.join("packages/shared");
+    std::fs::create_dir_all(host.join("pages")).unwrap();
+    std::fs::create_dir_all(host.join("components")).unwrap();
+    std::fs::create_dir_all(&sibling).unwrap();
+    std::fs::write(
+        sibling.join("package.json"),
+        r#"{"name":"@acme/shared","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(sibling.join("index.js"), "export const helper = 1;\n").unwrap();
+
+    let scope_dir = host.join("node_modules/@acme");
+    std::fs::create_dir_all(&scope_dir).unwrap();
+    std::os::unix::fs::symlink(&sibling, scope_dir.join("shared")).unwrap();
+
+    std::fs::write(
+        host.join("pages/home.tsx"),
+        r#"import { Demo } from "../components/demo";
+           export default function Home() { return <Demo/>; }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        host.join("components/demo.tsx"),
+        r#""use client";
+           import { helper } from "@acme/shared";
+           export function Demo() { return helper; }"#,
+    )
+    .unwrap();
+
+    let pages = vec![host.join("pages/home.tsx")];
+    let resolver = FsResolver::new();
+    let (_islands, meta) =
+        scan_islands_with_meta_and_first_party_root(&pages, &resolver, Some(workspace_root))
+            .expect("scan");
+
+    let expected_importer = host
+        .join("components/demo.tsx")
+        .canonicalize()
+        .expect("canonicalize importer");
+    let expected_package_dir = sibling
+        .canonicalize()
+        .expect("canonicalize sibling package dir");
+    assert_eq!(
+        meta.workspace_package_edges_from_islands,
+        vec![WorkspacePackageImportEdge {
+            importer: expected_importer,
+            specifier: "@acme/shared".to_string(),
+            package_dir: expected_package_dir,
         }],
         "got: {:?}",
         meta.workspace_package_edges_from_islands

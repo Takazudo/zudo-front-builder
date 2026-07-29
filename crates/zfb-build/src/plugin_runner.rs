@@ -645,6 +645,12 @@ impl PluginHost {
                 specifier: String,
                 #[serde(rename = "loaderId")]
                 loader_id: String,
+                /// `addVirtualModule`'s optional `{ watchFiles }` option
+                /// (#2167). `#[serde(default)]` keeps this backward
+                /// compatible with a hypothetical older host build that
+                /// never emits the field.
+                #[serde(rename = "watchFiles", default)]
+                watch_files: Vec<String>,
             },
             #[serde(rename = "injectRoute")]
             InjectRoute {
@@ -686,9 +692,11 @@ impl PluginHost {
                     WireRegistration::VirtualModule {
                         specifier,
                         loader_id,
+                        watch_files,
                     } => RawSetupRegistration::VirtualModule {
                         specifier,
                         loader_id: VirtualLoaderId(loader_id),
+                        watch_files,
                     },
                     WireRegistration::InjectRoute {
                         pattern,
@@ -728,6 +736,35 @@ impl PluginHost {
     /// paths when an import specifier matches a registered
     /// virtual-module entry.
     pub async fn invoke_virtual_loader(&self, loader_id: &VirtualLoaderId) -> Result<String> {
+        self.invoke_virtual_loader_via(loader_id, false).await
+    }
+
+    /// Like [`PluginHost::invoke_virtual_loader`] but sends `force: true`
+    /// (#2167), telling the JS host to bypass `virtualCache` and
+    /// re-invoke the loader, refreshing the memoised entry with the
+    /// fresh result.
+    ///
+    /// Intended for a loader whose `addVirtualModule` registration also
+    /// declared `{ watchFiles }` — [`crate::plugin_refresh::PluginRefreshState::refresh`]
+    /// (issue #2168) calls this when one of those files changes, so the
+    /// next import of the virtual module sees the fresh content instead of
+    /// the first-call-wins cached value `invoke_virtual_loader` returns.
+    /// `refresh` itself is not yet wired to a live watcher tick — see that
+    /// module's doc comment.
+    pub async fn invoke_virtual_loader_forced(
+        &self,
+        loader_id: &VirtualLoaderId,
+    ) -> Result<String> {
+        self.invoke_virtual_loader_via(loader_id, true).await
+    }
+
+    /// Shared implementation behind [`PluginHost::invoke_virtual_loader`] /
+    /// [`PluginHost::invoke_virtual_loader_forced`] (#2167).
+    async fn invoke_virtual_loader_via(
+        &self,
+        loader_id: &VirtualLoaderId,
+        force: bool,
+    ) -> Result<String> {
         #[derive(Deserialize)]
         struct Reply {
             source: String,
@@ -735,7 +772,7 @@ impl PluginHost {
         let reply: Reply = self
             .request_typed(
                 "virtualLoad",
-                serde_json::json!({ "loaderId": loader_id.as_str() }),
+                serde_json::json!({ "loaderId": loader_id.as_str(), "force": force }),
             )
             .await?;
         Ok(reply.source)
@@ -1681,7 +1718,14 @@ mod tests {
                   throw new Error("expected dev, got " + command);
                 }
                 addAlias("@/foo", "./src/foo.tsx");
-                addVirtualModule("virtual:data", () => 'export default 42');
+                // A per-call-incrementing counter so a cache-hit (loader
+                // NOT re-invoked) and a forced reload (loader IS
+                // re-invoked) are observably distinguishable (#2167).
+                let calls = 0;
+                addVirtualModule("virtual:data", () => {
+                  calls += 1;
+                  return `export default ${calls}`;
+                });
                 injectRoute("/dev/x", "./scripts/x.ts");
               },
             };
@@ -1718,16 +1762,150 @@ mod tests {
             .get("virtual:data")
             .expect("vm registered");
         assert_eq!(vm.plugin, "setupper");
-        // Invoke the loader and confirm the cached source is returned
-        // both times.
+        assert!(
+            vm.watch_files.is_empty(),
+            "no watchFiles option was supplied, so the registry entry must be empty"
+        );
+        // #2167 contract amendment: an unforced load still cache-hits
+        // (the loader is NOT re-invoked — `calls` stays at 1); a forced
+        // load bypasses the cache and DOES re-invoke the loader,
+        // refreshing the memoised entry; a subsequent unforced load then
+        // cache-hits the freshly-refreshed value rather than the stale
+        // pre-force one.
         let first = host.invoke_virtual_loader(&vm.loader_id).await.unwrap();
-        assert_eq!(first, "export default 42");
+        assert_eq!(first, "export default 1");
         let second = host.invoke_virtual_loader(&vm.loader_id).await.unwrap();
-        assert_eq!(second, first);
+        assert_eq!(
+            second, first,
+            "unforced load must still cache-hit and not re-invoke the loader"
+        );
+        let forced = host
+            .invoke_virtual_loader_forced(&vm.loader_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            forced, "export default 2",
+            "force:true must bypass the cache and re-invoke the loader"
+        );
+        let after_force = host.invoke_virtual_loader(&vm.loader_id).await.unwrap();
+        assert_eq!(
+            after_force, forced,
+            "an unforced load after a forced reload must cache-hit the refreshed value"
+        );
         assert_eq!(regs.injected_routes.len(), 1);
         let r = &regs.injected_routes.as_slice()[0];
         assert_eq!(r.pattern, "/dev/x");
         assert_eq!(r.entrypoint, tmp.path().join("scripts/x.ts"));
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_virtual_module_watch_files_round_trip() {
+        // #2167: `addVirtualModule`'s optional third arg `{ watchFiles }`
+        // must survive the host -> Rust wire hop into
+        // `VirtualModuleEntry::watch_files`.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("watcher.mjs");
+        let watch_a = tmp.path().join("watch-a.json");
+        let watch_b = tmp.path().join("watch-b.json");
+        let plugin_src = format!(
+            r#"
+            export default {{
+              name: "watcher",
+              setup({{ addVirtualModule }}) {{
+                addVirtualModule("virtual:watched", () => 'export default 1', {{
+                  watchFiles: [{a:?}, {b:?}],
+                }});
+              }},
+            }};
+            "#,
+            a = watch_a.to_string_lossy().to_string(),
+            b = watch_b.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "watcher".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let regs = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect("setup ok");
+        let vm = regs
+            .virtual_modules
+            .get("virtual:watched")
+            .expect("vm registered");
+        assert_eq!(vm.watch_files, vec![watch_a.clone(), watch_b.clone()]);
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_virtual_module_rejects_relative_watch_files() {
+        // #2167: absolute-only enforcement lives host-side
+        // (`plugin-host.mjs`'s `addVirtualModule`), mirroring
+        // `extraWatchPaths`'s absolute-only rule
+        // (`crates/zfb/src/config.rs`). A relative entry must be
+        // rejected rather than silently accepted and later
+        // misinterpreted by a dev-server watcher with no defined base
+        // directory to resolve it against.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("relwatcher.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "relwatcher",
+              setup({ addVirtualModule }) {
+                addVirtualModule("virtual:rel", () => 'export default 1', {
+                  watchFiles: ["./relative/path.json"],
+                });
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "relwatcher".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let err = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect_err("a relative watchFiles entry must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("absolute"),
+            "expected an absolute-path error, got: {msg}"
+        );
         host.shutdown().await.ok();
     }
 
