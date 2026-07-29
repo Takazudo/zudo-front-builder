@@ -12,7 +12,7 @@
     "dev:zfb:network": "zfb dev --host 0.0.0.0",
     "dev:network": "run-p dev:zfb:network dev:history",
     "dev:history": "doc-history-server --port 4322 --content-dir src/content/docs --locale ja:src/content/docs-ja",
-    "build": "zfb build",
+    "build": "zfb build --strict-broken",
     "preview": "zfb preview",
     "check": "zfb check",
     "check:html": "html-validate \"dist/**/*.html\"",
@@ -21,10 +21,10 @@
     "b4push": "pnpm check && pnpm build"
   },
   "dependencies": {
-    "@takazudo/zfb": "0.1.0-next.96",
-    "@takazudo/zfb-runtime": "0.1.0-next.96",
-    "@takazudo/zfb-md-wasm": "0.1.0-next.96",
-    "@takazudo/zfb-adapter-cloudflare": "0.1.0-next.96",
+    "@takazudo/zfb": "0.1.0-next.97",
+    "@takazudo/zfb-runtime": "0.1.0-next.97",
+    "@takazudo/zfb-md-wasm": "0.1.0-next.97",
+    "@takazudo/zfb-adapter-cloudflare": "0.1.0-next.97",
     "@takazudo/zudo-doc": "4.4.6",
     "@takazudo/zudo-doc-history-server": "4.4.6",
     "@takazudo/zdtp": "0.4.9",
