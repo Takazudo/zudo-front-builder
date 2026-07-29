@@ -232,6 +232,37 @@ fn watch_backend_from_config(cfg: &config::Config) -> zfb_watcher::WatchBackend 
     }
 }
 
+/// Deadline-margin multiplier applied to the watcher-liveness probe when
+/// it drives the poll backend (issue #2174, codex review finding).
+///
+/// [`zfb_watcher::WatchBackend::Poll`] only observes changes at its own
+/// re-scan cadence: a marker the probe writes just after a scan may not
+/// be picked up until roughly the NEXT scan, nearly a full `interval`
+/// later. At the maximum configured `watchPollIntervalMs` (10_000ms),
+/// the probe's default 10s deadline alone would race a genuinely healthy
+/// poll backend into a false `TimedOut` verdict. `3` gives comfortable
+/// room for a full scan cycle plus scheduling jitter without ever
+/// SHRINKING the deadline below the native-backend default (below) for
+/// a short poll interval.
+const LIVENESS_POLL_DEADLINE_INTERVAL_MULTIPLIER: u32 = 3;
+
+/// Build the watcher-liveness probe's [`zfb_watcher::LivenessOpts`] for
+/// `backend` (issue #2174): same as [`zfb_watcher::LivenessOpts::default`]
+/// on [`zfb_watcher::WatchBackend::Native`], but with the deadline scaled
+/// up per [`LIVENESS_POLL_DEADLINE_INTERVAL_MULTIPLIER`] when `backend`
+/// is [`zfb_watcher::WatchBackend::Poll`] — never below the default,
+/// since a short poll interval needs no extra margin.
+fn liveness_opts_for_backend(backend: zfb_watcher::WatchBackend) -> zfb_watcher::LivenessOpts {
+    let default_deadline = zfb_watcher::LivenessOpts::default().deadline;
+    let deadline = match backend {
+        zfb_watcher::WatchBackend::Native => default_deadline,
+        zfb_watcher::WatchBackend::Poll { interval } => {
+            default_deadline.max(interval * LIVENESS_POLL_DEADLINE_INTERVAL_MULTIPLIER)
+        }
+    };
+    zfb_watcher::LivenessOpts::new(deadline).with_backend(backend)
+}
+
 /// Does a project-root-relative collection path escape the project root
 /// via `..`? A purely LEXICAL check (no filesystem access): walk the
 /// components tracking depth, and report an escape the moment a
@@ -2750,11 +2781,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // backend must have its liveness self-check probe the poll backend
     // too, not the native one (a native-backed probe would report on
     // FSEvents/inotify health, which says nothing about the backend
-    // actually in use).
+    // actually in use). `liveness_opts_for_backend` also scales the
+    // deadline up for the poll backend — see its doc comment for why
+    // the default 10s deadline alone can false-positive at the maximum
+    // configured poll interval.
     let liveness_probe_handle = spawn_watcher_liveness_probe(
         probe_project_root,
         probe_effective_watch_targets,
-        zfb_watcher::LivenessOpts::default().with_backend(watch_backend_from_config(&cfg)),
+        liveness_opts_for_backend(watch_backend_from_config(&cfg)),
     );
 
     // Announce the ACTUAL bound port, not the requested one: with
@@ -9495,8 +9529,7 @@ mod tests {
             watch_poll_interval_ms: Some(250),
             ..config::Config::default()
         };
-        let opts =
-            zfb_watcher::LivenessOpts::default().with_backend(watch_backend_from_config(&cfg));
+        let opts = liveness_opts_for_backend(watch_backend_from_config(&cfg));
         assert_eq!(
             opts.backend,
             zfb_watcher::WatchBackend::Poll {
@@ -9508,9 +9541,44 @@ mod tests {
     #[test]
     fn liveness_opts_stay_native_from_default_config() {
         let cfg = config::Config::default();
-        let opts =
-            zfb_watcher::LivenessOpts::default().with_backend(watch_backend_from_config(&cfg));
+        let opts = liveness_opts_for_backend(watch_backend_from_config(&cfg));
         assert_eq!(opts.backend, zfb_watcher::WatchBackend::Native);
+    }
+
+    /// Codex review finding (issue #2174): a poll-backed liveness probe
+    /// must extend its deadline well beyond the configured poll
+    /// interval, or a healthy poll backend at the maximum allowed
+    /// interval (10s) can false-positive into a `TimedOut` verdict
+    /// before the probe's own `PollWatcher` has even completed its
+    /// first re-scan.
+    #[test]
+    fn liveness_opts_for_backend_keeps_default_deadline_for_native() {
+        let opts = liveness_opts_for_backend(zfb_watcher::WatchBackend::Native);
+        assert_eq!(opts.backend, zfb_watcher::WatchBackend::Native);
+        assert_eq!(opts.deadline, zfb_watcher::LivenessOpts::default().deadline);
+    }
+
+    #[test]
+    fn liveness_opts_for_backend_scales_deadline_with_a_long_poll_interval() {
+        let backend = zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_secs(10),
+        };
+        let opts = liveness_opts_for_backend(backend);
+        assert_eq!(opts.backend, backend);
+        assert!(
+            opts.deadline >= std::time::Duration::from_secs(10) * 3,
+            "deadline must scale with the configured poll interval, got {:?}",
+            opts.deadline
+        );
+    }
+
+    #[test]
+    fn liveness_opts_for_backend_never_shrinks_deadline_below_default_for_a_short_poll_interval() {
+        let backend = zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_millis(100),
+        };
+        let opts = liveness_opts_for_backend(backend);
+        assert_eq!(opts.deadline, zfb_watcher::LivenessOpts::default().deadline);
     }
 
     // -----------------------------------------------------------------

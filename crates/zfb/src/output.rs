@@ -73,18 +73,36 @@ fn fmt_ready(url: &str) -> String {
 /// `fmt_*` helpers above) because `commands::dev` reuses this exact text
 /// as the decision output of its own pure verdict-to-warning mapping — see
 /// `commands::dev::watcher_liveness_warning_for`.
-pub(crate) fn fmt_watcher_liveness_timed_out() -> String {
-    "hot-reload looks dead on this machine: the dev server's own watcher \
-     self-check did not observe a filesystem change within its deadline, \
-     so editing files in your project's watched directories may not \
-     trigger a rebuild until you restart `zfb dev`.\n  Common causes: a \
-     stalled fseventsd (macOS — try `sudo killall fseventsd`), a \
-     Dropbox/OneDrive/iCloud-synced project directory intercepting file \
-     events, or antivirus/EDR software hooking filesystem calls.\n  If \
-     the problem persists, try setting `watchPollFallback: true` in \
-     `zfb.config.ts` to fall back to a poll-based watcher instead of \
-     relying on native filesystem-change notifications."
-        .to_string()
+///
+/// `backend` is the backend the probe actually drove (issue #2174, codex
+/// review finding): a session already running
+/// [`zfb_watcher::WatchBackend::Poll`] must not be told to enable
+/// `watchPollFallback` — it already is — so the remedy line names the
+/// interval/reachability angle instead of repeating advice that has no
+/// effect.
+pub(crate) fn fmt_watcher_liveness_timed_out(backend: zfb_watcher::WatchBackend) -> String {
+    let remedy = match backend {
+        zfb_watcher::WatchBackend::Native => {
+            "If the problem persists, try setting `watchPollFallback: true` in \
+             `zfb.config.ts` to fall back to a poll-based watcher instead of \
+             relying on native filesystem-change notifications."
+        }
+        zfb_watcher::WatchBackend::Poll { .. } => {
+            "`watchPollFallback` is already enabled, so this isn't a native \
+             filesystem-notification problem — try raising `watchPollIntervalMs`, \
+             or check whether the watched directories are otherwise unreachable \
+             from this process (e.g. a network mount that dropped)."
+        }
+    };
+    format!(
+        "hot-reload looks dead on this machine: the dev server's own watcher \
+         self-check did not observe a filesystem change within its deadline, \
+         so editing files in your project's watched directories may not \
+         trigger a rebuild until you restart `zfb dev`.\n  Common causes: a \
+         stalled fseventsd (macOS — try `sudo killall fseventsd`), a \
+         Dropbox/OneDrive/iCloud-synced project directory intercepting file \
+         events, or antivirus/EDR software hooking filesystem calls.\n  {remedy}"
+    )
 }
 
 /// Print an informational status message to `stdout`.
@@ -598,7 +616,7 @@ mod tests {
 
     #[test]
     fn fmt_watcher_liveness_timed_out_names_hot_reload_and_common_causes() {
-        let text = fmt_watcher_liveness_timed_out();
+        let text = fmt_watcher_liveness_timed_out(zfb_watcher::WatchBackend::Native);
         let lower = text.to_lowercase();
         assert!(text.contains("hot-reload"), "got: {text}");
         assert!(text.contains("restart `zfb dev`"), "got: {text}");
@@ -618,10 +636,29 @@ mod tests {
             !text.contains("pages/, content/"),
             "must not hardcode the default watch-dir list, got: {text}"
         );
-        // Issue #2174 — the remedy line naming the poll-backend opt-out.
+        // Issue #2174 — on the native backend, the remedy line names the
+        // poll-backend opt-out.
         assert!(
             text.contains("watchPollFallback: true"),
             "expected a remedy line naming watchPollFallback: true, got: {text}"
+        );
+    }
+
+    /// Codex review finding (issue #2174): a session already running the
+    /// poll backend must NOT be told to enable `watchPollFallback` — it
+    /// already is — or the guidance is actively misleading.
+    #[test]
+    fn fmt_watcher_liveness_timed_out_does_not_recommend_poll_fallback_when_already_polling() {
+        let text = fmt_watcher_liveness_timed_out(zfb_watcher::WatchBackend::Poll {
+            interval: Duration::from_millis(500),
+        });
+        assert!(
+            !text.contains("watchPollFallback: true"),
+            "must not recommend enabling an already-active poll fallback, got: {text}"
+        );
+        assert!(
+            text.contains("watchPollIntervalMs"),
+            "poll-mode guidance should point at the interval knob instead, got: {text}"
         );
     }
 
