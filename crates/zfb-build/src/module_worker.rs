@@ -1717,7 +1717,10 @@ pub fn shadow_mirror_prunes_path(mirror_root: &Path, candidate_path: &Path) -> b
 ///   deliberately materializes `.zudo-doc/routes-src/**` and a depth-1
 ///   `.zfb/*.json` despite both being hidden, so treating every hidden dir
 ///   as pruned would reject a virtual module reaching genuinely staged
-///   zudo-doc-compat source.
+///   zudo-doc-compat source. That exemption is itself prune-aware WITHIN the
+///   allowlisted subtree — the staging pass walks it with the same
+///   `is_pruned_infra_dir` filter, so a nested `.cache/`/`node_modules/`
+///   inside it is still unstaged and still rejected here.
 fn reject_pruned_project_tier_virtual_imports(source: &str, project_root: &Path) -> Result<()> {
     let virtual_path = project_root.join(".zfb-worker-virtual-module.mjs");
     let Ok((module, base, unresolved_ctxt)) = parse_module(&virtual_path, source) else {
@@ -4004,6 +4007,73 @@ mod tests {
             ),
             "{remapped}"
         );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_nested_dir_under_staging_allowlist_is_not_rejected() {
+        // The exemption must survive nesting that the staging walk actually
+        // materializes — `.zudo-doc/routes-src/` is a `materialise_shadow`
+        // walk ROOT, and an ordinary subdirectory inside it is descended into
+        // exactly like `components/ui/`.
+        let project = tempfile::tempdir().unwrap();
+        let staged_target = project
+            .path()
+            .join(".zudo-doc/routes-src/pages/generated-route.tsx");
+        write(&staged_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&staged_target.to_string_lossy()).unwrap(),
+        );
+
+        let remapped = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap();
+
+        assert!(
+            remapped.contains(
+                "export { generated } from \"./.zudo-doc/routes-src/pages/generated-route.tsx\";"
+            ),
+            "{remapped}"
+        );
+    }
+
+    #[test]
+    fn absolute_project_virtual_import_into_pruned_dir_under_staging_allowlist_is_rejected() {
+        // codex-review (epic PR #2177): the staging exemption is NOT a blanket
+        // pass for the whole allowlisted subtree. `materialise_shadow` runs
+        // the allowlisted dir through the same
+        // `filter_entry(|e| !is_pruned_infra_dir(e))` as every other source
+        // root, so a nested `.cache/` inside it is still omitted from the
+        // shadow. Exempting it would let the rewrite through and surface the
+        // opaque esbuild "Could not resolve" this guard exists to replace.
+        let project = tempfile::tempdir().unwrap();
+        let pruned_target = project
+            .path()
+            .join(".zudo-doc/routes-src/.cache/generated-route.tsx");
+        write(&pruned_target, "export const generated = 1;\n");
+        let source = format!(
+            "export {{ generated }} from {};\n",
+            serde_json::to_string(&pruned_target.to_string_lossy()).unwrap(),
+        );
+
+        let error = remap_virtual_module_project_imports_to_shadow(
+            &source,
+            project.path(),
+            project.path(),
+            project.path(),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&pruned_target.to_string_lossy().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("shadow mirror prunes"), "{message}");
     }
 
     #[test]
