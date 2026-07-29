@@ -106,7 +106,10 @@ pub enum WatchBackend {
     /// its default `false` — scans compare mtimes (whole-second
     /// granularity), never file contents.
     Poll {
-        /// Re-scan cadence. See [`DEFAULT_POLL_INTERVAL`].
+        /// Re-scan cadence. See [`DEFAULT_POLL_INTERVAL`]. MUST be
+        /// non-zero: constructors return an error for `Duration::ZERO`
+        /// (notify would accept it and busy-loop its poll thread,
+        /// rescanning every watched tree with no pause).
         interval: Duration,
     },
 }
@@ -316,6 +319,14 @@ struct GuardedNotifyWatcher {
     // `watch`/`unwatch` are ever called. `Send` because the Watcher moves
     // into tokio tasks with the handle.
     inner: Box<dyn NotifyWatcher + Send>,
+    /// `true` when `inner` is the poll backend, whose `unwatch` removes
+    /// ONLY the exact registered key — never nested registrations the way
+    /// inotify's recursive unwatch does. The retirement coverage-transfer
+    /// branch in [`Watcher::sync_recursive_dir_watches`] consults this: a
+    /// transferred root must be unwatched eagerly there, or its leftover
+    /// scan entry would keep delivering after the covering ancestor
+    /// retires.
+    poll_backend: bool,
     filter: Arc<Mutex<RecursiveDirFilterCore>>,
     /// Test-only observability (issue #1843): when armed via
     /// [`Watcher::enable_watch_call_log`], every `(path, recursive)` arg
@@ -531,6 +542,17 @@ impl Watcher {
         J: IntoIterator<Item = T>,
         T: AsRef<Path>,
     {
+        if let WatchBackend::Poll { interval } = options.backend {
+            // notify accepts a zero interval and busy-loops its poll thread
+            // (recv_timeout(0) + a full rescan of every watched tree, no
+            // pause). Reject it as a configuration error up front.
+            if interval.is_zero() {
+                return Err(notify::Error::generic(
+                    "WatchBackend::Poll interval must be non-zero",
+                ));
+            }
+        }
+
         let root = project_root.as_ref();
 
         // notify hands us events on a sync channel from a thread it owns.
@@ -646,6 +668,7 @@ impl Watcher {
             Self {
                 _notify: GuardedNotifyWatcher {
                     inner: notify_watcher,
+                    poll_backend: matches!(options.backend, WatchBackend::Poll { .. }),
                     filter: Arc::clone(&recursive_dir_filter),
                     watch_call_log: None,
                 },
@@ -939,11 +962,30 @@ impl Watcher {
                 .any(|alias| surviving_aliases.iter().any(|kept| alias.starts_with(kept)));
             if covered_by_surviving {
                 // Coverage transfer: a surviving root spans this subtree.
-                // Leave the notify registration alone — its events are still
-                // wanted, and on inotify an unwatch here would strip watch
-                // descriptors the surviving root's coverage shares. The
-                // lingering entry is removed whenever the covering root is
-                // itself retired (its recursive unwatch spans this path).
+                // On the native backends, leave the notify registration
+                // alone — its events are still wanted, and on inotify an
+                // unwatch here would strip watch descriptors the surviving
+                // root's coverage shares. The lingering entry is removed
+                // whenever the covering root is itself retired (its
+                // recursive unwatch spans this path on inotify).
+                //
+                // POLL BACKEND EXCEPTION (codex review, sub-issue #2173):
+                // PollWatcher registrations are independent per-key scan
+                // entries, so the ancestor's later unwatch removes ONLY its
+                // own key — the lingering entry would keep scanning and
+                // delivering forever, violating the replace semantics.
+                // Unwatching the transferred root NOW is precise and safe
+                // there: no state is shared between registrations, and the
+                // surviving ancestor's own recursive scan keeps covering
+                // this subtree.
+                if self._notify.poll_backend {
+                    if let Err(error) = self._notify.unwatch(&root) {
+                        warn!(
+                            path = %root.display(), %error,
+                            "failed to unwatch coverage-transferred recursive dir root (poll backend)"
+                        );
+                    }
+                }
                 continue;
             }
             if let Err(error) = self._notify.unwatch(&root) {
@@ -1813,6 +1855,26 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(3), watcher.shutdown())
             .await
             .expect("Watcher::shutdown() must complete (circular-wait deadlock regression)");
+    }
+
+    /// A zero poll interval must be rejected at construction (codex review
+    /// of sub-issue #2173): notify accepts `Duration::ZERO` and busy-loops
+    /// its poll thread, rescanning every watched tree with no pause.
+    #[tokio::test]
+    async fn poll_backend_zero_interval_fails_construction() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let result = Watcher::start_with_options(
+            tmp.path(),
+            std::iter::once("."),
+            std::iter::empty::<&Path>(),
+            WatchOptions::default().with_backend(WatchBackend::Poll {
+                interval: Duration::ZERO,
+            }),
+        );
+        assert!(
+            result.is_err(),
+            "a zero poll interval must fail construction, not busy-loop"
+        );
     }
 
     /// Regression test for the saturated-outbound-channel shutdown hang (issue
