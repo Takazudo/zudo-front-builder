@@ -258,6 +258,7 @@ jobs:
               | test(=ssr_only_healthy_deferred_publish_reloads_open_tab)
               | test(=ssr_only_cold_bootstrap_recovery_reloads_open_tab)
               | test(=embedded_host_matches_real_workerd_for_supported_rows_and_documented_divergences)
+              | test(=e2e_poll_backend_content_edit_and_new_entry_discovery)
           ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
           rc=${PIPESTATUS[0]}
           set -e

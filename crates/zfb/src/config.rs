@@ -580,6 +580,47 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub copy_public_with_base: bool,
 
+    /// Opt into `notify`'s poll-based watch backend
+    /// ([`zfb_watcher::WatchBackend::Poll`]) for the dev server's
+    /// watchers instead of the OS-native backend (FSEvents on macOS,
+    /// inotify on Linux, ...).
+    ///
+    /// Use this as a fallback when the native backend is unavailable or
+    /// unreliable on the host (network-mounted project directories, some
+    /// CI/sandboxed containers) — the poll backend re-scans the watched
+    /// roots on an interval instead of relying on OS filesystem-change
+    /// notifications.
+    ///
+    /// Default: `false` (native backend). See
+    /// [`watch_poll_interval_ms`](Self::watch_poll_interval_ms) for the
+    /// re-scan cadence.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `watchPollFallback` 1:1.
+    #[serde(default)]
+    pub watch_poll_fallback: bool,
+
+    /// Re-scan interval, in milliseconds, for the poll watch backend.
+    /// Only takes effect when
+    /// [`watch_poll_fallback`](Self::watch_poll_fallback) is `true`.
+    ///
+    /// **Validated at config-load time:** must be between `50` and
+    /// `10_000` (inclusive) — values outside that range are rejected
+    /// (too low busy-loops the poll thread; too high makes hot-reload
+    /// feel broken). A value below `100` is accepted but logs a warning
+    /// (elevated re-scan CPU cost on large trees). Setting this field
+    /// WITHOUT `watchPollFallback: true` is accepted and dormant, with a
+    /// logged warning rather than an error — a preset may pre-stage the
+    /// interval ahead of a project enabling the fallback itself.
+    ///
+    /// Absent falls through to `zfb_watcher::DEFAULT_POLL_INTERVAL`
+    /// (500ms), applied by the consuming command — not stored here.
+    ///
+    /// `#[serde(rename_all = "camelCase")]` on this struct deserialises
+    /// the JSON / TS form `watchPollIntervalMs` 1:1.
+    #[serde(default)]
+    pub watch_poll_interval_ms: Option<u64>,
+
     /// Config presets to merge before validation (#1196, #1199, #1202).
     ///
     /// Each preset is a partial `ZfbConfig`-shaped object. Presets are merged
@@ -639,6 +680,8 @@ impl Default for Config {
             output: OutputMode::default(),
             plugin_hook_timeout_secs: None,
             copy_public_with_base: true,
+            watch_poll_fallback: false,
+            watch_poll_interval_ms: None,
             presets: Vec::new(),
         }
     }
@@ -2366,6 +2409,29 @@ fn validate(cfg: &Config, dir: &Path) -> Result<()> {
             );
         }
     }
+    if let Some(interval) = cfg.watch_poll_interval_ms {
+        if !(50..=10_000).contains(&interval) {
+            bail!(
+                "watchPollIntervalMs {interval} must be between 50 and 10000 \
+                 (inclusive); values this low busy-loop the poll thread with \
+                 no pause, values this high make hot-reload feel broken"
+            );
+        }
+        if interval < 100 {
+            tracing::warn!(
+                "watchPollIntervalMs {interval} is below the recommended 100ms \
+                 floor; a re-scan interval this short can add noticeable CPU \
+                 cost on large project trees"
+            );
+        }
+        if !cfg.watch_poll_fallback {
+            tracing::warn!(
+                "watchPollIntervalMs is set but watchPollFallback is not \
+                 \"true\"; the interval has no effect until watchPollFallback \
+                 is enabled"
+            );
+        }
+    }
     if let Some(s) = &cfg.site {
         // `site` must be an absolute HTTP/HTTPS URL — it is used to build
         // canonical hrefs, OG URLs, and sitemap entries, none of which make
@@ -3608,6 +3674,143 @@ mod tests {
             .unwrap();
         let cfg = load_from_dir(tmp.path()).await.unwrap();
         assert!(cfg.extra_watch_paths.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // watchPollFallback / watchPollIntervalMs (issue #2174)
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn watch_poll_fallback_defaults_to_false_and_interval_to_none() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(tmp.path().join("zfb.config.json"), r#"{}"#)
+            .await
+            .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.unwrap();
+        assert!(!cfg.watch_poll_fallback);
+        assert_eq!(cfg.watch_poll_interval_ms, None);
+    }
+
+    #[tokio::test]
+    async fn watch_poll_fallback_true_is_accepted_and_stored() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "watchPollFallback": true }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("watchPollFallback: true must be accepted");
+        assert!(cfg.watch_poll_fallback);
+    }
+
+    #[tokio::test]
+    async fn watch_poll_interval_ms_rejects_zero() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "watchPollFallback": true, "watchPollIntervalMs": 0 }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("0 must be rejected — it would busy-loop the poll thread");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("watchPollIntervalMs"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn watch_poll_interval_ms_rejects_below_50() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "watchPollFallback": true, "watchPollIntervalMs": 49 }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("49 is below the 50ms floor and must be rejected");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("watchPollIntervalMs"), "msg: {msg}");
+        assert!(msg.contains("50"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn watch_poll_interval_ms_rejects_above_10000() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "watchPollFallback": true, "watchPollIntervalMs": 10001 }"#,
+        )
+        .await
+        .unwrap();
+        let err = load_from_dir(tmp.path())
+            .await
+            .expect_err("10001 is above the 10000ms ceiling and must be rejected");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("watchPollIntervalMs"), "msg: {msg}");
+        assert!(msg.contains("10000"), "msg: {msg}");
+    }
+
+    #[tokio::test]
+    async fn watch_poll_interval_ms_accepts_50_to_99_with_warning() {
+        // 50..100 is accepted (not an error) but logs a warning — mirroring
+        // the `codeHighlight.roleClasses` + `tailwind.enabled=false`
+        // precedent above, this only asserts the value loads and is stored;
+        // the warning itself isn't captured (no tracing-capture harness
+        // exists in this crate).
+        for interval in [50_u64, 99] {
+            let tmp = TempDir::new().unwrap();
+            tokio::fs::write(
+                tmp.path().join("zfb.config.json"),
+                format!(r#"{{ "watchPollFallback": true, "watchPollIntervalMs": {interval} }}"#),
+            )
+            .await
+            .unwrap();
+            let cfg = load_from_dir(tmp.path())
+                .await
+                .unwrap_or_else(|e| panic!("{interval}ms must be accepted (warning only): {e:#}"));
+            assert_eq!(cfg.watch_poll_interval_ms, Some(interval));
+        }
+    }
+
+    #[tokio::test]
+    async fn watch_poll_interval_ms_accepts_100_to_10000_silently() {
+        for interval in [100_u64, 500, 10_000] {
+            let tmp = TempDir::new().unwrap();
+            tokio::fs::write(
+                tmp.path().join("zfb.config.json"),
+                format!(r#"{{ "watchPollFallback": true, "watchPollIntervalMs": {interval} }}"#),
+            )
+            .await
+            .unwrap();
+            let cfg = load_from_dir(tmp.path())
+                .await
+                .unwrap_or_else(|e| panic!("{interval}ms must be accepted: {e:#}"));
+            assert_eq!(cfg.watch_poll_interval_ms, Some(interval));
+        }
+    }
+
+    #[tokio::test]
+    async fn watch_poll_interval_ms_without_fallback_is_accepted_and_dormant() {
+        // A preset may pre-stage the interval ahead of a project enabling
+        // the fallback itself — this must load (warning only), not error.
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "watchPollIntervalMs": 250 }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path())
+            .await
+            .expect("watchPollIntervalMs without watchPollFallback must be allowed (dormant)");
+        assert!(!cfg.watch_poll_fallback);
+        assert_eq!(cfg.watch_poll_interval_ms, Some(250));
     }
 
     #[tokio::test]

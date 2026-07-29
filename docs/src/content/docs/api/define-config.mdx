@@ -79,6 +79,8 @@ All keys are camelCase. The shape is enforced by the Rust serde deserializer (`c
   See [Resolve links](../markdown-features/resolve-links.mdx) and the [Markdown Features](../markdown-features/index.mdx) feature map for the full behavior.
 - `emitRoutesManifest?: boolean` — whether `zfb build` writes the post-build route manifest to `<outDir>/__zfb/routes.json`. Default: `true` (emit). Set `false` to suppress.
 - `extraWatchPaths?: string[]` — extra absolute filesystem paths the dev watcher follows in addition to the in-project source roots. See [Watching paths outside the project root](#watching-paths-outside-the-project-root).
+- `watchPollFallback?: boolean` — make `zfb dev` watch the filesystem by polling instead of by OS-native change notifications (FSEvents on macOS, inotify on Linux, …). Default: `false` (native). Turn it on for hosts where the native backend never delivers — network-mounted project directories, some CI/sandboxed containers, a stalled `fseventsd`. See [Poll-based file watching](#poll-based-file-watching).
+- `watchPollIntervalMs?: number` — re-scan interval, in milliseconds, for the poll backend. Default: `500`. Must be between `50` and `10000` inclusive; anything outside that range is a config-load error, and a value below `100` is accepted with a warning. Only takes effect when `watchPollFallback` is `true` — setting it alone is accepted but dormant, with a warning rather than an error. See [Poll-based file watching](#poll-based-file-watching).
 
 The following keys are part of the same `ZfbConfig` type — `defineConfig` and `zfb check` type-check them like any other field. They configure the Rust engine's code-rendering and plugin behaviour:
 
@@ -329,6 +331,49 @@ This is a dev-mode feature. Production builds (`zfb build`) snapshot the filesys
 
 </Warning>
 
+## Poll-based file watching
+
+`zfb dev` normally learns about edits from the operating system's own filesystem-change notifications — FSEvents on macOS, inotify on Linux, and the platform equivalent elsewhere. That is the fastest path and the default. On some hosts it never delivers: a project directory on a network mount, certain CI or sandboxed containers, or a macOS `fseventsd` that has stalled. Hot-reload then looks dead even though `zfb dev` is running fine.
+
+`watchPollFallback: true` swaps that native backend for a polling one, which re-scans the watched roots on a fixed interval instead of waiting to be told about changes.
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  watchPollFallback: true,
+  watchPollIntervalMs: 500,
+});
+```
+
+### When to reach for it
+
+Do not enable it pre-emptively — polling costs CPU that native notifications do not, and it is slower to react. Turn it on when hot-reload is actually broken on a given machine.
+
+The dev server tells you when that has happened. At boot it runs a watcher-liveness self-check: it makes its own filesystem change and waits to observe it. If nothing arrives within the deadline, `zfb dev` prints a loud `hot-reload looks dead on this machine` warning, lists the common causes (a stalled `fseventsd`, a Dropbox/OneDrive/iCloud-synced project directory intercepting events, antivirus/EDR software hooking filesystem calls), and names `watchPollFallback: true` as the remedy to try. That warning is the clearest signal to set this flag.
+
+Its absence is weaker evidence. The self-check writes its markers into a scratch directory deliberately kept clear of the roots the dev server really watches — an overlap would make the probe's own writes look like project changes and trigger a rebuild storm on every check. So it measures whether the backend delivers events for that one location, not for every watched path. A failure confined to a single watched path, such as an `extraWatchPaths` entry on a network mount that stopped delivering, can leave hot-reload broken while the self-check still passes. If edits to a particular directory never trigger a rebuild and no warning appeared, the poll backend is still worth trying.
+
+If the poll backend is already enabled and the same warning still appears, it says so and suggests a different remedy instead — raise `watchPollIntervalMs`, or check whether the watched directories have become unreachable from the process (a network mount that dropped, for instance). Enabling a fallback that is already on would not help.
+
+### The interval
+
+- **Default `500`ms** when `watchPollIntervalMs` is omitted.
+- **Valid range `50`–`10000`ms, inclusive.** Anything outside it fails at config load — too low busy-loops the polling thread, too high makes hot-reload feel broken.
+- **Below `100`ms is accepted with a warning.** A re-scan that frequent can add noticeable CPU cost on a large project tree.
+- **Dormant without the flag.** Setting `watchPollIntervalMs` while `watchPollFallback` is `false` is accepted, warns, and has no effect until the fallback is enabled. It is deliberately not an error, so a preset can pre-stage an interval for projects that may later opt in.
+
+### Behaviour differences from the native backend
+
+Everything downstream of event delivery is shared between the two backends — change classification, debouncing, and dynamic watch registration all behave identically. What differs is how changes are noticed in the first place:
+
+- **Latency is roughly one poll interval** (plus the debounce window), instead of milliseconds after the OS event. At the 500ms default, expect edits to take up to about half a second longer to trigger a rebuild.
+- **A file created and deleted within a single interval produces no event at all.** The next scan never sees the path, so neither the creation nor the deletion is reported.
+- **Modification detection is mtime-based at whole-second granularity.** File contents are not compared. An overwrite that leaves the file's modification time in the same second goes unnoticed until a later change bumps the mtime.
+- **Each child of a newly created directory arrives as its own creation event.** This is a deliberate divergence, and an improvement: the native backend can report a created directory whose children never surface as individual events.
+
+This flag affects `zfb dev` only. Production builds snapshot the filesystem once and never rely on watcher events, so neither key changes shipped output.
+
 ## Examples
 
 ```ts
@@ -376,3 +421,6 @@ The loader enforces the following rules and reports errors with the file path pl
   override an extension reserved by zfb.
 - `bundle.define` cannot override the mode-owned `DEV`, `PROD`, or `NODE_ENV`
   substitutions.
+- `watchPollIntervalMs` must be between `50` and `10000` (inclusive). A value
+  below `100`, and a value set without `watchPollFallback: true`, are both
+  accepted with a warning rather than rejected.

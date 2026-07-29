@@ -525,6 +525,44 @@ export type ZfbConfig = {
   copyPublicWithBase?: boolean;
 
   /**
+   * Opt into `notify`'s poll-based watch backend for the dev server's
+   * watchers instead of the OS-native backend (FSEvents on macOS,
+   * inotify on Linux, ...).
+   *
+   * Use this as a fallback when the native backend is unavailable or
+   * unreliable on the host (network-mounted project directories, some
+   * CI/sandboxed containers) — the poll backend re-scans the watched
+   * roots on an interval instead of relying on OS filesystem-change
+   * notifications.
+   *
+   * Default: `false` (native backend). See
+   * {@link watchPollIntervalMs} for the re-scan cadence.
+   *
+   * Mirrors `Config::watch_poll_fallback` in crates/zfb/src/config.rs.
+   */
+  watchPollFallback?: boolean;
+
+  /**
+   * Re-scan interval, in milliseconds, for the poll watch backend. Only
+   * takes effect when {@link watchPollFallback} is `true`.
+   *
+   * Validated at config-load time: must be between `50` and `10000`
+   * (inclusive) — values outside that range are rejected (too low
+   * busy-loops the poll thread; too high makes hot-reload feel broken).
+   * A value below `100` is accepted but logs a warning (elevated
+   * re-scan CPU cost on large trees). Setting this WITHOUT
+   * `watchPollFallback: true` is accepted and dormant, with a logged
+   * warning rather than an error — a preset may pre-stage the interval
+   * ahead of a project enabling the fallback itself.
+   *
+   * Absent falls through to the built-in 500ms default, applied by the
+   * consuming command.
+   *
+   * Mirrors `Config::watch_poll_interval_ms` in crates/zfb/src/config.rs.
+   */
+  watchPollIntervalMs?: number;
+
+  /**
    * Project output mode. Drives the V8-mode decision the build engine
    * makes right after the no-SSR-without-adapter precondition check
    * (sub-task 4.1b / issue #373):
