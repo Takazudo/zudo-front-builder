@@ -241,22 +241,61 @@ fn workspace_claims_member(globs: &[String], project_root: &Path, workspace_root
 
     let mut claimed = false;
     for glob in globs {
-        let (negated, pattern) = match glob.strip_prefix('!') {
-            Some(rest) => (true, rest),
-            None => (false, glob.as_str()),
-        };
-        let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
-        let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
-        let pattern_segments: Vec<&str> = if pattern == "." || pattern.is_empty() {
-            Vec::new()
-        } else {
-            pattern.split('/').collect()
-        };
+        let (negated, pattern_segments) = parse_glob(glob);
         if glob_segments_match(&pattern_segments, &segments) {
             claimed = !negated;
         }
     }
     claimed
+}
+
+/// Parse one raw `packages:` glob entry into `(negated, pattern segments)` —
+/// the shared first step [`workspace_claims_member`]'s exact-match check and
+/// [`collect_workspace_dirs`]'s pruning gate ([`glob_pattern_reachable`]) both
+/// need before matching.
+fn parse_glob(glob: &str) -> (bool, Vec<&str>) {
+    let (negated, pattern) = match glob.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, glob),
+    };
+    let pattern = pattern.strip_prefix("./").unwrap_or(pattern);
+    let pattern = pattern.strip_suffix('/').unwrap_or(pattern);
+    let pattern_segments = if pattern == "." || pattern.is_empty() {
+        Vec::new()
+    } else {
+        pattern.split('/').collect()
+    };
+    (negated, pattern_segments)
+}
+
+/// Whether `pattern` could still match `prefix_segments` itself, or any path
+/// having `prefix_segments` as its leading segments — i.e. whether the
+/// directory `prefix_segments` names could BE a match, or CONTAIN one.
+/// `false` is a proof that no full path under this directory can ever be
+/// claimed by `pattern`; it is the only case [`collect_workspace_dirs`]'s
+/// pruning gate may act on. `true` is returned whenever the pattern's
+/// remaining shape leaves any doubt — reachability, not exact membership, is
+/// the question here.
+///
+/// A `**` anywhere pattern still has left to match always keeps this `true`:
+/// `**` can absorb the whole remaining prefix (and anything deeper still), so
+/// no finite prefix can ever rule it out. A plain literal or single-`*`
+/// pattern segment, once consumed, DOES rule things out: once the pattern is
+/// fully consumed but segments of the prefix remain, nothing beneath the
+/// matched directory can ever satisfy it.
+fn glob_pattern_reachable(pattern: &[&str], prefix_segments: &[String]) -> bool {
+    match pattern.split_first() {
+        None => prefix_segments.is_empty(),
+        Some((&"**", _)) => true,
+        Some((first, rest)) => match prefix_segments.split_first() {
+            // Fewer segments committed than the pattern has already
+            // accounted for — nothing rules this out yet.
+            None => true,
+            Some((segment, tail)) => {
+                glob_segment_matches(first, segment) && glob_pattern_reachable(rest, tail)
+            }
+        },
+    }
 }
 
 fn glob_segments_match(pattern: &[&str], path: &[String]) -> bool {
@@ -333,7 +372,7 @@ pub fn claimed_workspace_member_names(workspace_root: &Path) -> BTreeMap<String,
     }
 
     let mut candidates = Vec::new();
-    collect_workspace_dirs(&workspace_root, &mut candidates);
+    collect_workspace_dirs(&workspace_root, &[], &globs, &mut candidates);
     candidates.sort();
 
     for dir in candidates {
@@ -352,10 +391,37 @@ pub fn claimed_workspace_member_names(workspace_root: &Path) -> BTreeMap<String,
 }
 
 /// Recursively collect every real (non-symlink) directory under `dir`,
-/// including `dir` itself. Never descends into a directory literally named
-/// `node_modules` or `.git`, and never follows a symlinked directory (it is
-/// skipped, not counted and not descended into).
-fn collect_workspace_dirs(dir: &Path, out: &mut Vec<PathBuf>) {
+/// including `dir` itself, that a POSITIVE `packages:` glob could still claim
+/// — either directly, or through one of its descendants
+/// ([`glob_pattern_reachable`]). Never descends into a directory literally
+/// named `node_modules` or `.git` — pnpm's own reserved names, skipped
+/// unconditionally and never subject to the glob-aware rule below — and
+/// never follows a symlinked directory (it is skipped, not counted and not
+/// descended into).
+///
+/// `prefix` is `dir`'s own path relative to the workspace root, as segments
+/// (empty for the workspace root itself, which is always visited — the
+/// pruning gate only applies to a directory's CHILDREN). `globs` is the raw
+/// `packages:` list ([`workspace_package_globs`]'s output, negations and
+/// all); only its POSITIVE entries decide reachability; see
+/// [`glob_pattern_reachable`]'s own docs for why a negation is never
+/// consulted here.
+///
+/// # Why not blanket-prune known infra directory NAMES
+///
+/// `target/`, `dist/`, `.zfb-build/`, `worktrees/` are common build-artifact
+/// directory names, but none of them is reserved by pnpm: `packages:` is a
+/// caller-supplied glob list, and nothing stops a workspace from
+/// legitimately claiming `"dist"` or `"worktrees/*"` as a real package
+/// location (issue #2142). Pruning by literal basename would silently make
+/// such a workspace's members undiscoverable. Instead, a subtree is skipped
+/// only once [`glob_pattern_reachable`] PROVES no positive glob can ever
+/// match it or anything beneath it — for an ordinary workspace whose globs
+/// never mention `dist`/`target`/etc. that prunes exactly as eagerly as a
+/// hardcoded basename skip would, while a workspace that legitimately claims
+/// `dist/*` still walks in exactly as far as the claim requires, and no
+/// further.
+fn collect_workspace_dirs(dir: &Path, prefix: &[String], globs: &[String], out: &mut Vec<PathBuf>) {
     out.push(dir.to_path_buf());
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -372,7 +438,16 @@ fn collect_workspace_dirs(dir: &Path, out: &mut Vec<PathBuf>) {
         if name == "node_modules" || name == ".git" {
             continue;
         }
-        collect_workspace_dirs(&path, out);
+        let mut child_prefix = prefix.to_vec();
+        child_prefix.push(name.to_string_lossy().into_owned());
+        let reachable = globs.iter().any(|glob| {
+            let (negated, pattern_segments) = parse_glob(glob);
+            !negated && glob_pattern_reachable(&pattern_segments, &child_prefix)
+        });
+        if !reachable {
+            continue; // no positive pattern can ever match this dir or a descendant.
+        }
+        collect_workspace_dirs(&path, &child_prefix, globs, out);
     }
 }
 
@@ -747,5 +822,66 @@ mod tests {
         let members = claimed_workspace_member_names(&root);
         assert!(!members.contains_key("legacy"));
         assert_eq!(members.get("current"), Some(&root.join("apps/current")));
+    }
+
+    // ── glob-aware pruning (issue #2142) ───────────────────────────────────
+
+    #[test]
+    fn claimed_member_names_prunes_a_subtree_no_positive_glob_can_ever_reach() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            "packages: ['packages/*']\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("packages/ok")).unwrap();
+        std::fs::write(root.join("packages/ok/package.json"), r#"{"name":"ok"}"#).unwrap();
+
+        // `target/` is not reserved by pnpm and is not named by any glob
+        // here — it must never even be visited: a nested `package.json`
+        // must not surface, proving the walk pruned the WHOLE subtree
+        // rather than merely rejecting this one directory's own membership
+        // check (which would still have descended into it).
+        std::fs::create_dir_all(root.join("target/debug/build/nested")).unwrap();
+        std::fs::write(
+            root.join("target/debug/build/nested/package.json"),
+            r#"{"name":"should-never-surface"}"#,
+        )
+        .unwrap();
+
+        let members = claimed_workspace_member_names(&root);
+        assert_eq!(members.len(), 1, "got {members:?}");
+        assert_eq!(members.get("ok"), Some(&root.join("packages/ok")));
+        assert!(!members.contains_key("should-never-surface"));
+    }
+
+    #[test]
+    fn claimed_member_names_still_discovers_a_member_explicitly_claimed_beneath_a_normally_pruned_name(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        // A workspace that DOES claim packages under `dist/` — an unusual
+        // but legitimate topology (issue #2142): `dist` is a common
+        // build-artifact name, but nothing reserves it, and a naive
+        // basename-based prune would silently make this member
+        // undiscoverable.
+        std::fs::write(root.join("pnpm-workspace.yaml"), "packages: ['dist/*']\n").unwrap();
+        std::fs::create_dir_all(root.join("dist/published-pkg")).unwrap();
+        std::fs::write(
+            root.join("dist/published-pkg/package.json"),
+            r#"{"name":"@acme/published"}"#,
+        )
+        .unwrap();
+
+        let members = claimed_workspace_member_names(&root);
+        assert_eq!(
+            members.get("@acme/published"),
+            Some(&root.join("dist/published-pkg")),
+            "a package explicitly claimed under a normally-pruned directory name must still be \
+             found; got {members:?}"
+        );
     }
 }

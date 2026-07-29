@@ -4033,7 +4033,17 @@ pub fn bundle_with_session(
     .is_eligible()
     {
         if let Some(meta_path) = metafile_path.as_deref() {
-            crate::metafile_deps::audit_metafile_stage_escape_at_path(
+            // One shared classification pass over one read/parse of the
+            // metafile and one `ClaimedMemberRoster` (issue #2142) now feeds
+            // BOTH the audit and the enrolment-selection query below —
+            // `audit_metafile_stage_escape_at_path` and
+            // `accepted_enrolment_set_at_path` used to be called separately
+            // here, each re-reading and re-parsing the same file and
+            // building its own roster when locality required one. See
+            // `crate::metafile_deps::audit_and_enrol_metafile_stage_escape`'s
+            // own docs for the shared pass, and `ClaimedMemberRoster`'s docs
+            // for the resulting materialization contract.
+            let accepted = crate::metafile_deps::audit_and_enrol_metafile_stage_escape_at_path(
                 meta_path,
                 shadow,
                 &[work],
@@ -4043,23 +4053,16 @@ pub fn bundle_with_session(
 
             // Acceptance ⇒ enrolment (issue #2089, epic #2078 Sub 10b —
             // serving #2048), enforced fail-closed over the SAME metafile the
-            // audit just classified, with the SAME four arguments, so the two
-            // can never disagree about which inputs were accepted. Nested
-            // workspace members only: `first_party_root == project_root` is the
-            // exact condition under which `SiblingMirrorPlan::compute` returns
-            // an empty plan and `mirror_sibling_root` never runs, so there is
-            // no enrolment channel to couple to at a root-claimed workspace —
-            // #2048 scopes itself the same way. See
+            // audit just classified, so the two can never disagree about
+            // which inputs were accepted. Nested workspace members only:
+            // `first_party_root == project_root` is the exact condition
+            // under which `SiblingMirrorPlan::compute` returns an empty plan
+            // and `mirror_sibling_root` never runs, so there is no enrolment
+            // channel to couple to at a root-claimed workspace — #2048
+            // scopes itself the same way. See
             // [`enforce_accepted_package_enrolment`] for why this enforces the
             // coupling rather than performing it.
             if first_party_root != project_root {
-                let accepted = crate::metafile_deps::accepted_enrolment_set_at_path(
-                    meta_path,
-                    shadow,
-                    &[work],
-                    &first_party_root,
-                )
-                .context("bundler: enrolment-selection query failed")?;
                 enforce_accepted_package_enrolment(
                     &accepted,
                     &plugin_preprocessing_files,
