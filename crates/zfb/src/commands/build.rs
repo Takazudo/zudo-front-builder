@@ -16424,7 +16424,7 @@ mod tests {
     /// elsewhere in this same binary — by production code (the
     /// `with_embedded_binary` skip above) and by the env-gated
     /// `default_runner_emit_prod_assets_returns_non_empty_css_for_real_project`
-    /// below, which CLAUDE.md documents running in this very process via
+    /// below, which crates/CLAUDE.md documents running in this very process via
     /// `cargo test -p zfb --lib commands::build:: -- --include-ignored`.
     /// `EnvGuard` bounds the mutation in TIME but not across THREADS, so
     /// both tests take [`TAILWIND_BIN_ENV_LOCK`] to serialise against each

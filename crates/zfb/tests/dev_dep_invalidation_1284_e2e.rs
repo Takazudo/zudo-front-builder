@@ -33,7 +33,7 @@
 //! The Wave-3 author wired all three scenarios into a local copy of the
 //! `dev_serve_e2e` harness (`spawn_dev` / `boot_and_handshake` /
 //! `poll_until_contains` / `subscribe_sse`) — these are no longer stubs.
-//! They stay `#[ignore]`d (tagged `heavy:`, see CLAUDE.md's taxonomy)
+//! They stay `#[ignore]`d (tagged `heavy:`, see crates/CLAUDE.md's taxonomy)
 //! because each scenario boots a real `zfb dev` server (esbuild + embedded
 //! V8 + Tailwind for symptom C) and polls it over HTTP: too slow, and too
 //! reliant on a free port, for the T1 PR gate. Run locally with
