@@ -43,10 +43,16 @@
 //! and calls [`PluginVirtualModuleStore::publish`] only once every one of
 //! them has succeeded. A single failing loader in the batch means NONE of
 //! the batch's specifiers are published — the store keeps serving its
-//! last-good memo for all of them, the failure is logged, and the caller
-//! keeps watching (a delete-then-recreate of the failing file recovers on
-//! the next event, since it's the loader itself that decides whether to
-//! throw).
+//! last-good memo for all of them and the failure is logged.
+//!
+//! A discarded batch is not lost, though: every specifier the failed batch
+//! touched (including ones whose OWN loader succeeded — only a sibling
+//! failed) is queued in an internal pending-retry set and folded into the
+//! NEXT `refresh` call's affected set automatically, regardless of what
+//! that call's own `changed_paths` name. Without this, a recovery event
+//! naming only the file that failed would retry just that one specifier
+//! and silently lose the sibling's already-fetched fresh content forever
+//! (codex review, issue #2168).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -219,15 +225,21 @@ impl PluginRefreshOutcome {
 }
 
 /// Session-lifetime plugin-refresh state (issue #2168): the shared source
-/// store, the watch ownership map, and a [`PluginHost`] clone (cheap — see
-/// [`PluginHost`]'s own doc comment) to invoke loaders with. Threaded into
-/// `zfb`'s `DevRebuildInputs` so it is reachable from the same struct the
-/// bundler / V8 host / islands rebuild already read their plugin data from.
+/// store, the watch ownership map, a [`PluginHost`] clone (cheap — see
+/// [`PluginHost`]'s own doc comment) to invoke loaders with, and a pending-
+/// retry set (see [`Self::refresh`]'s doc for why). Threaded into `zfb`'s
+/// `DevRebuildInputs` so it is reachable from the same struct the bundler /
+/// V8 host / islands rebuild already read their plugin data from.
 #[derive(Clone, Default)]
 pub struct PluginRefreshState {
     host: Option<PluginHost>,
     ownership: PluginWatchOwnership,
     store: PluginVirtualModuleStore,
+    /// Specifiers a PAST batch fetched-but-discarded because a sibling in
+    /// the same batch failed (see [`Self::refresh`]'s atomicity note).
+    /// `Arc<Mutex<_>>` so every clone of `PluginRefreshState` shares the
+    /// same pending set, same as `store`.
+    pending: Arc<std::sync::Mutex<BTreeMap<String, VirtualLoaderId>>>,
 }
 
 impl PluginRefreshState {
@@ -240,6 +252,7 @@ impl PluginRefreshState {
             host,
             ownership,
             store,
+            pending: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -254,17 +267,43 @@ impl PluginRefreshState {
         self.ownership.watched_paths()
     }
 
-    /// Re-invoke every loader owning a path in `changed_paths`, publishing
+    /// Re-invoke every loader owning a path in `changed_paths` (PLUS any
+    /// specifier a past call fetched-but-discarded — see below), publishing
     /// atomically on full success. A no-op (returns a default/empty
     /// outcome immediately, no host round-trip) when there is no plugin
-    /// host (pluginless project) or none of `changed_paths` is a
-    /// registered watch file.
+    /// host (pluginless project) and nothing is affected or pending.
+    ///
+    /// ## Why a pending-retry set (codex review, issue #2168)
+    ///
+    /// The atomicity contract discards the WHOLE batch on any failure —
+    /// including specifiers whose own loader just succeeded, if a sibling
+    /// in the SAME `changed_paths` batch failed. Without carrying that
+    /// success forward, it would be lost for good the moment a recovery
+    /// event names only the file that failed: `ownership.affected` for
+    /// that narrower path set would never mention the sibling that
+    /// succeeded before, so its freshly-fetched (but never published)
+    /// content would never resurface until its own watched file happens to
+    /// change independently. `pending` remembers every specifier a failed
+    /// batch touched (not just the ones that failed) so the NEXT call —
+    /// whatever triggered it — retries them too, alongside anything the
+    /// caller directly asked for this time.
     ///
     /// **NOT wired to a live watcher tick anywhere yet** — see the module
     /// doc. This is the function the next sub-issue's orchestrator hook is
-    /// expected to call with the tick's changed paths.
+    /// expected to call with each tick's changed paths.
     pub async fn refresh(&self, changed_paths: &[PathBuf]) -> PluginRefreshOutcome {
-        let affected = self.ownership.affected(changed_paths);
+        let mut affected = self.ownership.affected(changed_paths);
+        {
+            let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            if !pending.is_empty() {
+                let mut seen: BTreeSet<String> = affected.iter().map(|(s, _)| s.clone()).collect();
+                for (specifier, loader_id) in pending.iter() {
+                    if seen.insert(specifier.clone()) {
+                        affected.push((specifier.clone(), loader_id.clone()));
+                    }
+                }
+            }
+        }
         if affected.is_empty() {
             return PluginRefreshOutcome::default();
         }
@@ -295,9 +334,15 @@ impl PluginRefreshState {
                     specifier = %specifier,
                     error = %message,
                     "plugin virtual-module reload failed; retaining last-good source \
-                     for the whole batch (delete-then-recreate recovers on the next \
-                     watch event)"
+                     for the whole batch (queued for retry on the next refresh call)"
                 );
+            }
+            // Remember EVERY specifier this attempt touched — not just the
+            // ones that failed — so the next call (however narrow its own
+            // `changed_paths`) retries the discarded successes too.
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            for (specifier, loader_id) in &affected {
+                pending.insert(specifier.clone(), loader_id.clone());
             }
             return PluginRefreshOutcome {
                 refreshed: Vec::new(),
@@ -305,6 +350,15 @@ impl PluginRefreshState {
             };
         }
 
+        // Full success: every specifier just retried (freshly affected AND
+        // carried-over-pending alike) is now published — clear it from
+        // pending.
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            for (specifier, _) in &affected {
+                pending.remove(specifier);
+            }
+        }
         let refreshed: Vec<String> = updates.keys().cloned().collect();
         self.store.publish(updates);
         PluginRefreshOutcome {
@@ -633,7 +687,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_all_or_nothing_one_failing_loader_blocks_the_whole_batch() {
+    async fn refresh_all_or_nothing_one_failing_loader_blocks_the_whole_batch_then_recovers_via_pending_retry(
+    ) {
         if !host_node_available() {
             eprintln!("skipping: node not on PATH");
             return;
@@ -694,6 +749,34 @@ mod tests {
             state.store().get("virtual:ok").as_deref(),
             Some("export default \"ok-one\""),
             "virtual:ok's last-good memo must be retained, not silently advanced"
+        );
+
+        // Codex review (issue #2168): fix ONLY the bad file and refresh with
+        // a NARROW batch that names just that one path — NOT ok_watch. If
+        // virtual:ok's already-fetched "ok-two" content were simply
+        // discarded for good, this narrower recovery event would republish
+        // virtual:bad alone and leave virtual:ok stale forever. The pending-
+        // retry set must carry virtual:ok's failed-batch membership forward
+        // so THIS call retries it too, alongside virtual:bad.
+        std::fs::write(&bad_watch, "bad-two").unwrap();
+        let outcome = state.refresh(std::slice::from_ref(&bad_watch)).await;
+        let mut refreshed = outcome.refreshed.clone();
+        refreshed.sort();
+        assert_eq!(
+            refreshed,
+            vec!["virtual:bad".to_string(), "virtual:ok".to_string()],
+            "a recovery event naming only the fixed file must ALSO republish the \
+             sibling specifier the earlier failed batch silently discarded"
+        );
+        assert!(outcome.failed.is_empty());
+        assert_eq!(
+            state.store().get("virtual:ok").as_deref(),
+            Some("export default \"ok-two\""),
+            "virtual:ok's fetched-but-discarded update must not be lost"
+        );
+        assert_eq!(
+            state.store().get("virtual:bad").as_deref(),
+            Some("export default \"bad-two\"")
         );
 
         host.shutdown().await.ok();
