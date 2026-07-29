@@ -370,23 +370,6 @@ async fn e2e_dev_watches_workspace_sibling_raw_and_worker_sources() {
     let host_root = workspace.path().join("sub/host");
     let shared_dir = workspace.path().join("sub/shared");
 
-    // Scenario D (issue #1711) needs COPY mode for the preprocess stage, not
-    // the default symlink mode: a sibling PLAIN module is resolved directly
-    // by esbuild's normal module graph (unlike `?raw`/worker deps, which are
-    // rewritten into generated in-place modules and never hit esbuild's own
-    // symlink resolution). Real esbuild's `--preserve-symlinks` does not
-    // protect a plain relative-import symlink the way it protects a
-    // `node_modules`-shaped one, so in symlink mode the stage-escape audit
-    // (#1705) rejects the resolved real path as an escape. `copy_mode` in
-    // `stage_client_script_preprocessing` (crates/zfb/src/commands/build.rs)
-    // requires BOTH a discoverable `node_modules` dir and a tsconfig `paths`
-    // map in scope — the `sub/host/tsconfig.json` fixture already carries an
-    // (otherwise unused) `paths` entry for this; this empty dir is the other
-    // half. `copy_fixture` above intentionally skips copying `node_modules`,
-    // so it must be created here rather than checked into the fixture.
-    std::fs::create_dir_all(workspace.path().join("node_modules"))
-        .expect("create workspace node_modules dir to force copy-mode staging");
-
     let mut session = spawn_dev(&host_root, &esbuild, None);
     let Some(port) = wait_for_ready(&mut session).await else {
         return; // environmental skip (no V8/esbuild)
