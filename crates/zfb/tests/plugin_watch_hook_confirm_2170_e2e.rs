@@ -16,9 +16,19 @@
 //! `preset.mjs` registers `virtual:note`, whose loader reads
 //! `plugin-watched/note.txt` directly via `node:fs` — a read the dev
 //! bundler's static-import scan cannot see on its own — and declares that
-//! path as a `watchFiles` entry. `pages/index.tsx` imports `virtual:note`
-//! and renders its value, and is `prerender = false` (SSR-only) — see the
-//! next section for why that is load-bearing, not incidental.
+//! path as a `watchFiles` entry. TWO pages import `virtual:note` and
+//! render its value, deliberately covering both serving regimes:
+//!
+//! - `pages/index.tsx` — `prerender = false` (SSR-only). Rendered fresh on
+//!   every request against whatever bundle is currently loaded.
+//! - `pages/prerendered.tsx` — PRERENDERED (the default). Its HTML is
+//!   committed to `.zfb-build/dev-pages/` and re-served from disk until a
+//!   tick marks the page stale.
+//!
+//! The second page is not decoration: it is the only one of the two that
+//! can fail when page INVALIDATION regresses, and it was added by issue
+//! #2181 after the finding recorded in the next section. See that section
+//! for why the first draft of this test had only the SSR-only page.
 //!
 //! `plugin-watched/` is deliberately a project-root child directory that is
 //! NOT one of `crates/zfb/src/commands/dev.rs`'s `DEFAULT_WATCH_ROOTS`
@@ -31,15 +41,17 @@
 //! edit even with #2167/#2168/#2169 fully reverted, and would prove nothing
 //! about the new plugin watch-file registration this epic added.
 //!
-//! ## Why the fixture page is SSR-only (`prerender = false`) — a real finding
+//! ## The prerendered-page gap this test originally documented (issue #2181)
 //!
 //! The first draft of this test used an ordinary prerendered/SSG page and
 //! assumed (from `orchestrator.rs`'s `PreTickRefreshHook` doc comment,
 //! "typically `PageSelection::All` … since watch files usually sit outside
 //! the source roots") that a plugin watch-file edit would mark that page
 //! stale via the `External` classification arm. **That assumption was
-//! empirically wrong for THIS fixture's exact path shape**, and matters
-//! enough to record here rather than silently work around:
+//! empirically wrong for THIS fixture's exact path shape**, so the draft
+//! was narrowed to an SSR-only page and the gap reported separately as
+//! issue #2181. #2181 has since been FIXED, and this section records the
+//! trail because the fix's correctness rests on it:
 //!
 //! `plugin-watched/note.txt` is a project-root-RELATIVE path (it does NOT
 //! fail `strip_prefix(project_root)`) with no recognized top segment
@@ -53,45 +65,44 @@
 //! above was describing). `Unclassified`'s own arm in `orchestrator.rs`'s
 //! `plan_for_changes` only consults `graph.dirty_pages(&path)` — empty
 //! here, since nothing imports `note.txt` via a real ESM specifier the
-//! dependency graph could ever see — so **zero pages are even considered
-//! by this tick's lazy-render callback**, confirmed directly: a run with
-//! `ZFB_DEV_TIMING=1` shows `stale probe: drained pages_stale=0` for the
-//! `note.txt:Modified` tick, meaning `lazy_render_tick`'s per-page loop ran
-//! over an EMPTY `pages` slice. A prerendered page's already-written
-//! `dev-pages/index.html` is therefore NEVER invalidated by this edit, and
-//! a subsequent `GET /` just re-serves the stale on-disk file forever —
-//! **reproduced reliably (3/3 runs) against the fully-merged, unmodified
-//! base** before this was traced to its cause.
+//! dependency graph could ever see — so **zero pages were even considered
+//! by that tick's lazy-render callback**, confirmed directly at the time: a
+//! run with `ZFB_DEV_TIMING=1` showed `stale probe: drained pages_stale=0`
+//! for the `note.txt:Modified` tick, meaning `lazy_render_tick`'s per-page
+//! loop ran over an EMPTY `pages` slice. A prerendered page's
+//! already-written `dev-pages/*.html` was therefore never invalidated by
+//! this edit, and subsequent requests re-served the stale on-disk file
+//! forever — **reproduced reliably (3/3 runs)** before it was traced.
 //!
-//! What DOES fire, unconditionally whenever
+//! The #2181 fix marks `PageSelection::All` inside the same
+//! `is_plugin_watch_target` block that already set the consumer flags
+//! (`orchestrator.rs`, both in `plan_for_changes` and in
+//! `tick_with_kinds`'s removed-path fold), so page invalidation no longer
+//! depends on how the watch file happens to classify. That is why
+//! `pages/prerendered.tsx` exists in this fixture and is asserted below
+//! ALONGSIDE the SSR-only page rather than replacing it — the two pages
+//! fail for different reasons, and keeping both means a failure names
+//! which contract broke:
+//!
+//! - **`/` (SSR-only)** has no `dev-pages/*.html` file and no staleness
+//!   bookkeeping at all — the renderer executes the page function FRESH on
+//!   every request, always against whatever bundle is currently loaded. It
+//!   therefore proves the STORE-refresh half (#2168/#2169: the loader was
+//!   re-invoked and its output published before the rebuild read it) and
+//!   is completely insensitive to page selection.
+//! - **`/prerendered/`** is served from committed HTML, so it proves the
+//!   INVALIDATION half (#2181) specifically: it can only go fresh if the
+//!   tick actually selected it for re-render. Reverting #2181's
+//!   `plan.mark_pages(PageSelection::All)` leaves `/` green and fails
+//!   exactly this route — the same 3/3-reproducible stale-V1 symptom
+//!   recorded above.
+//!
+//! What fires regardless of `PathClass`, whenever
 //! `GranularityPolicy::is_plugin_watch_target` matches (`orchestrator.rs`,
-//! issue #2169's own addition, independent of `PathClass`): `plan.mark_css()`
-//! / `mark_islands()` / `mark_client_scripts()` / `mark_ssr_reload_needed()`.
-//! The CSS flag is what produces the SSE event this test observes (`css`,
-//! not `page` — see the assertion below); the SSR-reload flag reloads the
-//! V8 host against a freshly-rebuilt bundle, but for a PRERENDERED page
-//! that reload has no consumer to serve it to, since nothing re-renders
-//! that page's committed HTML file.
-//!
-//! An **SSR-only** page (`prerender = false`) sidesteps this entirely: such
-//! a route has no `dev-pages/*.html` file and no staleness bookkeeping at
-//! all — the renderer executes the page function FRESH on every single
-//! request, always against whatever bundle is CURRENTLY loaded. So as long
-//! as (a) the bundle gets rebuilt with the refreshed virtual-module source
-//! (guaranteed by `mark_ssr_reload_needed` triggering a rebuild) and (b)
-//! the refresh actually landed in the shared `PluginVirtualModuleStore`
-//! before that rebuild reads it (issue #2169's whole point), the very next
-//! `GET /` is guaranteed fresh — independent of `pages_stale`/lazy-render
-//! narrowing altogether. Confirmed reliably (5/5 runs) once the fixture
-//! page was changed to SSR-only, and confirmed revert-proof (see below).
-//!
-//! **This is a real, separate finding from the epic's own scope** — a
-//! plugin watch-file living inside the project root under an unrecognized
-//! directory name does not refresh a PRERENDERED page's served content
-//! (only CSS/islands/client-scripts consumers and SSR-only routes benefit)
-//! — reported to the team lead alongside this test rather than silently
-//! routed around. It does not block this confirm-e2e, which targets the
-//! shape the feature demonstrably supports end-to-end.
+//! issue #2169's own addition): `plan.mark_css()` / `mark_islands()` /
+//! `mark_client_scripts()` / `mark_ssr_reload_needed()`. The CSS flag is
+//! what produces the SSE event this test observes (`css`, not `page` — see
+//! the assertion below).
 //!
 //! ## The content-freshness assertion (binding shape, per issue #2170)
 //!
@@ -531,14 +542,24 @@ async fn run_scenario() -> ScenarioOutcome {
     );
 
     // ------------------------------------------------------------------
-    // Confirm the boot-rendered page serves the virtual module's INITIAL
-    // content before touching it.
+    // Confirm BOTH pages serve the virtual module's INITIAL content before
+    // touching it — the SSR-only route and the prerendered one. Without
+    // this baseline a post-edit freshness pass could not distinguish "the
+    // page refreshed" from "the page never rendered the old value at all".
     // ------------------------------------------------------------------
     poll_until_response_contains(
         &client,
         &format!("{base}/"),
         "V1-NOTE-CONTENT",
-        "boot: initial virtual-module content",
+        "boot: initial virtual-module content (SSR-only route)",
+        &session,
+    )
+    .await;
+    poll_until_response_contains(
+        &client,
+        &format!("{base}/prerendered/"),
+        "V1-NOTE-CONTENT",
+        "boot: initial virtual-module content (prerendered route)",
         &session,
     )
     .await;
@@ -625,7 +646,25 @@ async fn run_scenario() -> ScenarioOutcome {
         &client,
         &format!("{base}/"),
         "V2-NOTE-CONTENT-FRESH",
-        "entry rerender after the note.txt edit",
+        "entry rerender after the note.txt edit (SSR-only route)",
+        &session,
+    )
+    .await;
+
+    // The #2181 half, asserted SECOND and separately so a failure names
+    // which contract broke. The SSR-only route above cannot fail on page
+    // selection (it has no committed HTML and no staleness bookkeeping);
+    // this PRERENDERED route is served from `.zfb-build/dev-pages/` and
+    // can only go fresh if the tick actually selected it for re-render —
+    // which is exactly what `plan.mark_pages(PageSelection::All)` in
+    // `orchestrator.rs`'s `is_plugin_watch_target` block provides. With
+    // that line reverted, the route above stays green and THIS one times
+    // out still serving `V1-NOTE-CONTENT`.
+    poll_until_response_contains(
+        &client,
+        &format!("{base}/prerendered/"),
+        "V2-NOTE-CONTENT-FRESH",
+        "prerendered page invalidation after the note.txt edit (issue #2181)",
         &session,
     )
     .await;
