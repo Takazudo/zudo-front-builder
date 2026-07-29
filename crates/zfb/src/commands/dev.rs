@@ -6807,7 +6807,9 @@ export default {{
 /// Truthy values: `1`, `true` (case-insensitive). Everything else — including
 /// unset, empty, and unrecognized values — is off, so the hot path has zero
 /// overhead.
-#[cfg(feature = "embed_v8")]
+///
+/// Not `embed_v8`-gated: `watch_backend_from_config` consults it in every
+/// build flavor, including no-v8.
 pub(crate) fn dev_timing_enabled() -> bool {
     std::env::var("ZFB_DEV_TIMING")
         .ok()

@@ -135,10 +135,7 @@ async fn transferred_root_stops_delivering_after_covering_ancestor_retires() {
     // this pins against would deliver within ~2 — scan + debounce). Any
     // event canonicalizing to c.md fails; unrelated residuals are drained.
     let deadline = std::time::Instant::now() + Duration::from_secs(1);
-    loop {
-        let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
-            break;
-        };
+    while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
         match tokio::time::timeout(remaining, rx.recv()).await {
             Ok(Some(change)) => {
                 let got = fs::canonicalize(&change.path).unwrap_or_else(|_| change.path.clone());
