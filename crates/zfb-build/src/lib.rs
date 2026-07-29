@@ -93,9 +93,9 @@ pub use module_worker::{
     discover_registered_virtual_preprocessing_with_context,
     remap_virtual_module_project_imports_to_shadow,
     remap_virtual_module_workspace_sibling_imports_to_shadow, rewrite_module_worker_urls,
-    rewrite_module_worker_urls_with_context, ModulePreprocessingDiscovery,
-    ModuleWorkerBuildContext, ModuleWorkerDependency, ModuleWorkerEdge, ModuleWorkerRawImportEdge,
-    ModuleWorkerRewrite,
+    rewrite_module_worker_urls_with_context, shadow_mirror_prunes_path,
+    ModulePreprocessingDiscovery, ModuleWorkerBuildContext, ModuleWorkerDependency,
+    ModuleWorkerEdge, ModuleWorkerRawImportEdge, ModuleWorkerRewrite,
 };
 pub use orchestrator::{
     BuildOrchestrator, DiscoveryHook, DiscoveryOutcome, ExternalInvalidationHook,

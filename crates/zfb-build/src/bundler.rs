@@ -11099,17 +11099,18 @@ fn run_esbuild(
         .plugin_virtual_modules
         .iter()
         .map(|(specifier, source)| {
-            (
-                specifier.clone(),
-                remap_virtual_module_project_imports_to_shadow(
-                    source,
-                    &input.project_root,
-                    first_party_root,
-                    work_root,
-                ),
+            let remapped = remap_virtual_module_project_imports_to_shadow(
+                source,
+                &input.project_root,
+                first_party_root,
+                work_root,
             )
+            .with_context(|| {
+                format!("bundler: failed remapping virtual module {specifier:?} for the SSR shadow")
+            })?;
+            Ok((specifier.clone(), remapped))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let resolver_inputs = zfb_plugin_resolver::build_resolver_inputs(
         &effective_plugin_aliases,
         &effective_plugin_virtual_modules,
