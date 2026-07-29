@@ -8771,26 +8771,26 @@ impl BundleExcludeMatcher {
 /// [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] (`.tsx`, `.ts`, `.jsx`, `.js`,
 /// `.mdx`, `.md`, `.html`) — the same constant `zfb-router`'s `scan_pages`
 /// reads, so the two layers cannot silently drift apart again (issue #1742
-/// / epic #1990). Files starting with `_` are treated as private (skipped)
-/// to match the conventional Next/Astro/Remix behaviour, and the
-/// conventional non-page sidecars ([`zfb_types::is_page_sidecar_file`] —
-/// `*.d.ts`, `*.test.*`, `*.spec.*`) are skipped too, matching
-/// `scan_pages`. Skipping them in only one of the two layers would put the
-/// bundler back in the drifted state #1742 describes, from the other side:
-/// the sidecar would be bundled as a production route the router never
-/// emitted, and fail on its missing default export.
+/// / epic #1990). Files starting with `_`, or nested under a directory
+/// starting with `_` (e.g. `_components/api.tsx`), are treated as private
+/// (skipped) to match the conventional Next/Astro/Remix behaviour and
+/// `scan_pages`'s own rule — [`zfb_types::path_has_private_prefix_component`]
+/// is the single source of truth for both layers (issue #2123 / #2148: a
+/// nested-private page used to be invisible to the router's SSG scan yet
+/// still reach this bundler's own route list, making it live-servable over
+/// SSR despite looking private everywhere else). The conventional
+/// non-page sidecars ([`zfb_types::is_page_sidecar_file`] — `*.d.ts`,
+/// `*.test.*`, `*.spec.*`) are skipped too, matching `scan_pages`. Skipping
+/// them in only one of the two layers would put the bundler back in the
+/// drifted state #1742 describes, from the other side: the sidecar would
+/// be bundled as a production route the router never emitted, and fail on
+/// its missing default export.
 fn derive_route(rel: &Path) -> Option<String> {
     let ext = rel.extension().and_then(|s| s.to_str())?;
     if !zfb_types::ROUTABLE_PAGE_EXTENSIONS.contains(&ext) {
         return None;
     }
-    // Skip `_private.tsx` style.
-    if rel
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map(|s| s.starts_with('_'))
-        .unwrap_or(false)
-    {
+    if zfb_types::path_has_private_prefix_component(rel) {
         return None;
     }
     if zfb_types::is_page_sidecar_file(rel) {
@@ -12762,6 +12762,27 @@ mod tests {
             Some("/about")
         );
         assert_eq!(derive_route(Path::new("index.html")).as_deref(), Some("/"));
+    }
+
+    /// A page nested under a `_`-prefixed directory is private, matching
+    /// `zfb-router`'s `scan_pages` — previously `derive_route` only checked
+    /// the file NAME, so a page like this reached the bundler's own route
+    /// list (and the compiled `entry.mjs` SSR route table) despite being
+    /// invisible to the router-driven SSG scan (issue #2123 / #2148): a
+    /// `prerender: false` page under a private directory was live-servable
+    /// over SSR while never appearing in the static build.
+    #[test]
+    fn route_derivation_skips_pages_nested_under_private_directory() {
+        assert!(derive_route(Path::new("_lib/foo.ts")).is_none());
+        assert!(derive_route(Path::new("_components/nested/api.tsx")).is_none());
+        // A private component need not be the immediate parent.
+        assert!(derive_route(Path::new("a/_b/c.tsx")).is_none());
+        // Positive control: an ordinary (non-`_`) sibling directory still
+        // routes normally.
+        assert_eq!(
+            derive_route(Path::new("lib/foo.ts")).as_deref(),
+            Some("/lib/foo")
+        );
     }
 
     /// The bundler is the SECOND page-extension consumer (issue #1742's
