@@ -123,6 +123,16 @@ const previewHandlers = new Map(); // handlerId -> { plugin, handler }
 const virtualLoaders = new Map(); // loaderId -> { plugin, loader }
 const virtualCache = new Map(); // loaderId -> string (cached source)
 let nextLoaderId = 0;
+// #2167 codex review: serializes `virtualLoad` requests PER loaderId so
+// two overlapping calls for the same loader (e.g. two forced reloads
+// issued back-to-back as a watched file changes twice in quick
+// succession) are always processed in receipt order. Without this, an
+// earlier-started-but-later-resolving loader() call could overwrite
+// `virtualCache` with a stale result after a newer call already landed
+// the fresh one. Keyed by loaderId so unrelated virtual modules never
+// block on each other. Holds the tail promise of each loader's queue;
+// reset alongside `virtualLoaders`/`virtualCache` in `handleSetup`.
+const virtualLoadQueues = new Map(); // loaderId -> Promise<void>, the queue tail
 
 function send(envelope) {
   stdout.write(JSON.stringify(envelope) + "\n");
@@ -221,6 +231,7 @@ async function handleSetup(id, msg) {
   // doesn't surface stale loaders / routes from the previous run.
   virtualLoaders.clear();
   virtualCache.clear();
+  virtualLoadQueues.clear();
   nextLoaderId = 0;
   const command = msg.ctx && msg.ctx.command;
   if (command !== "build" && command !== "dev" && command !== "preview") {
@@ -321,7 +332,14 @@ async function handleSetup(id, msg) {
                 );
               }
             }
-            watchFiles = options.watchFiles;
+            // Copy rather than alias the caller's array (codex review,
+            // #2167): the registration is only serialized at the end of
+            // the whole `setup` round, so an aliased reference would let
+            // a plugin that reuses/mutates the same array across
+            // multiple `addVirtualModule` calls (or mutates it after
+            // registering, bypassing the validation above) silently
+            // corrupt an already-registered entry's watchFiles.
+            watchFiles = options.watchFiles.slice();
           }
         }
         const loaderId = `v${nextLoaderId++}`;
@@ -434,6 +452,18 @@ async function handleVirtualLoad(id, msg) {
     );
     return;
   }
+  // Serialize on the per-loaderId queue (codex review, #2167) so an
+  // overlapping call for the SAME loader can never resolve out of
+  // order and clobber `virtualCache` with a stale result. `.catch` on
+  // the previous tail keeps one failed load from wedging the queue for
+  // every subsequent request against this loaderId.
+  const previous = virtualLoadQueues.get(msg.loaderId) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(() => runVirtualLoad(id, msg, entry));
+  virtualLoadQueues.set(msg.loaderId, next);
+  await next;
+}
+
+async function runVirtualLoad(id, msg, entry) {
   // First-call wins: subsequent invocations return the memoised
   // source string verbatim. Matches the "loader runs exactly once
   // per build" contract from #255 and the cache check in the V8 host
@@ -443,6 +473,9 @@ async function handleVirtualLoad(id, msg) {
   // through to re-invoke the loader below, refreshing the memoised
   // entry with the fresh result. The "exactly once" contract now reads
   // "exactly once, unless a forced reload was explicitly requested".
+  // Running inside the per-loaderId queue above guarantees this whole
+  // check-then-refresh sequence never races another call for the same
+  // loaderId.
   const force = msg.force === true;
   if (!force && virtualCache.has(msg.loaderId)) {
     sendOk(id, { source: virtualCache.get(msg.loaderId) });
