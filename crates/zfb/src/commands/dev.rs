@@ -220,16 +220,42 @@ fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
 /// (falling back to `zfb_watcher::DEFAULT_POLL_INTERVAL` when absent) —
 /// config-load validation (`crate::config::validate`) already bounds the
 /// interval to 50..=10_000ms and warns when it is set but dormant.
+///
+/// **`ZFB_DEV_TIMING`-gated observable signal (issue #2175, codex review
+/// finding):** without a way to see WHICH backend a session actually
+/// selected, an e2e over `watchPollFallback: true` cannot distinguish "the
+/// poll backend is live" from "the native backend happens to still work" —
+/// both observe the same edit/create events, so a revert of this exact
+/// config-to-backend threading would leave such a test silently green.
+/// Prints `"[zfb-timing] watch backend: poll interval=<ms>ms"` or
+/// `"[zfb-timing] watch backend: native"` once per call (this fn runs at
+/// each of the three watch-construction call sites), same env var and
+/// truthy parse as every other `ZFB_DEV_TIMING` line in this file.
 fn watch_backend_from_config(cfg: &config::Config) -> zfb_watcher::WatchBackend {
-    if !cfg.watch_poll_fallback {
-        return zfb_watcher::WatchBackend::Native;
+    let backend = if !cfg.watch_poll_fallback {
+        zfb_watcher::WatchBackend::Native
+    } else {
+        let interval_ms = cfg
+            .watch_poll_interval_ms
+            .unwrap_or(zfb_watcher::DEFAULT_POLL_INTERVAL.as_millis() as u64);
+        zfb_watcher::WatchBackend::Poll {
+            interval: std::time::Duration::from_millis(interval_ms),
+        }
+    };
+    if dev_timing_enabled() {
+        match backend {
+            zfb_watcher::WatchBackend::Native => {
+                eprintln!("[zfb-timing] watch backend: native");
+            }
+            zfb_watcher::WatchBackend::Poll { interval } => {
+                eprintln!(
+                    "[zfb-timing] watch backend: poll interval={}ms",
+                    interval.as_millis()
+                );
+            }
+        }
     }
-    let interval_ms = cfg
-        .watch_poll_interval_ms
-        .unwrap_or(zfb_watcher::DEFAULT_POLL_INTERVAL.as_millis() as u64);
-    zfb_watcher::WatchBackend::Poll {
-        interval: std::time::Duration::from_millis(interval_ms),
-    }
+    backend
 }
 
 /// Deadline-margin multiplier applied to the watcher-liveness probe when
