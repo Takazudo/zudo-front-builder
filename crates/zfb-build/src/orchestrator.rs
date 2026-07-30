@@ -1496,7 +1496,17 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         if !edited_content.is_empty() && !plan.pages.is_empty() {
             plan.content_narrowing = Some(crate::plan::ContentNarrowing {
                 changed_content: edited_content,
-                fan_out_safe: modified_only_content,
+                // Issue #2190 — a plugin `watchFiles` target that is itself
+                // under a collection root classifies `PathClass::Content`,
+                // so a Modified-only tick touching it would otherwise set
+                // `fan_out_safe: true` and narrow fan-out to that file's OWN
+                // routes, undoing the `PageSelection::All` invalidation that
+                // virtual-module consumer pages rely on. Reuse
+                // `pre_tick_refresh_applies` verbatim (same predicate that
+                // gates the pre-tick loader refresh) so "refresh ran this
+                // tick" and "narrowing off this tick" cannot drift apart.
+                fan_out_safe: modified_only_content
+                    && !pre_tick_refresh_applies(&self.config.policy, &changes),
             });
         }
 
@@ -2387,6 +2397,128 @@ mod tests {
                 fan_out_safe: true,
             }),
             "a Modified-only Content tick must carry the fan-out-safe narrowing hint"
+        );
+    }
+
+    /// Issue #2190 — a plugin `watchFiles` target that is itself under a
+    /// collection root classifies `PathClass::Content` (the root-segment
+    /// walk, `policy::classify_change_with_content_roots`), so a
+    /// Modified-only tick touching it would otherwise set
+    /// `fan_out_safe: true` and the eager path would narrow fan-out to the
+    /// watched file's own routes — undoing the `PageSelection::All`
+    /// invalidation that virtual-module consumer pages rely on
+    /// (prerendered pages importing the virtual module could serve stale
+    /// content). See the CONTROL test right below, which pins that a
+    /// non-watched sibling content edit is unaffected.
+    #[test]
+    fn content_classified_plugin_watch_file_tick_is_not_fan_out_safe() {
+        use zfb_watcher::ChangeKind;
+        let watched = PathBuf::from("/proj/content/watched.md");
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(policy_with_plugin_watch_files([watched.clone()])),
+            make_graph(),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+
+        // Precondition: prove the gate is actually armed for this path, or
+        // the assertions below would read as coverage while guarding
+        // nothing (the #1581 dead-guard lesson).
+        assert!(
+            orch.policy().is_plugin_watch_target(&watched),
+            "the watched path must be registered as a plugin watch target"
+        );
+
+        orch.tick_with_kinds(
+            vec![(watched.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        let plan = plans
+            .last()
+            .expect("a plugin-watch content tick must produce a plan");
+        assert_eq!(
+            plan.content_narrowing,
+            Some(crate::plan::ContentNarrowing {
+                changed_content: vec![watched],
+                fan_out_safe: false,
+            }),
+            "a Modified-only tick touching a Content-classified plugin watch file must NOT \
+             be fan-out-safe (#2190) — the pre-tick loader refresh ran this tick, so the \
+             eager path must not narrow fan-out to the watched file's own routes"
+        );
+        match &plan.pages {
+            PageSelection::Specific(pages) => {
+                let expected: std::collections::BTreeSet<PageId> = [
+                    pid("/proj/pages/a.tsx"),
+                    pid("/proj/pages/b.tsx"),
+                    pid("/proj/pages/c.tsx"),
+                ]
+                .into_iter()
+                .collect();
+                assert_eq!(
+                    *pages, expected,
+                    "a plugin-watch content tick must still invalidate every page (the \
+                     resolved form of PageSelection::All) — the narrowing hint alone must \
+                     never narrow the plan's own page selection"
+                );
+            }
+            PageSelection::All => unreachable!("resolve_all runs before the pipeline apply"),
+        }
+    }
+
+    /// CONTROL for the test above (#2190): an identical Modified-only tick
+    /// for a sibling content file that is NOT a plugin watch target must
+    /// keep `fan_out_safe: true` — pins that the new gate cannot silently
+    /// become always-false and regress the narrowing machinery's whole
+    /// purpose.
+    #[test]
+    fn non_watched_sibling_content_tick_stays_fan_out_safe() {
+        use zfb_watcher::ChangeKind;
+        let watched = PathBuf::from("/proj/content/watched.md");
+        let sibling = PathBuf::from("/proj/content/sibling.md");
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            )
+            .with_policy(policy_with_plugin_watch_files([watched])),
+            make_graph(),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+
+        orch.tick_with_kinds(
+            vec![(sibling.clone(), ChangeKind::Modified)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        let plan = plans
+            .last()
+            .expect("a Modified-only content tick must produce a plan");
+        assert_eq!(
+            plan.content_narrowing,
+            Some(crate::plan::ContentNarrowing {
+                changed_content: vec![sibling],
+                fan_out_safe: true,
+            }),
+            "a Modified-only tick for a non-watched sibling content file must stay \
+             fan-out-safe (#2190 control) — the plugin-watch gate must not fire for paths \
+             outside the watch set"
         );
     }
 
