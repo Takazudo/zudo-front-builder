@@ -45,19 +45,6 @@ Debian/Ubuntu）を使ってください。（npm 経由のインストールで
 curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
 ```
 
-<Note title="1.0 未満の現状：上記のコマンドはまだ何もインストールできません">
-
-現時点では安定版リリースは存在せず、プレリリース（`v0.1.0-next.N`）のみです。
-`v0.1.0` がリリースされるまで、デフォルトのコマンドは**安定版のみ**を解決しようと
-して、該当するリリースが見つからずに失敗します。プレリリースを明示的にインストール
-してください。
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
-```
-
-</Note>
-
 `zfb` は `$HOME/.local/bin/zfb` にインストールされます。このディレクトリがまだ
 `PATH` に含まれていない場合は追加してください：
 
@@ -70,7 +57,7 @@ export PATH="$HOME/.local/bin:$PATH"
 | 変数 | デフォルト | 用途 |
 | --- | --- | --- |
 | `ZFB_INSTALL` | `$HOME/.local` | インストール先プレフィックス。バイナリは `$ZFB_INSTALL/bin/zfb` に配置されます。 |
-| `ZFB_VERSION` | （最新の安定版） | リリースを固定します。特定のタグには `v0.X.Y`、プレリリースを使う場合は `latest-prerelease` を指定します。 |
+| `ZFB_VERSION` | （最新の安定版） | リリースを固定します。特定のタグには `v1.0.0`、プレリリースを使う場合は `latest-prerelease` を指定します。 |
 
 ### macOS — Homebrew
 
@@ -89,9 +76,6 @@ npm の `latest` タグと同様に、Homebrew の formula は**安定版**リ�
 追跡します — バージョン固定やプレリリースのオプトインの仕組みはありません。特定
 バージョンやプレリリースをインストールしたい場合は、代わりに curl インストーラで
 `ZFB_VERSION`（例：`ZFB_VERSION=latest-prerelease`）を指定してください。
-
-現在の 1.0 未満の期間は、最初の安定版 `vX.Y.Z` がリリースされるまで、tap が最新の
-プレリリースを早期アクセス版として提供する場合があります。
 
 </Note>
 
@@ -114,7 +98,7 @@ irm https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.p
 | 変数 | デフォルト | 用途 |
 | --- | --- | --- |
 | `ZFB_INSTALL` | `%LOCALAPPDATA%\zfb` | インストールルート。バイナリは `$ZFB_INSTALL\bin\zfb.exe` に配置されます。 |
-| `ZFB_VERSION` | （最新の安定版） | リリースタグ（例：`v0.2.0`）または `latest-prerelease` を固定します。 |
+| `ZFB_VERSION` | （最新の安定版） | リリースタグ（例：`v1.0.0`）または `latest-prerelease` を固定します。 |
 
 バイナリを現在のセッションの `PATH` に追加するには：
 

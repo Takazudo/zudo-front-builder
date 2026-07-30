@@ -46,19 +46,6 @@ path detects musl and fails with a friendlier message — see
 curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | sh
 ```
 
-<Note title="Pre-1.0: the command above has nothing to install yet">
-
-There are no stable releases yet — only prereleases (`v0.1.0-next.N`). Until
-`v0.1.0` ships, the default command resolves the latest **non-prerelease**
-release and fails with no matching release found. Install a prerelease
-explicitly:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
-```
-
-</Note>
-
 Installs `zfb` to `$HOME/.local/bin/zfb`. Add that directory to your `PATH`
 if it isn't already:
 
@@ -71,7 +58,7 @@ export PATH="$HOME/.local/bin:$PATH"
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ZFB_INSTALL` | `$HOME/.local` | Install prefix. Binary lands at `$ZFB_INSTALL/bin/zfb`. |
-| `ZFB_VERSION` | (latest stable) | Pin a release. Use `v0.X.Y` for a specific tag, or `latest-prerelease` to opt into pre-releases. |
+| `ZFB_VERSION` | (latest stable) | Pin a release. Use `v1.0.0` for a specific tag, or `latest-prerelease` to opt into pre-releases. |
 
 ### macOS — Homebrew
 
@@ -90,9 +77,6 @@ Like the npm `latest` tag, the Homebrew formula follows **stable** releases
 only — it has no per-version pin or prerelease opt-in. To install a specific
 version or a prerelease, use the curl installer with `ZFB_VERSION` (e.g.
 `ZFB_VERSION=latest-prerelease`) instead.
-
-During the current pre-1.0 phase the tap may serve the latest prerelease as
-an early-access build until the first stable `vX.Y.Z` ships.
 
 </Note>
 
@@ -115,7 +99,7 @@ Installs `zfb.exe` to `%LOCALAPPDATA%\zfb\bin\zfb.exe`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ZFB_INSTALL` | `%LOCALAPPDATA%\zfb` | Install root. Binary lands at `$ZFB_INSTALL\bin\zfb.exe`. |
-| `ZFB_VERSION` | (latest stable) | Pin a release tag (e.g. `v0.2.0`) or `latest-prerelease`. |
+| `ZFB_VERSION` | (latest stable) | Pin a release tag (e.g. `v1.0.0`) or `latest-prerelease`. |
 
 Add the binary to your `PATH` for the current session:
 

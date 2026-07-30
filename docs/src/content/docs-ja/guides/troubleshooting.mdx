@@ -24,18 +24,13 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **原因:** `install.sh` は何かをダウンロードする前に、GitHub Releases API からタグを解決します。
 
-- `ZFB_VERSION` が未設定の場合、最新の **非プレリリース** リリースを要求します。1.0 以前の zfb はプレリリース（`v0.1.0-next.N`）しか出していないため、解決すべき安定版リリースがまだ存在せず、これは設計どおり失敗します。[Node なしでインストール](../install/node-free.mdx#linux-macos-—-curl) の注記を参照してください。
+- `ZFB_VERSION` が未設定の場合、最新の **非プレリリース** リリースを要求します。通常はこれで解決できます。失敗するのは、API に到達できない、レート制限を受けている、あるいはリクエストが何らかの理由でブロックされている場合だけです。[Node なしでインストール](../install/node-free.mdx#linux-macos-—-curl) を参照してください。
 - `ZFB_VERSION=latest-prerelease` の場合、直近 30 件のリリースを走査して `"prerelease": true` が付いたものを探します。直近 30 件のいずれもプレリリースでない場合（たとえば、その後いくつかの安定版がリリースされ、プレリリースがそのウィンドウから押し出された場合）、同じように解決に失敗します。
 
 **対処:**
 
-- 1.0 以前（まだ安定版リリースが存在しない）: 明示的にプレリリースにオプトインする —
-
-  ```sh
-  curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
-  ```
-
-- `latest-prerelease` 自体が解決に失敗する場合: 代わりに [リリースページ](https://github.com/Takazudo/zudo-front-builder/releases) から厳密なタグを固定してください（例: `ZFB_VERSION=v0.1.0-next.76`）。
+- レート制限を受けている場合やプロキシ環境の場合: [リリースページ](https://github.com/Takazudo/zudo-front-builder/releases) から厳密なタグを固定してください（例: `ZFB_VERSION=v1.0.0`）。タグ解決のリクエスト自体をスキップできます。
+- プレリリースを使いたいが `latest-prerelease` の解決に失敗する場合（直近 30 件にプレリリースが 1 件も含まれていない場合）: 代わりにプレリリースのタグを直接固定してください（例: `ZFB_VERSION=v0.1.0-next.99`）。
 
 ## `musl/Alpine is not supported yet`
 

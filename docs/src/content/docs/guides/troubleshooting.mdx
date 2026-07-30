@@ -27,18 +27,13 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **Cause:** `install.sh` resolves a tag from the GitHub Releases API before downloading anything.
 
-- With `ZFB_VERSION` unset, it asks for the latest **non-prerelease** release. Pre-1.0, zfb has shipped only prereleases (`v0.1.0-next.N`) — there is no stable release to resolve yet, so this fails by design. See the note in [Install without Node](../install/node-free.mdx#linux-macos-—-curl).
+- With `ZFB_VERSION` unset, it asks for the latest **non-prerelease** release. This normally resolves; it fails only if the API is unreachable, rate-limited, or the request is otherwise blocked. See [Install without Node](../install/node-free.mdx#linux-macos-—-curl).
 - With `ZFB_VERSION=latest-prerelease`, it scans the most recent 30 releases for one flagged `"prerelease": true`. If none of the last 30 is a prerelease (for example, several stable releases have since shipped and prereleases have rolled off that window), resolution fails the same way.
 
 **Fix:**
 
-- Pre-1.0 (no stable release exists yet): explicitly opt into prereleases —
-
-  ```sh
-  curl -fsSL https://raw.githubusercontent.com/Takazudo/zudo-front-builder/main/install.sh | ZFB_VERSION=latest-prerelease sh
-  ```
-
-- If `latest-prerelease` itself fails to resolve: pin an exact tag from the [releases page](https://github.com/Takazudo/zudo-front-builder/releases) instead, e.g. `ZFB_VERSION=v0.1.0-next.76`.
+- If you are rate-limited or behind a proxy: pin an exact tag from the [releases page](https://github.com/Takazudo/zudo-front-builder/releases), e.g. `ZFB_VERSION=v1.0.0`, which skips the tag-resolution request entirely.
+- If you specifically want a prerelease and `latest-prerelease` fails to resolve (none of the last 30 releases is a prerelease): pin the exact prerelease tag instead, e.g. `ZFB_VERSION=v0.1.0-next.99`.
 
 ## `musl/Alpine is not supported yet`
 
