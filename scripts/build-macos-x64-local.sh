@@ -160,7 +160,9 @@ CI=true pnpm install --frozen-lockfile
 # below don't run any longer than necessary with the slots polluted. An EXIT
 # trap is armed first so a failure mid-build restores them too; it is
 # disarmed again right after the explicit post-build restore so it doesn't
-# fire a second time on normal script exit.
+# fire a second time on normal script exit. Either path, a FAILED restore
+# leaves the backup directory on disk (the helper names it plus a per-slot
+# recovery mapping on stderr) — it is then the only copy of the originals.
 source "${repo_root}/scripts/release-binary-slot-restore.sh"
 save_binary_slots
 
@@ -168,6 +170,7 @@ _slot_restore_on_exit() {
   local exit_status=$?
   if ! restore_binary_slots; then
     echo "ERROR: binary slot restore failed while handling script exit (original exit status ${exit_status}) — repo slots may be left wrong-arch until the next native build" >&2
+    echo "       The pre-build originals were RETAINED (not deleted) at: ${BINARY_SLOT_BACKUP_DIR} — see the per-slot recovery mapping printed above" >&2
   fi
   exit "$exit_status"
 }
@@ -181,6 +184,7 @@ restore_binary_slots || _slot_restore_status=$?
 trap - EXIT
 if [[ "$_slot_restore_status" -ne 0 ]]; then
   echo "ERROR: failed to restore one or more binary slots to their pre-build state after the cross-target build" >&2
+  echo "       The pre-build originals were RETAINED (not deleted) at: ${BINARY_SLOT_BACKUP_DIR} — see the per-slot recovery mapping printed above" >&2
   exit 1
 fi
 
