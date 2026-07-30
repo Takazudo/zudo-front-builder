@@ -102,14 +102,22 @@ restore_binary_slots() {
     # BINARY_SLOT_BACKUP_DIR set, so a caller can retry) and name the path so
     # a human can recover manually.
     echo "ERROR: RETAINING the binary slot backup directory — it holds the only remaining copy of the original slot bytes: ${BINARY_SLOT_BACKUP_DIR}" >&2
-    echo "       Recover manually with 'cp -p <backup>/slot_N <path>', then delete the directory:" >&2
+    # Build the recovery lines first: a slot that was ABSENT pre-build has no
+    # slot_N backup (its restore is a deletion), so an all-deletion failure
+    # leaves nothing to copy back — don't print a recovery header with no
+    # commands under it.
+    local recovery=""
     idx=0
     for slot in "${BINARY_SLOT_PATHS[@]}"; do
       if [[ -f "${BINARY_SLOT_BACKUP_DIR}/slot_${idx}" ]]; then
-        echo "         ${BINARY_SLOT_BACKUP_DIR}/slot_${idx} -> ${slot}" >&2
+        recovery="${recovery}         cp -p ${BINARY_SLOT_BACKUP_DIR}/slot_${idx} ${slot}"$'\n'
       fi
       idx=$((idx + 1))
     done
+    if [[ -n "$recovery" ]]; then
+      echo "       Recover manually by running, then removing the directory:" >&2
+      printf '%s' "$recovery" >&2
+    fi
     return "$failed"
   fi
   # Every slot was restored successfully, so the backup has served its

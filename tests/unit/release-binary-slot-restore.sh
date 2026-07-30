@@ -258,6 +258,12 @@ else
   fail "case 4: failure report does NOT name the retained backup path ($BACKUP_DIR4)"
 fi
 
+if grep -q -- "cp -p $BACKUP_DIR4/slot_0 crates/zfb/binaries/esbuild/esbuild" "$STDERR_FILE4"; then
+  pass "case 4: failure report prints a runnable per-slot recovery command"
+else
+  fail "case 4: failure report lacks a runnable per-slot recovery command"
+fi
+
 if [ "$(cat "$BACKUP_DIR_AFTER_FILE4")" = "$BACKUP_DIR4" ]; then
   pass "case 4: BINARY_SLOT_BACKUP_DIR left set after a failed restore (a retry is still possible)"
 else
