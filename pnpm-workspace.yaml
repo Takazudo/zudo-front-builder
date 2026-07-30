@@ -33,10 +33,20 @@ minimumReleaseAge: 0
 
 overrides:
   devalue: "^5.8.1"
-  # Force hono to the patched version across the whole tree. The transitively
-  # pulled published @takazudo/zfb-runtime still requests an older hono, which
-  # carries the GHSA-88fw-hqm2-52qc CORS advisory (vulnerable <4.12.25). The
-  # override patches every path so `pnpm audit --prod --audit-level=high` passes.
+  # Defensive floor for GHSA-88fw-hqm2-52qc (hono CORS advisory, vulnerable
+  # <4.12.25), kept so `pnpm audit --prod --audit-level=high` stays green.
+  #
+  # No path in the tree requests an older hono today: the published
+  # @takazudo/zfb-runtime has declared `hono: ^4.12.25` since 0.1.0-next.51,
+  # and first-party packages/zfb-runtime declares the same. So this override
+  # is currently a no-op, retained only to fail closed if a transitive
+  # consumer ever regresses below the patched version. Safe to delete once
+  # that risk is accepted — but note it is also cited as the `>=`-vs-`^`
+  # counter-example in the js-yaml comment below, which would need updating.
+  #
+  # (This comment was accurate when written — zfb-runtime shipped ^4.12.23 at
+  # the time — and decayed when next.51 published the patched range hours
+  # later. Keep it in sync with reality per SECURITY-DEPS.md.)
   hono: ">=4.12.25"
   # Same shape as the hono override above (issue #1827). js-yaml arrives only
   # transitively — gray-matter@4.0.3 <- @takazudo/zudo-doc + docs — and carries
