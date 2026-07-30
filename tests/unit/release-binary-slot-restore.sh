@@ -56,6 +56,7 @@ make_fixture() {
 
 WORK1=$(mktemp -d)
 make_fixture "$WORK1"
+BACKUP_DIR_FILE1=$(mktemp)
 
 bash -c '
   set -eu
@@ -66,6 +67,7 @@ bash -c '
   chmod 0644 crates/zfb/binaries/esbuild/esbuild
   printf "x64-tailwind-bytes" > crates/zfb/binaries/tailwindcss-v4
   chmod 0644 crates/zfb/binaries/tailwindcss-v4
+  echo "$BINARY_SLOT_BACKUP_DIR" > "'"$BACKUP_DIR_FILE1"'"
   restore_binary_slots
 '
 
@@ -92,6 +94,14 @@ if [ -x "$WORK1/crates/zfb/binaries/tailwindcss-v4" ]; then
 else
   fail "case 1: tailwindcss-v4 slot executable bit NOT restored"
 fi
+
+BACKUP_DIR1=$(cat "$BACKUP_DIR_FILE1")
+if [ -n "$BACKUP_DIR1" ] && [ ! -e "$BACKUP_DIR1" ]; then
+  pass "case 1: backup directory removed after restore (no stale temp copy left behind)"
+else
+  fail "case 1: backup directory still present after restore: $BACKUP_DIR1"
+fi
+rm -f "$BACKUP_DIR_FILE1"
 
 rm -rf "$WORK1"
 
@@ -133,12 +143,14 @@ rm -rf "$WORK2"
 
 WORK3=$(mktemp -d)
 make_fixture "$WORK3"
+BACKUP_DIR_FILE3=$(mktemp)
 
 if bash -c '
   set -eu
   cd "'"$WORK3"'"
   . "'"$LIB"'"
   save_binary_slots
+  echo "$BINARY_SLOT_BACKUP_DIR" > "'"$BACKUP_DIR_FILE3"'"
   _test_trap() {
     local exit_status=$?
     restore_binary_slots || true
@@ -171,6 +183,14 @@ if [ -x "$WORK3/crates/zfb/binaries/esbuild/esbuild" ]; then
 else
   fail "case 3: EXIT trap did NOT restore esbuild slot executable bit on the failure path"
 fi
+
+BACKUP_DIR3=$(cat "$BACKUP_DIR_FILE3")
+if [ -n "$BACKUP_DIR3" ] && [ ! -e "$BACKUP_DIR3" ]; then
+  pass "case 3: backup directory removed by the EXIT trap's restore on the failure path"
+else
+  fail "case 3: backup directory still present after the EXIT trap's restore: $BACKUP_DIR3"
+fi
+rm -f "$BACKUP_DIR_FILE3"
 
 rm -rf "$WORK3"
 

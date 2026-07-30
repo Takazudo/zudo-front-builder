@@ -23,6 +23,10 @@
 # tests/unit/release-binary-slot-restore.sh, which exercises it directly
 # against a throwaway fixture tree.
 #
+# restore_binary_slots removes its backup directory once every slot restore
+# has been attempted, so repeated local release builds don't accumulate
+# stale copies of the ~75 MB tailwindcss-v4 slot under $TMPDIR.
+#
 # Known blind spot (documented, not engineered around): a concurrent native
 # build writing to a slot between save_binary_slots and restore_binary_slots
 # will have its freshly staged output clobbered by the restore.
@@ -36,7 +40,8 @@ BINARY_SLOT_PATHS=(
   "crates/zfb/binaries/tailwindcss-v4"
 )
 
-# Set by save_binary_slots(); restore_binary_slots() reads it.
+# Set by save_binary_slots(); restore_binary_slots() reads it and removes it
+# once every slot has been restored (or a restore has been attempted).
 BINARY_SLOT_BACKUP_DIR=""
 
 # save_binary_slots — snapshot every path in BINARY_SLOT_PATHS into a fresh
@@ -82,5 +87,10 @@ restore_binary_slots() {
     fi
     idx=$((idx + 1))
   done
+  # The backup has served its purpose (every slot restore was attempted) —
+  # remove it so repeated local release builds don't accumulate stale copies
+  # of the ~75 MB tailwindcss-v4 slot under $TMPDIR (codex review finding).
+  rm -rf "$BINARY_SLOT_BACKUP_DIR"
+  BINARY_SLOT_BACKUP_DIR=""
   return "$failed"
 }
