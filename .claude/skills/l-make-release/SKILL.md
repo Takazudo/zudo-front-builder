@@ -1,7 +1,7 @@
 ---
 description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), publish the Release, and watch release.yml to completion. Fully autonomous end-to-end by default (no confirmation prompts, publishes without asking); pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional: major, minor, patch, next, stable — controls version bump strategy. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing (default is fully autonomous end-to-end). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
+argument-description: "Optional: major, minor, patch, next — bump that component and start a -next.N prerelease (publishes to the npm `next` tag). stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — bump that component and land it stable directly, no prerelease step (publishes to `latest`; use for low-risk fixes, e.g. 1.0.0 -> 1.0.1). --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing (default is fully autonomous end-to-end). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
@@ -65,6 +65,17 @@ Before doing anything else, verify ALL of the following. If any check fails, sto
 
 Read the current version from `packages/zfb/package.json` (the version source-of-truth — not the workspace root).
 
+Every rule below sets two independent things: **which component bumps** (major / minor / patch) and
+**which channel the result lands on**. The `-next.N` forms publish to the npm `next` tag and leave
+`latest` untouched; the `stable` forms publish to `latest` — the version a bare `npm i zfb`,
+`brew install`, or `curl | sh` resolves to.
+
+Prerelease-first is the default, and is the right shape when a change wants dogfooding before it
+becomes everyone's default. It is NOT required: since v1.0.0 holds `latest`, a low-risk fix
+(typo, docs, a one-line guard fully covered by CI) can land straight on `latest` via
+`stable <level>` rather than burning two full release cycles — each of which republishes all 10
+lockstep packages — to ship one line. Choose the channel by **risk**, not by diff size.
+
 Apply the following rules based on the optional argument:
 
 ### No argument
@@ -73,11 +84,20 @@ Apply the following rules based on the optional argument:
   - Example: `0.1.0-next.3` → `0.1.0-next.4`
 - If current is stable `X.Y.Z`: propose `X.{Y+1}.0-next.1`
   - Example: `0.1.0` → `0.2.0-next.1`
+  - **When `MAJOR >= 1`, this default minor is a compatibility CLAIM, not a safe fallback.** Once a
+    stable holds `latest`, `X.{Y+1}.0` asserts "additive only, nothing breaks." Before accepting it,
+    use Step 3's categorization: if any commit is a **Breaking Change** (`!` suffix or
+    `BREAKING CHANGE` in the body), escalate to `{X+1}.0.0-next.1` and say why in the Step 3
+    proposal. Never let the no-argument default silently downgrade a breaking release to a minor.
 
 ### `next` argument (from stable)
 
 - Force-start a new minor prerelease: `X.{Y+1}.0-next.1`
 - Example: `0.1.0` → `0.2.0-next.1`
+- **Requires current to be stable.** If current is already a `-next.N` prerelease, do NOT apply the
+  formula — stop with an error and name the two unambiguous alternatives: **no argument** continues
+  the existing line (`X.Y.Z-next.{N+1}`), and **`minor`** restarts the prerelease on a new triple.
+  ("Give me a next release" is ambiguous from a prerelease; make the user pick rather than guessing.)
 
 ### `major` argument
 
@@ -94,11 +114,43 @@ Apply the following rules based on the optional argument:
 - Bump patch, start prerelease: `X.Y.{Z+1}-next.1`
 - Example: `0.1.0-next.5` → `0.1.1-next.1`, `0.1.0` → `0.1.1-next.1`
 
-### `stable` argument
+### `stable` argument (no level) — promote the current prerelease
 
 - Strip the `-next.N` suffix from the current prerelease.
-- Requires current version to be a `-next.N` prerelease. If it is stable already, stop with an error.
+- Requires current version to be a `-next.N` prerelease. If it is stable already, stop with an
+  error and point the user at `stable <level>` below — that is the form for stable → stable.
 - Example: `0.1.0-next.5` → `0.1.0`
+
+### `stable <level>` argument — land a stable release directly
+
+`stable major`, `stable minor`, or `stable patch`. Bumps that component of the current version's
+release triple, discards any `-next.N` suffix, and lands the result **stable** — no intermediate
+prerelease, one release cycle instead of two.
+
+- `stable patch`: `X.Y.{Z+1}` — Example: `1.0.0` → `1.0.1`
+- `stable minor`: `X.{Y+1}.0` — Example: `1.0.0` → `1.1.0`
+- `stable major`: `{X+1}.0.0` — Example: `1.0.0` → `2.0.0`
+
+Works from a prerelease too, computing from the release triple and dropping the suffix — this is
+the form that produces a **first stable release**: `0.1.0-next.99` + `stable major` → `1.0.0`.
+(Before this rule existed, cutting v1.0.0 required driving Steps 4–11 by hand, because no argument
+could produce a stable major.)
+
+**Post-1.0 semver applies.** Once a stable holds `latest`, the component choice is a compatibility
+claim, not a size estimate: `stable patch` asserts no API change, `stable minor` asserts additive
+only, and anything that breaks an existing project requires `stable major`. Do NOT default to
+`patch` because the diff looks small.
+
+### Validation (all forms)
+
+After computing the proposed version, before any mutation:
+
+- It MUST be strictly greater than the current version under semver precedence (a prerelease sorts
+  below its own stable: `1.0.0-next.1` < `1.0.0`). If it is not, stop with an error showing both
+  versions — never bump sideways or backwards.
+- It MUST NOT already exist as a **published** GitHub Release (Step 8 re-checks this against
+  drafts; this is the earlier, cheaper guard). A published version is immutable on npm and can
+  never be re-cut.
 
 ## Step 3: Analyze Changes and Propose
 
@@ -114,6 +166,14 @@ Analyze commits since that tag:
 ```bash
 git log <last-tag>..HEAD --oneline
 ```
+
+**Zero-commit guard.** If that command returns nothing, the latest tag is already at HEAD and there
+is nothing to release — **STOP with an error**, naming the tag and showing that the SHAs match
+(`git rev-parse <last-tag> HEAD`). An empty commit range is never what "cut a release" meant, and on
+a `stable` form the result would land on `latest` immutably. This guard is **not** waived by the
+default autonomous mode and is independent of `--confirm`; autonomy removes confirmation prompts,
+it does not authorize publishing an empty release. (This is a live hazard, not a hypothetical: right
+after a release lands, `v<just-released>` IS HEAD, so an immediate re-invocation hits exactly this.)
 
 Categorize each commit by its conventional-commit prefix:
 
@@ -216,10 +276,23 @@ Rules:
 - Only include sections that have entries.
 - Use today's date for `Released`.
 - Each entry: commit subject followed by the short hash in parentheses.
-- `sidebar_position` formula: `MAJOR*10000 + MINOR*1000 + PATCH*10 + (prereleaseN || 10)`
-  - Stable versions use `10` in the prerelease slot so they sort **above** their own prereleases when the category uses `sortOrder: "desc"`.
-  - Examples: `0.1.0` (stable) = `0*10000 + 1*1000 + 0*10 + 10` = **1010**; `0.1.0-next.5` = `0 + 1000 + 0 + 5` = **1005**; `0.1.0-next.1` = **1001**.
-  - Desc-sorted: 1010 > 1005 > 1001 → stable appears above its prereleases, newer prereleases above older ones.
+- `sidebar_position` formula: `MAJOR*10000000 + MINOR*100000 + PATCH*1000 + (prereleaseN || 999)`
+  - Every slot is 3 digits wide: minor and patch up to 99, prerelease N up to 998. Stable versions
+    use `999` in the prerelease slot so they sort **above** every prerelease on the same release
+    triple, under the changelog category's `category_sort_order: desc`.
+  - Examples: `1.0.1-next.1` = **10001001**; `1.0.1-next.10` = **10001010**; `1.0.1-next.99` = **10001099**; `1.0.1` (stable) = **10001999**; `1.1.0` = **10100999**; `2.0.0` = **20000999**.
+  - Desc-sorted: 20000999 > 10100999 > 10001999 > 10001099 > 10001010 > 10001001 → stable above its own prereleases, newer prereleases above older ones, at any N.
+  - **Why this is wider than it looks like it needs to be** (do NOT "simplify" it back): the previous
+    formula gave each slot only one digit — `MAJOR*10000 + MINOR*1000 + PATCH*10 + (N || 10)` — so it
+    broke as soon as a prerelease counter reached 10. Real collisions in this repo's own history:
+    `0.1.0-next.10` computed **1010**, identical to what stable `0.1.0` would have taken, and
+    `0.1.0-next.11` = **1011** sorted *above* it. A minor of `0.10.0` collided with `1.0.0` the same
+    way. The `0.1.0-next.*` line ran to **next.99**, so this was not a theoretical bound.
+  - **Legacy values are intentionally NOT migrated.** Every changelog page written before v1.0.0
+    keeps its old-formula number (the largest is `v1.0.0.mdx` at **10010**). No migration is needed:
+    the smallest value this formula can emit for any version after 1.0.0 is `1.0.1-next.1` =
+    10001001, which already exceeds 10010, so new entries always sort above every legacy entry and
+    relative order is preserved across the two schemes. Do not renumber the existing pages.
 
 ## Step 5: Build + Test (focused)
 
@@ -356,7 +429,7 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    gh run list --workflow release.yml --limit 3 --json databaseId,displayTitle,status
    ```
 
-3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows; the macos-13 leg is skipped when the Mac archive was pre-uploaded in Step 10, built on CI otherwise) and publishes all 9 npm packages.
+3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows; the macos-13 leg is skipped when the Mac archive was pre-uploaded in Step 10, built on CI otherwise) and publishes all 10 npm packages.
 4. **On success**: print a final report — Release URL, and confirm npm landed with `npm view @takazudo/zfb dist-tags`. For a **stable** release, remind the user to run `./scripts/update-homebrew-formula.sh v<version> --push` (manual — never run it from this skill). For prereleases, skip Homebrew per the gating below.
 5. **On failure**: fetch the failed logs (`gh run view <id> --log-failed`) and report. If the failure is clearly transient (network flake, runner eviction), retry once with `gh run rerun <id> --failed`. Otherwise surface to the user with the failure summary — do NOT unpublish or delete the Release, and do NOT retry more than once.
 
@@ -366,12 +439,13 @@ Print the message below **verbatim** (substitute the actual version string for `
 
 The Homebrew step is gated to **stable** releases (it tracks the stable channel, like npm `latest`). If `<version>` is a prerelease (`-next.` / `-beta.` / `-rc.`), do NOT run `update-homebrew-formula.sh` — direct prerelease testers to `npm i -g zfb@next` or the curl installer's `ZFB_VERSION=latest-prerelease`.
 
-**Note — prerelease dual-tag**: while `@takazudo/zfb dist-tags.latest` is empty or is itself a
-prerelease (contains `"-"`), `release.yml` advances **both** `next` and `latest` on every
-`*-next.*` publish. That means `npm i -g zfb` (no tag) also follows prereleases until the first
-stable is cut. Once a stable holds `latest` the dual-tag is self-disabled and prereleases no
-longer touch it. See RELEASE_DAY_CHECKLIST.md "Prerelease dual-tag policy" for the manual
-remediation commands if the workflow's `dist-tag add` retries exhaust.
+**Note — prerelease dual-tag (RESOLVED as of v1.0.0, 2026-07-31)**: while
+`@takazudo/zfb dist-tags.latest` was empty or was itself a prerelease (contains `"-"`),
+`release.yml` advanced **both** `next` and `latest` on every `*-next.*` publish, so `npm i -g zfb`
+(no tag) followed prereleases. **v1.0.0 now holds `latest`, so that gate is self-disabled and
+prereleases no longer touch `latest`** — this is history, not current behavior. Do not expect a
+`-next.N` publish to move `latest`. See RELEASE_DAY_CHECKLIST.md "Prerelease dual-tag policy" for
+the manual remediation commands if the workflow's `dist-tag add` retries ever exhaust.
 
 ### If the Mac binary was built + uploaded (Step 10 on macOS)
 
@@ -388,7 +462,7 @@ NEXT STEP — publish the draft to trigger release.yml (from any host):
   # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
 release.yml's detect-mac-local job will see the pre-uploaded archive,
-skip the slow macos-13 leg, and publish all 9 packages.
+skip the slow macos-13 leg, and publish all 10 packages.
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
 remaining platform archives (linux + windows) and their .sha256 files, then publishes the
