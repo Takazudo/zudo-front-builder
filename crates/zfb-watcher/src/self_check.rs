@@ -277,6 +277,21 @@ pub async fn check_liveness<P: AsRef<Path>>(probe_dir: P, opts: LivenessOpts) ->
         );
     }
 
+    classify_final_verdict(loop_outcome, any_write_succeeded, last_write_error)
+}
+
+/// Maps a completed [`run_liveness_loop`] result plus the marker-write
+/// bookkeeping (`any_write_succeeded`, `last_write_error`) into the final
+/// [`LivenessOutcome`]. Pure — no I/O, no async runtime — so every mapping
+/// is unit-testable directly without a real filesystem or watcher (issue
+/// #2185/#2191). This is a second pure seam alongside `run_liveness_loop`'s
+/// injection seam above: that seam returns the private [`LoopOutcome`] but
+/// does not itself cover this final mapping.
+fn classify_final_verdict(
+    loop_outcome: LoopOutcome,
+    any_write_succeeded: bool,
+    last_write_error: Option<String>,
+) -> LivenessOutcome {
     match loop_outcome {
         LoopOutcome::Observed => LivenessOutcome::Live,
         // The probe watcher's channel disconnected before any marker was
@@ -613,55 +628,55 @@ mod tests {
         );
     }
 
-    /// If every marker write fails (e.g. the probe location becomes
-    /// read-only mid-run), no notification could ever have been
-    /// generated — the verdict must be `SetupFailed`, not `TimedOut`,
-    /// or a disk/permission problem would misreport as a dead
-    /// FSEvents/inotify stream.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn all_marker_writes_failing_yields_setup_failed_not_timed_out() {
-        use std::os::unix::fs::PermissionsExt;
+    // -----------------------------------------------------------------
+    // `classify_final_verdict` — pure mapping, all five outcomes
+    // (issue #2185/#2191: replaces the FSEvents-racy real-fs
+    // all-writes-fail test previously here — see #2185 for why that
+    // test's premise was false on macOS).
+    // -----------------------------------------------------------------
 
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let probe_dir = tmp.path().join("liveness-probe");
-        std::fs::create_dir_all(&probe_dir).expect("create probe dir");
+    #[test]
+    fn classify_timed_out_with_no_successful_write_and_an_error_is_setup_failed_with_that_error() {
+        let outcome =
+            classify_final_verdict(LoopOutcome::TimedOut, false, Some("disk full".to_string()));
 
-        let mut perms = std::fs::metadata(&probe_dir)
-            .expect("stat probe dir")
-            .permissions();
-        perms.set_mode(0o555);
-        std::fs::set_permissions(&probe_dir, perms).expect("chmod probe dir read-only");
-
-        // Some environments (root, certain sandboxes) bypass directory
-        // permission checks entirely. Confirm enforcement actually blocks
-        // a write here before asserting on it, so this test skips rather
-        // than false-failing when it can't exercise the path it targets.
-        let enforced = std::fs::write(probe_dir.join("canary"), b"x").is_err();
-
-        if enforced {
-            let outcome = check_liveness(
-                &probe_dir,
-                LivenessOpts::new(Duration::from_millis(200))
-                    .with_marker_interval(Duration::from_millis(30))
-                    .with_poll_interval(Duration::from_millis(10)),
-            )
-            .await;
-
-            match outcome {
-                LivenessOutcome::SetupFailed(_) => {}
-                other => {
-                    panic!("expected SetupFailed when every marker write fails, got {other:?}")
-                }
-            }
+        match outcome {
+            LivenessOutcome::SetupFailed(msg) => assert_eq!(msg, "disk full"),
+            other => panic!("expected SetupFailed(\"disk full\"), got {other:?}"),
         }
+    }
 
-        // Restore permissions so the tempdir's own Drop cleanup can
-        // remove it.
-        let mut perms = std::fs::metadata(&probe_dir)
-            .expect("stat probe dir")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&probe_dir, perms).expect("chmod probe dir restore");
+    #[test]
+    fn classify_timed_out_with_no_successful_write_and_no_error_falls_back_to_default_message() {
+        let outcome = classify_final_verdict(LoopOutcome::TimedOut, false, None);
+
+        match outcome {
+            LivenessOutcome::SetupFailed(msg) => assert_eq!(
+                msg,
+                "no watcher liveness probe marker could be written before the deadline"
+            ),
+            other => panic!("expected SetupFailed with the fallback message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_timed_out_with_a_successful_write_is_timed_out() {
+        let outcome = classify_final_verdict(LoopOutcome::TimedOut, true, None);
+
+        assert!(matches!(outcome, LivenessOutcome::TimedOut));
+    }
+
+    #[test]
+    fn classify_observed_is_live() {
+        let outcome = classify_final_verdict(LoopOutcome::Observed, false, None);
+
+        assert!(matches!(outcome, LivenessOutcome::Live));
+    }
+
+    #[test]
+    fn classify_source_gone_is_setup_failed() {
+        let outcome = classify_final_verdict(LoopOutcome::SourceGone, false, None);
+
+        assert!(matches!(outcome, LivenessOutcome::SetupFailed(_)));
     }
 }
