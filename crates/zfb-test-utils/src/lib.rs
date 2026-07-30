@@ -437,7 +437,7 @@ pub enum SkipKind {
     /// At least one expected slot binary path IS a runnable file, yet the
     /// lookup failed to return it — a harness bug that must panic loudly.
     HarnessBug {
-        /// The slot paths that exist as files despite the failed lookup.
+        /// The slot paths that exist AND execute despite the failed lookup.
         present_slots: Vec<PathBuf>,
     },
     /// No usable candidate anywhere, and at least one expected slot path
