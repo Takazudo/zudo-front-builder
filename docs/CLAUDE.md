@@ -75,8 +75,8 @@ it can be modified, rather than requiring the host to reconstruct package intern
 - Required: `title` (string)
 - Optional: `description`, `sidebar_position` (number), `sidebar_label`, `category`, `tags`
 - Sidebar order is driven by `sidebar_position`
-- Sidebar category label comes from the `index.mdx` frontmatter in each directory, or from a `_category_.json` file when there is no `index.mdx`
-- `_category_.json` files are NOT disposable: the zfb content-collection loader skips them as data files (emitting a benign build warning — silenced when the collection's `include`/`exclude` globs already filter the file out, see zfb#1032), but the docs app's nav layer (`loadCategoryMeta` via `resolveNavSource`) still reads them for category `label`, `position`, `description`, `sortOrder`, and `noPage`. Deleting them can regress sidebar/category nav (e.g. `api`, `architecture`, generated Claude sections).
+- Sidebar category label comes from the directory's `index.mdx` frontmatter (`sidebar_label`, else `title`). A directory with no `index.mdx` falls back to its title-cased directory name (`api` → "Api") — `_category_.json` is *meant* to supply the label in that case, but currently does not reach the renderer (see below)
+- `_category_.json` files are currently **inert** under zfb, and this is a known bug (zfb#2196), not the intended design. The zfb content-collection loader skips them as data files (emitting a benign build warning — silenced when the collection's `include`/`exclude` globs already filter the file out, see zfb#1032), and the docs app's nav layer (`loadCategoryMeta` via `resolveNavSource`) cannot read them either: it uses `node:fs`, which zfb's SSG runtime stubs with a throwing proxy, so `loadCategoryMeta` fails closed to an empty map with no build error. Category `label`, `position`, `description`, `sortOrder`, and `noPage` therefore never reach the sidebar. Do **not** delete these files to "clean up" the warnings — the intended fix is the other direction (make the metadata reach the nav layer), and deleting them would lock in today's wrong labels and ordering
 
 ### Links
 

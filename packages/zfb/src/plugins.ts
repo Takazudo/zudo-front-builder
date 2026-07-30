@@ -203,10 +203,11 @@ export type ZfbPreviewMiddlewareContext = {
  * protocol now supports bypassing the memo and re-invoking the loader,
  * intended for a loader whose registration also declares
  * [`watchFiles`](#watchFiles) and needs a fresh read after one of
- * those files changes on disk. Wiring an actual `zfb dev` watch that
- * triggers this is a separate, later concern — registering
- * `watchFiles` here only tells the host which paths a future watcher
- * should track.
+ * those files changes on disk. `zfb dev` watches every declared
+ * [`watchFiles`](#watchFiles) path and re-invokes the owning loader with
+ * its memo bypassed when one of them changes (#2169, #2181); `zfb build`
+ * invokes each loader exactly once and never re-invokes it. See the
+ * Plugins concept page for the full refresh contract.
  * (Under `zfb preview`, `addVirtualModule` registrations are accepted
  * but inert — see [`ZfbSetupContext.command`](#command) — so the
  * loader never runs there.)
