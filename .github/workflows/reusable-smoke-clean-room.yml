@@ -9,8 +9,11 @@
 #     job's output, runner=ubuntu-latest. SAME parameters that job always used;
 #     this stage only changes HOW it is invoked (workflow_call vs inline
 #     steps), not WHAT runs.
-#   - drift-net.yml's weekly off-release exam — dist_tag=next, on both
-#     ubuntu-latest and a pinned macOS runner (the leg release.yml never runs).
+#   - drift-net.yml's weekly off-release exam — dist_tag=latest on both
+#     ubuntu-latest and a pinned macOS runner (the leg release.yml never runs),
+#     plus a dist_tag=next leg on ubuntu-latest. It smoked only `next` until
+#     v1.0.0, when the dual-tag gate self-disabled and `latest` stopped being
+#     covered incidentally; see drift-net.yml's header for the full rationale.
 #
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
