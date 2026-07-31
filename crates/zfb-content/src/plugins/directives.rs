@@ -33,12 +33,14 @@
 //!
 //! ## Warning sink (v1)
 //!
-//! Unknown directive names produce a [`DirectiveDiagnostic`] with
-//! optional line/column info, NOT a parse error. The source paragraph
-//! is left intact. There is no central diagnostic sink yet — diagnostics
-//! accumulate on the registry instance and the orchestrator (e.g. the
-//! pipeline runner) is responsible for draining and printing them.
-//! Use [`DirectiveRegistry::take_diagnostics`] after a pipeline run.
+//! Unknown directive names — and, since zfb#2206, genuinely-unclosed
+//! container openers (an opener with no closing `:::` before the next
+//! directive opener / end of siblings) — produce a
+//! [`DirectiveDiagnostic`] with optional line/column info, NOT a parse
+//! error. The source paragraph is left intact. Diagnostics accumulate on
+//! the registry instance and the orchestrator (e.g. the pipeline runner)
+//! is responsible for draining and printing them. Use
+//! [`DirectiveRegistry::take_diagnostics`] after a pipeline run.
 //!
 //! ## No built-in defaults
 //!
@@ -53,7 +55,8 @@ use markdown::mdast::{
     Node as MdastNode, Text,
 };
 
-use crate::pipeline::MdastVisitor;
+use crate::pipeline::{BuildContext, MdastVisitor};
+use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
 
 // Directive definition types moved to `zfb-md-ast` so `zfb-md-extras`
 // (which cannot depend on `zfb-content`) can produce `Vec<DirectiveDef>`
@@ -136,6 +139,40 @@ impl MdastVisitor for DirectiveRegistry {
             }
         }
     }
+
+    /// Context-armed pipelines (real builds) surface directive
+    /// diagnostics through the shared markdown-diagnostics channel: after
+    /// the walk, the registry drains its buffer into the [`BuildContext`]
+    /// diagnostics sink as Warning-severity [`MarkdownDiagnostic`]s, so
+    /// unknown-directive and unclosed-container findings (zfb#2206) reach
+    /// the build output via `Pipeline::take_markdown_diagnostics` instead
+    /// of dying inside the boxed visitor. Warning severity keeps the
+    /// graceful-fallback contract — the build prints the findings but
+    /// never aborts on them.
+    ///
+    /// Context-free runs (`Pipeline::run`, direct `visit` calls) keep
+    /// accumulating on the registry for manual draining via
+    /// [`DirectiveRegistry::take_diagnostics`] — unchanged behaviour.
+    fn visit_with_context(&mut self, node: &mut MdastNode, ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+        if self.diagnostics.is_empty() {
+            return;
+        }
+        let Some(sink) = ctx.diagnostics.as_deref_mut() else {
+            return;
+        };
+        for d in std::mem::take(&mut self.diagnostics) {
+            sink.emit(MarkdownDiagnostic::Generic {
+                severity: DiagnosticSeverity::Warning,
+                message: d.message,
+                location: Some(SourceLocation {
+                    path: ctx.source_path.clone(),
+                    line: d.line.and_then(|l| u32::try_from(l).ok()),
+                    col: d.column.and_then(|c| u32::try_from(c).ok()),
+                }),
+            });
+        }
+    }
 }
 
 // -- transformation -----------------------------------------------------
@@ -171,12 +208,42 @@ impl DirectiveRegistry {
                         // the block-level checks below (no double-warn).
                         let n = replacement.len();
                         children.splice(i..=i, replacement);
+                        // One exception (zfb#2206): when the run's TRAILING
+                        // prose starts with a REGISTERED container opener (an
+                        // unclosed tail from the collapsed run's in-paragraph
+                        // view), give the block-level handler one direct shot
+                        // at it — it may close across the FOLLOWING sibling
+                        // paragraphs, and otherwise records the unclosed
+                        // diagnostic. Unknown names are never re-warned here
+                        // (the registered-name gate excludes them), and the
+                        // handler never re-enters the collapsed path, so no
+                        // double-warn and no re-entry loop is possible.
+                        if n > 0 {
+                            let tail = i + n - 1;
+                            if let Some(tail_parsed) = self.parse_block_open(&children[tail], 3) {
+                                if let Some(tail_def) = self.defs.get(&tail_parsed.name).cloned() {
+                                    if tail_def.kind == DirectiveKind::Container {
+                                        if let Some(next_i) = self.transform_block_container(
+                                            children,
+                                            tail,
+                                            &tail_def,
+                                            &tail_parsed,
+                                        ) {
+                                            i = next_i;
+                                            continue;
+                                        }
+                                        // Genuinely unclosed: diagnostic
+                                        // recorded; the tail stays literal.
+                                    }
+                                }
+                            }
+                        }
                         i += n;
                         continue;
                     }
                     // First line looked like an opener but no fence run was
                     // recognised (e.g. no closer) — fall through to the
-                    // block-level handlers below, which leave it alone.
+                    // block-level handlers below.
                 }
             }
 
@@ -184,36 +251,14 @@ impl DirectiveRegistry {
             if let Some(parsed) = self.parse_block_open(&children[i], 3) {
                 if let Some(def) = self.defs.get(&parsed.name).cloned() {
                     if def.kind == DirectiveKind::Container {
-                        // Find matching `:::` close.
-                        if let Some(close_idx) =
-                            (i + 1..children.len()).find(|j| is_container_close(&children[*j]))
+                        if let Some(next_i) =
+                            self.transform_block_container(children, i, &def, &parsed)
                         {
-                            let (line, column) = paragraph_line_col(&children[i]);
-                            let validated_opt = self.run_validation(&def, &parsed, line, column);
-                            let body: Vec<MdastNode> = children.drain(i..=close_idx).collect();
-                            // Strip open + close paragraphs.
-                            let inner = body[1..body.len() - 1].to_vec();
-                            let jsx = build_flow_jsx(&def, &parsed, inner, validated_opt.as_ref());
-                            children.insert(i, jsx);
-                            i += 1;
+                            i = next_i;
                             continue;
                         }
-                        // No separate closing `:::` paragraph exists. The
-                        // single-text collapsed form (one multi-line Text
-                        // child) was already handled by the collapsed-run entry
-                        // at the top of the loop. What remains here is the rare
-                        // MULTI-inline-child collapsed paragraph (e.g. the body
-                        // contained emphasis, so the parser split the value
-                        // across several inline children). Use the original
-                        // #1090 single-container handler for it.
-                        if let Some(inner) = collapsed_container_body(&children[i]) {
-                            let (line, column) = paragraph_line_col(&children[i]);
-                            let validated_opt = self.run_validation(&def, &parsed, line, column);
-                            let jsx = build_flow_jsx(&def, &parsed, inner, validated_opt.as_ref());
-                            children[i] = jsx;
-                            i += 1;
-                            continue;
-                        }
+                        // Genuinely unclosed (diagnostic recorded inside):
+                        // leave the paragraph alone and fall through.
                     }
                 } else {
                     // Looks like a container, but the name is not
@@ -249,6 +294,111 @@ impl DirectiveRegistry {
 
             i += 1;
         }
+    }
+
+    /// Transform the container directive whose opener paragraph sits at
+    /// `children[i]`, handling GLUED opener/closer lines (zfb#2206).
+    ///
+    /// markdown-rs glues `:::` fence lines into adjacent paragraphs when
+    /// blank lines are missing, so the opener paragraph may carry the first
+    /// body block after its opener line, and the closing `:::` may be the
+    /// last line of the final body paragraph. Shapes handled, in order:
+    ///
+    /// (a) the closing `:::` line lives INSIDE the opener paragraph itself
+    ///     (fully-collapsed multi-inline-child form — e.g. a backticked
+    ///     bracket title with no blank lines; the single-`Text` collapsed
+    ///     form never reaches here, the collapsed-run entry owns it);
+    /// (b) the closer lives in a LATER sibling — a standalone `:::`
+    ///     paragraph, or glued as a line of a body paragraph. The scan is
+    ///     BOUNDED by the next container-opener-shaped paragraph so a
+    ///     broken opener can never steal a later directive's closer (the
+    ///     pre-zfb#2206 cascade). Non-paragraph siblings (code fences,
+    ///     lists, headings, …) pass through as body content.
+    ///
+    /// Body assembly preserves phrasing: the opener paragraph's glued
+    /// remainder lines and the closer paragraph's preceding lines become
+    /// body paragraphs with their inline nodes intact (only the opener
+    /// LINE itself is ever flattened, for parsing). Prose glued AFTER the
+    /// closer line is re-emitted as a following sibling and left at the
+    /// caller's scan position, so a directive run glued after a closer is
+    /// revisited rather than dropped.
+    ///
+    /// Returns `Some(next_index)` when the directive transformed. Returns
+    /// `None` when the opener is genuinely unclosed — an "unclosed
+    /// container directive" diagnostic is recorded and the paragraph is
+    /// left untouched (graceful literal fallback).
+    fn transform_block_container(
+        &mut self,
+        children: &mut Vec<MdastNode>,
+        i: usize,
+        def: &DirectiveDef,
+        parsed: &ParsedDirective,
+    ) -> Option<usize> {
+        let (line, column) = paragraph_line_col(&children[i]);
+        let opener_lines = paragraph_inline_lines(&children[i]);
+
+        // (a) closer inside the opener paragraph itself.
+        if let Some(lines) = &opener_lines {
+            if let Some(k) = closer_line_index(lines, 1) {
+                let validated_opt = self.run_validation(def, parsed, line, column);
+                let inner: Vec<MdastNode> =
+                    paragraph_from_lines(&lines[1..k]).into_iter().collect();
+                let after = paragraph_from_lines(&lines[k + 1..]);
+                let jsx = build_flow_jsx(def, parsed, inner, validated_opt.as_ref());
+                children[i] = jsx;
+                if let Some(after) = after {
+                    children.insert(i + 1, after);
+                }
+                return Some(i + 1);
+            }
+        }
+
+        // (b) bounded sibling scan for the closer.
+        let mut found: Option<(usize, Vec<InlineLine>, usize)> = None;
+        for (j, sibling) in children.iter().enumerate().skip(i + 1) {
+            if !matches!(sibling, MdastNode::Paragraph(_)) {
+                continue;
+            }
+            if is_block_opener_shaped(sibling) {
+                break;
+            }
+            if let Some(lines) = paragraph_inline_lines(sibling) {
+                if let Some(k) = closer_line_index(&lines, 0) {
+                    found = Some((j, lines, k));
+                    break;
+                }
+            }
+        }
+        let Some((j, closer_lines, k)) = found else {
+            self.diagnostics.push(DirectiveDiagnostic {
+                message: format!(
+                    "unclosed container directive `:::{}` — missing closing `:::` fence",
+                    parsed.name
+                ),
+                line,
+                column,
+            });
+            return None;
+        };
+
+        let validated_opt = self.run_validation(def, parsed, line, column);
+        let mut body_nodes: Vec<MdastNode> = children.drain(i..=j).collect();
+        // Drop the opener paragraph (its glued remainder lines re-enter
+        // below) and the closer paragraph (replaced by its line splits).
+        body_nodes.remove(0);
+        body_nodes.pop();
+        let mut inner: Vec<MdastNode> = Vec::new();
+        if let Some(lines) = &opener_lines {
+            inner.extend(paragraph_from_lines(&lines[1..]));
+        }
+        inner.extend(body_nodes);
+        inner.extend(paragraph_from_lines(&closer_lines[..k]));
+        let jsx = build_flow_jsx(def, parsed, inner, validated_opt.as_ref());
+        children.insert(i, jsx);
+        if let Some(after) = paragraph_from_lines(&closer_lines[k + 1..]) {
+            children.insert(i + 1, after);
+        }
+        Some(i + 1)
     }
 
     /// Transform a fully-collapsed directive paragraph by RE-SEGMENTING its
@@ -412,10 +562,11 @@ impl DirectiveRegistry {
     ///
     /// This is the line-level body builder, reached via the
     /// [`single_text_collapsed`] entry (one multi-line `Text` child). Its
-    /// sibling [`collapsed_container_body`] is the OTHER half of an intentional
-    /// dual body-builder path: that one CLONES inline children for the rarer
-    /// multi-inline-child collapsed paragraph. The two are discriminated by
-    /// [`single_text_collapsed`] at the call site in `transform_children`.
+    /// sibling is [`DirectiveRegistry::transform_block_container`]'s
+    /// inline-line assembly, which preserves phrasing nodes for
+    /// multi-inline-child paragraphs (zfb#2206). The two are discriminated
+    /// by [`single_text_collapsed`] at the call site in
+    /// `transform_children`.
     fn build_collapsed_body(&mut self, body_lines: &[&str]) -> Vec<MdastNode> {
         if body_lines.is_empty() {
             return Vec::new();
@@ -524,8 +675,16 @@ impl DirectiveRegistry {
         out
     }
 
-    /// Try to parse the first text run of `node` (a Paragraph) as a
-    /// directive opener with exactly `colons` leading colons.
+    /// Try to parse the first LINE of `node` (a Paragraph) as a directive
+    /// opener with exactly `colons` leading colons.
+    ///
+    /// The opener head (`:::name`) must start in a leading `Text` child —
+    /// a paragraph beginning with a code span is never an opener. When the
+    /// opener line spans SEVERAL inline children (a bracketed title
+    /// carrying inline markup, e.g. `` :::warning[`code` in title] ``,
+    /// splits into Text + InlineCode + Text — zfb#2206), the line is
+    /// flattened to plain text for parsing, which normalizes the label to
+    /// its plain text content.
     fn parse_block_open(&self, node: &MdastNode, colons: usize) -> Option<ParsedDirective> {
         let MdastNode::Paragraph(p) = node else {
             return None;
@@ -533,15 +692,25 @@ impl DirectiveRegistry {
         let MdastNode::Text(t) = p.children.first()? else {
             return None;
         };
-        // Require the FIRST line of the first text run to be the
-        // directive — anything after a newline is body text.
-        let line = first_line(&t.value).trim_end();
-        let parsed = parse_directive_line(line, colons)?;
-        // Reject `:::name` if the paragraph has trailing content on the
-        // same line that we couldn't consume — we want `:::note` and
-        // `:::details title="x"` to match, but not `:::nope hello`
-        // unless the trailing portion was attribute-shaped.
-        Some(parsed)
+        // Require the FIRST line to be the directive — anything after a
+        // newline is body text.
+        let first_ln = first_line(&t.value).trim_end();
+        if count_leading_colons(first_ln) != colons {
+            return None;
+        }
+        // Single inline child, or the opener line ends inside the leading
+        // Text: the whole opener line is `first_ln` — parse it directly.
+        if p.children.len() == 1 || t.value.contains('\n') {
+            return parse_directive_body(&first_ln[colons..]);
+        }
+        // Multi-inline-child opener line: flatten it to plain text.
+        let lines = split_inline_lines(&p.children);
+        let flat = flatten_line_plain(lines.first()?)?;
+        let flat = flat.trim_end();
+        if count_leading_colons(flat) != colons {
+            return None;
+        }
+        parse_directive_body(&flat[colons..])
     }
 
     fn warn_unknown(&mut self, name: &str, node: &MdastNode) {
@@ -601,25 +770,14 @@ pub(crate) struct ParsedDirective {
     pub attrs: Vec<(String, String)>,
 }
 
-/// Parse a directive opener line with exactly `expected_colons` leading
-/// colons. Returns `None` if the line doesn't start with that many
-/// colons, has a different count, or has no name token.
-pub(crate) fn parse_directive_line(line: &str, expected_colons: usize) -> Option<ParsedDirective> {
-    // Single colon-count source of truth (see `count_leading_colons`).
-    if count_leading_colons(line) != expected_colons {
-        return None;
-    }
-    parse_directive_body(&line[expected_colons..])
-}
-
 /// Parse the part of a directive opener AFTER its leading colons — the name,
 /// optional `[label]`, and optional `{attrs}` (or legacy unbraced attrs).
 /// Returns `None` when `rest` does not start with a name-start char.
 ///
-/// Split out of [`parse_directive_line`] so the collapsed-run path — which
-/// already knows the colon count from [`container_opener_colons`] — can slice
-/// the colons off and call here directly, instead of re-counting the same
-/// colons through `parse_directive_line` (zfb#1099).
+/// Every caller counts the leading colons once (via
+/// [`count_leading_colons`] / [`container_opener_colons`]) and slices them
+/// off before calling here, keeping a single colon-count site per scan
+/// (zfb#1099).
 fn parse_directive_body(rest: &str) -> Option<ParsedDirective> {
     // The "rest" must start with a name char (so `:::` alone, or `::: `
     // is rejected).
@@ -637,10 +795,14 @@ fn parse_directive_body(rest: &str) -> Option<ParsedDirective> {
     // Optional [label].
     let mut label: Option<String> = None;
     if let Some(stripped) = after.strip_prefix('[') {
-        if let Some(end) = stripped.find(']') {
-            label = Some(stripped[..end].to_string());
-            after = &stripped[end + 1..];
-        }
+        // An unterminated bracket is a malformed opener, not a lax
+        // no-label opener: reject so the source stays literal instead of
+        // transforming with the title silently dropped (zfb#2206). The
+        // oracle parser (`crate::directive_parser`) rejects the same shape
+        // by requiring the label to close before the line end.
+        let end = stripped.find(']')?;
+        label = Some(stripped[..end].to_string());
+        after = &stripped[end + 1..];
     }
 
     let trimmed = after.trim_start();
@@ -835,21 +997,207 @@ fn first_line(s: &str) -> &str {
     }
 }
 
-/// Is this paragraph the closing `:::` fence of a container directive?
-///
-/// Node-level and stricter than its line-level sibling
-/// [`container_close_colons`]: this requires the paragraph's first line to be
-/// EXACTLY `:::` (the block-scan only ever opens 3-colon containers), whereas
-/// `container_close_colons` accepts any all-colon run of ≥3 for the
-/// nested-fence matching in the collapsed-run path.
-fn is_container_close(node: &MdastNode) -> bool {
+// -- inline-line machinery (zfb#2206) -----------------------------------
+//
+// markdown-rs glues `:::` fence lines into adjacent paragraphs, and inline
+// markup (a backticked bracket title, emphasis in the body) splits a
+// paragraph into several inline children. The block-level container scan
+// therefore needs a LINE view of a paragraph's inline children: split at
+// top-level newline boundaries, find the opener/closer lines, and rejoin
+// the remaining lines as body content WITHOUT flattening its phrasing.
+
+/// One line of a paragraph's inline children, plus the separator that
+/// ended it: `Some(Break)` for a CommonMark hard break (restored verbatim
+/// on rejoin so `<br>` semantics survive the round trip), `None` for a
+/// soft newline from a `Text` split or the paragraph end.
+#[derive(Debug, Default)]
+struct InlineLine {
+    nodes: Vec<MdastNode>,
+    hard_break: Option<MdastNode>,
+}
+
+/// Split a paragraph's inline children into LINES at top-level newline
+/// boundaries: newlines inside top-level `Text` values, and `Break`
+/// nodes (recorded as the ending line's [`InlineLine::hard_break`]).
+/// Every other inline node is atomic and stays on its current line —
+/// including nodes with a newline NESTED inside (e.g. emphasis spanning
+/// a soft break): the nested newline travels inside the node, which is
+/// exactly right for body content. Only opener-line FLATTENING must
+/// reject such nodes, and [`flatten_line_plain`] does that itself.
+/// Split `Text` segments carry no position; unsplit nodes keep theirs.
+fn split_inline_lines(children: &[MdastNode]) -> Vec<InlineLine> {
+    fn push_text_segment(line: &mut InlineLine, segment: &str) {
+        let segment = strip_trailing_cr(segment);
+        if segment.is_empty() {
+            return;
+        }
+        line.nodes.push(MdastNode::Text(Text {
+            value: segment.to_string(),
+            position: None,
+        }));
+    }
+
+    let mut lines: Vec<InlineLine> = vec![InlineLine::default()];
+    for child in children {
+        match child {
+            MdastNode::Text(t) if t.value.contains('\n') => {
+                let mut parts = t.value.split('\n');
+                if let Some(first) = parts.next() {
+                    push_text_segment(lines.last_mut().expect("seeded"), first);
+                }
+                for part in parts {
+                    lines.push(InlineLine::default());
+                    push_text_segment(lines.last_mut().expect("just pushed"), part);
+                }
+            }
+            MdastNode::Break(_) => {
+                lines.last_mut().expect("seeded").hard_break = Some(child.clone());
+                lines.push(InlineLine::default());
+            }
+            other => {
+                lines.last_mut().expect("seeded").nodes.push(other.clone());
+            }
+        }
+    }
+    lines
+}
+
+/// Does any text content anywhere inside `node` contain a newline?
+fn node_text_contains_newline(node: &MdastNode) -> bool {
+    match node {
+        MdastNode::Text(t) => t.value.contains('\n'),
+        MdastNode::InlineCode(c) => c.value.contains('\n'),
+        other => other
+            .children()
+            .is_some_and(|cs| cs.iter().any(node_text_contains_newline)),
+    }
+}
+
+/// The inline-line view of a Paragraph node, or `None` for other node
+/// kinds (see [`split_inline_lines`]).
+fn paragraph_inline_lines(node: &MdastNode) -> Option<Vec<InlineLine>> {
+    let MdastNode::Paragraph(p) = node else {
+        return None;
+    };
+    Some(split_inline_lines(&p.children))
+}
+
+/// Flatten one inline LINE to plain text for directive-opener parsing.
+/// `Text` contributes its value verbatim, `InlineCode` its value (the
+/// parser already stripped the backticks), and emphasis-like wrappers
+/// their nested text — which is exactly the "title normalized to plain
+/// text" contract for bracketed labels carrying inline markup (zfb#2206).
+/// Returns `None` for any other inline node kind, and for a node carrying
+/// a NESTED newline (the visual line ends inside it, so the flattened
+/// text would swallow content beyond the opener line): the line is not
+/// reliably flattenable, and callers leave the paragraph alone.
+fn flatten_line_plain(line: &InlineLine) -> Option<String> {
+    fn rec(node: &MdastNode, out: &mut String) -> bool {
+        match node {
+            MdastNode::Text(t) => {
+                out.push_str(&t.value);
+                true
+            }
+            MdastNode::InlineCode(c) => {
+                out.push_str(&c.value);
+                true
+            }
+            MdastNode::Emphasis(_) | MdastNode::Strong(_) | MdastNode::Delete(_) => node
+                .children()
+                .is_none_or(|cs| cs.iter().all(|c| rec(c, out))),
+            _ => false,
+        }
+    }
+    let mut out = String::new();
+    for node in &line.nodes {
+        if node_text_contains_newline(node) || !rec(node, &mut out) {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// Index of the first line at `from` onward that is a bare container close
+/// fence: a single `Text` line whose trimmed value is an all-colon run of
+/// three or more (the same [`container_close_colons`] rule the
+/// collapsed-run path applies, so a lenient `:::::` closer behaves
+/// identically at both levels). A code span rendering as `:::` is an
+/// `InlineCode` child and never matches.
+fn closer_line_index(lines: &[InlineLine], from: usize) -> Option<usize> {
+    (from..lines.len()).find(|&k| {
+        matches!(&lines[k].nodes[..], [MdastNode::Text(t)] if container_close_colons(&t.value).is_some())
+    })
+}
+
+/// Rejoin split inline lines into one inline run, restoring each line's
+/// separator — the recorded `Break` node for a hard break, a `\n` for a
+/// soft newline — and merging adjacent `Text` nodes so plain multi-line
+/// prose stays a single `Text` (the shape the parser itself produces).
+/// Merged `Text` nodes drop their (now stale) positions.
+fn join_inline_lines(lines: &[InlineLine]) -> Vec<MdastNode> {
+    let mut out: Vec<MdastNode> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx > 0 {
+            match lines[idx - 1].hard_break.as_ref() {
+                Some(br) => out.push(br.clone()),
+                None => match out.last_mut() {
+                    Some(MdastNode::Text(prev)) => {
+                        prev.value.push('\n');
+                        prev.position = None;
+                    }
+                    _ => out.push(MdastNode::Text(Text {
+                        value: "\n".to_string(),
+                        position: None,
+                    })),
+                },
+            }
+        }
+        for node in &line.nodes {
+            match (out.last_mut(), node) {
+                (Some(MdastNode::Text(prev)), MdastNode::Text(t)) => {
+                    prev.value.push_str(&t.value);
+                    prev.position = None;
+                }
+                _ => out.push(node.clone()),
+            }
+        }
+    }
+    out
+}
+
+/// Wrap rejoined lines in a body Paragraph. Empty / whitespace-only
+/// content produces no node.
+fn paragraph_from_lines(lines: &[InlineLine]) -> Option<MdastNode> {
+    if lines.is_empty() {
+        return None;
+    }
+    let children = join_inline_lines(lines);
+    let only_ws = children
+        .iter()
+        .all(|c| matches!(c, MdastNode::Text(t) if t.value.trim().is_empty()));
+    if children.is_empty() || only_ws {
+        return None;
+    }
+    Some(MdastNode::Paragraph(markdown::mdast::Paragraph {
+        children,
+        position: None,
+    }))
+}
+
+/// Is this paragraph SHAPED like a container-directive opener (first line
+/// of the leading `Text` child: >= 3 colons immediately followed by a
+/// name)? Used to BOUND the sibling closer scan: a broken opener must
+/// never steal the closer of a later directive (the pre-zfb#2206
+/// cascade), so the scan stops at the next opener-shaped paragraph
+/// whether or not that later name is registered.
+fn is_block_opener_shaped(node: &MdastNode) -> bool {
     let MdastNode::Paragraph(p) = node else {
         return false;
     };
     let Some(MdastNode::Text(t)) = p.children.first() else {
         return false;
     };
-    first_line(&t.value).trim() == ":::"
+    container_opener_colons(first_line(&t.value).trim_end()).is_some()
 }
 
 /// Strip a trailing `\r` (CRLF input) off a single re-segmented line.
@@ -884,9 +1232,9 @@ fn container_opener_colons(line: &str) -> Option<usize> {
 }
 
 /// If `line` is a bare container CLOSE fence (only colons, ≥3, no name),
-/// return its colon count, else `None`. The line-level, ≥3 counterpart to
-/// the node-level, exactly-`:::` [`is_container_close`]; both encode the same
-/// "a close fence is all colons" idea for their respective scans.
+/// return its colon count, else `None`. Shared by the collapsed-run scan
+/// and the block-level [`closer_line_index`], so a lenient `:::::` closer
+/// behaves identically at both levels.
 fn container_close_colons(line: &str) -> Option<usize> {
     let t = line.trim();
     if t.len() >= 3 && t.bytes().all(|b| b == b':') {
@@ -953,8 +1301,8 @@ fn reparse_block(text: &str) -> Vec<MdastNode> {
 /// collapsed shape `markdown::to_mdast` produces for blank-line-less fences),
 /// return `(text_value, start_line, start_column)` — the Text's value plus the
 /// paragraph's start position (defaulting to 1:1 when absent) for diagnostics.
-/// Returns `None` for the multi-inline-child case (which the #1090
-/// `collapsed_container_body` fallback handles instead).
+/// Returns `None` for the multi-inline-child case (which
+/// [`DirectiveRegistry::transform_block_container`] handles instead).
 fn single_text_collapsed(node: &MdastNode) -> Option<(String, usize, usize)> {
     let MdastNode::Paragraph(p) = node else {
         return None;
@@ -999,137 +1347,6 @@ fn pos_for(i: usize, first_pos: Option<(usize, usize)>) -> (Option<usize>, Optio
         (0, Some((l, c))) => (Some(l), Some(c)),
         _ => (None, None),
     }
-}
-
-/// Strip a leading directive-opener line (and the `\n`/`\r\n` that
-/// follows it) from `value`. The opener line is the substring up to the
-/// first newline. Returns the remaining body text.
-fn strip_opener_line(value: &str) -> &str {
-    match value.find('\n') {
-        // Everything after the first `\n` is the body. Any trailing `\r`
-        // (CRLF input) belonged to the opener line, so nothing extra to
-        // strip here.
-        Some(nl) => &value[nl + 1..],
-        // No newline: the whole value was the opener — no body.
-        None => "",
-    }
-}
-
-/// Strip a trailing standalone `:::` line (and the `\n`/`\r\n` before it)
-/// from `value`. Returns `Some(remaining)` when the last line trims to
-/// exactly `:::`, else `None`.
-fn strip_closer_line(value: &str) -> Option<&str> {
-    let last_nl = value.rfind('\n');
-    match last_nl {
-        Some(nl) => {
-            let last = &value[nl + 1..];
-            if last.trim() == ":::" {
-                // Drop the `\n` and a preceding `\r` (CRLF) too.
-                let before = &value[..nl];
-                Some(before.strip_suffix('\r').unwrap_or(before))
-            } else {
-                None
-            }
-        }
-        None => {
-            // Single line: it must itself be the closer.
-            if value.trim() == ":::" {
-                Some("")
-            } else {
-                None
-            }
-        }
-    }
-}
-
-/// When `node` is a single Paragraph that collapsed a container directive
-/// (`:::name[...]` … `:::` written WITHOUT surrounding blank lines, so the
-/// markdown parser merged the opener, body, and closing `:::` into one
-/// multi-line Paragraph — issue #1090), return the directive body wrapped
-/// as JSX flow children: a `Vec` holding one body `Paragraph` (or empty
-/// when the body is blank), matching the shape the blank-line-separated
-/// form and `githubAlerts` produce. Returns `None` when `node` is not a
-/// collapsed container.
-///
-/// Detection: the FIRST child is a Text whose first line parses as a
-/// `:::name` opener, the value spans multiple lines, and the LAST child is
-/// a Text whose last line is exactly `:::`.
-///
-/// This is the CLONE-inline-children half of an intentional dual body-builder
-/// path: it handles the rarer multi-inline-child collapsed paragraph, while
-/// the line-level [`DirectiveRegistry::build_collapsed_body`] re-parses raw
-/// lines for the common single-`Text`-child shape. The two are discriminated
-/// by [`single_text_collapsed`] at the call site in `transform_children`.
-fn collapsed_container_body(node: &MdastNode) -> Option<Vec<MdastNode>> {
-    let MdastNode::Paragraph(p) = node else {
-        return None;
-    };
-    // First child: Text whose first line is a `:::name` opener.
-    let MdastNode::Text(first) = p.children.first()? else {
-        return None;
-    };
-    // Must be multi-line (i.e. the parser merged the fences in).
-    if !first.value.contains('\n') {
-        return None;
-    }
-    let opener_line = first_line(&first.value).trim_end();
-    parse_directive_line(opener_line, 3)?;
-    // Last child must be a Text whose last line is exactly `:::`.
-    let MdastNode::Text(last) = p.children.last()? else {
-        return None;
-    };
-    let last_line = last.value.rsplit('\n').next().unwrap_or(&last.value);
-    if last_line.trim() != ":::" {
-        return None;
-    }
-
-    // Build the body inline nodes: clone the paragraph children, strip the
-    // opener line from the first Text and the closing `:::` line from the
-    // last Text. When first and last are the same node (single Text child),
-    // strip both from that one node.
-    let mut inline: Vec<MdastNode> = p.children.clone();
-    let n = inline.len();
-    if n == 1 {
-        if let MdastNode::Text(t) = &mut inline[0] {
-            let body = strip_opener_line(&t.value);
-            let body = strip_closer_line(body).unwrap_or(body);
-            t.value = body.to_string();
-        }
-    } else {
-        if let MdastNode::Text(t) = &mut inline[0] {
-            t.value = strip_opener_line(&t.value).to_string();
-        }
-        if let MdastNode::Text(t) = &mut inline[n - 1] {
-            if let Some(stripped) = strip_closer_line(&t.value) {
-                t.value = stripped.to_string();
-            }
-        }
-    }
-
-    // Drop leading/trailing empty Text nodes left after stripping so the
-    // body paragraph has no stray empty text runs.
-    if let Some(MdastNode::Text(t)) = inline.first() {
-        if t.value.is_empty() {
-            inline.remove(0);
-        }
-    }
-    if let Some(MdastNode::Text(t)) = inline.last() {
-        if t.value.is_empty() {
-            inline.pop();
-        }
-    }
-
-    if inline.is_empty() {
-        // Body was blank (e.g. `:::note\n:::`) — no children.
-        return Some(Vec::new());
-    }
-
-    // Wrap the remaining inline content in a Paragraph, matching the
-    // blank-line-separated form where the body is its own Paragraph node.
-    Some(vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
-        children: inline,
-        position: None,
-    })])
 }
 
 // -- JSX construction ---------------------------------------------------
@@ -1617,6 +1834,15 @@ separated body
             |c| matches!(c, MdastNode::MdxJsxFlowElement(j) if j.name.as_deref() == Some("Tip")),
         );
         assert!(!has_tip, "unbalanced tip must NOT transform");
+        // Since zfb#2206 the unclosed trailing opener additionally records
+        // an unclosed-container diagnostic (the literal fallback stays).
+        let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "unclosed diagnostic expected, got {diags:#?}"
+        );
+        assert!(diags[0].message.contains("unclosed") && diags[0].message.contains("tip"));
     }
 
     #[test]
@@ -1735,6 +1961,441 @@ separated body
             r.take_diagnostics().is_empty(),
             "lenient closer is accepted without diagnostics"
         );
+    }
+
+    // ---- multi-block bodies, glued fences, backtick titles (zfb#2206) ----
+
+    /// Collect the plain-text content of each top-level Paragraph child of a
+    /// JSX flow element (InlineCode contributes its value; other inline
+    /// markup contributes its nested Text content).
+    fn body_paragraph_texts(j: &MdxJsxFlowElement) -> Vec<String> {
+        fn inline_text(nodes: &[MdastNode]) -> String {
+            let mut s = String::new();
+            for n in nodes {
+                match n {
+                    MdastNode::Text(t) => s.push_str(&t.value),
+                    MdastNode::InlineCode(c) => s.push_str(&c.value),
+                    other => {
+                        if let Some(children) = other.children() {
+                            s.push_str(&inline_text(children));
+                        }
+                    }
+                }
+            }
+            s
+        }
+        j.children
+            .iter()
+            .filter_map(|c| match c {
+                MdastNode::Paragraph(p) => Some(inline_text(&p.children)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Recursively collect every Text value in the tree so tests can assert
+    /// no literal `:::` fence leaked anywhere in the output.
+    fn collect_text_values(nodes: &[MdastNode], out: &mut Vec<String>) {
+        for n in nodes {
+            if let MdastNode::Text(t) = n {
+                out.push(t.value.clone());
+            }
+            if let Some(children) = n.children() {
+                collect_text_values(children, out);
+            }
+        }
+    }
+
+    fn assert_no_literal_fence(nodes: &[MdastNode]) {
+        let mut texts = Vec::new();
+        collect_text_values(nodes, &mut texts);
+        assert!(
+            !texts.iter().any(|t| t.contains(":::")),
+            "no literal ::: may leak into the output, got texts: {texts:#?}"
+        );
+    }
+
+    #[test]
+    fn real_parser_blank_line_inside_body_transforms() {
+        // zfb#2206 repro form A: a blank line inside the body glues the
+        // opener to the first body block and the closer to the last one.
+        // Both body paragraphs must survive inside ONE <Warning>.
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nalpha one\n\nalpha two\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "one directive expected, got {out:#?}");
+        let warning = flow(&out[0]);
+        assert_eq!(warning.name.as_deref(), Some("Warning"));
+        assert_eq!(
+            body_paragraph_texts(warning),
+            vec!["alpha one".to_string(), "alpha two".to_string()],
+            "both body blocks must survive, got {:#?}",
+            warning.children
+        );
+        assert_no_literal_fence(&out);
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "well-formed: no diagnostics"
+        );
+    }
+
+    #[test]
+    fn real_parser_glued_opener_padded_closer_keeps_first_body_block() {
+        // The opener is glued to the first body line but the closer is
+        // padded. Pre-#2206 this TRANSFORMED but silently dropped the glued
+        // "body one" line together with the opener paragraph.
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nbody one\n\nbody two\n\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "one directive expected, got {out:#?}");
+        let warning = flow(&out[0]);
+        assert_eq!(warning.name.as_deref(), Some("Warning"));
+        assert_eq!(
+            body_paragraph_texts(warning),
+            vec!["body one".to_string(), "body two".to_string()],
+            "the glued first body line must not be dropped, got {:#?}",
+            warning.children
+        );
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_padded_opener_glued_closer_transforms() {
+        // The opener is padded but the closer is glued to the last body
+        // block. Pre-#2206 the glued closer was never recognised, so the
+        // whole run leaked literal (or stole a later directive's closer).
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\n\nbody one\n\nbody two\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "one directive expected, got {out:#?}");
+        let warning = flow(&out[0]);
+        assert_eq!(warning.name.as_deref(), Some("Warning"));
+        assert_eq!(
+            body_paragraph_texts(warning),
+            vec!["body one".to_string(), "body two".to_string()],
+            "both body blocks must survive, got {:#?}",
+            warning.children
+        );
+        assert_no_literal_fence(&out);
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_backtick_bracket_title_normalizes_to_plain_text() {
+        // zfb#2206 repro form B: inline code in the bracketed title splits
+        // the opener line across several inline children. The directive must
+        // transform, with the title normalized to plain text in the `title`
+        // attribute and NO title fragment leaking into the body.
+        let mut r = registry_with_admonitions();
+        let input = ":::warning[`Evidence:` in the title]\nbravo body\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "one directive expected, got {out:#?}");
+        let warning = flow(&out[0]);
+        assert_eq!(warning.name.as_deref(), Some("Warning"));
+        assert_eq!(
+            attr(warning, "title").as_deref(),
+            Some("Evidence: in the title"),
+            "backticked bracket title must normalize to plain text"
+        );
+        assert_eq!(
+            body_paragraph_texts(warning),
+            vec!["bravo body".to_string()],
+            "no title fragment may leak into the body, got {:#?}",
+            warning.children
+        );
+        assert_no_literal_fence(&out);
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_cascade_broken_form_does_not_steal_later_closer() {
+        // zfb#2206 root cause 3: pre-fix, the glued-closer form A opener
+        // stole the standalone `:::` of the NEXT directive, swallowing
+        // everything between (cascade). Both directives must transform
+        // independently with their own bodies.
+        let mut r = registry_with_admonitions();
+        let input = "\
+:::warning
+alpha one
+
+alpha two
+:::
+
+:::note
+
+padded body
+
+:::
+";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 2, "two directives expected, got {out:#?}");
+        let warning = flow(&out[0]);
+        assert_eq!(warning.name.as_deref(), Some("Warning"));
+        assert_eq!(
+            body_paragraph_texts(warning),
+            vec!["alpha one".to_string(), "alpha two".to_string()]
+        );
+        let note = flow(&out[1]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        assert_eq!(body_paragraph_texts(note), vec!["padded body".to_string()]);
+        assert_no_literal_fence(&out);
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_unclosed_opener_warns_and_stays_literal() {
+        // A genuinely-unclosed container opener must emit a build
+        // diagnostic (zfb#2206 acceptance) instead of leaking silently.
+        // The source stays literal — graceful fallback, no transform.
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nnever closed\n\nplain trailing paragraph\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "unclosed opener must not transform, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic must name the unclosed directive, got {:?}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].line, Some(1), "diagnostic carries the opener line");
+    }
+
+    #[test]
+    fn real_parser_unclosed_opener_leaves_later_padded_directive_intact() {
+        // Cascade half 2: a genuinely-unclosed opener followed by a
+        // well-formed padded directive. Pre-fix the unclosed opener stole
+        // the later directive's closer; now the later directive must render
+        // and the unclosed one stays literal with a diagnostic.
+        let mut r = registry_with_admonitions();
+        let input = "\
+:::warning
+never closed
+
+:::note
+
+padded body
+
+:::
+";
+        let out = run_real_parser(&mut r, input);
+        let notes: Vec<&MdxJsxFlowElement> = out
+            .iter()
+            .filter_map(|c| match c {
+                MdastNode::MdxJsxFlowElement(j) => Some(j),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes.len(),
+            1,
+            "exactly the later <Note> transforms, got {out:#?}"
+        );
+        assert_eq!(notes[0].name.as_deref(), Some("Note"));
+        assert_eq!(
+            body_paragraph_texts(notes[0]),
+            vec!["padded body".to_string()]
+        );
+        // The unclosed opener survives as literal text.
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning")),
+            "unclosed opener stays literal, got {texts:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(diags[0].message.contains("unclosed"));
+    }
+
+    #[test]
+    fn real_parser_closer_with_trailing_prose_keeps_prose_after_directive() {
+        // Prose glued AFTER the closing `:::` on the same paragraph must be
+        // re-emitted after the directive, not silently dropped (pre-#2206
+        // the whole closer paragraph vanished with its trailing lines).
+        let mut r = registry_with_admonitions();
+        let input = ":::note\nbody\n\n:::\nmore text\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 2, "directive + trailing prose, got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        assert_eq!(body_paragraph_texts(note), vec!["body".to_string()]);
+        let MdastNode::Paragraph(p) = &out[1] else {
+            unreachable!("trailing prose paragraph expected, got {:?}", out[1]);
+        };
+        let MdastNode::Text(t) = &p.children[0] else {
+            unreachable!("trailing prose text expected");
+        };
+        assert_eq!(t.value, "more text");
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_emphasis_in_collapsed_body_preserves_phrasing() {
+        // Parity pin for the multi-inline-child collapsed shape: emphasis in
+        // the body splits the paragraph into several inline children. The
+        // body must keep its phrasing nodes (NOT flattened to plain text).
+        let mut r = registry_with_admonitions();
+        let input = ":::note\nbody *em* text\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        let MdastNode::Paragraph(body) = &note.children[0] else {
+            unreachable!("body paragraph expected, got {:?}", note.children[0]);
+        };
+        assert!(
+            body.children
+                .iter()
+                .any(|c| matches!(c, MdastNode::Emphasis(_))),
+            "emphasis phrasing must survive in the body, got {:#?}",
+            body.children
+        );
+        assert_eq!(body_paragraph_texts(note), vec!["body em text".to_string()]);
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_backtick_title_followed_by_padded_directive_no_steal() {
+        // Form B (backtick title, collapsed) followed by a padded sibling:
+        // the collapsed run must close inside its own paragraph and never
+        // reach for the padded sibling's closer.
+        let mut r = registry_with_admonitions();
+        let input = "\
+:::warning[`Evidence:` in the title]
+bravo body
+:::
+
+:::note
+
+padded body
+
+:::
+";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 2, "two directives expected, got {out:#?}");
+        let warning = flow(&out[0]);
+        assert_eq!(warning.name.as_deref(), Some("Warning"));
+        assert_eq!(
+            attr(warning, "title").as_deref(),
+            Some("Evidence: in the title")
+        );
+        assert_eq!(
+            body_paragraph_texts(warning),
+            vec!["bravo body".to_string()]
+        );
+        let note = flow(&out[1]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        assert_eq!(body_paragraph_texts(note), vec!["padded body".to_string()]);
+        assert_no_literal_fence(&out);
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_hard_break_in_collapsed_body_survives() {
+        // Codex review (zfb#2206): a CommonMark hard break (two trailing
+        // spaces) in a collapsed body produces a Break node. The line
+        // machinery must restore it verbatim on rejoin — not degrade it to
+        // a soft newline (the pre-#2206 clone path preserved it).
+        let mut r = registry_with_admonitions();
+        let input = ":::note\nfoo  \nbar\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        let MdastNode::Paragraph(body) = &note.children[0] else {
+            unreachable!("body paragraph expected, got {:?}", note.children[0]);
+        };
+        assert!(
+            body.children
+                .iter()
+                .any(|c| matches!(c, MdastNode::Break(_))),
+            "the hard Break node must survive in the body, got {:#?}",
+            body.children
+        );
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_emphasis_spanning_soft_break_in_body_transforms() {
+        // Codex review (zfb#2206): inline markup spanning a soft break
+        // (`*foo\nbar*`) nests a newline inside the emphasis node. The
+        // directive must still transform with the phrasing intact — the
+        // nested newline only disqualifies OPENER-line flattening, never
+        // the body (the pre-#2206 clone path transformed this shape).
+        let mut r = registry_with_admonitions();
+        let input = ":::note\n*foo\nbar*\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        let MdastNode::Paragraph(body) = &note.children[0] else {
+            unreachable!("body paragraph expected, got {:?}", note.children[0]);
+        };
+        assert!(
+            body.children
+                .iter()
+                .any(|c| matches!(c, MdastNode::Emphasis(_))),
+            "emphasis spanning the soft break must survive, got {:#?}",
+            body.children
+        );
+        assert_no_literal_fence(&out);
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "no false unclosed diagnostic for a well-formed body"
+        );
+    }
+
+    #[test]
+    fn oracle_parser_and_registry_agree_on_2206_repro_forms() {
+        // Divergence guard (zfb#2206): the oracle-pinned source-level parser
+        // (`crate::directive_parser`) and the production registry must both
+        // recognise the three repro forms — one container each.
+        use crate::directive_parser::{parse_directive_mdast, DirectiveMdastNode};
+        use crate::facade::{GfmOptions, ParseDialect, ParseMdastOptions};
+
+        fn count_containers(node: &DirectiveMdastNode) -> usize {
+            let own = usize::from(node.kind == "containerDirective");
+            own + node
+                .children
+                .as_ref()
+                .map_or(0, |c| c.iter().map(count_containers).sum())
+        }
+
+        let forms = [
+            ":::warning\nalpha one\n\nalpha two\n:::\n",
+            ":::warning[`Evidence:` in the title]\nbravo body\n:::\n",
+            ":::warning[plain title here]\ncharlie body\n:::\n",
+        ];
+        for src in forms {
+            let opts = ParseMdastOptions {
+                dialect: ParseDialect::Markdown,
+                gfm: GfmOptions::default(),
+                frontmatter: false,
+            };
+            let root = parse_directive_mdast(opts, src).expect("oracle parses the form");
+            assert_eq!(
+                count_containers(&root),
+                1,
+                "oracle must claim one containerDirective for {src:?}"
+            );
+
+            let mut r = registry_with_admonitions();
+            let out = run_real_parser(&mut r, src);
+            let jsx = out
+                .iter()
+                .filter(|c| matches!(c, MdastNode::MdxJsxFlowElement(_)))
+                .count();
+            assert_eq!(jsx, 1, "registry must transform {src:?}, got {out:#?}");
+            assert!(
+                r.take_diagnostics().is_empty(),
+                "no diagnostics for {src:?}"
+            );
+        }
     }
 
     // ---- container tests ----
@@ -1949,6 +2610,87 @@ separated body
         assert!(!r.take_diagnostics().is_empty(), "warning recorded");
     }
 
+    #[test]
+    fn context_armed_visit_flushes_diagnostics_to_sink() {
+        // zfb#2206: with a BuildContext diagnostics sink armed (real
+        // builds — the JSX-emit path drains the sink into the pipeline's
+        // markdown-diagnostics counters), directive diagnostics flow out
+        // as Warning-severity MarkdownDiagnostics with the source path and
+        // position attached, and the registry buffer is drained.
+        use zfb_md_ast::diagnostics::CollectingSink;
+
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nnever closed\n\n:::bogus\n\nx\n\n:::\n";
+        let mut root = markdown::to_mdast(input, &markdown::ParseOptions::mdx())
+            .expect("markdown-rs should parse the sample");
+
+        let mut sink = CollectingSink::new();
+        let mut ctx = BuildContext::for_paths("/proj/content/a.mdx", "/proj", "/proj/public");
+        ctx.diagnostics = Some(&mut sink);
+        r.visit_with_context(&mut root, &mut ctx);
+        drop(ctx);
+
+        let flushed = sink.take();
+        assert_eq!(
+            flushed.len(),
+            2,
+            "unclosed + unknown must reach the sink, got {flushed:#?}"
+        );
+        for d in &flushed {
+            let MarkdownDiagnostic::Generic {
+                severity,
+                message,
+                location,
+            } = d
+            else {
+                unreachable!("directive diagnostics are Generic, got {d:?}");
+            };
+            assert_eq!(*severity, DiagnosticSeverity::Warning);
+            assert!(
+                message.contains("unclosed") || message.contains("unknown directive"),
+                "unexpected message {message:?}"
+            );
+            let loc = location.as_ref().expect("location attached");
+            assert_eq!(
+                loc.path.as_deref(),
+                Some(std::path::Path::new("/proj/content/a.mdx"))
+            );
+        }
+        // The unclosed-opener diagnostic carries the opener's position.
+        assert!(
+            flushed.iter().any(|d| matches!(
+                d,
+                MarkdownDiagnostic::Generic {
+                    message,
+                    location: Some(loc),
+                    ..
+                } if message.contains("unclosed") && loc.line == Some(1)
+            )),
+            "unclosed diagnostic keeps its line, got {flushed:#?}"
+        );
+        // Drained: nothing left on the registry buffer.
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "registry buffer must be drained into the sink"
+        );
+    }
+
+    #[test]
+    fn context_without_sink_keeps_diagnostics_on_registry() {
+        // No diagnostics sink armed: the registry keeps accumulating for
+        // manual draining (the pre-#2206 contract, unchanged).
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nnever closed\n";
+        let mut root = markdown::to_mdast(input, &markdown::ParseOptions::mdx())
+            .expect("markdown-rs should parse the sample");
+        let mut ctx = BuildContext::for_paths("/proj/content/a.mdx", "/proj", "/proj/public");
+        r.visit_with_context(&mut root, &mut ctx);
+        drop(ctx);
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "diagnostic stays on the registry");
+        assert!(diags[0].message.contains("unclosed"));
+    }
+
     // ---- bit-for-bit admonition behaviour ----
 
     #[test]
@@ -2001,6 +2743,15 @@ separated body
         assert_eq!(out.len(), 2);
         // First is still a paragraph.
         assert!(matches!(out[0], MdastNode::Paragraph(_)));
+        // Since zfb#2206 the genuinely-unclosed opener additionally records
+        // an unclosed-container diagnostic (the source still stays literal).
+        let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "unclosed diagnostic expected, got {diags:#?}"
+        );
+        assert!(diags[0].message.contains("unclosed"));
     }
 
     #[test]
@@ -2201,21 +2952,31 @@ separated body
     }
 
     #[test]
-    fn single_line_unrecognised_container_no_blank_line_diagnostic() {
-        // A paragraph with a directive opener but NO newline (i.e., the
-        // close is a separate paragraph) should not trigger the blank-
-        // line diagnostic even when we can't find the close.
+    fn single_line_lone_opener_emits_unclosed_diagnostic() {
+        // UPDATED for zfb#2206 (was `single_line_unrecognised_container_no_
+        // blank_line_diagnostic`, which pinned "no diagnostic for a lone
+        // opener" back when the only candidate was the long-removed
+        // blank-line diagnostic). #2206's acceptance mandates the opposite:
+        // a genuinely-unclosed container opener must EMIT a build
+        // diagnostic instead of leaking silently. The source paragraph is
+        // still preserved — graceful literal fallback, no transform.
         let mut r = registry_with_admonitions();
         // Just the opener with no close sibling.
         let out = run_with_registry(&mut r, vec![text_para(":::note")]);
-        // No diagnostic (the missing-close path, not the merged path).
         let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "unclosed-container diagnostic expected, got {diags:#?}"
+        );
         assert!(
-            diags.is_empty(),
-            "no blank-line diagnostic for lone opener, got {diags:?}"
+            diags[0].message.contains("unclosed") && diags[0].message.contains("note"),
+            "diagnostic names the unclosed directive, got {:?}",
+            diags[0].message
         );
         // Source paragraph preserved.
         assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], MdastNode::Paragraph(_)));
     }
 
     // ---- directives-only (generic directives feature, zero defaults) tests ----
