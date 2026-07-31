@@ -1342,6 +1342,68 @@ fn configured_pipelines_expose_nested_code_chain() {
     assert!(Pipeline::with_mdx().nested_code_render_chain().is_none());
 }
 
+/// Codex-review follow-up (#2207): the PUBLIC post-construction
+/// registration helpers must keep the nested-code chain in lockstep with
+/// the live hast chain — a manually-registered mermaid / code-enrichment
+/// step must show up in the reconstructed chain too, or top-level and
+/// nested fences would diverge.
+#[test]
+fn manual_feature_registration_syncs_nested_code_chain() {
+    use zfb_content::pipeline::{
+        register_features, register_post_syntect_features, ResolvedGfmConstructs,
+    };
+    use zfb_md_extras::{CodeEnrichmentConfig, FeatureToggle, MarkdownFeaturesConfig};
+
+    // register_post_syntect_features: enrichment joins the chain (3 → 4).
+    let mut p = Pipeline::with_defaults();
+    let enrichment = MarkdownFeaturesConfig {
+        code_enrichment: Some(CodeEnrichmentConfig::default()),
+        ..Default::default()
+    };
+    register_post_syntect_features(&mut p, &enrichment);
+    assert_eq!(
+        p.nested_code_render_chain()
+            .expect("chain survives manual registration")
+            .len(),
+        4,
+        "manually registered code-enrichment must join the nested chain",
+    );
+
+    // register_features: mermaid joins the chain (2 → 3) on a
+    // full-config pipeline that was built without it.
+    let mut p = Pipeline::with_defaults_and_full_config(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+    )
+    .expect("no themes_dir — cannot fail");
+    let mermaid_on = MarkdownFeaturesConfig {
+        mermaid: Some(FeatureToggle::Bool(true)),
+        ..Default::default()
+    };
+    register_features(&mut p, &mermaid_on);
+    assert_eq!(
+        p.nested_code_render_chain()
+            .expect("chain survives manual registration")
+            .len(),
+        3,
+        "manually registered mermaid must join the nested chain",
+    );
+
+    // A bare pipeline stays chain-less even after manual registration —
+    // the sync only updates an EXISTING spec, it never conjures one for
+    // a pipeline that has no syntect step.
+    let mut p = Pipeline::with_mdx();
+    register_post_syntect_features(&mut p, &enrichment);
+    assert!(
+        p.nested_code_render_chain().is_none(),
+        "manual registration must not conjure a chain without syntect",
+    );
+}
+
 /// Codex-review follow-up (zfb#871): a CUSTOM pipeline that hand-wires
 /// `HeadingLinksPlugin::with_strategy(Hierarchical)` must call
 /// `set_heading_id_strategy` so the `headings` export mirrors the

@@ -57,8 +57,8 @@ use crate::dep_manifest::DependencyManifest;
 use crate::footnotes::FOOTNOTE_LABEL_STYLE;
 use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
-    constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode, HastVisitor,
-    JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
+    code_block_hast, constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode,
+    HastVisitor, JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 use crate::plugins::BrokenLinkDiagnostic;
@@ -1749,10 +1749,10 @@ impl NestedRenderCtx<'_> {
 ///
 /// Steps mirror the top-level path exactly:
 ///
-/// 1. Build the SAME mini-hast node `pipeline::mdast_to_hast_inner`'s
-///    `Code` arm builds for a top-level fence —
+/// 1. Build the SAME mini-hast node a top-level fence gets, via the
+///    shared [`code_block_hast`] constructor —
 ///    `<pre><code class="language-{lang}" data-lang data-meta>Text</code></pre>`
-///    — including the `data-lang` / `data-meta` attributes the current
+///    — including the `data-lang` / `data-meta` attributes the legacy
 ///    fallback emission drops (they are what the chain plugins key on).
 /// 2. Run the owned chain in the documented ordering contract
 ///    (code-title → mermaid → syntect → code-enrichment) against a
@@ -1778,26 +1778,8 @@ impl NestedRenderCtx<'_> {
 /// to gain over the established fallback bytes.
 fn nested_code_via_chain(c: &markdown::mdast::Code, ctx: &NestedRenderCtx) -> Option<String> {
     let chain = ctx.code_chain.as_ref()?;
-    let mut code_attrs: Vec<(String, String)> = Vec::new();
-    if let Some(lang) = &c.lang {
-        code_attrs.push(("class".to_string(), format!("language-{lang}")));
-        code_attrs.push(("data-lang".to_string(), lang.clone()));
-    }
-    if let Some(meta) = &c.meta {
-        code_attrs.push(("data-meta".to_string(), meta.clone()));
-    }
     let mini = HastNode::Root {
-        children: vec![HastNode::Element {
-            tag: "pre".to_string(),
-            attrs: vec![],
-            children: vec![HastNode::Element {
-                tag: "code".to_string(),
-                attrs: code_attrs,
-                children: vec![HastNode::Text(c.value.clone())],
-                void: false,
-            }],
-            void: false,
-        }],
+        children: vec![code_block_hast(c)],
     };
     let mut rewritten = mini.clone();
     for visitor in chain.borrow_mut().iter_mut() {

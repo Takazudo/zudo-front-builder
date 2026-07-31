@@ -2252,6 +2252,19 @@ pub fn register_features(p: &mut Pipeline, features: &zfb_md_extras::MarkdownFea
     // pipeline uncacheable anyway, so there is no dependency manifest to
     // feed (the compile cache never stores entries for it).
     register_features_config_derived(p, features, None);
+    // Keep the nested-code render chain (#2207) in lockstep with the
+    // live hast chain: a manual post-construction registration can add
+    // the mermaid step to a pipeline whose constructor-stored spec
+    // predates it — without this sync, a top-level mermaid fence would
+    // render the mermaid div while a JSX-nested one kept the raw
+    // fallback. Constructors never route through this wrapper (they
+    // call the `_config_derived` inner directly and compute the spec
+    // themselves), so this is the single sync point for the manual path.
+    if zfb_md_ast::feature_enabled(&features.mermaid) {
+        if let Some(spec) = p.nested_code_chain_spec.as_mut() {
+            spec.mermaid = true;
+        }
+    }
     p.invalidate_config_fingerprint();
 }
 
@@ -2462,6 +2475,17 @@ pub fn register_post_syntect_features(
     features: &zfb_md_extras::MarkdownFeaturesConfig,
 ) {
     register_post_syntect_features_config_derived(p, features);
+    // Keep the nested-code render chain (#2207) in lockstep with the
+    // live hast chain — same rationale as the mermaid sync in
+    // [`register_features`]: without it, a manually-registered
+    // code-enrichment visitor would enrich top-level fences while
+    // JSX-nested ones ran a stale reconstructed chain and dropped line
+    // highlights / diff markers.
+    if let Some(cfg) = &features.code_enrichment {
+        if let Some(spec) = p.nested_code_chain_spec.as_mut() {
+            spec.code_enrichment = Some(cfg.clone());
+        }
+    }
     p.invalidate_config_fingerprint();
 }
 
@@ -2695,26 +2719,7 @@ fn mdast_to_hast_inner(
             convert_children_with(&d.children, strategy, fc),
         ),
         MdastNode::InlineCode(c) => element("code", vec![], vec![HastNode::Text(c.value.clone())]),
-        MdastNode::Code(c) => {
-            // Fenced code block. Wrap raw text in <pre><code>; expose
-            // `lang` and `meta` as data-* attrs so Sub 4 plugins (e.g.
-            // rehypeCodeTitle) and Sub 5 (syntect) can inspect them.
-            let mut code_attrs: Vec<(String, String)> = Vec::new();
-            if let Some(lang) = &c.lang {
-                code_attrs.push(("class".to_string(), format!("language-{lang}")));
-                code_attrs.push(("data-lang".to_string(), lang.clone()));
-            }
-            if let Some(meta) = &c.meta {
-                code_attrs.push(("data-meta".to_string(), meta.clone()));
-            }
-            let code_el = HastNode::Element {
-                tag: "code".to_string(),
-                attrs: code_attrs,
-                children: vec![HastNode::Text(c.value.clone())],
-                void: false,
-            };
-            element("pre", vec![], vec![code_el])
-        }
+        MdastNode::Code(c) => code_block_hast(c),
         MdastNode::Link(l) => {
             let mut attrs = vec![("href".to_string(), l.url.clone())];
             if let Some(title) = &l.title {
@@ -3085,6 +3090,37 @@ fn element(tag: &str, attrs: Vec<(String, String)>, children: Vec<HastNode>) -> 
         children,
         void: false,
     }
+}
+
+/// Build the hast node for ONE fenced code block: `<pre><code
+/// class="language-{lang}" data-lang="…" data-meta="…">TEXT</code></pre>`.
+/// `lang` and `meta` are exposed as data-* attrs so the code-block
+/// plugins (code-title, mermaid, syntect, code-enrichment) can inspect
+/// them.
+///
+/// The SINGLE authority for the node shape both render paths feed the
+/// code-block chain: [`mdast_to_hast_inner`]'s top-level `Code` arm AND
+/// the JSX-emit path's nested-fence renderer
+/// (`mdx_jsx_emit::nested_code_via_chain`, #2207). Sharing one
+/// constructor is what guarantees a nested fence enters the chain as the
+/// EXACT node a top-level fence would — keep any shape change here, in
+/// one place.
+pub(crate) fn code_block_hast(c: &markdown::mdast::Code) -> HastNode {
+    let mut code_attrs: Vec<(String, String)> = Vec::new();
+    if let Some(lang) = &c.lang {
+        code_attrs.push(("class".to_string(), format!("language-{lang}")));
+        code_attrs.push(("data-lang".to_string(), lang.clone()));
+    }
+    if let Some(meta) = &c.meta {
+        code_attrs.push(("data-meta".to_string(), meta.clone()));
+    }
+    let code_el = HastNode::Element {
+        tag: "code".to_string(),
+        attrs: code_attrs,
+        children: vec![HastNode::Text(c.value.clone())],
+        void: false,
+    };
+    element("pre", vec![], vec![code_el])
 }
 
 /// Build the (disabled) task-list checkbox hast node that precedes a
