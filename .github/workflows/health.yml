@@ -341,6 +341,23 @@ jobs:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
         run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored
 
+      # Root-claimed-workspace LOOSE-FILE staging regression (issue #2208,
+      # epic #2205): the ACCEPT complement of the armed-regression step
+      # above. Arming guard (b) at root-claimed workspaces (#1988) exposed
+      # that repo-root loose files reached via a broad `@/*` alias were only
+      # staged under active exclusions — under an empty `bundle.exclude` the
+      # dual-target tsconfig's live-real fallback resolved them to LIVE
+      # source, which the now-armed audit rejects as case 4 (the next.96 →
+      # next.97 regression). The fix widens the staging gate (declared-data
+      # `workspace_root_claims_path` predicate); this binary proves real
+      # esbuild's shadow-first resolution now records the STAGED spelling,
+      # and its negative control proves the widened staging did not loosen
+      # the audit (an undeclared bare-package-name escape stays rejected).
+      - name: Run zfb-build root-workspace loose-file alias esbuild regression test
+        env:
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb-build --test bundler_root_workspace_loose_file_alias_esbuild_regression -- --ignored
+
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are
       # staged by the assert step above but, like the zfb-islands suite before

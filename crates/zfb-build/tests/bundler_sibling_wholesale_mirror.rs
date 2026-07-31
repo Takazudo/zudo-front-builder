@@ -1007,6 +1007,44 @@ fn empty_exclude_does_not_stage_project_root_loose_files() {
     );
 }
 
+/// Issue #2208: at a ROOT-CLAIMED workspace (`pnpm-workspace.yaml` claims
+/// `'.'`, so `first_party_root == project_root`) the loose-file pass fires
+/// even under an EMPTY `bundle.exclude` — the stage-escape audit is armed
+/// there (eligibility row 3, #1987/#1988), so the empty-exclude live-real
+/// tsconfig fallback would resolve `@/<name>` to LIVE source and hard-fail
+/// as case 4 ("no staged spelling"). Staging gives esbuild's shadow-first
+/// dual-target resolution a staged spelling to win with. The standalone
+/// (non-workspace) pin above must stay green — no `pnpm-workspace.yaml`
+/// means the declared-data predicate fails closed and nothing is staged.
+#[test]
+fn root_claimed_workspace_empty_exclude_stages_project_root_loose_files() {
+    let root = tempfile::tempdir().unwrap();
+    let project = write_standalone_project(root.path());
+    write(
+        &project.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'packages/*'\n",
+    );
+    write(
+        &project.join("package.json"),
+        "{ \"name\": \"host\", \"private\": true }\n",
+    );
+    write(&project.join("data.json"), "{ \"loose\": true }\n");
+    let tsconfig_paths = BTreeMap::from([(
+        "@/*".to_string(),
+        vec![project.join("*").to_string_lossy().into_owned()],
+    )]);
+
+    let input = make_bundle_input(&project, "dist-rootclaimed", vec![], tsconfig_paths, vec![]);
+    let mut session = ShadowSession::new(&input.project_root).unwrap();
+    bundle_with_session(input, Some(&mut session)).expect("root-claimed empty-exclude bundle");
+
+    assert!(
+        work_mirror_root(&session).join("data.json").is_file(),
+        "a root-claimed workspace must stage root loose files reached via a wildcard root \
+         alias even under an empty bundle.exclude (#2208)"
+    );
+}
+
 /// Byte-identical: a standalone (non-workspace) build claims no sibling region,
 /// so nothing outside the project mirror is staged even when a would-be sibling
 /// directory sits next to it.
