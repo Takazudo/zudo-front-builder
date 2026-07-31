@@ -354,7 +354,7 @@ impl DirectiveRegistry {
         }
 
         // (b) bounded sibling scan for the closer.
-        let mut found: Option<(usize, Vec<Vec<MdastNode>>, usize)> = None;
+        let mut found: Option<(usize, Vec<InlineLine>, usize)> = None;
         for (j, sibling) in children.iter().enumerate().skip(i + 1) {
             if !matches!(sibling, MdastNode::Paragraph(_)) {
                 continue;
@@ -704,7 +704,7 @@ impl DirectiveRegistry {
             return parse_directive_body(&first_ln[colons..]);
         }
         // Multi-inline-child opener line: flatten it to plain text.
-        let lines = split_inline_lines(&p.children)?;
+        let lines = split_inline_lines(&p.children);
         let flat = flatten_line_plain(lines.first()?)?;
         let flat = flat.trim_end();
         if count_leading_colons(flat) != colons {
@@ -1006,26 +1006,38 @@ fn first_line(s: &str) -> &str {
 // top-level newline boundaries, find the opener/closer lines, and rejoin
 // the remaining lines as body content WITHOUT flattening its phrasing.
 
+/// One line of a paragraph's inline children, plus the separator that
+/// ended it: `Some(Break)` for a CommonMark hard break (restored verbatim
+/// on rejoin so `<br>` semantics survive the round trip), `None` for a
+/// soft newline from a `Text` split or the paragraph end.
+#[derive(Debug, Default)]
+struct InlineLine {
+    nodes: Vec<MdastNode>,
+    hard_break: Option<MdastNode>,
+}
+
 /// Split a paragraph's inline children into LINES at top-level newline
-/// boundaries: newlines inside top-level `Text` values, and `Break` nodes.
-/// Non-Text inline nodes are atomic — a newline nested inside one (e.g.
-/// emphasis spanning a soft break) makes the split unreliable, so the
-/// function returns `None` and callers fall back to leaving the paragraph
-/// alone. Split `Text` segments carry no position; unsplit nodes keep
-/// theirs.
-fn split_inline_lines(children: &[MdastNode]) -> Option<Vec<Vec<MdastNode>>> {
-    fn push_text_segment(line: &mut Vec<MdastNode>, segment: &str) {
+/// boundaries: newlines inside top-level `Text` values, and `Break`
+/// nodes (recorded as the ending line's [`InlineLine::hard_break`]).
+/// Every other inline node is atomic and stays on its current line —
+/// including nodes with a newline NESTED inside (e.g. emphasis spanning
+/// a soft break): the nested newline travels inside the node, which is
+/// exactly right for body content. Only opener-line FLATTENING must
+/// reject such nodes, and [`flatten_line_plain`] does that itself.
+/// Split `Text` segments carry no position; unsplit nodes keep theirs.
+fn split_inline_lines(children: &[MdastNode]) -> Vec<InlineLine> {
+    fn push_text_segment(line: &mut InlineLine, segment: &str) {
         let segment = strip_trailing_cr(segment);
         if segment.is_empty() {
             return;
         }
-        line.push(MdastNode::Text(Text {
+        line.nodes.push(MdastNode::Text(Text {
             value: segment.to_string(),
             position: None,
         }));
     }
 
-    let mut lines: Vec<Vec<MdastNode>> = vec![Vec::new()];
+    let mut lines: Vec<InlineLine> = vec![InlineLine::default()];
     for child in children {
         match child {
             MdastNode::Text(t) if t.value.contains('\n') => {
@@ -1034,20 +1046,20 @@ fn split_inline_lines(children: &[MdastNode]) -> Option<Vec<Vec<MdastNode>>> {
                     push_text_segment(lines.last_mut().expect("seeded"), first);
                 }
                 for part in parts {
-                    lines.push(Vec::new());
+                    lines.push(InlineLine::default());
                     push_text_segment(lines.last_mut().expect("just pushed"), part);
                 }
             }
-            MdastNode::Break(_) => lines.push(Vec::new()),
+            MdastNode::Break(_) => {
+                lines.last_mut().expect("seeded").hard_break = Some(child.clone());
+                lines.push(InlineLine::default());
+            }
             other => {
-                if node_text_contains_newline(other) {
-                    return None;
-                }
-                lines.last_mut().expect("seeded").push(other.clone());
+                lines.last_mut().expect("seeded").nodes.push(other.clone());
             }
         }
     }
-    Some(lines)
+    lines
 }
 
 /// Does any text content anywhere inside `node` contain a newline?
@@ -1062,12 +1074,12 @@ fn node_text_contains_newline(node: &MdastNode) -> bool {
 }
 
 /// The inline-line view of a Paragraph node, or `None` for other node
-/// kinds / unsplittable inline shapes (see [`split_inline_lines`]).
-fn paragraph_inline_lines(node: &MdastNode) -> Option<Vec<Vec<MdastNode>>> {
+/// kinds (see [`split_inline_lines`]).
+fn paragraph_inline_lines(node: &MdastNode) -> Option<Vec<InlineLine>> {
     let MdastNode::Paragraph(p) = node else {
         return None;
     };
-    split_inline_lines(&p.children)
+    Some(split_inline_lines(&p.children))
 }
 
 /// Flatten one inline LINE to plain text for directive-opener parsing.
@@ -1075,9 +1087,11 @@ fn paragraph_inline_lines(node: &MdastNode) -> Option<Vec<Vec<MdastNode>>> {
 /// parser already stripped the backticks), and emphasis-like wrappers
 /// their nested text — which is exactly the "title normalized to plain
 /// text" contract for bracketed labels carrying inline markup (zfb#2206).
-/// Any other inline node kind returns `None`: the line is not reliably
-/// flattenable, and callers leave the paragraph alone.
-fn flatten_line_plain(line: &[MdastNode]) -> Option<String> {
+/// Returns `None` for any other inline node kind, and for a node carrying
+/// a NESTED newline (the visual line ends inside it, so the flattened
+/// text would swallow content beyond the opener line): the line is not
+/// reliably flattenable, and callers leave the paragraph alone.
+fn flatten_line_plain(line: &InlineLine) -> Option<String> {
     fn rec(node: &MdastNode, out: &mut String) -> bool {
         match node {
             MdastNode::Text(t) => {
@@ -1095,8 +1109,8 @@ fn flatten_line_plain(line: &[MdastNode]) -> Option<String> {
         }
     }
     let mut out = String::new();
-    for node in line {
-        if !rec(node, &mut out) {
+    for node in &line.nodes {
+        if node_text_contains_newline(node) || !rec(node, &mut out) {
             return None;
         }
     }
@@ -1109,32 +1123,36 @@ fn flatten_line_plain(line: &[MdastNode]) -> Option<String> {
 /// collapsed-run path applies, so a lenient `:::::` closer behaves
 /// identically at both levels). A code span rendering as `:::` is an
 /// `InlineCode` child and never matches.
-fn closer_line_index(lines: &[Vec<MdastNode>], from: usize) -> Option<usize> {
+fn closer_line_index(lines: &[InlineLine], from: usize) -> Option<usize> {
     (from..lines.len()).find(|&k| {
-        matches!(&lines[k][..], [MdastNode::Text(t)] if container_close_colons(&t.value).is_some())
+        matches!(&lines[k].nodes[..], [MdastNode::Text(t)] if container_close_colons(&t.value).is_some())
     })
 }
 
-/// Rejoin split inline lines into one inline run, restoring the `\n`
-/// separators between lines and merging adjacent `Text` nodes so plain
-/// multi-line prose stays a single `Text` (the shape the parser itself
-/// produces). Merged `Text` nodes drop their (now stale) positions.
-fn join_inline_lines(lines: &[Vec<MdastNode>]) -> Vec<MdastNode> {
+/// Rejoin split inline lines into one inline run, restoring each line's
+/// separator — the recorded `Break` node for a hard break, a `\n` for a
+/// soft newline — and merging adjacent `Text` nodes so plain multi-line
+/// prose stays a single `Text` (the shape the parser itself produces).
+/// Merged `Text` nodes drop their (now stale) positions.
+fn join_inline_lines(lines: &[InlineLine]) -> Vec<MdastNode> {
     let mut out: Vec<MdastNode> = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
         if idx > 0 {
-            match out.last_mut() {
-                Some(MdastNode::Text(prev)) => {
-                    prev.value.push('\n');
-                    prev.position = None;
-                }
-                _ => out.push(MdastNode::Text(Text {
-                    value: "\n".to_string(),
-                    position: None,
-                })),
+            match lines[idx - 1].hard_break.as_ref() {
+                Some(br) => out.push(br.clone()),
+                None => match out.last_mut() {
+                    Some(MdastNode::Text(prev)) => {
+                        prev.value.push('\n');
+                        prev.position = None;
+                    }
+                    _ => out.push(MdastNode::Text(Text {
+                        value: "\n".to_string(),
+                        position: None,
+                    })),
+                },
             }
         }
-        for node in line {
+        for node in &line.nodes {
             match (out.last_mut(), node) {
                 (Some(MdastNode::Text(prev)), MdastNode::Text(t)) => {
                     prev.value.push_str(&t.value);
@@ -1149,7 +1167,7 @@ fn join_inline_lines(lines: &[Vec<MdastNode>]) -> Vec<MdastNode> {
 
 /// Wrap rejoined lines in a body Paragraph. Empty / whitespace-only
 /// content produces no node.
-fn paragraph_from_lines(lines: &[Vec<MdastNode>]) -> Option<MdastNode> {
+fn paragraph_from_lines(lines: &[InlineLine]) -> Option<MdastNode> {
     if lines.is_empty() {
         return None;
     }
@@ -2275,6 +2293,61 @@ padded body
         assert_eq!(body_paragraph_texts(note), vec!["padded body".to_string()]);
         assert_no_literal_fence(&out);
         assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_hard_break_in_collapsed_body_survives() {
+        // Codex review (zfb#2206): a CommonMark hard break (two trailing
+        // spaces) in a collapsed body produces a Break node. The line
+        // machinery must restore it verbatim on rejoin — not degrade it to
+        // a soft newline (the pre-#2206 clone path preserved it).
+        let mut r = registry_with_admonitions();
+        let input = ":::note\nfoo  \nbar\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        let MdastNode::Paragraph(body) = &note.children[0] else {
+            unreachable!("body paragraph expected, got {:?}", note.children[0]);
+        };
+        assert!(
+            body.children
+                .iter()
+                .any(|c| matches!(c, MdastNode::Break(_))),
+            "the hard Break node must survive in the body, got {:#?}",
+            body.children
+        );
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn real_parser_emphasis_spanning_soft_break_in_body_transforms() {
+        // Codex review (zfb#2206): inline markup spanning a soft break
+        // (`*foo\nbar*`) nests a newline inside the emphasis node. The
+        // directive must still transform with the phrasing intact — the
+        // nested newline only disqualifies OPENER-line flattening, never
+        // the body (the pre-#2206 clone path transformed this shape).
+        let mut r = registry_with_admonitions();
+        let input = ":::note\n*foo\nbar*\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert_eq!(out.len(), 1, "got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        let MdastNode::Paragraph(body) = &note.children[0] else {
+            unreachable!("body paragraph expected, got {:?}", note.children[0]);
+        };
+        assert!(
+            body.children
+                .iter()
+                .any(|c| matches!(c, MdastNode::Emphasis(_))),
+            "emphasis spanning the soft break must survive, got {:#?}",
+            body.children
+        );
+        assert_no_literal_fence(&out);
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "no false unclosed diagnostic for a well-formed body"
+        );
     }
 
     #[test]
