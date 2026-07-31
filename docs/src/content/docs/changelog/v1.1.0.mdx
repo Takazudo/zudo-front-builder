@@ -1,0 +1,43 @@
+---
+title: v1.1.0
+sidebar_position: 10100999
+---
+
+# v1.1.0
+
+Released: 2026-08-01
+
+Promotes the `1.1.0-next.1` prerelease to stable. The list below covers everything since `v1.0.0` —
+the full set of changes a `latest` user crosses when upgrading from `1.0.0`.
+
+## Features
+
+- feat(zfb-content): surface directive diagnostics through the pipeline markdown-diagnostics channel (#2206) (654facca)
+- feat(content): highlight fenced code nested in MDX JSX bodies and directives (b86b5828)
+- feat(build): extend stage-escape remediation text for repo-root loose files (5a1c5d91)
+
+## Bug Fixes
+
+- fix(zfb-content): stop the buried-opener sibling scan at buried sibling openers (fc15bad5)
+- fix(zfb-content): warn on unclosed container opener buried behind a prose first line (5f713c5a)
+- fix(zfb-content): emit unclosed diagnostic for openers leaked before a glued directive run (06824b88)
+- fix(zfb-content): preserve hard breaks and nested-newline phrasing in directive bodies (#2206 review) (9c6ec3c5)
+- fix(zfb-content): container directives — multi-block bodies, backtick titles, bounded closer search (#2206) (235f56e4)
+- fix(content): sync nested-code chain on manual feature registration + share the code-block hast constructor (52deb416)
+- fix(build): stage root-workspace loose files reached via the broad alias (5eb8702e)
+- fix(build): state the root package.json name requirement in the remediation text (e53dc19d)
+- fix(ci): point the drift net at the `latest` channel, not just `next` (9ea8d972)
+- fix(release): ensure homebrew tap checkout before formula write (0a3e00e8)
+- fix(test): scope composition-test boundary checks to each Note's own span (ed0f1c9c)
+- fix(test): make the homebrew tap test POSIX sh, not bash (308bcd29)
+
+## Other Changes
+
+- chore(release): bump to v1.1.0-next.1 (fcad49fc)
+- test(zfb-content): cover the hard-break-separated buried opener pre-filter arm (48328787)
+- test(content): pin multi-block directive + JSX Note nested-fence composition (#2209) (a69b62b8)
+- test(build): pin nested-fence class-mode highlight at the bundler layer (626f65c4)
+- docs(content): de-link private NestedCodeChainSpec from pub getter doc (6080eb75)
+- docs(skill): make /l-make-release stable-by-default, ask only on a major (ca309f65)
+- docs(skill): update /l-make-release after first stable release (v1.0.0) (3a6ce753)
+- chore(ci): wire the root-workspace loose-file env-gate into health.yml (b9f04372)
