@@ -227,6 +227,18 @@ impl DirectiveRegistry {
                             // Record the unclosed diagnostic for those —
                             // diagnostic only, never a transform.
                             self.warn_unclosed_leaked_segments(children, i, tail);
+                            // The zfb#2211 buried shape can arrive as a
+                            // spliced literal segment too (e.g. trailing
+                            // prose gluing an unclosed opener behind a
+                            // non-opener first line) — the loop skips the
+                            // replacement range, so scan it here.
+                            // Opener-HEADED segments are skipped by the
+                            // scan's head gate: the leaked-segment pass
+                            // above and the tail handler below own those,
+                            // so no segment can warn twice.
+                            for seg in i..=tail {
+                                self.warn_unclosed_buried_opener(children, seg);
+                            }
                             if let Some(tail_parsed) = self.parse_block_open(&children[tail], 3) {
                                 if let Some(tail_def) = self.defs.get(&tail_parsed.name).cloned() {
                                     if tail_def.kind == DirectiveKind::Container {
@@ -293,6 +305,12 @@ impl DirectiveRegistry {
                     self.warn_unknown(&parsed.name, &children[i]);
                 }
             }
+
+            // zfb#2211: nothing above engaged this node — but a paragraph
+            // whose first line is NOT an opener can still glue a `:::name`
+            // opener on a later line. Record the unclosed diagnostic for a
+            // genuinely-unclosed buried opener; the node stays untouched.
+            self.warn_unclosed_buried_opener(children, i);
 
             // Inline text directive scan inside this paragraph.
             if self.has_text_dirs {
@@ -762,6 +780,89 @@ impl DirectiveRegistry {
         }
     }
 
+    /// Diagnostic-only scan for a container opener BURIED behind a
+    /// non-opener first line (zfb#2211). markdown-rs glues `:::` fence
+    /// lines into the preceding prose paragraph when blank lines are
+    /// missing, so a paragraph like `prose\n:::warning\nnever closed`
+    /// reaches no head-level path at all — pre-2211 the opener leaked
+    /// literally with NO "unclosed container directive" Warning, while
+    /// the same opener at the paragraph HEAD did warn.
+    ///
+    /// Records [`Self::record_unclosed`] for the FIRST genuinely-unclosed
+    /// buried opener and leaves the AST completely untouched (the literal
+    /// leak IS the pinned transform behaviour for this malformed shape).
+    /// "Genuinely unclosed" mirrors the head-opener paths on both levels:
+    ///
+    /// - in-paragraph: no matching closer line under the collapsed scan's
+    ///   colon-stack rule ([`inline_lines_matching_closer`], the
+    ///   InlineLine mirror of [`find_collapsed_closer`]); a CLOSED buried
+    ///   run is skipped past — it still leaks, but it is not unclosed;
+    /// - siblings: no bare closer line in a FOLLOWING sibling paragraph
+    ///   before the next opener-shaped one
+    ///   ([`later_siblings_have_closer`], mirroring
+    ///   [`Self::transform_block_container`]'s shape-(b) bounds) — a
+    ///   later directive's closer never suppresses, but a stray `:::` the
+    ///   author plausibly meant as the closer does.
+    ///
+    /// Exactly-one-diagnostic guards: paragraphs whose FIRST line is
+    /// opener-shaped are skipped wholesale — the block-level,
+    /// collapsed-run, and leaked-segment paths own those, which keeps the
+    /// warn sites disjoint. Only REGISTERED container names in the exact
+    /// 3-colon form warn (the same gates as every other `record_unclosed`
+    /// caller); a code-span `` `:::name` `` line never counts (the
+    /// InlineLine classifiers reject non-`Text` leading nodes). After the
+    /// first unclosed opener-shaped line the scan stops: the rest of the
+    /// paragraph is that opener's would-be body, mirroring how the head
+    /// paths warn only the outermost unclosed opener.
+    fn warn_unclosed_buried_opener(&mut self, children: &[MdastNode], i: usize) {
+        let MdastNode::Paragraph(p) = &children[i] else {
+            return;
+        };
+        // Cheap pre-filter before any node cloning: a buried fence line
+        // starts either right after a newline inside a top-level `Text`,
+        // or at a `Text` that opens a line after a hard `Break`. Plain
+        // prose paragraphs (the overwhelmingly common case) bail here.
+        let may_have_buried_fence = p.children.iter().enumerate().any(|(idx, c)| match c {
+            MdastNode::Text(t) => {
+                t.value.contains("\n:::") || (idx > 0 && t.value.starts_with(":::"))
+            }
+            _ => false,
+        });
+        if !may_have_buried_fence || is_block_opener_shaped(&children[i]) {
+            return;
+        }
+        let lines = split_inline_lines(&p.children);
+        let (para_line, column) = paragraph_line_col(&children[i]);
+        let mut k = 1;
+        while k < lines.len() {
+            let Some(open_colons) = inline_line_opener_colons(&lines[k]) else {
+                k += 1;
+                continue;
+            };
+            if let Some(close_idx) = inline_lines_matching_closer(&lines, k + 1, open_colons) {
+                // A balanced buried run: not unclosed. (It does not
+                // transform either — pinned literal fallback.) Skip past
+                // its closer and keep scanning.
+                k = close_idx + 1;
+                continue;
+            }
+            if open_colons == 3 {
+                if let Some(parsed) = parse_inline_line_opener(&lines[k], 3) {
+                    if self.defs.get(&parsed.name).map(|d| d.kind) == Some(DirectiveKind::Container)
+                        && !later_siblings_have_closer(children, i + 1)
+                    {
+                        // Each InlineLine is one source line (soft `\n`
+                        // and hard-break splits both consume exactly
+                        // one), so the buried fence sits `k` lines below
+                        // the paragraph start.
+                        self.record_unclosed(&parsed.name, para_line.map(|l| l + k), column);
+                    }
+                }
+            }
+            return;
+        }
+    }
+
     /// Run `validate_attrs` on `def` against the raw attrs in `parsed`.
     /// Appends any resulting diagnostics (annotated with position) to
     /// `self.diagnostics`. Returns `Some(validated_map)` on success
@@ -1164,9 +1265,7 @@ fn flatten_line_plain(line: &InlineLine) -> Option<String> {
 /// identically at both levels). A code span rendering as `:::` is an
 /// `InlineCode` child and never matches.
 fn closer_line_index(lines: &[InlineLine], from: usize) -> Option<usize> {
-    (from..lines.len()).find(|&k| {
-        matches!(&lines[k].nodes[..], [MdastNode::Text(t)] if container_close_colons(&t.value).is_some())
-    })
+    (from..lines.len()).find(|&k| inline_line_closer_colons(&lines[k]).is_some())
 }
 
 /// Rejoin split inline lines into one inline run, restoring each line's
@@ -1238,6 +1337,120 @@ fn is_block_opener_shaped(node: &MdastNode) -> bool {
         return false;
     };
     container_opener_colons(first_line(&t.value).trim_end()).is_some()
+}
+
+/// The leading colon count of `line` when it is SHAPED like a container
+/// opener fence — the InlineLine mirror of the per-line
+/// [`container_opener_colons`] check in [`find_collapsed_closer`]. The
+/// fence must start in a leading `Text` node: a code span rendering as
+/// `:::name` is an `InlineCode` child and never counts (phrasing, not a
+/// fence), exactly like [`is_block_opener_shaped`] at the paragraph head.
+/// Top-level `Text` segments in an [`InlineLine`] never contain `\n`
+/// ([`split_inline_lines`] splits on them), so the value IS the line
+/// prefix.
+fn inline_line_opener_colons(line: &InlineLine) -> Option<usize> {
+    match line.nodes.first() {
+        Some(MdastNode::Text(t)) => container_opener_colons(&t.value),
+        _ => None,
+    }
+}
+
+/// The colon count of `line` when it is a bare container CLOSE fence —
+/// the single-`Text` rule [`closer_line_index`] applies, exposed with the
+/// count so the buried-opener scan (zfb#2211) can drive the colon-stack
+/// matching rule with it.
+fn inline_line_closer_colons(line: &InlineLine) -> Option<usize> {
+    match &line.nodes[..] {
+        [MdastNode::Text(t)] => container_close_colons(&t.value),
+        _ => None,
+    }
+}
+
+/// InlineLine mirror of [`find_collapsed_closer`]: the index of the line
+/// that closes an opener of `open_colons` colons under the same
+/// colon-count stack rule (a closer of `k` colons closes the innermost
+/// open fence whose opener count is `<= k`; a too-small closer means the
+/// run is malformed — `None`). Used ONLY by the buried-opener diagnostic
+/// scan (zfb#2211); it never drives a transform.
+fn inline_lines_matching_closer(
+    lines: &[InlineLine],
+    from: usize,
+    open_colons: usize,
+) -> Option<usize> {
+    let mut stack: Vec<usize> = vec![open_colons];
+    for (j, line) in lines.iter().enumerate().skip(from) {
+        if let Some(close_k) = inline_line_closer_colons(line) {
+            let &top = stack.last().expect("stack seeded with the opener");
+            if top > close_k {
+                return None;
+            }
+            stack.pop();
+            if stack.is_empty() {
+                return Some(j);
+            }
+        } else if let Some(inner_colons) = inline_line_opener_colons(line) {
+            stack.push(inner_colons);
+        }
+    }
+    None
+}
+
+/// Parse ONE InlineLine as a directive opener with exactly `colons`
+/// leading colons — the line-level mirror of
+/// [`DirectiveRegistry::parse_block_open`] for fence lines buried BEHIND
+/// the paragraph head (zfb#2211). Same gates: the fence must start in a
+/// leading `Text` node, and a multi-node line (e.g. a bracketed title
+/// carrying inline markup) is flattened via [`flatten_line_plain`] with
+/// the colon count re-checked on the flat text.
+fn parse_inline_line_opener(line: &InlineLine, colons: usize) -> Option<ParsedDirective> {
+    let MdastNode::Text(t) = line.nodes.first()? else {
+        return None;
+    };
+    let lead = t.value.trim_end();
+    if count_leading_colons(lead) != colons {
+        return None;
+    }
+    if line.nodes.len() == 1 {
+        return parse_directive_body(&lead[colons..]);
+    }
+    let flat = flatten_line_plain(line)?;
+    let flat = flat.trim_end();
+    if count_leading_colons(flat) != colons {
+        return None;
+    }
+    parse_directive_body(&flat[colons..])
+}
+
+/// Does any FOLLOWING sibling paragraph offer a bare closer line to the
+/// buried opener, before the next opener takes over? The buried-opener
+/// scan's sibling half (zfb#2211). Non-paragraph siblings pass through
+/// (they would be body content), as in
+/// `DirectiveRegistry::transform_block_container`'s shape (b) — but the
+/// "stop at the next opener" bound is applied PER LINE, not only to
+/// sibling paragraph HEADS (codex review of zfb#2211): within each
+/// sibling the FIRST fence-shaped line wins. A bare closer preceded by
+/// no opener plausibly closes OUR opener (suppress); an opener-shaped
+/// line first — head or buried, code-span-safe via the InlineLine
+/// classifiers — means any later closer belongs to THAT opener, never
+/// ours, so the scan stops there entirely.
+fn later_siblings_have_closer(children: &[MdastNode], from: usize) -> bool {
+    for sibling in &children[from..] {
+        if !matches!(sibling, MdastNode::Paragraph(_)) {
+            continue;
+        }
+        let Some(lines) = paragraph_inline_lines(sibling) else {
+            continue;
+        };
+        for line in &lines {
+            if inline_line_closer_colons(line).is_some() {
+                return true;
+            }
+            if inline_line_opener_colons(line).is_some() {
+                return false;
+            }
+        }
+    }
+    false
 }
 
 /// Strip a trailing `\r` (CRLF input) off a single re-segmented line.
@@ -2339,6 +2552,397 @@ padded body
             diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
             "diagnostic names the leaked opener, got {:?}",
             diags[0].message
+        );
+    }
+
+    #[test]
+    fn real_parser_buried_unclosed_opener_behind_prose_warns_and_stays_literal() {
+        // zfb#2211: an unclosed opener buried BEHIND a non-opener first
+        // line (markdown-rs glues the fence line into the prose paragraph
+        // when blank lines are missing). No head-level path engages such a
+        // paragraph, so pre-fix the `:::warning` leaked literally with NO
+        // diagnostic. Diagnostic-only contract: the paragraph still leaks
+        // literally, exactly as before.
+        let mut r = registry_with_admonitions();
+        let input = "some prose\n:::warning\nnever closed\n\nplain trailing paragraph\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "buried unclosed opener must not transform, got {out:#?}"
+        );
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning")),
+            "buried opener stays literal, got {texts:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the buried opener, got {:?}",
+            diags[0].message
+        );
+        assert_eq!(
+            diags[0].line,
+            Some(2),
+            "diagnostic points at the buried fence line, not the paragraph head"
+        );
+    }
+
+    #[test]
+    fn real_parser_buried_unclosed_opener_in_multi_inline_paragraph_warns() {
+        // Same buried shape, but the first line carries inline markup so
+        // the paragraph splits into several inline children — the
+        // detection must work on the InlineLine view, not just the
+        // single-Text collapsed form.
+        let mut r = registry_with_admonitions();
+        let input = "prose with *emphasis* here\n:::warning\nnever closed\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "buried unclosed opener must not transform, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the buried opener, got {:?}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].line, Some(2), "buried fence line attached");
+    }
+
+    #[test]
+    fn real_parser_buried_unclosed_opener_after_hard_break_warns() {
+        // A hard break (two trailing spaces) before the buried opener puts
+        // the fence text at the START of a later `Text` child instead of
+        // behind a `\n` inside one — the pre-filter's second arm. Without
+        // it this variant would silently skip the scan.
+        let mut r = registry_with_admonitions();
+        let input = "some prose  \n:::warning\nnever closed\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "buried unclosed opener must not transform, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the buried opener, got {:?}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].line, Some(2), "buried fence line attached");
+    }
+
+    #[test]
+    fn real_parser_buried_unclosed_opener_before_later_directive_warns_and_leaves_it_intact() {
+        // The buried unclosed opener is followed by a WELL-FORMED
+        // directive. The later directive's own closer must not suppress
+        // the buried diagnostic (the sibling closer scan stops at the next
+        // opener-shaped paragraph, mirroring the head-opener bound), and
+        // the later directive must still transform untouched.
+        let mut r = registry_with_admonitions();
+        let input = "some prose\n:::warning\nnever closed\n\n:::note\nbody\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        let jsx_names: Vec<&str> = out
+            .iter()
+            .filter_map(|c| match c {
+                MdastNode::MdxJsxFlowElement(j) => j.name.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jsx_names,
+            vec!["Note"],
+            "only the later note transforms, got {out:#?}"
+        );
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning")),
+            "buried opener stays literal, got {texts:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the buried opener, got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn real_parser_head_and_buried_unclosed_openers_warn_once_each() {
+        // A buried unclosed opener in a prose paragraph AND a head-level
+        // unclosed opener in the next paragraph: exactly ONE diagnostic
+        // per unclosed opener — the buried scan must not re-report the
+        // head shape the block-level path already records.
+        let mut r = registry_with_admonitions();
+        let input =
+            "intro\n:::warning\nnever closed\n\n:::tip\nalso never closed\n\ntrailing prose\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            2,
+            "one diagnostic per unclosed opener, got {diags:#?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("unclosed") && d.message.contains("warning")),
+            "the buried opener warns, got {diags:#?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("unclosed") && d.message.contains("tip")),
+            "the head opener still warns, got {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn real_parser_buried_unclosed_opener_in_collapsed_run_tail_warns() {
+        // zfb#2211 companion: the buried shape can also arrive as a
+        // collapsed run's TRAILING prose segment — a recognised run
+        // followed by prose gluing an unclosed opener behind a non-opener
+        // first line. The recognised run transforms; the tail's buried
+        // opener records exactly one unclosed diagnostic and keeps
+        // leaking literally.
+        let mut r = registry_with_admonitions();
+        let input = ":::note\nalpha\n:::\nprose\n:::warning\nnever closed\n";
+        let out = run_real_parser(&mut r, input);
+        let jsx_names: Vec<&str> = out
+            .iter()
+            .filter_map(|c| match c {
+                MdastNode::MdxJsxFlowElement(j) => j.name.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jsx_names,
+            vec!["Note"],
+            "the recognised run still transforms, got {out:#?}"
+        );
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning")),
+            "buried opener stays literal, got {texts:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the buried opener, got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn real_parser_buried_opener_with_glued_closer_stays_literal_and_silent() {
+        // NEGATIVE (zfb#2211): a buried opener whose closer lives in the
+        // SAME glued paragraph is NOT unclosed — no diagnostic. Today's
+        // transform behavior for this malformed shape is pinned
+        // unchanged: nothing transforms and both fence lines leak
+        // literally.
+        let mut r = registry_with_admonitions();
+        let input = "some prose\n:::warning\nbody\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "buried-but-closed shape does not transform today (pinned), got {out:#?}"
+        );
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning")),
+            "the buried run stays literal, got {texts:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert!(
+            diags.is_empty(),
+            "a closed buried opener must not warn, got {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn real_parser_buried_opener_with_sibling_closer_stays_silent() {
+        // NEGATIVE (zfb#2211): the buried opener's closer sits in a LATER
+        // sibling paragraph. The sibling scan mirrors the head-opener
+        // shape-(b) bounds, so the bare closer suppresses the diagnostic;
+        // a directive AFTER that closer still transforms untouched.
+        let mut r = registry_with_admonitions();
+        let input = "some prose\n:::warning\nbody\n\n:::\n\n:::note\nreal\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        let jsx_names: Vec<&str> = out
+            .iter()
+            .filter_map(|c| match c {
+                MdastNode::MdxJsxFlowElement(j) => j.name.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jsx_names,
+            vec!["Note"],
+            "the later note still transforms, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert!(
+            diags.is_empty(),
+            "a sibling closer suppresses the buried diagnostic, got {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn real_parser_buried_opener_not_suppressed_by_sibling_buried_run_closer() {
+        // Codex review of zfb#2211: a FOLLOWING sibling paragraph whose
+        // own BURIED directive run supplies the closer must not suppress
+        // the earlier buried opener's diagnostic — that closer belongs to
+        // the sibling's opener (`text` / `:::note` / `body` / `:::`), not
+        // ours. Pre-fix the sibling scan only stopped at opener-shaped
+        // paragraph HEADS, so `closer_line_index` grabbed the note's
+        // closer and silenced the warning. The sibling's own CLOSED
+        // buried run stays silent (per the glued-closer negative pin), so
+        // exactly ONE diagnostic fires — for `:::warning`.
+        let mut r = registry_with_admonitions();
+        let input = "prose\n:::warning\nnever closed\n\ntext\n:::note\nbody\n:::\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms (both shapes are buried), got {out:#?}"
+        );
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning"))
+                && texts.iter().any(|t| t.contains(":::note")),
+            "both buried runs stay literal, got {texts:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed")
+                && diags[0].message.contains("warning")
+                && !diags[0].message.contains("note"),
+            "the diagnostic names the genuinely-unclosed opener, got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn real_parser_consecutive_buried_unclosed_openers_warn_once_each() {
+        // Companion pin for the fix above: when the sibling's buried
+        // opener is itself UNCLOSED, stopping our sibling scan at it must
+        // not eat the sibling's OWN diagnostic — each paragraph warns for
+        // its own buried opener, exactly once each.
+        let mut r = registry_with_admonitions();
+        let input = "prose\n:::warning\nnever closed\n\ntext\n:::note\nalso never closed\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            2,
+            "one diagnostic per buried unclosed opener, got {diags:#?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("unclosed") && d.message.contains("warning")),
+            "the first paragraph's opener warns, got {diags:#?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("unclosed") && d.message.contains("note")),
+            "the sibling's own opener warns too, got {diags:#?}"
+        );
+    }
+
+    #[test]
+    fn real_parser_backtick_fence_line_is_not_a_buried_opener() {
+        // NEGATIVE (zfb#2211): a code span rendering as `:::warning` is
+        // PHRASING, not a fence line — the buried-opener scan must not
+        // mistake it (the InlineLine's leading node is InlineCode, never
+        // a fence-bearing Text).
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, "some prose\n`:::warning`\nnever closed\n");
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert!(
+            diags.is_empty(),
+            "a backtick code span must not warn as an opener, got {diags:#?}"
+        );
+
+        // Discriminating case: a code-span `:::note` line ABOVE a real
+        // buried unclosed `:::warning`. The one diagnostic must name the
+        // real fence (warning), never the phrasing (note) — proving the
+        // code-span line is skipped rather than accidentally pre-filtered.
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, "prose\n`:::note`\nx\n:::warning\nnever closed\n");
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("warning") && !diags[0].message.contains("note"),
+            "the diagnostic names the real fence, not the code span, got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn real_parser_buried_unregistered_or_off_form_openers_stay_silent() {
+        // NEGATIVE (zfb#2211): only REGISTERED container names in the
+        // exact 3-colon form warn (mirroring the head gates). A buried
+        // unknown name and a buried 4-colon opener both stay silent — and
+        // keep leaking literally.
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, "prose\n:::bogus\nnever closed\n");
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms, got {out:#?}"
+        );
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "unknown buried name must not warn"
+        );
+
+        let mut r = registry_with_admonitions();
+        let out = run_real_parser(&mut r, "prose\n::::warning\nnever closed\n");
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms, got {out:#?}"
+        );
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "a 4-colon buried opener is outside the exact-3-colon gate"
         );
     }
 
