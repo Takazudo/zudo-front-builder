@@ -1,7 +1,14 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# shellcheck shell=sh
 #
 # tests/unit/update-homebrew-formula.sh — offline tests for the tap-checkout
 # handling in scripts/update-homebrew-formula.sh.
+#
+# POSIX sh, NOT bash: health.yml runs every tests/unit/*.sh with `sh`, which is
+# dash on the ubuntu runner, so the shebang is ignored and bashisms fail there
+# even when the file runs clean under bash locally. (`set -o pipefail` is the
+# one that bit — on macOS /bin/sh is bash in POSIX mode and accepts it.)
+# Verify with `dash tests/unit/update-homebrew-formula.sh`, not just bash.
 #
 # Regression origin: the script used to write Formula/zfb.rb BEFORE touching
 # git, so on a host with no tap checkout it manufactured a plain directory and
@@ -17,7 +24,7 @@
 # Run:
 #   bash tests/unit/update-homebrew-formula.sh
 
-set -euo pipefail
+set -eu
 
 PASS=0
 FAIL=0
