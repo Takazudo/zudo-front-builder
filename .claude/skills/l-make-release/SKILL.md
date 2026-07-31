@@ -1,7 +1,7 @@
 ---
-description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), publish the Release, and watch release.yml to completion. Fully autonomous end-to-end by default (no confirmation prompts, publishes without asking); pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
+description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), publish the Release, and watch release.yml to completion. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional: major, minor, patch, next — bump that component and start a -next.N prerelease (publishes to the npm `next` tag). stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — bump that component and land it stable directly, no prerelease step (publishes to `latest`; use for low-risk fixes, e.g. 1.0.0 -> 1.0.1). --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing (default is fully autonomous end-to-end). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
+argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
@@ -13,6 +13,8 @@ Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. 
 This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it.
 
 **Default: fully autonomous end-to-end — NEVER ask for confirmation, NEVER stop and wait.** Steps 1–3 are read-only (preconditions, version computation, change analysis); print the Step 3 proposal (current → new version + categorized changelog) **for visibility only** and proceed straight into Step 4 without waiting. The edge cases that used to prompt have autonomous defaults defined inline (Step 1 orphaned drafts, Step 8 partial state). There is no stopping point: Step 11 **publishes the Release itself** and watches the triggered `release.yml` run to completion. Do not pause to ask "publish?", "go?", or any equivalent — the invocation itself is the authorization.
+
+**The single exception: a no-argument MAJOR.** When Step 2's no-argument judgment lands on **major** (the commit range contains a breaking change), stop and ask whether to land it stable or soak it on `next` first — see [Step 2's no-argument rule](#no-argument--judge-the-level-land-stable-unless-it-is-a-major). This is a *version-strategy* question, not a "go?" confirmation, and it is the only one. Once the user answers, the rest of the run is autonomous again as normal. A no-argument **patch** or **minor** never pauses: it lands stable on `latest` without asking.
 
 **`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), ask before acting on the Step 1 / Step 8 edge cases, and **stop at Step 11 with the draft unpublished** — the user publishes manually. Use this when the version strategy or release notes need vetting. Without this flag, do NOT pause anywhere.
 
@@ -70,34 +72,65 @@ Every rule below sets two independent things: **which component bumps** (major /
 `latest` untouched; the `stable` forms publish to `latest` — the version a bare `npm i zfb`,
 `brew install`, or `curl | sh` resolves to.
 
-Prerelease-first is the default, and is the right shape when a change wants dogfooding before it
-becomes everyone's default. It is NOT required: since v1.0.0 holds `latest`, a low-risk fix
-(typo, docs, a one-line guard fully covered by CI) can land straight on `latest` via
-`stable <level>` rather than burning two full release cycles — each of which republishes all 10
-lockstep packages — to ship one line. Choose the channel by **risk**, not by diff size.
+**Stable-by-default.** The no-argument path judges the level from the commits and, for **patch** and
+**minor**, lands it **stable** — straight to `latest`, in one release cycle. Prerelease-first is NOT
+the default: burning two full cycles (each republishing all 10 lockstep packages, each waiting on a
+~40-minute `release.yml`) to ship a routine fix batch is exactly the cost this avoids.
+
+**A major is the one exception** — see the no-argument rule below. That is where a soak on `next`
+earns its keep, because a major asserts "this breaks existing projects" and `latest` is immutable
+once published.
+
+Explicit arguments override the judgment in both directions: `next` / `major` / `minor` / `patch`
+force a prerelease when you *do* want dogfooding; `stable <level>` forces a specific stable bump.
+Prefix-derived levels measure the **shape** of a change, not its **risk** — when a batch is shaped
+like a minor but smells like a soak (a subsystem that was still finding edge cases in the last few
+commits, a fix that fixes another fix in the same range), reach for `next` deliberately.
 
 Apply the following rules based on the optional argument:
 
-### No argument
+### No argument — judge the level, land stable unless it is a major
 
-- If current is `X.Y.Z-next.N` (prerelease): propose `X.Y.Z-next.{N+1}`
-  - Example: `0.1.0-next.3` → `0.1.0-next.4`
-- If current is stable `X.Y.Z`: propose `X.{Y+1}.0-next.1`
-  - Example: `0.1.0` → `0.2.0-next.1`
-  - **When `MAJOR >= 1`, this default minor is a compatibility CLAIM, not a safe fallback.** Once a
-    stable holds `latest`, `X.{Y+1}.0` asserts "additive only, nothing breaks." Before accepting it,
-    use Step 3's categorization: if any commit is a **Breaking Change** (`!` suffix or
-    `BREAKING CHANGE` in the body), escalate to `{X+1}.0.0-next.1` and say why in the Step 3
-    proposal. Never let the no-argument default silently downgrade a breaking release to a minor.
+1. **Judge the required level** from the Step 3 commit categorization:
+   - any **Breaking Change** (`!` suffix or `BREAKING CHANGE` in the body) → **major**
+   - else any `feat:` → **minor**
+   - else → **patch**
 
-### `next` argument (from stable)
+2. **Compute the target version:**
+   - **From a stable `X.Y.Z`** — bump the judged component: patch → `X.Y.{Z+1}`, minor → `X.{Y+1}.0`.
+   - **From a prerelease `X.Y.Z-next.N`** — **promote to its own triple** `X.Y.Z` (drop the suffix).
+     The triple already encodes a level relative to the last stable (`1.1.0` after `1.0.0` already
+     claims "minor"), so fixes *and* feats landed during the soak need no further bump:
+     `1.1.0-next.1` + fixes → `1.1.0`; `1.1.0-next.1` + a `feat:` → still `1.1.0`. Escalate the
+     triple ONLY for a breaking change (→ `{X+1}.0.0`), which routes to the ask in 4.
 
-- Force-start a new minor prerelease: `X.{Y+1}.0-next.1`
-- Example: `0.1.0` → `0.2.0-next.1`
-- **Requires current to be stable.** If current is already a `-next.N` prerelease, do NOT apply the
-  formula — stop with an error and name the two unambiguous alternatives: **no argument** continues
-  the existing line (`X.Y.Z-next.{N+1}`), and **`minor`** restarts the prerelease on a new triple.
-  ("Give me a next release" is ambiguous from a prerelease; make the user pick rather than guessing.)
+3. **patch or minor → land it STABLE, fully autonomously.** No prompt, no prerelease step, no
+   waiting. Examples:
+   - `1.0.0` + fixes only → `1.0.1`
+   - `1.0.0` + a `feat:` → `1.1.0`
+   - `1.1.0-next.1` + anything non-breaking since the tag → `1.1.0`
+
+4. **major → STOP and ASK.** Present the breaking commits and wait for the user to pick:
+   - **stable major now** → `{X+1}.0.0`, straight to `latest`
+   - **prerelease first** → `{X+1}.0.0-next.1`, soak on `next`, promote later with `stable`
+
+   This is the ONE place the default autonomous path pauses, and it is deliberate. A major asserts
+   "this breaks existing projects"; `latest` is what a bare `npm i`, `brew install`, and `curl | sh`
+   resolve to; and a published version is immutable on npm. Do not guess the channel here — ask.
+
+### `next` argument — force a prerelease (the soak escape)
+
+The primary way to ask for dogfooding, since the no-argument path no longer produces prereleases.
+
+- **From a stable `X.Y.Z`** — start a prerelease at the judged level (rule 1 above):
+  patch → `X.Y.{Z+1}-next.1`, minor → `X.{Y+1}.0-next.1`, major → `{X+1}.0.0-next.1`.
+  - Example: `1.0.0` + a `feat:` → `1.1.0-next.1`
+- **From a prerelease `X.Y.Z-next.N`** — continue the existing line: `X.Y.Z-next.{N+1}`.
+  - Example: `1.1.0-next.1` → `1.1.0-next.2`
+  - This case used to be an error (no-argument owned line-continuation). Now that no-argument
+    **promotes** a prerelease to stable, `next` is the only way to extend a soak — so it must work
+    here, and it is unambiguous.
+- To restart a prerelease on a *different* triple, pass `major` / `minor` / `patch` explicitly.
 
 ### `major` argument
 
@@ -161,19 +194,46 @@ git fetch --tags origin
 git tag -l 'v*' --sort=-v:refname | head -1
 ```
 
-Analyze commits since that tag:
+**Pick the changelog base by what you are releasing:**
+
+- **Normal case** — base = the latest `v*` tag (the command above).
+- **Promotion** — the target is stable `X.Y.Z` and the current version is `X.Y.Z-next.N` (the
+  no-argument path from a prerelease, or the `stable` argument). Use the latest **stable** tag as
+  the base instead:
+
+  ```bash
+  git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1
+  ```
+
+  Match stable tags **positively** (bare `vMAJOR.MINOR.PATCH`) rather than excluding prereleases
+  with something like `grep -v -- '-'`: that negative form is not portable — `ugrep`, which shadows
+  `grep` on some setups, rejects a bare `-` as a pattern and fails the whole pipeline. The positive
+  regex also drops `-beta.` / `-rc.` tags for free.
+
+  A promotion's changelog must describe what changed since the last thing on `latest`, not since the
+  last prerelease. Basing it on the prerelease tag would make `v1.1.0`'s page empty even though the
+  release carries every commit of the `1.1.0-next.*` line. The breaking-change scan that feeds
+  Step 2's level judgment uses this same base — a `feat!:` that landed mid-soak must still escalate
+  `1.1.0` to `2.0.0`.
+
+Analyze commits since the chosen base:
 
 ```bash
-git log <last-tag>..HEAD --oneline
+git log <base-tag>..HEAD --oneline
 ```
 
-**Zero-commit guard.** If that command returns nothing, the latest tag is already at HEAD and there
+**Zero-commit guard.** If that command returns nothing, the base tag is already at HEAD and there
 is nothing to release — **STOP with an error**, naming the tag and showing that the SHAs match
-(`git rev-parse <last-tag> HEAD`). An empty commit range is never what "cut a release" meant, and on
+(`git rev-parse <base-tag> HEAD`). An empty commit range is never what "cut a release" meant, and on
 a `stable` form the result would land on `latest` immutably. This guard is **not** waived by the
 default autonomous mode and is independent of `--confirm`; autonomy removes confirmation prompts,
 it does not authorize publishing an empty release. (This is a live hazard, not a hypothetical: right
 after a release lands, `v<just-released>` IS HEAD, so an immediate re-invocation hits exactly this.)
+
+Note the base selection above is what makes a promotion work: promoting with no *new* commits since
+the prerelease is legitimate — you are changing the channel, not the content — so the guard measures
+against the last **stable** and correctly lets it through. Only a range that is empty since the last
+stable is genuinely nothing to release.
 
 Categorize each commit by its conventional-commit prefix:
 
@@ -202,7 +262,16 @@ Other Changes:
 
 Only show sections that have entries.
 
+This categorization is also what feeds Step 2's no-argument level judgment (breaking → major,
+else `feat:` → minor, else patch), so do it before finalizing the proposed version.
+
 - **Default (autonomous)**: the printout is for visibility only — proceed straight to Step 4 without waiting.
+- **Exception — no-argument MAJOR**: if the range contains a breaking change and no explicit version
+  argument was given, do NOT proceed. Show the breaking commits and ask the user to choose
+  **stable `{X+1}.0.0`** or **prerelease `{X+1}.0.0-next.1`**, per
+  [Step 2's no-argument rule](#no-argument--judge-the-level-land-stable-unless-it-is-a-major).
+  Resume full autonomy once they answer. (An explicit `major` / `stable major` / `next` argument
+  already states the intent — no ask.)
 - **With `--confirm`**: **wait for explicit user confirmation before proceeding.** If the trigger was a loose phrase, restate the proposed bump plainly so the user can catch a wrong version strategy before anything is written.
 
 ## Step 4: Bump + Sync + Changelog mdx
