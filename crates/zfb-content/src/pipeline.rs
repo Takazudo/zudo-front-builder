@@ -774,7 +774,7 @@ impl Pipeline {
     /// [`HastNode::JsxRaw`] payload that the live hast visitors never
     /// traverse — is highlighted exactly like a top-level fence. The
     /// chain is handed out OWNED (fresh instances per call,
-    /// reconstructed from the stored [`NestedCodeChainSpec`] config)
+    /// reconstructed from the stored `NestedCodeChainSpec` config)
     /// so the caller can run it inside the emit walk without borrowing
     /// the pipeline — `mdx_to_jsx_module_inner` still needs
     /// `&mut Pipeline` afterwards for `apply_hast_visitors`.
