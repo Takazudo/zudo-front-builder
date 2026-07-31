@@ -157,6 +157,12 @@ releases keep full provenance across every package.
 
 ## Homebrew tap update (added by issue #383)
 
+**`/l-make-release` now does this for you on its default path** (since v1.1.0,
+2026-08-01): after the `release.yml` watch succeeds, Step 11 runs the command
+below itself for **stable** releases. The manual flow here still applies when you
+publish by hand — a `--confirm` run, a Release published from the web UI, or a
+recovery — since nothing is then watching `release.yml` to trigger it.
+
 After the GitHub Release assets are published, regenerate and push the Homebrew
 tap formula. Requires a local checkout of `Takazudo/homebrew-tap` at the default
 path (`~/repos/Takazudo/homebrew-tap`):

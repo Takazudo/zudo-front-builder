@@ -1,16 +1,18 @@
 ---
-description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), publish the Release, and watch release.yml to completion. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
+description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), publish the Release, watch release.yml to completion, and push the updated Homebrew formula to the tap on a stable release. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
 argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
 
-Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-13 CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — and watches that run to completion. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish.
+Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-13 CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
 
 ## Invocation & autonomy
 
 This skill is **model-invocable**: a rough natural-language request like "bump version", "cut a release", or "release zfb" may trigger it.
+
+**End-to-end means end-to-end.** On the default path a stable release needs no manual follow-up: the skill publishes, watches `release.yml`, and pushes the Homebrew formula itself (Step 11). Do not end a stable run by telling the user to go run the tap script — run it.
 
 **Default: fully autonomous end-to-end — NEVER ask for confirmation, NEVER stop and wait.** Steps 1–3 are read-only (preconditions, version computation, change analysis); print the Step 3 proposal (current → new version + categorized changelog) **for visibility only** and proceed straight into Step 4 without waiting. The edge cases that used to prompt have autonomous defaults defined inline (Step 1 orphaned drafts, Step 8 partial state). There is no stopping point: Step 11 **publishes the Release itself** and watches the triggered `release.yml` run to completion. Do not pause to ask "publish?", "go?", or any equivalent — the invocation itself is the authorization.
 
@@ -42,7 +44,11 @@ The Rust CLI binary is built by `.github/workflows/release.yml`, not by this ski
 - **Default**: this skill publishes the Release itself at Step 11 (`gh release edit v<version> --draft=false`) once the Mac asset situation is settled, then watches the triggered `release.yml` run to completion. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
 - This skill **never** pushes a tag separately. The draft Release creation (`gh release create --draft`) creates the tag remotely.
 - This skill **never** publishes to npm directly. `release.yml` does that when the Release is published.
-- This skill **never** runs the Homebrew formula update (stable releases only; manual — see Step 11's report).
+- **Homebrew is automatic on the default path, for stable releases only.** Once `release.yml`
+  succeeds, Step 11 runs `./scripts/update-homebrew-formula.sh v<version> --push` itself. Prereleases
+  skip it (brew tracks the stable channel). On the `--confirm` path it stays manual — that path stops
+  before publishing, so the skill never observes `release.yml` finishing and cannot know the assets
+  are up.
 
 ## Step 1: Preconditions
 
@@ -499,7 +505,37 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    ```
 
 3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows; the macos-13 leg is skipped when the Mac archive was pre-uploaded in Step 10, built on CI otherwise) and publishes all 10 npm packages.
-4. **On success**: print a final report — Release URL, and confirm npm landed with `npm view @takazudo/zfb dist-tags`. For a **stable** release, remind the user to run `./scripts/update-homebrew-formula.sh v<version> --push` (manual — never run it from this skill). For prereleases, skip Homebrew per the gating below.
+4. **On success — update Homebrew (stable only), then report.**
+
+   **a. Homebrew.** If `<version>` is **stable** (no `-next.` / `-beta.` / `-rc.`), run it now — do
+   not ask, and do not defer it to the user:
+
+   ```bash
+   ./scripts/update-homebrew-formula.sh v<version> --push
+   ```
+
+   Run it only **after** the `release.yml` watch reports success: the script fetches every
+   platform's `.sha256` from the Release and 404s if the upload job has not finished. It is
+   idempotent — re-running for the same version rewrites `Formula/zfb.rb` to the same content and
+   commits nothing new — so a retry after a transient network failure is safe.
+
+   Confirm the tap actually moved, rather than trusting the exit code alone:
+
+   ```bash
+   git -C "${HOME}/repos/Takazudo/homebrew-tap" log -1 --oneline
+   grep -m1 'version' "${HOME}/repos/Takazudo/homebrew-tap/Formula/zfb.rb"
+   ```
+
+   **If it fails, the release is still a success** — npm and the GH Release are already live and
+   immutable. Report the brew failure separately with the command to retry by hand; do NOT unpublish
+   anything, and do NOT retry more than once. The usual causes are a push credential problem on the
+   tap remote or a `.sha256` not yet uploaded.
+
+   For **prereleases**, skip this entirely — brew tracks the stable channel. Testers use
+   `npm i -g zfb@next` or the curl installer with `ZFB_VERSION=latest-prerelease`.
+
+   **b. Report.** Release URL, and confirm npm landed with `npm view @takazudo/zfb dist-tags`. For a
+   stable release, state the tap commit so the Homebrew half is verifiable at a glance.
 5. **On failure**: fetch the failed logs (`gh run view <id> --log-failed`) and report. If the failure is clearly transient (network flake, runner eviction), retry once with `gh run rerun <id> --failed`. Otherwise surface to the user with the failure summary — do NOT unpublish or delete the Release, and do NOT retry more than once.
 
 ### `--confirm` path: notify + STOP
@@ -546,7 +582,8 @@ installer with ZFB_VERSION=latest-prerelease:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
 
-(See RELEASE_DAY_CHECKLIST.md for the Homebrew flow — not handled by this skill.)
+(Homebrew is manual on THIS path only, because --confirm stops before publishing. The default
+path runs the tap push itself. See RELEASE_DAY_CHECKLIST.md for the Homebrew flow.)
 ============================================================
 ````
 
