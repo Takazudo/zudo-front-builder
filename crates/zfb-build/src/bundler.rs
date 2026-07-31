@@ -3556,7 +3556,26 @@ pub fn bundle_with_session(
     // the empty-exclude path stays byte-identical (there the dual-target
     // tsconfig still resolves such imports against the real root), AND on a
     // wildcard root alias actually existing so nothing is staged needlessly.
-    if !bundle_exclude.is_empty()
+    //
+    // Issue #2208 widening: at a ROOT-CLAIMED workspace (`pnpm-workspace.yaml`
+    // claims `'.'`, so `first_party_root == project_root` and `workspace_rel`
+    // is `None`) the empty-exclude live-real fallback is no longer silently
+    // fine — the stage-escape audit is armed there via eligibility row 3
+    // (#1987/#1988), and a loose file resolved through the fallback classifies
+    // as case 4 ("no staged spelling") and hard-fails the build. Stage the
+    // narrow surface instead of touching the audit (the #1840 precedent). The
+    // predicate is DECLARED-DATA only (`workspace_root_claims_path`), not
+    // `stage_escape_audit_eligibility` — eligibility additionally depends on
+    // currently-reachable `node_modules` state, which would make *staging*
+    // filesystem-dependent for no benefit; declared data stages harmlessly in
+    // the claims-'.'-but-nothing-reachable corner. (Not
+    // `workspace_explicitly_claims_root_package` either — that predicate is
+    // nested-host-only by construction and returns `false` here.) A standalone
+    // non-workspace project has no `pnpm-workspace.yaml`, so the read fails
+    // closed and its empty-exclude path stays byte-identical.
+    let root_claimed_workspace = workspace_rel.is_none()
+        && zfb_types::first_party::workspace_root_claims_path(&first_party_root, &project_root);
+    if (!bundle_exclude.is_empty() || root_claimed_workspace)
         && has_wildcard_root_alias(
             &project_root,
             &input.tsconfig_paths,

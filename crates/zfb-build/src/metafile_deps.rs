@@ -1606,6 +1606,17 @@ fn offenders_to_audit_result(offenders: Vec<String>) -> Result<()> {
     if offenders.is_empty() {
         return Ok(());
     }
+    // The second remediation paragraph (issue #2208) covers the repo-root
+    // loose-file shape: the `exports` route it names is accepted TODAY by
+    // [`declared_first_party_package_identity_from_canonical`] (the ROOT
+    // package is its own nearest package root, and a claimed `'.'` passes
+    // `workspace_root_claims_path`) — but only when the manifest carries a
+    // `name` (identity resolution bails without one), so the message states
+    // that requirement rather than promising a route a name-less private
+    // root package cannot take. The symlink sentence is explicit because
+    // symlinking is the first thing a consumer tries — esbuild runs
+    // without `--preserve-symlinks` in the affected shape, so the metafile
+    // records the canonicalised real target, never the symlink's spelling.
     bail!(
         "zfb bundler: stage-escape audit — the following metafile input(s) escaped their stage: \
          {}\n\
@@ -1613,7 +1624,12 @@ fn offenders_to_audit_result(offenders: Vec<String>) -> Result<()> {
          package's own `package.json`, not in this project's staging or bundler config: either \
          declare the imported location as an entry root under `exports` (or `main`), or import it \
          through a path the package already declares. An undeclared deep import reaches live \
-         source nothing staged, which is what the audit is refusing.",
+         source nothing staged, which is what the audit is refusing. For an offender that is a \
+         loose file at the workspace root itself (e.g. reached through a broad `@/*` root alias), \
+         declaring its location under the ROOT `package.json`'s `exports` is likewise accepted \
+         (that package.json must also carry a `name` for its identity to resolve). Symlinks do \
+         not help here: metafile inputs are canonicalised, so a symlink placed inside the \
+         project is audited as its live target.",
         offenders.join(", ")
     );
 }
@@ -3449,7 +3465,12 @@ mod tests {
              package's own `package.json`, not in this project's staging or bundler config: either \
              declare the imported location as an entry root under `exports` (or `main`), or import it \
              through a path the package already declares. An undeclared deep import reaches live \
-             source nothing staged, which is what the audit is refusing."
+             source nothing staged, which is what the audit is refusing. For an offender that is a \
+             loose file at the workspace root itself (e.g. reached through a broad `@/*` root alias), \
+             declaring its location under the ROOT `package.json`'s `exports` is likewise accepted \
+             (that package.json must also carry a `name` for its identity to resolve). Symlinks do \
+             not help here: metafile inputs are canonicalised, so a symlink placed inside the \
+             project is audited as its live target."
         )
     }
 
