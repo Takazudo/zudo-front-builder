@@ -11,16 +11,31 @@
 #             accepts both and normalises internally.
 #
 # --tap-path  Path to the Homebrew tap repo checkout.
-#             Default: ${HOME}/repos/myoss/homebrew-tap
+#             Default: ${HOME}/repos/Takazudo/homebrew-tap
+#             If that path does not exist (or exists but is empty), it is CLONED
+#             from ZFB_TAP_REMOTE — see "Tap checkout" below.
 #
 # --push      After writing Formula/zfb.rb, git add + commit + push.
 #             Without this flag the file is written AND printed to stdout.
+#
+# Tap checkout:
+#   The tap is validated (and cloned if absent) BEFORE the formula is written.
+#   Ordering matters: this script used to write Formula/zfb.rb first and only
+#   touch git at the very end, so on a machine with no tap checkout it created a
+#   plain directory, then died at `git add` with "not a git repository" — leaving
+#   a non-git stub that made every later run fail the same way. That is not
+#   hypothetical: it happened on the v1.0.0 release (2026-07-31), the first
+#   release for which this stable-gated script had ever run.
 #
 # Environment overrides (useful for offline / CI testing):
 #   ZFB_SHA256_SOURCE_DIR  When set, the script reads *.sha256 files from
 #                          this local directory instead of fetching from GitHub.
 #                          File names must match the archive basename, e.g.:
 #                            zfb-0.2.0-aarch64-apple-darwin.tar.gz.sha256
+#   ZFB_TAP_REMOTE         Git remote to clone the tap from when --tap-path is
+#                          absent. Default: git@github.com:Takazudo/homebrew-tap.git
+#                          (use https://github.com/Takazudo/homebrew-tap.git on a
+#                          host without SSH keys; tests point it at a local repo).
 set -euo pipefail
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -69,6 +84,49 @@ version_tag="v${semver}"
 
 echo "==> Updating formula for zfb ${version_tag} (semver: ${semver})"
 echo "    tap-path: ${tap_path}"
+
+# ── Prepare the tap checkout ──────────────────────────────────────────────────
+#
+# MUST run before the formula is written (and before the checksum fetch, so a
+# broken tap fails in a second instead of after four network round trips).
+# See the "Tap checkout" note in the header for why the ordering is load-bearing:
+# writing first is what manufactured the non-git stub on the v1.0.0 release.
+
+tap_remote="${ZFB_TAP_REMOTE:-git@github.com:Takazudo/homebrew-tap.git}"
+
+if [[ -d "${tap_path}/.git" ]]; then
+  echo "==> Tap checkout present"
+  # Guard against committing into an unrelated repo (e.g. a mistyped --tap-path).
+  tap_origin="$(git -C "$tap_path" remote get-url origin 2>/dev/null || echo "")"
+  if [[ "$tap_origin" != *"homebrew-tap"* ]]; then
+    echo "WARNING: ${tap_path} origin does not look like a Homebrew tap:" >&2
+    echo "         ${tap_origin:-<no origin>}" >&2
+    if [[ "$do_push" == "true" ]]; then
+      echo "ERROR: refusing to commit + push into a repo that is not the tap." >&2
+      echo "       Pass --tap-path with the real tap checkout, or drop --push." >&2
+      exit 1
+    fi
+  fi
+elif [[ -e "$tap_path" ]] && [[ -n "$(ls -A "$tap_path" 2>/dev/null)" ]]; then
+  # Non-empty and not a git repo — most likely the stub left by the pre-fix
+  # version of this script. Do NOT auto-delete: it is outside this repo and may
+  # hold something the user cares about. Make the remediation explicit instead.
+  echo "ERROR: ${tap_path} exists and is not a git repository." >&2
+  echo "       This is usually the stub left behind by an older version of this" >&2
+  echo "       script, which wrote Formula/zfb.rb before checking git." >&2
+  echo "       Inspect it, then remove it and re-run so it can be cloned:" >&2
+  echo "         ls -la '${tap_path}'" >&2
+  echo "         rm -rf '${tap_path}'" >&2
+  exit 1
+else
+  echo "==> Tap checkout absent — cloning ${tap_remote}"
+  mkdir -p "$(dirname "$tap_path")"
+  if ! git clone "$tap_remote" "$tap_path"; then
+    echo "ERROR: failed to clone the tap from ${tap_remote}" >&2
+    echo "       Set ZFB_TAP_REMOTE to an https:// URL if this host has no SSH key." >&2
+    exit 1
+  fi
+fi
 
 # ── Asset URL base ────────────────────────────────────────────────────────────
 
