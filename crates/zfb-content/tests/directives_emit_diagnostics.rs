@@ -135,6 +135,60 @@ fn unclosed_opener_glued_before_valid_directive_reaches_pipeline_markdown_diagno
 }
 
 #[test]
+fn buried_unclosed_opener_reaches_pipeline_markdown_diagnostics() {
+    // zfb#2211: the buried shape — a non-opener first line with the
+    // unclosed opener glued mid-paragraph — through the REAL emit path.
+    // Pre-fix this leaked literal ::: with no diagnostic at all (only
+    // paragraph-HEAD openers warned). Diagnostic-only: the source still
+    // leaks literally.
+    let mut p = directives_pipeline();
+    let jsx = compile(
+        &mut p,
+        "intro prose\n:::warning\nnever closed\n\nplain paragraph\n",
+    );
+    assert!(
+        jsx.contains(":::warning"),
+        "buried opener stays literal in the emitted JSX: {jsx}"
+    );
+    let diags = p.take_markdown_diagnostics();
+    assert_eq!(
+        diags.len(),
+        1,
+        "the buried unclosed diagnostic must reach the pipeline counters, got {diags:#?}"
+    );
+    let MarkdownDiagnostic::Generic {
+        severity,
+        message,
+        location,
+    } = &diags[0]
+    else {
+        unreachable!(
+            "directive diagnostics surface as Generic, got {:?}",
+            diags[0]
+        );
+    };
+    assert_eq!(
+        *severity,
+        DiagnosticSeverity::Warning,
+        "warning-only: the build prints it but never aborts"
+    );
+    assert!(
+        message.contains("unclosed") && message.contains("warning"),
+        "message names the buried opener, got {message:?}"
+    );
+    let loc = location.as_ref().expect("location attached");
+    assert_eq!(
+        loc.path.as_deref(),
+        Some(std::path::Path::new("/proj/content/a.mdx"))
+    );
+    assert_eq!(
+        loc.line,
+        Some(2),
+        "the buried fence LINE, not the paragraph head"
+    );
+}
+
+#[test]
 fn repro_forms_compile_clean_through_emit_path() {
     // The three #2206 repro forms (A: blank-line body, B: backtick title,
     // C: plain-title control) through the real emit path: all transform,
