@@ -55,7 +55,8 @@ use markdown::mdast::{
     Node as MdastNode, Text,
 };
 
-use crate::pipeline::MdastVisitor;
+use crate::pipeline::{BuildContext, MdastVisitor};
+use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
 
 // Directive definition types moved to `zfb-md-ast` so `zfb-md-extras`
 // (which cannot depend on `zfb-content`) can produce `Vec<DirectiveDef>`
@@ -136,6 +137,40 @@ impl MdastVisitor for DirectiveRegistry {
             for c in children.iter_mut() {
                 self.visit(c);
             }
+        }
+    }
+
+    /// Context-armed pipelines (real builds) surface directive
+    /// diagnostics through the shared markdown-diagnostics channel: after
+    /// the walk, the registry drains its buffer into the [`BuildContext`]
+    /// diagnostics sink as Warning-severity [`MarkdownDiagnostic`]s, so
+    /// unknown-directive and unclosed-container findings (zfb#2206) reach
+    /// the build output via `Pipeline::take_markdown_diagnostics` instead
+    /// of dying inside the boxed visitor. Warning severity keeps the
+    /// graceful-fallback contract — the build prints the findings but
+    /// never aborts on them.
+    ///
+    /// Context-free runs (`Pipeline::run`, direct `visit` calls) keep
+    /// accumulating on the registry for manual draining via
+    /// [`DirectiveRegistry::take_diagnostics`] — unchanged behaviour.
+    fn visit_with_context(&mut self, node: &mut MdastNode, ctx: &mut BuildContext<'_>) {
+        self.visit(node);
+        if self.diagnostics.is_empty() {
+            return;
+        }
+        let Some(sink) = ctx.diagnostics.as_deref_mut() else {
+            return;
+        };
+        for d in std::mem::take(&mut self.diagnostics) {
+            sink.emit(MarkdownDiagnostic::Generic {
+                severity: DiagnosticSeverity::Warning,
+                message: d.message,
+                location: Some(SourceLocation {
+                    path: ctx.source_path.clone(),
+                    line: d.line.and_then(|l| u32::try_from(l).ok()),
+                    col: d.column.and_then(|c| u32::try_from(c).ok()),
+                }),
+            });
         }
     }
 }
@@ -2500,6 +2535,87 @@ padded body
             "text preserved, got: {collected:?}"
         );
         assert!(!r.take_diagnostics().is_empty(), "warning recorded");
+    }
+
+    #[test]
+    fn context_armed_visit_flushes_diagnostics_to_sink() {
+        // zfb#2206: with a BuildContext diagnostics sink armed (real
+        // builds — the JSX-emit path drains the sink into the pipeline's
+        // markdown-diagnostics counters), directive diagnostics flow out
+        // as Warning-severity MarkdownDiagnostics with the source path and
+        // position attached, and the registry buffer is drained.
+        use zfb_md_ast::diagnostics::CollectingSink;
+
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nnever closed\n\n:::bogus\n\nx\n\n:::\n";
+        let mut root = markdown::to_mdast(input, &markdown::ParseOptions::mdx())
+            .expect("markdown-rs should parse the sample");
+
+        let mut sink = CollectingSink::new();
+        let mut ctx = BuildContext::for_paths("/proj/content/a.mdx", "/proj", "/proj/public");
+        ctx.diagnostics = Some(&mut sink);
+        r.visit_with_context(&mut root, &mut ctx);
+        drop(ctx);
+
+        let flushed = sink.take();
+        assert_eq!(
+            flushed.len(),
+            2,
+            "unclosed + unknown must reach the sink, got {flushed:#?}"
+        );
+        for d in &flushed {
+            let MarkdownDiagnostic::Generic {
+                severity,
+                message,
+                location,
+            } = d
+            else {
+                unreachable!("directive diagnostics are Generic, got {d:?}");
+            };
+            assert_eq!(*severity, DiagnosticSeverity::Warning);
+            assert!(
+                message.contains("unclosed") || message.contains("unknown directive"),
+                "unexpected message {message:?}"
+            );
+            let loc = location.as_ref().expect("location attached");
+            assert_eq!(
+                loc.path.as_deref(),
+                Some(std::path::Path::new("/proj/content/a.mdx"))
+            );
+        }
+        // The unclosed-opener diagnostic carries the opener's position.
+        assert!(
+            flushed.iter().any(|d| matches!(
+                d,
+                MarkdownDiagnostic::Generic {
+                    message,
+                    location: Some(loc),
+                    ..
+                } if message.contains("unclosed") && loc.line == Some(1)
+            )),
+            "unclosed diagnostic keeps its line, got {flushed:#?}"
+        );
+        // Drained: nothing left on the registry buffer.
+        assert!(
+            r.take_diagnostics().is_empty(),
+            "registry buffer must be drained into the sink"
+        );
+    }
+
+    #[test]
+    fn context_without_sink_keeps_diagnostics_on_registry() {
+        // No diagnostics sink armed: the registry keeps accumulating for
+        // manual draining (the pre-#2206 contract, unchanged).
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nnever closed\n";
+        let mut root = markdown::to_mdast(input, &markdown::ParseOptions::mdx())
+            .expect("markdown-rs should parse the sample");
+        let mut ctx = BuildContext::for_paths("/proj/content/a.mdx", "/proj", "/proj/public");
+        r.visit_with_context(&mut root, &mut ctx);
+        drop(ctx);
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "diagnostic stays on the registry");
+        assert!(diags[0].message.contains("unclosed"));
     }
 
     // ---- bit-for-bit admonition behaviour ----
