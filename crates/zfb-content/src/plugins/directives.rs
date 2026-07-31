@@ -220,6 +220,13 @@ impl DirectiveRegistry {
                         // double-warn and no re-entry loop is possible.
                         if n > 0 {
                             let tail = i + n - 1;
+                            // NON-tail segments can leak a literal opener too
+                            // (zfb#2212): an unclosed opener glued ABOVE a
+                            // valid run precedes its transformed JSX in the
+                            // replacement, where the tail check never looks.
+                            // Record the unclosed diagnostic for those —
+                            // diagnostic only, never a transform.
+                            self.warn_unclosed_leaked_segments(children, i, tail);
                             if let Some(tail_parsed) = self.parse_block_open(&children[tail], 3) {
                                 if let Some(tail_def) = self.defs.get(&tail_parsed.name).cloned() {
                                     if tail_def.kind == DirectiveKind::Container {
@@ -370,14 +377,7 @@ impl DirectiveRegistry {
             }
         }
         let Some((j, closer_lines, k)) = found else {
-            self.diagnostics.push(DirectiveDiagnostic {
-                message: format!(
-                    "unclosed container directive `:::{}` — missing closing `:::` fence",
-                    parsed.name
-                ),
-                line,
-                column,
-            });
+            self.record_unclosed(&parsed.name, line, column);
             return None;
         };
 
@@ -720,6 +720,46 @@ impl DirectiveRegistry {
             line,
             column,
         });
+    }
+
+    /// Record the "unclosed container directive" Warning for `name`. The
+    /// single message site, shared by the block-level scan's
+    /// genuinely-unclosed branch and the collapsed-run splice's
+    /// leaked-segment pass (zfb#2212).
+    fn record_unclosed(&mut self, name: &str, line: Option<usize>, column: Option<usize>) {
+        self.diagnostics.push(DirectiveDiagnostic {
+            message: format!(
+                "unclosed container directive `:::{name}` — missing closing `:::` fence"
+            ),
+            line,
+            column,
+        });
+    }
+
+    /// Diagnostic-only pass over a collapsed run's spliced replacement
+    /// segments in `children[from..to]` (zfb#2212): record the
+    /// unclosed-container Warning for every literal segment that BEGINS
+    /// with a REGISTERED container opener. Such a segment is an unclosed
+    /// leak by construction — a registered container opener with a
+    /// matching closer inside the run always transforms, so an opener
+    /// heading a literal segment found no closer under the fence-matching
+    /// rule. Callers exclude the TAIL segment (it gets the block-level
+    /// handler's shot at closing across FOLLOWING siblings instead);
+    /// non-tail segments are bounded by the rest of their own run, so
+    /// their non-closure is final and no transform is ever attempted —
+    /// the literal leak IS the graceful-fallback output for this
+    /// malformed shape. Unknown names never fire (the collapsed run
+    /// already warned them once) and wrong-kind names are not containers.
+    fn warn_unclosed_leaked_segments(&mut self, children: &[MdastNode], from: usize, to: usize) {
+        for node in children.iter().take(to).skip(from) {
+            let Some(parsed) = self.parse_block_open(node, 3) else {
+                continue;
+            };
+            if self.defs.get(&parsed.name).map(|d| d.kind) == Some(DirectiveKind::Container) {
+                let (line, column) = paragraph_line_col(node);
+                self.record_unclosed(&parsed.name, line, column);
+            }
+        }
     }
 
     /// Run `validate_attrs` on `def` against the raw attrs in `parsed`.
@@ -2210,6 +2250,96 @@ padded body
         let diags = r.take_diagnostics();
         assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
         assert!(diags[0].message.contains("unclosed"));
+    }
+
+    #[test]
+    fn real_parser_unclosed_opener_glued_before_directive_warns_and_stays_literal() {
+        // zfb#2212: an unclosed opener glued DIRECTLY (no blank lines)
+        // above a valid collapsed run leaks as a literal prose segment
+        // BEFORE the transformed run. The pre-fix splice check inspected
+        // only the FINAL replacement node for an opener shape, so this
+        // shape lost its unclosed diagnostic entirely — a silent literal
+        // leak. Transformation semantics are pinned unchanged: the
+        // trailing `:::note` still transforms and the `:::warning`
+        // opener stays a literal leak.
+        let mut r = registry_with_admonitions();
+        let input = ":::warning\nnever closed\n:::note\nbody\n:::\n";
+        let out = run_real_parser(&mut r, input);
+
+        let jsx_names: Vec<&str> = out
+            .iter()
+            .filter_map(|c| match c {
+                MdastNode::MdxJsxFlowElement(j) => j.name.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jsx_names,
+            vec!["Note"],
+            "only the trailing note transforms, got {out:#?}"
+        );
+        let note = flow(
+            out.iter()
+                .find(|c| matches!(c, MdastNode::MdxJsxFlowElement(_)))
+                .expect("note JSX present"),
+        );
+        assert_eq!(body_paragraph_texts(note), vec!["body".to_string()]);
+
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning")),
+            "unclosed opener stays literal, got {texts:#?}"
+        );
+
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the leaked opener, got {:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn real_parser_unclosed_opener_glued_between_directives_warns_once() {
+        // zfb#2212 companion shape: the leaked opener sits BETWEEN two
+        // valid collapsed runs — neither the first nor the final
+        // replacement node. Both runs transform; the middle `:::warning`
+        // leaks literally with exactly ONE unclosed diagnostic (the
+        // whole-segment scan must not double-report, and the JSX
+        // segments must not confuse it).
+        let mut r = registry_with_admonitions();
+        let input = ":::note\nalpha\n:::\n:::warning\nnever closed\n:::tip\nbravo\n:::\n";
+        let out = run_real_parser(&mut r, input);
+
+        let jsx_names: Vec<&str> = out
+            .iter()
+            .filter_map(|c| match c {
+                MdastNode::MdxJsxFlowElement(j) => j.name.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            jsx_names,
+            vec!["Note", "Tip"],
+            "both well-formed runs transform, got {out:#?}"
+        );
+
+        let mut texts = Vec::new();
+        collect_text_values(&out, &mut texts);
+        assert!(
+            texts.iter().any(|t| t.contains(":::warning")),
+            "unclosed opener stays literal, got {texts:#?}"
+        );
+
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the leaked opener, got {:?}",
+            diags[0].message
+        );
     }
 
     #[test]

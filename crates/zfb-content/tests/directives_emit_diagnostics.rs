@@ -87,6 +87,54 @@ fn unclosed_container_reaches_pipeline_markdown_diagnostics() {
 }
 
 #[test]
+fn unclosed_opener_glued_before_valid_directive_reaches_pipeline_markdown_diagnostics() {
+    // zfb#2212: an unclosed opener glued (NO blank lines) directly above
+    // a valid collapsed directive — one paragraph run. The collapsed-run
+    // transform emits the literal warning paragraph followed by the
+    // transformed note; pre-fix only the FINAL replacement node was
+    // checked for an opener shape, so the leaked `:::warning` earned no
+    // unclosed diagnostic. Diagnostic-only contract: the note still
+    // transforms and the warning opener still leaks literally.
+    let mut p = directives_pipeline();
+    let jsx = compile(&mut p, ":::warning\nnever closed\n:::note\nbody\n:::\n");
+    assert!(
+        jsx.contains(":::warning"),
+        "unclosed opener stays literal in the emitted JSX: {jsx}"
+    );
+    assert!(
+        jsx.contains("<Note") && !jsx.contains(":::note"),
+        "the trailing note must transform, not leak: {jsx}"
+    );
+    let diags = p.take_markdown_diagnostics();
+    assert_eq!(
+        diags.len(),
+        1,
+        "the unclosed diagnostic must reach the pipeline counters, got {diags:#?}"
+    );
+    let MarkdownDiagnostic::Generic {
+        severity,
+        message,
+        location,
+    } = &diags[0]
+    else {
+        unreachable!(
+            "directive diagnostics surface as Generic, got {:?}",
+            diags[0]
+        );
+    };
+    assert_eq!(*severity, DiagnosticSeverity::Warning);
+    assert!(
+        message.contains("unclosed") && message.contains("warning"),
+        "message names the leaked opener, got {message:?}"
+    );
+    let loc = location.as_ref().expect("location attached");
+    assert_eq!(
+        loc.path.as_deref(),
+        Some(std::path::Path::new("/proj/content/a.mdx"))
+    );
+}
+
+#[test]
 fn repro_forms_compile_clean_through_emit_path() {
     // The three #2206 repro forms (A: blank-line body, B: backtick title,
     // C: plain-title control) through the real emit path: all transform,
