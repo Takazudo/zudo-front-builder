@@ -64,9 +64,17 @@ fn write_fixture_project(root: &std::path::Path) {
         "export default function DefaultLayout({ children }) { return children; }\n",
     )
     .unwrap();
+    // One top-level fence plus the SAME-language fence nested inside an
+    // MDX JSX component: the nested one is flattened into a JsxRaw
+    // payload before hast visitors run and must be highlighted by the
+    // nested-code render chain instead (#2207). `Note` needs no import —
+    // the compiled module resolves it through the `components` prop at
+    // runtime, so esbuild bundles it fine and the class markers are
+    // assertable on the bundle text.
     fs::write(
         root.join("pages/index.mdx"),
-        "---\ntitle: Class Mode Confirm\n---\n\n```rust\nfn main() {}\n```\n",
+        "---\ntitle: Class Mode Confirm\n---\n\n```rust\nfn main() {}\n```\n\n\
+         <Note>\n\n```rust\nfn nested() {}\n```\n\n</Note>\n",
     )
     .unwrap();
 }
@@ -161,6 +169,25 @@ fn bundler_class_mode_project_ties_emission_and_css_injection() {
     assert!(
         !body.contains("syntect-"),
         "class mode must NOT emit the inline syntect- class hook.\n--- bundle excerpt ---\n{}",
+        &body[..body.len().min(2000)]
+    );
+    // ---- Emission: the JSX-nested fence is highlighted too (#2207) ----
+    // Pre-fix, the nested fence bypassed the hast chain and shipped as
+    // raw `<_components.code class="language-rust">` bytes; now BOTH the
+    // top-level and the <Note>-nested fence carry the class-mode root
+    // class, and the raw language- fallback shape is gone from the
+    // built page entirely.
+    assert!(
+        !body.contains("language-rust"),
+        "the raw language-rust fallback must NOT survive for the nested \
+         fence on a class-mode build.\n--- bundle excerpt ---\n{}",
+        &body[..body.len().min(2000)]
+    );
+    assert!(
+        body.matches("hi-root").count() >= 2,
+        "both the top-level AND the <Note>-nested fence must carry \
+         hi-root (got {}).\n--- bundle excerpt ---\n{}",
+        body.matches("hi-root").count(),
         &body[..body.len().min(2000)]
     );
 
