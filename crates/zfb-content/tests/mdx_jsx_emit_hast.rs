@@ -896,6 +896,452 @@ fn default_features_keep_flat_heading_ids() {
     );
 }
 
+// ── #2207: fenced code nested in MDX JSX bodies / directives ────────────────
+//
+// Fences inside `<Note>…</Note>` (and inside `:::` directives, which the
+// DirectiveRegistry rewrites into the same MdxJsxFlowElement shape at the
+// mdast phase) are flattened into an opaque JsxRaw payload before hast
+// visitors run, so `SyntectPlugin` never saw them —
+// `jsx_render_child`'s `Code` arm hand-emitted unhighlighted
+// `<_components.pre><_components.code class="language-…">` bytes. These
+// tests pin the fix: the pipeline's nested-code render chain
+// (`Pipeline::nested_code_render_chain`) highlights nested fences exactly
+// like top-level ones, in EVERY `codeHighlight` mode, while pipelines
+// without syntect keep the fallback emission byte-stable.
+
+/// Build the full-config CLASS-mode pipeline (`codeHighlight.mode:
+/// "class"`, default `hi-` prefix) with an optional feature set.
+fn class_mode_pipeline(features: Option<&zfb_md_extras::MarkdownFeaturesConfig>) -> Pipeline {
+    use std::collections::BTreeMap;
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+
+    Pipeline::with_defaults_and_full_config_class(
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        features,
+        "hi-",
+        &BTreeMap::new(),
+    )
+    .expect("no themes_dir — cannot fail")
+}
+
+/// `note → Note` directive vocabulary, the same shape
+/// `directive_survives_with_hast_phase` above uses.
+fn note_directive_features() -> zfb_md_extras::MarkdownFeaturesConfig {
+    use std::collections::HashMap;
+    use zfb_md_extras::{DirectiveSpec, MarkdownFeaturesConfig};
+
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
+    MarkdownFeaturesConfig {
+        directives: Some(directives),
+        ..Default::default()
+    }
+}
+
+/// Compile through SWC or panic with the emitted module attached.
+fn assert_swc_accepts(out: &str, filename: &str) {
+    let opts = CompileOptions::default().with_filename(filename.to_string());
+    SwcPipeline::new()
+        .compile(out, &opts)
+        .unwrap_or_else(|e| panic!("SWC rejected {filename}: {e}\n--- src ---\n{out}"));
+}
+
+/// Inline mode (`with_defaults`): a fence inside `<Note>` must reach the
+/// module as syntect markup — NOT the raw `language-rust` fallback shape
+/// the bug emitted.
+#[test]
+fn nested_fence_in_mdx_jsx_is_highlighted_inline_mode() {
+    let out = emit_with_defaults("<Note>\n\n```rust\nfn main() {}\n```\n\n</Note>\n");
+    assert!(
+        out.contains("syntect-"),
+        "nested fence must carry the syntect class hook:\n{out}",
+    );
+    assert!(
+        out.contains("dangerouslySetInnerHTML"),
+        "nested syntect token HTML must be embedded via dangerouslySetInnerHTML:\n{out}",
+    );
+    assert!(
+        !out.contains("language-rust"),
+        "raw language-rust fallback must NOT survive on a syntect pipeline:\n{out}",
+    );
+    // The highlighted block still sits INSIDE the <Note> body.
+    let note_open = out.find("<Note>").expect("Note must open");
+    let note_close = out.find("</Note>").expect("Note must close");
+    let pre = out.find("syntect-").expect("syntect hook present");
+    assert!(
+        note_open < pre && pre < note_close,
+        "highlighted markup must live inside the <Note> body:\n{out}",
+    );
+    assert_swc_accepts(&out, "nested-fence-inline.tsx");
+}
+
+/// Class mode: the nested fence must carry `hi-root` + role classes.
+#[test]
+fn nested_fence_in_mdx_jsx_is_highlighted_class_mode() {
+    let mut p = class_mode_pipeline(None);
+    let out = mdx_to_jsx_module_with_pipeline(
+        "<Note>\n\n```ts\nconst x: number = 1\n```\n\n</Note>\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+    assert!(
+        out.contains("class=\"hi-root\""),
+        "nested fence must carry the class-mode root class:\n{out}",
+    );
+    // Role classes live inside the dangerouslySetInnerHTML JS string
+    // literal (quotes escaped), so assert the bare token — same
+    // convention as `bundler_class_mode_confirm.rs`.
+    assert!(
+        out.contains("hi-kw"),
+        "nested fence must carry class-mode role classes:\n{out}",
+    );
+    assert!(
+        !out.contains("language-ts"),
+        "raw language-ts fallback must NOT survive in class mode:\n{out}",
+    );
+    assert!(
+        !out.contains("syntect-"),
+        "class mode must not emit the inline syntect- hook for the nested fence:\n{out}",
+    );
+    assert_swc_accepts(&out, "nested-fence-class.tsx");
+}
+
+/// Inline mode, `:::note` directive: the directive rewrites to a `<Note>`
+/// MdxJsxFlowElement at the mdast phase, so its fenced body hits the same
+/// JsxRaw flattening — it must be highlighted too.
+#[test]
+fn directive_nested_fence_is_highlighted_inline_mode() {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+
+    let features = note_directive_features();
+    let mut p = Pipeline::with_defaults_and_full_config(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        Some(&features),
+    )
+    .expect("no themes_dir — cannot fail");
+    let out = mdx_to_jsx_module_with_pipeline(
+        ":::note\n\n```ts\nconst x: number = 1\n```\n\n:::\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+    assert!(
+        out.contains("<Note") && out.contains("</Note>"),
+        "directive must fold into <Note>:\n{out}",
+    );
+    assert!(
+        out.contains("syntect-"),
+        "directive-nested fence must carry the syntect class hook:\n{out}",
+    );
+    assert!(
+        !out.contains("language-ts"),
+        "raw language-ts fallback must NOT survive inside a directive:\n{out}",
+    );
+}
+
+/// Class mode, `:::note` directive.
+#[test]
+fn directive_nested_fence_is_highlighted_class_mode() {
+    let features = note_directive_features();
+    let mut p = class_mode_pipeline(Some(&features));
+    let out = mdx_to_jsx_module_with_pipeline(
+        ":::note\n\n```ts\nconst x: number = 1\n```\n\n:::\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+    assert!(
+        out.contains("<Note") && out.contains("</Note>"),
+        "directive must fold into <Note>:\n{out}",
+    );
+    assert!(
+        out.contains("class=\"hi-root\""),
+        "directive-nested fence must carry hi-root in class mode:\n{out}",
+    );
+    // Bare token — role classes sit inside the escaped
+    // dangerouslySetInnerHTML string literal (see the <Note> twin above).
+    assert!(
+        out.contains("hi-kw"),
+        "directive-nested fence must carry role classes in class mode:\n{out}",
+    );
+    assert!(
+        !out.contains("language-ts"),
+        "raw language-ts fallback must NOT survive inside a directive in class mode:\n{out}",
+    );
+    assert_swc_accepts(&out, "directive-fence-class.tsx");
+}
+
+/// Dual-theme mode is covered by the same chain (the spec stores a clone
+/// of the mode-carrying `SyntectPlugin`): a nested fence emits the
+/// `syntect-dual` wrapper with `--shiki-*` custom properties.
+#[test]
+fn nested_fence_dual_mode_gets_dual_markers() {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+
+    let mut p = Pipeline::with_defaults_and_full_config_dual(
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+        "base16-ocean.light",
+        "base16-ocean.dark",
+    )
+    .expect("built-in themes — cannot fail");
+    let out = mdx_to_jsx_module_with_pipeline(
+        "<Note>\n\n```rust\nfn main() {}\n```\n\n</Note>\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+    assert!(
+        out.contains("syntect-dual"),
+        "nested fence must carry the dual-mode wrapper class:\n{out}",
+    );
+    assert!(
+        out.contains("--shiki-light") && out.contains("--shiki-dark"),
+        "nested dual-mode tokens must carry --shiki-* custom properties:\n{out}",
+    );
+    assert!(
+        !out.contains("language-rust"),
+        "raw language-rust fallback must NOT survive in dual mode:\n{out}",
+    );
+}
+
+/// Shared-bridge convergence: the SAME fence at top level and nested in
+/// `<Note>` must produce byte-identical `<_components.pre …>…</_components.pre>`
+/// markup — both go through the same `HastJsxBridge` node emitter.
+#[test]
+fn nested_fence_output_converges_with_top_level_shape() {
+    let mut p = class_mode_pipeline(None);
+    let out = mdx_to_jsx_module_with_pipeline(
+        "```rust\nfn main() {}\n```\n\n<Note>\n\n```rust\nfn main() {}\n```\n\n</Note>\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+
+    let open = "<_components.pre class=\"hi-root\">";
+    let close = "</_components.pre>";
+    let start = out
+        .find(open)
+        .unwrap_or_else(|| panic!("hi-root pre must be present:\n{out}"));
+    let end = out[start..]
+        .find(close)
+        .map(|i| start + i + close.len())
+        .unwrap_or_else(|| panic!("hi-root pre must close:\n{out}"));
+    let segment = &out[start..end];
+    assert_eq!(
+        out.matches(segment).count(),
+        2,
+        "the identical fence must emit byte-identical pre markup at top \
+         level AND nested in <Note> (shared bridge emitter):\nsegment: {segment}\n{out}",
+    );
+}
+
+/// Ordering pin (code-title → syntect): a titled nested fence gets the
+/// `code-block-container` wrapper AND highlighted contents — possible
+/// only when the title plugin ran before syntect replaced the `<pre>`.
+#[test]
+fn nested_titled_fence_composes_container_then_highlight() {
+    let out =
+        emit_with_defaults("<Note>\n\n```rust title=\"main.rs\"\nfn main() {}\n```\n\n</Note>\n");
+    assert!(
+        out.contains("class=\"code-block-container\""),
+        "nested titled fence must get the container wrapper:\n{out}",
+    );
+    assert!(
+        out.contains("class=\"code-block-title\""),
+        "nested titled fence must get the title bar:\n{out}",
+    );
+    assert!(
+        out.contains("main.rs"),
+        "title text must survive into the JSX body:\n{out}",
+    );
+    assert!(
+        out.contains("syntect-"),
+        "nested titled fence must ALSO be highlighted:\n{out}",
+    );
+    assert!(
+        !out.contains("language-rust"),
+        "raw language-rust fallback must NOT survive:\n{out}",
+    );
+    assert_swc_accepts(&out, "nested-titled-fence.tsx");
+}
+
+/// Ordering pin (mermaid → syntect): a nested ```mermaid fence becomes a
+/// mermaid div and is NOT syntect-highlighted.
+#[test]
+fn nested_mermaid_fence_becomes_mermaid_div() {
+    let out = emit_with_defaults("<Note>\n\n```mermaid\ngraph TD;\n  A-->B;\n```\n\n</Note>\n");
+    assert!(
+        out.contains("class=\"mermaid\""),
+        "nested mermaid fence must become a mermaid div:\n{out}",
+    );
+    assert!(
+        out.contains("data-mermaid"),
+        "nested mermaid div must carry data-mermaid:\n{out}",
+    );
+    assert!(
+        out.contains("graph TD;"),
+        "diagram source must survive into the JSX body:\n{out}",
+    );
+    assert!(
+        !out.contains("language-mermaid"),
+        "language-mermaid must not leak past the mermaid plugin:\n{out}",
+    );
+    assert!(
+        !out.contains("syntect-"),
+        "a mermaid fence must NOT be syntect-highlighted:\n{out}",
+    );
+}
+
+/// Ordering pin (syntect → code-enrichment): with `codeEnrichment`
+/// enabled, a nested fence with a `{1}` line-highlight meta gets
+/// `data-line-highlight` on its first line span — enrichment operates on
+/// the per-line structure syntect emits, so this proves it ran AFTER.
+#[test]
+fn nested_fence_enrichment_fires_after_syntect() {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+    use zfb_md_extras::{CodeEnrichmentConfig, MarkdownFeaturesConfig};
+
+    let features = MarkdownFeaturesConfig {
+        code_enrichment: Some(CodeEnrichmentConfig::default()),
+        ..Default::default()
+    };
+    let mut p = Pipeline::with_defaults_and_full_config(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        Some(&features),
+    )
+    .expect("no themes_dir — cannot fail");
+    let out = mdx_to_jsx_module_with_pipeline(
+        "<Note>\n\n```js {1}\nconst a = 1\nconst b = 2\n```\n\n</Note>\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+    assert!(
+        out.contains("syntect-"),
+        "the nested fence must be highlighted:\n{out}",
+    );
+    assert!(
+        out.contains("data-line-highlight=\"true\""),
+        "code-enrichment must fire on the nested fence's line spans:\n{out}",
+    );
+}
+
+/// Byte-stability pin: a pipeline WITHOUT syntect (bare `with_mdx`)
+/// exposes NO chain and keeps the exact legacy fallback emission for a
+/// nested fence — exact-substring consumers depend on those bytes.
+#[test]
+fn pipeline_without_syntect_keeps_fallback_emission_byte_stable() {
+    let mut p = Pipeline::with_mdx();
+    assert!(
+        p.nested_code_render_chain().is_none(),
+        "bare pipeline must expose no nested-code chain",
+    );
+    let out = mdx_to_jsx_module_with_pipeline(
+        "<Note>\n\n```rust\nfn main() {}\n```\n\n</Note>\n",
+        MdxJsxOptions::default(),
+        &mut p,
+    )
+    .expect("pipeline emit ok");
+    assert!(
+        out.contains(
+            "<_components.pre><_components.code class=\"language-rust\">\
+             fn main() &#123;&#125;</_components.code></_components.pre>"
+        ),
+        "no-syntect pipeline must keep the byte-stable fallback emission:\n{out}",
+    );
+    assert!(
+        !out.contains("syntect-") && !out.contains("hi-root"),
+        "no highlight markup may appear without a syntect plugin:\n{out}",
+    );
+}
+
+/// Chain-exposure pin: the configured default/full-config constructors
+/// expose the chain (with the documented membership), bare constructors
+/// do not.
+#[test]
+fn configured_pipelines_expose_nested_code_chain() {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+    use zfb_md_extras::{CodeEnrichmentConfig, FeatureToggle, MarkdownFeaturesConfig};
+
+    // Legacy defaults: code-title + mermaid (always on) + syntect.
+    let chain = Pipeline::with_defaults()
+        .nested_code_render_chain()
+        .expect("with_defaults must expose the chain");
+    assert_eq!(chain.len(), 3, "legacy chain: title + mermaid + syntect");
+
+    // Full config, empty features: mermaid + enrichment are opt-in → off.
+    let p = Pipeline::with_defaults_and_full_config(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        None,
+    )
+    .expect("no themes_dir — cannot fail");
+    let chain = p
+        .nested_code_render_chain()
+        .expect("full-config must expose the chain");
+    assert_eq!(chain.len(), 2, "full-config default chain: title + syntect");
+
+    // Full config with mermaid + codeEnrichment: all four members.
+    let features = MarkdownFeaturesConfig {
+        mermaid: Some(FeatureToggle::Bool(true)),
+        code_enrichment: Some(CodeEnrichmentConfig::default()),
+        ..Default::default()
+    };
+    let p = Pipeline::with_defaults_and_full_config(
+        None,
+        ResolvedGfmConstructs::CONSERVATIVE,
+        None,
+        true,
+        false,
+        Some(&features),
+    )
+    .expect("no themes_dir — cannot fail");
+    let chain = p
+        .nested_code_render_chain()
+        .expect("full-config must expose the chain");
+    assert_eq!(
+        chain.len(),
+        4,
+        "full chain: title + mermaid + syntect + enrichment"
+    );
+
+    // Class mode (via PipelineSpec, the production route) exposes it too.
+    let spec = zfb_content::PipelineSpec {
+        code_highlight_mode: zfb_content::CodeHighlightMode::Class,
+        ..Default::default()
+    };
+    assert!(
+        spec.build_pipeline()
+            .expect("build ok")
+            .nested_code_render_chain()
+            .is_some(),
+        "class-mode PipelineSpec pipeline must expose the chain",
+    );
+
+    // Bare constructors expose nothing.
+    assert!(Pipeline::new().nested_code_render_chain().is_none());
+    assert!(Pipeline::with_mdx().nested_code_render_chain().is_none());
+}
+
 /// Codex-review follow-up (zfb#871): a CUSTOM pipeline that hand-wires
 /// `HeadingLinksPlugin::with_strategy(Hierarchical)` must call
 /// `set_heading_id_strategy` so the `headings` export mirrors the

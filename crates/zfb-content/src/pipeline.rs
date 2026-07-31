@@ -493,6 +493,22 @@ pub struct Pipeline {
     /// Derived purely from the `features` config (already in the
     /// fingerprint) — NEVER fingerprinted separately.
     link_validation_enabled: bool,
+    /// Configuration-derived spec for reconstructing the code-block hast
+    /// chain on demand, so fenced code nested inside an MDX JSX body /
+    /// `:::` directive can be highlighted exactly like a top-level fence
+    /// (#2207). Set only by the two default-chain constructor families
+    /// ([`Pipeline::build_defaults`] and
+    /// [`Pipeline::with_defaults_and_full_config_inner`]) — the ones
+    /// that wire a [`SyntectPlugin`]. `None` (bare / manually-wired
+    /// pipelines) means "no chain": the JSX-emit path keeps its
+    /// byte-stable fallback emission for nested fences.
+    ///
+    /// A spec rather than a prebuilt `Vec<Box<dyn HastVisitor>>` because
+    /// the live visitor chain is non-cloneable trait objects; the getter
+    /// ([`Pipeline::nested_code_render_chain`]) reconstructs fresh
+    /// instances per call from this stored config. Purely derived from
+    /// already-fingerprinted config — never fingerprinted separately.
+    nested_code_chain_spec: Option<NestedCodeChainSpec>,
 }
 
 impl Default for Pipeline {
@@ -506,6 +522,33 @@ enum HiEmit<'a> {
     Single(Option<&'a str>),
     Dual(&'a str, &'a str),
     Class(&'a str, &'a BTreeMap<String, String>),
+}
+
+/// Stored config for [`Pipeline::nested_code_render_chain`] (#2207): the
+/// minimum needed to reconstruct the code-block hast chain — code-title →
+/// mermaid → syntect → code-enrichment (the documented ordering contract
+/// of the default constructors) — for one detached nested fence.
+///
+/// [`CodeTitlePlugin`] is unconditionally part of every chain (both
+/// constructor families always wire it), so it carries no field here.
+/// [`SyntectPlugin`] is stored as a ready instance (it is `Clone` — the
+/// heavy `Highlighter` sits behind an `Arc`) so the getter reproduces the
+/// exact single/dual/class emission mode of the live chain. Mermaid and
+/// code-enrichment are stored as their enabling config: both plugin types
+/// are stateless but not `Clone`, and reconstruction from config is the
+/// same thing the constructors themselves do.
+struct NestedCodeChainSpec {
+    /// Whether the constructed chain wired a [`MermaidPlugin`] —
+    /// always `true` for the legacy `with_defaults*` family, and
+    /// `feature_enabled(features.mermaid)` for the full-config family.
+    mermaid: bool,
+    /// Mode-carrying clone of the exact `SyntectPlugin` the live hast
+    /// chain runs (single theme / dual themes / class emission).
+    syntect: SyntectPlugin,
+    /// `markdown.features.codeEnrichment` when enabled — the post-syntect
+    /// enrichment visitor's construction config. `None` for the legacy
+    /// family (which never wires enrichment) and for configs without it.
+    code_enrichment: Option<zfb_md_ast::CodeEnrichmentConfig>,
 }
 
 impl Pipeline {
@@ -577,6 +620,7 @@ impl Pipeline {
             cross_file_link_candidates: Vec::new(),
             file_headings: Vec::new(),
             link_validation_enabled: false,
+            nested_code_chain_spec: None,
         }
     }
 
@@ -717,6 +761,48 @@ impl Pipeline {
     #[must_use]
     pub fn heading_id_strategy(&self) -> HeadingIdStrategy {
         self.heading_id_strategy
+    }
+
+    /// Reconstruct the code-block hast chain for rendering ONE detached
+    /// fenced code block, in the documented ordering contract of the
+    /// default constructors: code-title → mermaid → syntect →
+    /// code-enrichment (#2207).
+    ///
+    /// The JSX-emit path uses this so a fence nested inside an MDX JSX
+    /// element body (`<Note>…</Note>`) or a `:::` directive — which the
+    /// mdast→hast conversion flattens into an opaque
+    /// [`HastNode::JsxRaw`] payload that the live hast visitors never
+    /// traverse — is highlighted exactly like a top-level fence. The
+    /// chain is handed out OWNED (fresh instances per call,
+    /// reconstructed from the stored [`NestedCodeChainSpec`] config)
+    /// so the caller can run it inside the emit walk without borrowing
+    /// the pipeline — `mdx_to_jsx_module_inner` still needs
+    /// `&mut Pipeline` afterwards for `apply_hast_visitors`.
+    ///
+    /// Every visitor in the chain is stateless per-document
+    /// ([`CodeTitlePlugin`], [`MermaidPlugin`], [`SyntectPlugin`], the
+    /// enrichment plugin), so fresh instances behave identically to the
+    /// live chain's and need no `reset()` discipline.
+    ///
+    /// Returns `None` for pipelines whose construction wired no
+    /// [`SyntectPlugin`] (bare [`Pipeline::new`] / [`Pipeline::with_mdx`]
+    /// / manually-assembled chains): callers must keep their existing
+    /// fallback emission byte-stable in that case.
+    #[must_use]
+    pub fn nested_code_render_chain(&self) -> Option<Vec<Box<dyn HastVisitor>>> {
+        let spec = self.nested_code_chain_spec.as_ref()?;
+        let mut chain: Vec<Box<dyn HastVisitor>> = Vec::new();
+        chain.push(Box::new(CodeTitlePlugin::new()));
+        if spec.mermaid {
+            chain.push(Box::new(MermaidPlugin::new()));
+        }
+        chain.push(Box::new(spec.syntect.clone()));
+        if let Some(cfg) = &spec.code_enrichment {
+            chain.push(Box::new(
+                zfb_md_extras::code_enrichment::CodeEnrichmentPlugin::new(cfg.clone()),
+            ));
+        }
+        Some(chain)
     }
 
     /// Declare the heading-ID strategy of a manually wired
@@ -1528,6 +1614,15 @@ impl Pipeline {
         } else {
             SyntectPlugin::new(highlighter)
         };
+        // Nested-code render chain (#2207): store the config needed to
+        // reconstruct the code-block chain for fences nested inside MDX
+        // JSX bodies. The legacy chain always wires MermaidPlugin and
+        // never wires code-enrichment.
+        p.nested_code_chain_spec = Some(NestedCodeChainSpec {
+            mermaid: true,
+            syntect: syntect.clone(),
+            code_enrichment: None,
+        });
         p.push_config_derived_hast_visitor(Box::new(syntect));
         // Fingerprint the construction config LAST: the interim descriptor
         // from `with_resolved_gfm_constructs` only covers the bare
@@ -1849,6 +1944,17 @@ impl Pipeline {
             HiEmit::Single(Some(theme)) => SyntectPlugin::new(highlighter).with_theme(theme),
             HiEmit::Single(None) => SyntectPlugin::new(highlighter),
         };
+        // Nested-code render chain (#2207): store the config needed to
+        // reconstruct the code-block chain for fences nested inside MDX
+        // JSX bodies / directives. Mermaid and code-enrichment mirror the
+        // exact feature gating used for the live chain above
+        // (`register_features_config_derived` /
+        // `register_post_syntect_features_config_derived`).
+        p.nested_code_chain_spec = Some(NestedCodeChainSpec {
+            mermaid: zfb_md_ast::feature_enabled(&features.mermaid),
+            syntect: syntect.clone(),
+            code_enrichment: features.code_enrichment.clone(),
+        });
         p.push_config_derived_hast_visitor(Box::new(syntect));
         // Post-syntect extras visitors operate on the per-line
         // <span class="line"> structure SyntectPlugin emits.

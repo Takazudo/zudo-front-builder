@@ -57,8 +57,8 @@ use crate::dep_manifest::DependencyManifest;
 use crate::footnotes::FOOTNOTE_LABEL_STYLE;
 use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
-    constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode, JsxEmitStrategy,
-    Pipeline, PipelineError, ResolvedGfmConstructs,
+    constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode, HastVisitor,
+    JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 use crate::plugins::BrokenLinkDiagnostic;
@@ -404,18 +404,29 @@ fn mdx_to_jsx_module_inner(
         // path keeps using the lossy fallback to preserve its
         // long-standing snapshot output.
         //
-        // Slug context: the strategy callback fires once per top-level
-        // MDX JSX node, in document order, with no shared mutable state
-        // (it is a `&dyn Fn`). We give it interior mutability via a
-        // `Cell<usize>` cursor over `nested_slugs` — the document-order
-        // list of slugs `collect_headings` assigned to JSX-nested
-        // headings. `jsx_render_child` pops the next slug each time it
-        // renders a `MdastNode::Heading`, so the `id` it stamps matches
-        // the TOC export exactly. The cursor persists across all
-        // top-level JSX nodes because the closure captures it by ref.
-        let slug_ctx = SlugCtx {
+        // Nested-render context: the strategy callback fires once per
+        // top-level MDX JSX node, in document order, with no shared
+        // mutable state (it is a `&dyn Fn`). We give it interior
+        // mutability via a `Cell<usize>` cursor over `nested_slugs` —
+        // the document-order list of slugs `collect_headings` assigned
+        // to JSX-nested headings. `jsx_render_child` pops the next slug
+        // each time it renders a `MdastNode::Heading`, so the `id` it
+        // stamps matches the TOC export exactly. The cursor persists
+        // across all top-level JSX nodes because the closure captures
+        // it by ref.
+        //
+        // The ctx also OWNS the nested-code render chain (#2207),
+        // fetched here through `&Pipeline` — an owned chain on the ctx
+        // is what lets the strategy closure highlight JSX-nested fences
+        // without borrowing the pipeline, which `apply_hast_visitors`
+        // below still needs mutably.
+        let slug_ctx = NestedRenderCtx {
             nested_slugs: &nested_slugs,
             cursor: std::cell::Cell::new(0),
+            code_chain: pipeline_mut
+                .as_deref()
+                .and_then(Pipeline::nested_code_render_chain)
+                .map(std::cell::RefCell::new),
         };
         let strategy_fn = |node: &MdastNode, fc: &FootnoteRenderCtx<'_>| -> String {
             jsx_raw_recursive(node, &slug_ctx, fc)
@@ -1680,7 +1691,9 @@ fn collect_components_tag_names(jsx: &str, out: &mut std::collections::BTreeSet<
     }
 }
 
-/// Slug context threaded through the JSX-text recursive renderer.
+/// Per-document context threaded through the JSX-text recursive
+/// renderer (the [`JsxEmitStrategy::JsxPath`] strategy) — nested-heading
+/// slugs plus the nested-code render chain.
 ///
 /// `nested_slugs` is the document-order list of slugs `collect_headings`
 /// assigned to headings that live inside an MDX JSX element body, and
@@ -1691,15 +1704,29 @@ fn collect_components_tag_names(jsx: &str, out: &mut std::collections::BTreeSet<
 /// `walk_collect_headings`' descent order (both are mdast document-order
 /// walks reaching the same heading set), so the pop sequence aligns.
 ///
-/// `Cell` gives interior mutability without `unsafe` / `thread_local`:
-/// the `&dyn Fn` strategy callback cannot carry `&mut` state, but a
-/// `&Cell` captured by the closure can.
-struct SlugCtx<'a> {
+/// `code_chain` is the OWNED code-block hast chain
+/// ([`Pipeline::nested_code_render_chain`], #2207) used to highlight a
+/// fenced code block nested inside an MDX JSX body exactly like a
+/// top-level fence. Owning the chain here — instead of borrowing the
+/// pipeline inside the strategy closure — is what avoids a borrow
+/// conflict with the later `apply_hast_visitors(&mut Pipeline)` call in
+/// `mdx_to_jsx_module_inner`. `None` when the pipeline exposes no chain
+/// (no syntect configured): the `Code` arm then keeps its byte-stable
+/// fallback emission.
+///
+/// `Cell` / `RefCell` give interior mutability without `unsafe` /
+/// `thread_local`: the `&dyn Fn` strategy callback cannot carry `&mut`
+/// state, but a `&Cell` / `&RefCell` captured by the closure can. The
+/// `RefCell` borrow is non-reentrant by construction — the chain
+/// visitors are pure hast walkers that never call back into this
+/// renderer.
+struct NestedRenderCtx<'a> {
     nested_slugs: &'a [String],
     cursor: std::cell::Cell<usize>,
+    code_chain: Option<std::cell::RefCell<Vec<Box<dyn HastVisitor>>>>,
 }
 
-impl SlugCtx<'_> {
+impl NestedRenderCtx<'_> {
     /// Pop the slug for the next nested heading in document order.
     ///
     /// Returns `None` once the precomputed list is exhausted — a guard
@@ -1713,6 +1740,78 @@ impl SlugCtx<'_> {
         }
         slug
     }
+}
+
+/// Render one JSX-nested fenced code block through the pipeline's
+/// code-block hast chain and the shared [`HastJsxBridge`] node emitter,
+/// so nested output converges byte-for-byte with a top-level fence's
+/// (#2207).
+///
+/// Steps mirror the top-level path exactly:
+///
+/// 1. Build the SAME mini-hast node `pipeline::mdast_to_hast_inner`'s
+///    `Code` arm builds for a top-level fence —
+///    `<pre><code class="language-{lang}" data-lang data-meta>Text</code></pre>`
+///    — including the `data-lang` / `data-meta` attributes the current
+///    fallback emission drops (they are what the chain plugins key on).
+/// 2. Run the owned chain in the documented ordering contract
+///    (code-title → mermaid → syntect → code-enrichment) against a
+///    detached `Root` wrapper, since every chain plugin rewrites
+///    matching nodes among the CHILDREN of the node it visits.
+/// 3. Emit the rewritten children through a [`HastJsxBridge`] — the same
+///    `emit_node` code top-level blocks go through — and embed the
+///    result in the surrounding JsxRaw payload. The local bridge's
+///    harvested `html_tags` / `component_names` are deliberately
+///    dropped: the outer bridge re-harvests both from the final JsxRaw
+///    payload string (`collect_components_tag_names` /
+///    `collect_jsx_component_names` in its `JsxRaw` arm), exactly as it
+///    already does for every other `<_components.…>` reference this
+///    renderer emits. `hoisted_esm` cannot arise here — only
+///    `emit_root` hoists, and no chain plugin injects module-level ESM.
+///
+/// Returns `None` — caller falls back to the byte-stable legacy
+/// emission — when the ctx carries no chain, or when the chain left the
+/// mini-tree UNTOUCHED (no `data-lang` to key on, or a swallowed
+/// per-block highlight error): for an untouched tree the bridge would
+/// emit the code text as a `{"…"}` JS string literal whose contents are
+/// invisible to `jsx_text_escape`'s `<`-escaping, and there is nothing
+/// to gain over the established fallback bytes.
+fn nested_code_via_chain(c: &markdown::mdast::Code, ctx: &NestedRenderCtx) -> Option<String> {
+    let chain = ctx.code_chain.as_ref()?;
+    let mut code_attrs: Vec<(String, String)> = Vec::new();
+    if let Some(lang) = &c.lang {
+        code_attrs.push(("class".to_string(), format!("language-{lang}")));
+        code_attrs.push(("data-lang".to_string(), lang.clone()));
+    }
+    if let Some(meta) = &c.meta {
+        code_attrs.push(("data-meta".to_string(), meta.clone()));
+    }
+    let mini = HastNode::Root {
+        children: vec![HastNode::Element {
+            tag: "pre".to_string(),
+            attrs: vec![],
+            children: vec![HastNode::Element {
+                tag: "code".to_string(),
+                attrs: code_attrs,
+                children: vec![HastNode::Text(c.value.clone())],
+                void: false,
+            }],
+            void: false,
+        }],
+    };
+    let mut rewritten = mini.clone();
+    for visitor in chain.borrow_mut().iter_mut() {
+        visitor.visit(&mut rewritten);
+    }
+    if rewritten == mini {
+        return None;
+    }
+    let HastNode::Root { children } = &rewritten else {
+        // Defensive: no chain plugin replaces the Root itself.
+        return None;
+    };
+    let mut bridge = HastJsxBridge::new();
+    Some(children.iter().map(|n| bridge.emit_node(n)).collect())
 }
 
 /// Build the `id="…"` attribute plus trailing hash-link anchor for a
@@ -1758,7 +1857,11 @@ fn nested_heading_id_and_anchor(slug: &str, text: &str) -> (String, String) {
 /// recursion only on the JSX path is safe because the bridge already
 /// embeds the resulting JsxRaw payload verbatim — JSX accepts plain
 /// HTML tags inside MDX JSX bodies.
-fn jsx_raw_recursive(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>) -> String {
+fn jsx_raw_recursive(
+    node: &MdastNode,
+    ctx: &NestedRenderCtx,
+    fc: &FootnoteRenderCtx<'_>,
+) -> String {
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
             jsx_element_text(j.name.as_deref(), &j.attributes, &j.children, ctx, fc)
@@ -1780,7 +1883,7 @@ fn jsx_element_text(
     name: Option<&str>,
     attrs: &[AttributeContent],
     children: &[MdastNode],
-    ctx: &SlugCtx,
+    ctx: &NestedRenderCtx,
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let attrs_str = render_jsx_attrs(attrs);
@@ -1822,7 +1925,7 @@ fn jsx_element_text(
 /// `HastNode::JsxRaw` arm) harvests the `<_components.<tag>` references
 /// afterwards so the module preamble registers each tag's default
 /// fallback in the `_components` map.
-fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>) -> String {
+fn jsx_render_child(node: &MdastNode, ctx: &NestedRenderCtx, fc: &FootnoteRenderCtx<'_>) -> String {
     match node {
         MdastNode::Text(t) => jsx_text_escape(&t.value),
         MdastNode::Html(h) => h.value.clone(),
@@ -1864,16 +1967,27 @@ fn jsx_render_child(node: &MdastNode, ctx: &SlugCtx, fc: &FootnoteRenderCtx<'_>)
             "<_components.code>{}</_components.code>",
             jsx_text_escape(&c.value),
         ),
-        MdastNode::Code(c) => {
-            let mut attrs = String::new();
-            if let Some(lang) = &c.lang {
-                attrs.push_str(&format!(" class=\"language-{}\"", jsx_attr_escape(lang)));
+        // Fenced code inside an MDX JSX body / directive (#2207): route
+        // through the pipeline's code-block chain + the shared bridge
+        // emitter so the fence is highlighted exactly like a top-level
+        // one (full parity: title wrapper, mermaid div, syntect
+        // markup, enrichment attributes). Fallback — no chain on the
+        // ctx, or the chain left the block untouched — keeps the
+        // established byte-stable unhighlighted emission below;
+        // exact-substring tests depend on those bytes.
+        MdastNode::Code(c) => match nested_code_via_chain(c, ctx) {
+            Some(rendered) => rendered,
+            None => {
+                let mut attrs = String::new();
+                if let Some(lang) = &c.lang {
+                    attrs.push_str(&format!(" class=\"language-{}\"", jsx_attr_escape(lang)));
+                }
+                format!(
+                    "<_components.pre><_components.code{attrs}>{}</_components.code></_components.pre>",
+                    jsx_text_escape(&c.value),
+                )
             }
-            format!(
-                "<_components.pre><_components.code{attrs}>{}</_components.code></_components.pre>",
-                jsx_text_escape(&c.value),
-            )
-        }
+        },
         MdastNode::Link(l) => {
             let mut attrs = format!(" href=\"{}\"", jsx_attr_escape(&l.url));
             if let Some(title) = &l.title {
@@ -2023,7 +2137,7 @@ fn jsx_footnote_reference_marker(entry: &FootnoteEntry, footnote_ref: &FootnoteR
 /// the bridge's `collect_components_tag_names` scan registers each tag.
 fn jsx_render_table(
     t: &markdown::mdast::Table,
-    ctx: &SlugCtx,
+    ctx: &NestedRenderCtx,
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let style_attr = |col: usize| -> String {
@@ -2138,7 +2252,7 @@ fn jsx_wrap_children(
     tag: &str,
     attrs: &str,
     children: &[MdastNode],
-    ctx: &SlugCtx,
+    ctx: &NestedRenderCtx,
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     format!(
