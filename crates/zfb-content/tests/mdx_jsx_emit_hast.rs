@@ -1079,6 +1079,115 @@ fn directive_nested_fence_is_highlighted_class_mode() {
     assert_swc_accepts(&out, "directive-fence-class.tsx");
 }
 
+/// zfb#2209 (Wave-2 confirm pass over #2206 + #2207): the composition
+/// neither Wave-1 sub-issue tested on its own — a `ts` fence inside a
+/// MULTI-BLOCK (blank-line-separated) `:::note` directive body, in the
+/// SAME document as a `ts` fence inside a plain `<Note>` JSX element, run
+/// through the real class-mode pipeline. The directive body here is
+/// "opener glued to a paragraph, blank line, fenced code, blank line,
+/// closer" — the #2206 multi-block-body shape (`real_parser_blank_line_inside_body_transforms`
+/// / `real_parser_glued_opener_padded_closer_keeps_first_body_block` in
+/// `directives.rs`) — with a CODE block as the second body member instead
+/// of a second paragraph, which neither #2206's directive-parser tests
+/// (no highlighting) nor #2207's nested-highlight tests (single-block
+/// bodies only) exercised together. Both admonitions must render fully
+/// highlighted, the directive's leading prose must survive (the exact
+/// defect #2206 fixed — a glued first body block was silently dropped),
+/// and no literal `:::` or raw `language-ts` fallback may leak anywhere.
+#[test]
+fn directive_multi_block_body_and_top_level_note_jsx_both_highlight_in_class_mode() {
+    let features = note_directive_features();
+    let mut p = class_mode_pipeline(Some(&features));
+    let input = concat!(
+        ":::note\n",
+        "Intro paragraph before the fence.\n",
+        "\n",
+        "```ts\n",
+        "const x: number = 1\n",
+        "```\n",
+        "\n",
+        ":::\n",
+        "\n",
+        "<Note>\n",
+        "\n",
+        "```ts\n",
+        "const y: number = 2\n",
+        "```\n",
+        "\n",
+        "</Note>\n",
+    );
+    let out = mdx_to_jsx_module_with_pipeline(input, MdxJsxOptions::default(), &mut p)
+        .expect("pipeline emit ok");
+
+    // Both the directive-derived and the plain-JSX admonition must be
+    // present as <Note> elements.
+    assert_eq!(
+        out.matches("<Note").count(),
+        2,
+        "both the :::note directive and the plain <Note> JSX must fold \
+         into <Note> elements:\n{out}",
+    );
+    assert_eq!(
+        out.matches("</Note>").count(),
+        2,
+        "both admonitions must close:\n{out}",
+    );
+
+    // #2206: the directive's glued leading paragraph must survive inside
+    // the SAME <Note> as the fenced block — this is the exact content the
+    // pre-fix multi-block-body bug silently dropped.
+    assert!(
+        out.contains("Intro paragraph before the fence."),
+        "multi-block directive body must keep its leading paragraph \
+         alongside the nested fence:\n{out}",
+    );
+
+    // #2207: both nested `ts` fences (directive body + plain JSX) must be
+    // highlighted class-mode admonitions — hi-root root class present
+    // exactly twice, once per fence.
+    assert_eq!(
+        out.matches("class=\"hi-root\"").count(),
+        2,
+        "both the directive-nested and JSX-nested fence must carry their \
+         own hi-root class-mode markup:\n{out}",
+    );
+    assert!(
+        out.contains("hi-kw"),
+        "nested fences must carry class-mode role classes, not just the \
+         root wrapper:\n{out}",
+    );
+
+    // Each hi-root block must live inside SOME <Note>…</Note> span, not
+    // stray outside both admonitions.
+    let note_close = out.find("</Note>").expect("first </Note> present");
+    let (first_note, second_note) = out.split_at(note_close + "</Note>".len());
+    assert!(
+        first_note.contains("class=\"hi-root\""),
+        "the directive-derived admonition body must contain its highlighted fence:\n{first_note}",
+    );
+    assert!(
+        second_note.contains("class=\"hi-root\""),
+        "the plain-JSX admonition body must contain its highlighted fence:\n{second_note}",
+    );
+
+    // No literal directive fence syntax and no raw language-* fallback may
+    // leak anywhere in the composed output.
+    assert!(
+        !out.contains(":::"),
+        "no literal ::: directive fence syntax may leak into the output:\n{out}",
+    );
+    assert!(
+        !out.contains("language-ts"),
+        "raw language-ts fallback must NOT survive on either nested fence:\n{out}",
+    );
+    assert!(
+        !out.contains("syntect-"),
+        "class mode must not emit the inline syntect- hook for either nested fence:\n{out}",
+    );
+
+    assert_swc_accepts(&out, "directive-multiblock-and-jsx-note-class.tsx");
+}
+
 /// Dual-theme mode is covered by the same chain (the spec stores a clone
 /// of the mode-carrying `SyntectPlugin`): a nested fence emits the
 /// `syntect-dual` wrapper with `--shiki-*` custom properties.
