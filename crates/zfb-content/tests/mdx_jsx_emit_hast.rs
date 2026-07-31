@@ -1133,18 +1133,48 @@ fn directive_multi_block_body_and_top_level_note_jsx_both_highlight_in_class_mod
         "both admonitions must close:\n{out}",
     );
 
-    // #2206: the directive's glued leading paragraph must survive inside
-    // the SAME <Note> as the fenced block — this is the exact content the
-    // pre-fix multi-block-body bug silently dropped.
+    // Extract the two NON-NESTED `<Note …>…</Note>` element spans in
+    // document order, so every check below can be scoped to "strictly
+    // inside this admonition's own body" rather than "somewhere before an
+    // unrelated closing tag" (codex review: a slice built from only the
+    // first `</Note>` index also contains the whole module preamble, so a
+    // regression that emitted markup BEFORE `<Note>` opened could still
+    // pass a same-slice containment check).
+    fn note_element_span(out: &str, search_from: usize) -> (usize, usize) {
+        let open = out[search_from..]
+            .find("<Note")
+            .map(|i| search_from + i)
+            .expect("<Note open tag present");
+        let close_end = out[open..]
+            .find("</Note>")
+            .map(|i| open + i + "</Note>".len())
+            .expect("</Note> close tag present");
+        (open, close_end)
+    }
+    let (first_open, first_close_end) = note_element_span(&out, 0);
+    let first_note = &out[first_open..first_close_end];
+    let (second_open, second_close_end) = note_element_span(&out, first_close_end);
+    let second_note = &out[second_open..second_close_end];
+
+    // #2206: the directive's glued leading paragraph must survive INSIDE
+    // the directive-derived <Note> element itself, alongside the fenced
+    // block — this is the exact content the pre-fix multi-block-body bug
+    // silently dropped.
     assert!(
-        out.contains("Intro paragraph before the fence."),
+        first_note.contains("Intro paragraph before the fence."),
         "multi-block directive body must keep its leading paragraph \
-         alongside the nested fence:\n{out}",
+         inside the SAME <Note> element as the nested fence:\n{first_note}",
+    );
+    assert!(
+        !second_note.contains("Intro paragraph before the fence."),
+        "the directive's leading paragraph belongs only to the first \
+         admonition, not the plain-JSX one:\n{second_note}",
     );
 
     // #2207: both nested `ts` fences (directive body + plain JSX) must be
     // highlighted class-mode admonitions — hi-root root class present
-    // exactly twice, once per fence.
+    // exactly twice overall, and exactly once INSIDE each Note element's
+    // own span (not merely somewhere before its closing tag).
     assert_eq!(
         out.matches("class=\"hi-root\"").count(),
         2,
@@ -1156,18 +1186,17 @@ fn directive_multi_block_body_and_top_level_note_jsx_both_highlight_in_class_mod
         "nested fences must carry class-mode role classes, not just the \
          root wrapper:\n{out}",
     );
-
-    // Each hi-root block must live inside SOME <Note>…</Note> span, not
-    // stray outside both admonitions.
-    let note_close = out.find("</Note>").expect("first </Note> present");
-    let (first_note, second_note) = out.split_at(note_close + "</Note>".len());
-    assert!(
-        first_note.contains("class=\"hi-root\""),
-        "the directive-derived admonition body must contain its highlighted fence:\n{first_note}",
+    assert_eq!(
+        first_note.matches("class=\"hi-root\"").count(),
+        1,
+        "the directive-derived admonition body must contain exactly its \
+         own highlighted fence:\n{first_note}",
     );
-    assert!(
-        second_note.contains("class=\"hi-root\""),
-        "the plain-JSX admonition body must contain its highlighted fence:\n{second_note}",
+    assert_eq!(
+        second_note.matches("class=\"hi-root\"").count(),
+        1,
+        "the plain-JSX admonition body must contain exactly its own \
+         highlighted fence:\n{second_note}",
     );
 
     // No literal directive fence syntax and no raw language-* fallback may
