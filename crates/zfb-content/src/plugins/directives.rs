@@ -2608,6 +2608,30 @@ padded body
     }
 
     #[test]
+    fn real_parser_buried_unclosed_opener_after_hard_break_warns() {
+        // A hard break (two trailing spaces) before the buried opener puts
+        // the fence text at the START of a later `Text` child instead of
+        // behind a `\n` inside one — the pre-filter's second arm. Without
+        // it this variant would silently skip the scan.
+        let mut r = registry_with_admonitions();
+        let input = "some prose  \n:::warning\nnever closed\n";
+        let out = run_real_parser(&mut r, input);
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, MdastNode::MdxJsxFlowElement(_))),
+            "buried unclosed opener must not transform, got {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("warning"),
+            "diagnostic names the buried opener, got {:?}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].line, Some(2), "buried fence line attached");
+    }
+
+    #[test]
     fn real_parser_buried_unclosed_opener_before_later_directive_warns_and_leaves_it_intact() {
         // The buried unclosed opener is followed by a WELL-FORMED
         // directive. The later directive's own closer must not suppress
