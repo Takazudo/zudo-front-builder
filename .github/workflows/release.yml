@@ -75,7 +75,7 @@ on:
         # Manual override: forces detect-mac-local to output mac_local_present=true
         # without querying the GH Release. Use this on workflow_dispatch when you
         # have already uploaded the macOS-x64 archive + .sha256 to the Release and
-        # want to skip the macos-13 build leg. Under the normal `release: published`
+        # want to skip the macos-15-intel build leg. Under the normal `release: published`
         # trigger, auto-detection (detect-mac-local job) handles this automatically.
         # See RELEASE_DAY_CHECKLIST.md.
         description: "Manual override: treat the macOS-x64 archive as already present (forces mac_local_present=true)"
@@ -170,16 +170,23 @@ jobs:
         run: |
           ALL='[
             {"host":"macos-latest","target":"aarch64-apple-darwin","platform":"darwin-arm64","binary":"zfb","archive_ext":"tar.gz"},
-            {"host":"macos-13","target":"x86_64-apple-darwin","platform":"darwin-x64","binary":"zfb","archive_ext":"tar.gz"},
+            {"host":"macos-15-intel","target":"x86_64-apple-darwin","platform":"darwin-x64","binary":"zfb","archive_ext":"tar.gz"},
             {"host":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu","platform":"linux-x64-gnu","binary":"zfb","archive_ext":"tar.gz"},
             {"host":"ubuntu-latest","target":"aarch64-unknown-linux-gnu","platform":"linux-arm64-gnu","binary":"zfb","archive_ext":"tar.gz","use_cross":true},
             {"host":"windows-latest","target":"x86_64-pc-windows-msvc","platform":"win32-x64-msvc","binary":"zfb.exe","archive_ext":"zip"}
           ]'
           # TODO when ubuntu-22.04 GitHub Actions runner is deprecated: switch to a
           # manylinux_2_28 container or zig-cc cross-compile to maintain the GLIBC 2.35 floor.
+          # x86_64-apple-darwin runs on macos-15-intel, NOT macos-13: the macOS 13
+          # image was retired 2025-12-04 and a job requesting it queues forever
+          # rather than failing fast — which would hang `publish` (it needs `build`)
+          # and silently block the npm release. This leg only runs when the Mac
+          # archive was NOT pre-uploaded, so the dead label went unnoticed for 8+
+          # releases. macos-15-intel is the last x86_64 macOS image Actions offers;
+          # it retires Fall 2027, after which this leg needs a cross-compile.
           if [[ "$MAC_LOCAL_PRESENT" == "true" ]]; then
             SETTINGS="$(echo "$ALL" | jq -c '[.[] | select(.target != "x86_64-apple-darwin")]')"
-            echo "mac_local_present=true → dropping the x86_64-apple-darwin (macos-13) build leg"
+            echo "mac_local_present=true → dropping the x86_64-apple-darwin (macos-15-intel) build leg"
           else
             SETTINGS="$(echo "$ALL" | jq -c '.')"
           fi
@@ -636,7 +643,7 @@ jobs:
 
       # Fast-Mac gate (A2): when detect-mac-local found the pre-uploaded archive,
       # download and extract the binary so @takazudo/zfb-darwin-x64 can be
-      # published without running the macos-13 build leg. detect-mac-local already
+      # published without running the macos-15-intel build leg. detect-mac-local already
       # verified both the archive and its .sha256 are present before outputting true.
       - name: Verify + fetch pre-built macOS-x64 archive from GH Release
         if: ${{ needs.detect-mac-local.outputs.mac_local_present == 'true' && inputs.dry_run != true }}

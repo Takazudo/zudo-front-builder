@@ -1,12 +1,12 @@
 ---
-description: "Build the x86_64-apple-darwin zfb binary locally on a Mac and upload it to the draft GH Release for the tag, saving the slow macos-13 CI leg. Triggers on \"make mac binary\", \"build mac release binary\", \"upload mac binary\". Standalone entry for building on a separate Mac — /l-make-release builds the Mac binary inline when it already runs on macOS."
+description: "Build the x86_64-apple-darwin zfb binary locally on a Mac and upload it to the draft GH Release for the tag, saving the slow macos-15-intel CI leg. Triggers on \"make mac binary\", \"build mac release binary\", \"upload mac binary\". Standalone entry for building on a separate Mac — /l-make-release builds the Mac binary inline when it already runs on macOS."
 user-invocable: true
 argument-description: "Required: the tag (e.g. v0.1.0-next.5)"
 ---
 
 # /l-make-mac-release-binary
 
-Mac-only skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. Works with the `/l-make-release` (X9) flow to pre-upload the Mac archive so the `release.yml` publish step can skip the slow `macos-13` CI leg.
+Mac-only skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. Works with the `/l-make-release` (X9) flow to pre-upload the Mac archive so the `release.yml` publish step can skip the slow `macos-15-intel` CI leg.
 
 ## Pair with /l-make-release (X9 workflow)
 
@@ -120,7 +120,7 @@ Next: publish the draft Release (from any host) to trigger CI publish:
   # or via web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
 release.yml will auto-detect the pre-uploaded archive,
-skip the macos-13 build leg, and publish all 9 packages.
+skip the macos-15-intel build leg, and publish all 9 packages.
 
 After publishing, WAIT for the Release workflow run to finish (gh run watch) — it uploads the
 remaining platform archives (linux + windows) and their .sha256 files.

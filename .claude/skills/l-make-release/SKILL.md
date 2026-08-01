@@ -6,7 +6,7 @@ argument-description: "Optional — with NO argument the level is judged from th
 
 # /l-make-release
 
-Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-13 CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
+Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-15-intel CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
 
 ## Invocation & autonomy
 
@@ -445,7 +445,7 @@ The tag is created remotely as a draft. The `release: published` webhook event d
 
 ## Step 10: Build the macOS x86_64 Binary Locally (default)
 
-GitHub's `macos-13` runners are slow and frequently queue-starved, so this skill builds the Mac binary **locally by default** and pre-uploads it to the draft Release. `release.yml`'s detect-mac-local job then skips the `macos-13` leg at publish time.
+GitHub's `macos-15-intel` runners are slow and frequently queue-starved, so this skill builds the Mac binary **locally by default** and pre-uploads it to the draft Release. `release.yml`'s detect-mac-local job then skips the `macos-15-intel` leg at publish time.
 
 Detect the host OS:
 
@@ -472,16 +472,16 @@ Both `zfb-<version>-x86_64-apple-darwin.tar.gz` and its `.sha256` companion must
 
 ### If NOT `Darwin`
 
-Do not attempt the build (the cross-target needs an Apple host). **Print this note**, then continue to Step 11. (Default: Step 11 publishes anyway and `release.yml`'s macos-13 leg builds the Mac binary on CI — slower but autonomous. With `--confirm`: the user can run `/l-make-mac-release-binary` on a Mac before publishing manually.)
+Do not attempt the build (the cross-target needs an Apple host). **Print this note**, then continue to Step 11. (Default: Step 11 publishes anyway and `release.yml`'s macos-15-intel leg builds the Mac binary on CI — slower but autonomous. With `--confirm`: the user can run `/l-make-mac-release-binary` on a Mac before publishing manually.)
 
 ```
 ⚠️  Not a macOS host (uname = <result>). Skipping the local Mac build.
-    To build the Mac binary locally (recommended — saves the slow macos-13 CI leg),
+    To build the Mac binary locally (recommended — saves the slow macos-15-intel CI leg),
     run on a Mac before publishing:
 
       /l-make-mac-release-binary v<version>
 
-    Otherwise, publishing the draft will let CI build the macos-13 leg (slower).
+    Otherwise, publishing the draft will let CI build the macos-15-intel leg (slower).
 ```
 
 ## Step 11: Publish + Watch (default) / Notify + STOP (`--confirm`)
@@ -504,7 +504,7 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    gh run list --workflow release.yml --limit 3 --json databaseId,displayTitle,status
    ```
 
-3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows; the macos-13 leg is skipped when the Mac archive was pre-uploaded in Step 10, built on CI otherwise) and publishes all 10 npm packages.
+3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows; the macos-15-intel leg is skipped when the Mac archive was pre-uploaded in Step 10, built on CI otherwise) and publishes all 10 npm packages.
 4. **On success — update Homebrew (stable only), then report.**
 
    **a. Homebrew.** If `<version>` is **stable** (no `-next.` / `-beta.` / `-rc.`), run it now — do
@@ -568,7 +568,7 @@ NEXT STEP — publish the draft to trigger release.yml (from any host):
   # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
 release.yml's detect-mac-local job will see the pre-uploaded archive,
-skip the slow macos-13 leg, and publish all 10 packages.
+skip the slow macos-15-intel leg, and publish all 10 packages.
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
 remaining platform archives (linux + windows) and their .sha256 files, then publishes the
@@ -609,16 +609,16 @@ Option A (recommended): build the Mac binary on a Mac first, then publish
 
     gh release edit v<version> --draft=false
 
-Option B: publish now and let CI build the macos-13 leg (slower)
+Option B: publish now and let CI build the macos-15-intel leg (slower)
 
     gh release edit v<version> --draft=false
     # or via the web UI
 
 Either way, release.yml auto-detects whether the Mac archive is on the Release at
-publish time. If present → skip macos-13 (fast). If absent → build on CI.
+publish time. If present → skip macos-15-intel (fast). If absent → build on CI.
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
-remaining platform archives (linux + windows, and the macos-13 leg under Option B) and their
+remaining platform archives (linux + windows, and the macos-15-intel leg under Option B) and their
 .sha256 files, then publishes the npm packages:
 
   gh run watch

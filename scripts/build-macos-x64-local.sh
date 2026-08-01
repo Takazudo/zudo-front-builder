@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # build-macos-x64-local.sh
 #
-# Escape hatch for the chronically queue-starved GHA `macos-13` (legacy Intel)
-# runner (issue #437). Builds the macOS-x64 (`x86_64-apple-darwin`) release
+# Escape hatch for the Intel macOS CI runner (issue #437), originally written
+# because `macos-13` was chronically queue-starved. That image was retired
+# 2025-12-04; the CI leg now targets `macos-15-intel`, which itself retires in
+# Fall 2027 — after which Actions has no x86_64 macOS runner and this script's
+# cross-compile-from-arm64 approach becomes the only way to produce the archive.
+# Builds the macOS-x64 (`x86_64-apple-darwin`) release
 # binary locally on a Mac and produces the GH Release archive + sha256 in the
 # EXACT format release.yml would have produced on the runner.
 #
@@ -311,7 +315,7 @@ if [[ -n "$upload_tag" ]]; then
     "${archive_path}.sha256" \
     --clobber
   echo "==> Uploaded. Now publish the draft GH Release (gh release edit ${upload_tag} --draft=false or web UI) to trigger release.yml."
-  echo "    The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-13 build leg."
+  echo "    The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-15-intel build leg."
 else
   echo ""
   echo "Not uploaded. To attach these to the draft GH Release for <tag>, run:"
@@ -319,5 +323,5 @@ else
   echo "    \"${archive_path}\" \\"
   echo "    \"${archive_path}.sha256\" --clobber"
   echo "Then publish the draft Release (gh release edit <tag> --draft=false or web UI) to trigger release.yml."
-  echo "The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-13 build leg."
+  echo "The workflow's detect-mac-local job will see the pre-uploaded archive and skip the macos-15-intel build leg."
 fi

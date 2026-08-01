@@ -15,7 +15,7 @@ on a tag push. The flow is:
    version tag). Draft Releases do NOT trigger the workflow.
 2. Optionally: on a Mac, run `./scripts/build-macos-x64-local.sh --upload vX.Y.Z`
    to pre-upload the macOS-x64 archive + `.sha256` to the draft Release (fast-Mac
-   path — skips the chronically slow `macos-13` runner).
+   path — skips the chronically slow `macos-15-intel` runner).
 3. **Publish the draft Release** (`gh release edit vX.Y.Z --draft=false` or the
    web UI) to trigger `release.yml`. Publishing fires the `release: published`
    event; the draft state does NOT.
@@ -88,9 +88,20 @@ The `release-assets` job will list the collected files instead of uploading.
 
 ## macOS-x64 local-build escape hatch (added by issue #437, updated by issue #455)
 
-The GHA `macos-13` (legacy Intel) runner is chronically queue-starved — GitHub
-is throttling its capacity to push users toward Apple Silicon images. The
-`detect-mac-local` job (A2) auto-detects whether a locally-built macOS-x64
+This escape hatch was built because the Intel macOS runner was chronically
+queue-starved. That runner (`macos-13`) has since been **retired outright**
+(2025-12-04); the x86_64 leg now targets **`macos-15-intel`**, the migration
+label, whose throughput here is not yet characterised. Note the deadline: that
+image retires in **Fall 2027**, and Actions offers no x86_64 macOS runner after
+it — at which point this leg must become a cross-compile (which is exactly what
+`build-macos-x64-local.sh` already does on an Apple Silicon host).
+
+Because the local-build path has been used for every recent release, the dead
+`macos-13` label sat unnoticed in the matrix for 8+ releases. It only affects
+the no-pre-upload path, where it would have hung the whole release rather than
+failing fast — `publish` needs `build`.
+
+The `detect-mac-local` job (A2) auto-detects whether a locally-built macOS-x64
 archive has been pre-uploaded to the draft Release before it was published,
 so no manual re-dispatch is needed.
 
@@ -100,9 +111,9 @@ so no manual re-dispatch is needed.
 2. Publish the draft (`gh release edit vX.Y.Z --draft=false` or web UI) with
    NO Mac archive attached.
 3. The workflow builds all 5 platforms on CI and publishes all packages with
-   full npm `--provenance`. Use this path whenever `macos-13` is behaving.
+   full npm `--provenance`. Use this path whenever `macos-15-intel` is behaving.
 
-### Fast-Mac path (when `macos-13` is slow or you want to skip it)
+### Fast-Mac path (when `macos-15-intel` is slow or you want to skip it)
 
 1. Run `/l-make-release` to create the draft Release.
 2. On a Mac, build + upload the macOS-x64 asset to the **draft** Release:
@@ -120,7 +131,7 @@ so no manual re-dispatch is needed.
    to trigger `release.yml`. The workflow's `detect-mac-local` job will see both
    files on the Release and output `mac_local_present=true`, causing it to:
 
-   - drop the `darwin-x64` build leg from the matrix (no `macos-13` wait),
+   - drop the `darwin-x64` build leg from the matrix (no `macos-15-intel` wait),
    - download the pre-uploaded archive, verify its `.sha256`, extract the binary,
    - upload the other 4 platform archives to the Release (the pre-uploaded
      macOS-x64 asset stays in place),
@@ -152,7 +163,7 @@ the publish step therefore splits:
 - all other packages → published **with** `--provenance`
 
 This is the "mixed-provenance" option B from issue #437. Prefer the default path
-(option C: only use the escape hatch when `macos-13` is actually stuck) so most
+(option C: only use the escape hatch when `macos-15-intel` is actually stuck) so most
 releases keep full provenance across every package.
 
 ## Homebrew tap update (added by issue #383)
