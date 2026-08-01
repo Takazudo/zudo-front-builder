@@ -165,7 +165,7 @@ recovery — since nothing is then watching `release.yml` to trigger it.
 
 After the GitHub Release assets are published, regenerate and push the Homebrew
 tap formula. Requires a local checkout of `Takazudo/homebrew-tap` at the default
-path (`~/repos/Takazudo/homebrew-tap`):
+path (`~/repos/zp/homebrew-tap`, overridable with `ZFB_TAP_PATH`):
 
 ```sh
 ./scripts/update-homebrew-formula.sh vX.Y.Z --push

@@ -11,7 +11,7 @@
 #             accepts both and normalises internally.
 #
 # --tap-path  Path to the Homebrew tap repo checkout.
-#             Default: ${HOME}/repos/Takazudo/homebrew-tap
+#             Default: ${ZFB_TAP_PATH:-${HOME}/repos/zp/homebrew-tap}
 #             If that path does not exist (or exists but is empty), it is CLONED
 #             from ZFB_TAP_REMOTE — see "Tap checkout" below.
 #
@@ -36,12 +36,15 @@
 #                          absent. Default: git@github.com:Takazudo/homebrew-tap.git
 #                          (use https://github.com/Takazudo/homebrew-tap.git on a
 #                          host without SSH keys; tests point it at a local repo).
+#   ZFB_TAP_PATH           Overrides the default tap checkout location. Use this
+#                          on a host that keeps the tap somewhere else, instead
+#                          of passing --tap-path on every invocation.
 set -euo pipefail
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 version_arg=""
-tap_path="${HOME}/repos/Takazudo/homebrew-tap"
+tap_path="${ZFB_TAP_PATH:-${HOME}/repos/zp/homebrew-tap}"
 do_push=false
 
 while [[ $# -gt 0 ]]; do

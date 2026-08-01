@@ -522,8 +522,9 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    Confirm the tap actually moved, rather than trusting the exit code alone:
 
    ```bash
-   git -C "${HOME}/repos/Takazudo/homebrew-tap" log -1 --oneline
-   grep -m1 'version' "${HOME}/repos/Takazudo/homebrew-tap/Formula/zfb.rb"
+   TAP="${ZFB_TAP_PATH:-${HOME}/repos/zp/homebrew-tap}"
+   git -C "$TAP" log -1 --oneline
+   grep -m1 'version' "$TAP/Formula/zfb.rb"
    ```
 
    **If it fails, the release is still a success** — npm and the GH Release are already live and
