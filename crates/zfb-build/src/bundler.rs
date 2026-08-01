@@ -8282,8 +8282,11 @@ fn materialise_collection(
 /// transitions) to stderr whenever this returns `true`. Wave 3 removes
 /// or promotes this instrumentation per the Wave 2 decision.
 fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
-    let diag = jsx_breakage_scan(jsx);
-    if diag.trip.is_some() && std::env::var_os("ZFB_DEBUG_BRIDGE_GATE").is_some() {
+    let debug = std::env::var_os("ZFB_DEBUG_BRIDGE_GATE").is_some();
+    // Recording is skipped entirely when diagnostics are off, so the
+    // production path stays allocation-free (`Vec::new` never grows).
+    let diag = jsx_breakage_scan_with(jsx, debug);
+    if debug && diag.trip.is_some() {
         eprintln!("{}", diag.render_report(jsx));
     }
     diag.trip.is_some()
@@ -8402,11 +8405,20 @@ impl JsxBreakageDiagnostic {
     }
 }
 
+/// Recording scan — used by the #2217 diagnosis tests, which always
+/// want the transition log.
+#[cfg(test)]
+fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
+    jsx_breakage_scan_with(jsx, true)
+}
+
 /// The scan itself — byte-for-byte the pre-#2217 algorithm of
 /// [`jsx_likely_breaks_downstream_parser`], with state transitions
-/// recorded into the returned [`JsxBreakageDiagnostic`]. The recording
-/// is the ONLY addition; control flow is unchanged.
-fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
+/// recorded into the returned [`JsxBreakageDiagnostic`] when `record`
+/// is set. The recording is the ONLY addition; control flow is
+/// unchanged, and with `record == false` the scan stays allocation-free
+/// (`Vec::new` never grows), preserving the pre-#2217 production cost.
+fn jsx_breakage_scan_with(jsx: &str, record: bool) -> JsxBreakageDiagnostic {
     let bytes = jsx.as_bytes();
     let mut in_string: Option<u8> = None;
     let mut in_line_comment = false;
@@ -8420,7 +8432,9 @@ fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
         if in_line_comment {
             if c == b'\n' {
                 in_line_comment = false;
-                events.push(GateScanEvent::LineCommentClose { offset: i });
+                if record {
+                    events.push(GateScanEvent::LineCommentClose { offset: i });
+                }
             }
             i += 1;
             continue;
@@ -8428,7 +8442,9 @@ fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
         if in_block_comment {
             if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
                 in_block_comment = false;
-                events.push(GateScanEvent::BlockCommentClose { offset: i });
+                if record {
+                    events.push(GateScanEvent::BlockCommentClose { offset: i });
+                }
                 i += 2;
                 continue;
             }
@@ -8445,10 +8461,12 @@ fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
             }
             if c == q {
                 in_string = None;
-                events.push(GateScanEvent::StringClose {
-                    offset: i,
-                    quote: q,
-                });
+                if record {
+                    events.push(GateScanEvent::StringClose {
+                        offset: i,
+                        quote: q,
+                    });
+                }
             }
             i += 1;
             continue;
@@ -8459,13 +8477,17 @@ fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
             match bytes[i + 1] {
                 b'/' => {
                     in_line_comment = true;
-                    events.push(GateScanEvent::LineCommentOpen { offset: i });
+                    if record {
+                        events.push(GateScanEvent::LineCommentOpen { offset: i });
+                    }
                     i += 2;
                     continue;
                 }
                 b'*' => {
                     in_block_comment = true;
-                    events.push(GateScanEvent::BlockCommentOpen { offset: i });
+                    if record {
+                        events.push(GateScanEvent::BlockCommentOpen { offset: i });
+                    }
                     i += 2;
                     continue;
                 }
@@ -8476,10 +8498,12 @@ fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
         // String literal opener.
         if c == b'"' || c == b'\'' || c == b'`' {
             in_string = Some(c);
-            events.push(GateScanEvent::StringOpen {
-                offset: i,
-                quote: c,
-            });
+            if record {
+                events.push(GateScanEvent::StringOpen {
+                    offset: i,
+                    quote: c,
+                });
+            }
             i += 1;
             continue;
         }
