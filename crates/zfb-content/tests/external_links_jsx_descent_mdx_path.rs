@@ -201,3 +201,46 @@ fn footnote_definition_external_link_under_jsx_is_treated_exactly_once() {
         "the treated link's href must survive: {jsx}"
     );
 }
+
+/// Regression pin (codex review of #2249): a JSX-nested HEADING whose
+/// text is (or contains) an external link must keep its plain-text
+/// projection — `headings[i].text`/`.slug` in the module export AND the
+/// rendered `id`/hash-link anchor on the `<hN>` itself — after
+/// `JsxNestedExternalLinks` replaces the nested `Link` with an `<a>`
+/// `MdxJsxTextElement`. Both `collect_headings` (via `mdast_inline_text`)
+/// and the JSX-nested heading's own renderer share that same text
+/// projection (`mdx_jsx_emit.rs`), so this one pin covers both call
+/// sites: before the fix, the synthesized JSX anchor fell through the
+/// generic "JSX contributes nothing to TOCs" catch-all and silently
+/// emptied the heading's text/slug/id/anchor.
+#[test]
+fn jsx_nested_heading_containing_a_treated_external_link_keeps_its_text_and_anchor() {
+    let mut p = pipeline_with_external_links(false, false);
+    let opts = MdxJsxOptions::default()
+        .with_filename("content/a.mdx".to_string())
+        .with_source_path("/proj/content/a.mdx");
+    let jsx = mdx_to_jsx_module_with_pipeline(
+        "<Note>\n\n## [Guide](https://example.org)\n\n</Note>\n",
+        opts,
+        &mut p,
+    )
+    .expect("compile must succeed");
+
+    assert!(
+        jsx.contains(r#"text: "Guide""#),
+        "the headings export must keep the flattened link text: {jsx}"
+    );
+    assert!(
+        jsx.contains(r#"slug: "guide""#),
+        "the headings export must keep a non-empty slug derived from that text: {jsx}"
+    );
+    assert!(
+        jsx.contains(r#"id="guide""#),
+        "the rendered heading must keep its stamped id (and, by extension, its \
+         hash-link anchor, which is derived from the same slug): {jsx}"
+    );
+    assert!(
+        jsx.contains("target=\"_blank\""),
+        "the nested link itself must still be treated as external: {jsx}"
+    );
+}
