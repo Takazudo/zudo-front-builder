@@ -208,6 +208,169 @@ pub async fn next_sse_event_name(
     }
 }
 
+/// A single parsed SSE frame — the `event:` name and the `data:` payload,
+/// captured verbatim (not JSON-decoded) so callers can assert on wire
+/// shape directly. `None` for a field means that field's line was never
+/// seen in the frame (distinct from an empty string, which means the
+/// line WAS present but carried no content after the colon).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SseFrame {
+    pub event: Option<String>,
+    pub data: Option<String>,
+}
+
+/// Strict counterpart to [`next_sse_event_name`]: reads the next full SSE
+/// frame — waiting for the blank-line dispatch boundary the SSE spec uses
+/// to terminate a frame, so both `event:` and `data:` lines are captured,
+/// not just the first line seen — and asserts it carries a non-empty
+/// `data:` line before returning the frame's event name.
+///
+/// This is the wire-level proxy for the empty-payload guard in
+/// `crates/zfb-server/src/livereload.rs` (`ReloadEvent::data()` /
+/// `sse_response`): axum 0.8.9 silently DROPS any `Event` whose data
+/// buffer is empty (`EventDataWriter::write_buf` early-returns on an
+/// empty write, so `.data("")` never even emits a `data:` line at all —
+/// see that file's doc comments). If that guard ever regresses, the
+/// frame this function reads is missing its `data:` line and the
+/// assertion below fails loudly instead of the regression passing
+/// silently through `next_sse_event_name`'s tolerant name-only scan.
+///
+/// Returns `Ok(None)` on timeout or stream EOF with no event field ever
+/// observed — mirroring `next_sse_event_name`'s timeout behavior — so a
+/// missing event fails the caller's own assertion rather than panicking
+/// inside a timing-sensitive helper.
+///
+/// ADDITIVE / OPT-IN: this does not change `next_sse_event_name`'s
+/// tolerant, first-line-wins parsing — other call sites depend on that
+/// exact behavior. Use this helper only where the `data:` guarantee
+/// itself is under test.
+pub async fn assert_frame_has_data(
+    resp: reqwest::Response,
+    dur: Duration,
+) -> anyhow::Result<Option<String>> {
+    let frame = next_sse_frame(resp, dur).await?;
+    match frame {
+        Some(f) => {
+            assert!(
+                f.data.as_deref().is_some_and(|d| !d.is_empty()),
+                "SSE frame carried event {:?} but no non-empty `data:` line \
+                 (frame: {f:?}) — the empty-payload guard may have regressed \
+                 (ReloadEvent::data() / sse_response, crates/zfb-server/src/livereload.rs)",
+                f.event,
+            );
+            Ok(f.event)
+        }
+        None => Ok(None),
+    }
+}
+
+/// Strip at most one leading U+0020 SPACE after a `field:` colon, per the
+/// SSE wire-format spec (WHATWG "event stream interpretation": *"If value
+/// starts with a single U+0020 SPACE character, remove it from value"*).
+/// Unlike `str::trim`, this touches nothing else — a payload that is
+/// itself whitespace, or that carries trailing spaces, survives verbatim,
+/// which is what [`SseFrame`]'s docs promise and what
+/// [`assert_frame_has_data`]'s emptiness check relies on (`str::trim`
+/// would collapse a whitespace-only `data:` line to `""` and misreport a
+/// genuinely non-empty payload as missing).
+fn strip_one_leading_space(s: &str) -> &str {
+    s.strip_prefix(' ').unwrap_or(s)
+}
+
+/// Read a `text/event-stream` body chunk-by-chunk and return the first
+/// full frame (`event:` + `data:` lines, terminated by the blank-line
+/// dispatch boundary) we observe. Times out after `dur`, mirroring
+/// [`next_sse_event_name`]'s incremental UTF-8 handling (reuses
+/// [`decode_utf8_incremental`] rather than duplicating it).
+///
+/// A comment-only / keep-alive block (no `event:` line before the blank
+/// line) is skipped and scanning continues — only a block that produced
+/// an `event:` field is dispatched, matching SSE's own "no event, no
+/// dispatch" semantics.
+pub async fn next_sse_frame(
+    resp: reqwest::Response,
+    dur: Duration,
+) -> anyhow::Result<Option<SseFrame>> {
+    let mut stream = resp.bytes_stream();
+    let mut buf = Vec::<u8>::new();
+    let mut decoded_up_to: usize = 0;
+    let mut pending_line = String::new();
+
+    let mut event: Option<String> = None;
+    let mut data: Option<String> = None;
+
+    let task = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            buf.extend_from_slice(&chunk);
+
+            let (valid_str, new_decoded) = decode_utf8_incremental(&buf, decoded_up_to);
+            decoded_up_to = new_decoded;
+
+            let to_scan = if pending_line.is_empty() {
+                valid_str
+            } else {
+                let mut s = std::mem::take(&mut pending_line);
+                s.push_str(&valid_str);
+                s
+            };
+
+            let mut lines = to_scan.split('\n').peekable();
+            while let Some(line) = lines.next() {
+                if lines.peek().is_none() {
+                    // Last segment — may be an incomplete line (no
+                    // trailing newline yet). Save it for the next chunk.
+                    if !line.is_empty() {
+                        pending_line = line.to_string();
+                    }
+                    break;
+                }
+                let trimmed = line.trim_end_matches('\r');
+                if trimmed.is_empty() {
+                    // Blank line = SSE dispatch boundary.
+                    if event.is_some() {
+                        return Ok::<Option<SseFrame>, anyhow::Error>(Some(SseFrame {
+                            event: event.take(),
+                            data: data.take(),
+                        }));
+                    }
+                    // Comment-only / keep-alive block: reset and keep
+                    // scanning for the next real frame.
+                    event = None;
+                    data = None;
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix("event:") {
+                    let name = strip_one_leading_space(rest).to_string();
+                    if !name.is_empty() {
+                        event = Some(name);
+                    }
+                } else if let Some(rest) = trimmed.strip_prefix("data:") {
+                    // Multiple `data:` lines in one frame are joined with
+                    // `\n` per the SSE spec; axum never emits more than
+                    // one for this crate's events, but this keeps the
+                    // helper spec-correct rather than last-line-wins.
+                    let payload = strip_one_leading_space(rest).to_string();
+                    data = Some(match data.take() {
+                        Some(mut existing) => {
+                            existing.push('\n');
+                            existing.push_str(&payload);
+                            existing
+                        }
+                        None => payload,
+                    });
+                }
+            }
+        }
+        Ok(None)
+    };
+
+    match tokio::time::timeout(dur, task).await {
+        Ok(res) => res,
+        Err(_) => Ok(None),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers exposed for unit-testing the incremental decoder.
 // ---------------------------------------------------------------------------
@@ -385,6 +548,150 @@ mod tests {
     fn sse_scan_no_event_returns_none() {
         let result = scan_chunks_for_event(&[b"data: hello\n\n"]);
         assert_eq!(result, None);
+    }
+
+    // ── next_sse_frame / assert_frame_has_data ────────────────────────────
+    //
+    // Same simulation strategy as `scan_chunks_for_event` above: the
+    // production async fn's line-scanning state machine, duplicated as a
+    // synchronous helper so the blank-line dispatch boundary and
+    // event/data accumulation can be exercised without a real
+    // `reqwest::Response`.
+
+    /// Simulate `next_sse_frame`'s scan loop for a sequence of byte
+    /// chunks, returning the first dispatched frame or `None`.
+    fn scan_chunks_for_frame(chunks: &[&[u8]]) -> Option<SseFrame> {
+        let mut buf = Vec::<u8>::new();
+        let mut decoded_up_to: usize = 0;
+        let mut pending_line = String::new();
+        let mut event: Option<String> = None;
+        let mut data: Option<String> = None;
+
+        for &chunk in chunks {
+            buf.extend_from_slice(chunk);
+
+            let (valid_str, new_decoded) = decode_utf8_incremental(&buf, decoded_up_to);
+            decoded_up_to = new_decoded;
+
+            let to_scan = if pending_line.is_empty() {
+                valid_str.clone()
+            } else {
+                let mut s = std::mem::take(&mut pending_line);
+                s.push_str(&valid_str);
+                s
+            };
+
+            let mut lines = to_scan.split('\n').peekable();
+            while let Some(line) = lines.next() {
+                if lines.peek().is_none() {
+                    if !line.is_empty() {
+                        pending_line = line.to_string();
+                    }
+                    break;
+                }
+                let trimmed = line.trim_end_matches('\r');
+                if trimmed.is_empty() {
+                    if event.is_some() {
+                        return Some(SseFrame {
+                            event: event.take(),
+                            data: data.take(),
+                        });
+                    }
+                    event = None;
+                    data = None;
+                    continue;
+                }
+                if let Some(rest) = trimmed.strip_prefix("event:") {
+                    let name = strip_one_leading_space(rest).to_string();
+                    if !name.is_empty() {
+                        event = Some(name);
+                    }
+                } else if let Some(rest) = trimmed.strip_prefix("data:") {
+                    let payload = strip_one_leading_space(rest).to_string();
+                    data = Some(match data.take() {
+                        Some(mut existing) => {
+                            existing.push('\n');
+                            existing.push_str(&payload);
+                            existing
+                        }
+                        None => payload,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn sse_frame_single_chunk_captures_event_and_data() {
+        let frame = scan_chunks_for_frame(&[b"event: page\ndata: {}\n\n"]).expect("frame");
+        assert_eq!(frame.event.as_deref(), Some("page"));
+        assert_eq!(frame.data.as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn sse_frame_split_across_chunks_still_captures_data() {
+        // The exact production wire shape (`sse_response`), split mid-line
+        // to prove the incremental scan doesn't lose the `data:` field.
+        let frame = scan_chunks_for_frame(&[b"event: page\nda", b"ta: {}\n\n"]).expect("frame");
+        assert_eq!(frame.event.as_deref(), Some("page"));
+        assert_eq!(frame.data.as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn sse_frame_event_only_leaves_data_none() {
+        // Regression proxy: this is the exact shape the pre-#2238 fix
+        // produced for Page/Css events (`event:` line present, `data:`
+        // line never written because axum's Event::data("") is a no-op).
+        // `assert_frame_has_data` must reject a frame shaped like this.
+        let frame = scan_chunks_for_frame(&[b"event: page\n\n"]).expect("frame");
+        assert_eq!(frame.event.as_deref(), Some("page"));
+        assert_eq!(frame.data, None, "no data: line was ever sent");
+    }
+
+    #[test]
+    fn sse_frame_whitespace_only_data_stays_non_empty() {
+        // Regression guard for a real codex-review finding on this
+        // helper: only ONE leading space after the colon is part of the
+        // SSE wire syntax (WHATWG "event stream interpretation"), so a
+        // `data:` line carrying a SECOND space as its actual payload
+        // must survive as the single-space string `" "`, not collapse to
+        // `""`. `str::trim` (used by the pre-existing tolerant
+        // `next_sse_event_name`/`scan_chunks_for_event`, deliberately
+        // left untouched) would wrongly report this frame as having no
+        // data at all, which would make `assert_frame_has_data` reject a
+        // genuinely non-empty payload.
+        let frame = scan_chunks_for_frame(&[b"event: page\ndata:  \n\n"]).expect("frame");
+        assert_eq!(frame.event.as_deref(), Some("page"));
+        assert_eq!(
+            frame.data.as_deref(),
+            Some(" "),
+            "only the single spec-mandated leading space is stripped"
+        );
+    }
+
+    #[test]
+    fn sse_frame_preserves_trailing_whitespace_in_data() {
+        // Companion to the whitespace-only case above: trailing spaces in
+        // an otherwise non-trivial payload must also survive verbatim.
+        let frame = scan_chunks_for_frame(&[b"event: page\ndata: {} \n\n"]).expect("frame");
+        assert_eq!(frame.data.as_deref(), Some("{} "));
+    }
+
+    #[test]
+    fn sse_frame_comment_only_block_is_skipped() {
+        // A bare keep-alive comment block (no `event:` line) must not be
+        // dispatched as a frame — scanning continues to the real frame
+        // that follows.
+        let frame =
+            scan_chunks_for_frame(&[b": keep-alive\n\nevent: css\ndata: {}\n\n"]).expect("frame");
+        assert_eq!(frame.event.as_deref(), Some("css"));
+        assert_eq!(frame.data.as_deref(), Some("{}"));
+    }
+
+    #[test]
+    fn sse_frame_no_event_returns_none() {
+        assert_eq!(scan_chunks_for_frame(&[b": keep-alive\n\n"]), None);
     }
 
     // ── wait_for_subscribers ─────────────────────────────────────────────
