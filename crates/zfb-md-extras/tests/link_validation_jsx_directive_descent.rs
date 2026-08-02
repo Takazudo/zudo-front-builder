@@ -349,7 +349,6 @@ fn context_list_item_link_warns_ja() {
 /// leaf (`link_validation.rs`'s `// Leaf nodes.` match arm) — the nested
 /// `<a href>` is never visited.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2184"]
 fn context_mdx_jsx_note_children_link_should_warn_en() {
     let mut registry = HeadingRegistry::new();
     let (diags, _hast) = run_with_note_directive(
@@ -372,7 +371,6 @@ fn context_mdx_jsx_note_children_link_should_warn_en() {
 
 /// CJK counterpart of `context_mdx_jsx_note_children_link_should_warn_en`.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2184"]
 fn context_mdx_jsx_note_children_link_should_warn_ja() {
     let mut registry = HeadingRegistry::new();
     let md = "<Note>\n\n[リンク](#存在しない見出し-ノート)\n\n</Note>\n";
@@ -405,7 +403,6 @@ fn context_mdx_jsx_note_children_link_should_warn_ja() {
 /// proof that this is the IDENTICAL node shape as the MDX JSX case, not a
 /// second, independent bug.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2184"]
 fn context_container_directive_note_children_link_should_warn_en() {
     let mut registry = HeadingRegistry::new();
     let (diags, _hast) = run_with_note_directive(
@@ -428,7 +425,6 @@ fn context_container_directive_note_children_link_should_warn_en() {
 
 /// CJK counterpart of `context_container_directive_note_children_link_should_warn_en`.
 #[test]
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2184"]
 fn context_container_directive_note_children_link_should_warn_ja() {
     let mut registry = HeadingRegistry::new();
     let md = ":::note\n\n[リンク](#存在しない見出し-ディレクティブ)\n\n:::\n";
