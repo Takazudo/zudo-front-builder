@@ -170,6 +170,27 @@ pub struct BuildArgs {
         conflicts_with = "strict_broken"
     )]
     no_strict_broken: bool,
+
+    /// Fail the build (non-zero exit) when a content-collection `.md`/`.mdx`
+    /// entry falls back to `<pre data-zfb-content-fallback>` because its
+    /// compiled JSX does not parse. Off by default: the fallback always
+    /// warns and the build always exits 0 unless this (or the config
+    /// `strictContentBridge` field) is enabled. See issue #2220.
+    #[arg(
+        long = "strict-content-bridge",
+        action = ArgAction::SetTrue,
+        conflicts_with = "no_strict_content_bridge"
+    )]
+    strict_content_bridge: bool,
+
+    /// Do not fail the build on a content-bridge fallback, even if
+    /// `strictContentBridge` is enabled in `zfb.config.*`.
+    #[arg(
+        long = "no-strict-content-bridge",
+        action = ArgAction::SetTrue,
+        conflicts_with = "strict_content_bridge"
+    )]
+    no_strict_content_bridge: bool,
 }
 
 impl BuildArgs {
@@ -204,6 +225,22 @@ impl BuildArgs {
             (true, true) => BuildStrictBrokenLinks::Disabled,
         }
     }
+
+    /// The user-facing strict-content-bridge CLI state.
+    ///
+    /// Kept as a tri-state so command orchestration can layer
+    /// "explicit CLI > config `strictContentBridge` > default false"
+    /// without treating an omitted flag as an explicit `false`.
+    pub fn strict_content_bridge(&self) -> BuildStrictContentBridge {
+        match (self.strict_content_bridge, self.no_strict_content_bridge) {
+            (true, false) => BuildStrictContentBridge::Enabled,
+            (false, true) => BuildStrictContentBridge::Disabled,
+            (false, false) => BuildStrictContentBridge::Unspecified,
+            // clap rejects this via `conflicts_with`; keep the branch
+            // deterministic for direct struct construction in tests.
+            (true, true) => BuildStrictContentBridge::Disabled,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +268,23 @@ pub enum BuildStrictBrokenLinks {
 }
 
 impl BuildStrictBrokenLinks {
+    pub fn as_option(self) -> Option<bool> {
+        match self {
+            Self::Unspecified => None,
+            Self::Enabled => Some(true),
+            Self::Disabled => Some(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStrictContentBridge {
+    Unspecified,
+    Enabled,
+    Disabled,
+}
+
+impl BuildStrictContentBridge {
     pub fn as_option(self) -> Option<bool> {
         match self {
             Self::Unspecified => None,
@@ -334,6 +388,13 @@ mod tests {
     fn build_strict_broken_links(argv: &[&str]) -> BuildStrictBrokenLinks {
         match Cli::try_parse_from(argv).expect("parse").command {
             Command::Build(args) => args.strict_broken_links(),
+            other => panic!("expected build subcommand, got {other:?}"),
+        }
+    }
+
+    fn build_strict_content_bridge(argv: &[&str]) -> BuildStrictContentBridge {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Build(args) => args.strict_content_bridge(),
             other => panic!("expected build subcommand, got {other:?}"),
         }
     }
@@ -501,6 +562,60 @@ mod tests {
         assert!(
             help.contains("--no-strict-broken"),
             "build help must document --no-strict-broken:\n{help}"
+        );
+    }
+
+    #[test]
+    fn build_strict_content_bridge_absent_is_unspecified() {
+        assert_eq!(
+            build_strict_content_bridge(&["zfb", "build"]),
+            BuildStrictContentBridge::Unspecified
+        );
+    }
+
+    #[test]
+    fn build_strict_content_bridge_flag_enables() {
+        assert_eq!(
+            build_strict_content_bridge(&["zfb", "build", "--strict-content-bridge"]),
+            BuildStrictContentBridge::Enabled
+        );
+    }
+
+    #[test]
+    fn build_no_strict_content_bridge_flag_disables() {
+        assert_eq!(
+            build_strict_content_bridge(&["zfb", "build", "--no-strict-content-bridge"]),
+            BuildStrictContentBridge::Disabled
+        );
+    }
+
+    #[test]
+    fn build_strict_content_bridge_flags_conflict() {
+        let err = Cli::try_parse_from([
+            "zfb",
+            "build",
+            "--strict-content-bridge",
+            "--no-strict-content-bridge",
+        ])
+        .expect_err("conflicting strict-content-bridge flags must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn build_help_documents_strict_content_bridge_flags() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let build = cmd
+            .find_subcommand_mut("build")
+            .expect("build subcommand exists");
+        let help = build.render_long_help().to_string();
+        assert!(
+            help.contains("--strict-content-bridge"),
+            "build help must document --strict-content-bridge:\n{help}"
+        );
+        assert!(
+            help.contains("--no-strict-content-bridge"),
+            "build help must document --no-strict-content-bridge:\n{help}"
         );
     }
 

@@ -314,6 +314,37 @@ pub struct Config {
     #[serde(default)]
     pub strict_broken_links: bool,
 
+    /// Whether a genuine MDX content-bridge fallback should fail the build.
+    ///
+    /// A content-collection `.md`/`.mdx` entry whose compiled JSX does not
+    /// parse (see `zfb_build::bundler::materialise_collection`'s defensive
+    /// skip) is not bridged into the SSR worker — it always warns to stderr
+    /// and renders via `<pre data-zfb-content-fallback>` instead, and `zfb
+    /// build` exits 0 regardless. This field lets a project opt into
+    /// failing the build loudly instead, so a silently-degraded page can no
+    /// longer reach production unnoticed.
+    ///
+    /// Default: `false` (off) for compatibility — this part 2 of #2186 was
+    /// deliberately scoped as opt-in, not a default-on build failure. `zfb
+    /// build --strict-content-bridge` / `--no-strict-content-bridge` can
+    /// override this value for a single build; the build command resolves
+    /// that CLI tri-state before handing the config to orchestration, so
+    /// downstream code only ever sees the effective boolean.
+    ///
+    /// Unlike `strict_broken_links`, there is no "force-enable" concern
+    /// here: the content-bridge gate always runs for every compiled
+    /// collection entry, so there is no adjacent feature to force on.
+    ///
+    /// Build-only: it does not affect `zfb dev` — dev keeps warning and
+    /// serving the fallback shape. A future refactor must not "fix" this
+    /// into dev; see the dev-isolation regression pin in
+    /// `crates/zfb/src/commands/dev.rs`.
+    ///
+    /// Mirrors `ZfbConfig::strictContentBridge` in
+    /// `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub strict_content_bridge: bool,
+
     /// Bundler options. `bundle.exclude` lists project-relative globs of
     /// source files the bundler must keep out of the esbuild graph (see
     /// [`BundleConfig::exclude`]). Absent / `None` → no files are skipped
@@ -665,6 +696,7 @@ impl Default for Config {
             prefetch: None,
             minify_html: false,
             strict_broken_links: false,
+            strict_content_bridge: false,
             bundle: None,
             plugins: Vec::new(),
             adapter: None,
@@ -3514,6 +3546,10 @@ mod tests {
             !cfg.strict_broken_links,
             "omitted strictBrokenLinks must default to compatibility-off"
         );
+        assert!(
+            !cfg.strict_content_bridge,
+            "omitted strictContentBridge must default to compatibility-off"
+        );
     }
 
     #[tokio::test]
@@ -3566,6 +3602,32 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert!(!cfg.strict_broken_links);
+    }
+
+    #[tokio::test]
+    async fn loads_strict_content_bridge_true_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "strictContentBridge": true }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.strict_content_bridge);
+    }
+
+    #[tokio::test]
+    async fn loads_strict_content_bridge_false_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "strictContentBridge": false }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(!cfg.strict_content_bridge);
     }
 
     #[tokio::test]
