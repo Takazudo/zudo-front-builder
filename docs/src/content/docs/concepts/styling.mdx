@@ -41,7 +41,7 @@ Tailwind v4 is opt-in via `zfb.config.{ts,json}`:
 }
 ```
 
-When enabled, the `zfb-css` crate runs the bundled `tailwindcss-v4` binary as part of the build. There is **no per-project Tailwind install** — you do not add `tailwindcss` to `package.json` and you do not maintain a `tailwind.config.js`. The compiler is built into zfb itself.
+When enabled, the `zfb-css` crate runs the bundled `tailwindcss-v4` binary as part of the build. There is **no per-project Tailwind install** — you do not add `tailwindcss` to `package.json` and you do not maintain a `tailwind.config.js`. The compiler is built into zfb itself; [Tailwind is embedded, not installed](#tailwind-v4-tailwind-is-embedded-not-installed) below states the full contract.
 
 Once Tailwind is on, utility classes work in `.tsx` files under the scanned content roots (see [Where Tailwind looks](#tailwind-v4-where-tailwind-looks) below):
 
@@ -56,6 +56,33 @@ export default function Hero() {
 ```
 
 Tailwind v4's CSS-first configuration is supported through `@theme` directives in `global.css` — you customise tokens by editing CSS, not a JS config file.
+
+### Tailwind is embedded, not installed
+
+zfb owns Tailwind end to end: the compiler, the version it runs, and the resolution of every `@import "tailwindcss*"` specifier. The four points below are the whole contract.
+
+**The compiler ships inside the `zfb` executable.** The Tailwind v4 standalone CLI is embedded in zfb's vendor snapshot, extracted at runtime, and invoked as a subprocess by the `zfb-css` crate — no Node.js, no `node_modules`, no download at build time (see [Install without Node](../install/node-free.mdx)). The exact Tailwind version is pinned in zfb's own source tree (`TAILWIND_VERSION` in `crates/zfb/build.rs`) and changes only when zfb itself releases.
+
+**Your project must not install Tailwind.** Do not add `tailwindcss` or `@tailwindcss/vite` to `package.json`. If either is already listed — in a project migrated from a Vite or Astro setup, or one produced by a scaffolder written before this contract — remove it and reinstall. Projects scaffolded by `zfb new` carry neither.
+
+**`@import "tailwindcss"` is resolved by the embedded engine, never from `node_modules`.** All three specifiers you are likely to write are virtual:
+
+```css title="styles/global.css"
+@import "tailwindcss";
+/* or, taken apart: */
+@import "tailwindcss/preflight";
+@import "tailwindcss/utilities";
+```
+
+zfb's CSS import walker recognises the `tailwindcss` prefix and skips resolution entirely (`is_virtual_specifier` in `crates/zfb-css/src/css_imports.rs`); the embedded binary supplies those stylesheets itself. A `node_modules/tailwindcss` directory is therefore never read. Keeping one around is unsupported: it does not change the emitted CSS, does not override the embedded version, and only adds weight to your lockfile.
+
+**There is no project-level version override — but the binary path is overridable.** No config field selects a Tailwind version, and an npm-installed `tailwindcss` is never consulted, whatever its version. What you *can* redirect is which binary runs: `ZFB_TAILWIND_BIN` points the CSS engine at an absolute path to a Tailwind v4 binary of your choosing, in place of the embedded one. Treat it as an advanced/CI escape hatch — for air-gapped builds, or environments required to run binaries from their own vetted supply chain — rather than as a supported way to select a Tailwind version. See the [environment variable reference](../api/cli.mdx#environment-variables) for its exact semantics.
+
+<Note title="A build that survives removing the dependency is the contract, not luck">
+
+If you drop `tailwindcss` from `package.json` and the emitted stylesheet comes out byte-identical, nothing is silently broken and nothing is about to break — the dependency was never being read in the first place.
+
+</Note>
 
 ### Where Tailwind looks
 
