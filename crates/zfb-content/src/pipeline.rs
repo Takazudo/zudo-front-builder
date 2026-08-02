@@ -2584,8 +2584,39 @@ pub fn mdast_to_hast(node: &MdastNode) -> HastNode {
 /// Added for #121 so the JSX-emit detour can swap in a recursive
 /// renderer for those arms without changing the HTML serializer
 /// output.
+///
+/// Thin wrapper over [`mdast_to_hast_with_model`] that discards the
+/// `FootnoteModel` it builds — use that sibling entry point directly
+/// when a caller needs the model too (issue #2246, Registration B).
 #[must_use]
 pub fn mdast_to_hast_with(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> HastNode {
+    mdast_to_hast_with_model(node, strategy).0
+}
+
+/// Same as [`mdast_to_hast_with`], but additionally returns the
+/// [`FootnoteModel`] built for `node`.
+///
+/// Added for issue #2246 (Registration B): `mdx_jsx_emit`'s hast-detour
+/// arm needs the SAME `FootnoteModel` instance this conversion consumes
+/// — never a second, independently re-derived one — to register every
+/// footnote occurrence id (`model.entries()[*].references[*].id`) into
+/// the per-compile `HeadingRegistry` before hast visitors run, so a
+/// footnote reference marker rendered inside a JsxRaw string (invisible
+/// to the hast-phase `HeadingLinksPlugin::visit_node` walk) still
+/// resolves as a valid link target. `mdast_to_hast_with` stays the
+/// plain-`HastNode` entry point every other caller uses.
+///
+/// Returning the model alongside the hast tree is safe because
+/// [`FootnoteRenderCtx`] only *borrows* it (`FootnoteRenderCtx::new`
+/// takes `&FootnoteModel`) — that borrow, and the local `fc` value
+/// holding it, are both last used while `hast` is being computed below,
+/// so by the time this function returns, moving `model` into the
+/// result tuple borrows nothing that is still live.
+#[must_use]
+pub fn mdast_to_hast_with_model(
+    node: &MdastNode,
+    strategy: &JsxEmitStrategy<'_>,
+) -> (HastNode, FootnoteModel) {
     // Footnotes are the one construct that cannot be rendered from an
     // independent per-node match arm in `mdast_to_hast_inner` below:
     // the rendered footnote section collects at the END of the
@@ -2601,7 +2632,7 @@ pub fn mdast_to_hast_with(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> H
     // references.
     let model = FootnoteModel::collect(node);
     let fc = FootnoteRenderCtx::new(&model);
-    match node {
+    let hast = match node {
         MdastNode::Root(r) => {
             let mut children: Vec<HastNode> = r
                 .children
@@ -2641,7 +2672,8 @@ pub fn mdast_to_hast_with(node: &MdastNode, strategy: &JsxEmitStrategy<'_>) -> H
             HastNode::Root { children }
         }
         _ => mdast_to_hast_inner(node, strategy, &fc),
-    }
+    };
+    (hast, model)
 }
 
 /// Per-document footnote render state threaded through the recursive

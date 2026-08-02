@@ -57,8 +57,8 @@ use crate::dep_manifest::DependencyManifest;
 use crate::footnotes::FOOTNOTE_LABEL_STYLE;
 use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
-    code_block_hast, constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode,
-    HastVisitor, JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
+    code_block_hast, constructs_for_jsx_emit, mdast_to_hast_with_model, FootnoteRenderCtx,
+    HastNode, HastVisitor, JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 use crate::plugins::BrokenLinkDiagnostic;
@@ -388,6 +388,19 @@ fn mdx_to_jsx_module_inner(
                     reg.insert(src.clone(), entry);
                 }
             }
+            // Registration A (#2246, class 3): JSX-authored literal
+            // anchor ids (`<div id="…">` / `<a name="…">`), collected
+            // from the SAME post-mdast-visitor `children` slice
+            // `collect_headings` just walked — every depth, including
+            // top level. See `collect_jsx_anchor_ids`'s doc comment for
+            // the collected/excluded rules and the disjointness proof
+            // vs the hast-phase `insert_anchor_id` arm in
+            // `heading_links.rs`. No ordering constraint vs
+            // `resolve_links`: `ResolveLinksPlugin` rewrites `Link`/
+            // `Image` urls only, never JSX attribute values.
+            for id in collect_jsx_anchor_ids(&children) {
+                reg.insert_anchor_id(src.clone(), id);
+            }
             if record_file_headings {
                 compiled_file_headings = Some(FileHeadings {
                     source_path: normalize_path_lexical(&src),
@@ -443,7 +456,11 @@ fn mdx_to_jsx_module_inner(
             jsx_raw_recursive(node, &slug_ctx, fc)
         };
         let strategy = JsxEmitStrategy::JsxPath(&strategy_fn);
-        let mut hast = mdast_to_hast_with(&mdast_root, &strategy);
+        // `_with_model` (not the plain `mdast_to_hast_with`) so
+        // Registration B below can register the SAME `FootnoteModel`
+        // instance this conversion just built — never a second,
+        // independently re-derived one (#2246).
+        let (mut hast, footnote_model) = mdast_to_hast_with_model(&mdast_root, &strategy);
         // The emitter must have consumed every nested-heading slug in
         // lockstep with `collect_headings`. A mismatch means the emit
         // walk order drifted from `walk_collect_headings`' descent set.
@@ -456,7 +473,46 @@ fn mdx_to_jsx_module_inner(
         );
         if let Some(p) = pipeline_mut.as_deref_mut() {
             match build_ctx.as_mut() {
-                Some(ctx) => p.apply_hast_visitors_with_context(&mut hast, ctx),
+                Some(ctx) => {
+                    // Registration B (#2246, class 4): register every
+                    // footnote occurrence id —
+                    // `model.entries()[*].references[*].id` — from the
+                    // `FootnoteModel` the conversion above just built,
+                    // BEFORE hast visitors run. A footnote reference
+                    // occurrence that renders inside a JsxRaw string
+                    // (`jsx_footnote_reference_marker`) is invisible to
+                    // the hast-phase `HeadingLinksPlugin::visit_node`
+                    // walk below, so without this the structured
+                    // footnote section's backreference link would false-
+                    // positive as broken. Registers ALL occurrence ids,
+                    // not only JSX-nested ones — isolating just the
+                    // JSX-nested subset would mean replaying the
+                    // emitters' own traversal, exactly the id-drift risk
+                    // this issue forbids (ids must come from
+                    // `FootnoteModel`'s allocator, never be re-derived).
+                    // Deliberate BOUNDED OVERLAP: a top-level occurrence
+                    // renders as a structured hast `Element` too, so
+                    // `HeadingLinksPlugin::visit_node` (below) inserts
+                    // the SAME id a second time — safe because
+                    // `insert_anchor_id` is documented per-file
+                    // idempotent (`heading_registry.rs`). Definition ids
+                    // (`user-content-fn-…`) and `FOOTNOTE_LABEL_ID` are
+                    // deliberately NOT registered here: the structured
+                    // footnote section always renders them as hast
+                    // `Element`s, so the hast phase already records them
+                    // — doing it twice here would be pure double-
+                    // registration with zero coverage gain.
+                    if let (Some(reg), Some(src)) =
+                        (ctx.heading_registry.as_deref_mut(), ctx.source_path.clone())
+                    {
+                        for entry in footnote_model.entries() {
+                            for footnote_ref in &entry.references {
+                                reg.insert_anchor_id(src.clone(), footnote_ref.id.clone());
+                            }
+                        }
+                    }
+                    p.apply_hast_visitors_with_context(&mut hast, ctx)
+                }
                 None => p.apply_hast_visitors(&mut hast),
             }
         }
@@ -734,6 +790,132 @@ fn walk_collect_headings(
                 walk_collect_headings(&j.children, out, slugs, true);
             }
             _ => {}
+        }
+    }
+}
+
+/// Collect every statically-known literal anchor id authored directly on
+/// an MDX-JSX intrinsic element — `<div id="…">`, `<a name="…">` — at
+/// EVERY depth, including the top level (issue #2246, Registration A).
+///
+/// A top-level `<div id="x">` is, on the MDX path, exactly as invisible
+/// to the hast-phase `HeadingLinksPlugin::visit_node`'s `insert_anchor_id`
+/// arm as a JSX-nested one: both are `MdxJsxFlowElement`s that
+/// [`emit_jsx_raw`](crate::pipeline) collapses to one opaque
+/// `HastNode::JsxRaw` string the hast walk never recurses into. So this
+/// walk must not gate on "inside a JSX ancestor" the way
+/// [`walk_collect_headings`] does — it descends generically through
+/// [`MdastNode::children`], the same generic-descent idiom
+/// [`crate::footnotes::FootnoteModel::collect`] uses to reach every
+/// `Node::children()` regardless of container kind.
+///
+/// **Pure** — no I/O, no registry writes; the caller (the seeding block
+/// in [`mdx_to_jsx_module_with_pipeline`]) registers the result via
+/// `HeadingRegistry::insert_anchor_id`. Callers pass the post-mdast-
+/// visitor `children` slice — the same slice [`collect_headings`]
+/// receives — so directive expansion (`:::note` → `MdxJsxFlowElement`)
+/// and transclusion have already run.
+///
+/// ## What is collected
+///
+/// Only `MdxJsxFlowElement`/`MdxJsxTextElement` nodes whose `name` is an
+/// **intrinsic element** (first char NOT ASCII uppercase — the same
+/// first-char rule [`collect_jsx_component_names`] uses to tell a
+/// PascalCase component from an html tag) are inspected:
+///
+/// - `id="literal"` on ANY intrinsic element;
+/// - additionally, `name="literal"` when the element is specifically
+///   `<a>` — mirrors the hast-phase `<a name>` arm in
+///   `crate::plugins::heading_links`.
+///
+/// A fragment (`name: None`) carries no attributes to inspect, so it
+/// contributes nothing. A **component** (`<Note id="x">`) is excluded
+/// even though it syntactically carries an `id` attribute: whether a
+/// component forwards that prop to the rendered DOM is statically
+/// unknowable, and #2224 already ruled author-written JSX attribute
+/// surfaces on components out of linkValidation's scope.
+///
+/// ## What is excluded, and why
+///
+/// - `id={expr}` (`AttributeValue::Expression`) — runtime-computed and
+///   statically unknowable; registering a guessed value could validate
+///   a fragment link that never actually renders.
+/// - a bare, value-less `id` attribute (`<div id>`, `p.value == None`)
+///   — no literal value exists to record.
+/// - an empty literal (`id=""`) — not a usable anchor target.
+/// - a spread attribute (`AttributeContent::Expression`, `{...rest}`)
+///   — could inject an `id` at runtime, but its value is opaque at
+///   compile time; only statically-known literal anchors enter the
+///   registry.
+///
+/// ## Partition invariant
+///
+/// `MdxJsxFlowElement`/`MdxJsxTextElement` never surface as hast
+/// `Element` nodes on the MDX path — [`emit_jsx_raw`](crate::pipeline)
+/// collapses every one of them, under both [`JsxEmitStrategy`]
+/// variants, to `HastNode::Raw`/`HastNode::JsxRaw` — so this fn's
+/// result set and the hast-phase `insert_anchor_id` arm's result set
+/// are disjoint BY CONSTRUCTION: nothing this walk can see is also
+/// reachable by a hast `Element` walk. See the
+/// `collect_jsx_anchor_ids_disjoint_from_structured_element_ids` unit
+/// test below.
+fn collect_jsx_anchor_ids(children: &[MdastNode]) -> Vec<String> {
+    let mut out = Vec::new();
+    for node in children {
+        walk_collect_jsx_anchor_ids(node, &mut out);
+    }
+    out
+}
+
+fn walk_collect_jsx_anchor_ids(node: &MdastNode, out: &mut Vec<String>) {
+    let jsx_shape = match node {
+        MdastNode::MdxJsxFlowElement(j) => Some((j.name.as_deref(), &j.attributes)),
+        MdastNode::MdxJsxTextElement(j) => Some((j.name.as_deref(), &j.attributes)),
+        _ => None,
+    };
+    if let Some((Some(name), attributes)) = jsx_shape {
+        if is_intrinsic_jsx_name(name) {
+            collect_literal_jsx_anchor_attrs(name, attributes, out);
+        }
+    }
+    // Generic descent — reaches JSX bodies, block containers
+    // (blockquote/list/list-item), and every other parent kind through
+    // one shared path, matching `FootnoteModel::collect`'s idiom rather
+    // than `walk_collect_headings`'s bespoke per-container match.
+    if let Some(kids) = node.children() {
+        for c in kids {
+            walk_collect_jsx_anchor_ids(c, out);
+        }
+    }
+}
+
+/// `true` when `name` is an intrinsic (lowercase-led) JSX tag rather
+/// than a PascalCase component — the same first-char rule
+/// [`collect_jsx_component_names`] uses. Empty names (never produced by
+/// the parser for a non-fragment element) are treated as intrinsic.
+fn is_intrinsic_jsx_name(name: &str) -> bool {
+    !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+}
+
+fn collect_literal_jsx_anchor_attrs(tag: &str, attrs: &[AttributeContent], out: &mut Vec<String>) {
+    for a in attrs {
+        // Spread attributes (`{...rest}`) are opaque at compile time —
+        // excluded, never registered (see the fn doc's exclusion list).
+        let AttributeContent::Property(p) = a else {
+            continue;
+        };
+        let is_id = p.name == "id";
+        let is_a_name = tag == "a" && p.name == "name";
+        if !is_id && !is_a_name {
+            continue;
+        }
+        // `None` (bare attribute) and `Expression` (runtime-computed)
+        // are both excluded — only a non-empty literal is a
+        // statically-known anchor.
+        if let Some(AttributeValue::Literal(v)) = &p.value {
+            if !v.is_empty() {
+                out.push(v.clone());
+            }
         }
     }
 }
@@ -3518,6 +3700,127 @@ mod tests {
 
     fn emit(src: &str) -> String {
         mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")
+    }
+
+    // ── collect_jsx_anchor_ids (#2246, Registration A) ──────────────────────
+
+    /// Parse `src` into the top-level post-mdast children slice, with
+    /// GFM `ALL_ON` (footnotes need `footnote_definition` on to parse as
+    /// structured nodes at all) and the same permissive ESM parser
+    /// `mdx_to_jsx_module_inner` supplies — mirrors the production parse
+    /// options closely enough for these pure-fn tests.
+    fn parse_children(src: &str) -> Vec<MdastNode> {
+        let options = markdown::ParseOptions {
+            constructs: constructs_for_jsx_emit(ResolvedGfmConstructs::ALL_ON),
+            mdx_esm_parse: Some(Box::new(|_value: &str| -> markdown::MdxSignal {
+                markdown::MdxSignal::Ok
+            })),
+            ..markdown::ParseOptions::default()
+        };
+        let root = markdown::to_mdast(src, &options).expect("parse ok");
+        match root {
+            MdastNode::Root(r) => r.children,
+            other => vec![other],
+        }
+    }
+
+    /// Partition invariant (spec-mandated): for a fixture mixing a
+    /// JSX-authored literal anchor with a footnote — whose eventual
+    /// `user-content-fn-a` / `user-content-fnref-a` ids are recorded by
+    /// the SEPARATE hast-phase walk (`HeadingLinksPlugin` /
+    /// Registration B's `FootnoteModel`-sourced registration), never by
+    /// this pure mdast walk — the fn returns EXACTLY the JSX-authored
+    /// ids and nothing a hast walk would separately record.
+    #[test]
+    fn collect_jsx_anchor_ids_disjoint_from_structured_element_ids() {
+        let children = parse_children(
+            "<div id=\"jsx-div\"></div>\n\n\
+             <Note>\n\n<a name=\"jsx-nested-name\"></a>\n\n</Note>\n\n\
+             Ref[^a] end.\n\n[^a]: Body.\n",
+        );
+        let ids = collect_jsx_anchor_ids(&children);
+        assert_eq!(
+            ids,
+            vec!["jsx-div".to_string(), "jsx-nested-name".to_string()],
+            "expected exactly the JSX-authored ids, in document order"
+        );
+        assert!(
+            !ids.iter().any(|id| id.contains("user-content")),
+            "must not include any footnote-derived id — those are recorded \
+             by a disjoint hast-phase walk, not this one: {ids:?}"
+        );
+    }
+
+    /// Collects at every depth, including top level (the top-level
+    /// `<div id>` characterization case) — and only from intrinsic
+    /// elements: a PascalCase component's `id` prop is excluded even
+    /// though it is syntactically identical to a `<div id>`.
+    #[test]
+    fn collect_jsx_anchor_ids_covers_every_depth_and_excludes_components() {
+        let children = parse_children(
+            "<div id=\"top-level\"></div>\n\n\
+             <Note id=\"component-id\">\n\n\
+             <span id=\"nested-in-component\"></span>\n\n\
+             <div name=\"not-collected-not-an-a-tag\"></div>\n\n\
+             </Note>\n",
+        );
+        assert_eq!(
+            collect_jsx_anchor_ids(&children),
+            vec!["top-level".to_string(), "nested-in-component".to_string()],
+            "component id excluded; `name` on a non-`<a>` tag excluded"
+        );
+    }
+
+    /// The pure attribute-level exclusion rules, exercised directly on
+    /// hand-built `AttributeContent` (sidesteps parser quirks around
+    /// expression/spread source syntax): an expression-valued `id`, a
+    /// bare value-less `id`, an empty literal `id`, and a spread
+    /// attribute are all excluded; a literal `id` beside/after any of
+    /// them is still collected.
+    #[test]
+    fn collect_literal_jsx_anchor_attrs_excludes_non_static_and_empty_values() {
+        let attrs = vec![
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Literal("literal-id".to_string())),
+            }),
+            // Expression-valued — runtime-computed, statically unknowable.
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Expression(
+                    markdown::mdast::AttributeValueExpression {
+                        value: "dynamicId".to_string(),
+                        stops: Vec::new(),
+                    },
+                )),
+            }),
+            // Bare, value-less — no literal value to record.
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: None,
+            }),
+            // Empty literal — not a usable anchor target.
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Literal(String::new())),
+            }),
+            // Spread — opaque at compile time.
+            AttributeContent::Expression(markdown::mdast::MdxJsxExpressionAttribute {
+                value: "...rest".to_string(),
+                stops: Vec::new(),
+            }),
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Literal("after-spread".to_string())),
+            }),
+        ];
+        let mut out = Vec::new();
+        collect_literal_jsx_anchor_attrs("div", &attrs, &mut out);
+        assert_eq!(
+            out,
+            vec!["literal-id".to_string(), "after-spread".to_string()],
+            "only the two statically-known literal ids must survive"
+        );
     }
 
     // #1392: is_module_level_esm used to match only `export const`,

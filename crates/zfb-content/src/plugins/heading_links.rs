@@ -205,14 +205,34 @@ impl HeadingLinksPlugin {
     /// pushed for each heading processed. When `registry` is `None` the
     /// behaviour is identical to the pre-wave-6 `visit` method.
     ///
-    /// KNOWN LIMITATION (#1095): raw-HTML elements authored as literal HTML
-    /// inside markdown (e.g. `<div id="x">`) arrive as `HastNode::Raw` (an
-    /// opaque string) at this walk — they are NOT structured `Element` nodes
-    /// and therefore cannot be recorded in the anchor-id store. GFM footnote
-    /// back-reference anchors (`id="user-content-fn-1"`) similarly degrade to
-    /// `HastNode::Raw("")` in `mdast_to_hast`. Both remain unrecorded and will
-    /// still trigger a `BrokenLink` if linked from the same file. A future fix
-    /// would require a raw-HTML parser pass before this walk.
+    /// KNOWN LIMITATION (#1095), UPDATED by #2246 — three parts, two now
+    /// closed:
+    ///
+    /// (a) GFM footnote ids are NOT missing anymore. Since #2021, both
+    /// footnote families render as structured hast `Element`s
+    /// (`pipeline.rs`'s `footnote_reference_marker` / `render_footnote_item`),
+    /// so a TOP-LEVEL occurrence/definition id IS recorded by this very
+    /// walk. A footnote occurrence rendered inside an MDX-JSX body still
+    /// collapses to an opaque `HastNode::JsxRaw` this walk never sees —
+    /// #2246 closes that gap separately, model-side (see (b)).
+    ///
+    /// (b) MDX-JSX-authored literal anchors (`<div id="x">` written as
+    /// MDX JSX, `<a name="x">`) and footnote occurrence ids nested inside
+    /// an MDX-JSX body are now registered too — but NOT by this hast walk.
+    /// `mdx_jsx_emit.rs`'s `collect_jsx_anchor_ids` (mdast-side,
+    /// Registration A) and its footnote-occurrence registration sourced
+    /// from `FootnoteModel` (Registration B) run BEFORE this walk, on the
+    /// MDX compile path only (`mdx_to_jsx_module_with_pipeline`).
+    ///
+    /// (c) The true #1095 residue: raw-HTML elements authored as LITERAL
+    /// HTML inside markdown (e.g. `<div id="x">` written as raw HTML, not
+    /// MDX JSX) still arrive as `HastNode::Raw` (an opaque string) at this
+    /// walk — they are NOT structured `Element` nodes and therefore cannot
+    /// be recorded in the anchor-id store, and neither Registration A nor B
+    /// covers them (both are MDX-JSX-shaped, not raw-`Html`-node-shaped).
+    /// Still unrecorded, still triggers a `BrokenLink` if linked from the
+    /// same file. A future fix would require a raw-HTML parser pass before
+    /// this walk.
     fn visit_node(
         &mut self,
         node: &mut HastNode,
