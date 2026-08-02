@@ -264,6 +264,19 @@ pub async fn assert_frame_has_data(
     }
 }
 
+/// Strip at most one leading U+0020 SPACE after a `field:` colon, per the
+/// SSE wire-format spec (WHATWG "event stream interpretation": *"If value
+/// starts with a single U+0020 SPACE character, remove it from value"*).
+/// Unlike `str::trim`, this touches nothing else — a payload that is
+/// itself whitespace, or that carries trailing spaces, survives verbatim,
+/// which is what [`SseFrame`]'s docs promise and what
+/// [`assert_frame_has_data`]'s emptiness check relies on (`str::trim`
+/// would collapse a whitespace-only `data:` line to `""` and misreport a
+/// genuinely non-empty payload as missing).
+fn strip_one_leading_space(s: &str) -> &str {
+    s.strip_prefix(' ').unwrap_or(s)
+}
+
 /// Read a `text/event-stream` body chunk-by-chunk and return the first
 /// full frame (`event:` + `data:` lines, terminated by the blank-line
 /// dispatch boundary) we observe. Times out after `dur`, mirroring
@@ -328,7 +341,7 @@ pub async fn next_sse_frame(
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("event:") {
-                    let name = rest.trim().to_string();
+                    let name = strip_one_leading_space(rest).to_string();
                     if !name.is_empty() {
                         event = Some(name);
                     }
@@ -337,7 +350,7 @@ pub async fn next_sse_frame(
                     // `\n` per the SSE spec; axum never emits more than
                     // one for this crate's events, but this keeps the
                     // helper spec-correct rather than last-line-wins.
-                    let payload = rest.trim().to_string();
+                    let payload = strip_one_leading_space(rest).to_string();
                     data = Some(match data.take() {
                         Some(mut existing) => {
                             existing.push('\n');
@@ -589,12 +602,12 @@ mod tests {
                     continue;
                 }
                 if let Some(rest) = trimmed.strip_prefix("event:") {
-                    let name = rest.trim().to_string();
+                    let name = strip_one_leading_space(rest).to_string();
                     if !name.is_empty() {
                         event = Some(name);
                     }
                 } else if let Some(rest) = trimmed.strip_prefix("data:") {
-                    let payload = rest.trim().to_string();
+                    let payload = strip_one_leading_space(rest).to_string();
                     data = Some(match data.take() {
                         Some(mut existing) => {
                             existing.push('\n');
@@ -634,6 +647,35 @@ mod tests {
         let frame = scan_chunks_for_frame(&[b"event: page\n\n"]).expect("frame");
         assert_eq!(frame.event.as_deref(), Some("page"));
         assert_eq!(frame.data, None, "no data: line was ever sent");
+    }
+
+    #[test]
+    fn sse_frame_whitespace_only_data_stays_non_empty() {
+        // Regression guard for a real codex-review finding on this
+        // helper: only ONE leading space after the colon is part of the
+        // SSE wire syntax (WHATWG "event stream interpretation"), so a
+        // `data:` line carrying a SECOND space as its actual payload
+        // must survive as the single-space string `" "`, not collapse to
+        // `""`. `str::trim` (used by the pre-existing tolerant
+        // `next_sse_event_name`/`scan_chunks_for_event`, deliberately
+        // left untouched) would wrongly report this frame as having no
+        // data at all, which would make `assert_frame_has_data` reject a
+        // genuinely non-empty payload.
+        let frame = scan_chunks_for_frame(&[b"event: page\ndata:  \n\n"]).expect("frame");
+        assert_eq!(frame.event.as_deref(), Some("page"));
+        assert_eq!(
+            frame.data.as_deref(),
+            Some(" "),
+            "only the single spec-mandated leading space is stripped"
+        );
+    }
+
+    #[test]
+    fn sse_frame_preserves_trailing_whitespace_in_data() {
+        // Companion to the whitespace-only case above: trailing spaces in
+        // an otherwise non-trivial payload must also survive verbatim.
+        let frame = scan_chunks_for_frame(&[b"event: page\ndata: {} \n\n"]).expect("frame");
+        assert_eq!(frame.data.as_deref(), Some("{} "));
     }
 
     #[test]
