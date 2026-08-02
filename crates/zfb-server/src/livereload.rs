@@ -127,12 +127,21 @@ impl ReloadEvent {
         }
     }
 
-    /// SSE `data:` payload. `Page` and `Css` carry no data (the browser
-    /// reacts on the event name alone); `Islands` serialises the
-    /// `{component, bundle_url}` pair as a one-line JSON object.
+    /// SSE `data:` payload. An `Event` with a genuinely empty data buffer
+    /// is silently dropped by `EventSource` — no `message`/named-event
+    /// listener ever fires for it (axum 0.8.9's own `Event::data` docs
+    /// call this out: "events with an empty data field will be ignored
+    /// by the browser"; internally `EventDataWriter::write_buf`
+    /// early-returns on an empty write, so `.data("")` never even emits
+    /// a `data:` line). `Page` and `Css` therefore carry the minimal
+    /// non-empty sentinel `"{}"` so the event is dispatched at all — the
+    /// `page`/`css` listeners in `livereload.js` still react on the
+    /// event name alone and ignore `event.data` entirely. `Islands`
+    /// serialises the real `{component, bundle_url}` pair as a one-line
+    /// JSON object.
     pub fn data(&self) -> String {
         match self {
-            ReloadEvent::Page | ReloadEvent::Css => String::new(),
+            ReloadEvent::Page | ReloadEvent::Css => "{}".to_string(),
             ReloadEvent::Islands {
                 component,
                 bundle_url,
@@ -260,11 +269,13 @@ pub fn sse_response(
     let stream = BroadcastStream::new(rx).filter_map(|res| async move {
         match res {
             Ok(ev) => {
-                let mut sse = Event::default().event(ev.name());
-                let payload = ev.data();
-                if !payload.is_empty() {
-                    sse = sse.data(payload);
-                }
+                // Every variant's `data()` is non-empty by construction
+                // (`Page`/`Css` carry the `"{}"` sentinel, `Islands`
+                // carries real JSON) — see `ReloadEvent::data`'s doc
+                // comment for why an empty buffer would make axum
+                // silently drop the event. `.data(...)` is therefore
+                // always attached, unconditionally.
+                let sse = Event::default().event(ev.name()).data(ev.data());
                 Some(Ok(sse))
             }
             Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(skipped)) => {
@@ -853,8 +864,64 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["component"], "Counter");
         assert_eq!(parsed["bundleUrl"], "/assets/islands-deadbeef.js");
-        // Page / Css events stay payload-less.
-        assert!(ReloadEvent::Page.data().is_empty());
-        assert!(ReloadEvent::Css.data().is_empty());
+        // Page / Css events carry the non-empty `{}` sentinel, never an
+        // empty string — an empty `data:` buffer is silently dropped by
+        // axum (see `ReloadEvent::data`'s doc comment), so the sentinel
+        // is what keeps the event dispatchable at all.
+        assert_eq!(ReloadEvent::Page.data(), "{}");
+        assert_eq!(ReloadEvent::Css.data(), "{}");
+    }
+
+    /// Issue #2238 — pin the EXACT bytes `sse_response` puts on the wire
+    /// for `Page`/`Css`, not merely that `.data(...)` was called. Before
+    /// this fix `ReloadEvent::data()` returned `""` for these variants
+    /// and `sse_response` skipped `.data(...)` entirely on an empty
+    /// payload — axum 0.8.9's `Event::data("")` writes nothing at all
+    /// (`EventDataWriter::write_buf` early-returns on empty input), and
+    /// axum's own docs say an event with an empty data field is ignored
+    /// by the browser. Drives the REAL production `sse_response`
+    /// function end to end (broadcast send -> SSE body frame), pulling
+    /// exactly one frame via `http_body_util::BodyExt::frame` so the
+    /// test terminates without waiting on the (otherwise unbounded)
+    /// broadcast stream or the 15s keep-alive.
+    #[tokio::test]
+    async fn sse_response_emits_exact_wire_bytes_for_page_and_css() {
+        use axum::response::IntoResponse;
+        use http_body_util::BodyExt;
+
+        async fn first_frame_bytes(tx: &ReloadTx, ev: ReloadEvent) -> Vec<u8> {
+            // `sse_response` subscribes synchronously before returning,
+            // so sending right after is race-free — no subscriber-wait
+            // helper needed.
+            let mut body = sse_response(tx).into_response().into_body();
+            tx.send(ev).ok();
+            let frame = body
+                .frame()
+                .await
+                .expect("stream ended before yielding a frame")
+                .expect("frame error");
+            frame
+                .into_data()
+                .expect("expected a data frame, not trailers")
+                .to_vec()
+        }
+
+        let (tx, _rx) = broadcast::channel::<ReloadEvent>(4);
+
+        let page_bytes = first_frame_bytes(&tx, ReloadEvent::Page).await;
+        assert_eq!(
+            page_bytes,
+            b"event: page\ndata: {}\n\n",
+            "page wire bytes: {:?}",
+            String::from_utf8_lossy(&page_bytes)
+        );
+
+        let css_bytes = first_frame_bytes(&tx, ReloadEvent::Css).await;
+        assert_eq!(
+            css_bytes,
+            b"event: css\ndata: {}\n\n",
+            "css wire bytes: {:?}",
+            String::from_utf8_lossy(&css_bytes)
+        );
     }
 }
