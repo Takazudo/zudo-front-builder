@@ -6,7 +6,7 @@ Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) �
 
 - **zfb** — static site engine (Rust binary + JS plugin host)
 - **MDX** — content format
-- **Tailwind CSS v4** — via `@tailwindcss/vite`
+- **Tailwind CSS v4** — compiled by the Tailwind v4 CLI embedded in the `zfb` binary; there is no per-project `tailwindcss` / `@tailwindcss/vite` install (see `src/content/docs/concepts/styling.mdx`)
 - **Preact** — for interactive islands only
 - **`@takazudo/zfb-md-wasm`** — code highlighting (compiled into the zfb pipeline; no separate Shiki dependency)
 
