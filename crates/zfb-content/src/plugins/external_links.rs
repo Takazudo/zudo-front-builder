@@ -23,7 +23,9 @@
 //! Relative URLs (`/internal/`, `./relative.mdx`, `#anchor`) are always
 //! internal.
 
-use crate::pipeline::{HastNode, HastVisitor};
+use markdown::mdast::Node as MdastNode;
+
+use crate::pipeline::{HastNode, HastVisitor, MdastVisitor};
 
 /// Configuration passed to [`ExternalLinksPlugin`] at construction time.
 ///
@@ -247,6 +249,45 @@ fn set_attr(attrs: &mut Vec<(String, String)>, key: &str, val: &str) {
         }
     }
     attrs.push((key.to_string(), val.to_string()));
+}
+
+/// JSX-nested-phase stub for the external-links pass (zfb#2247).
+///
+/// Registered as an [`MdastVisitor`] in the pipeline's mdast phase —
+/// `Pipeline::apply_mdast_visitors_with_context` /
+/// `Pipeline::apply_mdast_visitors` in `zfb-content::pipeline` — LAST,
+/// after `jsx_nested_image_dimensions`. This sub lands the wiring only:
+/// `visit` no-ops. Behavior (synthesizing `MdxJsxTextElement` nodes in
+/// place of JSX-nested external `Link` mdast nodes, via
+/// `zfb_md_ast::mdx_jsx::rewrite_jsx_nested`) lands in #2249.
+///
+/// Constructed from the SAME `config` + `site` as the paired
+/// [`ExternalLinksPlugin`] (see `Pipeline::add_external_links`) —
+/// `site_origin` reuses this module's own [`extract_origin`], since both
+/// types live in the same module.
+#[allow(dead_code)] // fields are wired now so #2249 needs no further pipeline.rs registration edits; consumed once #2249 implements `visit`
+pub struct JsxNestedExternalLinks {
+    config: ExternalLinksConfig,
+    site_origin: Option<String>,
+}
+
+impl JsxNestedExternalLinks {
+    /// Create a new stub. `site` mirrors [`ExternalLinksPlugin::new`]'s
+    /// `site` parameter — the canonical site URL, or `None` when every
+    /// absolute HTTP/HTTPS href should be treated as external.
+    #[must_use]
+    pub fn new(config: ExternalLinksConfig, site: Option<&str>) -> Self {
+        let site_origin = site.and_then(extract_origin);
+        Self {
+            config,
+            site_origin,
+        }
+    }
+}
+
+impl MdastVisitor for JsxNestedExternalLinks {
+    /// No-op in this sub — behavior lands in #2249.
+    fn visit(&mut self, _node: &mut MdastNode) {}
 }
 
 // ---------------------------------------------------------------------------
