@@ -1397,6 +1397,37 @@ fn bundler_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Prefix every [`ShadowSession`] tempdir carries — also the name filter
+/// [`reap_stale_shadow_sessions`] uses to recognize a sibling session dir.
+const SHADOW_SESSION_PREFIX: &str = "zfb-shadow-session-";
+
+/// Reserved lock-file name at a shadow session dir's root (issue #2257) —
+/// zfb-namespaced (mirrors the watcher-liveness probe's per-session
+/// `.owner.lock` convention, `crates/zfb/src/commands/watcher_liveness_probe.rs`)
+/// so it can never collide with a real project file the materialise walk
+/// would otherwise write. Treat this name as reserved under any shadow
+/// session root: [`wipe_dir_contents`]'s dirty-reset wipe must skip it, and
+/// the stale-file prune pass must never visit it (it is written directly
+/// via `std::fs::File`, never through [`ShadowWriter`], so it can never
+/// enter `visited`/`prev_visited` in the first place).
+const SHADOW_SESSION_LOCK_FILE_NAME: &str = ".zfb-owner.lock";
+
+/// `ZFB_KEEP_SHADOW_SESSION` opt-out (issue #2257): truthy parse copied
+/// from [`bundler_timing_enabled`] (trim; `"1"`/`"true"` case-insensitive;
+/// unset/empty/other → off), private to this module. Checked at three
+/// sites — see the "Teardown, keep-flag, and reap" section of
+/// [`ShadowSession`]'s doc comment for what each does with it.
+fn keep_shadow_session_enabled() -> bool {
+    std::env::var("ZFB_KEEP_SHADOW_SESSION")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
 /// Persistent dev shadow-tree session (issue #993).
 ///
 /// A plain [`bundle`] call materialises a fresh shadow tempdir, re-writes
@@ -1438,9 +1469,50 @@ fn bundler_timing_enabled() -> bool {
 ///
 /// `zfb build` keeps calling [`bundle`], which passes no session — the
 /// production path is byte-for-byte unchanged.
+///
+/// ## Teardown, keep-flag, and reap (issue #2257)
+///
+/// A dev process that never unwinds (`SIGKILL`, a host crash) leaves the
+/// [`Drop`] impl below unrun until the OS reclaims the process — which
+/// never happens, since `Drop` only runs on a normal Rust unwind/return,
+/// not on a killed process. Three cooperating mechanisms close that leak:
+///
+/// - **Lock protocol**: the ctor ([`ShadowSession::new`]) creates and
+///   exclusively locks [`SHADOW_SESSION_LOCK_FILE_NAME`] at the session
+///   root immediately after allocating the tempdir, before any
+///   materialisation — so the lock is held for the dir's entire live
+///   window, mirroring the watcher-liveness probe's `.owner.lock`
+///   convention (`crates/zfb/src/commands/watcher_liveness_probe.rs`).
+/// - **Ordered teardown**: [`Drop for ShadowSession`](#impl-Drop-for-ShadowSession)
+///   unlocks + closes the lock file BEFORE the `TempDir` field drops
+///   (some platforms refuse deleting a dir that still holds an open
+///   file) — every implicit-drop call site gets this ordering for free.
+///   [`ShadowSession::teardown`] is the explicit, consuming form the dev
+///   command uses at shutdown; it never fails.
+/// - **Startup reap**: [`reap_stale_shadow_sessions`] is called ONCE from
+///   the dev boot path (never from this ctor — see that function's doc
+///   comment for why) and deletes a sibling session dir only when it is
+///   BOTH older than [`REAP_AGE_FLOOR`] AND provably lock-free.
+///
+/// `ZFB_KEEP_SHADOW_SESSION` (checked via the private
+/// `keep_shadow_session_enabled`) opts a session out of all three: the
+/// ctor disarms the `TempDir`'s `Drop`-time deletion outright
+/// (`disable_cleanup(true)`, so even a bare `Drop` cannot remove it, not
+/// only an explicit `teardown()`), `teardown` logs the kept path instead
+/// of deleting it, and the reap skips every candidate while the flag is
+/// set. A LATER boot without the flag WILL reap a previously-kept dir
+/// once it passes the age floor — the flag must stay exported for the
+/// whole debugging session, not just the boot that created the dir.
 pub struct ShadowSession {
     /// The persistent shadow tempdir — lives as long as the session.
     work: tempfile::TempDir,
+    /// Exclusive advisory lock on [`SHADOW_SESSION_LOCK_FILE_NAME`],
+    /// acquired in [`ShadowSession::new`] immediately after allocating
+    /// `work` (before any materialisation) and held for the session's
+    /// entire lifetime. `None` only after `Drop for ShadowSession` has
+    /// already run (unlock-then-close happens there, before `work`
+    /// itself drops) — never observed `None` while the session is alive.
+    lock_file: Option<std::fs::File>,
     /// SHA-256 of the last-written bytes per shadow-relative path. Only
     /// real files written through [`ShadowWriter`] are recorded; symlinks
     /// and the always-write infra files (entry.mjs / shim / tsconfig)
@@ -1524,15 +1596,55 @@ pub struct ShadowSession {
 }
 
 impl ShadowSession {
-    /// Allocate the persistent shadow tempdir for a dev session.
+    /// Allocate the persistent shadow tempdir for a dev session, and
+    /// (issue #2257) claim exclusive ownership of it via
+    /// [`SHADOW_SESSION_LOCK_FILE_NAME`] before any materialisation runs.
     pub fn new(project_root: &Path) -> Result<Self> {
         let parent = shadow_parent_dir(project_root)?;
-        let work = tempfile::Builder::new()
-            .prefix("zfb-shadow-session-")
+        let mut work = tempfile::Builder::new()
+            .prefix(SHADOW_SESSION_PREFIX)
             .tempdir_in(parent)
             .context("shadow session: failed to allocate persistent shadow tempdir")?;
+
+        // ZFB_KEEP_SHADOW_SESSION: disarm `TempDir`'s Drop-time deletion
+        // from birth — a debugging session that keeps the flag exported
+        // for its whole run must never lose the dir to a bare `Drop` or
+        // process exit, not only to an explicit `teardown()` call.
+        if keep_shadow_session_enabled() {
+            work.disable_cleanup(true);
+        }
+
+        let lock_path = work.path().join(SHADOW_SESSION_LOCK_FILE_NAME);
+        let lock_file = fs::File::create(&lock_path).with_context(|| {
+            format!(
+                "shadow session: failed to create owner lock file {}",
+                lock_path.display()
+            )
+        })?;
+        // Exclusive, advisory, no pid checks (the watcher-liveness
+        // probe's mechanism — `sweep_stale_probe_sessions`). On Err,
+        // warn and keep holding the open file handle rather than
+        // bailing: a lockless filesystem also refuses
+        // `reap_stale_shadow_sessions`'s own `try_lock` probe on this
+        // same file, so the skip-and-leave-alone posture there still
+        // protects this dir either way. This is locked spec (#2257), not
+        // an oversight — a codex review during implementation suggested
+        // failing construction instead; that was deliberately NOT taken,
+        // since a permanently lockless filesystem would then make dev
+        // boot entirely unable to start, trading a soft (reap-skip)
+        // degradation for a hard one for no extra safety.
+        if let Err(error) = lock_file.try_lock() {
+            tracing::warn!(
+                path = %lock_path.display(),
+                %error,
+                "shadow session: failed to acquire exclusive owner lock; \
+                 continuing without proof of exclusivity"
+            );
+        }
+
         Ok(Self {
             work,
+            lock_file: Some(lock_file),
             written: HashMap::new(),
             prev_visited: HashSet::new(),
             dirty: false,
@@ -1549,11 +1661,70 @@ impl ShadowSession {
     pub fn shadow_root(&self) -> &Path {
         self.work.path()
     }
+
+    /// Explicit, consuming teardown (issue #2257) — the dev command's
+    /// normal shutdown path. Belt-and-braces alongside
+    /// [`Drop for ShadowSession`](#impl-Drop-for-ShadowSession), which
+    /// still runs on every path this fn doesn't reach (panic unwind,
+    /// early `?`-return before shutdown code runs): captures the shadow
+    /// root before it can vanish, then simply drops `self` so the SAME
+    /// ordered unlock-then-delete runs through one code path. Never
+    /// fails shutdown — every outcome is reported via `tracing`, not
+    /// `Result`.
+    pub fn teardown(self) {
+        let path = self.work.path().to_path_buf();
+        let keep = keep_shadow_session_enabled();
+        if keep {
+            tracing::info!(
+                path = %path.display(),
+                "shadow session: ZFB_KEEP_SHADOW_SESSION set; kept persistent shadow tempdir \
+                 (a later boot without the flag will reap it once past the age floor)"
+            );
+        }
+        drop(self);
+        if !keep && path.exists() {
+            // Observability for a failed delete — the next boot's reap
+            // (`reap_stale_shadow_sessions`) is the backstop.
+            tracing::warn!(
+                path = %path.display(),
+                "shadow session: teardown could not remove the persistent shadow tempdir; \
+                 the next dev boot's stale-session reap will reclaim it"
+            );
+        }
+    }
+}
+
+impl Drop for ShadowSession {
+    fn drop(&mut self) {
+        // `ProbeSessionGuard`'s exact ordering
+        // (`crates/zfb/src/commands/watcher_liveness_probe.rs`): unlock +
+        // close the lock file FIRST — some platforms refuse deleting a
+        // directory that still holds an open file. This runs before the
+        // compiler's automatic field drops (which happen after this fn
+        // returns, in declaration order), so `work: TempDir` always
+        // drops with the lock already released regardless of field
+        // order. Makes every one of the 89 implicit-drop call sites and
+        // every unwind path ordered-correct with zero call-site changes;
+        // `teardown()` also goes through this impl via its `drop(self)`.
+        if let Some(f) = self.lock_file.take() {
+            let _ = f.unlock();
+            drop(f);
+        }
+        // `work` drops after this fn returns, deleting the shadow dir
+        // unless `disable_cleanup` was set at construction
+        // (ZFB_KEEP_SHADOW_SESSION).
+    }
 }
 
 /// Remove every entry inside `dir` without removing `dir` itself.
 /// Symlinked children (e.g. the `node_modules` link) are removed as
 /// links, never followed into.
+///
+/// Skips [`SHADOW_SESSION_LOCK_FILE_NAME`] (issue #2257): a dirty-reset
+/// wipe must never delete the session's own owner lock — doing so could
+/// let a concurrent [`reap_stale_shadow_sessions`] observe the lock file
+/// genuinely absent (its `NotFound` branch) and reap this dir out from
+/// under a session that is very much alive, just mid-recovery.
 fn wipe_dir_contents(dir: &Path) -> Result<()> {
     let entries = fs::read_dir(dir).with_context(|| {
         format!(
@@ -1568,6 +1739,9 @@ fn wipe_dir_contents(dir: &Path) -> Result<()> {
                 dir.display()
             )
         })?;
+        if entry.file_name().to_str() == Some(SHADOW_SESSION_LOCK_FILE_NAME) {
+            continue;
+        }
         let ft = entry.file_type().with_context(|| {
             format!(
                 "shadow session: failed to stat shadow entry {}",
@@ -1589,6 +1763,165 @@ fn wipe_dir_contents(dir: &Path) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Grace floor for [`reap_stale_shadow_sessions`] (issue #2257): a
+/// candidate directory must be at least this old, IN ADDITION TO its
+/// [`SHADOW_SESSION_LOCK_FILE_NAME`] being provably unheld, before the
+/// reaper deletes it.
+///
+/// Unlike the Temp Sweeper's 30-minute `ORPHANED_ENTRY_GRACE`
+/// (`crates/zfb-islands/src/esbuild.rs`) — whose sizing rests on a live
+/// file's mtime tracking roughly one esbuild call — a shadow session
+/// dir's ROOT mtime is NOT a liveness signal here at all: deep writes
+/// during a live session never touch the root entry's own mtime, only
+/// the mtimes of entries created/removed/renamed directly inside it. The
+/// exclusive owner lock is the actual liveness signal; this floor's only
+/// job is covering the brief unlocked window between `tempdir_in`
+/// returning and the lock landing (a few syscalls, sub-second nominal)
+/// in a concurrent sibling's own boot. 5 minutes is roughly 300x that
+/// nominal window — absorbing scheduler starvation and short suspend/
+/// resume gaps — while still reclaiming a crashed boot's multi-GB stray
+/// at the very next `zfb dev` start in practice. A fresh sibling mid its
+/// first (potentially multi-GB) materialise is protected by its LOCK,
+/// never by this floor — the floor never needs to cover materialisation
+/// time. Erring longer only delays reclaiming a sub-5-minute stray by
+/// one more boot.
+const REAP_AGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Reap stale `zfb-shadow-session-*` directories left in `parent` by a
+/// `zfb dev` process that terminated without unwinding (issue #2257) —
+/// mirrors `sweep_stale_probe_sessions`'s posture
+/// (`crates/zfb/src/commands/watcher_liveness_probe.rs:173-228`):
+/// lock-based liveness, NO pid checks (pid reuse would make a
+/// genuinely-dead session's pid look alive again), best-effort,
+/// swallow-all-I/O-errors.
+///
+/// Called ONCE from the dev boot path, immediately before
+/// [`ShadowSession::new`] — deliberately NOT embedded in that ctor. See
+/// the "Teardown, keep-flag, and reap" section of [`ShadowSession`]'s
+/// doc comment for the full rationale; in short: 89 test call sites
+/// across the workspace construct a `ShadowSession` directly, and a
+/// ctor-embedded reap would make every one of them `read_dir` +
+/// lock-probe the REAL shared system temp — exactly the shared-resource
+/// interference class this crate's cross-binary-lock machinery exists to
+/// prevent.
+///
+/// `ZFB_KEEP_SHADOW_SESSION` gates this reap too, not just self-teardown:
+/// while the flag is exported for a debugging session, zfb neither
+/// deletes its own session nor reaps a sibling's kept dir.
+///
+/// Never panics; returns nothing. Every I/O failure either is swallowed
+/// (a best-effort `remove_dir_all`) or leaves the candidate untouched —
+/// fail closed, never risk deleting a dir this fn cannot prove is dead.
+///
+/// ## Out of scope / accepted limitations (issue #2257 — deliberate, do
+/// ## not "fix" without re-opening the locked spec)
+///
+/// - **Mixed-version concurrency**: a LIVE dev session started by a
+///   PRE-FIX zfb build (no lock file, and a root mtime that a long-lived
+///   session's deep writes never touch) sitting past the age floor is
+///   indistinguishable here from a genuinely dead pre-fix stray — the
+///   `NotFound` branch below reaps both. A codex review flagged this
+///   exact scenario during this epic's implementation; it is accepted,
+///   not a bug: mixed-version concurrent `zfb dev` on one host is rare,
+///   the shadow tree is derived state (the affected session errors and
+///   needs a restart, no data loss), and refusing to reap ANY lockless
+///   dir would leave the entire pre-fix stray population (issue #2232)
+///   unreclaimable forever.
+/// - Other temp classes this epic does not cover: `zfb-bundler-*` /
+///   `zfb-exact-node-modules-*` strays from a killed `zfb build` use a
+///   different producer with no lock protocol at all — age-only reaping
+///   there could delete a live long build's tree (V8 first compile is
+///   15-30 min). The `SHADOW_SESSION_PREFIX` filter below means this fn
+///   structurally never touches them.
+/// - Only `parent` itself is swept — strays under a DIFFERENT
+///   `shadow_parent_dir` candidate (e.g. `TMPDIR`/`XDG_CACHE_HOME`
+///   changed between the boot that created them and this one) are left
+///   alone; the caller only ever passes the resolution for THIS boot.
+/// - Filesystems where advisory locks "succeed" without truly
+///   conflicting (some NFS configurations) carry the same accepted risk
+///   as `sweep_stale_probe_sessions`.
+pub fn reap_stale_shadow_sessions(parent: &Path) {
+    if keep_shadow_session_enabled() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // Never follow symlinks: `DirEntry::file_type()` is
+        // `lstat`-based, so a symlink (even one pointing at a directory)
+        // reports `is_symlink()`, never `is_dir()`, and is skipped below.
+        if !file_type.is_dir() {
+            continue;
+        }
+        let is_shadow_session = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with(SHADOW_SESSION_PREFIX))
+            .unwrap_or(false);
+        if !is_shadow_session {
+            continue;
+        }
+        // `path` was just proven a real (non-symlink) directory above, so
+        // a plain `metadata` call here is equivalent to `symlink_metadata`.
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+            continue;
+        };
+        if age < REAP_AGE_FLOOR {
+            continue;
+        }
+
+        let lock_path = path.join(SHADOW_SESSION_LOCK_FILE_NAME);
+        match fs::File::open(&lock_path) {
+            Ok(lock_file) => match lock_file.try_lock() {
+                Ok(()) => {
+                    // We just acquired it ourselves -> no live owner.
+                    let _ = lock_file.unlock();
+                    drop(lock_file);
+                    let _ = fs::remove_dir_all(&path);
+                }
+                Err(_) => {
+                    // Either genuinely held by a live session (WouldBlock)
+                    // or an ambiguous platform error — either way, never
+                    // risk deleting a directory we can't prove is dead.
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Lock file genuinely absent: a pre-fix stray (the #2232
+                // population never wrote one), a crash landed between
+                // `tempdir_in` and the lock file's creation (the age
+                // floor already guards that window), OR — accepted,
+                // see this fn's "Out of scope" doc section — a still-LIVE
+                // session from a pre-fix zfb build running concurrently.
+                // All three are treated identically here: safe to remove.
+                let _ = fs::remove_dir_all(&path);
+            }
+            Err(error) => {
+                // The lock file EXISTS but could not be opened — e.g. fd
+                // exhaustion (EMFILE) or a permission error (EACCES).
+                // This says nothing about whether a live session owns it;
+                // treating it as stale would let a transient open failure
+                // delete a locked directory from under its running owner.
+                tracing::debug!(
+                    path = %lock_path.display(),
+                    %error,
+                    "shadow session reap: could not open owner lock file; leaving session dir untouched"
+                );
+            }
+        }
+    }
 }
 
 /// Canonicalize the shadow tree root so esbuild emits byte-deterministic
@@ -12161,6 +12494,191 @@ mod tests {
         assert!(msg.contains("bundler shadow root"), "{msg}");
     }
 
+    // -----------------------------------------------------------------
+    // Shadow-session teardown, keep-flag, and reap (issue #2257)
+    // -----------------------------------------------------------------
+
+    /// Backdate a directory's mtime by `age`, so [`reap_stale_shadow_sessions`]
+    /// sees it as older than [`REAP_AGE_FLOOR`]. Mirrors
+    /// `zfb-islands/src/esbuild.rs`'s `write_entry_aged` helper, applied to
+    /// a directory (opened for read, not write — a directory cannot be
+    /// opened with `O_WRONLY` on Unix, but `set_modified`'s underlying
+    /// `futimens` needs only an open handle, not a writable one).
+    fn backdate_dir_mtime(dir: &Path, age: std::time::Duration) {
+        let file = fs::File::open(dir).expect("open dir for mtime backdate");
+        file.set_modified(std::time::SystemTime::now() - age)
+            .expect("backdate dir mtime");
+    }
+
+    /// Test expectation 6 (#2257): the ctor holds its owner lock
+    /// exclusively for the session's entire (alive) lifetime — a second
+    /// `try_lock` attempt on the SAME lock file must fail while the
+    /// session is still owned.
+    #[test]
+    fn shadow_session_owner_lock_is_locked_so_a_concurrent_exclusive_lock_attempt_fails_while_owned(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = ShadowSession::new(tmp.path()).unwrap();
+        let lock_path = session.shadow_root().join(SHADOW_SESSION_LOCK_FILE_NAME);
+        assert!(lock_path.is_file(), "ctor must create the owner lock file");
+
+        let probe = fs::File::open(&lock_path).unwrap();
+        assert!(
+            probe.try_lock().is_err(),
+            "a second exclusive lock attempt on the ctor's own lock file must fail while the \
+             session is alive"
+        );
+    }
+
+    /// Test expectation 7 (#2257), bundler half: `teardown` removes the
+    /// shadow dir AND its lock file together (`remove_dir_all` over the
+    /// whole session root). The `dev.rs`-side half — a second
+    /// `shutdown_explicit` call being a no-op — is covered in
+    /// `crates/zfb/src/commands/dev.rs`'s own test module, since
+    /// `shutdown_explicit` lives there.
+    #[test]
+    fn teardown_removes_the_shadow_dir_and_its_lock_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = ShadowSession::new(tmp.path()).unwrap();
+        let shadow_root = session.shadow_root().to_path_buf();
+        assert!(shadow_root.join(SHADOW_SESSION_LOCK_FILE_NAME).exists());
+
+        session.teardown();
+
+        assert!(
+            !shadow_root.exists(),
+            "teardown must remove the shadow dir (and its lock file with it)"
+        );
+    }
+
+    /// Test expectation 1 (#2257): a stale sibling — lock file present but
+    /// unheld, mtime past the floor — is reaped.
+    #[test]
+    fn reap_removes_a_stale_unlocked_sibling_past_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let stale = parent.path().join("zfb-shadow-session-stale1");
+        fs::create_dir_all(&stale).unwrap();
+        fs::File::create(stale.join(SHADOW_SESSION_LOCK_FILE_NAME)).unwrap();
+        backdate_dir_mtime(&stale, REAP_AGE_FLOOR + std::time::Duration::from_secs(60));
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            !stale.exists(),
+            "a stale unlocked sibling past the age floor must be reaped"
+        );
+    }
+
+    /// Test expectation 2 (#2257): a sibling whose lock IS held (this test
+    /// holds it) survives the reap even though its mtime is past the
+    /// floor — the lock is the actual liveness signal, the floor only
+    /// covers the pre-lock window.
+    #[test]
+    fn reap_spares_a_locked_sibling_even_past_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let live = parent.path().join("zfb-shadow-session-live1");
+        fs::create_dir_all(&live).unwrap();
+        let lock_path = live.join(SHADOW_SESSION_LOCK_FILE_NAME);
+        let lock_file = fs::File::create(&lock_path).unwrap();
+        lock_file.try_lock().unwrap();
+        backdate_dir_mtime(&live, REAP_AGE_FLOOR + std::time::Duration::from_secs(60));
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            live.exists(),
+            "a live-locked sibling must survive the reap even past the age floor"
+        );
+        drop(lock_file);
+    }
+
+    /// Test expectation 3 (#2257): a freshly-created unlocked sibling
+    /// (under the age floor) survives — protects the sub-second window
+    /// between `tempdir_in` returning and the lock landing in a
+    /// concurrent sibling's own boot.
+    #[test]
+    fn reap_spares_a_fresh_unlocked_sibling_under_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let fresh = parent.path().join("zfb-shadow-session-fresh1");
+        fs::create_dir_all(&fresh).unwrap();
+        fs::File::create(fresh.join(SHADOW_SESSION_LOCK_FILE_NAME)).unwrap();
+        // No backdating: freshly created, well under the floor.
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            fresh.exists(),
+            "a fresh sibling under the age floor must never be reaped"
+        );
+    }
+
+    /// Test expectation 4 (#2257): a lockless dir past the floor — the
+    /// #2232 pre-fix stray shape (no `.zfb-owner.lock` at all) — is
+    /// reaped.
+    #[test]
+    fn reap_removes_a_lockless_pre_fix_stray_past_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let stray = parent.path().join("zfb-shadow-session-prefix-stray");
+        fs::create_dir_all(&stray).unwrap();
+        backdate_dir_mtime(&stray, REAP_AGE_FLOOR + std::time::Duration::from_secs(60));
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            !stray.exists(),
+            "a lockless pre-fix stray past the age floor must be reaped"
+        );
+    }
+
+    /// Test expectation 5 (#2257), part A: names that don't carry the
+    /// shadow-session prefix, and a plain FILE that DOES carry it, are
+    /// both left untouched regardless of age.
+    #[test]
+    fn reap_ignores_non_matching_names_and_a_same_prefixed_plain_file() {
+        let parent = tempfile::tempdir().unwrap();
+
+        let other_prefix_dir = parent.path().join("zfb-bundler-something");
+        fs::create_dir_all(&other_prefix_dir).unwrap();
+        backdate_dir_mtime(
+            &other_prefix_dir,
+            REAP_AGE_FLOOR + std::time::Duration::from_secs(60),
+        );
+
+        let prefixed_file = parent.path().join("zfb-shadow-session-not-a-dir");
+        fs::write(&prefixed_file, "not a directory").unwrap();
+        let handle = fs::OpenOptions::new()
+            .write(true)
+            .open(&prefixed_file)
+            .unwrap();
+        handle
+            .set_modified(
+                std::time::SystemTime::now()
+                    - (REAP_AGE_FLOOR + std::time::Duration::from_secs(60)),
+            )
+            .unwrap();
+        drop(handle);
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            other_prefix_dir.exists(),
+            "a differently-prefixed dir must never be touched by the reap"
+        );
+        assert!(
+            prefixed_file.exists(),
+            "a plain FILE carrying the session prefix must never be touched by the reap"
+        );
+    }
+
+    /// Test expectation 5 (#2257), part B: a nonexistent parent dir must
+    /// not panic.
+    #[test]
+    fn reap_against_a_nonexistent_parent_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        reap_stale_shadow_sessions(&missing);
+    }
+
     #[test]
     fn rebase_tsconfig_paths_dual_target_under_root_passthrough_external() {
         let root = Path::new("/proj");
@@ -17681,6 +18199,15 @@ mod tests {
                 return;
             };
             for entry in entries.flatten() {
+                // Issue #2257 — `.zfb-owner.lock` is session-level
+                // bookkeeping the ctor writes directly at the shadow
+                // root (never through `ShadowWriter`, never rerooted by
+                // the workspace layout logic below), not materialised
+                // project content. Exclude it so this inventory helper
+                // keeps describing only what a bundle call wrote.
+                if entry.file_name().to_str() == Some(SHADOW_SESSION_LOCK_FILE_NAME) {
+                    continue;
+                }
                 let file_type = entry.file_type().expect("dirent file type");
                 if file_type.is_dir() {
                     walk(&entry.path(), base, out);
