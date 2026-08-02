@@ -78,7 +78,7 @@ use zfb_router::Router;
 
 use zfb_render::paths::PathsCache;
 
-use crate::cli::{BuildArgs, BuildMinifyHtml, BuildStrictBrokenLinks};
+use crate::cli::{BuildArgs, BuildMinifyHtml, BuildStrictBrokenLinks, BuildStrictContentBridge};
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
@@ -132,6 +132,25 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     if strict_broken_links {
         apply_strict_broken_links_override(&mut config);
     }
+
+    // #2220 — strict-content-bridge override. Unlike strict-broken-links,
+    // there is no adjacent feature to force-enable (the content-bridge gate
+    // always runs for every compiled collection entry), so this is a plain
+    // resolve-and-write-back with no `apply_*_override` mutation. Written
+    // back to `config` for the same reason as `strict_broken_links` above:
+    // the same `config` binding is serialised verbatim into the
+    // preBuild/postBuild plugin JSON below, so a plugin reading the
+    // top-level field should see the CLI-resolved effective value.
+    //
+    // The actual bail-on-fallback decision happens later in `run_build`,
+    // after the bundler reports `BundlerOutput::content_bridge_fallback_pages`
+    // — `zfb_build::bundle()` itself never consults this value, which is
+    // what keeps `zfb dev` (which shares that same bundler call) unaffected
+    // by construction. See `MaterialiseCtx::content_bridge_fallbacks`'s doc
+    // comment in `crates/zfb-build/src/bundler.rs`.
+    let strict_content_bridge =
+        resolve_strict_content_bridge(args.strict_content_bridge(), &config);
+    config.strict_content_bridge = strict_content_bridge;
 
     let selected_outdir = resolve_outdir_arg(args.outdir.clone(), &config.out_dir);
     let outdir = resolve_outdir(&project_root, &selected_outdir);
@@ -480,6 +499,27 @@ pub(crate) fn apply_strict_broken_links_override(config: &mut Config) {
         .link_validation
         .get_or_insert_default()
         .fail_on_broken = Some(true);
+}
+
+/// Resolve the effective strict-content-bridge override (issue #2220).
+///
+/// Same tri-state precedence as [`resolve_minify_html`] /
+/// [`resolve_strict_broken_links`]: explicit CLI (`--strict-content-bridge`
+/// / `--no-strict-content-bridge`) beats the config `strictContentBridge`
+/// field, which beats the default (`false`). `Config::strict_content_bridge`
+/// is already defaulted to `false` by serde, so this function returns the
+/// single boolean `run_build` uses to decide whether a reported
+/// content-bridge fallback should fail the build.
+///
+/// Unlike [`resolve_strict_broken_links`], there is no paired
+/// `apply_*_override` function — the content-bridge gate always runs for
+/// every compiled collection entry, so there is no adjacent feature to
+/// force-enable.
+pub(crate) fn resolve_strict_content_bridge(
+    cli: BuildStrictContentBridge,
+    config: &Config,
+) -> bool {
+    cli.as_option().unwrap_or(config.strict_content_bridge)
 }
 
 // ---------------------------------------------------------------------------
@@ -6427,6 +6467,31 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         .bundle(bundler_input)
         .context("bundler step failed")?;
 
+    // #2220 — strict-content-bridge. `bundler_out.content_bridge_fallback_pages`
+    // is populated UNCONDITIONALLY by the bundler (it never itself decides to
+    // fail the build — see `MaterialiseCtx::content_bridge_fallbacks`'s doc
+    // comment in `crates/zfb-build/src/bundler.rs`); this is the ONLY place
+    // that ever turns a non-empty list into a build failure, and it does so
+    // before the expensive runtime `paths()` evaluation / V8 render below.
+    // Flag off (the default): this block is inert — the fallback already
+    // warned to stderr during bundling and the build proceeds to exit 0,
+    // byte-identical to before this field existed.
+    if config.strict_content_bridge && !bundler_out.content_bridge_fallback_pages.is_empty() {
+        let mut msg = format!(
+            "{} content-bridge fallback(s) found — the page(s) below render via \
+             <pre data-zfb-content-fallback> because their compiled JSX does not parse:\n",
+            bundler_out.content_bridge_fallback_pages.len()
+        );
+        for page in &bundler_out.content_bridge_fallback_pages {
+            msg.push_str(&format!("  {page}\n"));
+        }
+        msg.push_str(
+            "Fix the offending Markdown/MDX source, or set strictContentBridge: false \
+             (or pass --no-strict-content-bridge) to allow the fallback.",
+        );
+        anyhow::bail!(msg.trim_end().to_string());
+    }
+
     // 2. Phase 3 — runtime paths() evaluation.
     //
     // For any dynamic routes whose `paths()` couldn't be statically
@@ -7484,6 +7549,11 @@ mod tests {
         static_html_output_paths: RefCell<Vec<PathBuf>>,
         /// Bundle-relative Wasm assets returned from each fake bundle pass.
         emitted_wasm_assets: RefCell<Vec<PathBuf>>,
+        /// Content-bridge fallback pages (issue #2220) returned from each
+        /// fake bundle pass. Default = empty (parity with `DefaultRunner`
+        /// on a project with no fallback); tests can preload entries to
+        /// exercise `run_build`'s `strictContentBridge` bail check.
+        content_bridge_fallback_pages: RefCell<Vec<String>>,
     }
 
     impl FakeRunner {
@@ -7497,6 +7567,7 @@ mod tests {
                 page_client_script_refs: RefCell::new(Vec::new()),
                 static_html_output_paths: RefCell::new(Vec::new()),
                 emitted_wasm_assets: RefCell::new(Vec::new()),
+                content_bridge_fallback_pages: RefCell::new(Vec::new()),
             }
         }
 
@@ -7525,6 +7596,14 @@ mod tests {
 
         fn with_emitted_wasm_assets(self, assets: Vec<PathBuf>) -> Self {
             *self.emitted_wasm_assets.borrow_mut() = assets;
+            self
+        }
+
+        /// Declare content-bridge fallback pages (issue #2220) the fake
+        /// bundle pass should report, simulating a project where one or
+        /// more `.md`/`.mdx` entries failed to bridge.
+        fn with_content_bridge_fallback_pages(self, pages: Vec<String>) -> Self {
+            *self.content_bridge_fallback_pages.borrow_mut() = pages;
             self
         }
     }
@@ -7564,6 +7643,7 @@ mod tests {
                 },
                 route_module_deps: Vec::new(),
                 emitted_wasm_assets,
+                content_bridge_fallback_pages: self.content_bridge_fallback_pages.borrow().clone(),
             })
         }
         fn eval_deferred_paths(
@@ -7850,6 +7930,62 @@ mod tests {
         ));
     }
 
+    // --- resolve_strict_content_bridge tri-state cases (#2220) ---
+
+    #[test]
+    fn resolve_strict_content_bridge_defaults_false_when_cli_and_config_omit() {
+        let cfg = Config::default();
+        assert!(!resolve_strict_content_bridge(
+            BuildStrictContentBridge::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_content_bridge_uses_config_when_cli_omits_true() {
+        let cfg = Config {
+            strict_content_bridge: true,
+            ..Config::default()
+        };
+        assert!(resolve_strict_content_bridge(
+            BuildStrictContentBridge::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_content_bridge_uses_config_when_cli_omits_false() {
+        let cfg = Config {
+            strict_content_bridge: false,
+            ..Config::default()
+        };
+        assert!(!resolve_strict_content_bridge(
+            BuildStrictContentBridge::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_content_bridge_cli_enable_beats_config_false() {
+        let cfg = Config::default();
+        assert!(resolve_strict_content_bridge(
+            BuildStrictContentBridge::Enabled,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_content_bridge_cli_disable_beats_config_true() {
+        let cfg = Config {
+            strict_content_bridge: true,
+            ..Config::default()
+        };
+        assert!(!resolve_strict_content_bridge(
+            BuildStrictContentBridge::Disabled,
+            &cfg
+        ));
+    }
+
     // --- apply_strict_broken_links_override mutation-shape cases (#2117) ---
 
     #[test]
@@ -8026,6 +8162,96 @@ mod tests {
             );
             assert!(body.contains("<main>"), "expected non-empty <main>");
         }
+    }
+
+    // --- strictContentBridge bail check in run_build (#2220) ---
+
+    #[test]
+    fn run_build_content_bridge_fallback_does_not_fail_when_strict_is_off() {
+        // Flag off (the default): a reported fallback must NOT change the
+        // outcome — the build still succeeds and the fallback stays a
+        // stderr-only warning (already emitted by the bundler itself, not
+        // asserted here).
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_content_bridge_fallback_pages(vec!["content/docs/broken.mdx".to_string()]);
+        let cfg = Config {
+            strict_content_bridge: false,
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+
+        let (pages, _) = run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .expect(
+            "a content-bridge fallback must not fail the build when strictContentBridge is off",
+        );
+
+        assert_eq!(pages, 1);
+    }
+
+    #[test]
+    fn run_build_content_bridge_fallback_fails_when_strict_is_on() {
+        // Flag on: a reported fallback must fail the build (non-zero exit
+        // once this bubbles up to `main`) and the error must name the
+        // offending page.
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_content_bridge_fallback_pages(vec!["content/docs/broken.mdx".to_string()]);
+        let cfg = Config {
+            strict_content_bridge: true,
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .expect_err("a content-bridge fallback must fail the build when strictContentBridge is on");
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("content/docs/broken.mdx"),
+            "error message must name the offending page; got: {msg}"
+        );
+
+        // The render step must never run — the bail happens right after
+        // the bundle step, before the (expensive) render phase.
+        assert!(
+            runner.render_calls.borrow().is_empty(),
+            "render must not run once the strict-content-bridge bail fires"
+        );
     }
 
     #[test]
@@ -8433,6 +8659,7 @@ mod tests {
                     },
                     route_module_deps: Vec::new(),
                     emitted_wasm_assets: Vec::new(),
+                    content_bridge_fallback_pages: Vec::new(),
                 })
             }
             fn eval_deferred_paths(

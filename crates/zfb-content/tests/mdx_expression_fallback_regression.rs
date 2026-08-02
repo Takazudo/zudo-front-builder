@@ -7,10 +7,11 @@
 //! A real docs page (`design-token-lint.mdx` in `zudo-css-wisdom`) that
 //! mixes an island component (`<CssPreview>`) with fenced/inline code
 //! demos compiled into JSX that tripped the bundler's
-//! `jsx_likely_breaks_downstream_parser` gate
-//! (`crates/zfb-build/src/bundler.rs`), degrading the ENTIRE page — no
-//! island, no prose — to a raw `<pre>` fallback. The gate fires on a
-//! `{` (optionally `-`) directly followed by `\` + an ASCII letter.
+//! then-byte-scan `jsx_likely_breaks_downstream_parser` gate
+//! (`crates/zfb-build/src/bundler.rs`; replaced in #2216 by the real
+//! SWC parse `jsx_module_parse_failure`), degrading the ENTIRE page —
+//! no island, no prose — to a raw `<pre>` fallback. That gate fired on
+//! a `{` (optionally `-`) directly followed by `\` + an ASCII letter.
 //!
 //! ## Diagnosis (issue #1779)
 //!
@@ -34,8 +35,9 @@
 //! ## Repair
 //!
 //! Each expression sink now routes through `emit_mdx_expression_braced`:
-//! if emitting `{value}` verbatim would trip the gate's `{\letter}`
-//! heuristic (a string/comment-aware scan), the value is recovered as a
+//! if emitting `{value}` verbatim would trip the emitter's `{\letter}`
+//! byte pre-filter (a string/comment-aware scan, historically mirroring
+//! the pre-#2216 gate), the value is recovered as a
 //! JS string literal (`{"…escaped…"}`) so the bytes stay visible and the
 //! module parses. Only the breaking shape is recovered — valid MDX
 //! expressions (`{1 + 1}`), expression attributes (`count={1 + 2}`),
@@ -47,7 +49,8 @@
 //! For each fixture (island-descendant and top-level):
 //!   (a) MDX parse + compile succeeds.
 //!   (b) The compiled JSX does NOT trip `heuristic_says_jsx_breaks`
-//!       (mirror of the bundler gate) — no whole-page fallback.
+//!       (mirror of the pre-#2216 byte-scan bundler gate) — no
+//!       whole-page fallback.
 //!   (c) The compiled JSX parses through `zfb_render::SwcPipeline`.
 //!   (d) The recovered code bytes remain visibly present.
 //!   (e) Valid expression / attribute / spread / comment shapes survive
@@ -65,9 +68,12 @@ use zfb_content::{
 use zfb_render::{CompileOptions, SwcPipeline};
 
 // -----------------------------------------------------------------------------
-// Heuristic mirror — keep in sync with
-// `crates/zfb-build/src/bundler.rs::jsx_likely_breaks_downstream_parser`
-// (identical to the mirror in `large_mdx_fallback_regression.rs`).
+// Heuristic mirror of the bundler's pre-#2216 byte-scan gate
+// (`jsx_likely_breaks_downstream_parser`, replaced in #2216 by the real
+// SWC parse `jsx_module_parse_failure` in
+// `crates/zfb-build/src/bundler.rs`); identical to the mirror in
+// `large_mdx_fallback_regression.rs`. Pins properties of EMITTER
+// OUTPUT — no live byte-scan gate left to sync with.
 // -----------------------------------------------------------------------------
 
 fn heuristic_says_jsx_breaks(jsx: &str) -> bool {
@@ -167,9 +173,11 @@ fn compile_body(label: &str, body: &str) -> String {
             .unwrap_or_else(|e| panic!("compile failed for {label}: {e}"));
     assert!(
         !heuristic_says_jsx_breaks(&compiled.jsx_source),
-        "{label}: compiled JSX trips jsx_likely_breaks_downstream_parser — the bundler would \
-         skip this file in the bridge map and degrade the WHOLE page to the \
-         <pre data-zfb-content-fallback> shape (issue #1729). Emitted JSX:\n{}",
+        "{label}: compiled JSX trips the byte-scan mirror (heuristic_says_jsx_breaks) — a \
+         `{{\\letter}}` leak regressed; a genuinely-bare leak fails the bundler's SWC parse \
+         gate too, so the bundler would skip this file in the bridge map and degrade the \
+         WHOLE page to the <pre data-zfb-content-fallback> shape (issue #1729). Emitted \
+         JSX:\n{}",
         compiled.jsx_source
     );
     assert_swc_accepts(&compiled.jsx_source, label);
@@ -293,12 +301,13 @@ fn top_level_backslash_expression_does_not_fall_back() {
 // string. The recovery must therefore leave a VALID expression verbatim and
 // only string-wrap the genuinely-invalid `\d`-leak class.
 //
-// Because the recovered regex still contains the raw `{\d}` bytes, the
-// gate's byte mirror (`heuristic_says_jsx_breaks`) is expected to fire on
-// it — that is accepted and documented: it merely reproduces the
-// conservative pre-epic whole-page fallback for such a page. Preserving
-// valid-JS semantics takes priority over avoiding that fallback (the gate
-// itself is out of scope).
+// Because the emitted regex still contains the raw `{\d}` bytes, the
+// emitter's byte mirror (`heuristic_says_jsx_breaks`) is expected to fire
+// on it — that is accepted and documented: the mirror is only the
+// emitter-side pre-filter shape. Since #2216 the real bundler gate is an
+// SWC parse (`jsx_module_parse_failure`), which such a valid module
+// PASSES — no whole-page fallback occurs (the pre-#2216 byte-scan gate
+// did false-positive here; that documented residual is fixed).
 // -----------------------------------------------------------------------------
 
 /// The verbatim JS text a valid regex-literal expression must keep.
@@ -333,9 +342,10 @@ fn valid_regex_literal_expression_survives_verbatim_pipeline_path() {
         "valid regex expression must NOT be string-wrapped; emitted:\n{jsx}"
     );
 
-    // Documented, accepted consequence: the recovered regex keeps the raw
-    // `{\d}` bytes, so the gate's byte mirror fires. This reproduces the
-    // conservative pre-epic fallback rather than corrupting valid JS.
+    // Documented, accepted property: the emitted regex keeps the raw
+    // `{\d}` bytes, so the emitter's byte mirror fires. Since #2216 the
+    // real bundler gate (an SWC parse) accepts this valid module — the
+    // page bridges; only the emitter-side pre-filter sees the pattern.
     assert!(
         heuristic_says_jsx_breaks(&jsx),
         "the regex's raw `{{\\d}}` bytes are expected to trip the byte mirror; emitted:\n{jsx}"
@@ -411,7 +421,7 @@ fn snapshot_bridge_hash_parity_holds_for_recovered_fixture() {
 
     assert!(
         !heuristic_says_jsx_breaks(&compiled.jsx_source),
-        "bundler-side compile must not trip the gate"
+        "bundler-side compile must not trip the byte-scan mirror"
     );
 
     let snap_spec =

@@ -1,0 +1,36 @@
+<Note title="Known limitations">
+
+- **Config-level per-mode literal defaults aren't possible yet.** A row's manifest default is a single string, so AA-tuned per-mode literals (like `danger`) are seeded from whichever mode is active at reconfigure time rather than declared as a `{light, dark}` pair up front. Runtime per-mode editing (the **Per-mode** checkbox above) is unaffected — this only limits what a *config* can declare as a starting default. Tracked upstream as [zdtp#499](https://github.com/Takazudo/zudo-design-token-panel/issues/499).
+- **Ramp-option previews in the grouped dropdowns are static.** Each `<option>` shows the ramp stop's manifest-default color, not a live-updated swatch — if you've tweaked a stop on the Palette tab, the dropdown list still shows its original color next to the label. The *applied* color is still correct; only the picker's preview lags.
+- **A pre-3.0 saved envelope may render broken.** Before this ramp-native rewire, saved Color-tab overrides were stored as palette-index integers. Loaded against the current config, an index mapping resolves through a zdtp hydration path that currently falls back to solid black rather than the new defaults (upstream bug [zdtp#497](https://github.com/Takazudo/zudo-design-token-panel/issues/497)). If any semantic tokens render black after this update, click **Reset all** once to clear the stale mapping.
+
+</Note>
+
+Click **Export** in the panel header to open the export modal. The modal shows a single JSON document describing every tab's current state, wrapped in a `tabs` object keyed by tab id.
+
+By default the export is a **diff against the defaults** — only tokens you have actually changed are included. Untouched tabs are omitted entirely, and within a changed tab only the individual tokens you edited are kept. The result is small, easy to diff, and stable enough to paste into a commit.
+
+```json
+{
+  "$schema": "zudo-design-tokens/v3",
+  "exportedAt": "2026-07-05T12:00:00.000Z",
+  "tabs": {
+    "palette": {
+      "raw": {
+        "--palette-accent-1": "oklch(0.700 0.158 62)"
+      }
+    },
+    "color": {
+      "semantic": {
+        "--zd-bg": { "ref": { "tab": "palette", "tier": "base", "item": "base-3" } },
+        "--zd-danger": {
+          "literal": { "light": "oklch(.505 .170 25)", "dark": "oklch(.655 .170 25)" }
+        }
+      }
+    },
+    "spacing": {
+      "raw": { "--spacing-hsp-md": "1.25rem" }
+    }
+  }
+}
+```

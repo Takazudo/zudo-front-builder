@@ -811,6 +811,21 @@ pub struct BundlerOutput {
     /// this output is returned. Deployment adapters use this contract to carry
     /// the copied modules through to the final Worker package.
     pub emitted_wasm_assets: Vec<PathBuf>,
+    /// Every content-collection `.md`/`.mdx` source path (issue #2220, epic
+    /// #2216 Wave 4) whose compiled JSX failed [`jsx_module_parse_failure`]
+    /// during this call and therefore fell back to rendering via
+    /// `<pre data-zfb-content-fallback>` instead of bridging into the SSR
+    /// worker. Each entry is also warned to stderr unconditionally by
+    /// `materialise_collection`.
+    ///
+    /// Populated UNCONDITIONALLY — this field carries no policy of its own.
+    /// `bundle()` never fails because of it; deciding whether a non-empty
+    /// list should fail a BUILD is `crates/zfb/src/commands/
+    /// build.rs::run_build`'s job (the `strictContentBridge` config field /
+    /// `--strict-content-bridge` CLI flag), so `zfb dev` sharing this same
+    /// bundler call is unaffected by construction. Empty by default — a
+    /// project with no fallback pays nothing extra.
+    pub content_bridge_fallback_pages: Vec<String>,
 }
 
 /// What the bundle exports, in a form a downstream tool can read without
@@ -2310,6 +2325,7 @@ pub fn bundle_with_session(
         // #1151: the SHA-accurate collection-skip signal, parsed once per
         // bundle from the snapshot JSON the bundler already received.
         snapshot_specifiers: snapshot_specifier_set(input.content_snapshot_json.as_deref()),
+        content_bridge_fallbacks: RefCell::new(Vec::new()),
     };
     let project_root = normalize_path_lexical(&input.project_root);
     let plugin_main_fields = effective_ssr_main_fields(&input);
@@ -4281,12 +4297,19 @@ pub fn bundle_with_session(
         );
     }
 
+    // Bound to a local first (rather than inlined into the struct literal
+    // below) so the `Ref` temporary drops here, before `mat_ctx` itself is
+    // dropped at the end of this function's scope — inlined into the tail
+    // expression it would outlive `mat_ctx` per this block's temporary-
+    // lifetime rules.
+    let content_bridge_fallback_pages = mat_ctx.content_bridge_fallbacks.borrow().clone();
     Ok(BundlerOutput {
         bundle_path,
         sourcemap_path,
         manifest,
         route_module_deps,
         emitted_wasm_assets,
+        content_bridge_fallback_pages,
     })
 }
 
@@ -6838,6 +6861,29 @@ struct MaterialiseCtx<'a, 's> {
     /// (passthrough / prod-sessionless never skip; tests without a snapshot
     /// fall back to the legacy `(mtime, size)` key).
     snapshot_specifiers: Option<std::collections::HashSet<String>>,
+    /// Content-bridge fallback pages (issue #2220, epic #2216 Wave 4).
+    /// `materialise_collection`'s per-file closure pushes the `from` path of
+    /// every `.md`/`.mdx` collection entry whose compiled JSX fails
+    /// [`jsx_module_parse_failure`] — the SAME defensive-skip condition that
+    /// warns and returns [`ImportDecision::DoNotCache`] — so `bundle()` can
+    /// report every offending page via
+    /// [`BundlerOutput::content_bridge_fallback_pages`] after all collections
+    /// have been walked.
+    ///
+    /// This is purely a REPORTING channel: populating it never itself fails
+    /// `bundle()` (mirrors the always-warn, always-`DoNotCache` policy that
+    /// predates this field). Whether a non-empty result should fail a BUILD
+    /// is a build-only policy decision made by
+    /// `crates/zfb/src/commands/build.rs::run_build` (the
+    /// `strictContentBridge` config field / `--strict-content-bridge` CLI
+    /// flag) — never by the bundler itself, so `zfb dev` (which shares this
+    /// same materialise path) is structurally unable to inherit a
+    /// bail-on-fallback behavior.
+    ///
+    /// `RefCell` because every materialise call only holds `&MaterialiseCtx`
+    /// (shared reference), matching the existing `raw_import_edges` /
+    /// `module_worker_dependencies` interior-mutability idiom above.
+    content_bridge_fallbacks: RefCell<Vec<String>>,
 }
 
 /// Build the [`MaterialiseCtx::snapshot_specifiers`] set (#1151) from the
@@ -8190,8 +8236,8 @@ fn materialise_collection(
             // import after the compile: the collection pass produces an
             // `mdx://…` import (with `idStripSuffix` applied to the slug so
             // the bundler's bridge key matches the snapshot's stripped
-            // `module_specifier`), UNLESS the compiled JSX would break
-            // esbuild — the defensive skip, which omits the import and
+            // `module_specifier`), UNLESS the compiled JSX provably does
+            // not parse — the defensive skip, which omits the import and
             // refuses to cache so the page falls back to
             // `<pre data-zfb-content-fallback>` and every tick re-warns.
             materialise_mdx_with_skip(
@@ -8206,11 +8252,22 @@ fn materialise_collection(
                 cross_file_links_out,
                 file_headings_out,
                 |compiled| {
-                    if jsx_likely_breaks_downstream_parser(&compiled.jsx_source) {
+                    if let Some(parse_err) = jsx_module_parse_failure(&compiled.jsx_source) {
                         eprintln!(
-                            "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains bare `{{\\letter}}` expressions that esbuild rejects. The page will render via the <pre data-zfb-content-fallback> shape.",
+                            "zfb bundler: skipping MDX content bridge for {} — compiled JSX does not parse ({parse_err}). The page will render via the <pre data-zfb-content-fallback> shape.",
                             from.display(),
                         );
+                        // #2220 — report this fallback regardless of any
+                        // policy: recorded UNCONDITIONALLY (the warning above
+                        // fires unconditionally too), never gated on strict
+                        // mode here. Whether a non-empty result fails the
+                        // BUILD is decided later, by build.rs's own
+                        // `strictContentBridge` policy — see
+                        // `MaterialiseCtx::content_bridge_fallbacks`'s doc
+                        // comment.
+                        ctx.content_bridge_fallbacks
+                            .borrow_mut()
+                            .push(from.display().to_string());
                         return ImportDecision::DoNotCache;
                     }
                     // Apply `idStripSuffix` to the specifier's slug segment
@@ -8250,110 +8307,71 @@ fn materialise_collection(
     Ok(())
 }
 
-/// Heuristic check for compiled JSX that downstream parsers (esbuild's
-/// JSX pass, then SWC at render-time) will reject. The emitter that
-/// `compile_mdx_to_jsx_module_cached` drives does not yet know about
-/// `remark-math` style fences, so LaTeX content from a `$$...$$` block
-/// can leak into the JSX as bare expression containers like `{\infty}`
-/// or `{-\infty}` — JS does not accept `\letter` as an identifier
-/// outside a string literal, so the entire bundle aborts on the first
-/// such file.
+/// Parse gate for the MDX content bridge: `Some(first parse error)` when
+/// the compiled JSX module does NOT parse as a TSX module, `None` when
+/// it parses cleanly and may bridge.
 ///
-/// The check walks the JSX one byte at a time, tracking string-literal
-/// state (`'`, `"`, and template `` ` ``), and flags any `{` that —
-/// outside a string — is followed (optionally by a single `-`) by a
-/// backslash + ASCII letter. That mirrors the `{\foo}` / `{-\foo}`
-/// shape LaTeX leakage produces, while ignoring legitimate JSX such as
-/// `{"…\n…"}` (curly opens a JSX expression, immediately enters a
-/// string literal whose content can contain anything).
+/// SYNC CONTRACT: the parser configuration below is byte-for-byte the
+/// one `zfb-render`'s `SwcPipeline::compile` applies to every bridged
+/// `mdx://` module (`crates/zfb-render/src/swc_pipeline.rs` —
+/// `Syntax::Typescript(TsSyntax { tsx: true, .. })`, `EsVersion::Es2022`,
+/// `parse_module()`), so this gate's claim is exactly "the render-time
+/// compiler cannot parse this module cleanly" — a trip is a true
+/// positive for the real pipeline by construction (#2216/#2218; the
+/// pre-#2216 hand-rolled byte scanner false-positived on parseable
+/// modules, #2217). The per-expression twin of this check is
+/// `mdx_expression_is_valid_js` (`crates/zfb-content/src/mdx_jsx_emit.rs`),
+/// which applies the same parse-and-reject rule to a single MDX
+/// expression at emit time.
 ///
-/// Outside strings, `\letter` is genuinely unparseable by JS — there is
-/// no escape sequence at the expression level — so a true match is a
-/// reliable signal that the file would crash esbuild. False positives
-/// are bounded: the only consequence of a skip is a fallback
-/// `<pre data-zfb-content-fallback>` block on that page, matching the
-/// pre-S4e behaviour.
-fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
-    let bytes = jsx.as_bytes();
-    let mut in_string: Option<u8> = None;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
+/// Trip rule: `Err` from `parse_module()` OR non-empty
+/// `parser.take_errors()`. SWC error-recovers some invalid input into
+/// `Ok`; recovered errors still mean the input violates the grammar,
+/// which esbuild (`--loader:.mdx=jsx`, no recovery) rejects — treating
+/// them as trips preserves the gate's original esbuild-protection
+/// purpose. The chosen failure direction (#2218): err toward LOUD false
+/// negatives — a module this gate passes but esbuild rejects (e.g.
+/// TS-only syntax under the jsx loader) fails the build loudly; the
+/// silent one-page `<pre data-zfb-content-fallback>` degrade happens
+/// only for modules that provably do not parse.
+///
+/// Cost: the caller runs this only on `materialise_mdx_with_skip`'s
+/// full path — the skip path replays the cached `ImportDecision` — so
+/// the parse costs one SWC pass per cache-miss MDX compile (sub-ms at
+/// the field corpus's 8–51 KB, smaller than the MDX compile that just
+/// ran; the render path parses the same module again later anyway). No
+/// caching, no size guard, no scanner pre-filter.
+fn jsx_module_parse_failure(jsx: &str) -> Option<String> {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap, Spanned};
+    use swc_core::ecma::ast::EsVersion;
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 
-        // Line and block comments — `\letter` inside a comment is harmless.
-        if in_line_comment {
-            if c == b'\n' {
-                in_line_comment = false;
-            }
-            i += 1;
-            continue;
-        }
-        if in_block_comment {
-            if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                in_block_comment = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        // String-literal handling (single, double, template).
-        if let Some(q) = in_string {
-            // Escape: skip the next byte regardless of what it is.
-            if c == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if c == q {
-                in_string = None;
-            }
-            i += 1;
-            continue;
-        }
-
-        // Comment starts.
-        if c == b'/' && i + 1 < bytes.len() {
-            match bytes[i + 1] {
-                b'/' => {
-                    in_line_comment = true;
-                    i += 2;
-                    continue;
-                }
-                b'*' => {
-                    in_block_comment = true;
-                    i += 2;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-
-        // String literal opener.
-        if c == b'"' || c == b'\'' || c == b'`' {
-            in_string = Some(c);
-            i += 1;
-            continue;
-        }
-
-        // The pattern of interest: `{\letter` or `{-\letter`, outside
-        // strings and outside comments.
-        if c == b'{' {
-            let mut j = i + 1;
-            // optional unary minus before the backslash (matches `{-\foo}`).
-            if j < bytes.len() && bytes[j] == b'-' {
-                j += 1;
-            }
-            if j + 1 < bytes.len() && bytes[j] == b'\\' && bytes[j + 1].is_ascii_alphabetic() {
-                return true;
-            }
-        }
-
-        i += 1;
-    }
-    false
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), jsx.to_string());
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let hard_error = parser.parse_module().err();
+    let recovered = parser.take_errors();
+    // Recovered errors are recorded in source order during the single
+    // forward parse, so the earliest error is the first recovered one
+    // when any exist, else the hard error that stopped the parse.
+    let first = recovered.into_iter().next().or(hard_error)?;
+    // `span.lo` is SourceMap-global; subtracting the file's `start_pos`
+    // yields a plain byte offset into the module source.
+    let offset = first.span().lo.0.saturating_sub(fm.start_pos.0);
+    Some(format!("byte {offset}: {}", first.kind().msg()))
 }
 
 /// Per-call staging buffer for [`materialise_source_file`]'s four
@@ -13943,6 +13961,77 @@ mod tests {
         );
     }
 
+    /// Issue #2220 (epic #2216 Wave 4) — the content-bridge fallback signal
+    /// `materialise_collection` records for `bundle()`'s build-only strict
+    /// policy (`crates/zfb/src/commands/build.rs::run_build`).
+    ///
+    /// A `.mdx` file whose body embeds a spread-attribute JSX element with
+    /// a non-JS spread value (`<a {...\bad}>…</a>`) compiles to JSX that
+    /// does not parse: `render_jsx_attrs`'s `AttributeContent::Expression`
+    /// (spread) arm wraps the raw value straight into `{...}` with no
+    /// `mdx_expression_is_valid_js` validation (unlike the ordinary
+    /// attribute/text expression arms beside it), so `\bad` reaches the
+    /// compiled output unescaped and trips `jsx_module_parse_failure` —
+    /// a genuine, currently-reproducible true positive for the gate (as
+    /// opposed to `jsx_breakage_flags_bare_backslash_expressions`'s
+    /// hand-constructed strings, which test the parser function directly
+    /// without going through real MDX compilation). The defensive skip
+    /// fires: `imports` stays empty for this file (no `ContentImport` is
+    /// pushed) and the caller-owned `ctx.content_bridge_fallbacks`
+    /// accumulator records the offending source path. Critically,
+    /// `materialise_collection` itself still returns `Ok(())` — recording
+    /// the fallback NEVER fails the call, regardless of any policy; that
+    /// decision is made later, in the build command (see the field's own
+    /// doc comment).
+    #[test]
+    fn materialise_collection_records_content_bridge_fallback_and_never_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("broken.mdx"),
+            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
+        )
+        .unwrap();
+
+        let dest = tmp.path().join("shadow_content").join("docs");
+        let mut imports: Vec<ContentImport> = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
+        materialise_collection(
+            &src,
+            &dest,
+            "docs",
+            &mut imports,
+            &ctx,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("a content-bridge fallback must never fail materialise_collection");
+
+        assert!(
+            imports.is_empty(),
+            "the defensive skip must omit the bridge import; got {imports:?}"
+        );
+
+        let fallbacks = ctx.content_bridge_fallbacks.borrow();
+        assert_eq!(
+            fallbacks.len(),
+            1,
+            "expected exactly 1 recorded fallback, got {fallbacks:?}"
+        );
+        assert!(
+            fallbacks[0].contains("broken.mdx"),
+            "the recorded fallback must name the offending source file; got {:?}",
+            *fallbacks
+        );
+    }
+
     // -----------------------------------------------------------------
     // ShadowSession content-file skip cache (incremental materialise,
     // zfb#1148)
@@ -14021,6 +14110,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         let mut imports = Vec::new();
         let mut broken = Vec::new();
@@ -14091,6 +14181,7 @@ mod tests {
             // This dual-pass helper exercises the source/`materialise_shadow`
             // path (`import: None`), which is not snapshot-gated; `None` here.
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         let mut imports = Vec::new();
         materialise_collection(
@@ -15808,6 +15899,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         materialise_shadow(
             &components,
@@ -15858,6 +15950,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
 
         materialise_shadow(
@@ -15915,6 +16008,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
 
         preflight_raw_tree(&pages, &shadow_pages, &ctx).unwrap();
@@ -15970,6 +16064,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         materialise_shadow(
             &components,
@@ -16112,6 +16207,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
 
         preflight_raw_tree(&components, &shadow_components, &ctx)
@@ -16165,6 +16261,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         let is_excluded = |_: &Path| false;
 
@@ -16313,6 +16410,7 @@ mod tests {
                 worker_build_context: ModuleWorkerBuildContext::default(),
                 raw_preflight_complete: Cell::new(false),
                 snapshot_specifiers: None,
+                content_bridge_fallbacks: RefCell::new(Vec::new()),
             };
             preflight_raw_tree(&components, &shadow_components, &ctx)
         });
@@ -16974,61 +17072,240 @@ mod tests {
     }
 
     #[test]
-    fn jsx_breakage_heuristic_flags_bare_backslash_expressions() {
+    fn jsx_breakage_flags_bare_backslash_expressions() {
         // Positive cases — these are exactly the patterns the MDX
-        // emitter produces from un-escaped LaTeX (`$$\int_{-\infty}…$$`).
-        assert!(jsx_likely_breaks_downstream_parser(
-            r"<_components.p>{-\infty}{\infty}</_components.p>"
-        ));
-        assert!(jsx_likely_breaks_downstream_parser(
-            r"const x = {\foo}; // no quote"
-        ));
+        // emitter produces from un-escaped LaTeX (`$$\int_{-\infty}…$$`);
+        // neither parses as a TSX module.
+        assert!(
+            jsx_module_parse_failure(r"<_components.p>{-\infty}{\infty}</_components.p>").is_some()
+        );
+        assert!(jsx_module_parse_failure(r"const x = {\foo}; // no quote").is_some());
 
-        // Negative cases — these all parse cleanly under esbuild's
-        // JSX pass and must NOT be flagged.
+        // Negative cases — these all parse cleanly as TSX modules and
+        // must NOT be flagged.
         // 1. `\` inside a JSX-expression string literal.
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{"\\infty"}"#));
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{"$$\n\\int"}"#));
+        assert!(jsx_module_parse_failure(r#"{"\\infty"}"#).is_none());
+        assert!(jsx_module_parse_failure(r#"{"$$\n\\int"}"#).is_none());
         // 2. Curly + escape sequence INSIDE a multi-line string
         //    literal — emitter output for fenced code blocks
         //    contains `"...{\n  site:..."` (literal `{` followed
-        //    by an `\n` newline escape, all inside the string).
-        assert!(!jsx_likely_breaks_downstream_parser(
-            r#"{"export default {\n  site: \"x\"\n};"}"#
-        ));
+        //    by an `\n` newline escape, all inside the string). The
+        //    exact payload the pre-#2216 byte scanner misread as a bare
+        //    `{\letter}` once its string tracking desynced (#2217).
+        assert!(jsx_module_parse_failure(r#"{"export default {\n  site: \"x\"\n};"}"#).is_none());
         // 3. Template literal carrying the same shape.
-        assert!(!jsx_likely_breaks_downstream_parser(
-            "`export default {\\n  site: \\\"x\\\"};`"
-        ));
+        assert!(jsx_module_parse_failure("`export default {\\n  site: \\\"x\\\"};`").is_none());
         // 4. Plain JS expressions.
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{ a + b }"#));
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{props.children}"#));
-        assert!(!jsx_likely_breaks_downstream_parser(r#"export default x;"#));
+        assert!(jsx_module_parse_failure(r#"{ a + b }"#).is_none());
+        assert!(jsx_module_parse_failure(r#"{props.children}"#).is_none());
+        assert!(jsx_module_parse_failure(r#"export default x;"#).is_none());
         // 5. Comments may carry arbitrary text including `{\foo`.
-        assert!(!jsx_likely_breaks_downstream_parser(
-            r"// {\infty} explained inline"
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
-            r"/* {\infty} block-commented */"
-        ));
+        assert!(jsx_module_parse_failure(r"// {\infty} explained inline").is_none());
+        assert!(jsx_module_parse_failure(r"/* {\infty} block-commented */").is_none());
         // 6. Issue #206 shapes — inline-code values containing
         //    HTML-tag-like text and curly-brace patterns. The MDX
         //    emitter wraps each value in `js_string_literal_in_braces`
         //    (see `crates/zfb-content/src/mdx_jsx_emit.rs`), producing
-        //    `{"…escaped…"}` shapes. The `{` is followed by `"` —
-        //    neither `-` nor `\\` — so the heuristic must skip.
-        assert!(!jsx_likely_breaks_downstream_parser(
+        //    `{"…escaped…"}` shapes — JSX expressions that immediately
+        //    enter a string literal and parse cleanly.
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"<link rel=\"stylesheet\">"}</_components.code>"#
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
+        )
+        .is_none());
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"<script type=\"module\">"}</_components.code>"#
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
+        )
+        .is_none());
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"{main-deploy,preview-deploy,pr-checks}.yml"}</_components.code>"#
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
+        )
+        .is_none());
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"@theme { --color-*: initial; }"}</_components.code>"#
-        ));
+        )
+        .is_none());
+
+        // The four #2216 mechanism/direction pins (Wave 2 spec, #2219):
+        // 1. The #2217 desync class, minified, must pass: apostrophes in
+        //    raw JSX text followed by a real `"…{\n…"` string literal.
+        //    The old byte scanner lexed JSX text with JS string rules, so
+        //    the apostrophes flipped its string parity and the string's
+        //    legitimate `{\n` payload read as a bare `{\letter}`. One
+        //    fragment-rooted module so adjacent elements form a single
+        //    expression; a real parse accepts it.
+        assert!(jsx_module_parse_failure(
+            r#"<><Note><_components.p>aren't and picker's</_components.p></Note><_components.p>{"every tab's state"}</_components.p><span dangerouslySetInnerHTML={{__html: "{\n"}} /></>"#
+        )
+        .is_none());
+        // 2. The masking direction of the same desync, must trip: the
+        //    old scanner could swallow a GENUINE bare `{\infty}` inside
+        //    a phantom string opened by an apostrophe (Wave 1's
+        //    delete-paragraph trace proved the masking direction). The
+        //    parse gate must not.
+        assert!(jsx_module_parse_failure(
+            r#"<><_components.p>it's fine</_components.p><_components.p>{\infty}</_components.p></>"#
+        )
+        .is_some());
+        // 3. The byte scanner's documented residual false positive — a
+        //    regex literal carrying `{\d}` bytes (see
+        //    `emit_mdx_expression_braced` in zfb-content) — dissolves
+        //    for free: valid JS, the parse gate passes it.
+        assert!(jsx_module_parse_failure(r#"{/[{\d}]/.test("x")}"#).is_none());
+        // 4. The chosen failure direction (#2218), pinned: TS-only
+        //    syntax TSX-parses but esbuild (`--loader:.mdx=jsx`) rejects
+        //    it loudly — the deliberate false-negative direction; the
+        //    gate must not silently degrade a page for it (the byte
+        //    scanner was equally blind here, so this is not a
+        //    regression).
+        assert!(jsx_module_parse_failure(r#"{x as number}"#).is_none());
+    }
+
+    // The permanent field-parity compile driver for the #2216 regression
+    // test below. Reproduces zudolab/zudo-doc's effective pipeline options
+    // at 42b9dad19 (the #2186 field report): codeHighlight
+    // class mode (prefix "hi-" = the shared default), cjkFriendly (default
+    // true), stripMdExt, and the zudoDoc preset's full `markdown.features`
+    // block — verified against `pipeline_spec_from_config`
+    // (crates/zfb/src/commands/bundler_input.rs) and
+    // packages/zudo-doc/src/preset.ts@42b9dad19's `buildMarkdownFeatures`.
+    fn zudo_doc_parity_compile(body: &str, root: &Path) -> String {
+        let features: zfb_content::MarkdownFeaturesConfig =
+            serde_json::from_value(serde_json::json!({
+                "directives": {
+                    "note": "Note", "tip": "Tip", "info": "Info", "warning": "Warning",
+                    "danger": "Danger", "caution": "Caution", "details": "Details"
+                },
+                "mermaid": true,
+                "headingMarkerToc": true,
+                "githubAlerts": true,
+                "readingTime": true,
+                "githubAutolinks": { "repo": "zudolab/zudo-doc" },
+                "codeEnrichment": {},
+                "codeTabs": true,
+                "ruby": true,
+                "tocExport": {},
+                "imageDimensions": {},
+                "linkValidation": { "failOnBroken": false },
+                "headingIds": { "strategy": "hierarchical" }
+            }))
+            .expect("features block deserialises");
+        let spec = zfb_content::PipelineSpec {
+            code_highlight_mode: zfb_content::CodeHighlightMode::Class,
+            strip_md_ext: true,
+            features: Some(features),
+            build_context_roots: Some((root.to_path_buf(), root.join("public"))),
+            ..Default::default()
+        };
+        let mut pipeline = spec.build_pipeline().expect("pipeline builds");
+        pipeline.reset_per_entry();
+        let file_path = root.join("content/docs/reference/design-token-panel.mdx");
+        compile_mdx_to_jsx_module_cached(body, &file_path, None, Some(&mut pipeline))
+            .expect("mdx compiles")
+            .jsx_source
+    }
+
+    /// Permanent regression pin for epic #2216 (field report #2186): the
+    /// checked-in minimized field reproducer — the failing page's lines
+    /// 94–100 + 134–162 verbatim (fixture file) — compiled through the
+    /// zudo-doc parity pipeline must PASS the bridge gate. The pre-#2216
+    /// byte-scanner gate false-positived on exactly this module
+    /// (apostrophes in raw JSX text desynced its string tracking, and a
+    /// JSON fence's legitimate `{\n` payload inside a string literal
+    /// then read as a bare `{\letter}` — #2217's byte-level trace),
+    /// silently degrading the page to `<pre data-zfb-content-fallback>`
+    /// while the build exited 0. The SWC parse gate measures instead of
+    /// predicting, so this module — which parses cleanly — bridges.
+    ///
+    /// The genuinely-unparseable (true-positive) contract deliberately
+    /// does NOT get a pipeline-level variant here:
+    /// `emit_mdx_expression_braced` + `mdx_expression_is_valid_js`
+    /// recover invalid expressions at emit time (#1778/#1779), so
+    /// real-pipeline output is deliberately hard to make unparseable.
+    /// The TP contract lives at the unit level
+    /// (`jsx_breakage_flags_bare_backslash_expressions`); the gate stays
+    /// as defense in depth for plugin-injected `JsxRaw` payloads and
+    /// future emitter regressions.
+    #[test]
+    fn mdx_bridge_gate_2216_field_reproducer_bridges() {
+        let base = include_str!("../tests/fixtures/mdx-bridge-gate-2217/minimal-repro-body.mdx");
+        let tmp = tempfile::tempdir().unwrap();
+        let jsx = zudo_doc_parity_compile(base, tmp.path());
+        let failure = jsx_module_parse_failure(&jsx);
+        assert!(
+            failure.is_none(),
+            "the #2186 field reproducer's compiled JSX must pass the SWC parse gate — a trip \
+             here means the content bridge would silently degrade the page to \
+             <pre data-zfb-content-fallback> again (epic #2216). Reported parse failure: \
+             {failure:?}"
+        );
+
+        // #2221 (epic #2216 Wave 5 confirm pass) — a passing parse gate
+        // alone only proves the ABSENCE of a rejection; it does not prove
+        // the page renders real content. Assert POSITIVELY on the compiled
+        // markup itself, per the confirm-pass spec's item 2 ("assert on
+        // the emitted markup, not just on the absence of the warning").
+        //
+        // Deliberately NOT asserted here: the literal runtime fallback
+        // marker (`<pre data-zfb-content-fallback>` / `[zfb fallback
+        // render]`, `packages/zfb/src/content.ts`'s `renderFallback`).
+        // That string is produced later, by an entirely different code
+        // path (TS `Content()`, only reached when the JS-side bridge-map
+        // lookup misses at request time) — it can never appear in THIS
+        // Rust-side compiled-JSX string regardless of whether the page
+        // bridges or falls back, so a `!jsx.contains(...)` check on it
+        // here would be vacuously true (codex review catch, #2221 Wave
+        // 5). The real "did materialise_collection choose to bridge, not
+        // fall back" proof lives one level up, at the actual call site —
+        // see `mdx_bridge_gate_2216_field_reproducer_bundles_without_content_bridge_fallback`
+        // below, which drives the real `bundle()` entry point and
+        // asserts `content_bridge_fallback_pages` is empty for this
+        // fixture.
+        //
+        // What IS asserted here: the genuine fallback shape carries no
+        // headings, anchors, or components — just the raw unparsed body
+        // in a single flat `<pre>`. This compiled JSX must look nothing
+        // like that: it must carry the real `Note` component element
+        // with its real title prop, the real bullet/paragraph text
+        // (including the apostrophes that triggered #2217's byte-scanner
+        // desync — proof the content survived rather than being
+        // paraphrased away), a real external anchor href, the JSON
+        // fence's real payload, and several distinct component element
+        // types — i.e. genuine structure, not a flattened blob.
+        assert!(
+            jsx.contains(r#"<Note title="Known limitations">"#),
+            "the real Note MDX-JSX-flow-element and its title prop must survive verbatim; \
+             emitted:\n{jsx}"
+        );
+        assert!(
+            jsx.contains("Config-level per-mode literal defaults aren't possible yet."),
+            "the first bullet's real text — including the apostrophe that triggered #2217's \
+             byte-scanner desync — must survive verbatim; emitted:\n{jsx}"
+        );
+        assert!(
+            jsx.contains(
+                r#"href="https://github.com/Takazudo/zudo-design-token-panel/issues/499""#
+            ),
+            "the real external anchor href must survive; emitted:\n{jsx}"
+        );
+        assert!(
+            jsx.contains("zudo-design-tokens/v3"),
+            "the JSON fence's real payload must survive (as highlighted-code spans, not a raw \
+             fallback dump); emitted:\n{jsx}"
+        );
+        for marker in [
+            "_components.ul",
+            "_components.li",
+            "_components.strong",
+            "_components.a",
+            "_components.code",
+            "_components.pre",
+        ] {
+            assert!(
+                jsx.contains(marker),
+                "expected distinct component element `{marker}` in the compiled JSX — a \
+                 flattened fallback blob would carry none of these; emitted:\n{jsx}"
+            );
+        }
     }
 
     #[test]
@@ -20644,6 +20921,7 @@ mod tests {
                 worker_build_context: ModuleWorkerBuildContext::default(),
                 raw_preflight_complete: Cell::new(false),
                 snapshot_specifiers: None,
+                content_bridge_fallbacks: RefCell::new(Vec::new()),
             };
             stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None)
                 .unwrap();
@@ -20675,6 +20953,7 @@ mod tests {
                 worker_build_context: ModuleWorkerBuildContext::default(),
                 raw_preflight_complete: Cell::new(false),
                 snapshot_specifiers: None,
+                content_bridge_fallbacks: RefCell::new(Vec::new()),
             };
             stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None)
                 .unwrap();
@@ -21207,6 +21486,7 @@ mod tests {
             // Passthrough/sessionless never skips, so the snapshot gate is
             // irrelevant here.
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         }
     }
 
@@ -21489,6 +21769,151 @@ mod tests {
         assert!(
             msg.contains("broken") || msg.contains("link"),
             "error message must describe the problem; got: {msg}"
+        );
+    }
+
+    /// Issue #2220 (epic #2216 Wave 4) — `bundle()` NEVER fails because of a
+    /// content-bridge fallback, regardless of any policy: it only ever
+    /// REPORTS every offending page via
+    /// [`BundlerOutput::content_bridge_fallback_pages`]. Deciding whether a
+    /// non-empty result should fail a BUILD is
+    /// `crates/zfb/src/commands/build.rs::run_build`'s job (the
+    /// `strictContentBridge` config field / `--strict-content-bridge` CLI
+    /// flag) — `bundle()` itself carries no such flag, which is what makes
+    /// `zfb dev` (sharing this exact call) structurally unable to inherit a
+    /// bail-on-fallback behavior. Contrast with
+    /// [`on_broken_links_error_returns_err_without_esbuild`] above, where
+    /// the bundler itself DOES own the decision — the two mechanisms are
+    /// deliberately shaped differently (see issue #2220's design notes).
+    ///
+    /// Uses `mock_subprocess_output` so no esbuild binary is required — the
+    /// content-bridge gate runs during the MDX pipeline (before esbuild).
+    ///
+    /// Level: 1 (unit — pure logic in the bundler pipeline).
+    #[test]
+    fn content_bridge_fallback_never_fails_bundle_and_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("content/docs")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+
+        fs::write(
+            root.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        // Same genuine parse-failure shape as
+        // `materialise_collection_records_content_bridge_fallback_and_never_fails`
+        // above — a spread-attribute JSX element whose value is not valid
+        // JS (`render_jsx_attrs`'s spread arm skips the
+        // `mdx_expression_is_valid_js` recovery its sibling arms apply).
+        fs::write(
+            root.join("content/docs/broken.mdx"),
+            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            content_collections: vec![ContentCollectionSpec::new(
+                "docs",
+                PathBuf::from("content/docs"),
+            )],
+            ..make_minimal_input(&tmp)
+        };
+
+        let output = bundle(input)
+            .expect("a content-bridge fallback must never fail bundle(), regardless of policy");
+
+        assert_eq!(
+            output.content_bridge_fallback_pages.len(),
+            1,
+            "expected exactly 1 reported fallback page, got {:?}",
+            output.content_bridge_fallback_pages
+        );
+        assert!(
+            output.content_bridge_fallback_pages[0].contains("broken.mdx"),
+            "the reported fallback must name the offending source file; got {:?}",
+            output.content_bridge_fallback_pages
+        );
+    }
+
+    /// #2221 (epic #2216 Wave 5 confirm pass) — the real-call-site
+    /// companion to [`mdx_bridge_gate_2216_field_reproducer_bridges`]
+    /// above. That test proves the #2186 field reproducer's compiled JSX
+    /// passes the parse gate as a PURE FUNCTION check
+    /// (`jsx_module_parse_failure` called directly on
+    /// `compile_mdx_to_jsx_module_cached`'s output) — it never drives
+    /// `materialise_collection` itself, so it cannot see a defect in the
+    /// call site's own wiring (e.g. dropping the import, or recording a
+    /// fallback despite a clean parse).
+    ///
+    /// This test closes that gap the way
+    /// [`content_bridge_fallback_never_fails_bundle_and_is_reported`]
+    /// above proves the FAILURE direction: it drives the real
+    /// [`bundle()`] entry point (`mock_subprocess_output`, no esbuild
+    /// binary needed — the content-bridge gate runs during the MDX
+    /// pipeline, before esbuild) over a content collection containing
+    /// the actual reproducer fixture, and asserts
+    /// [`BundlerOutput::content_bridge_fallback_pages`] is EMPTY — i.e.
+    /// `materialise_collection`'s own closure genuinely chose
+    /// `ImportDecision::Bridge`, not `ImportDecision::DoNotCache`, for
+    /// this file. Level: 1 (unit — real call site, mocked subprocess).
+    ///
+    /// Still NOT covered by this test (or any other in this file): the
+    /// entry-module bridge-map keying and the JS-side runtime lookup
+    /// (`globalThis.__zfb.content.get(specifier)` in
+    /// `packages/zfb/src/content.ts`) that decide whether a *registered*
+    /// bridge import is actually reachable at request time — that seam
+    /// needs a real V8/esbuild render pass, out of scope for this
+    /// mocked-subprocess unit test.
+    #[test]
+    fn mdx_bridge_gate_2216_field_reproducer_bundles_without_content_bridge_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("content/docs")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+
+        fs::write(
+            root.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        // The identical #2186 field reproducer fixture used by
+        // `mdx_bridge_gate_2216_field_reproducer_bridges`, wrapped in
+        // frontmatter (the shape `materialise_collection` reads off
+        // disk) — same fixture, different seam under test.
+        let base = include_str!("../tests/fixtures/mdx-bridge-gate-2217/minimal-repro-body.mdx");
+        fs::write(
+            root.join("content/docs/design-token-panel.mdx"),
+            format!("---\ntitle: Design token panel\n---\n\n{base}"),
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            content_collections: vec![ContentCollectionSpec::new(
+                "docs",
+                PathBuf::from("content/docs"),
+            )],
+            ..make_minimal_input(&tmp)
+        };
+
+        let output = bundle(input).expect("bundle must succeed for the real field reproducer");
+
+        assert!(
+            output.content_bridge_fallback_pages.is_empty(),
+            "the #2186 field reproducer must bridge through materialise_collection's real call \
+             site — a non-empty result here means the page would silently render via \
+             <pre data-zfb-content-fallback> despite its compiled JSX parsing cleanly (epic \
+             #2216). Reported fallback(s): {:?}",
+            output.content_bridge_fallback_pages
         );
     }
 }
