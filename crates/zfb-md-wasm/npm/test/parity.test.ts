@@ -112,7 +112,9 @@ const manifest: Manifest = JSON.parse(readFileSync(join(fixturesDir, "manifest.j
 // Sanity-check the frozen count so a future accidental edit to the manifest
 // (add/remove a fixture) fails loudly here instead of just changing the
 // number of `it` blocks silently.
-const FROZEN_CORPUS_SIZE = 14;
+// 14 → 13: the `autolinks` fixture was removed with the GithubAutolinks
+// feature itself (zfb#2250) — a deliberate corpus change, not drift.
+const FROZEN_CORPUS_SIZE = 13;
 
 describe(`wasm vs native fancy-regex oracle parity (${FROZEN_CORPUS_SIZE}-fixture frozen corpus)`, () => {
   it("manifest carries exactly the frozen corpus size", () => {
