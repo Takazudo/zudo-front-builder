@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "zfb dev",
     "build": "zfb build",
-    "preview": "zfb preview"
+    "preview": "zfb preview",
+    "typecheck": "zfb check"
   },
   "dependencies": {
     "preact": "^10.22.0",
