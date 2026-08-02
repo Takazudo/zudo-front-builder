@@ -297,6 +297,12 @@ fn shadow_session_dirty_resets_after_error() {
     };
 
     let mut session = ShadowSession::new(tmp.path()).unwrap();
+    // Issue #2257 — the ctor's owner lock file, which the dirty-reset
+    // wipe below must never delete (deleting it could let a concurrent
+    // reaper's `NotFound` branch treat this LIVE session as a pre-fix
+    // stray).
+    let lock_path = session.shadow_root().join(".zfb-owner.lock");
+    assert!(lock_path.is_file(), "ctor must create the owner lock file");
 
     // Induce a bundle error AFTER the materialise walks populated the
     // shadow (the broken-links gate runs post-walk), so the session is
@@ -311,6 +317,10 @@ fn shadow_session_dirty_resets_after_error() {
     assert!(
         format!("{err:#}").contains("missing.mdx"),
         "error must report the broken link: {err:#}"
+    );
+    assert!(
+        lock_path.exists(),
+        "the owner lock file must survive a failed tick (it is never part of the dirty wipe)"
     );
 
     // Plant a foreign file in the persistent shadow. The next call starts
@@ -332,6 +342,22 @@ fn shadow_session_dirty_resets_after_error() {
     assert!(
         !foreign.exists(),
         "dirty session must wipe the shadow before reusing it"
+    );
+    // Issue #2257 — pin that neither the dirty-reset wipe NOR the
+    // subsequent stale-file prune pass (both of which run inside this
+    // same recovery call) ever removes `.zfb-owner.lock`.
+    assert!(
+        lock_path.exists(),
+        "the dirty-reset wipe and prune pass must both preserve `.zfb-owner.lock`"
+    );
+    // The wipe must not have dropped the ORIGINAL held lock either (e.g.
+    // by unlinking + recreating the file at the same path): an external
+    // exclusive-lock attempt must still fail exactly as it would have
+    // before the reset.
+    let probe = fs::File::open(&lock_path).unwrap();
+    assert!(
+        probe.try_lock().is_err(),
+        "the session's exclusive owner lock must still be held after the dirty-reset wipe"
     );
 
     let fresh_out = bundle(broken_links_input("dist-fresh")).expect("fresh bundle");
