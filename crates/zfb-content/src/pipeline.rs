@@ -429,6 +429,22 @@ pub struct Pipeline {
     /// after the directives step) so link rewriting sees finalized
     /// mdast link nodes.
     resolve_links: Option<ResolveLinksPlugin>,
+    /// Optional JSX-nested link-candidate collector (zfb#2184), created
+    /// in lockstep with `LinkValidationPlugin` when
+    /// `markdown.features.linkValidation` is enabled — the two share one
+    /// `Arc<Mutex<…>>` candidate buffer (see
+    /// `register_features_config_derived`).
+    ///
+    /// Deliberately NOT in `mdast_visitors`: registered mdast visitors
+    /// run BEFORE the `resolve_links` application, and the collector
+    /// MUST run after it — `ResolveLinksPlugin::visit` descends into JSX
+    /// children and rewrites nested `Link.url` in place, so collecting
+    /// pre-rewrite spellings would validate `./page.md` forms that
+    /// resolve_links turns into (skipped) URL-space hrefs: false
+    /// positives. Applied by `run_with_context` /
+    /// `apply_mdast_visitors_with_context` only — the context-free paths
+    /// never validate, so they never collect.
+    jsx_nested_link_collector: Option<zfb_md_extras::link_validation::JsxNestedLinkCollector>,
     /// Heading-ID strategy the wired `HeadingLinksPlugin` uses
     /// (`markdown.features.headingIds`, zfb#871). Read back by the
     /// JSX-emit path so `collect_headings` mirrors the same scheme.
@@ -608,6 +624,7 @@ impl Pipeline {
             gfm_constructs: resolved,
             add_trailing_slash: true,
             resolve_links: None,
+            jsx_nested_link_collector: None,
             heading_id_strategy: HeadingIdStrategy::default(),
             config_fingerprint_base: Some(format!(
                 "{FINGERPRINT_VERSION};bare;{}",
@@ -2163,6 +2180,12 @@ impl Pipeline {
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(&mut mdast);
         }
+        // JSX-nested link collection (zfb#2184) MUST stay after the
+        // resolve_links application — see the field doc on
+        // `jsx_nested_link_collector`.
+        if let Some(c) = self.jsx_nested_link_collector.as_mut() {
+            c.visit(&mut mdast);
+        }
 
         let mut hast = mdast_to_hast(&mdast);
 
@@ -2189,6 +2212,13 @@ impl Pipeline {
         }
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(node);
+        }
+        // JSX-nested link collection (zfb#2184) MUST stay after the
+        // resolve_links application — see the field doc on
+        // `jsx_nested_link_collector`. This hook is what covers the MDX
+        // compile path (`mdx_jsx_emit` calls this method).
+        if let Some(c) = self.jsx_nested_link_collector.as_mut() {
+            c.visit(node);
         }
     }
 
@@ -2443,6 +2473,21 @@ fn register_features_config_derived(
         if let Some(recorder) = read_recorder {
             plugin = plugin.with_recorder(Arc::clone(recorder));
         }
+        // JSX-nested link descent (zfb#2184): one collector + one
+        // validator per pipeline share one candidate buffer, wired at
+        // feature-registration time (mirrors the recorder wiring above).
+        // Config-derived construction, covered by the constructor's base
+        // descriptor over the whole `features` value — deliberately NOT
+        // routed through `add_mdast_visitor`, which would invalidate
+        // `config_fingerprint` (and would also run the collector too
+        // early: before the resolve_links application — see the
+        // `jsx_nested_link_collector` field doc).
+        let nested_buffer: zfb_md_extras::link_validation::JsxNestedLinkBuffer =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        plugin = plugin.with_nested_link_buffer(Arc::clone(&nested_buffer));
+        p.jsx_nested_link_collector = Some(
+            zfb_md_extras::link_validation::JsxNestedLinkCollector::new(nested_buffer),
+        );
         p.push_config_derived_hast_visitor(Box::new(plugin));
     }
 }
