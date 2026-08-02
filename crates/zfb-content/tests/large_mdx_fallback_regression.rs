@@ -78,8 +78,9 @@
 //!   (b) Snapshot `module_specifier` hash equals an independent
 //!       bundler-style `compile_mdx_to_jsx_module_cached` hash.
 //!   (c) The compiled JSX does NOT trip the heuristic mirror in
-//!       `heuristic_says_jsx_breaks` (kept in sync with
-//!       `crates/zfb-build/src/bundler.rs::jsx_likely_breaks_downstream_parser`).
+//!       `heuristic_says_jsx_breaks` (the byte scan that mirrored the
+//!       pre-#2216 bundler gate; the live gate is now a real SWC parse —
+//!       `jsx_module_parse_failure` in `crates/zfb-build/src/bundler.rs`).
 //!
 //! Any future regression that reintroduces a heuristic false-positive
 //! or a hash divergence on this content shape would fail this test.
@@ -123,8 +124,8 @@ fn build_residual_fallback_fixture() -> (String, String) {
     // wraps each value in `js_string_literal_in_braces`, so the
     // post-emission JSX shape is `{"<link rel=\"stylesheet\">"}` — a
     // JSX expression that immediately enters a string literal. The
-    // heuristic at `crates/zfb-build/src/bundler.rs::jsx_likely_breaks_downstream_parser`
-    // must NOT flag these.
+    // byte-scan mirror below (`heuristic_says_jsx_breaks`) must NOT
+    // flag these.
     const INLINE_CODE_HTML_TAG_LIKE: &[&str] = &[
         "<link rel=\"stylesheet\">",
         "<script type=\"module\">",
@@ -223,14 +224,13 @@ fn build_long_single_line_bullet(html_spans: &[&str], brace_spans: &[&str]) -> S
 // Heuristic re-implementation
 // -----------------------------------------------------------------------------
 
-/// Local copy of `zfb_build::bundler::jsx_likely_breaks_downstream_parser`
-/// so this `zfb-content`-side test does not need a `pub` re-export
-/// from `zfb-build`. The function is small and self-contained; if it
-/// ever diverges visibly the `jsx_breakage_heuristic_flags_…` test in
-/// zfb-build will catch the drift.
-///
-/// **Keep in sync with `crates/zfb-build/src/bundler.rs`.** When
-/// touching the heuristic, mirror the change here too.
+/// Local copy of the bundler's pre-#2216 byte-scan gate
+/// (`jsx_likely_breaks_downstream_parser`, replaced in #2216 by the
+/// real SWC parse `jsx_module_parse_failure` in
+/// `crates/zfb-build/src/bundler.rs`). Kept as this test's heuristic
+/// mirror: it pins properties of EMITTER OUTPUT (no `{\letter}` leak
+/// outside a string), which still hold — there is no live byte-scan
+/// gate left to sync with.
 fn heuristic_says_jsx_breaks(jsx: &str) -> bool {
     let bytes = jsx.as_bytes();
     let mut in_string: Option<u8> = None;
@@ -404,7 +404,7 @@ fn large_mdx_with_inline_code_html_curly_braces_does_not_fall_back() {
     // exactly the residual-fallback failure mode issue #206 chases.
     assert!(
         !heuristic_says_jsx_breaks(&compiled.jsx_source),
-        "jsx_likely_breaks_downstream_parser must NOT flag this fixture's compiled JSX. \
+        "the byte-scan mirror (heuristic_says_jsx_breaks) must NOT flag this fixture's compiled JSX. \
          A trip here is issue #206's residual-fallback bug — the bundler will skip this \
          file in the bridge map and the page will render the <pre data-zfb-content-fallback> \
          fallback. The heuristic would then be over-eager on JSX produced by the MDX \
