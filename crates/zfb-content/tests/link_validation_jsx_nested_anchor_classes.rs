@@ -17,25 +17,27 @@
 //!    (seeded from the same `collect_headings` walk) carries the nested
 //!    heading id, so the post-compile check (`zfb-build` bundler, #980)
 //!    settles the candidate as valid.
-//! 3. link → JSX-nested explicit anchor (`<div id>` / `<a name>`):
-//!    **broken** — false `BrokenLink`. The whole JSX subtree collapses to
-//!    one opaque `HastNode::JsxRaw`, so `HeadingLinksPlugin::visit_node`'s
-//!    `insert_anchor_id` arm (hast-phase, `Root|Element`-only recursion)
-//!    never sees the anchor element.
+//! 3. link → JSX-nested explicit anchor (`<div id>` / `<a name>`): WAS
+//!    **broken** (false `BrokenLink` — the whole JSX subtree collapsed to
+//!    one opaque `HastNode::JsxRaw`, invisible to the hast-phase
+//!    `HeadingLinksPlugin::visit_node`'s `insert_anchor_id` arm). #2246
+//!    fixed it: `collect_jsx_anchor_ids` (`mdx_jsx_emit.rs`) walks the
+//!    post-mdast-visitor tree directly and registers every JSX-authored
+//!    literal `id`/`<a name>` into the per-compile `HeadingRegistry`
+//!    before hast visitors run.
 //! 4. footnote back-reference whose reference occurrence sits inside JSX:
-//!    **broken** — false `BrokenLink` on the structured footnote section's
-//!    backref `<a href="#user-content-fnref-…">`. The occurrence marker
-//!    (carrying the `id`) is rendered inside the JsxRaw string by
-//!    `jsx_footnote_reference_marker`, invisible to the hast walk.
+//!    WAS **broken** (false `BrokenLink` on the structured footnote
+//!    section's backref `<a href="#user-content-fnref-…">` — the
+//!    occurrence marker rendered inside the JsxRaw string by
+//!    `jsx_footnote_reference_marker`, invisible to the hast walk).
+//!    #2246 fixed it: every `FootnoteRef.id` from the SAME `FootnoteModel`
+//!    the emit path consumes (`mdast_to_hast_with_model`, `pipeline.rs`)
+//!    is registered before hast visitors run.
 //!
-//! FLIP CONTRACT (#2246, Wave 2): the tests below whose names end in
-//! `_broken_today` assert the CURRENT broken behavior (exactly one false
-//! `BrokenLink`). The #2246 implementation registers the missing anchor
-//! ids and must FLIP those assertions to "no diagnostics" (delete the
-//! `_broken_today` suffix and the false-positive assertion; keep the
-//! fixture). They are deliberately committed green-asserting-broken
-//! rather than `#[ignore = "pending-feature: …"]`-red so the branch's
-//! `cargo test -p zfb-content` stays green throughout the epic. The
+//! FLIP CONTRACT (#2246, Wave 2 — DONE): every test that used to assert
+//! the broken behavior (a false `BrokenLink`, suffixed `_broken_today`)
+//! now asserts `assert_no_diags` instead; the suffix and the
+//! false-positive assertion are gone, the fixtures are unchanged. The
 //! bridged-class tests (classes 1 and 2) are permanent regression tests
 //! and must never be weakened.
 
@@ -91,22 +93,6 @@ fn assert_no_diags(source: &str) {
     assert!(
         diags.is_empty(),
         "expected no diagnostics for:\n{source}\ngot: {diags:#?}"
-    );
-}
-
-/// Assert the compile emits exactly one false `BrokenLink` for `url` —
-/// the CURRENT (broken) behavior. #2246 flips call sites of this helper
-/// to `assert_no_diags`.
-fn assert_single_false_broken_link_today(source: &str, url: &str) {
-    let diags = compile_and_take_diags(source);
-    assert_eq!(
-        diags.len(),
-        1,
-        "expected exactly the one false BrokenLink for:\n{source}\ngot: {diags:#?}"
-    );
-    assert!(
-        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url: u, .. } if u == url),
-        "diagnostic url must be {url:?}: {diags:?}"
     );
 }
 
@@ -216,78 +202,66 @@ fn cross_file_case(target_source: &str, linking_source: &str) {
     );
 }
 
-// ── Class 3: link → JSX-nested explicit anchor — BROKEN today ────────────────
+// ── Class 3: link → JSX-nested explicit anchor — FIXED by #2246 ──────────────
 //
-// #2246 flips each `_broken_today` test to `assert_no_diags` once the
 // JSX-authored literal `id` / `<a name>` anchors are registered into
-// `HeadingRegistry.anchor_ids` before validation.
+// `HeadingRegistry.anchor_ids` (via `collect_jsx_anchor_ids`) before
+// validation, so these no longer produce a false `BrokenLink`.
 
 /// `<div id>` anchor and the link both nested inside `<Note>`.
 #[test]
-fn link_to_jsx_nested_div_id_anchor_broken_today() {
-    assert_single_false_broken_link_today(
+fn link_to_jsx_nested_div_id_anchor() {
+    assert_no_diags(
         "<Note>\n\n<div id=\"nested-div-anchor\"></div>\n\n[jump](#nested-div-anchor)\n\n</Note>\n",
-        "#nested-div-anchor",
     );
 }
 
 /// `<a name>` legacy named anchor nested inside `<Note>`.
 #[test]
-fn link_to_jsx_nested_a_name_anchor_broken_today() {
-    assert_single_false_broken_link_today(
+fn link_to_jsx_nested_a_name_anchor() {
+    assert_no_diags(
         "<Note>\n\n<a name=\"nested-name-anchor\"></a>\n\n[jump](#nested-name-anchor)\n\n</Note>\n",
-        "#nested-name-anchor",
     );
 }
 
 /// Same class through the container-directive spelling.
 #[test]
-fn link_to_directive_nested_div_id_anchor_broken_today() {
-    assert_single_false_broken_link_today(
+fn link_to_directive_nested_div_id_anchor() {
+    assert_no_diags(
         ":::note\n\n<div id=\"nested-div-anchor\"></div>\n\n[jump](#nested-div-anchor)\n\n:::\n",
-        "#nested-div-anchor",
     );
 }
 
 /// CHARACTERIZATION (spec input for #2246, not one of the four classes):
 /// on the MDX path a TOP-LEVEL `<div id>` is also an `MdxJsxFlowElement`
-/// and also collapses to JsxRaw, so it is exactly as invisible to the
-/// hast-phase `insert_anchor_id` as the nested one — the registration
-/// walk must therefore collect MDX-JSX-authored anchors at EVERY depth,
-/// not only under a JSX ancestor. #2246 flips this too.
+/// and also collapses to JsxRaw, so it was exactly as invisible to the
+/// hast-phase `insert_anchor_id` as the nested one — `collect_jsx_anchor_ids`
+/// therefore collects MDX-JSX-authored anchors at EVERY depth, not only
+/// under a JSX ancestor.
 #[test]
-fn link_to_top_level_jsx_div_id_anchor_broken_today() {
-    assert_single_false_broken_link_today(
-        "<div id=\"top-div-anchor\"></div>\n\n[jump](#top-div-anchor)\n",
-        "#top-div-anchor",
-    );
+fn link_to_top_level_jsx_div_id_anchor() {
+    assert_no_diags("<div id=\"top-div-anchor\"></div>\n\n[jump](#top-div-anchor)\n");
 }
 
-// ── Class 4: footnote reference occurrence inside JSX — BROKEN today ─────────
+// ── Class 4: footnote reference occurrence inside JSX — FIXED by #2246 ───────
 //
 // The structured footnote section's backreference link points at the
-// occurrence marker's id, which was rendered inside the JsxRaw string
-// (`jsx_footnote_reference_marker`) and never registered. #2246 flips
-// each `_broken_today` test to `assert_no_diags` once the footnote
-// occurrence ids (allocated by `FootnoteModel` — the footnotes module's
-// own allocator, never re-derived) are registered before validation.
+// occurrence marker's id, which renders inside the JsxRaw string
+// (`jsx_footnote_reference_marker`). The footnote occurrence ids
+// (allocated by `FootnoteModel` — the footnotes module's own allocator,
+// never re-derived) are now registered before validation, so these no
+// longer produce a false `BrokenLink`.
 
 /// Reference occurrence inside `<Note>`, definition at top level.
 #[test]
-fn footnote_backref_to_jsx_nested_occurrence_broken_today() {
-    assert_single_false_broken_link_today(
-        "<Note>\n\nRef[^a] end.\n\n</Note>\n\n[^a]: Body.\n",
-        "#user-content-fnref-a",
-    );
+fn footnote_backref_to_jsx_nested_occurrence() {
+    assert_no_diags("<Note>\n\nRef[^a] end.\n\n</Note>\n\n[^a]: Body.\n");
 }
 
 /// Same class through the container-directive spelling.
 #[test]
-fn footnote_backref_to_directive_nested_occurrence_broken_today() {
-    assert_single_false_broken_link_today(
-        ":::note\n\nRef[^a] end.\n\n:::\n\n[^a]: Body.\n",
-        "#user-content-fnref-a",
-    );
+fn footnote_backref_to_directive_nested_occurrence() {
+    assert_no_diags(":::note\n\nRef[^a] end.\n\n:::\n\n[^a]: Body.\n");
 }
 
 /// CONTROL (permanent): a top-level occurrence renders as a structured
