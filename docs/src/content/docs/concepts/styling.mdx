@@ -59,7 +59,7 @@ Tailwind v4's CSS-first configuration is supported through `@theme` directives i
 
 ### Tailwind is embedded, not installed
 
-zfb owns Tailwind end to end: the compiler, the version it runs, and the resolution of every `@import "tailwindcss*"` specifier. The four points below are the whole contract.
+zfb owns Tailwind end to end: the compiler, the version it runs, and the resolution of the `tailwindcss` CSS imports. The four points below are the whole contract.
 
 **The compiler ships inside the `zfb` executable.** The Tailwind v4 standalone CLI is embedded in zfb's vendor snapshot, extracted at runtime, and invoked as a subprocess by the `zfb-css` crate — no Node.js, no `node_modules`, no download at build time (see [Install without Node](../install/node-free.mdx)). The exact Tailwind version is pinned in zfb's own source tree (`TAILWIND_VERSION` in `crates/zfb/build.rs`) and changes only when zfb itself releases.
 
@@ -74,7 +74,7 @@ zfb owns Tailwind end to end: the compiler, the version it runs, and the resolut
 @import "tailwindcss/utilities";
 ```
 
-zfb's CSS import walker recognises the `tailwindcss` prefix and skips resolution entirely (`is_virtual_specifier` in `crates/zfb-css/src/css_imports.rs`); the embedded binary supplies those stylesheets itself. A `node_modules/tailwindcss` directory is therefore never read. Keeping one around is unsupported: it does not change the emitted CSS, does not override the embedded version, and only adds weight to your lockfile.
+zfb's CSS import walker recognises exactly the specifier `tailwindcss` plus any `tailwindcss/`-prefixed subpath, and skips resolution for those entirely (`is_virtual_specifier` in `crates/zfb-css/src/css_imports.rs`); the embedded binary supplies the stylesheets itself. The match is that narrow on purpose — a separate package whose name merely begins with the same letters (`tailwindcss-something`) is an ordinary import and still resolves from `node_modules`. A `node_modules/tailwindcss` directory is therefore never read. Keeping one around is unsupported: it does not change the emitted CSS, does not override the embedded version, and only adds weight to your lockfile.
 
 **There is no project-level version override — but the binary path is overridable.** No config field selects a Tailwind version, and an npm-installed `tailwindcss` is never consulted, whatever its version. What you *can* redirect is which binary runs: `ZFB_TAILWIND_BIN` points the CSS engine at an absolute path to a Tailwind v4 binary of your choosing, in place of the embedded one. Treat it as an advanced/CI escape hatch — for air-gapped builds, or environments required to run binaries from their own vetted supply chain — rather than as a supported way to select a Tailwind version. See the [environment variable reference](../api/cli.mdx#environment-variables) for its exact semantics.
 

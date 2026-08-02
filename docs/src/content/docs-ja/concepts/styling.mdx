@@ -59,7 +59,7 @@ Tailwind v4 の CSS ファーストな設定は `global.css` 内の `@theme` デ
 
 ### Tailwind は zfb に組み込まれている
 
-Tailwind まわりは zfb がすべて引き受けます — コンパイラ本体、実行されるバージョン、そして `@import "tailwindcss*"` の解決までです。契約は次の 4 点に尽きます。
+Tailwind まわりは zfb がすべて引き受けます — コンパイラ本体、実行されるバージョン、そして `tailwindcss` の CSS import の解決までです。契約は次の 4 点に尽きます。
 
 **コンパイラは `zfb` 実行ファイルに同梱されています。** Tailwind v4 の standalone CLI は zfb の vendor snapshot に埋め込まれており、実行時に展開されて `zfb-css` クレートからサブプロセスとして呼び出されます。Node.js も `node_modules` も、ビルド時のダウンロードも必要ありません（[Node なしでインストール](../install/node-free.mdx) を参照）。Tailwind の具体的なバージョンは zfb 自身のソースツリー（`crates/zfb/build.rs` の `TAILWIND_VERSION`）にピン留めされており、zfb 自体がリリースされるときにだけ変わります。
 
@@ -74,7 +74,7 @@ Tailwind まわりは zfb がすべて引き受けます — コンパイラ本�
 @import "tailwindcss/utilities";
 ```
 
-zfb の CSS import ウォーカーは `tailwindcss` で始まる specifier を認識して解決をまるごとスキップし（`crates/zfb-css/src/css_imports.rs` の `is_virtual_specifier`）、これらのスタイルシートは組み込みバイナリ自身が供給します。そのため `node_modules/tailwindcss` が読まれることはありません。そのまま残しておく構成もサポート対象外です。出力される CSS は変わらず、組み込みのバージョンを上書きすることもなく、lockfile を重くするだけです。
+zfb の CSS import ウォーカーは、ちょうど `tailwindcss` という specifier と、`tailwindcss/` で始まるサブパスだけを認識し、それらの解決をまるごとスキップします（`crates/zfb-css/src/css_imports.rs` の `is_virtual_specifier`）。これらのスタイルシートは組み込みバイナリ自身が供給するからです。この判定が狭いのは意図的で、`tailwindcss-something` のように名前の先頭が一致しているだけの別パッケージは通常の import として扱われ、これまでどおり `node_modules` から解決されます。そのため `node_modules/tailwindcss` が読まれることはありません。そのまま残しておく構成もサポート対象外です。出力される CSS は変わらず、組み込みのバージョンを上書きすることもなく、lockfile を重くするだけです。
 
 **プロジェクト単位でのバージョン上書きはできません。ただしバイナリのパスは差し替えられます。** Tailwind のバージョンを選ぶ設定項目はなく、npm でインストールされた `tailwindcss` はバージョンを問わず参照されません。差し替えられるのは「どのバイナリを実行するか」です。`ZFB_TAILWIND_BIN` に Tailwind v4 バイナリの絶対パスを指定すると、CSS エンジンは組み込みのものではなくそちらを実行します。これは上級者向け / CI 向けの逃げ道です。エアギャップ環境や、自組織で検証済みのバイナリしか実行できない環境のためのものであり、Tailwind のバージョンを選ぶための手段ではありません。正確な挙動は [環境変数のリファレンス](../api/cli.mdx#環境変数) を参照してください。
 
