@@ -342,35 +342,6 @@ fn mermaid_marker_swap_from_json_config() {
     );
 }
 
-#[test]
-fn github_autolinks_exercises_repo_config_string() {
-    let html = render(
-        r#"{"features": {"githubAutolinks": {"repo": "owner/repo"}}}"#,
-        "See #123 for details.\n",
-    );
-    assert!(
-        html.contains(r#"href="https://github.com/owner/repo/issues/123""#),
-        "got: {html}"
-    );
-}
-
-#[test]
-fn github_autolinks_without_repo_reports_config_error_not_a_panic() {
-    let mut pipeline =
-        build_pipeline_from_json(r#"{"features": {"githubAutolinks": {}}}"#).expect("valid json");
-    let html = render_html(&mut pipeline, "See #123.\n").expect("run still succeeds");
-    // No repo configured -> no autolink rewrite; the plugin never wires in,
-    // and `register_features` records a build-blocking config-error
-    // diagnostic instead (#1392) rather than panicking or silently
-    // guessing a repo.
-    assert!(!html.contains("https://github.com/"), "got: {html}");
-    let diagnostics = pipeline.take_markdown_diagnostics();
-    assert!(
-        !diagnostics.is_empty(),
-        "missing repo must surface a diagnostic"
-    );
-}
-
 // ── fs-bound plugins: registered but inert ──────────────────────────────────
 
 #[test]

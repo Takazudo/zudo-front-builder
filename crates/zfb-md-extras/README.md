@@ -1,9 +1,9 @@
 # zfb-md-extras
 
 Remark/rehype plugin ports for the `zfb` markdown pipeline: github-alerts,
-github-autolinks, code enrichment, code tabs, heading-marker TOC, TOC export,
-transclusion, ruby annotations, mermaid, reading time, image dimensions, and
-link validation.
+code enrichment, code tabs, heading-marker TOC, TOC export, transclusion,
+ruby annotations, mermaid, reading time, image dimensions, and link
+validation.
 
 ---
 

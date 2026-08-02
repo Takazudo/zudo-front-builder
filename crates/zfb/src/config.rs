@@ -1271,7 +1271,7 @@ pub struct MarkdownConfig {
     /// Per-feature markdown pipeline toggles. Each field is a
     /// [`FeatureToggle`] (`true` / `false` / per-feature options object)
     /// or a feature-specific config struct (for features that require
-    /// extra parameters, e.g. `githubAutolinks`).
+    /// extra parameters, e.g. `readingTime`).
     ///
     /// Absent / `None` means all features are disabled. As of the
     /// v0.1.0-next.12 epic (#583, wired in #586) this includes the
@@ -1297,9 +1297,9 @@ pub struct MarkdownConfig {
 pub use zfb_md_ast::{
     directives_enabled, heading_id_strategy, into_directive_def, reading_time_enabled,
     CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind, FeatureOptions,
-    FeatureToggle, GithubAutolinksConfig, HeadingIdStrategy, HeadingIdsConfig,
-    HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig,
-    ReadingTimeFeature, ReadingTimeOptions, TocConfig, TocExportConfig, TranscludeConfig,
+    FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, HeadingMarkerTocFeature,
+    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, ReadingTimeFeature,
+    ReadingTimeOptions, TocConfig, TocExportConfig, TranscludeConfig,
 };
 
 /// Options for the `rehype-external-links` port.
@@ -5697,18 +5697,6 @@ mod tests {
         );
     }
 
-    // `githubAutolinks` uses a dedicated struct (requires `repo` field).
-    #[test]
-    fn features_github_autolinks_with_repo() {
-        let cfg: MarkdownConfig = serde_json::from_value(serde_json::json!({
-            "features": { "githubAutolinks": { "repo": "owner/repo" } }
-        }))
-        .expect("githubAutolinks deserialises");
-        let features = cfg.features.expect("features present");
-        let autolinks = features.github_autolinks.expect("githubAutolinks present");
-        assert_eq!(autolinks.repo.as_deref(), Some("owner/repo"));
-    }
-
     // Multiple features enabled simultaneously in one `features` block.
     #[test]
     fn features_multiple_features_in_one_block() {
@@ -5798,14 +5786,14 @@ mod tests {
         );
     }
 
-    // Same shape via the typed-options struct (`GithubAutolinksConfig`)
-    // — unknown keys alongside the legitimate `repo` field must reject.
-    // `GithubAutolinksConfig` is NOT inside an untagged enum, so the
+    // Same shape via a typed-options struct (`CodeEnrichmentConfig`) —
+    // unknown keys alongside legitimate fields must reject.
+    // `CodeEnrichmentConfig` is NOT inside an untagged enum, so the
     // inner "unknown field" message survives and we can assert on it.
     #[test]
     fn features_typed_option_struct_rejects_unknown_keys() {
         let err = serde_json::from_value::<MarkdownConfig>(serde_json::json!({
-            "features": { "githubAutolinks": { "repo": "owner/repo", "bogus": true } }
+            "features": { "codeEnrichment": { "diffMarkers": true, "bogus": true } }
         }))
         .expect_err("unknown keys inside a typed feature option struct must be rejected");
         let msg = err.to_string();
