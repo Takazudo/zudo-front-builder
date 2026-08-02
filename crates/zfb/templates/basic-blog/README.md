@@ -65,9 +65,9 @@ of every row marked **on** below.
 | Code enrichment | `markdown.features.codeEnrichment` | [code-enrichment](https://zfb.takazudomodular.com/docs/markdown-features/code-enrichment) |
 | Heading-marker TOC | `markdown.features.headingMarkerToc` | [heading-marker-toc](https://zfb.takazudomodular.com/docs/markdown-features/heading-marker-toc) |
 
-### Available, off by default
+### Available, not enabled here
 
-Add any of these to `zfb.config.ts` to turn them on.
+Add any of these to `zfb.config.ts` to turn it on or configure it.
 
 | Feature | Config key | Docs |
 | --- | --- | --- |
