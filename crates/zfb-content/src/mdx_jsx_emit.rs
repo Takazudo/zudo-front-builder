@@ -2561,24 +2561,34 @@ fn mdx_expression_is_valid_js(value: &str) -> bool {
 /// grammar does.
 ///
 /// Returns `Ok(())` only when `value` parses as EXACTLY one array
-/// element that is itself a spread (`[...expr]`) — the same strictness
-/// as `mdx_expression_is_valid_js`: a hard parse failure, any SWC
+/// element that is itself a spread (`[...expr]`), with the spread
+/// operand immediately followed by the array's closing `]` (only
+/// whitespace, if anything, in between) — the same strictness as
+/// `mdx_expression_is_valid_js`: a hard parse failure, any SWC
 /// error-recovered ("stashed") diagnostic, AND any other shape (an
 /// empty value, a bare `...` with no operand, multiple elements,
 /// trailing tokens) are all rejected, even when the wrapped array
 /// itself parses without error — `[]` and `[a, b]` are both valid JS
-/// but neither is a valid spread. `Err` carries the underlying SWC
-/// parse message and, where available, its byte offset into `value`
-/// itself (translated back from the synthetic `[value];` wrapper, not
-/// left relative to it).
+/// but neither is a valid spread. The explicit trailing-token check
+/// (rather than trusting the AST shape alone) matters because
+/// `[...props,];` — a spread followed by a legal array-literal trailing
+/// comma — parses to the exact same single-spread-element AST as
+/// `[...props];`; only a token-level check catches it. That distinction
+/// is load-bearing: `{...props,}` is not valid JSX spread-attribute
+/// grammar (JSX allows no comma there), so admitting it would still
+/// trip the bundler's parse gate (codex review catch, #2241). `Err`
+/// carries the underlying SWC parse message and, where available, its
+/// byte offset into `value` itself (translated back from the synthetic
+/// `[value];` wrapper, not left relative to it).
 fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
     use swc_core::common::sync::Lrc;
     use swc_core::common::{FileName, SourceMap, Spanned};
-    use swc_core::ecma::ast::{ArrayLit, EsVersion, Expr, ExprOrSpread, ModuleItem, Stmt};
+    use swc_core::ecma::ast::{EsVersion, Expr, ModuleItem, Stmt};
     use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 
+    let wrapped = format!("[{value}];");
     let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(FileName::Anon.into(), format!("[{value}];"));
+    let fm = cm.new_source_file(FileName::Anon.into(), wrapped.clone());
     let lexer = Lexer::new(
         Syntax::Typescript(TsSyntax {
             tsx: true,
@@ -2618,19 +2628,40 @@ fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
             .saturating_sub(1);
         return Err(format!("byte {offset}: {}", e.kind().msg()));
     }
-    let is_single_spread = matches!(
-        module.body.as_slice(),
-        [ModuleItem::Stmt(Stmt::Expr(stmt))]
-            if matches!(
-                &*stmt.expr,
-                Expr::Array(ArrayLit { elems, .. })
-                    if matches!(elems.as_slice(), [Some(ExprOrSpread { spread: Some(_), .. })])
-            )
-    );
-    if is_single_spread {
-        Ok(())
-    } else {
-        Err("expected a single spread expression (`...expr`), got a different shape".to_string())
+    let shape_mismatch =
+        || "expected a single spread expression (`...expr`), got a different shape".to_string();
+    let [ModuleItem::Stmt(Stmt::Expr(stmt))] = module.body.as_slice() else {
+        return Err(shape_mismatch());
+    };
+    let Expr::Array(array) = &*stmt.expr else {
+        return Err(shape_mismatch());
+    };
+    let [Some(elem)] = array.elems.as_slice() else {
+        return Err(shape_mismatch());
+    };
+    if elem.spread.is_none() {
+        return Err(shape_mismatch());
+    }
+    // The AST shape check above alone would accept `[...props,];` (a
+    // legal array-literal trailing comma) as a single spread element —
+    // it genuinely is one, at the AST level. But `{...props,}` is not
+    // valid JSX spread-attribute grammar, so anything other than
+    // whitespace between the spread operand and the array's closing `]`
+    // must still be rejected (see this fn's doc comment).
+    let expr_end = elem.expr.span().hi.0.saturating_sub(fm.start_pos.0) as usize;
+    let array_close = array
+        .span
+        .hi
+        .0
+        .saturating_sub(fm.start_pos.0)
+        .saturating_sub(1) as usize;
+    match wrapped.get(expr_end..array_close) {
+        Some(trailing) if trailing.trim().is_empty() => Ok(()),
+        _ => Err(
+            "expected the spread operand to be immediately followed by `}` — no trailing \
+             comma or extra tokens"
+                .to_string(),
+        ),
     }
 }
 
@@ -5835,6 +5866,38 @@ mod tests {
         assert!(
             err.contains("shape"),
             "expected the shape-mismatch message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_a_trailing_comma() {
+        // markdown-rs itself does not validate the expression (verified
+        // against `to_mdast`'s own output for `<a {...props,} />`), so an
+        // author-written trailing comma genuinely reaches this validator
+        // as `value == "...props,"`. `[...props,];` parses to the exact
+        // same single-spread-element AST as `[...props];` — a bare
+        // AST-shape check alone would wrongly accept it — but
+        // `{...props,}` is not valid JSX spread-attribute grammar and
+        // would still trip the bundler's parse gate (codex review catch,
+        // #2241).
+        let err = mdx_spread_attribute_validity("...props,")
+            .expect_err("a trailing comma after the spread operand must be rejected");
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_trailing_junk_after_the_operand() {
+        // A non-comma token between the operand and `]` must be caught
+        // by the same trailing-content check.
+        let err = mdx_spread_attribute_validity("...rest extra")
+            .expect_err("trailing tokens after the spread operand must be rejected");
+        assert!(
+            err.contains("byte "),
+            "expected a parse-error message (a bare identifier next to another token is a \
+             parse error before the trailing-token check even runs), got: {err}"
         );
     }
 
