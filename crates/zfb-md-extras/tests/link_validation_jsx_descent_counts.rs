@@ -265,6 +265,95 @@ fn jsx_nested_referenced_footnote_definition_link_reports_exactly_one() {
     );
 }
 
+/// Full-config pipeline (GFM footnotes ON) with the same `"note"`
+/// directive registration — the footnote fixtures below need footnote
+/// syntax live, which `with_defaults_and_features` does not enable.
+fn make_full_config_pipeline_with_note_directive() -> Pipeline {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
+    let features = MarkdownFeaturesConfig {
+        link_validation: Some(LinkValidationConfig::default()),
+        directives: Some(directives),
+        ..Default::default()
+    };
+    Pipeline::with_defaults_and_full_config(
+        None,
+        ResolvedGfmConstructs::ALL_ON,
+        None,
+        false,
+        false,
+        Some(&features),
+    )
+    .expect("full-config pipeline must build")
+}
+
+/// The gap case (codex deep-review finding on the #2225 skip): a
+/// REFERENCED footnote definition whose body wraps a broken link in its
+/// own JSX — `[^fn]: <Note>[broken](#missing)</Note>` — must report
+/// exactly ONE diagnostic. Before the `in_jsx = false` reset landed,
+/// the collector's unconditional `FootnoteDefinition` skip dropped the
+/// candidate while the rendered footnote section still collapsed the
+/// inner `<Note>` into an opaque `JsxRaw` leaf — invisible to BOTH
+/// halves of the partition, exactly the class of bug epic #2222 fixes.
+#[test]
+fn referenced_footnote_definition_with_jsx_wrapped_broken_link_reports_exactly_one() {
+    let mut pipeline = make_full_config_pipeline_with_note_directive();
+    let mut registry = HeadingRegistry::new();
+    let diags = run_doc(
+        &mut pipeline,
+        "text[^fn]\n\n[^fn]: <Note>[broken](#missing-fn-jsx-gap)</Note>\n",
+        &mut registry,
+    );
+    assert_eq!(
+        diags.len(),
+        1,
+        "a JSX-wrapped broken link inside a referenced footnote definition \
+         must warn exactly once (it is invisible to the hast walk): {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "#missing-fn-jsx-gap"),
+        "diagnostic url must be the raw href: {diags:?}"
+    );
+}
+
+/// The no-duplicate regression guard for the `in_jsx = false` reset: the
+/// case the #2225 skip was protecting — a footnote definition authored
+/// inside `<Note>` whose body holds an ORDINARY (non-JSX-wrapped) link —
+/// must still report exactly ONE diagnostic, never two. The reset means
+/// the recursed-into ordinary link arrives with `in_jsx = false` and is
+/// NOT collected; the rendered document-level footnote section (which
+/// the hast walk visits) remains its sole validation site. Asserts the
+/// TOTAL count, so any second occurrence fails regardless of shape —
+/// which is why the REFERENCE sits at top level here: a reference
+/// authored inside JSX adds an unrelated pre-existing artifact (the
+/// section's back-link targets the reference's anchor id inside the
+/// opaque `JsxRaw` blob — a false positive the both-inside guard
+/// `jsx_nested_referenced_footnote_definition_link_reports_exactly_one`
+/// URL-filters around).
+#[test]
+fn footnote_definition_inside_jsx_with_ordinary_link_still_reports_exactly_one() {
+    let mut pipeline = make_full_config_pipeline_with_note_directive();
+    let mut registry = HeadingRegistry::new();
+    let diags = run_doc(
+        &mut pipeline,
+        "ref[^fnord]\n\n<Note>\n\n[^fnord]: [link](#missing-fn-ordinary-guard)\n\n</Note>\n",
+        &mut registry,
+    );
+    assert_eq!(
+        diags.len(),
+        1,
+        "one authored ordinary-link occurrence in a JSX-nested footnote \
+         definition = exactly one diagnostic (rendered-section validation \
+         only — the reset must not reintroduce the double-report): {diags:?}"
+    );
+    assert!(
+        matches!(&diags[0], MarkdownDiagnostic::BrokenLink { url, .. } if url == "#missing-fn-ordinary-guard"),
+        "diagnostic url must be the raw href: {diags:?}"
+    );
+}
+
 // ── resolve_links ordering pin ───────────────────────────────────────────────
 
 /// The collector MUST run after the `resolve_links` application:
