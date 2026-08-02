@@ -1397,6 +1397,37 @@ fn bundler_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Prefix every [`ShadowSession`] tempdir carries — also the name filter
+/// [`reap_stale_shadow_sessions`] uses to recognize a sibling session dir.
+const SHADOW_SESSION_PREFIX: &str = "zfb-shadow-session-";
+
+/// Reserved lock-file name at a shadow session dir's root (issue #2257) —
+/// zfb-namespaced (mirrors the watcher-liveness probe's per-session
+/// `.owner.lock` convention, `crates/zfb/src/commands/watcher_liveness_probe.rs`)
+/// so it can never collide with a real project file the materialise walk
+/// would otherwise write. Treat this name as reserved under any shadow
+/// session root: [`wipe_dir_contents`]'s dirty-reset wipe must skip it, and
+/// the stale-file prune pass must never visit it (it is written directly
+/// via `std::fs::File`, never through [`ShadowWriter`], so it can never
+/// enter `visited`/`prev_visited` in the first place).
+const SHADOW_SESSION_LOCK_FILE_NAME: &str = ".zfb-owner.lock";
+
+/// `ZFB_KEEP_SHADOW_SESSION` opt-out (issue #2257): truthy parse copied
+/// from [`bundler_timing_enabled`] (trim; `"1"`/`"true"` case-insensitive;
+/// unset/empty/other → off), private to this module. Checked at three
+/// sites — see the "Teardown, keep-flag, and reap" section of
+/// [`ShadowSession`]'s doc comment for what each does with it.
+fn keep_shadow_session_enabled() -> bool {
+    std::env::var("ZFB_KEEP_SHADOW_SESSION")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
 /// Persistent dev shadow-tree session (issue #993).
 ///
 /// A plain [`bundle`] call materialises a fresh shadow tempdir, re-writes
@@ -1438,9 +1469,50 @@ fn bundler_timing_enabled() -> bool {
 ///
 /// `zfb build` keeps calling [`bundle`], which passes no session — the
 /// production path is byte-for-byte unchanged.
+///
+/// ## Teardown, keep-flag, and reap (issue #2257)
+///
+/// A dev process that never unwinds (`SIGKILL`, a host crash) leaves the
+/// [`Drop`] impl below unrun until the OS reclaims the process — which
+/// never happens, since `Drop` only runs on a normal Rust unwind/return,
+/// not on a killed process. Three cooperating mechanisms close that leak:
+///
+/// - **Lock protocol**: the ctor ([`ShadowSession::new`]) creates and
+///   exclusively locks [`SHADOW_SESSION_LOCK_FILE_NAME`] at the session
+///   root immediately after allocating the tempdir, before any
+///   materialisation — so the lock is held for the dir's entire live
+///   window, mirroring the watcher-liveness probe's `.owner.lock`
+///   convention (`crates/zfb/src/commands/watcher_liveness_probe.rs`).
+/// - **Ordered teardown**: [`Drop for ShadowSession`](#impl-Drop-for-ShadowSession)
+///   unlocks + closes the lock file BEFORE the `TempDir` field drops
+///   (some platforms refuse deleting a dir that still holds an open
+///   file) — every implicit-drop call site gets this ordering for free.
+///   [`ShadowSession::teardown`] is the explicit, consuming form the dev
+///   command uses at shutdown; it never fails.
+/// - **Startup reap**: [`reap_stale_shadow_sessions`] is called ONCE from
+///   the dev boot path (never from this ctor — see that function's doc
+///   comment for why) and deletes a sibling session dir only when it is
+///   BOTH older than [`REAP_AGE_FLOOR`] AND provably lock-free.
+///
+/// `ZFB_KEEP_SHADOW_SESSION` (checked via the private
+/// `keep_shadow_session_enabled`) opts a session out of all three: the
+/// ctor disarms the `TempDir`'s `Drop`-time deletion outright
+/// (`disable_cleanup(true)`, so even a bare `Drop` cannot remove it, not
+/// only an explicit `teardown()`), `teardown` logs the kept path instead
+/// of deleting it, and the reap skips every candidate while the flag is
+/// set. A LATER boot without the flag WILL reap a previously-kept dir
+/// once it passes the age floor — the flag must stay exported for the
+/// whole debugging session, not just the boot that created the dir.
 pub struct ShadowSession {
     /// The persistent shadow tempdir — lives as long as the session.
     work: tempfile::TempDir,
+    /// Exclusive advisory lock on [`SHADOW_SESSION_LOCK_FILE_NAME`],
+    /// acquired in [`ShadowSession::new`] immediately after allocating
+    /// `work` (before any materialisation) and held for the session's
+    /// entire lifetime. `None` only after `Drop for ShadowSession` has
+    /// already run (unlock-then-close happens there, before `work`
+    /// itself drops) — never observed `None` while the session is alive.
+    lock_file: Option<std::fs::File>,
     /// SHA-256 of the last-written bytes per shadow-relative path. Only
     /// real files written through [`ShadowWriter`] are recorded; symlinks
     /// and the always-write infra files (entry.mjs / shim / tsconfig)
@@ -1524,15 +1596,55 @@ pub struct ShadowSession {
 }
 
 impl ShadowSession {
-    /// Allocate the persistent shadow tempdir for a dev session.
+    /// Allocate the persistent shadow tempdir for a dev session, and
+    /// (issue #2257) claim exclusive ownership of it via
+    /// [`SHADOW_SESSION_LOCK_FILE_NAME`] before any materialisation runs.
     pub fn new(project_root: &Path) -> Result<Self> {
         let parent = shadow_parent_dir(project_root)?;
-        let work = tempfile::Builder::new()
-            .prefix("zfb-shadow-session-")
+        let mut work = tempfile::Builder::new()
+            .prefix(SHADOW_SESSION_PREFIX)
             .tempdir_in(parent)
             .context("shadow session: failed to allocate persistent shadow tempdir")?;
+
+        // ZFB_KEEP_SHADOW_SESSION: disarm `TempDir`'s Drop-time deletion
+        // from birth — a debugging session that keeps the flag exported
+        // for its whole run must never lose the dir to a bare `Drop` or
+        // process exit, not only to an explicit `teardown()` call.
+        if keep_shadow_session_enabled() {
+            work.disable_cleanup(true);
+        }
+
+        let lock_path = work.path().join(SHADOW_SESSION_LOCK_FILE_NAME);
+        let lock_file = fs::File::create(&lock_path).with_context(|| {
+            format!(
+                "shadow session: failed to create owner lock file {}",
+                lock_path.display()
+            )
+        })?;
+        // Exclusive, advisory, no pid checks (the watcher-liveness
+        // probe's mechanism — `sweep_stale_probe_sessions`). On Err,
+        // warn and keep holding the open file handle rather than
+        // bailing: a lockless filesystem also refuses
+        // `reap_stale_shadow_sessions`'s own `try_lock` probe on this
+        // same file, so the skip-and-leave-alone posture there still
+        // protects this dir either way. This is locked spec (#2257), not
+        // an oversight — a codex review during implementation suggested
+        // failing construction instead; that was deliberately NOT taken,
+        // since a permanently lockless filesystem would then make dev
+        // boot entirely unable to start, trading a soft (reap-skip)
+        // degradation for a hard one for no extra safety.
+        if let Err(error) = lock_file.try_lock() {
+            tracing::warn!(
+                path = %lock_path.display(),
+                %error,
+                "shadow session: failed to acquire exclusive owner lock; \
+                 continuing without proof of exclusivity"
+            );
+        }
+
         Ok(Self {
             work,
+            lock_file: Some(lock_file),
             written: HashMap::new(),
             prev_visited: HashSet::new(),
             dirty: false,
@@ -1549,11 +1661,70 @@ impl ShadowSession {
     pub fn shadow_root(&self) -> &Path {
         self.work.path()
     }
+
+    /// Explicit, consuming teardown (issue #2257) — the dev command's
+    /// normal shutdown path. Belt-and-braces alongside
+    /// [`Drop for ShadowSession`](#impl-Drop-for-ShadowSession), which
+    /// still runs on every path this fn doesn't reach (panic unwind,
+    /// early `?`-return before shutdown code runs): captures the shadow
+    /// root before it can vanish, then simply drops `self` so the SAME
+    /// ordered unlock-then-delete runs through one code path. Never
+    /// fails shutdown — every outcome is reported via `tracing`, not
+    /// `Result`.
+    pub fn teardown(self) {
+        let path = self.work.path().to_path_buf();
+        let keep = keep_shadow_session_enabled();
+        if keep {
+            tracing::info!(
+                path = %path.display(),
+                "shadow session: ZFB_KEEP_SHADOW_SESSION set; kept persistent shadow tempdir \
+                 (a later boot without the flag will reap it once past the age floor)"
+            );
+        }
+        drop(self);
+        if !keep && path.exists() {
+            // Observability for a failed delete — the next boot's reap
+            // (`reap_stale_shadow_sessions`) is the backstop.
+            tracing::warn!(
+                path = %path.display(),
+                "shadow session: teardown could not remove the persistent shadow tempdir; \
+                 the next dev boot's stale-session reap will reclaim it"
+            );
+        }
+    }
+}
+
+impl Drop for ShadowSession {
+    fn drop(&mut self) {
+        // `ProbeSessionGuard`'s exact ordering
+        // (`crates/zfb/src/commands/watcher_liveness_probe.rs`): unlock +
+        // close the lock file FIRST — some platforms refuse deleting a
+        // directory that still holds an open file. This runs before the
+        // compiler's automatic field drops (which happen after this fn
+        // returns, in declaration order), so `work: TempDir` always
+        // drops with the lock already released regardless of field
+        // order. Makes every one of the 89 implicit-drop call sites and
+        // every unwind path ordered-correct with zero call-site changes;
+        // `teardown()` also goes through this impl via its `drop(self)`.
+        if let Some(f) = self.lock_file.take() {
+            let _ = f.unlock();
+            drop(f);
+        }
+        // `work` drops after this fn returns, deleting the shadow dir
+        // unless `disable_cleanup` was set at construction
+        // (ZFB_KEEP_SHADOW_SESSION).
+    }
 }
 
 /// Remove every entry inside `dir` without removing `dir` itself.
 /// Symlinked children (e.g. the `node_modules` link) are removed as
 /// links, never followed into.
+///
+/// Skips [`SHADOW_SESSION_LOCK_FILE_NAME`] (issue #2257): a dirty-reset
+/// wipe must never delete the session's own owner lock — doing so could
+/// let a concurrent [`reap_stale_shadow_sessions`] observe the lock file
+/// genuinely absent (its `NotFound` branch) and reap this dir out from
+/// under a session that is very much alive, just mid-recovery.
 fn wipe_dir_contents(dir: &Path) -> Result<()> {
     let entries = fs::read_dir(dir).with_context(|| {
         format!(
@@ -1568,6 +1739,9 @@ fn wipe_dir_contents(dir: &Path) -> Result<()> {
                 dir.display()
             )
         })?;
+        if entry.file_name().to_str() == Some(SHADOW_SESSION_LOCK_FILE_NAME) {
+            continue;
+        }
         let ft = entry.file_type().with_context(|| {
             format!(
                 "shadow session: failed to stat shadow entry {}",
@@ -1589,6 +1763,186 @@ fn wipe_dir_contents(dir: &Path) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Grace floor for [`reap_stale_shadow_sessions`] (issue #2257): a
+/// candidate directory must be at least this old, IN ADDITION TO its
+/// [`SHADOW_SESSION_LOCK_FILE_NAME`] being provably unheld, before the
+/// reaper deletes it.
+///
+/// Unlike the Temp Sweeper's 30-minute `ORPHANED_ENTRY_GRACE`
+/// (`crates/zfb-islands/src/esbuild.rs`) — whose sizing rests on a live
+/// file's mtime tracking roughly one esbuild call — a shadow session
+/// dir's ROOT mtime is NOT a liveness signal here at all: deep writes
+/// during a live session never touch the root entry's own mtime, only
+/// the mtimes of entries created/removed/renamed directly inside it. The
+/// exclusive owner lock is the actual liveness signal; this floor's only
+/// job is covering the brief unlocked window between `tempdir_in`
+/// returning and the lock landing (a few syscalls, sub-second nominal)
+/// in a concurrent sibling's own boot. 5 minutes is roughly 300x that
+/// nominal window — absorbing scheduler starvation and short suspend/
+/// resume gaps — while still reclaiming a crashed boot's multi-GB stray
+/// at the very next `zfb dev` start in practice. A fresh sibling mid its
+/// first (potentially multi-GB) materialise is protected by its LOCK,
+/// never by this floor — the floor never needs to cover materialisation
+/// time. Erring longer only delays reclaiming a sub-5-minute stray by
+/// one more boot.
+const REAP_AGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Reap stale `zfb-shadow-session-*` directories left in `parent` by a
+/// `zfb dev` process that terminated without unwinding (issue #2257) —
+/// mirrors `sweep_stale_probe_sessions`'s posture
+/// (`crates/zfb/src/commands/watcher_liveness_probe.rs:173-228`):
+/// lock-based liveness, NO pid checks (pid reuse would make a
+/// genuinely-dead session's pid look alive again), best-effort,
+/// swallow-all-I/O-errors.
+///
+/// Called ONCE from the dev boot path, immediately before
+/// [`ShadowSession::new`] — deliberately NOT embedded in that ctor. See
+/// the "Teardown, keep-flag, and reap" section of [`ShadowSession`]'s
+/// doc comment for the full rationale; in short: 89 test call sites
+/// across the workspace construct a `ShadowSession` directly, and a
+/// ctor-embedded reap would make every one of them `read_dir` +
+/// lock-probe the REAL shared system temp — exactly the shared-resource
+/// interference class this crate's cross-binary-lock machinery exists to
+/// prevent.
+///
+/// `ZFB_KEEP_SHADOW_SESSION` gates this reap too, not just self-teardown:
+/// while the flag is exported for a debugging session, zfb neither
+/// deletes its own session nor reaps a sibling's kept dir.
+///
+/// Never panics; returns nothing. Every I/O failure either is swallowed
+/// (a best-effort `remove_dir_all`) or leaves the candidate untouched —
+/// fail closed, never risk deleting a dir this fn cannot prove is dead.
+///
+/// ## Out of scope / accepted limitations (issue #2257 — deliberate, do
+/// ## not "fix" without re-opening the locked spec)
+///
+/// - **Mixed-version concurrency**: a LIVE dev session started by a
+///   PRE-FIX zfb build (no lock file, and a root mtime that a long-lived
+///   session's deep writes never touch) sitting past the age floor is
+///   indistinguishable here from a genuinely dead pre-fix stray — the
+///   `NotFound` branch below reaps both. A codex review flagged this
+///   exact scenario during this epic's implementation; it is accepted,
+///   not a bug: mixed-version concurrent `zfb dev` on one host is rare,
+///   the shadow tree is derived state (the affected session errors and
+///   needs a restart, no data loss), and refusing to reap ANY lockless
+///   dir would leave the entire pre-fix stray population (issue #2232)
+///   unreclaimable forever.
+/// - Other temp classes this epic does not cover: `zfb-bundler-*` /
+///   `zfb-exact-node-modules-*` strays from a killed `zfb build` use a
+///   different producer with no lock protocol at all — age-only reaping
+///   there could delete a live long build's tree (V8 first compile is
+///   15-30 min). The `SHADOW_SESSION_PREFIX` filter below means this fn
+///   structurally never touches them.
+/// - Only `parent` itself is swept — strays under a DIFFERENT
+///   `shadow_parent_dir` candidate (e.g. `TMPDIR`/`XDG_CACHE_HOME`
+///   changed between the boot that created them and this one) are left
+///   alone; the caller only ever passes the resolution for THIS boot.
+/// - Filesystems where advisory locks "succeed" without truly
+///   conflicting (some NFS configurations) carry the same accepted risk
+///   as `sweep_stale_probe_sessions`.
+/// - **Windows is untested, not unsupported**: `std::fs::File::try_lock`
+///   is documented to release the lock when the owning process exits or
+///   is killed on every platform Rust supports (`LockFileEx` on Windows,
+///   `flock`/`fcntl` on Unix), so this whole lock-based liveness scheme
+///   should hold there in principle. But `crates/CLAUDE.md`'s T1/T3
+///   matrix runs health/exam/drift-net only on ubuntu/macOS — no CI job
+///   ever executes the Rust test suite on Windows (root `CLAUDE.md`'s T3
+///   cutover manifest, "Windows exam leg" row) — so this reap/teardown
+///   path has never been exercised against a real Windows lock release.
+///   Known Windows-specific hazards this can't rule out without that
+///   lane: `remove_dir_all` on Windows can fail with a sharing-violation
+///   error if any handle (even a since-closed one racing OS cleanup)
+///   still references a file under the directory, and `File::open` on a
+///   directory-mapped path behaves differently than on Unix. Both would
+///   surface as a swallowed I/O error in the `Err(error) if ... =>` arms
+///   below (fail-closed: the candidate is just left untouched), never as
+///   a false deletion — so the accepted risk is under-reaping on
+///   Windows, not the over-reaping this fn is designed to avoid
+///   elsewhere. Do not treat a passing test suite here as Windows proof;
+///   add a `windows-latest` exam leg (per the cutover manifest's trigger)
+///   before relying on this section for a Windows deployment.
+pub fn reap_stale_shadow_sessions(parent: &Path) {
+    if keep_shadow_session_enabled() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // Never follow symlinks: `DirEntry::file_type()` is
+        // `lstat`-based, so a symlink (even one pointing at a directory)
+        // reports `is_symlink()`, never `is_dir()`, and is skipped below.
+        if !file_type.is_dir() {
+            continue;
+        }
+        let is_shadow_session = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with(SHADOW_SESSION_PREFIX))
+            .unwrap_or(false);
+        if !is_shadow_session {
+            continue;
+        }
+        // `path` was just proven a real (non-symlink) directory above, so
+        // a plain `metadata` call here is equivalent to `symlink_metadata`.
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+            continue;
+        };
+        if age < REAP_AGE_FLOOR {
+            continue;
+        }
+
+        let lock_path = path.join(SHADOW_SESSION_LOCK_FILE_NAME);
+        match fs::File::open(&lock_path) {
+            Ok(lock_file) => match lock_file.try_lock() {
+                Ok(()) => {
+                    // We just acquired it ourselves -> no live owner.
+                    let _ = lock_file.unlock();
+                    drop(lock_file);
+                    let _ = fs::remove_dir_all(&path);
+                }
+                Err(_) => {
+                    // Either genuinely held by a live session (WouldBlock)
+                    // or an ambiguous platform error — either way, never
+                    // risk deleting a directory we can't prove is dead.
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Lock file genuinely absent: a pre-fix stray (the #2232
+                // population never wrote one), a crash landed between
+                // `tempdir_in` and the lock file's creation (the age
+                // floor already guards that window), OR — accepted,
+                // see this fn's "Out of scope" doc section — a still-LIVE
+                // session from a pre-fix zfb build running concurrently.
+                // All three are treated identically here: safe to remove.
+                let _ = fs::remove_dir_all(&path);
+            }
+            Err(error) => {
+                // The lock file EXISTS but could not be opened — e.g. fd
+                // exhaustion (EMFILE) or a permission error (EACCES).
+                // This says nothing about whether a live session owns it;
+                // treating it as stale would let a transient open failure
+                // delete a locked directory from under its running owner.
+                tracing::debug!(
+                    path = %lock_path.display(),
+                    %error,
+                    "shadow session reap: could not open owner lock file; leaving session dir untouched"
+                );
+            }
+        }
+    }
 }
 
 /// Canonicalize the shadow tree root so esbuild emits byte-deterministic
@@ -7773,6 +8127,7 @@ struct MirrorSkipEntry {
 /// - the collection pass builds the `mdx://…` import (and may suppress it
 ///   when the compiled JSX would break esbuild — the defensive skip);
 /// - the `materialise_shadow` `src/` pass never produces a bridge import.
+#[derive(Debug)]
 enum ImportDecision {
     /// Collection pass, healthy JSX: push this import and store a
     /// skippable entry carrying it (replayed verbatim on a later skip).
@@ -8023,6 +8378,61 @@ fn materialise_mdx_with_skip(
     Ok(false)
 }
 
+/// Decide the [`ImportDecision`] for one collection `.md`/`.mdx` compile
+/// — the bridge-import disposition [`materialise_mdx_with_skip`]'s
+/// `import_decision` callback applies after the compile finishes.
+/// Extracted from `materialise_collection`'s per-file closure (#2241)
+/// so it can be unit-tested directly against a hand-built [`CompiledMdx`],
+/// without a real MDX compile or any disk I/O.
+///
+/// Healthy JSX (passes [`jsx_module_parse_failure`]) bridges: applies
+/// `idStripSuffix` to the specifier's slug segment (so the bundler's
+/// bridge-map key matches the snapshot's stripped `module_specifier`)
+/// and returns [`ImportDecision::Bridge`]. JSX that provably does not
+/// parse takes the defensive skip instead: warns to stderr, records
+/// `from` into `ctx.content_bridge_fallbacks` UNCONDITIONALLY (#2220 —
+/// see that field's own doc comment; never gated on strict-mode policy
+/// here), and returns [`ImportDecision::DoNotCache`] so the file is
+/// never skip-cached and every tick recompiles (and re-warns) until the
+/// source is fixed.
+fn decide_content_bridge_import(
+    compiled: &CompiledMdx,
+    from: &Path,
+    strip_suffix: Option<&str>,
+    shadow_rel_path: String,
+    ctx: &MaterialiseCtx<'_, '_>,
+) -> ImportDecision {
+    if let Some(parse_err) = jsx_module_parse_failure(&compiled.jsx_source) {
+        eprintln!(
+            "zfb bundler: skipping MDX content bridge for {} — compiled JSX does not parse ({parse_err}). The page will render via the <pre data-zfb-content-fallback> shape.",
+            from.display(),
+        );
+        // #2220 — report this fallback regardless of any
+        // policy: recorded UNCONDITIONALLY (the warning above
+        // fires unconditionally too), never gated on strict
+        // mode here. Whether a non-empty result fails the
+        // BUILD is decided later, by build.rs's own
+        // `strictContentBridge` policy — see
+        // `MaterialiseCtx::content_bridge_fallbacks`'s doc
+        // comment.
+        ctx.content_bridge_fallbacks
+            .borrow_mut()
+            .push(from.display().to_string());
+        return ImportDecision::DoNotCache;
+    }
+    // Apply `idStripSuffix` to the specifier's slug segment
+    // via the shared `zfb-content` helper so the bundler's
+    // bridge-map key matches the snapshot's
+    // `EntrySnapshot::module_specifier` after stripping —
+    // the snapshot↔bridge byte-for-byte invariant.
+    let specifier =
+        zfb_content::collection::maybe_strip_specifier_suffix(&compiled.specifier, strip_suffix);
+    ImportDecision::Bridge(ContentImport {
+        specifier,
+        shadow_rel_path,
+    })
+}
+
 /// Walk one content collection's source root and materialise its
 /// entries into `dest`, compiling MDX to JSX on the fly via
 /// [`compile_mdx_to_jsx_module_cached`] and recording every entry in
@@ -8232,14 +8642,15 @@ fn materialise_collection(
             let rel_str = path_to_posix_string(rel);
             let shadow_rel_path = format!("content/{}/{}", collection_name, rel_str);
             // The shared incremental-materialise core does the skip-check /
-            // compile / write / store. The closure decides the bridge
-            // import after the compile: the collection pass produces an
-            // `mdx://…` import (with `idStripSuffix` applied to the slug so
-            // the bundler's bridge key matches the snapshot's stripped
-            // `module_specifier`), UNLESS the compiled JSX provably does
-            // not parse — the defensive skip, which omits the import and
-            // refuses to cache so the page falls back to
-            // `<pre data-zfb-content-fallback>` and every tick re-warns.
+            // compile / write / store. `decide_content_bridge_import`
+            // decides the bridge import after the compile: the collection
+            // pass produces an `mdx://…` import (with `idStripSuffix`
+            // applied to the slug so the bundler's bridge key matches the
+            // snapshot's stripped `module_specifier`), UNLESS the compiled
+            // JSX provably does not parse — the defensive skip, which
+            // omits the import and refuses to cache so the page falls
+            // back to `<pre data-zfb-content-fallback>` and every tick
+            // re-warns.
             materialise_mdx_with_skip(
                 from,
                 &to,
@@ -8252,37 +8663,7 @@ fn materialise_collection(
                 cross_file_links_out,
                 file_headings_out,
                 |compiled| {
-                    if let Some(parse_err) = jsx_module_parse_failure(&compiled.jsx_source) {
-                        eprintln!(
-                            "zfb bundler: skipping MDX content bridge for {} — compiled JSX does not parse ({parse_err}). The page will render via the <pre data-zfb-content-fallback> shape.",
-                            from.display(),
-                        );
-                        // #2220 — report this fallback regardless of any
-                        // policy: recorded UNCONDITIONALLY (the warning above
-                        // fires unconditionally too), never gated on strict
-                        // mode here. Whether a non-empty result fails the
-                        // BUILD is decided later, by build.rs's own
-                        // `strictContentBridge` policy — see
-                        // `MaterialiseCtx::content_bridge_fallbacks`'s doc
-                        // comment.
-                        ctx.content_bridge_fallbacks
-                            .borrow_mut()
-                            .push(from.display().to_string());
-                        return ImportDecision::DoNotCache;
-                    }
-                    // Apply `idStripSuffix` to the specifier's slug segment
-                    // via the shared `zfb-content` helper so the bundler's
-                    // bridge-map key matches the snapshot's
-                    // `EntrySnapshot::module_specifier` after stripping —
-                    // the snapshot↔bridge byte-for-byte invariant.
-                    let specifier = zfb_content::collection::maybe_strip_specifier_suffix(
-                        &compiled.specifier,
-                        strip_suffix,
-                    );
-                    ImportDecision::Bridge(ContentImport {
-                        specifier,
-                        shadow_rel_path,
-                    })
+                    decide_content_bridge_import(compiled, from, strip_suffix, shadow_rel_path, ctx)
                 },
             )?;
         } else {
@@ -12134,6 +12515,191 @@ mod tests {
         assert!(msg.contains("bundler shadow root"), "{msg}");
     }
 
+    // -----------------------------------------------------------------
+    // Shadow-session teardown, keep-flag, and reap (issue #2257)
+    // -----------------------------------------------------------------
+
+    /// Backdate a directory's mtime by `age`, so [`reap_stale_shadow_sessions`]
+    /// sees it as older than [`REAP_AGE_FLOOR`]. Mirrors
+    /// `zfb-islands/src/esbuild.rs`'s `write_entry_aged` helper, applied to
+    /// a directory (opened for read, not write — a directory cannot be
+    /// opened with `O_WRONLY` on Unix, but `set_modified`'s underlying
+    /// `futimens` needs only an open handle, not a writable one).
+    fn backdate_dir_mtime(dir: &Path, age: std::time::Duration) {
+        let file = fs::File::open(dir).expect("open dir for mtime backdate");
+        file.set_modified(std::time::SystemTime::now() - age)
+            .expect("backdate dir mtime");
+    }
+
+    /// Test expectation 6 (#2257): the ctor holds its owner lock
+    /// exclusively for the session's entire (alive) lifetime — a second
+    /// `try_lock` attempt on the SAME lock file must fail while the
+    /// session is still owned.
+    #[test]
+    fn shadow_session_owner_lock_is_locked_so_a_concurrent_exclusive_lock_attempt_fails_while_owned(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = ShadowSession::new(tmp.path()).unwrap();
+        let lock_path = session.shadow_root().join(SHADOW_SESSION_LOCK_FILE_NAME);
+        assert!(lock_path.is_file(), "ctor must create the owner lock file");
+
+        let probe = fs::File::open(&lock_path).unwrap();
+        assert!(
+            probe.try_lock().is_err(),
+            "a second exclusive lock attempt on the ctor's own lock file must fail while the \
+             session is alive"
+        );
+    }
+
+    /// Test expectation 7 (#2257), bundler half: `teardown` removes the
+    /// shadow dir AND its lock file together (`remove_dir_all` over the
+    /// whole session root). The `dev.rs`-side half — a second
+    /// `shutdown_explicit` call being a no-op — is covered in
+    /// `crates/zfb/src/commands/dev.rs`'s own test module, since
+    /// `shutdown_explicit` lives there.
+    #[test]
+    fn teardown_removes_the_shadow_dir_and_its_lock_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = ShadowSession::new(tmp.path()).unwrap();
+        let shadow_root = session.shadow_root().to_path_buf();
+        assert!(shadow_root.join(SHADOW_SESSION_LOCK_FILE_NAME).exists());
+
+        session.teardown();
+
+        assert!(
+            !shadow_root.exists(),
+            "teardown must remove the shadow dir (and its lock file with it)"
+        );
+    }
+
+    /// Test expectation 1 (#2257): a stale sibling — lock file present but
+    /// unheld, mtime past the floor — is reaped.
+    #[test]
+    fn reap_removes_a_stale_unlocked_sibling_past_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let stale = parent.path().join("zfb-shadow-session-stale1");
+        fs::create_dir_all(&stale).unwrap();
+        fs::File::create(stale.join(SHADOW_SESSION_LOCK_FILE_NAME)).unwrap();
+        backdate_dir_mtime(&stale, REAP_AGE_FLOOR + std::time::Duration::from_secs(60));
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            !stale.exists(),
+            "a stale unlocked sibling past the age floor must be reaped"
+        );
+    }
+
+    /// Test expectation 2 (#2257): a sibling whose lock IS held (this test
+    /// holds it) survives the reap even though its mtime is past the
+    /// floor — the lock is the actual liveness signal, the floor only
+    /// covers the pre-lock window.
+    #[test]
+    fn reap_spares_a_locked_sibling_even_past_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let live = parent.path().join("zfb-shadow-session-live1");
+        fs::create_dir_all(&live).unwrap();
+        let lock_path = live.join(SHADOW_SESSION_LOCK_FILE_NAME);
+        let lock_file = fs::File::create(&lock_path).unwrap();
+        lock_file.try_lock().unwrap();
+        backdate_dir_mtime(&live, REAP_AGE_FLOOR + std::time::Duration::from_secs(60));
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            live.exists(),
+            "a live-locked sibling must survive the reap even past the age floor"
+        );
+        drop(lock_file);
+    }
+
+    /// Test expectation 3 (#2257): a freshly-created unlocked sibling
+    /// (under the age floor) survives — protects the sub-second window
+    /// between `tempdir_in` returning and the lock landing in a
+    /// concurrent sibling's own boot.
+    #[test]
+    fn reap_spares_a_fresh_unlocked_sibling_under_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let fresh = parent.path().join("zfb-shadow-session-fresh1");
+        fs::create_dir_all(&fresh).unwrap();
+        fs::File::create(fresh.join(SHADOW_SESSION_LOCK_FILE_NAME)).unwrap();
+        // No backdating: freshly created, well under the floor.
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            fresh.exists(),
+            "a fresh sibling under the age floor must never be reaped"
+        );
+    }
+
+    /// Test expectation 4 (#2257): a lockless dir past the floor — the
+    /// #2232 pre-fix stray shape (no `.zfb-owner.lock` at all) — is
+    /// reaped.
+    #[test]
+    fn reap_removes_a_lockless_pre_fix_stray_past_the_age_floor() {
+        let parent = tempfile::tempdir().unwrap();
+        let stray = parent.path().join("zfb-shadow-session-prefix-stray");
+        fs::create_dir_all(&stray).unwrap();
+        backdate_dir_mtime(&stray, REAP_AGE_FLOOR + std::time::Duration::from_secs(60));
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            !stray.exists(),
+            "a lockless pre-fix stray past the age floor must be reaped"
+        );
+    }
+
+    /// Test expectation 5 (#2257), part A: names that don't carry the
+    /// shadow-session prefix, and a plain FILE that DOES carry it, are
+    /// both left untouched regardless of age.
+    #[test]
+    fn reap_ignores_non_matching_names_and_a_same_prefixed_plain_file() {
+        let parent = tempfile::tempdir().unwrap();
+
+        let other_prefix_dir = parent.path().join("zfb-bundler-something");
+        fs::create_dir_all(&other_prefix_dir).unwrap();
+        backdate_dir_mtime(
+            &other_prefix_dir,
+            REAP_AGE_FLOOR + std::time::Duration::from_secs(60),
+        );
+
+        let prefixed_file = parent.path().join("zfb-shadow-session-not-a-dir");
+        fs::write(&prefixed_file, "not a directory").unwrap();
+        let handle = fs::OpenOptions::new()
+            .write(true)
+            .open(&prefixed_file)
+            .unwrap();
+        handle
+            .set_modified(
+                std::time::SystemTime::now()
+                    - (REAP_AGE_FLOOR + std::time::Duration::from_secs(60)),
+            )
+            .unwrap();
+        drop(handle);
+
+        reap_stale_shadow_sessions(parent.path());
+
+        assert!(
+            other_prefix_dir.exists(),
+            "a differently-prefixed dir must never be touched by the reap"
+        );
+        assert!(
+            prefixed_file.exists(),
+            "a plain FILE carrying the session prefix must never be touched by the reap"
+        );
+    }
+
+    /// Test expectation 5 (#2257), part B: a nonexistent parent dir must
+    /// not panic.
+    #[test]
+    fn reap_against_a_nonexistent_parent_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        reap_stale_shadow_sessions(&missing);
+    }
+
     #[test]
     fn rebase_tsconfig_paths_dual_target_under_root_passthrough_external() {
         let root = Path::new("/proj");
@@ -13961,64 +14527,59 @@ mod tests {
         );
     }
 
-    /// Issue #2220 (epic #2216 Wave 4) — the content-bridge fallback signal
-    /// `materialise_collection` records for `bundle()`'s build-only strict
-    /// policy (`crates/zfb/src/commands/build.rs::run_build`).
+    /// Issue #2220 (epic #2216 Wave 4), decomposed by #2241 into a direct
+    /// unit test of [`decide_content_bridge_import`] — the content-bridge
+    /// fallback signal `materialise_collection` records for `bundle()`'s
+    /// build-only strict policy
+    /// (`crates/zfb/src/commands/build.rs::run_build`).
     ///
-    /// A `.mdx` file whose body embeds a spread-attribute JSX element with
-    /// a non-JS spread value (`<a {...\bad}>…</a>`) compiles to JSX that
-    /// does not parse: `render_jsx_attrs`'s `AttributeContent::Expression`
-    /// (spread) arm wraps the raw value straight into `{...}` with no
-    /// `mdx_expression_is_valid_js` validation (unlike the ordinary
-    /// attribute/text expression arms beside it), so `\bad` reaches the
-    /// compiled output unescaped and trips `jsx_module_parse_failure` —
-    /// a genuine, currently-reproducible true positive for the gate (as
-    /// opposed to `jsx_breakage_flags_bare_backslash_expressions`'s
-    /// hand-constructed strings, which test the parser function directly
-    /// without going through real MDX compilation). The defensive skip
-    /// fires: `imports` stays empty for this file (no `ContentImport` is
-    /// pushed) and the caller-owned `ctx.content_bridge_fallbacks`
-    /// accumulator records the offending source path. Critically,
-    /// `materialise_collection` itself still returns `Ok(())` — recording
-    /// the fallback NEVER fails the call, regardless of any policy; that
-    /// decision is made later, in the build command (see the field's own
-    /// doc comment).
+    /// Pre-#2241, this test drove a REAL MDX compile of a spread-attribute
+    /// JSX element carrying a non-JS spread value (`<a {...\bad}>…</a>`):
+    /// `render_jsx_attrs`'s spread arm emitted the raw value straight into
+    /// `{...}` with no validation, so `\bad` reached the compiled output
+    /// unescaped and reliably tripped `jsx_module_parse_failure` — a
+    /// genuine true positive for the gate. #2241 closed that leak
+    /// (`mdx_spread_attribute_validity` now drops the attribute and warns
+    /// instead), so the real-MDX repro no longer reaches this gate at
+    /// all — the pipeline never hands `decide_content_bridge_import` a
+    /// broken module for that input anymore. This test instead drives the
+    /// helper directly against a HAND-BUILT [`CompiledMdx`] whose
+    /// `jsx_source` is unparseable by construction (mirroring
+    /// `jsx_breakage_flags_bare_backslash_expressions`'s hand-constructed
+    /// strings, not a real MDX compile), pinning the same defensive-skip
+    /// contract at the seam that actually owns it: `ImportDecision` stays
+    /// `DoNotCache` (never a `Bridge`) and `ctx.content_bridge_fallbacks`
+    /// records the offending source path. `decide_content_bridge_import`
+    /// itself is infallible (`ImportDecision`, not `Result`) — the "never
+    /// fails" half of the original name now lives one level up, at
+    /// `materialise_collection`'s own `Ok(())` return, which this
+    /// decomposition no longer exercises (see the retirement note on
+    /// `content_bridge_fallback_never_fails_bundle_and_is_reported`,
+    /// formerly below, for the remaining coverage gap).
     #[test]
-    fn materialise_collection_records_content_bridge_fallback_and_never_fails() {
+    fn decide_content_bridge_import_records_fallback_and_returns_do_not_cache_for_broken_jsx() {
+        let broken = CompiledMdx {
+            jsx_source: "<a>{\\bad}</a>".to_string(),
+            content_hash: "deadbeef".to_string(),
+            specifier: "mdx://docs/broken#deadbeef".to_string(),
+        };
+        let from = Path::new("/project/content/docs/broken.mdx");
         let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("docs");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(
-            src.join("broken.mdx"),
-            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
-        )
-        .unwrap();
-
-        let dest = tmp.path().join("shadow_content").join("docs");
-        let mut imports: Vec<ContentImport> = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_collection(
-            &src,
-            &dest,
-            "docs",
-            &mut imports,
-            &ctx,
-            None,
-            None,
-            None,
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut Vec::new(),
-        )
-        .expect("a content-bridge fallback must never fail materialise_collection");
 
-        assert!(
-            imports.is_empty(),
-            "the defensive skip must omit the bridge import; got {imports:?}"
+        let decision = decide_content_bridge_import(
+            &broken,
+            from,
+            None,
+            "content/docs/broken.mdx".to_string(),
+            &ctx,
         );
 
+        assert!(
+            matches!(decision, ImportDecision::DoNotCache),
+            "broken JSX must take the defensive skip, not Bridge/NoBridge"
+        );
         let fallbacks = ctx.content_bridge_fallbacks.borrow();
         assert_eq!(
             fallbacks.len(),
@@ -14029,6 +14590,43 @@ mod tests {
             fallbacks[0].contains("broken.mdx"),
             "the recorded fallback must name the offending source file; got {:?}",
             *fallbacks
+        );
+    }
+
+    /// The `Bridge` counterpart to the `DoNotCache` test above — proves
+    /// `decide_content_bridge_import`'s healthy-JSX branch applies
+    /// `idStripSuffix` to the specifier and records NOTHING into
+    /// `ctx.content_bridge_fallbacks`.
+    #[test]
+    fn decide_content_bridge_import_bridges_healthy_jsx_with_strip_suffix_applied() {
+        let healthy = CompiledMdx {
+            jsx_source: "<a>hi</a>".to_string(),
+            content_hash: "cafef00d".to_string(),
+            specifier: "mdx://docs/broken.data#cafef00d".to_string(),
+        };
+        let from = Path::new("/project/content/docs/broken.data.mdx");
+        let tmp = tempfile::tempdir().unwrap();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
+
+        let decision = decide_content_bridge_import(
+            &healthy,
+            from,
+            Some(".data"),
+            "content/docs/broken.data.mdx".to_string(),
+            &ctx,
+        );
+
+        match decision {
+            ImportDecision::Bridge(import) => {
+                assert_eq!(import.specifier, "mdx://docs/broken#cafef00d");
+                assert_eq!(import.shadow_rel_path, "content/docs/broken.data.mdx");
+            }
+            other => panic!("expected ImportDecision::Bridge, got {other:?}"),
+        }
+        assert!(
+            ctx.content_bridge_fallbacks.borrow().is_empty(),
+            "healthy JSX must not record a fallback"
         );
     }
 
@@ -17168,6 +17766,12 @@ mod tests {
     // block — verified against `pipeline_spec_from_config`
     // (crates/zfb/src/commands/bundler_input.rs) and
     // packages/zudo-doc/src/preset.ts@42b9dad19's `buildMarkdownFeatures`.
+    //
+    // As of zfb#2250, `githubAutolinks` is dropped from this literal: the
+    // feature was removed from zfb entirely (host-specific — does not
+    // belong in a general SSG), so this reproduces zudo-doc's preset MINUS
+    // the removed key, pending zudo-doc's own preset update
+    // (zudolab/zudo-doc#3191) — see the lockstep warning in zfb#2250.
     fn zudo_doc_parity_compile(body: &str, root: &Path) -> String {
         let features: zfb_content::MarkdownFeaturesConfig =
             serde_json::from_value(serde_json::json!({
@@ -17179,7 +17783,6 @@ mod tests {
                 "headingMarkerToc": true,
                 "githubAlerts": true,
                 "readingTime": true,
-                "githubAutolinks": { "repo": "zudolab/zudo-doc" },
                 "codeEnrichment": {},
                 "codeTabs": true,
                 "ruby": true,
@@ -17219,12 +17822,17 @@ mod tests {
     /// The genuinely-unparseable (true-positive) contract deliberately
     /// does NOT get a pipeline-level variant here:
     /// `emit_mdx_expression_braced` + `mdx_expression_is_valid_js`
-    /// recover invalid expressions at emit time (#1778/#1779), so
-    /// real-pipeline output is deliberately hard to make unparseable.
-    /// The TP contract lives at the unit level
-    /// (`jsx_breakage_flags_bare_backslash_expressions`); the gate stays
-    /// as defense in depth for plugin-injected `JsxRaw` payloads and
-    /// future emitter regressions.
+    /// recover invalid expressions at emit time (#1778/#1779), and since
+    /// #2241 `mdx_spread_attribute_validity` closes the one remaining
+    /// leak (a non-JS spread-attribute value) the same way — so
+    /// real-pipeline output is now UNCONDITIONALLY hard to make
+    /// unparseable through this emitter (no known input shape reaches
+    /// the gate as a true positive anymore). The TP contract lives at
+    /// the unit level (`jsx_breakage_flags_bare_backslash_expressions`
+    /// here, plus `mdx_spread_attribute_validity`'s own unit tests in
+    /// `crates/zfb-content/src/mdx_jsx_emit.rs`); the gate stays as
+    /// defense in depth for plugin-injected `JsxRaw` payloads and future
+    /// emitter regressions.
     #[test]
     fn mdx_bridge_gate_2216_field_reproducer_bridges() {
         let base = include_str!("../tests/fixtures/mdx-bridge-gate-2217/minimal-repro-body.mdx");
@@ -17612,6 +18220,15 @@ mod tests {
                 return;
             };
             for entry in entries.flatten() {
+                // Issue #2257 — `.zfb-owner.lock` is session-level
+                // bookkeeping the ctor writes directly at the shadow
+                // root (never through `ShadowWriter`, never rerooted by
+                // the workspace layout logic below), not materialised
+                // project content. Exclude it so this inventory helper
+                // keeps describing only what a bundle call wrote.
+                if entry.file_name().to_str() == Some(SHADOW_SESSION_LOCK_FILE_NAME) {
+                    continue;
+                }
                 let file_type = entry.file_type().expect("dirent file type");
                 if file_type.is_dir() {
                     walk(&entry.path(), base, out);
@@ -21772,74 +22389,46 @@ mod tests {
         );
     }
 
-    /// Issue #2220 (epic #2216 Wave 4) — `bundle()` NEVER fails because of a
-    /// content-bridge fallback, regardless of any policy: it only ever
-    /// REPORTS every offending page via
-    /// [`BundlerOutput::content_bridge_fallback_pages`]. Deciding whether a
-    /// non-empty result should fail a BUILD is
-    /// `crates/zfb/src/commands/build.rs::run_build`'s job (the
-    /// `strictContentBridge` config field / `--strict-content-bridge` CLI
-    /// flag) — `bundle()` itself carries no such flag, which is what makes
-    /// `zfb dev` (sharing this exact call) structurally unable to inherit a
-    /// bail-on-fallback behavior. Contrast with
-    /// [`on_broken_links_error_returns_err_without_esbuild`] above, where
-    /// the bundler itself DOES own the decision — the two mechanisms are
-    /// deliberately shaped differently (see issue #2220's design notes).
-    ///
-    /// Uses `mock_subprocess_output` so no esbuild binary is required — the
-    /// content-bridge gate runs during the MDX pipeline (before esbuild).
-    ///
-    /// Level: 1 (unit — pure logic in the bundler pipeline).
-    #[test]
-    fn content_bridge_fallback_never_fails_bundle_and_is_reported() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_path_buf();
-
-        fs::create_dir_all(root.join("pages")).unwrap();
-        fs::create_dir_all(root.join("content/docs")).unwrap();
-        fs::create_dir_all(root.join("components")).unwrap();
-        fs::create_dir_all(root.join("layouts")).unwrap();
-
-        fs::write(
-            root.join("pages/index.tsx"),
-            "export default function Home() { return null; }\n",
-        )
-        .unwrap();
-
-        // Same genuine parse-failure shape as
-        // `materialise_collection_records_content_bridge_fallback_and_never_fails`
-        // above — a spread-attribute JSX element whose value is not valid
-        // JS (`render_jsx_attrs`'s spread arm skips the
-        // `mdx_expression_is_valid_js` recovery its sibling arms apply).
-        fs::write(
-            root.join("content/docs/broken.mdx"),
-            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
-        )
-        .unwrap();
-
-        let input = BundlerInput {
-            content_collections: vec![ContentCollectionSpec::new(
-                "docs",
-                PathBuf::from("content/docs"),
-            )],
-            ..make_minimal_input(&tmp)
-        };
-
-        let output = bundle(input)
-            .expect("a content-bridge fallback must never fail bundle(), regardless of policy");
-
-        assert_eq!(
-            output.content_bridge_fallback_pages.len(),
-            1,
-            "expected exactly 1 reported fallback page, got {:?}",
-            output.content_bridge_fallback_pages
-        );
-        assert!(
-            output.content_bridge_fallback_pages[0].contains("broken.mdx"),
-            "the reported fallback must name the offending source file; got {:?}",
-            output.content_bridge_fallback_pages
-        );
-    }
+    // Issue #2220 (epic #2216 Wave 4) originally pinned "`bundle()` NEVER
+    // fails because of a content-bridge fallback, and REPORTS every
+    // offending page via `BundlerOutput::content_bridge_fallback_pages`"
+    // with a real end-to-end `bundle()` call over a spread-attribute MDX
+    // fixture (`<a {...\bad}>…</a>`) that genuinely failed
+    // `jsx_module_parse_failure`.
+    //
+    // #2241 closed that leak at the source: `render_jsx_attrs`'s spread
+    // arm now validates via `mdx_spread_attribute_validity` and drops +
+    // warns instead of emitting the unparseable bytes, so this fixture no
+    // longer reaches the content-bridge gate at all — real-pipeline
+    // output is now deliberately hard to make unparseable for spreads
+    // too (see `mdx_bridge_gate_2216_field_reproducer_bridges`'s doc
+    // comment below), the same way it already was for ordinary
+    // expression attributes. There is no other known way to make a real
+    // MDX compile produce unparseable JSX through this call site, so this
+    // test is RETIRED (not replaced 1:1) rather than re-fixtured — its
+    // coverage decomposes into three pieces that together still prove the
+    // never-fails+recorded contract, none of which need a genuinely
+    // broken real-pipeline compile:
+    //   1. `decide_content_bridge_import_records_fallback_and_returns_do_not_cache_for_broken_jsx`
+    //      above — the DoNotCache + fallback-record decision itself,
+    //      against a hand-built `CompiledMdx`.
+    //   2. The one-line copy-out from `MaterialiseCtx::content_bridge_fallbacks`
+    //      into `BundlerOutput::content_bridge_fallback_pages` (`bundle()`,
+    //      around the `let content_bridge_fallback_pages = ...` line) —
+    //      trivial by inspection, not independently unit-tested.
+    //   3. `crates/zfb/src/commands/build.rs`'s `FakeRunner`-backed
+    //      `run_build_content_bridge_fallback_*` tests, which drive the
+    //      `strictContentBridge` bail check against a CANNED
+    //      `content_bridge_fallback_pages` list (`FakeRunner::with_content_bridge_fallback_pages`),
+    //      independent of how that list gets populated.
+    //
+    // Remaining gap (deliberately accepted, not silently dropped): no test
+    // left in this repo drives the real `bundle()` entry point end-to-end
+    // to a NON-EMPTY `content_bridge_fallback_pages` result. If a future
+    // change reopens a way to make real-pipeline JSX unparseable, only the
+    // hand-built helper test above would catch a regression in the
+    // decision logic — an end-to-end fixture-driven repro would not exist
+    // until a new one is written against whatever new leak is found.
 
     /// #2221 (epic #2216 Wave 5 confirm pass) — the real-call-site
     /// companion to [`mdx_bridge_gate_2216_field_reproducer_bridges`]
@@ -21851,9 +22440,11 @@ mod tests {
     /// call site's own wiring (e.g. dropping the import, or recording a
     /// fallback despite a clean parse).
     ///
-    /// This test closes that gap the way
-    /// [`content_bridge_fallback_never_fails_bundle_and_is_reported`]
-    /// above proves the FAILURE direction: it drives the real
+    /// This test closes that gap the way the now-retired
+    /// `content_bridge_fallback_never_fails_bundle_and_is_reported`
+    /// (see the retirement note above, near
+    /// `decide_content_bridge_import_records_fallback_and_returns_do_not_cache_for_broken_jsx`)
+    /// used to prove the FAILURE direction: it drives the real
     /// [`bundle()`] entry point (`mock_subprocess_output`, no esbuild
     /// binary needed — the content-bridge gate runs during the MDX
     /// pipeline, before esbuild) over a content collection containing

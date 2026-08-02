@@ -46,25 +46,6 @@ pub enum FeatureToggle {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeatureOptions {}
 
-/// Options for the `githubAutolinks` feature — rewrites bare `#123`,
-/// `user/repo#456`, and commit-SHA references into GitHub links (see
-/// `zfb_md_extras::github_autolinks` for the recognised patterns).
-///
-/// `repo` is required: `githubAutolinks: {}` (repo absent/`None`) is a
-/// config error — `register_features` (`zfb-content::pipeline`) emits a
-/// build-blocking diagnostic rather than silently skipping the feature
-/// (#1392).
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GithubAutolinksConfig {
-    /// GitHub repository reference (`owner/repo`) used to build autolink URLs
-    /// (e.g. `"owner/repo"` renders `#123` as
-    /// `https://github.com/owner/repo/issues/123`). Required — see the
-    /// struct-level doc comment.
-    #[serde(default)]
-    pub repo: Option<String>,
-}
-
 /// Options for the `codeEnrichment` feature.
 ///
 /// All flags default to `true` (ON) when the feature is enabled with the
@@ -536,10 +517,6 @@ pub struct MarkdownFeaturesConfig {
     #[serde(default)]
     pub reading_time: Option<ReadingTimeFeature>,
 
-    /// GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`.
-    #[serde(default)]
-    pub github_autolinks: Option<GithubAutolinksConfig>,
-
     /// Code-block enrichment (copy button, language label, etc.).
     #[serde(default)]
     pub code_enrichment: Option<CodeEnrichmentConfig>,
@@ -730,6 +707,26 @@ mod tests {
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("admonitionsPreset") || err_msg.contains("unknown field"),
+            "error must mention the unknown field; got: {err_msg}"
+        );
+    }
+
+    // `githubAutolinks` is a removed key (host-specific issue/PR/SHA
+    // autolinking does not belong in a general SSG — owner decision,
+    // 2026-08-02). `deny_unknown_fields` on `MarkdownFeaturesConfig` must
+    // reject it so stale configs fail fast rather than silently ignoring
+    // the removed field.
+    #[test]
+    fn github_autolinks_key_is_rejected() {
+        let json = serde_json::json!({ "githubAutolinks": { "repo": "owner/repo" } });
+        let result: Result<MarkdownFeaturesConfig, _> = serde_json::from_value(json);
+        assert!(
+            result.is_err(),
+            "githubAutolinks must be rejected by deny_unknown_fields; got: {result:?}"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("githubAutolinks") || err_msg.contains("unknown field"),
             "error must mention the unknown field; got: {err_msg}"
         );
     }

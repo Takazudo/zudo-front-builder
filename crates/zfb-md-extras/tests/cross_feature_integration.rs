@@ -21,7 +21,7 @@
 //!    NOT a `BrokenLink` diagnostic.
 //! 7. `ruby` + directives — `{base|ruby}` syntax inside a directive block
 //!    survives wrapping by other plugins.
-//! 8. All 15 features on simultaneously — build must not crash; output must
+//! 8. All 13 features on simultaneously — build must not crash; output must
 //!    contain plausible HTML markers.
 //!
 //! # Generic directives confirm gate
@@ -48,9 +48,8 @@ use zfb_md_ast::{
     diagnostics::{CollectingSink, DiagnosticSeverity, MarkdownDiagnostic},
     heading_registry::HeadingRegistry,
     BuildContext, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
-    FeatureToggle, GithubAutolinksConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
-    LinkValidationConfig, MarkdownFeaturesConfig, ReadingTimeFeature, TocConfig, TocExportConfig,
-    TranscludeConfig,
+    FeatureToggle, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+    MarkdownFeaturesConfig, ReadingTimeFeature, TocConfig, TocExportConfig, TranscludeConfig,
 };
 
 // ── Case 1: transclude + link_validation ────────────────────────────────────
@@ -538,15 +537,14 @@ fn ruby_outside_directive_works_with_directives_enabled() {
     );
 }
 
-// ── Case 8: all 15 features on simultaneously ────────────────────────────────
+// ── Case 8: all 13 features on simultaneously ────────────────────────────────
 
-/// Enable all 15 opt-in features simultaneously and assert:
+/// Enable all 13 opt-in features simultaneously and assert:
 /// - The pipeline does not crash.
 /// - The output contains sensible HTML for each feature's contribution.
 ///
-/// NOTE: `github_autolinks` requires `repo: Some(...)` to be active.
-/// `reading_time` injects an export line. `transclude`/`image_dimensions`/
-/// `link_validation` need a `BuildContext`.
+/// NOTE: `reading_time` injects an export line. `transclude`/
+/// `image_dimensions`/`link_validation` need a `BuildContext`.
 #[test]
 fn all_features_on_does_not_crash() {
     let fixtures_dir = PathBuf::from(concat!(
@@ -602,9 +600,6 @@ fn all_features_on_does_not_crash() {
         })),
         github_alerts: Some(FeatureToggle::Bool(true)),
         reading_time: Some(ReadingTimeFeature::Bool(true)),
-        github_autolinks: Some(GithubAutolinksConfig {
-            repo: Some("owner/repo".to_string()),
-        }),
         code_enrichment: Some(CodeEnrichmentConfig::default()),
         code_tabs: Some(FeatureToggle::Bool(true)),
         ruby: Some(FeatureToggle::Bool(true)),

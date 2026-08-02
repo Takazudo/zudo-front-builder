@@ -492,9 +492,10 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            default_fp, "308ef87c7e9347256505931b376f4be7d2222428811761ff2a6ea3983be87294",
+            default_fp, "0d4dd447ba9696acd7dcb4c12593fe4be396c84102ca0b4d56afc0ecc65a4f21",
             "default-spec fingerprint drifted from pre-#977 HEAD (re-captured for the \
-             issue #1848 FINGERPRINT_VERSION bump — see that const's doc comment)"
+             zfb#2250 githubAutolinks removal — the canonical features JSON shape lost a \
+             key, see that PR)"
         );
 
         let feats: zfb_md_extras::MarkdownFeaturesConfig =
@@ -513,9 +514,10 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            armed_fp, "0f14d0a12712b6a0ee335b00fb644eb8753330f20fb8a891c0073b269ddce501",
+            armed_fp, "91b1274c82b95a09a2b6235956a1d78266a5ee38883e191e10e9a972b6bbe2e6",
             "linkValidation-armed fingerprint drifted from pre-#977 HEAD (re-captured for the \
-             issue #1848 FINGERPRINT_VERSION bump — see that const's doc comment)"
+             zfb#2250 githubAutolinks removal — the canonical features JSON shape lost a \
+             key, see that PR)"
         );
 
         // Draining the channels is part of the observational contract

@@ -95,7 +95,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{
+    assert_frame_has_data, locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock,
+};
 
 /// Serializes the spawning tests in this file (each boots a full V8 +
 /// esbuild dev session; running them concurrently would double memory
@@ -1094,7 +1096,17 @@ async fn run_shared_scenarios(
             "---\ntitle: Alpha\ndate: 2026-01-01\n---\n\nV2-MARKER-A body for the alpha post.\n",
         )
         .expect("edit a.md body");
-        let ev = next_sse_event_name(sse, SSE_DEADLINE)
+        // Issue #2239 (Sub of the SSE Data Frame epic #2237): strict,
+        // wire-level assertion that this frame carries a non-empty
+        // `data:` line — the process-e2e proxy for the empty-payload
+        // guard in `crates/zfb-server/src/livereload.rs`
+        // (`ReloadEvent::data()` / `sse_response`, fixed in #2238). If
+        // that guard ever regresses, axum silently drops the `data:`
+        // line for `Page`/`Css` events and `assert_frame_has_data`
+        // panics here instead of the regression passing unnoticed
+        // through `next_sse_event_name`'s tolerant name-only scan (as
+        // every other scenario in this file still uses).
+        let ev = assert_frame_has_data(sse, SSE_DEADLINE)
             .await
             .expect("read SSE stream after body edit");
         // A trailing warmup tick could in principle deliver the first

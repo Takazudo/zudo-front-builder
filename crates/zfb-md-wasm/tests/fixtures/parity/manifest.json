@@ -107,19 +107,6 @@
       }
     },
     {
-      "slug": "autolinks",
-      "tier": "renderHtml",
-      "input": "input/autolinks.md",
-      "options": {
-        "filename": "autolinks.md",
-        "pipeline": {
-          "features": {
-            "githubAutolinks": { "repo": "takazudo/zudo-front-builder" }
-          }
-        }
-      }
-    },
-    {
       "slug": "frontmatter-variants",
       "tier": "renderHtml",
       "input": "input/frontmatter-variants.md",

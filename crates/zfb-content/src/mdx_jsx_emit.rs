@@ -57,8 +57,8 @@ use crate::dep_manifest::DependencyManifest;
 use crate::footnotes::FOOTNOTE_LABEL_STYLE;
 use crate::footnotes::{FootnoteEntry, FootnoteRef, FOOTNOTE_LABEL_ID};
 use crate::pipeline::{
-    code_block_hast, constructs_for_jsx_emit, mdast_to_hast_with, FootnoteRenderCtx, HastNode,
-    HastVisitor, JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
+    code_block_hast, constructs_for_jsx_emit, mdast_to_hast_with_model, FootnoteRenderCtx,
+    HastNode, HastVisitor, JsxEmitStrategy, Pipeline, PipelineError, ResolvedGfmConstructs,
 };
 use crate::plugins::heading_links::{slugify, HeadingIdStrategy, SlugAllocator};
 use crate::plugins::BrokenLinkDiagnostic;
@@ -115,6 +115,16 @@ impl MdxJsxOptions {
 /// (`:::note`), CJK-aware emphasis, or other mdast-phase plugins to fire
 /// against the MDX content should use
 /// [`mdx_to_jsx_module_with_pipeline`] instead. See zfb#116.
+///
+/// An invalid spread attribute (`{...value}` where `value` is not
+/// valid JS) is still validated and its attribute dropped (#2241) —
+/// the emitted module never carries the unparseable bytes — but
+/// because this entry point runs with no [`Pipeline`](crate::pipeline::Pipeline)
+/// there is no diagnostic channel to surface a warning through: no
+/// `MarkdownDiagnostic` is produced and nothing is printed to stderr.
+/// Callers that need the warning should compile through
+/// [`mdx_to_jsx_module_with_pipeline`] instead, whose diagnostics flow
+/// through `Pipeline::take_markdown_diagnostics`.
 ///
 /// # Errors
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
@@ -378,6 +388,19 @@ fn mdx_to_jsx_module_inner(
                     reg.insert(src.clone(), entry);
                 }
             }
+            // Registration A (#2246, class 3): JSX-authored literal
+            // anchor ids (`<div id="…">` / `<a name="…">`), collected
+            // from the SAME post-mdast-visitor `children` slice
+            // `collect_headings` just walked — every depth, including
+            // top level. See `collect_jsx_anchor_ids`'s doc comment for
+            // the collected/excluded rules and the disjointness proof
+            // vs the hast-phase `insert_anchor_id` arm in
+            // `heading_links.rs`. No ordering constraint vs
+            // `resolve_links`: `ResolveLinksPlugin` rewrites `Link`/
+            // `Image` urls only, never JSX attribute values.
+            for id in collect_jsx_anchor_ids(&children) {
+                reg.insert_anchor_id(src.clone(), id);
+            }
             if record_file_headings {
                 compiled_file_headings = Some(FileHeadings {
                     source_path: normalize_path_lexical(&src),
@@ -390,7 +413,7 @@ fn mdx_to_jsx_module_inner(
     // HeadingLinksPlugin's `visit_with_context` will ALSO insert top-level h2–h6 entries
     // during the hast pass — exact duplicates by the slug-lockstep invariant; harmless.)
 
-    let (body, html_tags, component_names, hoisted_esm) = if take_hast_detour {
+    let (body, html_tags, component_names, hoisted_esm, jsx_diagnostics) = if take_hast_detour {
         // Wrap children back into a Root so `mdast_to_hast_with` can
         // recurse through them as a single node — its public signature
         // takes `&MdastNode`.
@@ -427,12 +450,17 @@ fn mdx_to_jsx_module_inner(
                 .as_deref()
                 .and_then(Pipeline::nested_code_render_chain)
                 .map(std::cell::RefCell::new),
+            diagnostics: std::cell::RefCell::new(Vec::new()),
         };
         let strategy_fn = |node: &MdastNode, fc: &FootnoteRenderCtx<'_>| -> String {
             jsx_raw_recursive(node, &slug_ctx, fc)
         };
         let strategy = JsxEmitStrategy::JsxPath(&strategy_fn);
-        let mut hast = mdast_to_hast_with(&mdast_root, &strategy);
+        // `_with_model` (not the plain `mdast_to_hast_with`) so
+        // Registration B below can register the SAME `FootnoteModel`
+        // instance this conversion just built — never a second,
+        // independently re-derived one (#2246).
+        let (mut hast, footnote_model) = mdast_to_hast_with_model(&mdast_root, &strategy);
         // The emitter must have consumed every nested-heading slug in
         // lockstep with `collect_headings`. A mismatch means the emit
         // walk order drifted from `walk_collect_headings`' descent set.
@@ -445,7 +473,46 @@ fn mdx_to_jsx_module_inner(
         );
         if let Some(p) = pipeline_mut.as_deref_mut() {
             match build_ctx.as_mut() {
-                Some(ctx) => p.apply_hast_visitors_with_context(&mut hast, ctx),
+                Some(ctx) => {
+                    // Registration B (#2246, class 4): register every
+                    // footnote occurrence id —
+                    // `model.entries()[*].references[*].id` — from the
+                    // `FootnoteModel` the conversion above just built,
+                    // BEFORE hast visitors run. A footnote reference
+                    // occurrence that renders inside a JsxRaw string
+                    // (`jsx_footnote_reference_marker`) is invisible to
+                    // the hast-phase `HeadingLinksPlugin::visit_node`
+                    // walk below, so without this the structured
+                    // footnote section's backreference link would false-
+                    // positive as broken. Registers ALL occurrence ids,
+                    // not only JSX-nested ones — isolating just the
+                    // JSX-nested subset would mean replaying the
+                    // emitters' own traversal, exactly the id-drift risk
+                    // this issue forbids (ids must come from
+                    // `FootnoteModel`'s allocator, never be re-derived).
+                    // Deliberate BOUNDED OVERLAP: a top-level occurrence
+                    // renders as a structured hast `Element` too, so
+                    // `HeadingLinksPlugin::visit_node` (below) inserts
+                    // the SAME id a second time — safe because
+                    // `insert_anchor_id` is documented per-file
+                    // idempotent (`heading_registry.rs`). Definition ids
+                    // (`user-content-fn-…`) and `FOOTNOTE_LABEL_ID` are
+                    // deliberately NOT registered here: the structured
+                    // footnote section always renders them as hast
+                    // `Element`s, so the hast phase already records them
+                    // — doing it twice here would be pure double-
+                    // registration with zero coverage gain.
+                    if let (Some(reg), Some(src)) =
+                        (ctx.heading_registry.as_deref_mut(), ctx.source_path.clone())
+                    {
+                        for entry in footnote_model.entries() {
+                            for footnote_ref in &entry.references {
+                                reg.insert_anchor_id(src.clone(), footnote_ref.id.clone());
+                            }
+                        }
+                    }
+                    p.apply_hast_visitors_with_context(&mut hast, ctx)
+                }
                 None => p.apply_hast_visitors(&mut hast),
             }
         }
@@ -456,14 +523,28 @@ fn mdx_to_jsx_module_inner(
             bridge.html_tags,
             bridge.component_names,
             bridge.hoisted_esm,
+            // Drain diagnostics accumulated while rendering JSX-nested
+            // attributes (e.g. a dropped invalid spread, #2241) — merged
+            // into `context_diags` below, alongside every other
+            // context-plugin warning.
+            slug_ctx.diagnostics.into_inner(),
         )
     } else {
         let mut emitter = JsxEmitter::new();
         let body = emitter.emit_children_block(&children);
         // The no-pipeline JsxEmitter path is byte-stable and does not hoist
         // hast-phase JsxRaw nodes (it never runs hast visitors). Return an
-        // empty Vec so the tuple shape is uniform.
-        (body, emitter.html_tags, emitter.component_names, Vec::new())
+        // empty Vec so the tuple shape is uniform. It carries no diagnostic
+        // channel either (see `mdx_to_jsx_module`'s doc comment) — an
+        // invalid spread there is dropped silently, so this last slot is
+        // always empty.
+        (
+            body,
+            emitter.html_tags,
+            emitter.component_names,
+            Vec::new(),
+            Vec::new(),
+        )
     };
 
     // Flush context-plugin diagnostics — and the #977 side channels
@@ -474,7 +555,13 @@ fn mdx_to_jsx_module_inner(
     // `take_cross_file_link_candidates` / `take_file_headings`. The
     // explicit drop releases the sink/buffer borrows held by the context.
     drop(build_ctx);
-    let context_diags = context_sink.take();
+    let mut context_diags = context_sink.take();
+    // Merge in diagnostics collected while emitting JSX-nested attributes
+    // (e.g. a dropped invalid spread, #2241) — same drain discipline as
+    // `context_sink` above, just collected on `NestedRenderCtx` instead of
+    // through `BuildContext` since it fires from the hast-detour JSX-path
+    // walk, not a context-aware feature plugin.
+    context_diags.extend(jsx_diagnostics);
     if let Some(p) = pipeline_mut {
         if !context_diags.is_empty() {
             p.extend_markdown_diagnostics(context_diags);
@@ -707,6 +794,154 @@ fn walk_collect_headings(
     }
 }
 
+/// Collect every statically-known literal anchor id authored directly on
+/// an MDX-JSX intrinsic element — `<div id="…">`, `<a name="…">` — at
+/// EVERY depth, including the top level (issue #2246, Registration A).
+///
+/// A top-level `<div id="x">` is, on the MDX path, exactly as invisible
+/// to the hast-phase `HeadingLinksPlugin::visit_node`'s `insert_anchor_id`
+/// arm as a JSX-nested one: both are `MdxJsxFlowElement`s that
+/// [`emit_jsx_raw`](crate::pipeline) collapses to one opaque
+/// `HastNode::JsxRaw` string the hast walk never recurses into. So this
+/// walk must not gate on "inside a JSX ancestor" the way
+/// [`walk_collect_headings`] does — it descends generically through
+/// [`MdastNode::children`], the same generic-descent idiom
+/// [`crate::footnotes::FootnoteModel::collect`] uses to reach every
+/// `Node::children()` regardless of container kind, with ONE exception:
+/// it does not descend into a `FootnoteDefinition` body (see the
+/// exclusion list below) — the one container kind whose content is not
+/// unconditionally rendered.
+///
+/// **Pure** — no I/O, no registry writes; the caller (the seeding block
+/// in [`mdx_to_jsx_module_with_pipeline`]) registers the result via
+/// `HeadingRegistry::insert_anchor_id`. Callers pass the post-mdast-
+/// visitor `children` slice — the same slice [`collect_headings`]
+/// receives — so directive expansion (`:::note` → `MdxJsxFlowElement`)
+/// and transclusion have already run.
+///
+/// ## What is collected
+///
+/// Only `MdxJsxFlowElement`/`MdxJsxTextElement` nodes whose `name` is an
+/// **intrinsic element** (first char NOT ASCII uppercase — the same
+/// first-char rule [`collect_jsx_component_names`] uses to tell a
+/// PascalCase component from an html tag) are inspected:
+///
+/// - `id="literal"` on ANY intrinsic element;
+/// - additionally, `name="literal"` when the element is specifically
+///   `<a>` — mirrors the hast-phase `<a name>` arm in
+///   `crate::plugins::heading_links`.
+///
+/// A fragment (`name: None`) carries no attributes to inspect, so it
+/// contributes nothing. A **component** (`<Note id="x">`) is excluded
+/// even though it syntactically carries an `id` attribute: whether a
+/// component forwards that prop to the rendered DOM is statically
+/// unknowable, and #2224 already ruled author-written JSX attribute
+/// surfaces on components out of linkValidation's scope.
+///
+/// ## What is excluded, and why
+///
+/// - `id={expr}` (`AttributeValue::Expression`) — runtime-computed and
+///   statically unknowable; registering a guessed value could validate
+///   a fragment link that never actually renders.
+/// - a bare, value-less `id` attribute (`<div id>`, `p.value == None`)
+///   — no literal value exists to record.
+/// - an empty literal (`id=""`) — not a usable anchor target.
+/// - a spread attribute (`AttributeContent::Expression`, `{...rest}`)
+///   — could inject an `id` at runtime, but its value is opaque at
+///   compile time; only statically-known literal anchors enter the
+///   registry.
+/// - anything inside a `FootnoteDefinition` body (`[^label]: …`) — a
+///   definition's body is NOT unconditionally rendered: an unreferenced
+///   definition, or a duplicate that lost to an earlier one, never
+///   reaches the hast tree at all (`FootnoteModel::collect` decides the
+///   winning, referenced set; `pipeline.rs`'s `mdast_to_hast_inner` maps
+///   every top-level `FootnoteDefinition` node itself to an empty
+///   `HastNode::Raw`, and only the WINNING entries' bodies are
+///   separately converted, by `render_footnote_item`). Registering a
+///   JSX anchor from inside a body that might never render would let a
+///   genuinely broken link (no element in the DOM ever carries that id)
+///   silently validate — codex review finding, #2246. Like
+///   [`walk_collect_headings`], this walk therefore does not descend
+///   into `FootnoteDefinition` subtrees at all; a JSX anchor nested
+///   inside a footnote definition body is out of scope either way.
+///
+/// ## Partition invariant
+///
+/// `MdxJsxFlowElement`/`MdxJsxTextElement` never surface as hast
+/// `Element` nodes on the MDX path — [`emit_jsx_raw`](crate::pipeline)
+/// collapses every one of them, under both [`JsxEmitStrategy`]
+/// variants, to `HastNode::Raw`/`HastNode::JsxRaw` — so this fn's
+/// result set and the hast-phase `insert_anchor_id` arm's result set
+/// are disjoint BY CONSTRUCTION: nothing this walk can see is also
+/// reachable by a hast `Element` walk. See the
+/// `collect_jsx_anchor_ids_disjoint_from_structured_element_ids` unit
+/// test below.
+fn collect_jsx_anchor_ids(children: &[MdastNode]) -> Vec<String> {
+    let mut out = Vec::new();
+    for node in children {
+        walk_collect_jsx_anchor_ids(node, &mut out);
+    }
+    out
+}
+
+fn walk_collect_jsx_anchor_ids(node: &MdastNode, out: &mut Vec<String>) {
+    // See the fn doc's exclusion list: a footnote definition body is not
+    // unconditionally rendered, so never descend into one here.
+    if matches!(node, MdastNode::FootnoteDefinition(_)) {
+        return;
+    }
+    let jsx_shape = match node {
+        MdastNode::MdxJsxFlowElement(j) => Some((j.name.as_deref(), &j.attributes)),
+        MdastNode::MdxJsxTextElement(j) => Some((j.name.as_deref(), &j.attributes)),
+        _ => None,
+    };
+    if let Some((Some(name), attributes)) = jsx_shape {
+        if is_intrinsic_jsx_name(name) {
+            collect_literal_jsx_anchor_attrs(name, attributes, out);
+        }
+    }
+    // Generic descent — reaches JSX bodies, block containers
+    // (blockquote/list/list-item), and every other parent kind through
+    // one shared path, matching `FootnoteModel::collect`'s idiom rather
+    // than `walk_collect_headings`'s bespoke per-container match.
+    if let Some(kids) = node.children() {
+        for c in kids {
+            walk_collect_jsx_anchor_ids(c, out);
+        }
+    }
+}
+
+/// `true` when `name` is an intrinsic (lowercase-led) JSX tag rather
+/// than a PascalCase component — the same first-char rule
+/// [`collect_jsx_component_names`] uses. Empty names (never produced by
+/// the parser for a non-fragment element) are treated as intrinsic.
+fn is_intrinsic_jsx_name(name: &str) -> bool {
+    !name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+}
+
+fn collect_literal_jsx_anchor_attrs(tag: &str, attrs: &[AttributeContent], out: &mut Vec<String>) {
+    for a in attrs {
+        // Spread attributes (`{...rest}`) are opaque at compile time —
+        // excluded, never registered (see the fn doc's exclusion list).
+        let AttributeContent::Property(p) = a else {
+            continue;
+        };
+        let is_id = p.name == "id";
+        let is_a_name = tag == "a" && p.name == "name";
+        if !is_id && !is_a_name {
+            continue;
+        }
+        // `None` (bare attribute) and `Expression` (runtime-computed)
+        // are both excluded — only a non-empty literal is a
+        // statically-known anchor.
+        if let Some(AttributeValue::Literal(v)) = &p.value {
+            if !v.is_empty() {
+                out.push(v.clone());
+            }
+        }
+    }
+}
+
 /// Plain-text projection of a sequence of inline mdast nodes.
 ///
 /// Concatenates every reachable text payload in document order, which
@@ -723,7 +958,25 @@ fn walk_collect_headings(
 ///   `extract_text` would skip it, but `alt` is the closest plain-text
 ///   substitute and TOC consumers expect it)
 /// - `Break` → single space (renders as `<br>` then a space-equivalent)
-/// - MDX text expressions / JSX → contribute nothing (opaque to TOCs)
+/// - `MdxJsxTextElement` named exactly `"a"` → recurse into children,
+///   same as `Link` (zfb#2249). `JsxNestedExternalLinks` synthesizes
+///   these as a structural stand-in for what was a `Link` node moments
+///   before the mdast visitors ran (`## [Guide](https://example.org)`
+///   nested under JSX) — it is not opaque author content, so it must
+///   not silently empty out the heading's text/slug/anchor the way
+///   genuine author-written JSX does.
+/// - an `<img alt="…">`-shaped JSX element (`MdxJsxTextElement` named
+///   `img`) → contributes its `alt` attribute, same as `Image` above.
+///   Covers BOTH a literal author-written `<img>` and the synthesized
+///   element `JsxNestedImageDimensions` (zfb#2248) replaces a JSX-nested
+///   `Image` with — without this arm, a heading whose JSX-nested image
+///   got dimensions stamped would silently lose its alt-text
+///   contribution (falling through to the JSX catch-all below) purely
+///   because the referenced file happened to exist and be probable, an
+///   environment-dependent heading-text/slug change (codex review
+///   finding on #2248).
+/// - Every other MDX text expression / JSX element → contributes
+///   nothing (opaque to TOCs)
 fn mdast_inline_text(children: &[MdastNode]) -> String {
     let mut out = String::new();
     for c in children {
@@ -756,6 +1009,21 @@ fn push_inline_text(node: &MdastNode, out: &mut String) {
                 push_inline_text(c, out);
             }
         }
+        // A synthesized `<a>` `MdxJsxTextElement` (zfb#2249,
+        // `JsxNestedExternalLinks`) is what a `Link` node under a JSX
+        // ancestor turned into moments before this projection runs —
+        // recurse into its children exactly like the `Link` arm above,
+        // so a heading such as `## [Guide](https://example.org)`
+        // nested inside `<Note>…</Note>` keeps its text/slug/anchor
+        // regardless of whether that link happened to be external.
+        // Every OTHER JSX name stays opaque (the catch-all below) —
+        // this is a narrow exception for the one shape this pass
+        // synthesizes, not a general "JSX now contributes text" rule.
+        MdastNode::MdxJsxTextElement(j) if j.name.as_deref() == Some("a") => {
+            for c in &j.children {
+                push_inline_text(c, out);
+            }
+        }
         MdastNode::Image(i) => out.push_str(&i.alt),
         MdastNode::Break(_) => out.push(' '),
         // Math nodes contribute their raw LaTeX as plain text — best
@@ -766,11 +1034,35 @@ fn push_inline_text(node: &MdastNode, out: &mut String) {
         // rendered DOM.
         MdastNode::Math(m) => out.push_str(&m.value),
         MdastNode::InlineMath(m) => out.push_str(&m.value),
-        // Everything else (MDX expressions, raw HTML literals, JSX
+        // An `<img>`-shaped JSX element mirrors `Image`'s alt-text
+        // contribution — see the fn doc.
+        MdastNode::MdxJsxTextElement(j) if j.name.as_deref() == Some("img") => {
+            if let Some(alt) = jsx_literal_attr(&j.attributes, "alt") {
+                out.push_str(alt);
+            }
+        }
+        // Everything else (MDX expressions, raw HTML literals, other JSX
         // elements, …) contributes no plain text — TOCs cannot do
         // anything useful with `{count}` or `<Note/>` tokens.
         _ => {}
     }
+}
+
+/// Look up a JSX attribute's literal string value by name — `None` for a
+/// bare/boolean attribute, an expression-valued one, or an absent name.
+fn jsx_literal_attr<'a>(attrs: &'a [AttributeContent], name: &str) -> Option<&'a str> {
+    attrs.iter().find_map(|a| {
+        let AttributeContent::Property(p) = a else {
+            return None;
+        };
+        if p.name != name {
+            return None;
+        }
+        match &p.value {
+            Some(AttributeValue::Literal(v)) => Some(v.as_str()),
+            _ => None,
+        }
+    })
 }
 
 /// Render the `export const headings = [...];` line.
@@ -1027,7 +1319,12 @@ impl JsxEmitter {
         children: &[MdastNode],
     ) -> String {
         let tag = name.unwrap_or("");
-        let attrs_str = render_jsx_attrs(attrs);
+        // No-pipeline path (`mdx_to_jsx_module`): an invalid spread is
+        // still validated and dropped, but there is no diagnostic
+        // channel to route the warning through here — see that
+        // function's doc comment. The throwaway sink is discarded
+        // immediately after the call.
+        let attrs_str = render_jsx_attrs(attrs, &mut Vec::new());
         let inner = self.emit_inline_children(children);
 
         let (open_name, close_name) = if tag.is_empty() {
@@ -1724,6 +2021,14 @@ struct NestedRenderCtx<'a> {
     nested_slugs: &'a [String],
     cursor: std::cell::Cell<usize>,
     code_chain: Option<std::cell::RefCell<Vec<Box<dyn HastVisitor>>>>,
+    /// Diagnostics produced while rendering JSX-nested attributes — today
+    /// only an invalid spread attribute (#2241) pushes here. `jsx_element_text`
+    /// is reached only from the pipeline (hast-detour) path, so the caller
+    /// drains this once rendering completes and merges it into the same
+    /// context-diagnostics flush every other context-plugin warning goes
+    /// through (see the call site around `mdx_to_jsx_module_inner`'s
+    /// `context_sink` flush).
+    diagnostics: std::cell::RefCell<Vec<MarkdownDiagnostic>>,
 }
 
 impl NestedRenderCtx<'_> {
@@ -1868,7 +2173,7 @@ fn jsx_element_text(
     ctx: &NestedRenderCtx,
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
-    let attrs_str = render_jsx_attrs(attrs);
+    let attrs_str = render_jsx_attrs(attrs, &mut ctx.diagnostics.borrow_mut());
     // Choose the open/close JSX tag name. `name == None` is the MDX
     // fragment shorthand `<></>` — emit `_Fragment` so the JSX parser
     // accepts it (a bare `< />` is invalid). PascalCase names go through
@@ -2309,7 +2614,25 @@ fn render_attrs(attrs: &[(String, AttrVal)]) -> String {
 }
 
 /// Format a parsed MDX JSX attribute list as JSX text.
-fn render_jsx_attrs(attrs: &[AttributeContent]) -> String {
+///
+/// A spread attribute (`AttributeContent::Expression`) is validated via
+/// [`mdx_spread_attribute_validity`] before being emitted (#2241): an
+/// invalid spread value reaching the compiled module unescaped would
+/// trip the bundler's SWC parse gate (`jsx_module_parse_failure` in
+/// `crates/zfb-build/src/bundler.rs`), degrading the WHOLE page to the
+/// `<pre data-zfb-content-fallback>` shape — the same failure mode
+/// #1778/#1779 already closed for ordinary expression attributes via
+/// [`emit_mdx_expression_braced`]. An invalid spread is OMITTED
+/// entirely (never emitted, never silently coerced) and a
+/// [`MarkdownDiagnostic::warning`] naming the offending value and the
+/// underlying parse problem is pushed onto `diagnostics`. Callers with
+/// no pipeline-backed diagnostic channel (the no-pipeline
+/// [`mdx_to_jsx_module`] entry point) pass a throwaway sink — see that
+/// function's doc comment.
+fn render_jsx_attrs(
+    attrs: &[AttributeContent],
+    diagnostics: &mut Vec<MarkdownDiagnostic>,
+) -> String {
     if attrs.is_empty() {
         return String::new();
     }
@@ -2334,10 +2657,24 @@ fn render_jsx_attrs(attrs: &[AttributeContent]) -> String {
             AttributeContent::Expression(e) => {
                 // Spread attribute. markdown-rs delivers the value
                 // already containing the leading `...` (e.g. "...rest"
-                // for `<a {...rest} />`), so just wrap it back in `{}`.
-                out.push('{');
-                out.push_str(&e.value);
-                out.push('}');
+                // for `<a {...rest} />`).
+                match mdx_spread_attribute_validity(&e.value) {
+                    Ok(()) => {
+                        out.push('{');
+                        out.push_str(&e.value);
+                        out.push('}');
+                    }
+                    Err(parse_problem) => {
+                        // Drop the attribute — undo the leading space
+                        // this iteration already pushed so no
+                        // attribute-shaped gap survives in the output.
+                        out.pop();
+                        diagnostics.push(MarkdownDiagnostic::warning(format!(
+                            "dropping invalid spread attribute {{{}}}: {parse_problem}",
+                            e.value
+                        )));
+                    }
+                }
             }
         }
     }
@@ -2466,6 +2803,185 @@ fn mdx_expression_is_valid_js(value: &str) -> bool {
         module.body.as_slice(),
         [ModuleItem::Stmt(Stmt::Expr(stmt))] if matches!(*stmt.expr, Expr::Paren(_))
     )
+}
+
+/// Validate an MDX spread-attribute value (e.g. `"...rest"` for
+/// `<a {...rest} />` — markdown-rs already includes the leading `...`,
+/// see [`render_jsx_attrs`]) as a single, syntactically valid JS spread
+/// element (#2241).
+///
+/// [`mdx_expression_is_valid_js`] validates an ordinary
+/// attribute/text expression by wrapping it in `(value);` —
+/// parentheses accept any expression. That wrapper is grammatically
+/// invalid for EVERY spread shape: `(...rest);` is not a legal
+/// parenthesized expression, because a bare `...` can only start a
+/// spread element inside an array literal, a call's argument list, or
+/// an object literal — never inside plain parentheses. This validator
+/// instead wraps the value inside an array literal (`[value];`), which
+/// accepts a spread element the same way a JSX spread attribute's own
+/// grammar does.
+///
+/// Returns `Ok(())` only when `value` parses as EXACTLY one array
+/// element that is itself a spread (`[...expr]`), with the spread
+/// operand immediately followed by the array's closing `]` (only
+/// whitespace, if anything, in between) — the same strictness as
+/// `mdx_expression_is_valid_js`: a hard parse failure, any SWC
+/// error-recovered ("stashed") diagnostic, AND any other shape (an
+/// empty value, a bare `...` with no operand, multiple elements,
+/// trailing tokens) are all rejected, even when the wrapped array
+/// itself parses without error — `[]` and `[a, b]` are both valid JS
+/// but neither is a valid spread. The explicit trailing-token check
+/// (rather than trusting the AST shape alone) matters because
+/// `[...props,];` — a spread followed by a legal array-literal trailing
+/// comma — parses to the exact same single-spread-element AST as
+/// `[...props];`; only a token-level check catches it. That distinction
+/// is load-bearing: `{...props,}` is not valid JSX spread-attribute
+/// grammar (JSX allows no comma there), so admitting it would still
+/// trip the bundler's parse gate (codex review catch, #2241). `Err`
+/// carries the underlying SWC parse message and, where available, its
+/// byte offset into `value` itself (translated back from the synthetic
+/// `[value];` wrapper, not left relative to it).
+fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap, Spanned};
+    use swc_core::ecma::ast::{EsVersion, Expr, ModuleItem, Stmt};
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+
+    let wrapped = format!("[{value}];");
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), wrapped.clone());
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let module = match parser.parse_module() {
+        Ok(m) => m,
+        Err(e) => {
+            // `[` is a single ASCII byte, so subtracting one more than
+            // the byte offset into the synthetic `[value];` source maps
+            // the error position back onto `value` itself.
+            let offset = e
+                .span()
+                .lo
+                .0
+                .saturating_sub(fm.start_pos.0)
+                .saturating_sub(1);
+            return Err(format!("byte {offset}: {}", e.kind().msg()));
+        }
+    };
+    // SWC's parser is error-recovering: it can return `Ok` on invalid
+    // input while stashing recoverable diagnostics. Reject those too.
+    if let Some(e) = parser.take_errors().into_iter().next() {
+        let offset = e
+            .span()
+            .lo
+            .0
+            .saturating_sub(fm.start_pos.0)
+            .saturating_sub(1);
+        return Err(format!("byte {offset}: {}", e.kind().msg()));
+    }
+    let shape_mismatch =
+        || "expected a single spread expression (`...expr`), got a different shape".to_string();
+    let [ModuleItem::Stmt(Stmt::Expr(stmt))] = module.body.as_slice() else {
+        return Err(shape_mismatch());
+    };
+    let Expr::Array(array) = &*stmt.expr else {
+        return Err(shape_mismatch());
+    };
+    let [Some(elem)] = array.elems.as_slice() else {
+        return Err(shape_mismatch());
+    };
+    if elem.spread.is_none() {
+        return Err(shape_mismatch());
+    }
+    // The AST shape check above alone would accept `[...props,];` (a
+    // legal array-literal trailing comma) as a single spread element —
+    // it genuinely is one, at the AST level. But `{...props,}` is not
+    // valid JSX spread-attribute grammar, so anything other than
+    // whitespace/comments between the spread operand and the array's
+    // closing `]` must still be rejected (see this fn's doc comment).
+    // Comments ARE allowed here — the leading-comment case
+    // (`/* c */...x`) is already accepted because it sits entirely
+    // outside this byte range, and a trailing comment
+    // (`...x/* c */` or `...x // c\n`) is exactly as valid JS/JSX
+    // trivia as the leading one; a naive `trim().is_empty()` check
+    // treated a trailing comment as "extra tokens" and wrongly
+    // rejected a syntactically valid spread (confirm-guard review,
+    // #2242).
+    let expr_end = elem.expr.span().hi.0.saturating_sub(fm.start_pos.0) as usize;
+    let array_close = array
+        .span
+        .hi
+        .0
+        .saturating_sub(fm.start_pos.0)
+        .saturating_sub(1) as usize;
+    match wrapped.get(expr_end..array_close) {
+        Some(trailing) if trailing_region_is_only_trivia(trailing) => Ok(()),
+        _ => Err(
+            "expected the spread operand to be immediately followed by `}` — no trailing \
+             comma or extra tokens"
+                .to_string(),
+        ),
+    }
+}
+
+/// True iff `s` consists solely of whitespace and/or JS comments
+/// (`/* … */` block comments, `// …` line comments) — the shape a
+/// legitimate trailing comment produces between a spread operand and
+/// the array's closing `]` in [`mdx_spread_attribute_validity`]'s
+/// synthetic `[value];` wrapper. A `//` line comment must be
+/// terminated by a newline within `s` itself (or run to the end of
+/// `s`) to be recognized — matching how the JS lexer actually
+/// delimits it, and safe here because `s` is a genuine substring of
+/// the synthetic source, never truncated mid-comment.
+fn trailing_region_is_only_trivia(mut s: &str) -> bool {
+    loop {
+        // ECMAScript `WhiteSpace` is Unicode `White_Space` PLUS U+FEFF
+        // (ZERO WIDTH NO-BREAK SPACE / BOM, deliberately excluded from
+        // the Unicode property but still whitespace to a JS lexer) —
+        // `char::is_whitespace` alone under-covers NBSP/U+2028/etc. as
+        // ASCII-only would, and over-narrowing here regressed values
+        // the pre-#2242 `trim().is_empty()` check used to accept
+        // (codex review catch, #2242).
+        s = s.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}');
+        if s.is_empty() {
+            return true;
+        }
+        if let Some(rest) = s.strip_prefix("/*") {
+            let Some(end) = rest.find("*/") else {
+                return false;
+            };
+            s = &rest[end + 2..];
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix("//") {
+            // A `//` line comment ends at the next ECMAScript
+            // `LineTerminator` (LF, CR, U+2028 LINE SEPARATOR, or
+            // U+2029 PARAGRAPH SEPARATOR) — not just LF. Stopping at
+            // the terminator's start (rather than consuming it) is
+            // enough: the terminator itself is whitespace too, so the
+            // next loop iteration's leading trim absorbs it. Missing
+            // CR/U+2028/U+2029 here would let real trailing content
+            // (e.g. a comma) hide inside what this scanner mistook
+            // for comment trivia, wrongly accepting invalid JSX
+            // spread grammar (codex review catch, #2242).
+            s = match rest.find(['\n', '\r', '\u{2028}', '\u{2029}']) {
+                Some(pos) => &rest[pos..],
+                None => "",
+            };
+            continue;
+        }
+        return false;
+    }
 }
 
 /// Emitter-local byte pre-filter applied to a single emitted JSX
@@ -3263,6 +3779,152 @@ mod tests {
 
     fn emit(src: &str) -> String {
         mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")
+    }
+
+    // ── collect_jsx_anchor_ids (#2246, Registration A) ──────────────────────
+
+    /// Parse `src` into the top-level post-mdast children slice, with
+    /// GFM `ALL_ON` (footnotes need `footnote_definition` on to parse as
+    /// structured nodes at all) and the same permissive ESM parser
+    /// `mdx_to_jsx_module_inner` supplies — mirrors the production parse
+    /// options closely enough for these pure-fn tests.
+    fn parse_children(src: &str) -> Vec<MdastNode> {
+        let options = markdown::ParseOptions {
+            constructs: constructs_for_jsx_emit(ResolvedGfmConstructs::ALL_ON),
+            mdx_esm_parse: Some(Box::new(|_value: &str| -> markdown::MdxSignal {
+                markdown::MdxSignal::Ok
+            })),
+            ..markdown::ParseOptions::default()
+        };
+        let root = markdown::to_mdast(src, &options).expect("parse ok");
+        match root {
+            MdastNode::Root(r) => r.children,
+            other => vec![other],
+        }
+    }
+
+    /// Partition invariant (spec-mandated): for a fixture mixing a
+    /// JSX-authored literal anchor with a footnote — whose eventual
+    /// `user-content-fn-a` / `user-content-fnref-a` ids are recorded by
+    /// the SEPARATE hast-phase walk (`HeadingLinksPlugin` /
+    /// Registration B's `FootnoteModel`-sourced registration), never by
+    /// this pure mdast walk — the fn returns EXACTLY the JSX-authored
+    /// ids and nothing a hast walk would separately record.
+    #[test]
+    fn collect_jsx_anchor_ids_disjoint_from_structured_element_ids() {
+        let children = parse_children(
+            "<div id=\"jsx-div\"></div>\n\n\
+             <Note>\n\n<a name=\"jsx-nested-name\"></a>\n\n</Note>\n\n\
+             Ref[^a] end.\n\n[^a]: Body.\n",
+        );
+        let ids = collect_jsx_anchor_ids(&children);
+        assert_eq!(
+            ids,
+            vec!["jsx-div".to_string(), "jsx-nested-name".to_string()],
+            "expected exactly the JSX-authored ids, in document order"
+        );
+        assert!(
+            !ids.iter().any(|id| id.contains("user-content")),
+            "must not include any footnote-derived id — those are recorded \
+             by a disjoint hast-phase walk, not this one: {ids:?}"
+        );
+    }
+
+    /// Collects at every depth, including top level (the top-level
+    /// `<div id>` characterization case) — and only from intrinsic
+    /// elements: a PascalCase component's `id` prop is excluded even
+    /// though it is syntactically identical to a `<div id>`.
+    #[test]
+    fn collect_jsx_anchor_ids_covers_every_depth_and_excludes_components() {
+        let children = parse_children(
+            "<div id=\"top-level\"></div>\n\n\
+             <Note id=\"component-id\">\n\n\
+             <span id=\"nested-in-component\"></span>\n\n\
+             <div name=\"not-collected-not-an-a-tag\"></div>\n\n\
+             </Note>\n",
+        );
+        assert_eq!(
+            collect_jsx_anchor_ids(&children),
+            vec!["top-level".to_string(), "nested-in-component".to_string()],
+            "component id excluded; `name` on a non-`<a>` tag excluded"
+        );
+    }
+
+    /// Codex review finding (#2246): a JSX anchor inside a footnote
+    /// definition body must NOT be collected, referenced or not — an
+    /// UNREFERENCED definition's body never renders at all
+    /// (`FootnoteModel`'s "unreferenced definition is not rendered"
+    /// policy), so registering its embedded `<div id="ghost">` would
+    /// have let `[jump](#ghost)` — a genuinely broken link, since
+    /// nothing in the DOM ever carries that id — silently validate.
+    #[test]
+    fn collect_jsx_anchor_ids_excludes_ids_inside_footnote_definition_bodies() {
+        let children = parse_children(
+            "<div id=\"top-level\"></div>\n\n\
+             [^unreferenced]: <div id=\"ghost-unreferenced\"></div>\n\n\
+             Ref[^a] end.\n\n\
+             [^a]: <div id=\"ghost-referenced\"></div>\n",
+        );
+        assert_eq!(
+            collect_jsx_anchor_ids(&children),
+            vec!["top-level".to_string()],
+            "no id from inside ANY footnote definition body — referenced \
+             or not — may be collected: a definition's body only ever \
+             reaches the hast tree via `render_footnote_item`'s own \
+             conversion, which this pure mdast walk does not replay"
+        );
+    }
+
+    /// The pure attribute-level exclusion rules, exercised directly on
+    /// hand-built `AttributeContent` (sidesteps parser quirks around
+    /// expression/spread source syntax): an expression-valued `id`, a
+    /// bare value-less `id`, an empty literal `id`, and a spread
+    /// attribute are all excluded; a literal `id` beside/after any of
+    /// them is still collected.
+    #[test]
+    fn collect_literal_jsx_anchor_attrs_excludes_non_static_and_empty_values() {
+        let attrs = vec![
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Literal("literal-id".to_string())),
+            }),
+            // Expression-valued — runtime-computed, statically unknowable.
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Expression(
+                    markdown::mdast::AttributeValueExpression {
+                        value: "dynamicId".to_string(),
+                        stops: Vec::new(),
+                    },
+                )),
+            }),
+            // Bare, value-less — no literal value to record.
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: None,
+            }),
+            // Empty literal — not a usable anchor target.
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Literal(String::new())),
+            }),
+            // Spread — opaque at compile time.
+            AttributeContent::Expression(markdown::mdast::MdxJsxExpressionAttribute {
+                value: "...rest".to_string(),
+                stops: Vec::new(),
+            }),
+            AttributeContent::Property(markdown::mdast::MdxJsxAttribute {
+                name: "id".to_string(),
+                value: Some(AttributeValue::Literal("after-spread".to_string())),
+            }),
+        ];
+        let mut out = Vec::new();
+        collect_literal_jsx_anchor_attrs("div", &attrs, &mut out);
+        assert_eq!(
+            out,
+            vec!["literal-id".to_string(), "after-spread".to_string()],
+            "only the two statically-known literal ids must survive"
+        );
     }
 
     // #1392: is_module_level_esm used to match only `export const`,
@@ -5574,6 +6236,259 @@ mod tests {
             jsx.contains("class=\"sr-only\""),
             "the sr-only class stays as a styling hook alongside the inline \
              style: {jsx}"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // `mdx_spread_attribute_validity` — the array-wrap adapter (#2241)
+    // ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn spread_validity_accepts_an_ordinary_spread() {
+        assert_eq!(mdx_spread_attribute_validity("...rest"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_complex_conditional_spread() {
+        assert_eq!(mdx_spread_attribute_validity("...(cond ? a : b)"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_spread_with_a_leading_block_comment() {
+        // markdown-rs's own `stops` mapping shows a JSX comment before the
+        // spread stays part of the same attribute value (`{/* c */...x}`).
+        // Comments are trivia to the parser, so this must validate exactly
+        // like the bare `...x` spread.
+        assert_eq!(mdx_spread_attribute_validity("/* c */...x"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_tsx_flavored_spread() {
+        // `as` type assertions are the TSX-safe cast idiom this codebase
+        // already relies on elsewhere (see bundler.rs's
+        // `jsx_module_parse_failure` coverage for `{x as number}`) — angle-
+        // bracket casts are deliberately NOT exercised here because TSX
+        // mode treats `<Foo>` as JSX, not a cast.
+        assert_eq!(
+            mdx_spread_attribute_validity("...(x as Record<string, unknown>)"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_empty_value() {
+        // `<a {} />` — markdown-rs hands back an empty value with no `...`
+        // at all (verified against `to_mdast`'s own output). Wrapped as
+        // `[];` this is a perfectly valid (empty) array literal, so the
+        // shape check — not the parse check — is what must reject it: an
+        // empty array is valid JS but is not a spread.
+        let err =
+            mdx_spread_attribute_validity("").expect_err("an empty spread value must be rejected");
+        assert!(
+            err.contains("shape"),
+            "expected the shape-mismatch message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_bare_dots_with_no_operand() {
+        // `<a {...} />` — markdown-rs hands back the bare `...` with
+        // nothing after it (verified against `to_mdast`'s own output).
+        // `[...];` is a genuine parse error: a spread element requires an
+        // operand.
+        let err = mdx_spread_attribute_validity("...")
+            .expect_err("bare `...` with no operand must be rejected");
+        assert!(
+            err.starts_with("byte "),
+            "expected a parse-error message carrying a byte offset, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_the_field_bug_shape() {
+        // The exact #2220/#2241 field shape: a backslash-escape leaking
+        // outside a string (`<a {...\bad}>`, mirrored by the bundler-side
+        // fixtures in `crates/zfb-build/src/bundler.rs`). `\b` is not a
+        // valid identifier-start outside a Unicode escape, so this is a
+        // hard parse error naming the underlying SWC problem — not just
+        // "is not valid JS".
+        let err = mdx_spread_attribute_validity(r"...\bad")
+            .expect_err("a backslash-escape spread value must be rejected");
+        assert!(
+            err.starts_with("byte "),
+            "expected a parse-error message carrying a byte offset, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_multiple_elements() {
+        // Same strictness rule as `mdx_expression_is_valid_js`'s single-
+        // statement shape check: `[a, b];` is valid JS but is not a
+        // single spread element, so it must still be rejected even though
+        // nothing here fails to parse.
+        let err = mdx_spread_attribute_validity("...a, ...b")
+            .expect_err("multiple array elements must be rejected");
+        assert!(
+            err.contains("shape"),
+            "expected the shape-mismatch message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_a_trailing_comma() {
+        // markdown-rs itself does not validate the expression (verified
+        // against `to_mdast`'s own output for `<a {...props,} />`), so an
+        // author-written trailing comma genuinely reaches this validator
+        // as `value == "...props,"`. `[...props,];` parses to the exact
+        // same single-spread-element AST as `[...props];` — a bare
+        // AST-shape check alone would wrongly accept it — but
+        // `{...props,}` is not valid JSX spread-attribute grammar and
+        // would still trip the bundler's parse gate (codex review catch,
+        // #2241).
+        let err = mdx_spread_attribute_validity("...props,")
+            .expect_err("a trailing comma after the spread operand must be rejected");
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_trailing_junk_after_the_operand() {
+        // A non-comma token between the operand and `]` must be caught
+        // by the same trailing-content check.
+        let err = mdx_spread_attribute_validity("...rest extra")
+            .expect_err("trailing tokens after the spread operand must be rejected");
+        assert!(
+            err.contains("byte "),
+            "expected a parse-error message (a bare identifier next to another token is a \
+             parse error before the trailing-token check even runs), got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_spread_with_a_trailing_block_comment() {
+        // Symmetric with `spread_validity_accepts_a_spread_with_a_leading_block_comment`:
+        // a JS block comment is trivia wherever it sits, so
+        // `{...x/* c */}` is exactly as valid as `{/* c */...x}`. The
+        // trailing-content check must not mistake comment bytes for
+        // "extra tokens" (confirm-guard review, #2242).
+        assert_eq!(mdx_spread_attribute_validity("...x/* trailing */"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_multiple_trailing_block_comments_and_whitespace() {
+        assert_eq!(
+            mdx_spread_attribute_validity("...x  /* a */ /* b */  "),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_trailing_line_comment_terminated_by_newline() {
+        // A `//` line comment must still be closed by a newline inside
+        // the value itself (mirroring how the JS lexer delimits it) —
+        // this is the shape markdown-rs would hand back for a spread
+        // attribute written across multiple lines.
+        assert_eq!(mdx_spread_attribute_validity("...x // note\n"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_still_rejects_a_trailing_comma_beside_a_comment() {
+        // A comment does not launder an actual trailing comma — the
+        // comma itself must still trip the rejection even when
+        // surrounded by otherwise-legal trivia.
+        let err = mdx_spread_attribute_validity("...x, /* c */")
+            .expect_err("a trailing comma must still be rejected even beside a comment");
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_accepts_trailing_nbsp_and_bom_whitespace() {
+        // NBSP (U+00A0) and ZERO WIDTH NO-BREAK SPACE / BOM (U+FEFF) are
+        // both `WhiteSpace` per the ECMAScript spec even though U+FEFF is
+        // deliberately excluded from Unicode's `White_Space` property —
+        // an ASCII-only trim would regress values the pre-#2242
+        // `trim().is_empty()` check used to accept (codex review catch,
+        // #2242).
+        assert_eq!(mdx_spread_attribute_validity("...x\u{a0}"), Ok(()));
+        assert_eq!(mdx_spread_attribute_validity("...x\u{feff}"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_rejects_a_trailing_comma_hidden_behind_a_unicode_line_terminator() {
+        // U+2028 LINE SEPARATOR ends a `//` line comment exactly like
+        // `\n` does per the ECMAScript spec. A scanner that recognizes
+        // only `\n` would treat the comma after it as still inside the
+        // comment and wrongly accept invalid JSX spread grammar (codex
+        // review catch, #2242).
+        let err = mdx_spread_attribute_validity("...x // note\u{2028},").expect_err(
+            "a trailing comma after a U+2028-terminated line comment must still be rejected",
+        );
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_a_trailing_comma_hidden_behind_a_cr_terminated_line_comment() {
+        let err = mdx_spread_attribute_validity("...x // note\r,").expect_err(
+            "a trailing comma after a CR-terminated line comment must still be rejected",
+        );
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn render_jsx_attrs_drops_an_invalid_spread_and_emits_a_warning() {
+        let attrs = vec![AttributeContent::Expression(
+            markdown::mdast::MdxJsxExpressionAttribute {
+                value: r"...\bad".to_string(),
+                stops: Vec::new(),
+            },
+        )];
+        let mut diagnostics = Vec::new();
+        let out = render_jsx_attrs(&attrs, &mut diagnostics);
+        assert_eq!(out, "", "an invalid spread must be omitted entirely: {out}");
+        assert_eq!(diagnostics.len(), 1, "expected exactly 1 diagnostic");
+        assert_eq!(
+            diagnostics[0].severity(),
+            zfb_md_ast::diagnostics::DiagnosticSeverity::Warning
+        );
+        let MarkdownDiagnostic::Generic { message, .. } = &diagnostics[0] else {
+            panic!("expected a Generic diagnostic, got {:?}", diagnostics[0]);
+        };
+        assert!(
+            message.contains(r"...\bad"),
+            "diagnostic must name the offending spread value: {message}"
+        );
+        assert!(
+            message.contains("byte "),
+            "diagnostic must include the underlying parse position/message, not just \
+             \"is not valid JS\": {message}"
+        );
+    }
+
+    #[test]
+    fn render_jsx_attrs_keeps_a_valid_spread_verbatim_and_emits_no_diagnostic() {
+        let attrs = vec![AttributeContent::Expression(
+            markdown::mdast::MdxJsxExpressionAttribute {
+                value: "...rest".to_string(),
+                stops: Vec::new(),
+            },
+        )];
+        let mut diagnostics = Vec::new();
+        let out = render_jsx_attrs(&attrs, &mut diagnostics);
+        assert_eq!(out, " {...rest}");
+        assert!(
+            diagnostics.is_empty(),
+            "a valid spread must not emit a diagnostic: {diagnostics:?}"
         );
     }
 }
