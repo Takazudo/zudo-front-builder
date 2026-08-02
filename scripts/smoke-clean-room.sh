@@ -135,10 +135,12 @@ pnpm build
 # present if the content pipeline actually ran (not just that some file
 # happened to be written). `create-zfb <name>` (no --template) scaffolds the
 # "basic-blog" template (crates/zfb/src/cli.rs default_value), whose
-# pages/index.tsx renders `<h1>basic-blog</h1>` and lists every post in the
-# `blog` content collection, including the seed post's frontmatter title
-# "Hello, zfb" (content/blog/hello-zfb.mdx) — so both markers only appear if
-# getCollection("blog") resolved AND the page template rendered correctly.
+# pages/index.tsx renders an <h1> reading "basic-blog" and lists every post
+# in the `blog` content collection, including the seed post's frontmatter
+# title "Hello, zfb" (content/blog/hello-zfb.mdx) — so both markers only
+# appear if getCollection("blog") resolved AND the page template rendered
+# correctly. Both greps match on text, not markup: the heading carries
+# Tailwind utility classes, so the literal tag string is not in the HTML.
 
 pass() { printf '[PASS] %s\n' "$1"; }
 fail() { printf '[FAIL] %s\n' "$1" >&2; exit 1; }

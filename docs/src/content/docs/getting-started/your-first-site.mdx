@@ -37,6 +37,8 @@ zfb new my-site --template basic-blog
 
 `--template basic-blog` is the default, so you can omit it. A `node-free` template is also available for projects that need no Node.js dependency — it ships no `package.json` and relies on `.md`/`.html` page entries alongside `.tsx`; see [Markdown and HTML Pages](../concepts/md-html-pages.mdx) for the authoring surface it uses.
 
+`basic-blog` scaffolds a `zfb.config.ts` (not JSON), a `blog` content collection with three seed posts, four routes, and one client island. Its `README.md` is a tour of the tree; [Project structure](./project-structure.mdx) covers the same ground in more depth.
+
 ## Start the dev server
 
 ```bash
@@ -73,9 +75,19 @@ npx zfb preview
 
 All three commands honor `outDir` in `zfb.config.*`. For build and preview, an explicit `--outdir` always overrides the configured value.
 
+## Type-check the project
+
+```bash
+pnpm typecheck
+# or
+npx zfb check
+```
+
+`zfb check` does two things in one pass: it type-checks the project with TypeScript, and it validates every collection entry's frontmatter against the JSON Schema declared for that collection in `zfb.config.ts`. The build itself does not validate frontmatter, so this is where a post missing `title` or `date` gets caught. See [CLI reference](../api/cli.mdx).
+
 ## A working example
 
-A fully built site using `basic-blog` is available at [https://github.com/Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog).
+[zfb-example-blog](https://github.com/Takazudo/zfb-example-blog) is a standalone example site you can read and deploy, with a [live build](https://zfb-example-blog.pages.dev/). It is maintained as its own repository rather than as a copy of the bundled template, so its file layout differs from what `zfb new` scaffolds — read it as a worked example, not as a mirror of your new project. [Examples](../guides/examples.mdx) lists the rest.
 
 ## What to read next
 

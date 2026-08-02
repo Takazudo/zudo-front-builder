@@ -10,33 +10,34 @@ sidebar_position: 4
 my-site/
 ├── pages/
 │   ├── index.tsx
-│   ├── blog/
-│   │   ├── [slug].tsx
-│   │   └── page/
-│   │       └── [page].tsx
-│   └── tags/
-│       └── [tag].tsx
+│   ├── about.tsx
+│   ├── 404.tsx
+│   └── blog/
+│       └── [slug].tsx
 ├── layouts/
 │   └── default.tsx
 ├── components/
-│   ├── note.tsx
-│   └── theme-toggle.tsx
+│   ├── callout.tsx
+│   ├── theme-toggle.tsx
+│   └── zfb-shim.d.ts
 ├── content/
 │   └── blog/
-│       ├── deploying-static-sites.md
-│       ├── dev-loop-feel.md
 │       ├── hello-zfb.mdx
-│       ├── ssr-and-islands.md
-│       └── why-rust-cli.md
+│       ├── markdown-showcase.md
+│       └── styling-with-tailwind.md
 ├── lib/
 │   └── types.ts
 ├── styles/
 │   └── global.css
-├── zfb.config.json
+├── mdx-components.tsx
+├── zfb.config.ts
 ├── package.json
 ├── tsconfig.json
+├── README.md
 └── .gitignore
 ```
+
+ここに並ぶファイルはすべて、読んで書き換えられることを前提にしています。隠されたレイヤーも、触らずにおくべき生成コードもありません。
 
 ## pages/
 
@@ -47,27 +48,49 @@ my-site/
 - `pages/blog/[slug].tsx` → `/blog/:slug`（動的ルート — 解決された slug ごとに 1 つの HTML ファイル）
 - `pages/docs/[...slug].tsx` → キャッチオール、任意の深さにマッチ
 
-デフォルトテンプレートには index ページと 3 つの動的ルートが含まれます。`blog/[slug].tsx`（記事ごとに 1 つの HTML ファイル）、`blog/page/[page].tsx`（ページ分割された一覧）、`tags/[tag].tsx`（タグごとのアーカイブ）です。動的ルートファイルは `paths()` 関数をエクスポートし、zfb はビルド時にそれを呼び出して、パラメータを解決された値ごとに 1 つの HTML ファイルへ展開します。完全な API は [Dynamic routes](../concepts/dynamic-routes.mdx) を参照してください。
+テンプレートには静的ルートが 3 つ、動的ルートが 1 つ含まれます。`index.tsx` は `getStaticProps()` で全記事を新しい順に一覧し、`about.tsx` はデータ取得を一切行わない静的ページ、`blog/[slug].tsx` は `paths()` をエクスポートします。zfb はビルド時にこの `paths()` を呼び出し、`[slug]` をコレクションのエントリごとに 1 つの HTML ファイルへ展開します。完全な API は [動的ルート](../concepts/dynamic-routes.mdx) を参照してください。
+
+特別な意味を持つファイル名は `404.tsx` だけです。トップレベルの `pages/404.tsx` は `dist/404/index.html` ではなく、フラットな `dist/404.html` を出力します。これは `zfb preview` が — そしてたいていの静的ホスティングが — マッチしないリクエストに対して配信するファイルです。
+
+テンプレートが動的ルートを 1 つで止めているのは意図的です。ページ分割された一覧やタグごとのアーカイブは、いずれも同じ `paths()` のコントラクトの上に数行を足すだけで書けるため、テンプレートはそれらを同梱せず `README.md` から次の一歩としてリンクしています。[`paginate()`](../api/paginate.mdx) はコレクションをページごとのルートに変換し、`pages/tags/[tag].tsx` ルートは記事のフロントマターにすでにある `tags` で記事をグループ化します。
 
 ## layouts/
 
-再利用可能なページラッパーです。`layouts/default.tsx` はすべてのページが import するシェルで、ヘッダー・フッター・共通メタデータなどを担います。レイアウトは素の TSX コンポーネントなので、好きなように合成できます。
+再利用可能なページラッパーです。`layouts/default.tsx` はすべてのページが import するシェルで、`<head>`・ヘッダー・フッターに加えて、保存されたテーマを最初のフレームより前に適用するインラインスクリプトを担います。レイアウトは素の TSX コンポーネントなので、好きなように合成できます。
 
 ## components/
 
-素のコンポーネントと **島** です。テンプレートには `components/note.tsx`（サーバーレンダリングされる注意書き）と `components/theme-toggle.tsx`（ダークモードを切り替える `"use client"` 島）が含まれます。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされ、JavaScript をまったく出力しません。考え方の全体像は [islands ページ](../concepts/islands.mdx) にあります。
+素のコンポーネントと **島** です。テンプレートには 2 つのコンポーネントと 1 つの型宣言が含まれます。
+
+- `components/callout.tsx` は、ベースとなる `Callout` に加えて `Note`・`Tip`・`Important`・`Warning`・`Caution` の 5 つの名前付きラッパーをエクスポートします。この 5 つの名前は [GitHub アラート](../markdown-features/github-alerts.mdx)機能によって固定されています。この機能は `> [!NOTE]` の引用ブロックを、レンダリング前に `<Note>` 要素へ書き換えます。
+- `components/theme-toggle.tsx` はテンプレート唯一の `"use client"` 島です。ダークモードを切り替えるもので、ブラウザへ JavaScript を出力する唯一のコンポーネントでもあります。ファイル先頭の `"use client"` ディレクティブこそが、コンポーネントをクライアントサイドの島に変えるものです。これがないコンポーネントはサーバー上でのみレンダリングされます。考え方の全体像は [Islands](../concepts/islands.mdx) にあります。
+- `components/zfb-shim.d.ts` はコンポーネントではありません。`zfb.config.ts` が `defineConfig` を import する際のベア specifier `zfb/config` を宣言し、`@takazudo/zfb` が実際に提供する型へと対応づけます。設定ローダーはこの specifier をパース時に内部スタブへエイリアスするため、ディスク上でこれを解決するものは何もありません。このシムがないと、TypeScript と `zfb check` はこの import を解決不能として報告します。
 
 ## content/
 
-コンテンツコレクションです。`content/blog/` は `blog` コレクションの 5 つのシードエントリを保持します。名前付きディレクトリ内の Markdown・MDX ファイルで、ページから `getCollection("blog")` でクエリできます。コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。
+コンテンツコレクションです。`content/blog/` は `blog` コレクションの 3 つのシードエントリを保持します。名前付きディレクトリ内の Markdown・MDX ファイルで、ページから `getCollection("blog")` でクエリできます。
+
+- `hello-zfb.mdx` — ページがどのように HTML になるか、そして MDX が素の Markdown に何を加えるか。
+- `markdown-showcase.md` — テンプレートが有効にしている markdown 機能（テーブル、打ち消し線、タスクリスト、フットノート、アラート、エンリッチされたコードブロック、見出しマーカー TOC）の実例を、リファレンスページへのリンク付きで掲載。
+- `styling-with-tailwind.md` — Tailwind の設定がどこにあり、ダークモードがどう組まれているか。
+
+コレクションスキーマは `zfb.config.ts` の `collections` 配下で宣言します。クエリ API については [Content Collections](../concepts/content-collections.mdx) を参照してください。
+
+## mdx-components.tsx
+
+レンダリングされる**すべて**のコンテンツエントリに適用される、プロジェクトルートのコンポーネントマップです。zfb はこのファイルを `zfb.config.ts` の隣で検出してビルドに取り込み、ページがレンダリングされる前にその default export をインストールします。そのため `<entry.Content />` は、呼び出しごとの配線なしにこのマップを拾います。
+
+テンプレートのマップは、`components/callout.tsx` の 5 つのアラートコンポーネントをエクスポートします。素の `.md` 記事で `> [!NOTE]` が動くのはこれがあるからです。`githubAlerts` 機能は `<Note>` 要素を生成し、解決できない PascalCase の名前はレンダリング時に例外を投げます。マージ順は `defaultComponents` → このファイル → 呼び出し側の `components` prop なので、個別のページからローカルに上書きすることもできます。[MDX Components](../concepts/mdx-components.mdx) を参照してください。
 
 ## lib/
 
-共有の TypeScript ユーティリティです。テンプレートには `lib/types.ts` が含まれ、ページやコンポーネント全体で使われるフロントマターの型定義を持ちます。ここにフレームワークのマジックはありません。必要な場所で import する素の TypeScript モジュールです。
+共有の TypeScript ユーティリティです。テンプレートには `lib/types.ts` が含まれ、ページやコンポーネント全体で使われるフロントマターとエントリの型を持ちます。ここにフレームワークのマジックはありません。必要な場所で import する素の TypeScript モジュールです。
 
 ## styles/
 
-グローバル CSS です。`styles/global.css` がエントリポイントで、ルートレイアウトから import します。デフォルトテンプレートは、設定で `tailwind.enabled` が指定されているときにここで Tailwind を組み込みます。
+グローバル CSS です。`styles/global.css` がエントリポイントで、`layouts/default.tsx` から import します。冒頭は `@import "tailwindcss";` で始まり、`@theme` ブロックでプロジェクトのテーマトークンを定義し、Tailwind の `dark:` バリアントをテーマトグルが書き込む `data-theme` 属性に結び付け、最後にレンダリング済み Markdown 本文向けのスコープ付き `.prose` ブロックを置いています。
+
+この分割は意図的なものです。`.tsx` ファイル内のページの外枠は Tailwind ユーティリティをインラインで使いますが、Markdown が生成するのはユーティリティクラスの届かない素のタグです。そこで後者は CSS 側で一度だけスタイルを当て、`class="prose"` でオプトインします。テンプレートは設定に `tailwind` キーを持ちません。`tailwind: { enabled: false }` を指定しない限り Tailwind は有効です。[スタイリング](../concepts/styling.mdx) を参照してください。
 
 ## public/
 
@@ -84,16 +107,39 @@ my-site/
 
 `zfb.config.ts` で `base` が設定されている場合（例: `base: "/pj/site/"`）、`public/` 内のファイルもそのプレフィックス配下で配信されます。`public/logo.svg` → `/pj/site/logo.svg` です。同じ前置がビルド時にも行われるため、プレフィックスは dev と prod で一貫します。
 
-`public/` を使う場合と島向けに TSX import を使う場合の使い分けを含む完全なリファレンスは、[Static Assets](../concepts/static-assets.mdx) を参照してください。
+`public/` を使う場合と島向けに TSX import を使う場合の使い分けを含む完全なリファレンスは、[静的アセット](../concepts/static-assets.mdx) を参照してください。
 
-## zfb.config.json
+## zfb.config.ts
+
+テンプレートがスキャフォールドするのは TypeScript の設定ファイルです。オブジェクトを `defineConfig()` で包むため、完全な型チェックと IDE 補完が得られます。
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  framework: "preact",
+  collections: [{ name: "blog", path: "content/blog", schema: { /* … */ } }],
+  markdown: {
+    gfm: { taskListItem: true, footnoteDefinition: true },
+    features: { githubAlerts: true, codeEnrichment: {}, headingMarkerToc: true },
+  },
+});
+```
+
+zfb がすでにデフォルト値を持つオプションは、意図的にすべて省いてあります。`outDir`・`publicDir`・`tailwind` はいずれも暗黙のままなので、このファイルにはプロジェクトが実際に下した判断だけが並びます。残っているトップレベルのキーは 3 つです。`framework`（`"preact"`）、`blog` コレクション（`zfb check` が全記事のフロントマターを検証する JSON Schema 付き）、そして markdown のオプトインです。最後のものは、常時有効なテーブルと打ち消し線に加えて GFM のタスクリストとフットノート、そして [GitHub アラート](../markdown-features/github-alerts.mdx)・[コードブロックのエンリッチメント](../markdown-features/code-enrichment.mdx)・[見出しマーカー TOC](../markdown-features/heading-marker-toc.mdx) です。他に何を有効にできるかの全体像は [Markdown 機能](../markdown-features/index.mdx)のインデックスにあります。
 
 設定ファイルは camelCase スキーマを使います。主なキーには次のものがあります。`outDir`（デフォルト `"dist"`）、`publicDir`（デフォルト `"public"`）、`host`（デフォルト `"localhost"`）、`port`（デフォルト `3000` — これは `zfb dev` サーバーのデフォルトで、`zfb preview` は未設定時に代わりに `4321` にフォールバックします）、`framework`（`"preact"` または `"react"`、デフォルト `"preact"`）、`collections`、`tailwind`、`plugins`。これは網羅的な一覧ではありません。完全なスキーマのリファレンスは [defineConfig](../api/define-config.mdx) を参照してください。
 
 `outDir` は `zfb dev`、`zfb build`、`zfb preview` のすべてで尊重されます。build と preview では CLI の `--outdir` が config の `outDir` より優先され、組み込みのフォールバックは `dist/` です。
 
-テンプレートは `zfb.config.json` をスキャフォールドします。これを `zfb.config.ts` にリネームすると、zfb は同梱の esbuild バイナリ経由でロードし、完全な TypeScript 型と IDE 補完が得られます。スキーマはどちらの形式でも同一です。
+素の `zfb.config.json` もレガシーのフォールバックとして受け付けられます。スキーマは同一ですが、型も `defineConfig()` も得られません。両方のファイルが存在する場合は `.ts` が優先されます。
 
-## package.json、tsconfig.json、.gitignore
+## package.json、tsconfig.json、README.md、.gitignore
 
-標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、島が import する任意のライブラリを宣言します。`zfb new` は `@takazudo/zfb` と `@takazudo/zfb-runtime` を、そのプロジェクトをスキャフォールドした CLI のバージョンに厳密ピン留めします — `=0.1.0-next.7` のような exact pin であり、`^`/`~` レンジではありません。これにより、スキャフォールドしたプロジェクトが将来のリリースへ静かにドリフトすることがなくなります。`tsconfig.json` は `pages/`・`layouts/`・`components/` 内の TSX がクリーンに型チェックされるよう構成されています。同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。加えて `**/zfb-tailwind-entry-*.css` も除外します。これは Tailwind パイプラインが CSS エントリの隣に生成する一時エントリファイルです（[スタイリング](../concepts/styling.mdx)を参照）。
+標準的なプロジェクトの配管です。`package.json` はフレームワークのランタイム依存（デフォルトでは `preact`）と、4 つのスクリプト `dev`・`build`・`preview`・`typecheck`（`zfb check` を実行し、TypeScript とコレクションスキーマの検証を行います）を宣言します。`zfb new` は `@takazudo/zfb` と `@takazudo/zfb-runtime` を、そのプロジェクトをスキャフォールドした CLI のバージョンに厳密ピン留めします — `=0.1.0-next.7` のような exact pin であり、`^`/`~` レンジではありません。これにより、スキャフォールドしたプロジェクトが将来のリリースへ静かにドリフトすることがなくなります。
+
+`tsconfig.json` はプロジェクト全体の TSX がクリーンに型チェックされるよう構成されており、パスエイリアスは 1 つだけです。`~/*` がプロジェクトルートに解決され、テンプレートはすべての import でこれを一貫して使っています。
+
+`README.md` は同じツリーの短い案内に加えて、このスターターで有効になっている markdown 機能と、利用可能だが無効にしてある機能を、それぞれリファレンスページへのリンク付きで表にまとめたものです。
+
+同梱の `.gitignore` は `dist/` と `node_modules/` を除外し、ビルド出力と依存関係をバージョン管理の外に保ちます。加えて、ビルド実行中に zfb の各パイプラインが生成する一時ファイルも除外します。その 1 つが `**/zfb-tailwind-entry-*.css` で、Tailwind パイプラインが CSS エントリの隣に書き出すエントリファイルです（[スタイリング](../concepts/styling.mdx)を参照）。
