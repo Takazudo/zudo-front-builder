@@ -1627,7 +1627,12 @@ impl ShadowSession {
         // bailing: a lockless filesystem also refuses
         // `reap_stale_shadow_sessions`'s own `try_lock` probe on this
         // same file, so the skip-and-leave-alone posture there still
-        // protects this dir either way.
+        // protects this dir either way. This is locked spec (#2257), not
+        // an oversight — a codex review during implementation suggested
+        // failing construction instead; that was deliberately NOT taken,
+        // since a permanently lockless filesystem would then make dev
+        // boot entirely unable to start, trading a soft (reap-skip)
+        // degradation for a hard one for no extra safety.
         if let Err(error) = lock_file.try_lock() {
             tracing::warn!(
                 path = %lock_path.display(),
@@ -1809,6 +1814,34 @@ const REAP_AGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(5 * 6
 /// Never panics; returns nothing. Every I/O failure either is swallowed
 /// (a best-effort `remove_dir_all`) or leaves the candidate untouched —
 /// fail closed, never risk deleting a dir this fn cannot prove is dead.
+///
+/// ## Out of scope / accepted limitations (issue #2257 — deliberate, do
+/// ## not "fix" without re-opening the locked spec)
+///
+/// - **Mixed-version concurrency**: a LIVE dev session started by a
+///   PRE-FIX zfb build (no lock file, and a root mtime that a long-lived
+///   session's deep writes never touch) sitting past the age floor is
+///   indistinguishable here from a genuinely dead pre-fix stray — the
+///   `NotFound` branch below reaps both. A codex review flagged this
+///   exact scenario during this epic's implementation; it is accepted,
+///   not a bug: mixed-version concurrent `zfb dev` on one host is rare,
+///   the shadow tree is derived state (the affected session errors and
+///   needs a restart, no data loss), and refusing to reap ANY lockless
+///   dir would leave the entire pre-fix stray population (issue #2232)
+///   unreclaimable forever.
+/// - Other temp classes this epic does not cover: `zfb-bundler-*` /
+///   `zfb-exact-node-modules-*` strays from a killed `zfb build` use a
+///   different producer with no lock protocol at all — age-only reaping
+///   there could delete a live long build's tree (V8 first compile is
+///   15-30 min). The `SHADOW_SESSION_PREFIX` filter below means this fn
+///   structurally never touches them.
+/// - Only `parent` itself is swept — strays under a DIFFERENT
+///   `shadow_parent_dir` candidate (e.g. `TMPDIR`/`XDG_CACHE_HOME`
+///   changed between the boot that created them and this one) are left
+///   alone; the caller only ever passes the resolution for THIS boot.
+/// - Filesystems where advisory locks "succeed" without truly
+///   conflicting (some NFS configurations) carry the same accepted risk
+///   as `sweep_stale_probe_sessions`.
 pub fn reap_stale_shadow_sessions(parent: &Path) {
     if keep_shadow_session_enabled() {
         return;
@@ -1866,11 +1899,13 @@ pub fn reap_stale_shadow_sessions(parent: &Path) {
                 }
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // Lock file genuinely absent: either a pre-fix stray (the
-                // #2232 population never wrote one) or a crash landed
-                // between `tempdir_in` and the lock file's creation — the
-                // age floor already guards that window. Both are safe to
-                // remove.
+                // Lock file genuinely absent: a pre-fix stray (the #2232
+                // population never wrote one), a crash landed between
+                // `tempdir_in` and the lock file's creation (the age
+                // floor already guards that window), OR — accepted,
+                // see this fn's "Out of scope" doc section — a still-LIVE
+                // session from a pre-fix zfb build running concurrently.
+                // All three are treated identically here: safe to remove.
                 let _ = fs::remove_dir_all(&path);
             }
             Err(error) => {
