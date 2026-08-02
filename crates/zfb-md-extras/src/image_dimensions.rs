@@ -52,8 +52,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use markdown::mdast::Node as MdastNode;
+
 use zfb_md_ast::diagnostics::MarkdownDiagnostic;
-use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig, ReadRecorder};
+use zfb_md_ast::{
+    BuildContext, HastNode, HastVisitor, ImageDimensionsConfig, MdastVisitor, ReadRecorder,
+};
 
 use zfb_types::normalize_path_lexical;
 
@@ -110,6 +114,86 @@ impl ImageDimensionsPlugin {
     pub fn read_count(&self) -> usize {
         self.read_count.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Passthrough constructor seam (zfb#2247): build a hast-phase plugin
+    /// AND return the cache/read-count handles a paired mdast-phase stub
+    /// needs to see the SAME probe cache — [`JsxNestedImageDimensions`]
+    /// (#2248) shares this so an image referenced both top-level and
+    /// JSX-nested costs one disk read, not two. Mirrors
+    /// `LinkValidationPlugin`/`JsxNestedLinkCollector`'s shared-buffer
+    /// wiring in `zfb-content::pipeline` (the collector/validator
+    /// precedent). No behavior change — [`Self::new`] is untouched for
+    /// callers that don't need the paired stub.
+    #[must_use]
+    pub fn new_shared(config: ImageDimensionsConfig) -> (Self, ImageDimensionsShared) {
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+        let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugin = Self {
+            config,
+            cache: Arc::clone(&cache),
+            read_count: Arc::clone(&read_count),
+            recorder: None,
+        };
+        (plugin, ImageDimensionsShared { cache, read_count })
+    }
+}
+
+/// Cache/read-count handles shared between an [`ImageDimensionsPlugin`]
+/// (hast phase) and its paired mdast-phase [`JsxNestedImageDimensions`]
+/// stub (zfb#2247). Constructed by [`ImageDimensionsPlugin::new_shared`].
+///
+/// Fields stay private to this module — the concrete `CacheEntry` type is
+/// an internal implementation detail; only the two co-located visitors
+/// need to name it.
+pub struct ImageDimensionsShared {
+    cache: Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
+    read_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// JSX-nested-phase stub for the image-dimensions pass (zfb#2247).
+///
+/// Registered as an [`MdastVisitor`] in the pipeline's mdast phase —
+/// `Pipeline::apply_mdast_visitors_with_context` /
+/// `Pipeline::apply_mdast_visitors` in `zfb-content` — LAST, after the
+/// `jsx_nested_link_collector` block. This sub lands the wiring only:
+/// both visit methods are no-ops. Behavior (synthesizing
+/// `MdxJsxTextElement` nodes in place of JSX-nested `Image` mdast nodes,
+/// via `zfb_md_ast::mdx_jsx::rewrite_jsx_nested`) lands in #2248.
+#[allow(dead_code)] // fields are wired now so #2248 needs no further pipeline.rs registration edits; consumed once #2248 implements `visit`/`visit_with_context`
+pub struct JsxNestedImageDimensions {
+    config: ImageDimensionsConfig,
+    cache: Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
+    read_count: Arc<std::sync::atomic::AtomicUsize>,
+    recorder: Option<Arc<ReadRecorder>>,
+}
+
+impl JsxNestedImageDimensions {
+    /// Create the stub from the SAME config the paired
+    /// [`ImageDimensionsPlugin`] uses, its shared cache/read-count
+    /// handles (see [`ImageDimensionsPlugin::new_shared`]), and the SAME
+    /// optional read-recorder (zfb#944) — mirrors
+    /// [`ImageDimensionsPlugin::with_recorder`].
+    #[must_use]
+    pub fn new(
+        config: ImageDimensionsConfig,
+        shared: ImageDimensionsShared,
+        recorder: Option<Arc<ReadRecorder>>,
+    ) -> Self {
+        Self {
+            config,
+            cache: shared.cache,
+            read_count: shared.read_count,
+            recorder,
+        }
+    }
+}
+
+impl MdastVisitor for JsxNestedImageDimensions {
+    /// No-op in this sub — behavior lands in #2248.
+    fn visit(&mut self, _node: &mut MdastNode) {}
+
+    /// No-op in this sub — behavior lands in #2248.
+    fn visit_with_context(&mut self, _node: &mut MdastNode, _ctx: &mut BuildContext<'_>) {}
 }
 
 impl HastVisitor for ImageDimensionsPlugin {

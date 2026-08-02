@@ -441,6 +441,37 @@ pub struct Pipeline {
     /// `apply_mdast_visitors_with_context` only — the context-free paths
     /// never validate, so they never collect.
     jsx_nested_link_collector: Option<zfb_md_extras::link_validation::JsxNestedLinkCollector>,
+    /// Optional JSX-nested image-dimensions stub (zfb#2247), created in
+    /// lockstep with the hast-phase `ImageDimensionsPlugin` when
+    /// `markdown.features.imageDimensions` is enabled — the two share one
+    /// dimensions-cache `Arc` (+ read_count + recorder clone; see
+    /// `register_features_config_derived`), mirroring the
+    /// `jsx_nested_link_collector` shared-buffer precedent above.
+    ///
+    /// Applied LAST in the mdast phase (after the `jsx_nested_link_collector`
+    /// block), at both `apply_mdast_visitors_with_context` and
+    /// `apply_mdast_visitors`. Placement after the collector is load-bearing:
+    /// replacing a JSX-nested `Image` before collection would delete its
+    /// `is_img` existence-check candidate (a #2225 validation-coverage
+    /// regression). No post-`resolve_links` need of its own — this pass
+    /// never touches `Link`/`Image` urls. This sub only wires the field and
+    /// application slot; the visitor itself is a no-op stub — behavior lands
+    /// in #2248.
+    jsx_nested_image_dimensions: Option<zfb_md_extras::image_dimensions::JsxNestedImageDimensions>,
+    /// Optional JSX-nested external-links stub (zfb#2247), constructed
+    /// from the same `config` + `site` as the hast-phase
+    /// `ExternalLinksPlugin` in [`Pipeline::add_external_links`].
+    ///
+    /// Applied LAST in the mdast phase, after `jsx_nested_image_dimensions`
+    /// (order-insensitive by construction, pinned deterministically here),
+    /// at both `apply_mdast_visitors_with_context` and
+    /// `apply_mdast_visitors`. No post-`resolve_links` need: `ResolveLinksPlugin::visit`
+    /// only ever matches `MdastNode::Link` (`resolve_links.rs`), so `Image`
+    /// urls are never rewritten by it, and external-vs-internal
+    /// classification of a `Link`'s URL is rewrite-invariant either way.
+    /// This sub only wires the field and application slot; the visitor
+    /// itself is a no-op stub — behavior lands in #2249.
+    jsx_nested_external_links: Option<crate::plugins::external_links::JsxNestedExternalLinks>,
     /// Heading-ID strategy the wired `HeadingLinksPlugin` uses
     /// (`markdown.features.headingIds`, zfb#871). Read back by the
     /// JSX-emit path so `collect_headings` mirrors the same scheme.
@@ -621,6 +652,8 @@ impl Pipeline {
             add_trailing_slash: true,
             resolve_links: None,
             jsx_nested_link_collector: None,
+            jsx_nested_image_dimensions: None,
+            jsx_nested_external_links: None,
             heading_id_strategy: HeadingIdStrategy::default(),
             config_fingerprint_base: Some(format!(
                 "{FINGERPRINT_VERSION};bare;{}",
@@ -887,6 +920,13 @@ impl Pipeline {
         let segment = format!(
             "external_links;rel={:?};target={:?};site={:?}",
             config.rel, config.target, site
+        );
+        // JSX-nested external-links stub (zfb#2247): constructed from the
+        // SAME config + site as the hast-phase plugin below, beside its
+        // push — no fingerprint machinery needed, `segment` already covers
+        // the config.
+        self.jsx_nested_external_links = Some(
+            crate::plugins::external_links::JsxNestedExternalLinks::new(config.clone(), site),
         );
         self.push_config_derived_hast_visitor(Box::new(ExternalLinksPlugin::new(config, site)));
         self.extend_config_fingerprint(segment);
@@ -2086,6 +2126,17 @@ impl Pipeline {
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(node);
         }
+        // JSX-nested mutation stubs (zfb#2247), applied LAST in the mdast
+        // phase — after resolve_links. See the field docs on
+        // `jsx_nested_image_dimensions` / `jsx_nested_external_links` for
+        // the ordering rationale. Context-free path: both stubs receive
+        // context-free `visit` calls.
+        if let Some(v) = self.jsx_nested_image_dimensions.as_mut() {
+            v.visit(node);
+        }
+        if let Some(v) = self.jsx_nested_external_links.as_mut() {
+            v.visit(node);
+        }
     }
 
     /// Run only the hast visitor chain against an externally-built
@@ -2215,6 +2266,20 @@ impl Pipeline {
         // compile path (`mdx_jsx_emit` calls this method).
         if let Some(c) = self.jsx_nested_link_collector.as_mut() {
             c.visit(node);
+        }
+        // JSX-nested mutation stubs (zfb#2247), applied LAST in the mdast
+        // phase — after the collector block above. See the field docs on
+        // `jsx_nested_image_dimensions` / `jsx_nested_external_links` for
+        // the ordering rationale (both need collector output preserved;
+        // neither needs resolve_links). `jsx_nested_image_dimensions`
+        // takes context (mirrors its hast sibling, which requires
+        // `visit_with_context` to resolve paths); `jsx_nested_external_links`
+        // works context-free (mirrors its hast sibling's availability).
+        if let Some(v) = self.jsx_nested_image_dimensions.as_mut() {
+            v.visit_with_context(node, ctx);
+        }
+        if let Some(v) = self.jsx_nested_external_links.as_mut() {
+            v.visit(node);
         }
     }
 
@@ -2432,10 +2497,25 @@ fn register_features_config_derived(
     // Gated on `is_some()` (Option<ImageDimensionsConfig>; no outer FeatureToggle).
     // Uses visit_with_context — pipeline must call run_with_context for this to fire.
     if let Some(cfg) = features.image_dimensions.clone() {
-        let mut plugin = zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new(cfg);
+        // JSX-nested image-dimensions stub (zfb#2247): the hast plugin and
+        // the mdast-phase stub SHARE one dimensions-cache Arc + read_count
+        // (via `new_shared`, zfb-md-extras's passthrough constructor seam)
+        // and the SAME recorder clone — mirrors the collector/validator
+        // shared-buffer wiring below. An image referenced both top-level
+        // and JSX-nested costs one disk read, not two, once #2248 fills
+        // in the stub's behavior.
+        let (mut plugin, shared) =
+            zfb_md_extras::image_dimensions::ImageDimensionsPlugin::new_shared(cfg.clone());
         if let Some(recorder) = read_recorder {
             plugin = plugin.with_recorder(Arc::clone(recorder));
         }
+        p.jsx_nested_image_dimensions = Some(
+            zfb_md_extras::image_dimensions::JsxNestedImageDimensions::new(
+                cfg,
+                shared,
+                read_recorder.map(Arc::clone),
+            ),
+        );
         p.push_config_derived_hast_visitor(Box::new(plugin));
     }
 
@@ -4476,5 +4556,80 @@ mod tests {
 
         let strategy_fn = |_: &MdastNode, _: &FootnoteRenderCtx<'_>| -> String { String::new() };
         let _ = mdast_to_hast_with(&root, &JsxEmitStrategy::JsxPath(&strategy_fn));
+    }
+
+    // ── zfb#2247: shared mdast-phase wiring for the JSX-nested mutation
+    // stubs (#2248 ImageDimensions, #2249 ExternalLinks). Infrastructure
+    // only — both stubs are no-ops; these tests pin registration wiring,
+    // not behavior.
+
+    #[test]
+    fn image_dimensions_config_populates_jsx_nested_image_dimensions_field() {
+        let features = zfb_md_extras::MarkdownFeaturesConfig {
+            image_dimensions: Some(zfb_md_ast::ImageDimensionsConfig { skip_remote: None }),
+            ..Default::default()
+        };
+        let p = Pipeline::with_defaults_and_features(&features);
+        assert!(
+            p.jsx_nested_image_dimensions.is_some(),
+            "imageDimensions config must populate jsx_nested_image_dimensions"
+        );
+    }
+
+    #[test]
+    fn absent_image_dimensions_config_leaves_jsx_nested_image_dimensions_none() {
+        let features = zfb_md_extras::MarkdownFeaturesConfig::default();
+        let p = Pipeline::with_defaults_and_features(&features);
+        assert!(
+            p.jsx_nested_image_dimensions.is_none(),
+            "absent imageDimensions config must leave jsx_nested_image_dimensions None"
+        );
+    }
+
+    #[test]
+    fn add_external_links_populates_jsx_nested_external_links_field() {
+        let mut p = Pipeline::new();
+        assert!(
+            p.jsx_nested_external_links.is_none(),
+            "field must start None before add_external_links is called"
+        );
+        p.add_external_links(ExternalLinksConfig::default(), Some("https://example.com"));
+        assert!(
+            p.jsx_nested_external_links.is_some(),
+            "add_external_links must populate jsx_nested_external_links"
+        );
+    }
+
+    #[test]
+    fn absent_external_links_call_leaves_jsx_nested_external_links_none() {
+        let p = Pipeline::new();
+        assert!(p.jsx_nested_external_links.is_none());
+    }
+
+    #[test]
+    fn jsx_nested_registration_keeps_config_fingerprint_some() {
+        let features = zfb_md_extras::MarkdownFeaturesConfig {
+            image_dimensions: Some(zfb_md_ast::ImageDimensionsConfig { skip_remote: None }),
+            ..Default::default()
+        };
+        let mut p = Pipeline::with_defaults_and_features(&features);
+        assert!(
+            p.jsx_nested_image_dimensions.is_some(),
+            "sanity: the field this test's fingerprint claim depends on"
+        );
+        assert!(
+            p.config_fingerprint().is_some(),
+            "config_fingerprint must stay Some after imageDimensions registration"
+        );
+
+        p.add_external_links(ExternalLinksConfig::default(), Some("https://example.com"));
+        assert!(
+            p.jsx_nested_external_links.is_some(),
+            "sanity: the field this test's fingerprint claim depends on"
+        );
+        assert!(
+            p.config_fingerprint().is_some(),
+            "config_fingerprint must stay Some after add_external_links registration"
+        );
     }
 }

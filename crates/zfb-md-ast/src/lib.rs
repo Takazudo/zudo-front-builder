@@ -23,6 +23,7 @@ pub mod directives;
 pub mod features_config;
 pub mod hast_text;
 pub mod heading_registry;
+pub mod mdx_jsx;
 pub mod read_recorder;
 
 pub use directives::{
