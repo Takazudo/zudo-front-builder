@@ -1,11 +1,24 @@
 //! Mark external links with `target` and `rel` attributes.
 //!
-//! Rust port of npm `rehype-external-links`. Walks the hast tree and, for
-//! every `<a href="...">` whose href is classified as **external**:
+//! Rust port of npm `rehype-external-links`. Two visitors implement the
+//! same classification + rewrite policy over disjoint halves of a
+//! document's links (see "Coverage decisions" below for the partition):
 //!
-//! - Sets `target` (default `"_blank"`).
-//! - Merges `rel` tokens (default `["noopener", "noreferrer"]`) with any
-//!   existing `rel` attribute, deduplicating and preserving order.
+//! - [`ExternalLinksPlugin`] (hast phase) walks the hast tree and treats
+//!   every top-level, structurally-visible `<a href="...">` — the shape
+//!   `mdast_to_hast` renders an ordinary markdown link as.
+//! - [`JsxNestedExternalLinks`] (mdast phase) walks the mdast tree and
+//!   treats every markdown `[label](url)` link reached under an MDX-JSX
+//!   ancestor — the exact complement `ExternalLinksPlugin` cannot see.
+//!
+//! For every external link, both visitors:
+//!
+//! - Set `target` (default `"_blank"`).
+//! - Merge `rel` tokens (default `["noopener", "noreferrer"]`) with any
+//!   existing `rel` attribute, deduplicating and preserving order. A
+//!   markdown link can never carry a pre-existing `rel` (unlike a hast
+//!   `<a>`, which might come from raw HTML), so [`JsxNestedExternalLinks`]
+//!   always merges against an empty existing set.
 //!
 //! ## Same-origin classification
 //!
@@ -21,9 +34,47 @@
 //! candidates.
 //!
 //! Relative URLs (`/internal/`, `./relative.mdx`, `#anchor`) are always
-//! internal.
+//! internal. Both visitors share this classification via [`is_external`].
+//!
+//! ## Coverage decisions
+//!
+//! - **Markdown links only.** `[label](url)` reached under JSX — via a
+//!   literal MDX-JSX element (`<Note>…</Note>`) or a container directive
+//!   that expands to one (`:::note … :::`; directive expansion runs
+//!   before this pass) — is covered by [`JsxNestedExternalLinks`]. An
+//!   author-written literal JSX anchor (`<a href="...">`) is **not**
+//!   covered, anywhere — top-level or nested. This matches
+//!   `rehype-external-links` in JS (which also "cannot inspect JSX"),
+//!   #2224's authored-JSX-out-of-scope ruling, and keeps top-level
+//!   output byte-identical: treating a nested literal `<a>` while
+//!   leaving a top-level one alone would be incoherent, and silently
+//!   overriding an author's explicit `target=` would be hostile. Because
+//!   markdown `Link.url` is always a plain string, an expression-valued
+//!   `href` never arises for this pass — documented non-goal.
+//! - **HTML-path blind spot, refined.** `Pipeline::run` /
+//!   `run_with_context` (the HTML-serializer path) never apply
+//!   [`JsxNestedExternalLinks`] — nested markdown links render there as
+//!   lossy TEXT (the `reconstruct_jsx` fallback), so there is no `<a>` to
+//!   protect. Epic #2222 originally speculated the HTML path was the
+//!   affected surface; the real gap is the JSX path (MDX compile /
+//!   `mdx_to_jsx_module_with_pipeline`), where nested links DO render as
+//!   anchors — this module's split targets that corrected surface.
+//!   Documented blind spot, not a bug.
+//! - **Footnote-definition partition.** A `FootnoteDefinition`'s body
+//!   renders once, in the document-level footnote section — a
+//!   structurally hast-visible location `ExternalLinksPlugin` reaches
+//!   regardless of where the definition was authored. So
+//!   [`JsxNestedExternalLinks`] (via `rewrite_jsx_nested`) resets
+//!   JSX-nested tracking at a `FootnoteDefinition` boundary: an ordinary
+//!   link in the body is left untouched here, for the hast plugin to
+//!   treat exactly once, while JSX authored INSIDE the body re-arms (it
+//!   renders nowhere else — the hast walk never reaches it).
 
-use crate::pipeline::{HastNode, HastVisitor};
+use markdown::mdast::Node as MdastNode;
+
+use zfb_md_ast::mdx_jsx::{jsx_text_element, rewrite_jsx_nested};
+
+use crate::pipeline::{HastNode, HastVisitor, MdastVisitor};
 
 /// Configuration passed to [`ExternalLinksPlugin`] at construction time.
 ///
@@ -76,12 +127,17 @@ impl ExternalLinksPlugin {
 
 impl HastVisitor for ExternalLinksPlugin {
     fn visit(&mut self, node: &mut HastNode) {
-        // Note: MDX JSX anchors (`<a href="...">` written inline in .mdx files)
-        // are lowered to `HastNode::JsxRaw` (opaque strings) before this visitor
-        // runs, so they are not rewritten. Only standard-markdown links
-        // (`[label](https://...)`) — which become `HastNode::Element { tag: "a", … }`
-        // — are in scope. This matches `rehype-external-links` in JS, which also
-        // only sees the hast layer and cannot inspect JSX.
+        // Partition (see module docs "Coverage decisions"): this hast
+        // walk only ever reaches TOP-LEVEL, structurally-visible `<a>`
+        // elements. A markdown link reached under an MDX-JSX ancestor
+        // (`<Note>[label](url)</Note>`, or a `:::note` directive that
+        // expanded to one) is lowered to an opaque `HastNode::JsxRaw`
+        // string before this visitor runs — that half is covered by
+        // [`JsxNestedExternalLinks`] (mdast phase) instead. An
+        // author-written literal JSX anchor (`<a href="...">`) never
+        // becomes a hast `<a>` element at all and is out of scope
+        // everywhere, matching `rehype-external-links` in JS, which
+        // also only sees the hast layer and cannot inspect JSX.
         match node {
             HastNode::Root { children } | HastNode::Element { children, .. } => {
                 // First recurse into children so inner <a> elements are
@@ -247,6 +303,80 @@ fn set_attr(attrs: &mut Vec<(String, String)>, key: &str, val: &str) {
         }
     }
     attrs.push((key.to_string(), val.to_string()));
+}
+
+/// JSX-nested-phase visitor for the external-links pass (zfb#2249).
+///
+/// Registered as an [`MdastVisitor`] in the pipeline's mdast phase —
+/// `Pipeline::apply_mdast_visitors_with_context` /
+/// `Pipeline::apply_mdast_visitors` in `zfb-content::pipeline` — LAST,
+/// after `jsx_nested_image_dimensions` (wiring landed in #2247). For
+/// every JSX-nested markdown `Link` whose `url` is external (the same
+/// [`is_external`] classification the paired hast plugin uses), replaces
+/// the node in place with an `<a>` [`MdxJsxTextElement`](markdown::mdast::MdxJsxTextElement)
+/// carrying `href`, an optional `title`, `target`, and merged `rel` — see
+/// the module docs' "Coverage decisions" for the exact partition and
+/// rationale. Internal / relative / same-origin / non-HTTP(S) links are
+/// left as ordinary `Link` nodes, so they emit byte-identically via the
+/// native `Link` arm in `mdx_jsx_emit.rs`.
+///
+/// Constructed from the SAME `config` + `site` as the paired
+/// [`ExternalLinksPlugin`] (see `Pipeline::add_external_links`) —
+/// `site_origin` reuses this module's own [`extract_origin`], since both
+/// types live in the same module.
+pub struct JsxNestedExternalLinks {
+    config: ExternalLinksConfig,
+    site_origin: Option<String>,
+}
+
+impl JsxNestedExternalLinks {
+    /// Create a new stub. `site` mirrors [`ExternalLinksPlugin::new`]'s
+    /// `site` parameter — the canonical site URL, or `None` when every
+    /// absolute HTTP/HTTPS href should be treated as external.
+    #[must_use]
+    pub fn new(config: ExternalLinksConfig, site: Option<&str>) -> Self {
+        let site_origin = site.and_then(extract_origin);
+        Self {
+            config,
+            site_origin,
+        }
+    }
+}
+
+impl MdastVisitor for JsxNestedExternalLinks {
+    /// Context-free by construction (mirrors the hast sibling's
+    /// availability): this plugin needs no `BuildContext`, so the
+    /// default `visit_with_context` → `visit` delegation
+    /// (`MdastVisitor`'s trait default) is exactly right and is not
+    /// overridden here.
+    fn visit(&mut self, node: &mut MdastNode) {
+        // Precompute the per-call constants once: `target`/`rel` never
+        // vary per link, and a markdown `Link` can never carry a
+        // pre-existing `rel` to merge against (unlike the hast plugin's
+        // possibly-raw-HTML `<a>`), so the merge is always against an
+        // empty existing set.
+        let target = self.config.target.clone();
+        let rel = merge_rel_tokens(&[], &self.config.rel);
+        let site_origin = self.site_origin.clone();
+        rewrite_jsx_nested(node, &mut |n| {
+            let MdastNode::Link(link) = n else { return };
+            if !is_external(&link.url, site_origin.as_deref()) {
+                return;
+            }
+            // Attr order: href, title (when Some), target, rel — matches
+            // the treated top-level hast output order exactly (href,
+            // title?, then set_attr-appended target, rel).
+            let mut attrs = vec![("href".to_string(), link.url.clone())];
+            if let Some(title) = &link.title {
+                attrs.push(("title".to_string(), title.clone()));
+            }
+            attrs.push(("target".to_string(), target.clone()));
+            attrs.push(("rel".to_string(), rel.clone()));
+            let children = std::mem::take(&mut link.children);
+            let position = link.position.clone();
+            *n = jsx_text_element("a", attrs, children, position);
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,5 +682,196 @@ mod tests {
         let mut tree = before.clone();
         plugin_no_site().visit(&mut tree);
         assert_eq!(tree, before);
+    }
+
+    // --- JsxNestedExternalLinks (zfb#2249) ----------------------------------
+    //
+    // Level 1/unit coverage for the mdast-phase visitor. End-to-end MDX
+    // compile coverage (directive expansion, resolve_links ordering,
+    // link-validation interaction, footnote partition) lives in
+    // `tests/external_links_jsx_descent_mdx_path.rs`.
+
+    use markdown::mdast::{AttributeContent, AttributeValue, Link, MdxJsxFlowElement, Text};
+
+    use crate::pipeline::BuildContext;
+
+    /// `<Note>[label](url)</Note>` — a single markdown link nested one
+    /// level under an MDX-JSX flow element, the minimal shape
+    /// `rewrite_jsx_nested` fires on.
+    fn note_wrapping_link(url: &str, title: Option<&str>) -> MdastNode {
+        MdastNode::MdxJsxFlowElement(MdxJsxFlowElement {
+            children: vec![MdastNode::Link(Link {
+                children: vec![MdastNode::Text(Text {
+                    value: "label".to_string(),
+                    position: None,
+                })],
+                position: None,
+                url: url.to_string(),
+                title: title.map(str::to_string),
+            })],
+            position: None,
+            name: Some("Note".to_string()),
+            attributes: vec![],
+        })
+    }
+
+    /// The sole nested child of a `note_wrapping_link` tree, after a
+    /// visit — either still a `Link` (untouched) or the synthesized `a`
+    /// `MdxJsxTextElement` (treated).
+    fn nested_child(tree: &MdastNode) -> &MdastNode {
+        let MdastNode::MdxJsxFlowElement(el) = tree else {
+            unreachable!("expected MdxJsxFlowElement root, got {tree:?}");
+        };
+        &el.children[0]
+    }
+
+    /// Read a `Literal`-valued JSX attribute by name from an
+    /// `MdxJsxTextElement`. Returns `None` for a non-JSX node, a missing
+    /// attribute, or a non-literal value.
+    fn jsx_attr<'a>(node: &'a MdastNode, key: &str) -> Option<&'a str> {
+        let MdastNode::MdxJsxTextElement(el) = node else {
+            return None;
+        };
+        el.attributes.iter().find_map(|a| {
+            let AttributeContent::Property(p) = a else {
+                return None;
+            };
+            if p.name != key {
+                return None;
+            }
+            match &p.value {
+                Some(AttributeValue::Literal(s)) => Some(s.as_str()),
+                _ => None,
+            }
+        })
+    }
+
+    fn jsx_nested_plugin_no_site() -> JsxNestedExternalLinks {
+        JsxNestedExternalLinks::new(ExternalLinksConfig::default(), None)
+    }
+
+    fn jsx_nested_plugin_with_site(site: &str) -> JsxNestedExternalLinks {
+        JsxNestedExternalLinks::new(ExternalLinksConfig::default(), Some(site))
+    }
+
+    #[test]
+    fn jsx_nested_external_link_without_site_gets_target_and_rel() {
+        let mut tree = note_wrapping_link("https://other.com/foo", None);
+        jsx_nested_plugin_no_site().visit(&mut tree);
+        let child = nested_child(&tree);
+        assert_eq!(jsx_attr(child, "href"), Some("https://other.com/foo"));
+        assert_eq!(jsx_attr(child, "target"), Some("_blank"));
+        assert_eq!(jsx_attr(child, "rel"), Some("noopener noreferrer"));
+    }
+
+    #[test]
+    fn jsx_nested_same_origin_link_untouched_when_site_configured() {
+        let before = note_wrapping_link("https://example.com/foo", None);
+        let mut tree = before.clone();
+        jsx_nested_plugin_with_site("https://example.com").visit(&mut tree);
+        assert_eq!(
+            tree, before,
+            "same-origin nested link must stay an untouched Link node"
+        );
+    }
+
+    #[test]
+    fn jsx_nested_different_origin_link_treated_when_site_configured() {
+        let mut tree = note_wrapping_link("https://other.com/foo", None);
+        jsx_nested_plugin_with_site("https://example.com").visit(&mut tree);
+        let child = nested_child(&tree);
+        assert_eq!(jsx_attr(child, "target"), Some("_blank"));
+        assert_eq!(jsx_attr(child, "rel"), Some("noopener noreferrer"));
+    }
+
+    #[test]
+    fn jsx_nested_relative_link_untouched() {
+        let before = note_wrapping_link("./relative.mdx", None);
+        let mut tree = before.clone();
+        jsx_nested_plugin_no_site().visit(&mut tree);
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn jsx_nested_mailto_untouched() {
+        let before = note_wrapping_link("mailto:foo@bar.com", None);
+        let mut tree = before.clone();
+        jsx_nested_plugin_no_site().visit(&mut tree);
+        assert_eq!(tree, before);
+    }
+
+    #[test]
+    fn jsx_nested_custom_target_and_rel_honored() {
+        let cfg = ExternalLinksConfig {
+            target: "_self".to_string(),
+            rel: vec!["nofollow".to_string(), "noopener".to_string()],
+        };
+        let mut tree = note_wrapping_link("https://other.com/", Some("A title"));
+        JsxNestedExternalLinks::new(cfg, None).visit(&mut tree);
+        let child = nested_child(&tree);
+        assert_eq!(jsx_attr(child, "href"), Some("https://other.com/"));
+        assert_eq!(jsx_attr(child, "title"), Some("A title"));
+        assert_eq!(jsx_attr(child, "target"), Some("_self"));
+        assert_eq!(jsx_attr(child, "rel"), Some("nofollow noopener"));
+    }
+
+    #[test]
+    fn jsx_nested_attr_order_is_href_title_target_rel() {
+        let mut tree = note_wrapping_link("https://other.com/", Some("T"));
+        jsx_nested_plugin_no_site().visit(&mut tree);
+        let MdastNode::MdxJsxTextElement(a) = nested_child(&tree) else {
+            panic!("expected the nested Link to be replaced with an MdxJsxTextElement");
+        };
+        let names: Vec<&str> = a
+            .attributes
+            .iter()
+            .map(|attr| {
+                let AttributeContent::Property(p) = attr else {
+                    panic!("expected a Property attribute, got {attr:?}");
+                };
+                p.name.as_str()
+            })
+            .collect();
+        assert_eq!(names, vec!["href", "title", "target", "rel"]);
+    }
+
+    #[test]
+    fn jsx_nested_treated_link_preserves_children_and_position() {
+        let pos = markdown::unist::Position::new(1, 1, 0, 1, 20, 19);
+        let mut tree = MdastNode::MdxJsxFlowElement(MdxJsxFlowElement {
+            children: vec![MdastNode::Link(Link {
+                children: vec![MdastNode::Text(Text {
+                    value: "click here".to_string(),
+                    position: None,
+                })],
+                position: Some(pos.clone()),
+                url: "https://other.com/".to_string(),
+                title: None,
+            })],
+            position: None,
+            name: Some("Note".to_string()),
+            attributes: vec![],
+        });
+        jsx_nested_plugin_no_site().visit(&mut tree);
+        let MdastNode::MdxJsxTextElement(a) = nested_child(&tree) else {
+            panic!("expected the nested Link to be replaced with an MdxJsxTextElement");
+        };
+        assert_eq!(a.position, Some(pos));
+        assert_eq!(a.children.len(), 1);
+        assert!(matches!(&a.children[0], MdastNode::Text(t) if t.value == "click here"));
+    }
+
+    #[test]
+    fn jsx_nested_visit_is_a_pure_delegate_of_visit_with_context() {
+        // Context-free by construction (module docs / struct doc):
+        // `MdastVisitor::visit_with_context`'s trait default delegates to
+        // `visit`, and this plugin does not override it. Exercise that
+        // default path directly so a future accidental override is
+        // caught by this test rather than silently changing behavior.
+        let mut tree = note_wrapping_link("https://other.com/foo", None);
+        let mut ctx = BuildContext::for_paths("/proj/a.mdx", "/proj", "/proj/public");
+        jsx_nested_plugin_no_site().visit_with_context(&mut tree, &mut ctx);
+        let child = nested_child(&tree);
+        assert_eq!(jsx_attr(child, "target"), Some("_blank"));
     }
 }

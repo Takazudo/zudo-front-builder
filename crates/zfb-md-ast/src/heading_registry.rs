@@ -88,11 +88,21 @@ impl HeadingRegistry {
     /// zero headings can still have anchor ids recorded. Idempotent for
     /// duplicate ids within the same file.
     ///
-    /// NOTE: Raw-HTML elements (`<div id="x">` written as literal HTML inside
-    /// markdown) and GFM footnote back-reference anchors (`id="user-content-fn-1"`)
-    /// arrive as `HastNode::Raw` (opaque strings) at the point `HeadingLinksPlugin`
-    /// walks — they are NOT structured `Element` nodes and therefore cannot be
-    /// recorded here. See the known limitation comment in `heading_links.rs`.
+    /// NOTE (updated by #2246 — see `heading_links.rs`'s KNOWN LIMITATION
+    /// comment for the full three-part #1095 status): GFM footnote ids are
+    /// no longer categorically missing — since #2021 both footnote families
+    /// render as structured hast `Element`s, so a TOP-LEVEL occurrence
+    /// (`id="user-content-fnref-…"`) or definition (`id="user-content-fn-…"`)
+    /// IS recorded here via `HeadingLinksPlugin`'s own walk. An occurrence
+    /// nested inside an MDX-JSX body, and an MDX-JSX-authored literal anchor
+    /// (`<div id="x">` / `<a name="x">` written as MDX JSX), are also now
+    /// registered — but NOT through this hast-phase path: `mdx_jsx_emit.rs`
+    /// registers them mdast/model-side, on the MDX compile path only, before
+    /// `HeadingLinksPlugin`'s hast walk ever runs. The residual gap: raw-HTML
+    /// elements authored as LITERAL HTML inside markdown (not MDX JSX)
+    /// arrive as `HastNode::Raw` (an opaque string) at the point
+    /// `HeadingLinksPlugin` walks — they are NOT structured `Element` nodes
+    /// and therefore still cannot be recorded here.
     pub fn insert_anchor_id(&mut self, source_path: PathBuf, id: String) {
         self.anchor_ids.entry(source_path).or_default().insert(id);
     }

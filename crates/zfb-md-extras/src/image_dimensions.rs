@@ -36,6 +36,42 @@
 //! is emitted via `ctx.diagnostics` and the `<img>` element is left unchanged.
 //! Undimensionable SVGs do NOT warn (see *SVG support* above).
 //!
+//! # JSX-nested images (#2248)
+//!
+//! [`JsxNestedImageDimensions`] stamps `width`/`height` on markdown images
+//! (`![…]`) that live inside an MDX-JSX ancestor — the mdast-phase
+//! counterpart to this module's hast-phase [`ImageDimensionsPlugin`],
+//! sharing its probe cache, `read_count`, and recorder (see
+//! [`ImageDimensionsPlugin::new_shared`]). Coverage is intentionally
+//! partitioned:
+//!
+//! - **Covered:** a markdown image with an MDX-JSX ancestor, including
+//!   inside a `:::note`-style container directive — `DirectiveRegistry`
+//!   expands those into an ordinary `MdxJsxFlowElement` before this pass
+//!   runs, so both syntaxes share the fix.
+//! - **NOT covered, anywhere: author-written literal JSX `<img …>`.**
+//!   Top-level literal JSX is pinned byte-identical by the existing
+//!   snapshot suites, and treating only *nested* literal JSX would be an
+//!   incoherent half-measure. This matches today's behaviour, the
+//!   rehype-ecosystem precedent (`rehype-img-size` never touches
+//!   author-written JSX either), and #2224's authored-JSX-out-of-scope
+//!   ruling.
+//! - **NOT covered by design: the HTML path** (`Pipeline::run` /
+//!   `Pipeline::run_with_context`). Nested markdown images never render
+//!   as structured elements there — `reconstruct_jsx`'s lossy
+//!   stringification collapses them to text — so there is nothing this
+//!   pass could usefully rewrite, and it deliberately does not run on
+//!   that path (see those methods' doc comments).
+//! - **Footnote-definition partition:** an ordinary (non-JSX-wrapped)
+//!   image directly inside a footnote-definition body is left to the
+//!   *rendered footnote section*'s hast-phase [`ImageDimensionsPlugin`]
+//!   — the definition boundary resets the JSX-nested driver, matching
+//!   `JsxNestedLinkCollector`'s identical partition (zfb#2184/#2225), so
+//!   the image is treated exactly once, never twice. JSX authored
+//!   *inside* a definition body re-arms the driver, so an image nested
+//!   in that inner JSX body IS treated by this pass (the rendered
+//!   section can't see inside the resulting opaque JSX blob).
+//!
 //! # Configuration
 //!
 //! Wire via `features.imageDimensions: {}` in `zfb.config.ts`. Requires
@@ -52,8 +88,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use markdown::mdast::Node as MdastNode;
+
 use zfb_md_ast::diagnostics::MarkdownDiagnostic;
-use zfb_md_ast::{BuildContext, HastNode, HastVisitor, ImageDimensionsConfig, ReadRecorder};
+use zfb_md_ast::mdx_jsx::{jsx_text_element, rewrite_jsx_nested};
+use zfb_md_ast::{
+    BuildContext, HastNode, HastVisitor, ImageDimensionsConfig, MdastVisitor, ReadRecorder,
+};
 
 use zfb_types::normalize_path_lexical;
 
@@ -109,6 +150,99 @@ impl ImageDimensionsPlugin {
     #[must_use]
     pub fn read_count(&self) -> usize {
         self.read_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Passthrough constructor seam (zfb#2247): build a hast-phase plugin
+    /// AND return the cache/read-count handles a paired mdast-phase stub
+    /// needs to see the SAME probe cache — [`JsxNestedImageDimensions`]
+    /// (#2248) shares this so an image referenced both top-level and
+    /// JSX-nested costs one disk read, not two. Mirrors
+    /// `LinkValidationPlugin`/`JsxNestedLinkCollector`'s shared-buffer
+    /// wiring in `zfb-content::pipeline` (the collector/validator
+    /// precedent). No behavior change — [`Self::new`] is untouched for
+    /// callers that don't need the paired stub.
+    #[must_use]
+    pub fn new_shared(config: ImageDimensionsConfig) -> (Self, ImageDimensionsShared) {
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+        let read_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let plugin = Self {
+            config,
+            cache: Arc::clone(&cache),
+            read_count: Arc::clone(&read_count),
+            recorder: None,
+        };
+        (plugin, ImageDimensionsShared { cache, read_count })
+    }
+}
+
+/// Cache/read-count handles shared between an [`ImageDimensionsPlugin`]
+/// (hast phase) and its paired mdast-phase [`JsxNestedImageDimensions`]
+/// stub (zfb#2247). Constructed by [`ImageDimensionsPlugin::new_shared`].
+///
+/// Fields stay private to this module — the concrete `CacheEntry` type is
+/// an internal implementation detail; only the two co-located visitors
+/// need to name it.
+pub struct ImageDimensionsShared {
+    cache: Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
+    read_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// JSX-nested-phase pass for the image-dimensions feature (zfb#2247 wiring,
+/// zfb#2248 behavior).
+///
+/// Registered as an [`MdastVisitor`] in the pipeline's mdast phase —
+/// `Pipeline::apply_mdast_visitors_with_context` /
+/// `Pipeline::apply_mdast_visitors` in `zfb-content` — LAST, after the
+/// `jsx_nested_link_collector` block (load-bearing: replacing a
+/// JSX-nested `Image` before that collector runs would delete its
+/// `is_img` existence-check candidate). See the module-level "JSX-nested
+/// images" section for the coverage decisions.
+pub struct JsxNestedImageDimensions {
+    config: ImageDimensionsConfig,
+    cache: Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
+    read_count: Arc<std::sync::atomic::AtomicUsize>,
+    recorder: Option<Arc<ReadRecorder>>,
+}
+
+impl JsxNestedImageDimensions {
+    /// Create the stub from the SAME config the paired
+    /// [`ImageDimensionsPlugin`] uses, its shared cache/read-count
+    /// handles (see [`ImageDimensionsPlugin::new_shared`]), and the SAME
+    /// optional read-recorder (zfb#944) — mirrors
+    /// [`ImageDimensionsPlugin::with_recorder`].
+    #[must_use]
+    pub fn new(
+        config: ImageDimensionsConfig,
+        shared: ImageDimensionsShared,
+        recorder: Option<Arc<ReadRecorder>>,
+    ) -> Self {
+        Self {
+            config,
+            cache: shared.cache,
+            read_count: shared.read_count,
+            recorder,
+        }
+    }
+}
+
+impl MdastVisitor for JsxNestedImageDimensions {
+    /// No-op: this plugin needs `BuildContext` to resolve paths — mirrors
+    /// the hast sibling's [`ImageDimensionsPlugin::visit`] contract.
+    fn visit(&mut self, _node: &mut MdastNode) {}
+
+    /// Rewrite every JSX-nested `Image` mdast node in place (#2248): runs
+    /// [`rewrite_jsx_nested`] over the tree and attempts dimension
+    /// injection on each `Image` the walk reaches — JSX-nested only, the
+    /// driver never fires at top level and resets at `FootnoteDefinition`
+    /// boundaries (see the module docs).
+    fn visit_with_context(&mut self, node: &mut MdastNode, ctx: &mut BuildContext<'_>) {
+        let config = &self.config;
+        let cache = &self.cache;
+        let read_count = &self.read_count;
+        let recorder = self.recorder.as_deref();
+        rewrite_jsx_nested(node, &mut |n| {
+            try_inject_dimensions_jsx_nested(n, ctx, config, cache, read_count, recorder);
+        });
     }
 }
 
@@ -188,20 +322,99 @@ fn try_inject_dimensions(
         None => return,
     };
 
+    if let Some((width, height)) =
+        resolve_and_probe_dimensions(&src, ctx, config, cache, read_count, recorder)
+    {
+        attrs.push(("width".to_string(), width.to_string()));
+        attrs.push(("height".to_string(), height.to_string()));
+    }
+}
+
+/// If `node` is a JSX-nested mdast `Image`, attempt dimension injection via
+/// the shared [`resolve_and_probe_dimensions`] core; on success, REPLACE the
+/// node in place with the emitted `<img>` JSX element (#2248) —
+/// `zfb_md_ast::mdx_jsx::jsx_text_element("img", attrs, vec![], <original
+/// position>)`.
+///
+/// Attr order: `src`, `alt` (ALWAYS, even when empty — mirrors the native
+/// nested-image emission arm at `mdx_jsx_emit.rs`'s `jsx_render_child`,
+/// which always emits `alt`), `title` (only when `Some`), `width`,
+/// `height` — the same order [`try_inject_dimensions`] appends width/height
+/// in for the treated top-level hast case.
+///
+/// "Skip if width/height already present" (the hast sibling's first guard)
+/// is vacuous here: mdast `Image` nodes cannot carry attrs, so synthesis
+/// only ever ADDS the two.
+fn try_inject_dimensions_jsx_nested(
+    node: &mut MdastNode,
+    ctx: &mut BuildContext<'_>,
+    config: &ImageDimensionsConfig,
+    cache: &Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
+    read_count: &Arc<std::sync::atomic::AtomicUsize>,
+    recorder: Option<&ReadRecorder>,
+) {
+    let MdastNode::Image(image) = node else {
+        return;
+    };
+
+    let Some((width, height)) =
+        resolve_and_probe_dimensions(&image.url, ctx, config, cache, read_count, recorder)
+    else {
+        return;
+    };
+
+    let mut attrs: Vec<(String, String)> = vec![
+        ("src".to_string(), image.url.clone()),
+        ("alt".to_string(), image.alt.clone()),
+    ];
+    if let Some(title) = &image.title {
+        attrs.push(("title".to_string(), title.clone()));
+    }
+    attrs.push(("width".to_string(), width.to_string()));
+    attrs.push(("height".to_string(), height.to_string()));
+
+    let position = image.position.clone();
+    *node = jsx_text_element("img", attrs, vec![], position);
+}
+
+/// Shared resolve/probe core (#2248): resolves `src` to a local absolute
+/// path, enforces the containment + symlink-escape guards, records the
+/// dependency read (zfb#944) BEFORE probing, and probes dimensions — used
+/// by both the hast-phase [`try_inject_dimensions`] (`<img>` elements) and
+/// the mdast-phase [`try_inject_dimensions_jsx_nested`] (JSX-nested
+/// `Image` nodes). Every "leave the node untouched" case is decided AND
+/// diagnosed here; the caller only has to decide what a `Some` result
+/// means for its own node shape.
+///
+/// Returns:
+/// - `Some((width, height))` — ready to inject.
+/// - `None` — every skip case: remote (when `skip_remote`)/`data:` URL
+///   (silent); resolve failure, containment escape, or symlink escape
+///   (each warns via `ctx.diagnostics`); probe `Ok(None)` (SVG with no
+///   determinable intrinsic dimensions — silent, #1083); probe `Err`
+///   (warns).
+fn resolve_and_probe_dimensions(
+    src: &str,
+    ctx: &mut BuildContext<'_>,
+    config: &ImageDimensionsConfig,
+    cache: &Arc<Mutex<HashMap<PathBuf, CacheEntry>>>,
+    read_count: &Arc<std::sync::atomic::AtomicUsize>,
+    recorder: Option<&ReadRecorder>,
+) -> Option<(u32, u32)> {
     // Skip remote URLs when `skipRemote` is true (the default).
     if should_skip_remote(config)
         && (src.starts_with("http://") || src.starts_with("https://") || src.starts_with("//"))
     {
-        return;
+        return None;
     }
 
     // Always skip data: URLs regardless of skipRemote (they are never on-disk files).
     if src.starts_with("data:") {
-        return;
+        return None;
     }
 
     // Resolve the `src` to an absolute filesystem path.
-    let abs_path = resolve_src(&src, ctx);
+    let abs_path = resolve_src(src, ctx);
     let abs_path = match abs_path {
         Some(p) => p,
         None => {
@@ -211,7 +424,7 @@ fn try_inject_dimensions(
                     "imageDimensions: could not resolve src '{src}' — no source path available"
                 ),
             );
-            return;
+            return None;
         }
     };
 
@@ -241,7 +454,7 @@ fn try_inject_dimensions(
                 expected_root.display()
             ),
         );
-        return;
+        return None;
     }
 
     // Symlink-escape guard: the lexical check above collapses `..` but cannot
@@ -262,7 +475,7 @@ fn try_inject_dimensions(
                     expected_root.display()
                 ),
             );
-            return;
+            return None;
         }
     }
 
@@ -280,15 +493,13 @@ fn try_inject_dimensions(
 
     // Probe dimensions (from cache or disk).
     match probe_dimensions(&abs_path, cache, read_count) {
-        Ok(Some((width, height))) => {
-            attrs.push(("width".to_string(), width.to_string()));
-            attrs.push(("height".to_string(), height.to_string()));
-        }
-        // SVG with no determinable intrinsic dimensions: leave the `<img>`
+        Ok(Some((width, height))) => Some((width, height)),
+        // SVG with no determinable intrinsic dimensions: leave the node
         // unchanged and emit nothing — warning per-SVG was pure noise (#1083).
-        Ok(None) => {}
+        Ok(None) => None,
         Err(err_msg) => {
             emit_warning(ctx, format!("imageDimensions: {err_msg}"));
+            None
         }
     }
 }

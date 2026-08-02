@@ -62,12 +62,12 @@
 // ## Corpus (FROZEN -- do not expand; see the epic issue's "bounded finish
 // line" note). Single source of truth:
 // crates/zfb-md-wasm/tests/fixtures/parity/manifest.json, shared with the
-// Rust oracle generator. 14 fixtures, each drawn from an existing crate
+// Rust oracle generator. 13 fixtures, each drawn from an existing crate
 // test's syntax and picked to cover one named tier from the epic issue:
 // github alerts, code tabs, ruby, :::directives, CJK emphasis, GFM tables,
-// heading links/toc, reading time, code enrichment, mermaid marker,
-// autolinks, mdx components + expressions, frontmatter variants, and a
-// malformed-MDX diagnostic case.
+// heading links/toc, reading time, code enrichment, mermaid marker, mdx
+// components + expressions, frontmatter variants, and a malformed-MDX
+// diagnostic case.
 //
 // Test plan (declared per project testing discipline): Level 3 (build
 // output) -- this compiles/renders through the REAL wasm binary executing
@@ -78,7 +78,7 @@
 // Blind spots (explicitly NOT covered here): browser execution of the wasm
 // module (Node-only, per this package's existing test setup); onig-vs-fancy
 // highlighting divergence (out of scope by the epic's oracle rule, see
-// above); any corpus growth beyond the frozen 14 fixtures.
+// above); any corpus growth beyond the frozen 13 fixtures.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -112,7 +112,9 @@ const manifest: Manifest = JSON.parse(readFileSync(join(fixturesDir, "manifest.j
 // Sanity-check the frozen count so a future accidental edit to the manifest
 // (add/remove a fixture) fails loudly here instead of just changing the
 // number of `it` blocks silently.
-const FROZEN_CORPUS_SIZE = 14;
+// 14 → 13: the `autolinks` fixture was removed with the GithubAutolinks
+// feature itself (zfb#2250) — a deliberate corpus change, not drift.
+const FROZEN_CORPUS_SIZE = 13;
 
 describe(`wasm vs native fancy-regex oracle parity (${FROZEN_CORPUS_SIZE}-fixture frozen corpus)`, () => {
   it("manifest carries exactly the frozen corpus size", () => {

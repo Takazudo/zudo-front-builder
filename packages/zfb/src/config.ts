@@ -974,25 +974,6 @@ export type FeatureToggle = boolean | FeatureOptions;
 export type FeatureOptions = Record<string, never>;
 
 /**
- * Options for the `githubAutolinks` feature — rewrites bare `#123`,
- * `user/repo#456`, and commit-SHA references into GitHub links.
- *
- * `repo` is required: `githubAutolinks: {}` (repo absent) is a config error
- * — the Rust pipeline emits a build-blocking diagnostic rather than
- * silently skipping the feature.
- *
- * Mirrors `GithubAutolinksConfig` in `crates/zfb-md-ast/src/features_config.rs`.
- */
-export type GithubAutolinksConfig = {
-  /**
-   * GitHub repository reference (`owner/repo`) used to build autolink URLs
-   * (e.g. `"owner/repo"` renders `#123` as
-   * `https://github.com/owner/repo/issues/123`). Required — see above.
-   */
-  repo: string;
-};
-
-/**
  * Options for the `codeEnrichment` feature.
  *
  * All flags default to `true` when the feature is enabled with
@@ -1127,9 +1108,6 @@ export type MarkdownFeaturesConfig = {
    * Accepts `true` / `false` shorthand or `{ wpm: N }` for a custom rate.
    */
   readingTime?: ReadingTimeFeature;
-
-  /** GitHub-style `owner/repo#123` and `SHA` autolinks. Requires `repo`. */
-  githubAutolinks?: GithubAutolinksConfig;
 
   /** Code-block enrichment (copy button, language label, etc.). */
   codeEnrichment?: CodeEnrichmentConfig;

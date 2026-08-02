@@ -21,9 +21,9 @@
 pub use zfb_md_ast::{
     directives_enabled, feature_enabled, heading_id_strategy, heading_marker_toc_enabled,
     into_directive_def, CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, DirectiveSpecKind,
-    FeatureOptions, FeatureToggle, GithubAutolinksConfig, HeadingIdStrategy, HeadingIdsConfig,
-    HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig,
-    TocConfig, TocExportConfig, TranscludeConfig,
+    FeatureOptions, FeatureToggle, HeadingIdStrategy, HeadingIdsConfig, HeadingMarkerTocFeature,
+    ImageDimensionsConfig, LinkValidationConfig, MarkdownFeaturesConfig, TocConfig,
+    TocExportConfig, TranscludeConfig,
 };
 
 /// Test harness module — `run_fixture` and helpers for fixture-based
@@ -60,10 +60,6 @@ pub mod github_alerts;
 /// Reading-time estimate injected into the MDX module as a named export.
 /// Wire via `features.readingTime: true` in `zfb.config.ts`.
 pub mod reading_time;
-
-/// GitHub-style `owner/repo#123` and SHA autolinks.
-/// Wire via `features.githubAutolinks: { repo: "owner/repo" }` in `zfb.config.ts`.
-pub mod github_autolinks;
 
 /// Code-block enrichment — diff markers (`// [!code ++]` / `// [!code --]`)
 /// and per-line highlighting via fence meta (`{1,3-5}`).
@@ -113,6 +109,6 @@ pub mod transclude;
 
 // Feature config types live in zfb-md-ast and are re-exported at the top
 // of this file. The canonical definitions use the rich per-feature option
-// structs (GithubAutolinksConfig, TocConfig, etc.) so the new
+// structs (TocConfig, TranscludeConfig, etc.) so the new
 // Pipeline::with_defaults_and_features API and zfb::config share one
 // authoritative shape.

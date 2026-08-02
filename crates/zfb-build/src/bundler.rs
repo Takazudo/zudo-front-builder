@@ -17227,6 +17227,12 @@ mod tests {
     // block — verified against `pipeline_spec_from_config`
     // (crates/zfb/src/commands/bundler_input.rs) and
     // packages/zudo-doc/src/preset.ts@42b9dad19's `buildMarkdownFeatures`.
+    //
+    // As of zfb#2250, `githubAutolinks` is dropped from this literal: the
+    // feature was removed from zfb entirely (host-specific — does not
+    // belong in a general SSG), so this reproduces zudo-doc's preset MINUS
+    // the removed key, pending zudo-doc's own preset update
+    // (zudolab/zudo-doc#3191) — see the lockstep warning in zfb#2250.
     fn zudo_doc_parity_compile(body: &str, root: &Path) -> String {
         let features: zfb_content::MarkdownFeaturesConfig =
             serde_json::from_value(serde_json::json!({
@@ -17238,7 +17244,6 @@ mod tests {
                 "headingMarkerToc": true,
                 "githubAlerts": true,
                 "readingTime": true,
-                "githubAutolinks": { "repo": "zudolab/zudo-doc" },
                 "codeEnrichment": {},
                 "codeTabs": true,
                 "ruby": true,

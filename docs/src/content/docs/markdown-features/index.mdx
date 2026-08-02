@@ -51,7 +51,6 @@ export default defineConfig({
     hardBreaks: true,
     features: {
       mermaid: true,
-      githubAutolinks: { repo: "owner/repo" },
       directives: {
         note: "Note",
         tip: "Tip",
@@ -62,10 +61,10 @@ export default defineConfig({
 ```
 
 Boolean shorthand is **not universal**. It works only for rows whose value
-shape includes `boolean`. Object-only rows, such as `githubAutolinks`,
-`codeEnrichment`, `tocExport`, `imageDimensions`, `linkValidation`,
-`transclude`, and `headingIds`, require an object. Unknown keys are rejected
-at config load time.
+shape includes `boolean`. Object-only rows, such as `codeEnrichment`,
+`tocExport`, `imageDimensions`, `linkValidation`, `transclude`, and
+`headingIds`, require an object. Unknown keys are rejected at config load
+time.
 
 ## Feature map
 
@@ -86,7 +85,6 @@ at config load time.
 | [Heading-marker TOC](./heading-marker-toc.mdx) | Opt-in | `markdown.features.headingMarkerToc` | `boolean \| { heading?: string; maxDepth?: number }` | Off when absent or `false`. |
 | [GitHub alerts](./github-alerts.mdx) | Opt-in | `markdown.features.githubAlerts` | `boolean \| {}` | Off when absent or `false`. |
 | [Reading time](./reading-time.mdx) | Opt-in | `markdown.features.readingTime` | `boolean \| { wpm?: number }` | Off when absent or `false`; emits `export const readingTimeMinutes`. |
-| [GitHub autolinks](./github-autolinks.mdx) | Opt-in | `markdown.features.githubAutolinks` | `{ repo: string }` | Off when absent; missing `repo` is a build-blocking config error. |
 | [Code-block enrichment](./code-enrichment.mdx) | Opt-in | `markdown.features.codeEnrichment` | `{ diffMarkers?: boolean; lineHighlight?: boolean; wordHighlight?: boolean }` | Off when absent; object form enables it, with all subfeatures on by default. |
 | [Code tabs](./code-tabs.mdx) | Opt-in | `markdown.features.codeTabs` | `boolean \| {}` | Off when absent or `false`. |
 | [Ruby annotation](./ruby.mdx) | Opt-in | `markdown.features.ruby` | `boolean \| {}` | Off when absent or `false`. |
