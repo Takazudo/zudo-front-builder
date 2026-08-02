@@ -958,7 +958,15 @@ fn collect_literal_jsx_anchor_attrs(tag: &str, attrs: &[AttributeContent], out: 
 ///   `extract_text` would skip it, but `alt` is the closest plain-text
 ///   substitute and TOC consumers expect it)
 /// - `Break` → single space (renders as `<br>` then a space-equivalent)
-/// - MDX text expressions / JSX → contribute nothing (opaque to TOCs)
+/// - `MdxJsxTextElement` named exactly `"a"` → recurse into children,
+///   same as `Link` (zfb#2249). `JsxNestedExternalLinks` synthesizes
+///   these as a structural stand-in for what was a `Link` node moments
+///   before the mdast visitors ran (`## [Guide](https://example.org)`
+///   nested under JSX) — it is not opaque author content, so it must
+///   not silently empty out the heading's text/slug/anchor the way
+///   genuine author-written JSX does.
+/// - Every other MDX text expression / JSX element → contributes
+///   nothing (opaque to TOCs)
 fn mdast_inline_text(children: &[MdastNode]) -> String {
     let mut out = String::new();
     for c in children {
@@ -991,6 +999,21 @@ fn push_inline_text(node: &MdastNode, out: &mut String) {
                 push_inline_text(c, out);
             }
         }
+        // A synthesized `<a>` `MdxJsxTextElement` (zfb#2249,
+        // `JsxNestedExternalLinks`) is what a `Link` node under a JSX
+        // ancestor turned into moments before this projection runs —
+        // recurse into its children exactly like the `Link` arm above,
+        // so a heading such as `## [Guide](https://example.org)`
+        // nested inside `<Note>…</Note>` keeps its text/slug/anchor
+        // regardless of whether that link happened to be external.
+        // Every OTHER JSX name stays opaque (the catch-all below) —
+        // this is a narrow exception for the one shape this pass
+        // synthesizes, not a general "JSX now contributes text" rule.
+        MdastNode::MdxJsxTextElement(j) if j.name.as_deref() == Some("a") => {
+            for c in &j.children {
+                push_inline_text(c, out);
+            }
+        }
         MdastNode::Image(i) => out.push_str(&i.alt),
         MdastNode::Break(_) => out.push(' '),
         // Math nodes contribute their raw LaTeX as plain text — best
@@ -1001,8 +1024,8 @@ fn push_inline_text(node: &MdastNode, out: &mut String) {
         // rendered DOM.
         MdastNode::Math(m) => out.push_str(&m.value),
         MdastNode::InlineMath(m) => out.push_str(&m.value),
-        // Everything else (MDX expressions, raw HTML literals, JSX
-        // elements, …) contributes no plain text — TOCs cannot do
+        // Everything else (MDX expressions, raw HTML literals, other
+        // JSX elements, …) contributes no plain text — TOCs cannot do
         // anything useful with `{count}` or `<Note/>` tokens.
         _ => {}
     }
