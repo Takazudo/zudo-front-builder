@@ -4323,9 +4323,9 @@ mod tests {
             "math should route through _components.pre/code: {out}"
         );
         // The LaTeX body is wrapped in a JS string literal — the
-        // backslashes must be doubled, not bare. If any bare `{\letter}`
-        // pattern leaked through, the bundler heuristic
-        // `jsx_likely_breaks_downstream_parser` would skip the bridge.
+        // backslashes must be doubled, not bare. A leaked bare `{\letter}`
+        // would fail to parse, so the bundler's content-bridge gate
+        // (`jsx_module_parse_failure`) would skip the bridge.
         assert!(
             out.contains("\\\\int_"),
             "expected backslash-escaped LaTeX inside JS string: {out}"
