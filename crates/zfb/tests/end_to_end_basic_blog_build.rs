@@ -1,19 +1,26 @@
 //! End-to-end regression test for issue #1354 (Test B) / #1361 — a full
 //! `zfb build` against the in-repo `basic-blog` template, asserting the
-//! emitted post pages, paginated indexes, and tag pages.
+//! emitted post/static pages and a representative sample of the enabled
+//! markdown features' output markup.
 //!
 //! ## What this tests
 //!
 //! `crates/zfb/templates/basic-blog/` is the dogfood example shipped with
-//! `zfb`: 5 posts (4 `.md` + `hello-zfb.mdx`) in the `blog` collection,
-//! `pages/blog/[slug].tsx` (per-post route), `pages/blog/page/[page].tsx`
-//! (`paginate()` with `pageSize: 3` over 5 posts → pages 1 and 2),
-//! `pages/tags/[tag].tsx` (one route per unique tag — 6 tags across the
-//! fixture posts: intro, tooling, perf, framework, ssr, deploy), and
-//! `layouts/default.tsx` which renders `<main class="site-main">{children}</main>`.
-//! Tailwind is ENABLED in the template's `zfb.config.json`, so this build
-//! also exercises the tailwindcss-v4 subprocess slot staged by
+//! `zfb`: 3 posts (2 `.md` + `hello-zfb.mdx`) in the `blog` collection,
+//! `pages/blog/[slug].tsx` (per-post route), plus the static routes
+//! `pages/index.tsx` (home — lists every post), `pages/about.tsx`, and
+//! `pages/404.tsx` (emits a flat `dist/404.html`, not `dist/404/index.html`
+//! — see that file's own header comment). A full build emits 6 pages.
+//! Tailwind is ENABLED in the template's `zfb.config.ts`, so this build also
+//! exercises the tailwindcss-v4 subprocess slot staged by
 //! `crates/zfb/build.rs`.
+//!
+//! `content/blog/markdown-showcase.md` renders one example of every
+//! markdown feature the template's `zfb.config.ts` `markdown` block turns
+//! on (task lists, footnotes, GitHub-style alerts, code enrichment, and the
+//! heading-marker TOC — see that post and `zfb.config.ts` for the mapping),
+//! so this test reads the built showcase page and asserts each feature's
+//! emitted markup is present.
 //!
 //! This test previously lived as a dormant, `#[ignore]`d unit-test stub at
 //! `crates/zfb/src/commands/build.rs` (see git history) — a lib unit test
@@ -57,21 +64,62 @@ use std::process::Command;
 
 use zfb_test_utils::zfb_binary;
 
-/// The 5 post slugs in `templates/basic-blog/content/blog/` (filename stem,
+/// The 3 post slugs in `templates/basic-blog/content/blog/` (filename stem,
 /// per `zfb_content::collection::derive_slug_for_file`).
-const POST_SLUGS: [&str; 5] = [
-    "deploying-static-sites",
-    "dev-loop-feel",
-    "hello-zfb",
-    "ssr-and-islands",
-    "why-rust-cli",
+const POST_SLUGS: [&str; 3] = ["hello-zfb", "markdown-showcase", "styling-with-tailwind"];
+
+/// Substrings expected in the built `markdown-showcase` page, one per
+/// enabled markdown feature it demonstrates. Paired with a label naming the
+/// `zfb.config.ts` `markdown` key (or "core behaviour" for features that
+/// need no config) each substring proves, so a failure names the feature
+/// rather than just the missing bytes.
+const SHOWCASE_FEATURE_MARKUP: [(&str, &str); 12] = [
+    ("<table>", "GFM tables (markdown.gfm.table, default on)"),
+    (
+        "<del>",
+        "GFM strikethrough (markdown.gfm.strikethrough, default on)",
+    ),
+    (
+        "type=\"checkbox\" disabled",
+        "GFM task list checkbox (markdown.gfm.taskListItem)",
+    ),
+    (
+        "data-footnotes",
+        "GFM footnotes section (markdown.gfm.footnoteDefinition)",
+    ),
+    (
+        "data-footnote-ref",
+        "GFM footnote reference marker (markdown.gfm.footnoteDefinition)",
+    ),
+    (
+        "data-component=\"note\"",
+        "githubAlerts NOTE component (markdown.features.githubAlerts)",
+    ),
+    (
+        "data-component=\"warning\"",
+        "githubAlerts WARNING component (markdown.features.githubAlerts)",
+    ),
+    (
+        "code-block-title",
+        "codeEnrichment title bar (markdown.features.codeEnrichment)",
+    ),
+    (
+        "data-line-highlight=\"true\"",
+        "codeEnrichment line highlight (markdown.features.codeEnrichment)",
+    ),
+    (
+        "data-line-diff=\"added\"",
+        "codeEnrichment diff marker, added line (markdown.features.codeEnrichment)",
+    ),
+    (
+        "data-line-diff=\"removed\"",
+        "codeEnrichment diff marker, removed line (markdown.features.codeEnrichment)",
+    ),
+    (
+        "highlighted-word",
+        "codeEnrichment word highlight (markdown.features.codeEnrichment)",
+    ),
 ];
-
-/// Paginated index pages: `pageSize: 3` over 5 posts → 2 pages.
-const PAGINATED_PAGES: [u32; 2] = [1, 2];
-
-/// The 6 unique tags across the 5 fixture posts' frontmatter.
-const TAGS: [&str; 6] = ["intro", "tooling", "perf", "framework", "ssr", "deploy"];
 
 fn template_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -145,9 +193,57 @@ fn assert_page_has_nonempty_main(path: &Path, label: &str) {
     );
 }
 
+/// Reads the built `markdown-showcase` page and asserts every
+/// [`SHOWCASE_FEATURE_MARKUP`] substring is present, plus that the
+/// `headingMarkerToc` feature actually generated a list right after the
+/// `TOC` heading (not just that the heading itself has an `id`).
+fn assert_showcase_feature_markup(dist: &Path) {
+    let path = dist
+        .join("blog")
+        .join("markdown-showcase")
+        .join("index.html");
+    let html = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+
+    for (needle, feature) in SHOWCASE_FEATURE_MARKUP {
+        assert!(
+            html.contains(needle),
+            "markdown-showcase: expected {feature} markup `{needle}` in {}\n--- html ---\n{html}",
+            path.display()
+        );
+    }
+
+    // The heading-marker TOC (markdown.features.headingMarkerToc) inserts a
+    // `<ul>` of links right after the `## TOC` heading (`id="toc"`) — assert
+    // the list is close enough after the heading to be that generated list,
+    // not some unrelated later list on the page.
+    let toc_heading = html.find("id=\"toc\"").unwrap_or_else(|| {
+        panic!(
+            "markdown-showcase: expected the TOC heading (headingMarkerToc, id=\"toc\") in {}\n\
+             --- html ---\n{html}",
+            path.display()
+        )
+    });
+    let after_heading = &html[toc_heading..];
+    let list_offset = after_heading.find("<ul>").unwrap_or_else(|| {
+        panic!(
+            "markdown-showcase: expected a generated <ul> right after the TOC heading \
+             (headingMarkerToc) in {}\n--- html ---\n{html}",
+            path.display()
+        )
+    });
+    assert!(
+        list_offset < 200,
+        "markdown-showcase: the <ul> found after id=\"toc\" is {list_offset} bytes away — too \
+         far to be the headingMarkerToc-generated list in {}\n--- html ---\n{html}",
+        path.display()
+    );
+}
+
 /// Runs a full `zfb build` on a fresh copy of `templates/basic-blog/` and
-/// asserts the 5 post pages, 2 paginated index pages, and 6 tag pages are
-/// all emitted with a non-empty `<main>`.
+/// asserts the home/about/404 static pages and the 3 post pages are all
+/// emitted with a non-empty `<main>`, and that the markdown-showcase post
+/// carries the emitted markup for every enabled markdown feature it
+/// demonstrates.
 ///
 /// Level 4 (real `zfb build` process e2e), tier T1 — serialized via the
 /// `e2e-heavy` nextest test-group alongside the other build-command
@@ -159,11 +255,13 @@ fn end_to_end_basic_blog_build() {
     copy_dir(&template_dir(), root).expect("copy templates/basic-blog into tempdir");
 
     // Inject the zfb#1729 regression fixture: an MDX post that wraps the
-    // `<Note>` island around a code demo whose highlighted template used
-    // to leak a bare `{\d}` expression. Pre-fix that tripped the bundler's
-    // downstream-parser gate and degraded the WHOLE page to the
-    // `<pre data-zfb-content-fallback>` shape; the emitter now recovers the
-    // shape as a string literal so the page renders normally.
+    // `<Note>` island (from `components/callout.tsx`, resolved through the
+    // project's `mdx-components.tsx` map) around a code demo whose
+    // highlighted template used to leak a bare `{\d}` expression. Pre-fix
+    // that tripped the bundler's downstream-parser gate and degraded the
+    // WHOLE page to the `<pre data-zfb-content-fallback>` shape; the
+    // emitter now recovers the shape as a string literal so the page
+    // renders normally.
     fs::write(
         root.join("content")
             .join("blog")
@@ -200,24 +298,19 @@ fn end_to_end_basic_blog_build() {
 
     let dist = root.join("dist");
 
+    assert_page_has_nonempty_main(&dist.join("index.html"), "home page /");
+    assert_page_has_nonempty_main(&dist.join("about").join("index.html"), "about page /about");
+    // pages/404.tsx emits a flat dist/404.html, not dist/404/index.html —
+    // see that file's own header comment and `commands/preview.rs`, which
+    // serves it as the project's 404 body from that exact path.
+    assert_page_has_nonempty_main(&dist.join("404.html"), "404 page");
+
     for slug in POST_SLUGS {
         let path = dist.join("blog").join(slug).join("index.html");
         assert_page_has_nonempty_main(&path, &format!("post page /blog/{slug}"));
     }
 
-    for page in PAGINATED_PAGES {
-        let path = dist
-            .join("blog")
-            .join("page")
-            .join(page.to_string())
-            .join("index.html");
-        assert_page_has_nonempty_main(&path, &format!("paginated index /blog/page/{page}"));
-    }
-
-    for tag in TAGS {
-        let path = dist.join("tags").join(tag).join("index.html");
-        assert_page_has_nonempty_main(&path, &format!("tag page /tags/{tag}"));
-    }
+    assert_showcase_feature_markup(&dist);
 
     // zfb#1729 build-level proof: the token-leak-demo post's island +
     // code demo must render as real content, NOT degrade to the
@@ -239,11 +332,13 @@ fn end_to_end_basic_blog_build() {
     );
     // The `<Note>` island actually rendered (proves real MDX evaluation,
     // not the raw-body fallback which would omit the component entirely).
+    // `<Note>` resolves to `components/callout.tsx`'s `Callout` component
+    // with `variant="note"`, which stamps this hook.
     assert!(
         leak_html.contains("data-component=\"note\""),
-        "zfb#1729: the <Note> island must render in token-leak-demo (its \
-         `data-component=\"note\"` hook must be present), proving the page did not \
-         fall back.\n--- html ---\n{leak_html}"
+        "zfb#1729: the <Note> island (components/callout.tsx) must render in \
+         token-leak-demo (its `data-component=\"note\"` hook must be present), proving \
+         the page did not fall back.\n--- html ---\n{leak_html}"
     );
     // The recovered code bytes survive to the rendered HTML.
     assert!(
