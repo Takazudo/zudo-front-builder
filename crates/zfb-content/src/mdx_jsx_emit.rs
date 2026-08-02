@@ -807,7 +807,10 @@ fn walk_collect_headings(
 /// [`walk_collect_headings`] does — it descends generically through
 /// [`MdastNode::children`], the same generic-descent idiom
 /// [`crate::footnotes::FootnoteModel::collect`] uses to reach every
-/// `Node::children()` regardless of container kind.
+/// `Node::children()` regardless of container kind, with ONE exception:
+/// it does not descend into a `FootnoteDefinition` body (see the
+/// exclusion list below) — the one container kind whose content is not
+/// unconditionally rendered.
 ///
 /// **Pure** — no I/O, no registry writes; the caller (the seeding block
 /// in [`mdx_to_jsx_module_with_pipeline`]) registers the result via
@@ -847,6 +850,20 @@ fn walk_collect_headings(
 ///   — could inject an `id` at runtime, but its value is opaque at
 ///   compile time; only statically-known literal anchors enter the
 ///   registry.
+/// - anything inside a `FootnoteDefinition` body (`[^label]: …`) — a
+///   definition's body is NOT unconditionally rendered: an unreferenced
+///   definition, or a duplicate that lost to an earlier one, never
+///   reaches the hast tree at all (`FootnoteModel::collect` decides the
+///   winning, referenced set; `pipeline.rs`'s `mdast_to_hast_inner` maps
+///   every top-level `FootnoteDefinition` node itself to an empty
+///   `HastNode::Raw`, and only the WINNING entries' bodies are
+///   separately converted, by `render_footnote_item`). Registering a
+///   JSX anchor from inside a body that might never render would let a
+///   genuinely broken link (no element in the DOM ever carries that id)
+///   silently validate — codex review finding, #2246. Like
+///   [`walk_collect_headings`], this walk therefore does not descend
+///   into `FootnoteDefinition` subtrees at all; a JSX anchor nested
+///   inside a footnote definition body is out of scope either way.
 ///
 /// ## Partition invariant
 ///
@@ -868,6 +885,11 @@ fn collect_jsx_anchor_ids(children: &[MdastNode]) -> Vec<String> {
 }
 
 fn walk_collect_jsx_anchor_ids(node: &MdastNode, out: &mut Vec<String>) {
+    // See the fn doc's exclusion list: a footnote definition body is not
+    // unconditionally rendered, so never descend into one here.
+    if matches!(node, MdastNode::FootnoteDefinition(_)) {
+        return;
+    }
     let jsx_shape = match node {
         MdastNode::MdxJsxFlowElement(j) => Some((j.name.as_deref(), &j.attributes)),
         MdastNode::MdxJsxTextElement(j) => Some((j.name.as_deref(), &j.attributes)),
@@ -3768,6 +3790,31 @@ mod tests {
             collect_jsx_anchor_ids(&children),
             vec!["top-level".to_string(), "nested-in-component".to_string()],
             "component id excluded; `name` on a non-`<a>` tag excluded"
+        );
+    }
+
+    /// Codex review finding (#2246): a JSX anchor inside a footnote
+    /// definition body must NOT be collected, referenced or not — an
+    /// UNREFERENCED definition's body never renders at all
+    /// (`FootnoteModel`'s "unreferenced definition is not rendered"
+    /// policy), so registering its embedded `<div id="ghost">` would
+    /// have let `[jump](#ghost)` — a genuinely broken link, since
+    /// nothing in the DOM ever carries that id — silently validate.
+    #[test]
+    fn collect_jsx_anchor_ids_excludes_ids_inside_footnote_definition_bodies() {
+        let children = parse_children(
+            "<div id=\"top-level\"></div>\n\n\
+             [^unreferenced]: <div id=\"ghost-unreferenced\"></div>\n\n\
+             Ref[^a] end.\n\n\
+             [^a]: <div id=\"ghost-referenced\"></div>\n",
+        );
+        assert_eq!(
+            collect_jsx_anchor_ids(&children),
+            vec!["top-level".to_string()],
+            "no id from inside ANY footnote definition body — referenced \
+             or not — may be collected: a definition's body only ever \
+             reaches the hast tree via `render_footnote_item`'s own \
+             conversion, which this pure mdast walk does not replay"
         );
     }
 
