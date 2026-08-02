@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use zfb_build::bundler::shadow_parent_dir;
+use zfb_build::bundler::{reap_stale_shadow_sessions, shadow_parent_dir};
 use zfb_build::{bundle, BundleMode, BundlerInput, ContentCollectionSpec, ShadowSession};
 use zfb_render::adapters::Framework;
 use zfb_test_utils::locate_esbuild;
@@ -92,6 +92,57 @@ fn shadow_session_tmpdir_is_not_project_local_when_tmpdir_is_project_local() {
     }
 
     run_child("session", None);
+}
+
+/// Test expectation 9 (#2257): `ZFB_KEEP_SHADOW_SESSION` must suppress
+/// self-teardown (a bare `Drop` AND an explicit `teardown()` call) AND the
+/// startup reap. Uses the same child-process + env-isolation harness as
+/// the other tests here — `ZFB_KEEP_SHADOW_SESSION` is a process-wide env
+/// var, so setting it with `std::env::set_var` inside an in-process test
+/// would leak across the other, unrelated, in-parallel tests in this
+/// binary.
+#[test]
+fn shadow_session_keep_flag_suppresses_drop_teardown_and_reap() {
+    if in_child("keep_flag") {
+        let root = child_root();
+        fs::create_dir_all(&root).unwrap();
+
+        // (a) Drop-proof: even a bare `Drop` (no explicit `teardown()`)
+        // must not delete the dir when the flag is set — the ctor's
+        // `disable_cleanup(true)` disarms `TempDir`'s own Drop-time
+        // deletion from birth, not just `teardown()`'s own branch.
+        let session_a = ShadowSession::new(&root).expect("allocate shadow session");
+        let root_a = session_a.shadow_root().to_path_buf();
+        drop(session_a);
+        assert!(
+            root_a.exists(),
+            "ZFB_KEEP_SHADOW_SESSION must survive a plain Drop, not just explicit teardown"
+        );
+
+        // (b) Explicit teardown must also skip deletion.
+        let session_b = ShadowSession::new(&root).expect("allocate second shadow session");
+        let root_b = session_b.shadow_root().to_path_buf();
+        session_b.teardown();
+        assert!(
+            root_b.exists(),
+            "ZFB_KEEP_SHADOW_SESSION must suppress explicit teardown's deletion too"
+        );
+
+        // (c) The reap must also skip a kept dir, even well past the age
+        // floor — the flag gates the reaper as well as self-teardown.
+        let parent = shadow_parent_dir(&root).expect("shadow parent");
+        backdate_dir_mtime(&root_b, std::time::Duration::from_secs(6 * 60));
+        reap_stale_shadow_sessions(&parent);
+        assert!(
+            root_b.exists(),
+            "ZFB_KEEP_SHADOW_SESSION must suppress the reap too, even past the age floor"
+        );
+
+        mark_child_complete(&root);
+        return;
+    }
+
+    run_keep_flag_child();
 }
 
 #[test]
@@ -198,8 +249,58 @@ fn current_test_name(kind: &str) -> &'static str {
         "ephemeral" => "ephemeral_bundler_tmpdir_is_not_project_local_when_tmpdir_is_project_local",
         "session" => "shadow_session_tmpdir_is_not_project_local_when_tmpdir_is_project_local",
         "exact" => "exact_node_modules_tmpdir_is_not_project_local_when_tmpdir_is_project_local",
+        "keep_flag" => "shadow_session_keep_flag_suppresses_drop_teardown_and_reap",
         _ => unreachable!("unknown child kind"),
     }
+}
+
+/// Variant of [`run_child`] for the keep-flag test (#2257): needs the same
+/// TMPDIR/XDG_CACHE_HOME isolation, plus `ZFB_KEEP_SHADOW_SESSION=1` — and
+/// deliberately skips [`assert_no_shadow_dirs_under_project_tmp`], since
+/// this test's whole point is that the child's session dirs are NOT
+/// cleaned up by the child itself (they are reclaimed here only via
+/// `outside_cache`'s own `TempDir` drop at the end of this fn, not by any
+/// zfb-side teardown/reap).
+fn run_keep_flag_child() {
+    let project = tempfile::tempdir().expect("project root");
+    let project_tmp = project.path().join(".tmp");
+    fs::create_dir_all(&project_tmp).expect("project-local tmp");
+    let outside_cache = tempfile::tempdir().expect("outside cache");
+
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .arg("--exact")
+        .arg(current_test_name("keep_flag"))
+        .arg("--nocapture")
+        .env(CHILD_KIND, "keep_flag")
+        .env(CHILD_ROOT, project.path())
+        .env(CHILD_CACHE, outside_cache.path())
+        .env("TMPDIR", &project_tmp)
+        .env("TEMP", &project_tmp)
+        .env("TMP", &project_tmp)
+        .env("XDG_CACHE_HOME", outside_cache.path())
+        .env("ZFB_KEEP_SHADOW_SESSION", "1");
+
+    let output = command.output().expect("spawn isolated keep-flag child");
+    assert!(
+        output.status.success(),
+        "child failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        project.path().join(COMPLETE_FILE).is_file(),
+        "child process exited without running assertions"
+    );
+}
+
+/// Backdate a directory's mtime by `age` — mirrors the equivalent helper
+/// in `bundler.rs`'s own unit tests (`esbuild.rs`'s `write_entry_aged`
+/// shape, applied to a directory rather than a file).
+fn backdate_dir_mtime(dir: &Path, age: std::time::Duration) {
+    let file = fs::File::open(dir).expect("open dir for mtime backdate");
+    file.set_modified(std::time::SystemTime::now() - age)
+        .expect("backdate dir mtime");
 }
 
 fn in_child(kind: &str) -> bool {

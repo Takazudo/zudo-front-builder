@@ -77,7 +77,10 @@ use anyhow::{Context, Result};
 use sha2::{Digest as _, Sha256};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use zfb_build::bundler::{bundle_with_session, BundleMode, BundlerOutput, ShadowSession};
+use zfb_build::bundler::{
+    bundle_with_session, reap_stale_shadow_sessions, shadow_parent_dir, BundleMode, BundlerOutput,
+    ShadowSession,
+};
 use zfb_build::renderer::{
     render_one, shutdown, start, Backend, RendererStartInput, RendererState, RouteUniverseEntry,
 };
@@ -5964,8 +5967,18 @@ impl DevRenderSession {
         Some(self.mark_all_routes_stale())
     }
 
-    /// Tear down the underlying [`RendererState`] cleanly. Safe to call
-    /// multiple times — subsequent calls are a no-op.
+    /// Tear down the underlying [`RendererState`] cleanly, AND (issue
+    /// #2257) the persistent shadow-tree session if one is still
+    /// installed. Safe to call multiple times — subsequent calls are a
+    /// no-op on both fields (`Mutex<Option<_>>::take()` returns `None`
+    /// once each has already been torn down).
+    ///
+    /// `run()`'s post-`select!` teardown site calls this unconditionally
+    /// on BOTH the graceful-shutdown arm and every supervision-failure
+    /// arm before `run()` returns its `Result` — including the
+    /// Err-supervision path that used to leak the shadow session (the
+    /// confirmed #2257 leak mechanism). No new call site was needed:
+    /// extending this fn covers it.
     fn shutdown_explicit(&self) {
         let mut lock = self.inner.renderer.lock().unwrap_or_else(|p| {
             tracing::warn!(site = "DevRenderSession", "mutex poisoned, recovered");
@@ -5973,6 +5986,19 @@ impl DevRenderSession {
         });
         if let Some(state) = lock.take() {
             let _ = shutdown(state);
+        }
+        #[cfg(feature = "embed_v8")]
+        {
+            let mut shadow = self.inner.shadow_session.lock().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "DevRenderSession",
+                    "shadow session mutex poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            if let Some(session) = shadow.take() {
+                session.teardown();
+            }
         }
     }
 
@@ -6484,6 +6510,18 @@ impl Drop for DevRenderInner {
         if let Ok(mut g) = self.renderer.lock() {
             if let Some(state) = g.take() {
                 let _ = shutdown(state);
+            }
+        }
+        // Same belt-and-braces for the persistent shadow session (issue
+        // #2257), mirroring the renderer's shape immediately above. Even
+        // if this Mutex is poisoned, `ShadowSession`'s own `Drop` impl
+        // (unlock + delete, or keep under `ZFB_KEEP_SHADOW_SESSION`) is
+        // the final backstop — a poisoned lock here just means we can't
+        // reach `.teardown()`'s tracing, not that the dir leaks.
+        #[cfg(feature = "embed_v8")]
+        if let Ok(mut g) = self.shadow_session.lock() {
+            if let Some(session) = g.take() {
+                session.teardown();
             }
         }
     }
@@ -7888,6 +7926,20 @@ fn boot_dev_renderer(
         // consumer project deliberately has no `pages/` directory.
         empty_user_pages_root: empty_user_pages_guard.map(|guard| (guard, pages_dir.clone())),
     };
+
+    // Issue #2257 — reap stale sibling `zfb-shadow-session-*` dirs a
+    // SIGKILLed prior `zfb dev` process left behind, ONCE per boot,
+    // immediately before allocating this session's own dir. Resolved via
+    // the same `shadow_parent_dir` the ctor itself calls below; a
+    // resolution error here is swallowed — the ctor's own call to it on
+    // the next line surfaces the identical error properly. Deliberately
+    // NOT inside `ShadowSession::new` itself (see that fn's doc comment
+    // and `reap_stale_shadow_sessions`'s own doc comment for why: 89 test
+    // call sites across the workspace construct a `ShadowSession`
+    // directly and must never probe the real shared system temp).
+    if let Ok(shadow_parent) = shadow_parent_dir(project_root) {
+        reap_stale_shadow_sessions(&shadow_parent);
+    }
 
     // Persistent dev shadow-tree session (issue #993) — created once
     // here, used for the boot bundle below, then stored on
@@ -10027,6 +10079,83 @@ mod tests {
             injected_static_seeds: Vec::new(),
             injected_route_set: InjectedRouteSet::default(),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Shadow-session teardown (issue #2257)
+    // -----------------------------------------------------------------
+
+    /// Test expectation 10 (#2257): `shutdown_explicit` must tear down an
+    /// installed shadow session (belt-and-braces alongside the renderer
+    /// field it already tears down), and stay idempotent on a second
+    /// call. This is also the practical seam for the Err-supervision
+    /// teardown: `run()` calls `shutdown_explicit` unconditionally on
+    /// both the Ok and every Err arm of its post-`select!` teardown (see
+    /// that call site's own comment), so proving `shutdown_explicit`
+    /// itself removes the shadow dir proves the Err-supervision path
+    /// does too — there is no separate branch to test.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn shutdown_explicit_removes_the_shadow_session_dir_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let mut inner = stub_dev_inner_at(
+            root.clone(),
+            config::Config::default(),
+            HashMap::new(),
+            Vec::new(),
+        );
+        let shadow = ShadowSession::new(&root).expect("allocate shadow session");
+        let shadow_root = shadow.shadow_root().to_path_buf();
+        *inner.shadow_session.get_mut().unwrap() = Some(shadow);
+        let session = DevRenderSession {
+            inner: Arc::new(inner),
+        };
+
+        assert!(
+            shadow_root.exists(),
+            "sanity: shadow dir materialised before teardown"
+        );
+
+        session.shutdown_explicit();
+        assert!(
+            !shadow_root.exists(),
+            "shutdown_explicit must remove the shadow session's tempdir"
+        );
+
+        // Idempotent: a second call must not panic — the Mutex is
+        // already `None` on both the renderer and shadow-session fields.
+        session.shutdown_explicit();
+        assert!(!shadow_root.exists());
+    }
+
+    /// Belt-and-braces half of #2257: `Drop for DevRenderInner` must tear
+    /// down an installed shadow session even when `shutdown_explicit` was
+    /// never called — mirrors a panicking dev loop or an early
+    /// `?`-return that skips the normal shutdown path, the exact leak
+    /// mechanism this epic closes.
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn dev_render_inner_drop_removes_the_shadow_session_dir_without_explicit_teardown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let mut inner = stub_dev_inner_at(
+            root.clone(),
+            config::Config::default(),
+            HashMap::new(),
+            Vec::new(),
+        );
+        let shadow = ShadowSession::new(&root).expect("allocate shadow session");
+        let shadow_root = shadow.shadow_root().to_path_buf();
+        *inner.shadow_session.get_mut().unwrap() = Some(shadow);
+
+        assert!(shadow_root.exists());
+        drop(inner); // no `shutdown_explicit()` call
+        assert!(
+            !shadow_root.exists(),
+            "DevRenderInner's Drop impl must tear down the shadow session even without \
+             shutdown_explicit"
+        );
     }
 
     /// V8-off counterpart of [`stub_dev_inner`] — no `rebuild_inputs`
