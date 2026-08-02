@@ -270,6 +270,25 @@ export type ZfbConfig = {
    */
   strictBrokenLinks?: boolean;
   /**
+   * Fail `zfb build` (exit non-zero) when a content-collection `.md`/`.mdx`
+   * entry falls back to `<pre data-zfb-content-fallback>` because its
+   * compiled JSX does not parse. Default: `false`.
+   *
+   * This is the effective boolean the CLI's `--strict-content-bridge` /
+   * `--no-strict-content-bridge` tri-state resolves against. Precedence:
+   * explicit CLI flag > this config field > default `false`.
+   *
+   * Unlike `strictBrokenLinks`, there is no adjacent feature to
+   * force-enable: the content-bridge gate always runs for every compiled
+   * collection entry.
+   *
+   * Build-only: it does not affect `zfb dev` — dev keeps warning and
+   * serving the fallback shape.
+   *
+   * Mirrors `Config::strict_content_bridge` in `crates/zfb/src/config.rs`.
+   */
+  strictContentBridge?: boolean;
+  /**
    * Bundler options. `bundle.exclude` lists project-relative globs of
    * source files to keep out of the esbuild graph (e.g.
    * `["components/*.stories.tsx"]`) — see {@link BundleConfig.exclude} for

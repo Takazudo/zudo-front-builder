@@ -811,6 +811,21 @@ pub struct BundlerOutput {
     /// this output is returned. Deployment adapters use this contract to carry
     /// the copied modules through to the final Worker package.
     pub emitted_wasm_assets: Vec<PathBuf>,
+    /// Every content-collection `.md`/`.mdx` source path (issue #2220, epic
+    /// #2216 Wave 4) whose compiled JSX failed [`jsx_module_parse_failure`]
+    /// during this call and therefore fell back to rendering via
+    /// `<pre data-zfb-content-fallback>` instead of bridging into the SSR
+    /// worker. Each entry is also warned to stderr unconditionally by
+    /// `materialise_collection`.
+    ///
+    /// Populated UNCONDITIONALLY — this field carries no policy of its own.
+    /// `bundle()` never fails because of it; deciding whether a non-empty
+    /// list should fail a BUILD is `crates/zfb/src/commands/
+    /// build.rs::run_build`'s job (the `strictContentBridge` config field /
+    /// `--strict-content-bridge` CLI flag), so `zfb dev` sharing this same
+    /// bundler call is unaffected by construction. Empty by default — a
+    /// project with no fallback pays nothing extra.
+    pub content_bridge_fallback_pages: Vec<String>,
 }
 
 /// What the bundle exports, in a form a downstream tool can read without
@@ -2310,6 +2325,7 @@ pub fn bundle_with_session(
         // #1151: the SHA-accurate collection-skip signal, parsed once per
         // bundle from the snapshot JSON the bundler already received.
         snapshot_specifiers: snapshot_specifier_set(input.content_snapshot_json.as_deref()),
+        content_bridge_fallbacks: RefCell::new(Vec::new()),
     };
     let project_root = normalize_path_lexical(&input.project_root);
     let plugin_main_fields = effective_ssr_main_fields(&input);
@@ -4281,12 +4297,19 @@ pub fn bundle_with_session(
         );
     }
 
+    // Bound to a local first (rather than inlined into the struct literal
+    // below) so the `Ref` temporary drops here, before `mat_ctx` itself is
+    // dropped at the end of this function's scope — inlined into the tail
+    // expression it would outlive `mat_ctx` per this block's temporary-
+    // lifetime rules.
+    let content_bridge_fallback_pages = mat_ctx.content_bridge_fallbacks.borrow().clone();
     Ok(BundlerOutput {
         bundle_path,
         sourcemap_path,
         manifest,
         route_module_deps,
         emitted_wasm_assets,
+        content_bridge_fallback_pages,
     })
 }
 
@@ -6838,6 +6861,29 @@ struct MaterialiseCtx<'a, 's> {
     /// (passthrough / prod-sessionless never skip; tests without a snapshot
     /// fall back to the legacy `(mtime, size)` key).
     snapshot_specifiers: Option<std::collections::HashSet<String>>,
+    /// Content-bridge fallback pages (issue #2220, epic #2216 Wave 4).
+    /// `materialise_collection`'s per-file closure pushes the `from` path of
+    /// every `.md`/`.mdx` collection entry whose compiled JSX fails
+    /// [`jsx_module_parse_failure`] — the SAME defensive-skip condition that
+    /// warns and returns [`ImportDecision::DoNotCache`] — so `bundle()` can
+    /// report every offending page via
+    /// [`BundlerOutput::content_bridge_fallback_pages`] after all collections
+    /// have been walked.
+    ///
+    /// This is purely a REPORTING channel: populating it never itself fails
+    /// `bundle()` (mirrors the always-warn, always-`DoNotCache` policy that
+    /// predates this field). Whether a non-empty result should fail a BUILD
+    /// is a build-only policy decision made by
+    /// `crates/zfb/src/commands/build.rs::run_build` (the
+    /// `strictContentBridge` config field / `--strict-content-bridge` CLI
+    /// flag) — never by the bundler itself, so `zfb dev` (which shares this
+    /// same materialise path) is structurally unable to inherit a
+    /// bail-on-fallback behavior.
+    ///
+    /// `RefCell` because every materialise call only holds `&MaterialiseCtx`
+    /// (shared reference), matching the existing `raw_import_edges` /
+    /// `module_worker_dependencies` interior-mutability idiom above.
+    content_bridge_fallbacks: RefCell<Vec<String>>,
 }
 
 /// Build the [`MaterialiseCtx::snapshot_specifiers`] set (#1151) from the
@@ -8211,6 +8257,17 @@ fn materialise_collection(
                             "zfb bundler: skipping MDX content bridge for {} — compiled JSX does not parse ({parse_err}). The page will render via the <pre data-zfb-content-fallback> shape.",
                             from.display(),
                         );
+                        // #2220 — report this fallback regardless of any
+                        // policy: recorded UNCONDITIONALLY (the warning above
+                        // fires unconditionally too), never gated on strict
+                        // mode here. Whether a non-empty result fails the
+                        // BUILD is decided later, by build.rs's own
+                        // `strictContentBridge` policy — see
+                        // `MaterialiseCtx::content_bridge_fallbacks`'s doc
+                        // comment.
+                        ctx.content_bridge_fallbacks
+                            .borrow_mut()
+                            .push(from.display().to_string());
                         return ImportDecision::DoNotCache;
                     }
                     // Apply `idStripSuffix` to the specifier's slug segment
@@ -13904,6 +13961,77 @@ mod tests {
         );
     }
 
+    /// Issue #2220 (epic #2216 Wave 4) — the content-bridge fallback signal
+    /// `materialise_collection` records for `bundle()`'s build-only strict
+    /// policy (`crates/zfb/src/commands/build.rs::run_build`).
+    ///
+    /// A `.mdx` file whose body embeds a spread-attribute JSX element with
+    /// a non-JS spread value (`<a {...\bad}>…</a>`) compiles to JSX that
+    /// does not parse: `render_jsx_attrs`'s `AttributeContent::Expression`
+    /// (spread) arm wraps the raw value straight into `{...}` with no
+    /// `mdx_expression_is_valid_js` validation (unlike the ordinary
+    /// attribute/text expression arms beside it), so `\bad` reaches the
+    /// compiled output unescaped and trips `jsx_module_parse_failure` —
+    /// a genuine, currently-reproducible true positive for the gate (as
+    /// opposed to `jsx_breakage_flags_bare_backslash_expressions`'s
+    /// hand-constructed strings, which test the parser function directly
+    /// without going through real MDX compilation). The defensive skip
+    /// fires: `imports` stays empty for this file (no `ContentImport` is
+    /// pushed) and the caller-owned `ctx.content_bridge_fallbacks`
+    /// accumulator records the offending source path. Critically,
+    /// `materialise_collection` itself still returns `Ok(())` — recording
+    /// the fallback NEVER fails the call, regardless of any policy; that
+    /// decision is made later, in the build command (see the field's own
+    /// doc comment).
+    #[test]
+    fn materialise_collection_records_content_bridge_fallback_and_never_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("docs");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("broken.mdx"),
+            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
+        )
+        .unwrap();
+
+        let dest = tmp.path().join("shadow_content").join("docs");
+        let mut imports: Vec<ContentImport> = Vec::new();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
+        materialise_collection(
+            &src,
+            &dest,
+            "docs",
+            &mut imports,
+            &ctx,
+            None,
+            None,
+            None,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("a content-bridge fallback must never fail materialise_collection");
+
+        assert!(
+            imports.is_empty(),
+            "the defensive skip must omit the bridge import; got {imports:?}"
+        );
+
+        let fallbacks = ctx.content_bridge_fallbacks.borrow();
+        assert_eq!(
+            fallbacks.len(),
+            1,
+            "expected exactly 1 recorded fallback, got {fallbacks:?}"
+        );
+        assert!(
+            fallbacks[0].contains("broken.mdx"),
+            "the recorded fallback must name the offending source file; got {:?}",
+            *fallbacks
+        );
+    }
+
     // -----------------------------------------------------------------
     // ShadowSession content-file skip cache (incremental materialise,
     // zfb#1148)
@@ -13982,6 +14110,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         let mut imports = Vec::new();
         let mut broken = Vec::new();
@@ -14052,6 +14181,7 @@ mod tests {
             // This dual-pass helper exercises the source/`materialise_shadow`
             // path (`import: None`), which is not snapshot-gated; `None` here.
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         let mut imports = Vec::new();
         materialise_collection(
@@ -15769,6 +15899,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         materialise_shadow(
             &components,
@@ -15819,6 +15950,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
 
         materialise_shadow(
@@ -15876,6 +16008,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
 
         preflight_raw_tree(&pages, &shadow_pages, &ctx).unwrap();
@@ -15931,6 +16064,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         materialise_shadow(
             &components,
@@ -16073,6 +16207,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
 
         preflight_raw_tree(&components, &shadow_components, &ctx)
@@ -16126,6 +16261,7 @@ mod tests {
             worker_build_context: ModuleWorkerBuildContext::default(),
             raw_preflight_complete: Cell::new(false),
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         };
         let is_excluded = |_: &Path| false;
 
@@ -16274,6 +16410,7 @@ mod tests {
                 worker_build_context: ModuleWorkerBuildContext::default(),
                 raw_preflight_complete: Cell::new(false),
                 snapshot_specifiers: None,
+                content_bridge_fallbacks: RefCell::new(Vec::new()),
             };
             preflight_raw_tree(&components, &shadow_components, &ctx)
         });
@@ -20716,6 +20853,7 @@ mod tests {
                 worker_build_context: ModuleWorkerBuildContext::default(),
                 raw_preflight_complete: Cell::new(false),
                 snapshot_specifiers: None,
+                content_bridge_fallbacks: RefCell::new(Vec::new()),
             };
             stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None)
                 .unwrap();
@@ -20747,6 +20885,7 @@ mod tests {
                 worker_build_context: ModuleWorkerBuildContext::default(),
                 raw_preflight_complete: Cell::new(false),
                 snapshot_specifiers: None,
+                content_bridge_fallbacks: RefCell::new(Vec::new()),
             };
             stage_glob_matched_files_to_fixed_point(&ctx, &project, ws, &shadow, &work, None)
                 .unwrap();
@@ -21279,6 +21418,7 @@ mod tests {
             // Passthrough/sessionless never skips, so the snapshot gate is
             // irrelevant here.
             snapshot_specifiers: None,
+            content_bridge_fallbacks: RefCell::new(Vec::new()),
         }
     }
 
@@ -21561,6 +21701,75 @@ mod tests {
         assert!(
             msg.contains("broken") || msg.contains("link"),
             "error message must describe the problem; got: {msg}"
+        );
+    }
+
+    /// Issue #2220 (epic #2216 Wave 4) — `bundle()` NEVER fails because of a
+    /// content-bridge fallback, regardless of any policy: it only ever
+    /// REPORTS every offending page via
+    /// [`BundlerOutput::content_bridge_fallback_pages`]. Deciding whether a
+    /// non-empty result should fail a BUILD is
+    /// `crates/zfb/src/commands/build.rs::run_build`'s job (the
+    /// `strictContentBridge` config field / `--strict-content-bridge` CLI
+    /// flag) — `bundle()` itself carries no such flag, which is what makes
+    /// `zfb dev` (sharing this exact call) structurally unable to inherit a
+    /// bail-on-fallback behavior. Contrast with
+    /// [`on_broken_links_error_returns_err_without_esbuild`] above, where
+    /// the bundler itself DOES own the decision — the two mechanisms are
+    /// deliberately shaped differently (see issue #2220's design notes).
+    ///
+    /// Uses `mock_subprocess_output` so no esbuild binary is required — the
+    /// content-bridge gate runs during the MDX pipeline (before esbuild).
+    ///
+    /// Level: 1 (unit — pure logic in the bundler pipeline).
+    #[test]
+    fn content_bridge_fallback_never_fails_bundle_and_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("content/docs")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+
+        fs::write(
+            root.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        // Same genuine parse-failure shape as
+        // `materialise_collection_records_content_bridge_fallback_and_never_fails`
+        // above — a spread-attribute JSX element whose value is not valid
+        // JS (`render_jsx_attrs`'s spread arm skips the
+        // `mdx_expression_is_valid_js` recovery its sibling arms apply).
+        fs::write(
+            root.join("content/docs/broken.mdx"),
+            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            content_collections: vec![ContentCollectionSpec::new(
+                "docs",
+                PathBuf::from("content/docs"),
+            )],
+            ..make_minimal_input(&tmp)
+        };
+
+        let output = bundle(input)
+            .expect("a content-bridge fallback must never fail bundle(), regardless of policy");
+
+        assert_eq!(
+            output.content_bridge_fallback_pages.len(),
+            1,
+            "expected exactly 1 reported fallback page, got {:?}",
+            output.content_bridge_fallback_pages
+        );
+        assert!(
+            output.content_bridge_fallback_pages[0].contains("broken.mdx"),
+            "the reported fallback must name the offending source file; got {:?}",
+            output.content_bridge_fallback_pages
         );
     }
 }
