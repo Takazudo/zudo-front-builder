@@ -411,3 +411,35 @@ fn broken_nested_link_beside_treated_nested_image_still_diagnoses() {
         "the neighboring image must still get stamped: {jsx}"
     );
 }
+
+// ── Bonus: heading-text regression guard (codex review finding) ────────────
+
+/// A heading directly containing a JSX-nested image whose dimensions get
+/// successfully stamped must NOT lose the image's `alt` text from the
+/// heading's collected `text` (and therefore its slug) — codex review
+/// flagged that `mdx_jsx_emit::mdast_inline_text` reads `Image.alt` but,
+/// before this fix, treated ANY JSX element (including the synthesized
+/// `<img>` replacement) as contributing no text, so a heading like `##
+/// ![Foo](/existing.png) Bar` silently changed from `"Foo Bar"` to `"Bar"`
+/// only when the file happened to exist and be probable.
+#[test]
+fn heading_with_treated_jsx_nested_image_keeps_alt_text_in_heading_export() {
+    let mut p = make_pipeline();
+    let jsx = compile(
+        &mut p,
+        "<Note>\n\n## ![Foo](/sample-100x50.png) Bar\n\n</Note>\n",
+    );
+    assert!(
+        jsx.contains(r#"text: "Foo Bar""#),
+        "the heading's collected text must still include the image's alt text \
+         after dimension injection replaced the Image node: {jsx}"
+    );
+    // Sanity: the image itself was actually treated (dimensions present),
+    // otherwise the assertion above would trivially pass via the
+    // untreated-node's native `Image.alt` contribution instead of the
+    // fix under test.
+    assert!(
+        jsx.contains(r#"width="100" height="50""#),
+        "the heading's nested image must have been treated: {jsx}"
+    );
+}

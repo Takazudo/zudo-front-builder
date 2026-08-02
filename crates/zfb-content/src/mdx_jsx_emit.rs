@@ -958,7 +958,17 @@ fn collect_literal_jsx_anchor_attrs(tag: &str, attrs: &[AttributeContent], out: 
 ///   `extract_text` would skip it, but `alt` is the closest plain-text
 ///   substitute and TOC consumers expect it)
 /// - `Break` → single space (renders as `<br>` then a space-equivalent)
-/// - MDX text expressions / JSX → contribute nothing (opaque to TOCs)
+/// - an `<img alt="…">`-shaped JSX element (`MdxJsxTextElement` named
+///   `img`) → contributes its `alt` attribute, same as `Image` above.
+///   Covers BOTH a literal author-written `<img>` and the synthesized
+///   element `JsxNestedImageDimensions` (zfb#2248) replaces a JSX-nested
+///   `Image` with — without this arm, a heading whose JSX-nested image
+///   got dimensions stamped would silently lose its alt-text
+///   contribution (falling through to the JSX catch-all below) purely
+///   because the referenced file happened to exist and be probable, an
+///   environment-dependent heading-text/slug change (codex review
+///   finding on #2248).
+/// - other MDX text expressions / JSX → contribute nothing (opaque to TOCs)
 fn mdast_inline_text(children: &[MdastNode]) -> String {
     let mut out = String::new();
     for c in children {
@@ -1001,11 +1011,35 @@ fn push_inline_text(node: &MdastNode, out: &mut String) {
         // rendered DOM.
         MdastNode::Math(m) => out.push_str(&m.value),
         MdastNode::InlineMath(m) => out.push_str(&m.value),
-        // Everything else (MDX expressions, raw HTML literals, JSX
+        // An `<img>`-shaped JSX element mirrors `Image`'s alt-text
+        // contribution — see the fn doc.
+        MdastNode::MdxJsxTextElement(j) if j.name.as_deref() == Some("img") => {
+            if let Some(alt) = jsx_literal_attr(&j.attributes, "alt") {
+                out.push_str(alt);
+            }
+        }
+        // Everything else (MDX expressions, raw HTML literals, other JSX
         // elements, …) contributes no plain text — TOCs cannot do
         // anything useful with `{count}` or `<Note/>` tokens.
         _ => {}
     }
+}
+
+/// Look up a JSX attribute's literal string value by name — `None` for a
+/// bare/boolean attribute, an expression-valued one, or an absent name.
+fn jsx_literal_attr<'a>(attrs: &'a [AttributeContent], name: &str) -> Option<&'a str> {
+    attrs.iter().find_map(|a| {
+        let AttributeContent::Property(p) = a else {
+            return None;
+        };
+        if p.name != name {
+            return None;
+        }
+        match &p.value {
+            Some(AttributeValue::Literal(v)) => Some(v.as_str()),
+            _ => None,
+        }
+    })
 }
 
 /// Render the `export const headings = [...];` line.
