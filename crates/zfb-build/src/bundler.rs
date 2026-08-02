@@ -7773,6 +7773,7 @@ struct MirrorSkipEntry {
 /// - the collection pass builds the `mdx://…` import (and may suppress it
 ///   when the compiled JSX would break esbuild — the defensive skip);
 /// - the `materialise_shadow` `src/` pass never produces a bridge import.
+#[derive(Debug)]
 enum ImportDecision {
     /// Collection pass, healthy JSX: push this import and store a
     /// skippable entry carrying it (replayed verbatim on a later skip).
@@ -8023,6 +8024,61 @@ fn materialise_mdx_with_skip(
     Ok(false)
 }
 
+/// Decide the [`ImportDecision`] for one collection `.md`/`.mdx` compile
+/// — the bridge-import disposition [`materialise_mdx_with_skip`]'s
+/// `import_decision` callback applies after the compile finishes.
+/// Extracted from `materialise_collection`'s per-file closure (#2241)
+/// so it can be unit-tested directly against a hand-built [`CompiledMdx`],
+/// without a real MDX compile or any disk I/O.
+///
+/// Healthy JSX (passes [`jsx_module_parse_failure`]) bridges: applies
+/// `idStripSuffix` to the specifier's slug segment (so the bundler's
+/// bridge-map key matches the snapshot's stripped `module_specifier`)
+/// and returns [`ImportDecision::Bridge`]. JSX that provably does not
+/// parse takes the defensive skip instead: warns to stderr, records
+/// `from` into `ctx.content_bridge_fallbacks` UNCONDITIONALLY (#2220 —
+/// see that field's own doc comment; never gated on strict-mode policy
+/// here), and returns [`ImportDecision::DoNotCache`] so the file is
+/// never skip-cached and every tick recompiles (and re-warns) until the
+/// source is fixed.
+fn decide_content_bridge_import(
+    compiled: &CompiledMdx,
+    from: &Path,
+    strip_suffix: Option<&str>,
+    shadow_rel_path: String,
+    ctx: &MaterialiseCtx<'_, '_>,
+) -> ImportDecision {
+    if let Some(parse_err) = jsx_module_parse_failure(&compiled.jsx_source) {
+        eprintln!(
+            "zfb bundler: skipping MDX content bridge for {} — compiled JSX does not parse ({parse_err}). The page will render via the <pre data-zfb-content-fallback> shape.",
+            from.display(),
+        );
+        // #2220 — report this fallback regardless of any
+        // policy: recorded UNCONDITIONALLY (the warning above
+        // fires unconditionally too), never gated on strict
+        // mode here. Whether a non-empty result fails the
+        // BUILD is decided later, by build.rs's own
+        // `strictContentBridge` policy — see
+        // `MaterialiseCtx::content_bridge_fallbacks`'s doc
+        // comment.
+        ctx.content_bridge_fallbacks
+            .borrow_mut()
+            .push(from.display().to_string());
+        return ImportDecision::DoNotCache;
+    }
+    // Apply `idStripSuffix` to the specifier's slug segment
+    // via the shared `zfb-content` helper so the bundler's
+    // bridge-map key matches the snapshot's
+    // `EntrySnapshot::module_specifier` after stripping —
+    // the snapshot↔bridge byte-for-byte invariant.
+    let specifier =
+        zfb_content::collection::maybe_strip_specifier_suffix(&compiled.specifier, strip_suffix);
+    ImportDecision::Bridge(ContentImport {
+        specifier,
+        shadow_rel_path,
+    })
+}
+
 /// Walk one content collection's source root and materialise its
 /// entries into `dest`, compiling MDX to JSX on the fly via
 /// [`compile_mdx_to_jsx_module_cached`] and recording every entry in
@@ -8232,14 +8288,15 @@ fn materialise_collection(
             let rel_str = path_to_posix_string(rel);
             let shadow_rel_path = format!("content/{}/{}", collection_name, rel_str);
             // The shared incremental-materialise core does the skip-check /
-            // compile / write / store. The closure decides the bridge
-            // import after the compile: the collection pass produces an
-            // `mdx://…` import (with `idStripSuffix` applied to the slug so
-            // the bundler's bridge key matches the snapshot's stripped
-            // `module_specifier`), UNLESS the compiled JSX provably does
-            // not parse — the defensive skip, which omits the import and
-            // refuses to cache so the page falls back to
-            // `<pre data-zfb-content-fallback>` and every tick re-warns.
+            // compile / write / store. `decide_content_bridge_import`
+            // decides the bridge import after the compile: the collection
+            // pass produces an `mdx://…` import (with `idStripSuffix`
+            // applied to the slug so the bundler's bridge key matches the
+            // snapshot's stripped `module_specifier`), UNLESS the compiled
+            // JSX provably does not parse — the defensive skip, which
+            // omits the import and refuses to cache so the page falls
+            // back to `<pre data-zfb-content-fallback>` and every tick
+            // re-warns.
             materialise_mdx_with_skip(
                 from,
                 &to,
@@ -8252,37 +8309,7 @@ fn materialise_collection(
                 cross_file_links_out,
                 file_headings_out,
                 |compiled| {
-                    if let Some(parse_err) = jsx_module_parse_failure(&compiled.jsx_source) {
-                        eprintln!(
-                            "zfb bundler: skipping MDX content bridge for {} — compiled JSX does not parse ({parse_err}). The page will render via the <pre data-zfb-content-fallback> shape.",
-                            from.display(),
-                        );
-                        // #2220 — report this fallback regardless of any
-                        // policy: recorded UNCONDITIONALLY (the warning above
-                        // fires unconditionally too), never gated on strict
-                        // mode here. Whether a non-empty result fails the
-                        // BUILD is decided later, by build.rs's own
-                        // `strictContentBridge` policy — see
-                        // `MaterialiseCtx::content_bridge_fallbacks`'s doc
-                        // comment.
-                        ctx.content_bridge_fallbacks
-                            .borrow_mut()
-                            .push(from.display().to_string());
-                        return ImportDecision::DoNotCache;
-                    }
-                    // Apply `idStripSuffix` to the specifier's slug segment
-                    // via the shared `zfb-content` helper so the bundler's
-                    // bridge-map key matches the snapshot's
-                    // `EntrySnapshot::module_specifier` after stripping —
-                    // the snapshot↔bridge byte-for-byte invariant.
-                    let specifier = zfb_content::collection::maybe_strip_specifier_suffix(
-                        &compiled.specifier,
-                        strip_suffix,
-                    );
-                    ImportDecision::Bridge(ContentImport {
-                        specifier,
-                        shadow_rel_path,
-                    })
+                    decide_content_bridge_import(compiled, from, strip_suffix, shadow_rel_path, ctx)
                 },
             )?;
         } else {
@@ -13961,64 +13988,59 @@ mod tests {
         );
     }
 
-    /// Issue #2220 (epic #2216 Wave 4) — the content-bridge fallback signal
-    /// `materialise_collection` records for `bundle()`'s build-only strict
-    /// policy (`crates/zfb/src/commands/build.rs::run_build`).
+    /// Issue #2220 (epic #2216 Wave 4), decomposed by #2241 into a direct
+    /// unit test of [`decide_content_bridge_import`] — the content-bridge
+    /// fallback signal `materialise_collection` records for `bundle()`'s
+    /// build-only strict policy
+    /// (`crates/zfb/src/commands/build.rs::run_build`).
     ///
-    /// A `.mdx` file whose body embeds a spread-attribute JSX element with
-    /// a non-JS spread value (`<a {...\bad}>…</a>`) compiles to JSX that
-    /// does not parse: `render_jsx_attrs`'s `AttributeContent::Expression`
-    /// (spread) arm wraps the raw value straight into `{...}` with no
-    /// `mdx_expression_is_valid_js` validation (unlike the ordinary
-    /// attribute/text expression arms beside it), so `\bad` reaches the
-    /// compiled output unescaped and trips `jsx_module_parse_failure` —
-    /// a genuine, currently-reproducible true positive for the gate (as
-    /// opposed to `jsx_breakage_flags_bare_backslash_expressions`'s
-    /// hand-constructed strings, which test the parser function directly
-    /// without going through real MDX compilation). The defensive skip
-    /// fires: `imports` stays empty for this file (no `ContentImport` is
-    /// pushed) and the caller-owned `ctx.content_bridge_fallbacks`
-    /// accumulator records the offending source path. Critically,
-    /// `materialise_collection` itself still returns `Ok(())` — recording
-    /// the fallback NEVER fails the call, regardless of any policy; that
-    /// decision is made later, in the build command (see the field's own
-    /// doc comment).
+    /// Pre-#2241, this test drove a REAL MDX compile of a spread-attribute
+    /// JSX element carrying a non-JS spread value (`<a {...\bad}>…</a>`):
+    /// `render_jsx_attrs`'s spread arm emitted the raw value straight into
+    /// `{...}` with no validation, so `\bad` reached the compiled output
+    /// unescaped and reliably tripped `jsx_module_parse_failure` — a
+    /// genuine true positive for the gate. #2241 closed that leak
+    /// (`mdx_spread_attribute_validity` now drops the attribute and warns
+    /// instead), so the real-MDX repro no longer reaches this gate at
+    /// all — the pipeline never hands `decide_content_bridge_import` a
+    /// broken module for that input anymore. This test instead drives the
+    /// helper directly against a HAND-BUILT [`CompiledMdx`] whose
+    /// `jsx_source` is unparseable by construction (mirroring
+    /// `jsx_breakage_flags_bare_backslash_expressions`'s hand-constructed
+    /// strings, not a real MDX compile), pinning the same defensive-skip
+    /// contract at the seam that actually owns it: `ImportDecision` stays
+    /// `DoNotCache` (never a `Bridge`) and `ctx.content_bridge_fallbacks`
+    /// records the offending source path. `decide_content_bridge_import`
+    /// itself is infallible (`ImportDecision`, not `Result`) — the "never
+    /// fails" half of the original name now lives one level up, at
+    /// `materialise_collection`'s own `Ok(())` return, which this
+    /// decomposition no longer exercises (see the retirement note on
+    /// `content_bridge_fallback_never_fails_bundle_and_is_reported`,
+    /// formerly below, for the remaining coverage gap).
     #[test]
-    fn materialise_collection_records_content_bridge_fallback_and_never_fails() {
+    fn decide_content_bridge_import_records_fallback_and_returns_do_not_cache_for_broken_jsx() {
+        let broken = CompiledMdx {
+            jsx_source: "<a>{\\bad}</a>".to_string(),
+            content_hash: "deadbeef".to_string(),
+            specifier: "mdx://docs/broken#deadbeef".to_string(),
+        };
+        let from = Path::new("/project/content/docs/broken.mdx");
         let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("docs");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(
-            src.join("broken.mdx"),
-            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
-        )
-        .unwrap();
-
-        let dest = tmp.path().join("shadow_content").join("docs");
-        let mut imports: Vec<ContentImport> = Vec::new();
         let exclude = no_bundle_exclude();
         let ctx = default_mat_ctx(tmp.path(), &exclude);
-        materialise_collection(
-            &src,
-            &dest,
-            "docs",
-            &mut imports,
-            &ctx,
-            None,
-            None,
-            None,
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut Vec::new(),
-        )
-        .expect("a content-bridge fallback must never fail materialise_collection");
 
-        assert!(
-            imports.is_empty(),
-            "the defensive skip must omit the bridge import; got {imports:?}"
+        let decision = decide_content_bridge_import(
+            &broken,
+            from,
+            None,
+            "content/docs/broken.mdx".to_string(),
+            &ctx,
         );
 
+        assert!(
+            matches!(decision, ImportDecision::DoNotCache),
+            "broken JSX must take the defensive skip, not Bridge/NoBridge"
+        );
         let fallbacks = ctx.content_bridge_fallbacks.borrow();
         assert_eq!(
             fallbacks.len(),
@@ -14029,6 +14051,43 @@ mod tests {
             fallbacks[0].contains("broken.mdx"),
             "the recorded fallback must name the offending source file; got {:?}",
             *fallbacks
+        );
+    }
+
+    /// The `Bridge` counterpart to the `DoNotCache` test above — proves
+    /// `decide_content_bridge_import`'s healthy-JSX branch applies
+    /// `idStripSuffix` to the specifier and records NOTHING into
+    /// `ctx.content_bridge_fallbacks`.
+    #[test]
+    fn decide_content_bridge_import_bridges_healthy_jsx_with_strip_suffix_applied() {
+        let healthy = CompiledMdx {
+            jsx_source: "<a>hi</a>".to_string(),
+            content_hash: "cafef00d".to_string(),
+            specifier: "mdx://docs/broken.data#cafef00d".to_string(),
+        };
+        let from = Path::new("/project/content/docs/broken.data.mdx");
+        let tmp = tempfile::tempdir().unwrap();
+        let exclude = no_bundle_exclude();
+        let ctx = default_mat_ctx(tmp.path(), &exclude);
+
+        let decision = decide_content_bridge_import(
+            &healthy,
+            from,
+            Some(".data"),
+            "content/docs/broken.data.mdx".to_string(),
+            &ctx,
+        );
+
+        match decision {
+            ImportDecision::Bridge(import) => {
+                assert_eq!(import.specifier, "mdx://docs/broken#cafef00d");
+                assert_eq!(import.shadow_rel_path, "content/docs/broken.data.mdx");
+            }
+            other => panic!("expected ImportDecision::Bridge, got {other:?}"),
+        }
+        assert!(
+            ctx.content_bridge_fallbacks.borrow().is_empty(),
+            "healthy JSX must not record a fallback"
         );
     }
 
@@ -17219,12 +17278,17 @@ mod tests {
     /// The genuinely-unparseable (true-positive) contract deliberately
     /// does NOT get a pipeline-level variant here:
     /// `emit_mdx_expression_braced` + `mdx_expression_is_valid_js`
-    /// recover invalid expressions at emit time (#1778/#1779), so
-    /// real-pipeline output is deliberately hard to make unparseable.
-    /// The TP contract lives at the unit level
-    /// (`jsx_breakage_flags_bare_backslash_expressions`); the gate stays
-    /// as defense in depth for plugin-injected `JsxRaw` payloads and
-    /// future emitter regressions.
+    /// recover invalid expressions at emit time (#1778/#1779), and since
+    /// #2241 `mdx_spread_attribute_validity` closes the one remaining
+    /// leak (a non-JS spread-attribute value) the same way — so
+    /// real-pipeline output is now UNCONDITIONALLY hard to make
+    /// unparseable through this emitter (no known input shape reaches
+    /// the gate as a true positive anymore). The TP contract lives at
+    /// the unit level (`jsx_breakage_flags_bare_backslash_expressions`
+    /// here, plus `mdx_spread_attribute_validity`'s own unit tests in
+    /// `crates/zfb-content/src/mdx_jsx_emit.rs`); the gate stays as
+    /// defense in depth for plugin-injected `JsxRaw` payloads and future
+    /// emitter regressions.
     #[test]
     fn mdx_bridge_gate_2216_field_reproducer_bridges() {
         let base = include_str!("../tests/fixtures/mdx-bridge-gate-2217/minimal-repro-body.mdx");
@@ -21772,74 +21836,46 @@ mod tests {
         );
     }
 
-    /// Issue #2220 (epic #2216 Wave 4) — `bundle()` NEVER fails because of a
-    /// content-bridge fallback, regardless of any policy: it only ever
-    /// REPORTS every offending page via
-    /// [`BundlerOutput::content_bridge_fallback_pages`]. Deciding whether a
-    /// non-empty result should fail a BUILD is
-    /// `crates/zfb/src/commands/build.rs::run_build`'s job (the
-    /// `strictContentBridge` config field / `--strict-content-bridge` CLI
-    /// flag) — `bundle()` itself carries no such flag, which is what makes
-    /// `zfb dev` (sharing this exact call) structurally unable to inherit a
-    /// bail-on-fallback behavior. Contrast with
-    /// [`on_broken_links_error_returns_err_without_esbuild`] above, where
-    /// the bundler itself DOES own the decision — the two mechanisms are
-    /// deliberately shaped differently (see issue #2220's design notes).
-    ///
-    /// Uses `mock_subprocess_output` so no esbuild binary is required — the
-    /// content-bridge gate runs during the MDX pipeline (before esbuild).
-    ///
-    /// Level: 1 (unit — pure logic in the bundler pipeline).
-    #[test]
-    fn content_bridge_fallback_never_fails_bundle_and_is_reported() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_path_buf();
-
-        fs::create_dir_all(root.join("pages")).unwrap();
-        fs::create_dir_all(root.join("content/docs")).unwrap();
-        fs::create_dir_all(root.join("components")).unwrap();
-        fs::create_dir_all(root.join("layouts")).unwrap();
-
-        fs::write(
-            root.join("pages/index.tsx"),
-            "export default function Home() { return null; }\n",
-        )
-        .unwrap();
-
-        // Same genuine parse-failure shape as
-        // `materialise_collection_records_content_bridge_fallback_and_never_fails`
-        // above — a spread-attribute JSX element whose value is not valid
-        // JS (`render_jsx_attrs`'s spread arm skips the
-        // `mdx_expression_is_valid_js` recovery its sibling arms apply).
-        fs::write(
-            root.join("content/docs/broken.mdx"),
-            "---\ntitle: Broken\n---\n\n<a {...\\bad}>link</a>\n",
-        )
-        .unwrap();
-
-        let input = BundlerInput {
-            content_collections: vec![ContentCollectionSpec::new(
-                "docs",
-                PathBuf::from("content/docs"),
-            )],
-            ..make_minimal_input(&tmp)
-        };
-
-        let output = bundle(input)
-            .expect("a content-bridge fallback must never fail bundle(), regardless of policy");
-
-        assert_eq!(
-            output.content_bridge_fallback_pages.len(),
-            1,
-            "expected exactly 1 reported fallback page, got {:?}",
-            output.content_bridge_fallback_pages
-        );
-        assert!(
-            output.content_bridge_fallback_pages[0].contains("broken.mdx"),
-            "the reported fallback must name the offending source file; got {:?}",
-            output.content_bridge_fallback_pages
-        );
-    }
+    // Issue #2220 (epic #2216 Wave 4) originally pinned "`bundle()` NEVER
+    // fails because of a content-bridge fallback, and REPORTS every
+    // offending page via `BundlerOutput::content_bridge_fallback_pages`"
+    // with a real end-to-end `bundle()` call over a spread-attribute MDX
+    // fixture (`<a {...\bad}>…</a>`) that genuinely failed
+    // `jsx_module_parse_failure`.
+    //
+    // #2241 closed that leak at the source: `render_jsx_attrs`'s spread
+    // arm now validates via `mdx_spread_attribute_validity` and drops +
+    // warns instead of emitting the unparseable bytes, so this fixture no
+    // longer reaches the content-bridge gate at all — real-pipeline
+    // output is now deliberately hard to make unparseable for spreads
+    // too (see `mdx_bridge_gate_2216_field_reproducer_bridges`'s doc
+    // comment below), the same way it already was for ordinary
+    // expression attributes. There is no other known way to make a real
+    // MDX compile produce unparseable JSX through this call site, so this
+    // test is RETIRED (not replaced 1:1) rather than re-fixtured — its
+    // coverage decomposes into three pieces that together still prove the
+    // never-fails+recorded contract, none of which need a genuinely
+    // broken real-pipeline compile:
+    //   1. `decide_content_bridge_import_records_fallback_and_returns_do_not_cache_for_broken_jsx`
+    //      above — the DoNotCache + fallback-record decision itself,
+    //      against a hand-built `CompiledMdx`.
+    //   2. The one-line copy-out from `MaterialiseCtx::content_bridge_fallbacks`
+    //      into `BundlerOutput::content_bridge_fallback_pages` (`bundle()`,
+    //      around the `let content_bridge_fallback_pages = ...` line) —
+    //      trivial by inspection, not independently unit-tested.
+    //   3. `crates/zfb/src/commands/build.rs`'s `FakeRunner`-backed
+    //      `run_build_content_bridge_fallback_*` tests, which drive the
+    //      `strictContentBridge` bail check against a CANNED
+    //      `content_bridge_fallback_pages` list (`FakeRunner::with_content_bridge_fallback_pages`),
+    //      independent of how that list gets populated.
+    //
+    // Remaining gap (deliberately accepted, not silently dropped): no test
+    // left in this repo drives the real `bundle()` entry point end-to-end
+    // to a NON-EMPTY `content_bridge_fallback_pages` result. If a future
+    // change reopens a way to make real-pipeline JSX unparseable, only the
+    // hand-built helper test above would catch a regression in the
+    // decision logic — an end-to-end fixture-driven repro would not exist
+    // until a new one is written against whatever new leak is found.
 
     /// #2221 (epic #2216 Wave 5 confirm pass) — the real-call-site
     /// companion to [`mdx_bridge_gate_2216_field_reproducer_bridges`]
@@ -21851,9 +21887,11 @@ mod tests {
     /// call site's own wiring (e.g. dropping the import, or recording a
     /// fallback despite a clean parse).
     ///
-    /// This test closes that gap the way
-    /// [`content_bridge_fallback_never_fails_bundle_and_is_reported`]
-    /// above proves the FAILURE direction: it drives the real
+    /// This test closes that gap the way the now-retired
+    /// `content_bridge_fallback_never_fails_bundle_and_is_reported`
+    /// (see the retirement note above, near
+    /// `decide_content_bridge_import_records_fallback_and_returns_do_not_cache_for_broken_jsx`)
+    /// used to prove the FAILURE direction: it drives the real
     /// [`bundle()`] entry point (`mock_subprocess_output`, no esbuild
     /// binary needed — the content-bridge gate runs during the MDX
     /// pipeline, before esbuild) over a content collection containing

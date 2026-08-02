@@ -116,6 +116,16 @@ impl MdxJsxOptions {
 /// against the MDX content should use
 /// [`mdx_to_jsx_module_with_pipeline`] instead. See zfb#116.
 ///
+/// An invalid spread attribute (`{...value}` where `value` is not
+/// valid JS) is still validated and its attribute dropped (#2241) —
+/// the emitted module never carries the unparseable bytes — but
+/// because this entry point runs with no [`Pipeline`](crate::pipeline::Pipeline)
+/// there is no diagnostic channel to surface a warning through: no
+/// `MarkdownDiagnostic` is produced and nothing is printed to stderr.
+/// Callers that need the warning should compile through
+/// [`mdx_to_jsx_module_with_pipeline`] instead, whose diagnostics flow
+/// through `Pipeline::take_markdown_diagnostics`.
+///
 /// # Errors
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
 /// The error message includes the line/column reported by markdown-rs.
@@ -390,7 +400,7 @@ fn mdx_to_jsx_module_inner(
     // HeadingLinksPlugin's `visit_with_context` will ALSO insert top-level h2–h6 entries
     // during the hast pass — exact duplicates by the slug-lockstep invariant; harmless.)
 
-    let (body, html_tags, component_names, hoisted_esm) = if take_hast_detour {
+    let (body, html_tags, component_names, hoisted_esm, jsx_diagnostics) = if take_hast_detour {
         // Wrap children back into a Root so `mdast_to_hast_with` can
         // recurse through them as a single node — its public signature
         // takes `&MdastNode`.
@@ -427,6 +437,7 @@ fn mdx_to_jsx_module_inner(
                 .as_deref()
                 .and_then(Pipeline::nested_code_render_chain)
                 .map(std::cell::RefCell::new),
+            diagnostics: std::cell::RefCell::new(Vec::new()),
         };
         let strategy_fn = |node: &MdastNode, fc: &FootnoteRenderCtx<'_>| -> String {
             jsx_raw_recursive(node, &slug_ctx, fc)
@@ -456,14 +467,28 @@ fn mdx_to_jsx_module_inner(
             bridge.html_tags,
             bridge.component_names,
             bridge.hoisted_esm,
+            // Drain diagnostics accumulated while rendering JSX-nested
+            // attributes (e.g. a dropped invalid spread, #2241) — merged
+            // into `context_diags` below, alongside every other
+            // context-plugin warning.
+            slug_ctx.diagnostics.into_inner(),
         )
     } else {
         let mut emitter = JsxEmitter::new();
         let body = emitter.emit_children_block(&children);
         // The no-pipeline JsxEmitter path is byte-stable and does not hoist
         // hast-phase JsxRaw nodes (it never runs hast visitors). Return an
-        // empty Vec so the tuple shape is uniform.
-        (body, emitter.html_tags, emitter.component_names, Vec::new())
+        // empty Vec so the tuple shape is uniform. It carries no diagnostic
+        // channel either (see `mdx_to_jsx_module`'s doc comment) — an
+        // invalid spread there is dropped silently, so this last slot is
+        // always empty.
+        (
+            body,
+            emitter.html_tags,
+            emitter.component_names,
+            Vec::new(),
+            Vec::new(),
+        )
     };
 
     // Flush context-plugin diagnostics — and the #977 side channels
@@ -474,7 +499,13 @@ fn mdx_to_jsx_module_inner(
     // `take_cross_file_link_candidates` / `take_file_headings`. The
     // explicit drop releases the sink/buffer borrows held by the context.
     drop(build_ctx);
-    let context_diags = context_sink.take();
+    let mut context_diags = context_sink.take();
+    // Merge in diagnostics collected while emitting JSX-nested attributes
+    // (e.g. a dropped invalid spread, #2241) — same drain discipline as
+    // `context_sink` above, just collected on `NestedRenderCtx` instead of
+    // through `BuildContext` since it fires from the hast-detour JSX-path
+    // walk, not a context-aware feature plugin.
+    context_diags.extend(jsx_diagnostics);
     if let Some(p) = pipeline_mut {
         if !context_diags.is_empty() {
             p.extend_markdown_diagnostics(context_diags);
@@ -1027,7 +1058,12 @@ impl JsxEmitter {
         children: &[MdastNode],
     ) -> String {
         let tag = name.unwrap_or("");
-        let attrs_str = render_jsx_attrs(attrs);
+        // No-pipeline path (`mdx_to_jsx_module`): an invalid spread is
+        // still validated and dropped, but there is no diagnostic
+        // channel to route the warning through here — see that
+        // function's doc comment. The throwaway sink is discarded
+        // immediately after the call.
+        let attrs_str = render_jsx_attrs(attrs, &mut Vec::new());
         let inner = self.emit_inline_children(children);
 
         let (open_name, close_name) = if tag.is_empty() {
@@ -1724,6 +1760,14 @@ struct NestedRenderCtx<'a> {
     nested_slugs: &'a [String],
     cursor: std::cell::Cell<usize>,
     code_chain: Option<std::cell::RefCell<Vec<Box<dyn HastVisitor>>>>,
+    /// Diagnostics produced while rendering JSX-nested attributes — today
+    /// only an invalid spread attribute (#2241) pushes here. `jsx_element_text`
+    /// is reached only from the pipeline (hast-detour) path, so the caller
+    /// drains this once rendering completes and merges it into the same
+    /// context-diagnostics flush every other context-plugin warning goes
+    /// through (see the call site around `mdx_to_jsx_module_inner`'s
+    /// `context_sink` flush).
+    diagnostics: std::cell::RefCell<Vec<MarkdownDiagnostic>>,
 }
 
 impl NestedRenderCtx<'_> {
@@ -1868,7 +1912,7 @@ fn jsx_element_text(
     ctx: &NestedRenderCtx,
     fc: &FootnoteRenderCtx<'_>,
 ) -> String {
-    let attrs_str = render_jsx_attrs(attrs);
+    let attrs_str = render_jsx_attrs(attrs, &mut ctx.diagnostics.borrow_mut());
     // Choose the open/close JSX tag name. `name == None` is the MDX
     // fragment shorthand `<></>` — emit `_Fragment` so the JSX parser
     // accepts it (a bare `< />` is invalid). PascalCase names go through
@@ -2309,7 +2353,25 @@ fn render_attrs(attrs: &[(String, AttrVal)]) -> String {
 }
 
 /// Format a parsed MDX JSX attribute list as JSX text.
-fn render_jsx_attrs(attrs: &[AttributeContent]) -> String {
+///
+/// A spread attribute (`AttributeContent::Expression`) is validated via
+/// [`mdx_spread_attribute_validity`] before being emitted (#2241): an
+/// invalid spread value reaching the compiled module unescaped would
+/// trip the bundler's SWC parse gate (`jsx_module_parse_failure` in
+/// `crates/zfb-build/src/bundler.rs`), degrading the WHOLE page to the
+/// `<pre data-zfb-content-fallback>` shape — the same failure mode
+/// #1778/#1779 already closed for ordinary expression attributes via
+/// [`emit_mdx_expression_braced`]. An invalid spread is OMITTED
+/// entirely (never emitted, never silently coerced) and a
+/// [`MarkdownDiagnostic::warning`] naming the offending value and the
+/// underlying parse problem is pushed onto `diagnostics`. Callers with
+/// no pipeline-backed diagnostic channel (the no-pipeline
+/// [`mdx_to_jsx_module`] entry point) pass a throwaway sink — see that
+/// function's doc comment.
+fn render_jsx_attrs(
+    attrs: &[AttributeContent],
+    diagnostics: &mut Vec<MarkdownDiagnostic>,
+) -> String {
     if attrs.is_empty() {
         return String::new();
     }
@@ -2334,10 +2396,24 @@ fn render_jsx_attrs(attrs: &[AttributeContent]) -> String {
             AttributeContent::Expression(e) => {
                 // Spread attribute. markdown-rs delivers the value
                 // already containing the leading `...` (e.g. "...rest"
-                // for `<a {...rest} />`), so just wrap it back in `{}`.
-                out.push('{');
-                out.push_str(&e.value);
-                out.push('}');
+                // for `<a {...rest} />`).
+                match mdx_spread_attribute_validity(&e.value) {
+                    Ok(()) => {
+                        out.push('{');
+                        out.push_str(&e.value);
+                        out.push('}');
+                    }
+                    Err(parse_problem) => {
+                        // Drop the attribute — undo the leading space
+                        // this iteration already pushed so no
+                        // attribute-shaped gap survives in the output.
+                        out.pop();
+                        diagnostics.push(MarkdownDiagnostic::warning(format!(
+                            "dropping invalid spread attribute {{{}}}: {parse_problem}",
+                            e.value
+                        )));
+                    }
+                }
             }
         }
     }
@@ -2466,6 +2542,96 @@ fn mdx_expression_is_valid_js(value: &str) -> bool {
         module.body.as_slice(),
         [ModuleItem::Stmt(Stmt::Expr(stmt))] if matches!(*stmt.expr, Expr::Paren(_))
     )
+}
+
+/// Validate an MDX spread-attribute value (e.g. `"...rest"` for
+/// `<a {...rest} />` — markdown-rs already includes the leading `...`,
+/// see [`render_jsx_attrs`]) as a single, syntactically valid JS spread
+/// element (#2241).
+///
+/// [`mdx_expression_is_valid_js`] validates an ordinary
+/// attribute/text expression by wrapping it in `(value);` —
+/// parentheses accept any expression. That wrapper is grammatically
+/// invalid for EVERY spread shape: `(...rest);` is not a legal
+/// parenthesized expression, because a bare `...` can only start a
+/// spread element inside an array literal, a call's argument list, or
+/// an object literal — never inside plain parentheses. This validator
+/// instead wraps the value inside an array literal (`[value];`), which
+/// accepts a spread element the same way a JSX spread attribute's own
+/// grammar does.
+///
+/// Returns `Ok(())` only when `value` parses as EXACTLY one array
+/// element that is itself a spread (`[...expr]`) — the same strictness
+/// as `mdx_expression_is_valid_js`: a hard parse failure, any SWC
+/// error-recovered ("stashed") diagnostic, AND any other shape (an
+/// empty value, a bare `...` with no operand, multiple elements,
+/// trailing tokens) are all rejected, even when the wrapped array
+/// itself parses without error — `[]` and `[a, b]` are both valid JS
+/// but neither is a valid spread. `Err` carries the underlying SWC
+/// parse message and, where available, its byte offset into `value`
+/// itself (translated back from the synthetic `[value];` wrapper, not
+/// left relative to it).
+fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap, Spanned};
+    use swc_core::ecma::ast::{ArrayLit, EsVersion, Expr, ExprOrSpread, ModuleItem, Stmt};
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), format!("[{value}];"));
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let module = match parser.parse_module() {
+        Ok(m) => m,
+        Err(e) => {
+            // `[` is a single ASCII byte, so subtracting one more than
+            // the byte offset into the synthetic `[value];` source maps
+            // the error position back onto `value` itself.
+            let offset = e
+                .span()
+                .lo
+                .0
+                .saturating_sub(fm.start_pos.0)
+                .saturating_sub(1);
+            return Err(format!("byte {offset}: {}", e.kind().msg()));
+        }
+    };
+    // SWC's parser is error-recovering: it can return `Ok` on invalid
+    // input while stashing recoverable diagnostics. Reject those too.
+    if let Some(e) = parser.take_errors().into_iter().next() {
+        let offset = e
+            .span()
+            .lo
+            .0
+            .saturating_sub(fm.start_pos.0)
+            .saturating_sub(1);
+        return Err(format!("byte {offset}: {}", e.kind().msg()));
+    }
+    let is_single_spread = matches!(
+        module.body.as_slice(),
+        [ModuleItem::Stmt(Stmt::Expr(stmt))]
+            if matches!(
+                &*stmt.expr,
+                Expr::Array(ArrayLit { elems, .. })
+                    if matches!(elems.as_slice(), [Some(ExprOrSpread { spread: Some(_), .. })])
+            )
+    );
+    if is_single_spread {
+        Ok(())
+    } else {
+        Err("expected a single spread expression (`...expr`), got a different shape".to_string())
+    }
 }
 
 /// Emitter-local byte pre-filter applied to a single emitted JSX
@@ -5574,6 +5740,148 @@ mod tests {
             jsx.contains("class=\"sr-only\""),
             "the sr-only class stays as a styling hook alongside the inline \
              style: {jsx}"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────
+    // `mdx_spread_attribute_validity` — the array-wrap adapter (#2241)
+    // ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn spread_validity_accepts_an_ordinary_spread() {
+        assert_eq!(mdx_spread_attribute_validity("...rest"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_complex_conditional_spread() {
+        assert_eq!(mdx_spread_attribute_validity("...(cond ? a : b)"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_spread_with_a_leading_block_comment() {
+        // markdown-rs's own `stops` mapping shows a JSX comment before the
+        // spread stays part of the same attribute value (`{/* c */...x}`).
+        // Comments are trivia to the parser, so this must validate exactly
+        // like the bare `...x` spread.
+        assert_eq!(mdx_spread_attribute_validity("/* c */...x"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_tsx_flavored_spread() {
+        // `as` type assertions are the TSX-safe cast idiom this codebase
+        // already relies on elsewhere (see bundler.rs's
+        // `jsx_module_parse_failure` coverage for `{x as number}`) — angle-
+        // bracket casts are deliberately NOT exercised here because TSX
+        // mode treats `<Foo>` as JSX, not a cast.
+        assert_eq!(
+            mdx_spread_attribute_validity("...(x as Record<string, unknown>)"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_empty_value() {
+        // `<a {} />` — markdown-rs hands back an empty value with no `...`
+        // at all (verified against `to_mdast`'s own output). Wrapped as
+        // `[];` this is a perfectly valid (empty) array literal, so the
+        // shape check — not the parse check — is what must reject it: an
+        // empty array is valid JS but is not a spread.
+        let err =
+            mdx_spread_attribute_validity("").expect_err("an empty spread value must be rejected");
+        assert!(
+            err.contains("shape"),
+            "expected the shape-mismatch message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_bare_dots_with_no_operand() {
+        // `<a {...} />` — markdown-rs hands back the bare `...` with
+        // nothing after it (verified against `to_mdast`'s own output).
+        // `[...];` is a genuine parse error: a spread element requires an
+        // operand.
+        let err = mdx_spread_attribute_validity("...")
+            .expect_err("bare `...` with no operand must be rejected");
+        assert!(
+            err.starts_with("byte "),
+            "expected a parse-error message carrying a byte offset, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_the_field_bug_shape() {
+        // The exact #2220/#2241 field shape: a backslash-escape leaking
+        // outside a string (`<a {...\bad}>`, mirrored by the bundler-side
+        // fixtures in `crates/zfb-build/src/bundler.rs`). `\b` is not a
+        // valid identifier-start outside a Unicode escape, so this is a
+        // hard parse error naming the underlying SWC problem — not just
+        // "is not valid JS".
+        let err = mdx_spread_attribute_validity(r"...\bad")
+            .expect_err("a backslash-escape spread value must be rejected");
+        assert!(
+            err.starts_with("byte "),
+            "expected a parse-error message carrying a byte offset, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_multiple_elements() {
+        // Same strictness rule as `mdx_expression_is_valid_js`'s single-
+        // statement shape check: `[a, b];` is valid JS but is not a
+        // single spread element, so it must still be rejected even though
+        // nothing here fails to parse.
+        let err = mdx_spread_attribute_validity("...a, ...b")
+            .expect_err("multiple array elements must be rejected");
+        assert!(
+            err.contains("shape"),
+            "expected the shape-mismatch message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn render_jsx_attrs_drops_an_invalid_spread_and_emits_a_warning() {
+        let attrs = vec![AttributeContent::Expression(
+            markdown::mdast::MdxJsxExpressionAttribute {
+                value: r"...\bad".to_string(),
+                stops: Vec::new(),
+            },
+        )];
+        let mut diagnostics = Vec::new();
+        let out = render_jsx_attrs(&attrs, &mut diagnostics);
+        assert_eq!(out, "", "an invalid spread must be omitted entirely: {out}");
+        assert_eq!(diagnostics.len(), 1, "expected exactly 1 diagnostic");
+        assert_eq!(
+            diagnostics[0].severity(),
+            zfb_md_ast::diagnostics::DiagnosticSeverity::Warning
+        );
+        let MarkdownDiagnostic::Generic { message, .. } = &diagnostics[0] else {
+            panic!("expected a Generic diagnostic, got {:?}", diagnostics[0]);
+        };
+        assert!(
+            message.contains(r"...\bad"),
+            "diagnostic must name the offending spread value: {message}"
+        );
+        assert!(
+            message.contains("byte "),
+            "diagnostic must include the underlying parse position/message, not just \
+             \"is not valid JS\": {message}"
+        );
+    }
+
+    #[test]
+    fn render_jsx_attrs_keeps_a_valid_spread_verbatim_and_emits_no_diagnostic() {
+        let attrs = vec![AttributeContent::Expression(
+            markdown::mdast::MdxJsxExpressionAttribute {
+                value: "...rest".to_string(),
+                stops: Vec::new(),
+            },
+        )];
+        let mut diagnostics = Vec::new();
+        let out = render_jsx_attrs(&attrs, &mut diagnostics);
+        assert_eq!(out, " {...rest}");
+        assert!(
+            diagnostics.is_empty(),
+            "a valid spread must not emit a diagnostic: {diagnostics:?}"
         );
     }
 }

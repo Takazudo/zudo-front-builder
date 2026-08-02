@@ -241,6 +241,85 @@ fn mdx_spread_attribute_preserved() {
 }
 
 #[test]
+fn mdx_invalid_spread_attribute_is_dropped_and_module_stays_parseable() {
+    // The exact #2220/#2241 field shape: a backslash-escape leaking
+    // outside a string in a spread attribute. Pre-#2241 this reached the
+    // compiled module unescaped and tripped the bundler's SWC parse gate
+    // (`jsx_module_parse_failure` in `crates/zfb-build/src/bundler.rs`),
+    // degrading the whole page to the `<pre data-zfb-content-fallback>`
+    // shape. No-pipeline path: attribute still dropped, but there is no
+    // diagnostic channel here (see `mdx_to_jsx_module`'s doc comment).
+    let out = emit("<a {...\\bad}>link</a>\n");
+    assert!(
+        !out.contains(r"\bad"),
+        "the invalid spread's bytes must not reach the compiled module: {out}"
+    );
+    // The element itself, and its children, must still be present — only
+    // the one bad attribute is omitted.
+    assert!(
+        out.contains("link"),
+        "surrounding content must survive: {out}"
+    );
+    let pipeline = SwcPipeline::new();
+    let opts = CompileOptions::default().with_filename("t.tsx");
+    pipeline.compile(&out, &opts).unwrap_or_else(|e| {
+        panic!("dropping the invalid spread must leave a parseable module: {e}\n{out}")
+    });
+}
+
+#[test]
+fn mdx_invalid_spread_attribute_warns_through_the_pipeline_path() {
+    use zfb_content::pipeline::Pipeline;
+
+    let mut pipeline = Pipeline::with_defaults();
+    pipeline.reset_per_entry();
+    let out = zfb_content::mdx_to_jsx_module_with_pipeline(
+        "<a {...\\bad}>link</a>\n",
+        MdxJsxOptions::default(),
+        &mut pipeline,
+    )
+    .expect("compile ok");
+
+    assert!(
+        !out.contains(r"\bad"),
+        "the invalid spread's bytes must not reach the compiled module: {out}"
+    );
+    let compiled = SwcPipeline::new()
+        .compile(&out, &CompileOptions::default().with_filename("t.tsx"))
+        .unwrap_or_else(|e| {
+            panic!("dropping the invalid spread must leave a parseable module: {e}\n{out}")
+        });
+    assert!(!compiled.code.is_empty());
+
+    let diags = pipeline.take_markdown_diagnostics();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly 1 diagnostic, got {diags:?}"
+    );
+    match &diags[0] {
+        zfb_md_ast::diagnostics::MarkdownDiagnostic::Generic {
+            severity, message, ..
+        } => {
+            assert_eq!(
+                *severity,
+                zfb_md_ast::diagnostics::DiagnosticSeverity::Warning
+            );
+            assert!(
+                message.contains(r"...\bad"),
+                "diagnostic must name the offending spread value: {message}"
+            );
+            assert!(
+                message.contains("byte "),
+                "diagnostic must include the underlying SWC parse error/position, not just \
+                 \"is not valid JS\": {message}"
+            );
+        }
+        other => panic!("expected a Generic diagnostic, got {other:?}"),
+    }
+}
+
+#[test]
 fn mdx_text_expression_passes_through() {
     let out = emit("hello {1 + 1} world\n");
     // `{1 + 1}` should be visible verbatim in the output.
