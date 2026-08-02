@@ -274,15 +274,27 @@ impl MdastVisitor for JsxNestedLinkCollector {
 /// `walk_collect_headings`, this walk has no emitter-lockstep
 /// constraint, so generic descent is safe.)
 ///
-/// One deliberate exception: `FootnoteDefinition` subtrees are SKIPPED
-/// entirely. A definition's body never renders where it was written —
-/// `FootnoteModel` (zfb-content) lifts referenced definitions into the
-/// structured document-level footnote section, which the hast walk DOES
-/// visit even when the definition was authored inside a JSX body.
-/// Collecting here would validate the same occurrence twice (partition
-/// violation). Unreferenced definitions render nowhere and are validated
-/// by neither walk — matching today's structured behaviour for top-level
-/// unreferenced definitions.
+/// One deliberate exception: a `FootnoteDefinition` boundary RESETS
+/// `in_jsx` to `false` for the definition's subtree. A definition's
+/// body never renders where it was written — `FootnoteModel`
+/// (zfb-content) lifts referenced definitions into the structured
+/// document-level footnote section, which the hast walk DOES visit even
+/// when the definition was authored inside a JSX body — so an ordinary
+/// link in the body must NOT be collected regardless of any OUTER JSX
+/// ancestor: the rendered section already validates it, and collecting
+/// it too double-reported (the #2225 carve-out). But JSX authored
+/// INSIDE the body collapses to an opaque `JsxRaw` leaf in that
+/// rendered section, invisible to the hast walk — the reset lets the
+/// descent re-enter a JSX arm and flip `in_jsx` back to `true`,
+/// collecting exactly the links beneath definition-internal JSX
+/// (`[^fn]: <Note>[broken](#missing)</Note>` was dropped by BOTH
+/// halves under the former unconditional skip — codex review on
+/// #2225). Do NOT "simplify" the reset into a skip (reopens that gap)
+/// or into recursion carrying the outer `in_jsx` (reintroduces the
+/// double-report). Unreferenced definitions render nowhere; their
+/// ordinary links stay unvalidated (matching structured top-level
+/// behaviour), while a definition-internal-JSX link is still collected
+/// — warning on dead-but-broken content, accepted by the reset design.
 fn collect_jsx_nested_links(node: &MdastNode, in_jsx: bool, out: &mut Vec<JsxNestedLinkCandidate>) {
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
@@ -295,9 +307,17 @@ fn collect_jsx_nested_links(node: &MdastNode, in_jsx: bool, out: &mut Vec<JsxNes
                 collect_jsx_nested_links(c, true, out);
             }
         }
-        // Rendered via the document-level footnote section (structured,
-        // hast-walk-visible) or not at all — never collected here.
-        MdastNode::FootnoteDefinition(_) => {}
+        // The body renders via the document-level footnote section (or
+        // not at all), never in place — recurse with `in_jsx` RESET so
+        // an outer-JSX-relocated ordinary link is left to that
+        // hast-visible section (no double-report), while JSX authored
+        // INSIDE the body (opaque `JsxRaw` there) re-arms collection on
+        // re-entry. See the fn doc before "simplifying" this.
+        MdastNode::FootnoteDefinition(d) => {
+            for c in &d.children {
+                collect_jsx_nested_links(c, false, out);
+            }
+        }
         MdastNode::Link(l) => {
             if in_jsx {
                 out.push(JsxNestedLinkCandidate {
