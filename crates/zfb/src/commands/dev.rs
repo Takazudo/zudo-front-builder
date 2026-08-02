@@ -14508,6 +14508,7 @@ mod tests {
             },
             route_module_deps: Vec::new(),
             emitted_wasm_assets: Vec::new(),
+            content_bridge_fallback_pages: Vec::new(),
         }
     }
 
@@ -15790,6 +15791,57 @@ mod tests {
              `zfb dev` call, and the override belongs ONLY to build's owned-config \
              mutation in commands/build.rs::run() (#2117); leaking it here would hard-fail \
              `zfb dev` for any strict-configured project"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Dev-isolation regression pin for strictContentBridge (#2220, epic
+    // #2216 Wave 4)
+    // -----------------------------------------------------------------
+    //
+    // Isolation contract: `strictContentBridge` / `--strict-content-bridge`
+    // are resolved and consulted ONLY inside `commands/build.rs::run()` /
+    // `run_build()` (see that fn's own `#2220` comments) — `zfb dev`'s
+    // config-construction path (`run()` above) must stay outside that
+    // resolution entirely, so a project can set `strictContentBridge: true`
+    // in `zfb.config.*` for its `zfb build` CI gate while still running
+    // `zfb dev` day-to-day, with dev continuing to warn-and-serve a content-
+    // bridge fallback rather than `bail!`-ing.
+    //
+    // Unlike the strictBrokenLinks pin above, there is no companion
+    // "shared assembly" test here: this mechanism has NO shared function to
+    // leak into. `zfb_build::bundle()` (called by both `zfb build` and `zfb
+    // dev`) always reports `BundlerOutput::content_bridge_fallback_pages`
+    // unconditionally and never itself decides to fail — the ONLY place
+    // that ever turns that report into a build failure is the bail check
+    // inside `run_build`, gated on `config.strict_content_bridge`, which
+    // `zfb dev` never reads. So a plain source-text guard on `run()`'s own
+    // body (proving dev never even calls the CLI-tri-state resolver) closes
+    // the whole isolation contract, not just a partial slice of it.
+    #[test]
+    fn dev_run_never_applies_the_strict_content_bridge_override() {
+        let src = include_str!("dev.rs");
+
+        const RUN_MARKER: &str = "pub async fn run(args: &DevArgs) -> Result<()> {";
+        const V8_OFF_STUB_MARKER: &str = "pub async fn run(_args: &DevArgs) -> Result<()> {";
+
+        let start = src
+            .find(RUN_MARKER)
+            .expect("dev.rs must still define `pub async fn run(args: &DevArgs)`");
+        let body = &src[start..];
+        let end = body[1..]
+            .find(V8_OFF_STUB_MARKER)
+            .map(|i| i + 1)
+            .unwrap_or(body.len());
+        let run_body = &body[..end];
+
+        assert!(
+            !run_body.contains("resolve_strict_content_bridge"),
+            "dev.rs's `run()` must never call `resolve_strict_content_bridge` — \
+             strict-content-bridge enforcement is build-only (see \
+             commands/build.rs::run()/run_build(), #2220); pulling it into dev's \
+             shared config-construction path would hard-fail `zfb dev` mid-edit-session \
+             on any strict-configured project instead of warning-and-serving"
         );
     }
 

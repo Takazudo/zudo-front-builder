@@ -71,12 +71,13 @@
 //! Ported in Wave 6 (#580). Reference: [`remark-validate-links`](https://www.npmjs.com/package/remark-validate-links).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use markdown::mdast::Node as MdastNode;
 use zfb_md_ast::{
     diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation},
     BuildContext, CrossFileLinkCandidate, HastNode, HastVisitor, LinkValidationConfig,
-    ReadRecorder,
+    MdastVisitor, ReadRecorder,
 };
 use zfb_types::normalize_path_lexical;
 
@@ -174,6 +175,181 @@ fn resolve_relative(source_path: &Path, file_ref: &str) -> Option<PathBuf> {
     Some(normalize_path_lexical(&joined))
 }
 
+// ── JSX-nested link candidates (zfb#2184) ─────────────────────────────────────
+
+/// One `Link`/`Image` occurrence found under an MDX-JSX ancestor in the
+/// mdast tree — exactly the two values [`validate_link`] needs.
+///
+/// Deliberately NO position/line info: [`emit_broken_link`] builds a
+/// path-only [`SourceLocation`], so nested diagnostics come out
+/// byte-identical in shape to structured-walk ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsxNestedLinkCandidate {
+    /// The raw href (`Link.url` / `Image.url`) as it stands at collection
+    /// time — post-`resolve_links` (see the collector's ordering doc).
+    pub url: String,
+    /// True when the candidate came from an `Image` (`<img src>`
+    /// semantics: existence-only, sprite fragments never anchor-checked).
+    pub is_img: bool,
+}
+
+/// Shared candidate buffer carrying JSX-nested link candidates from the
+/// mdast-phase [`JsxNestedLinkCollector`] to the hast-phase
+/// [`LinkValidationPlugin`].
+pub type JsxNestedLinkBuffer = Arc<Mutex<Vec<JsxNestedLinkCandidate>>>;
+
+/// Mdast walk collecting every `Link`/`Image` that has an MDX-JSX
+/// ancestor (`MdxJsxFlowElement` / `MdxJsxTextElement`) — the exact
+/// complement of what the hast walk ([`collect_diagnostics`]) can see:
+/// an MDX-JSX element is collapsed into a single opaque
+/// `HastNode::JsxRaw(String)` leaf by the mdast→hast conversion, so the
+/// structured walk never reaches links nested inside it (zfb#2184; the
+/// same mechanism covers `:::note` container directives, which
+/// `DirectiveRegistry` expands into ordinary `MdxJsxFlowElement`s in the
+/// mdast phase). Partition invariant: the hast walk validates exactly the
+/// no-JSX-ancestor set, this collector exactly the complement — union
+/// validated, intersection empty, each occurrence exactly once.
+///
+/// # Ordering (load-bearing)
+///
+/// The pipeline applies this collector AFTER the `resolve_links`
+/// application. `ResolveLinksPlugin::visit` recurses via `children_mut()`
+/// — it DOES descend into JSX children and rewrites nested `Link.url` in
+/// place — so collecting pre-rewrite spellings would validate `./page.md`
+/// forms that resolve_links turns into (skipped) URL-space hrefs: false
+/// positives. It is therefore NOT a registered mdast visitor (those run
+/// before the resolve_links application); `Pipeline` holds it in a
+/// dedicated slot applied after that block, on the context-carrying
+/// paths only.
+///
+/// # Scope (parity with the structured walk)
+///
+/// Collects ONLY `Link` and `Image` — not `LinkReference` /
+/// `ImageReference` (dropped by the mdast→hast conversion's catch-all
+/// even at top level), not `Html` (a top-level `Html` → `Raw` leaf is
+/// not validated today either), not MDX expressions (opaque `value`, no
+/// mdast children). Author-written JSX attributes (`<a href=…>` authored
+/// as JSX, component props, directive attributes) are out of scope —
+/// they have no structured-walk counterpart to mirror (#2224 ruling).
+pub struct JsxNestedLinkCollector {
+    buffer: JsxNestedLinkBuffer,
+}
+
+impl JsxNestedLinkCollector {
+    /// Create a collector writing into `buffer`. The SAME `Arc` must be
+    /// attached to the validating [`LinkValidationPlugin`] via
+    /// [`LinkValidationPlugin::with_nested_link_buffer`].
+    #[must_use]
+    pub fn new(buffer: JsxNestedLinkBuffer) -> Self {
+        Self { buffer }
+    }
+}
+
+impl MdastVisitor for JsxNestedLinkCollector {
+    /// Collect into a local vec, then clear-then-fill the shared buffer.
+    ///
+    /// Clear-then-fill is dedup load-bearing: a pipeline reused across
+    /// documents must never accumulate one document's candidates into
+    /// the next. (The validator additionally drains on take at entry,
+    /// and [`LinkValidationPlugin`]'s `reset` clears — three independent
+    /// layers against cross-entry leakage.)
+    fn visit(&mut self, node: &mut MdastNode) {
+        let mut local = Vec::new();
+        collect_jsx_nested_links(node, false, &mut local);
+        let mut buf = self.buffer.lock().unwrap();
+        buf.clear();
+        buf.extend(local);
+    }
+}
+
+/// Recursive descent for [`JsxNestedLinkCollector`]: `in_jsx` flips to
+/// `true` on entering an MDX-JSX element body and stays `true` below —
+/// JSX-inside-JSX does not re-trigger a sub-collection; the walk visits
+/// every node exactly once.
+///
+/// Descent is GENERIC (`node.children()`) rather than an explicit
+/// container-arm list: links also live in `Paragraph`, `Table*`,
+/// `Emphasis`/`Strong`/`Delete`, … and a narrow list would silently miss
+/// e.g. a link in a table inside `<Note>`. (Unlike zfb-content's
+/// `walk_collect_headings`, this walk has no emitter-lockstep
+/// constraint, so generic descent is safe.)
+///
+/// One deliberate exception: a `FootnoteDefinition` boundary RESETS
+/// `in_jsx` to `false` for the definition's subtree. A definition's
+/// body never renders where it was written — `FootnoteModel`
+/// (zfb-content) lifts referenced definitions into the structured
+/// document-level footnote section, which the hast walk DOES visit even
+/// when the definition was authored inside a JSX body — so an ordinary
+/// link in the body must NOT be collected regardless of any OUTER JSX
+/// ancestor: the rendered section already validates it, and collecting
+/// it too double-reported (the #2225 carve-out). But JSX authored
+/// INSIDE the body collapses to an opaque `JsxRaw` leaf in that
+/// rendered section, invisible to the hast walk — the reset lets the
+/// descent re-enter a JSX arm and flip `in_jsx` back to `true`,
+/// collecting exactly the links beneath definition-internal JSX
+/// (`[^fn]: <Note>[broken](#missing)</Note>` was dropped by BOTH
+/// halves under the former unconditional skip — codex review on
+/// #2225). Do NOT "simplify" the reset into a skip (reopens that gap)
+/// or into recursion carrying the outer `in_jsx` (reintroduces the
+/// double-report). Unreferenced definitions render nowhere; their
+/// ordinary links stay unvalidated (matching structured top-level
+/// behaviour), while a definition-internal-JSX link is still collected
+/// — warning on dead-but-broken content, accepted by the reset design.
+fn collect_jsx_nested_links(node: &MdastNode, in_jsx: bool, out: &mut Vec<JsxNestedLinkCandidate>) {
+    match node {
+        MdastNode::MdxJsxFlowElement(j) => {
+            for c in &j.children {
+                collect_jsx_nested_links(c, true, out);
+            }
+        }
+        MdastNode::MdxJsxTextElement(j) => {
+            for c in &j.children {
+                collect_jsx_nested_links(c, true, out);
+            }
+        }
+        // The body renders via the document-level footnote section (or
+        // not at all), never in place — recurse with `in_jsx` RESET so
+        // an outer-JSX-relocated ordinary link is left to that
+        // hast-visible section (no double-report), while JSX authored
+        // INSIDE the body (opaque `JsxRaw` there) re-arms collection on
+        // re-entry. See the fn doc before "simplifying" this.
+        MdastNode::FootnoteDefinition(d) => {
+            for c in &d.children {
+                collect_jsx_nested_links(c, false, out);
+            }
+        }
+        MdastNode::Link(l) => {
+            if in_jsx {
+                out.push(JsxNestedLinkCandidate {
+                    url: l.url.clone(),
+                    is_img: false,
+                });
+            }
+            // An `Image` inside a link label is a distinct validatable
+            // occurrence — structured behaviour validates both the
+            // `<a href>` and its inner `<img src>` — so keep descending.
+            for c in &l.children {
+                collect_jsx_nested_links(c, in_jsx, out);
+            }
+        }
+        MdastNode::Image(i) => {
+            if in_jsx {
+                out.push(JsxNestedLinkCandidate {
+                    url: i.url.clone(),
+                    is_img: true,
+                });
+            }
+        }
+        other => {
+            if let Some(children) = other.children() {
+                for c in children {
+                    collect_jsx_nested_links(c, in_jsx, out);
+                }
+            }
+        }
+    }
+}
+
 // ── Visitor ───────────────────────────────────────────────────────────────────
 
 /// Hast visitor that validates internal links and anchor fragments.
@@ -189,6 +365,12 @@ pub struct LinkValidationPlugin {
     /// MDX compile cache can validate a dependency manifest. `None`
     /// keeps the pre-#944 behaviour exactly.
     recorder: Option<Arc<ReadRecorder>>,
+    /// Optional shared buffer of JSX-nested candidates (zfb#2184) filled
+    /// by [`JsxNestedLinkCollector`] in the mdast phase; drained
+    /// (`mem::take`) at every `visit_with_context` entry and validated
+    /// after the structured hast walk. `None` keeps pre-#2184 behaviour
+    /// exactly.
+    nested_links: Option<JsxNestedLinkBuffer>,
 }
 
 impl LinkValidationPlugin {
@@ -198,6 +380,7 @@ impl LinkValidationPlugin {
         Self {
             config,
             recorder: None,
+            nested_links: None,
         }
     }
 
@@ -208,6 +391,15 @@ impl LinkValidationPlugin {
     #[must_use]
     pub fn with_recorder(mut self, recorder: Arc<ReadRecorder>) -> Self {
         self.recorder = Some(recorder);
+        self
+    }
+
+    /// Attach the shared JSX-nested candidate buffer this plugin drains
+    /// (zfb#2184). The SAME `Arc` must be given to the pipeline's
+    /// [`JsxNestedLinkCollector`] — mirrors [`Self::with_recorder`].
+    #[must_use]
+    pub fn with_nested_link_buffer(mut self, buffer: JsxNestedLinkBuffer) -> Self {
+        self.nested_links = Some(buffer);
         self
     }
 
@@ -226,8 +418,18 @@ impl HastVisitor for LinkValidationPlugin {
     fn visit(&mut self, _node: &mut HastNode) {}
 
     /// Context-aware traversal: validates every `<a href>` and `<img src>`
-    /// in the hast tree against the heading registry and filesystem.
+    /// in the hast tree against the heading registry and filesystem, then
+    /// every JSX-nested candidate the mdast collector buffered (zfb#2184).
     fn visit_with_context(&mut self, node: &mut HastNode, ctx: &mut BuildContext<'_>) {
+        // Drain FIRST, unconditionally: a `None`-source document must
+        // still empty the buffer (its candidates are dropped, matching
+        // "no source path → no validation at all") — otherwise they
+        // would replay into the next document's run.
+        let pending = self
+            .nested_links
+            .as_ref()
+            .map(|b| std::mem::take(&mut *b.lock().unwrap()))
+            .unwrap_or_default();
         let source_path = match ctx.source_path.clone() {
             Some(p) => p,
             None => return, // no source path → cannot resolve relative links
@@ -240,6 +442,22 @@ impl HastVisitor for LinkValidationPlugin {
             recorder: self.recorder.as_deref(),
         };
         collect_diagnostics(node, &env, ctx);
+        // JSX-nested candidates (zfb#2184): validated late, after the
+        // structured walk, one existing `validate_link` call per
+        // candidate — diagnostic order is structured-walk first, then
+        // nested candidates in document order.
+        for c in &pending {
+            validate_link(&c.url, &env, ctx, c.is_img);
+        }
+    }
+
+    /// Belt-and-braces against cross-entry leakage (zfb#2184):
+    /// `Pipeline::reset_per_entry` clears the shared candidate buffer
+    /// alongside the other per-document visitor state.
+    fn reset(&mut self) {
+        if let Some(b) = &self.nested_links {
+            b.lock().unwrap().clear();
+        }
     }
 }
 
