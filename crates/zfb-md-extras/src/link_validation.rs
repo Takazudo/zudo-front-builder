@@ -269,10 +269,20 @@ impl MdastVisitor for JsxNestedLinkCollector {
 ///
 /// Descent is GENERIC (`node.children()`) rather than an explicit
 /// container-arm list: links also live in `Paragraph`, `Table*`,
-/// `Emphasis`/`Strong`/`Delete`, `FootnoteDefinition`, … and a narrow
-/// list would silently miss e.g. a link in a table inside `<Note>`.
-/// (Unlike zfb-content's `walk_collect_headings`, this walk has no
-/// emitter-lockstep constraint, so generic descent is safe.)
+/// `Emphasis`/`Strong`/`Delete`, … and a narrow list would silently miss
+/// e.g. a link in a table inside `<Note>`. (Unlike zfb-content's
+/// `walk_collect_headings`, this walk has no emitter-lockstep
+/// constraint, so generic descent is safe.)
+///
+/// One deliberate exception: `FootnoteDefinition` subtrees are SKIPPED
+/// entirely. A definition's body never renders where it was written —
+/// `FootnoteModel` (zfb-content) lifts referenced definitions into the
+/// structured document-level footnote section, which the hast walk DOES
+/// visit even when the definition was authored inside a JSX body.
+/// Collecting here would validate the same occurrence twice (partition
+/// violation). Unreferenced definitions render nowhere and are validated
+/// by neither walk — matching today's structured behaviour for top-level
+/// unreferenced definitions.
 fn collect_jsx_nested_links(node: &MdastNode, in_jsx: bool, out: &mut Vec<JsxNestedLinkCandidate>) {
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
@@ -285,6 +295,9 @@ fn collect_jsx_nested_links(node: &MdastNode, in_jsx: bool, out: &mut Vec<JsxNes
                 collect_jsx_nested_links(c, true, out);
             }
         }
+        // Rendered via the document-level footnote section (structured,
+        // hast-walk-visible) or not at all — never collected here.
+        MdastNode::FootnoteDefinition(_) => {}
         MdastNode::Link(l) => {
             if in_jsx {
                 out.push(JsxNestedLinkCandidate {

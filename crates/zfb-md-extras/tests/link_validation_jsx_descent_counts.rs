@@ -213,6 +213,58 @@ fn pipeline_reuse_does_not_replay_candidates_into_next_document() {
     );
 }
 
+// ── Footnote-definition partition guard ──────────────────────────────────────
+
+/// A broken link inside a REFERENCED footnote definition authored inside
+/// `<Note>` must report exactly ONE diagnostic. The definition's body
+/// does not render where it was written — `FootnoteModel` lifts it into
+/// the structured document-level footnote section, which the hast walk
+/// DOES visit (regardless of where the definition was authored). The
+/// collector must therefore skip `FootnoteDefinition` subtrees entirely,
+/// or this occurrence would be validated twice: once via the rendered
+/// section, once via the collected candidate (codex review finding on
+/// #2225; needs GFM footnotes ON, hence the full-config pipeline).
+#[test]
+fn jsx_nested_referenced_footnote_definition_link_reports_exactly_one() {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
+    let features = MarkdownFeaturesConfig {
+        link_validation: Some(LinkValidationConfig::default()),
+        directives: Some(directives),
+        ..Default::default()
+    };
+    let mut pipeline = Pipeline::with_defaults_and_full_config(
+        None,
+        ResolvedGfmConstructs::ALL_ON,
+        None,
+        false,
+        false,
+        Some(&features),
+    )
+    .expect("full-config pipeline must build");
+
+    let mut registry = HeadingRegistry::new();
+    let diags = run_doc(
+        &mut pipeline,
+        "<Note>\n\n[^fn1]\n\n[^fn1]: [link](#missing-footnote-def)\n\n</Note>\n",
+        &mut registry,
+    );
+    let broken: Vec<_> = diags
+        .iter()
+        .filter(|d| {
+            matches!(d, MarkdownDiagnostic::BrokenLink { url, .. } if url == "#missing-footnote-def")
+        })
+        .collect();
+    assert_eq!(
+        broken.len(),
+        1,
+        "one authored occurrence in a footnote definition = exactly one \
+         diagnostic (rendered-section validation only, no double-collect): {diags:?}"
+    );
+}
+
 // ── resolve_links ordering pin ───────────────────────────────────────────────
 
 /// The collector MUST run after the `resolve_links` application:
