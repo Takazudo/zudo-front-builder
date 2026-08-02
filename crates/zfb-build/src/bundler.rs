@@ -17238,6 +17238,74 @@ mod tests {
              <pre data-zfb-content-fallback> again (epic #2216). Reported parse failure: \
              {failure:?}"
         );
+
+        // #2221 (epic #2216 Wave 5 confirm pass) — a passing parse gate
+        // alone only proves the ABSENCE of a rejection; it does not prove
+        // the page renders real content. Assert POSITIVELY on the compiled
+        // markup itself, per the confirm-pass spec's item 2 ("assert on
+        // the emitted markup, not just on the absence of the warning").
+        //
+        // Deliberately NOT asserted here: the literal runtime fallback
+        // marker (`<pre data-zfb-content-fallback>` / `[zfb fallback
+        // render]`, `packages/zfb/src/content.ts`'s `renderFallback`).
+        // That string is produced later, by an entirely different code
+        // path (TS `Content()`, only reached when the JS-side bridge-map
+        // lookup misses at request time) — it can never appear in THIS
+        // Rust-side compiled-JSX string regardless of whether the page
+        // bridges or falls back, so a `!jsx.contains(...)` check on it
+        // here would be vacuously true (codex review catch, #2221 Wave
+        // 5). The real "did materialise_collection choose to bridge, not
+        // fall back" proof lives one level up, at the actual call site —
+        // see `mdx_bridge_gate_2216_field_reproducer_bundles_without_content_bridge_fallback`
+        // below, which drives the real `bundle()` entry point and
+        // asserts `content_bridge_fallback_pages` is empty for this
+        // fixture.
+        //
+        // What IS asserted here: the genuine fallback shape carries no
+        // headings, anchors, or components — just the raw unparsed body
+        // in a single flat `<pre>`. This compiled JSX must look nothing
+        // like that: it must carry the real `Note` component element
+        // with its real title prop, the real bullet/paragraph text
+        // (including the apostrophes that triggered #2217's byte-scanner
+        // desync — proof the content survived rather than being
+        // paraphrased away), a real external anchor href, the JSON
+        // fence's real payload, and several distinct component element
+        // types — i.e. genuine structure, not a flattened blob.
+        assert!(
+            jsx.contains(r#"<Note title="Known limitations">"#),
+            "the real Note MDX-JSX-flow-element and its title prop must survive verbatim; \
+             emitted:\n{jsx}"
+        );
+        assert!(
+            jsx.contains("Config-level per-mode literal defaults aren't possible yet."),
+            "the first bullet's real text — including the apostrophe that triggered #2217's \
+             byte-scanner desync — must survive verbatim; emitted:\n{jsx}"
+        );
+        assert!(
+            jsx.contains(
+                r#"href="https://github.com/Takazudo/zudo-design-token-panel/issues/499""#
+            ),
+            "the real external anchor href must survive; emitted:\n{jsx}"
+        );
+        assert!(
+            jsx.contains("zudo-design-tokens/v3"),
+            "the JSON fence's real payload must survive (as highlighted-code spans, not a raw \
+             fallback dump); emitted:\n{jsx}"
+        );
+        for marker in [
+            "_components.ul",
+            "_components.li",
+            "_components.strong",
+            "_components.a",
+            "_components.code",
+            "_components.pre",
+        ] {
+            assert!(
+                jsx.contains(marker),
+                "expected distinct component element `{marker}` in the compiled JSX — a \
+                 flattened fallback blob would carry none of these; emitted:\n{jsx}"
+            );
+        }
     }
 
     #[test]
@@ -21769,6 +21837,82 @@ mod tests {
         assert!(
             output.content_bridge_fallback_pages[0].contains("broken.mdx"),
             "the reported fallback must name the offending source file; got {:?}",
+            output.content_bridge_fallback_pages
+        );
+    }
+
+    /// #2221 (epic #2216 Wave 5 confirm pass) — the real-call-site
+    /// companion to [`mdx_bridge_gate_2216_field_reproducer_bridges`]
+    /// above. That test proves the #2186 field reproducer's compiled JSX
+    /// passes the parse gate as a PURE FUNCTION check
+    /// (`jsx_module_parse_failure` called directly on
+    /// `compile_mdx_to_jsx_module_cached`'s output) — it never drives
+    /// `materialise_collection` itself, so it cannot see a defect in the
+    /// call site's own wiring (e.g. dropping the import, or recording a
+    /// fallback despite a clean parse).
+    ///
+    /// This test closes that gap the way
+    /// [`content_bridge_fallback_never_fails_bundle_and_is_reported`]
+    /// above proves the FAILURE direction: it drives the real
+    /// [`bundle()`] entry point (`mock_subprocess_output`, no esbuild
+    /// binary needed — the content-bridge gate runs during the MDX
+    /// pipeline, before esbuild) over a content collection containing
+    /// the actual reproducer fixture, and asserts
+    /// [`BundlerOutput::content_bridge_fallback_pages`] is EMPTY — i.e.
+    /// `materialise_collection`'s own closure genuinely chose
+    /// `ImportDecision::Bridge`, not `ImportDecision::DoNotCache`, for
+    /// this file. Level: 1 (unit — real call site, mocked subprocess).
+    ///
+    /// Still NOT covered by this test (or any other in this file): the
+    /// entry-module bridge-map keying and the JS-side runtime lookup
+    /// (`globalThis.__zfb.content.get(specifier)` in
+    /// `packages/zfb/src/content.ts`) that decide whether a *registered*
+    /// bridge import is actually reachable at request time — that seam
+    /// needs a real V8/esbuild render pass, out of scope for this
+    /// mocked-subprocess unit test.
+    #[test]
+    fn mdx_bridge_gate_2216_field_reproducer_bundles_without_content_bridge_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("content/docs")).unwrap();
+        fs::create_dir_all(root.join("components")).unwrap();
+        fs::create_dir_all(root.join("layouts")).unwrap();
+
+        fs::write(
+            root.join("pages/index.tsx"),
+            "export default function Home() { return null; }\n",
+        )
+        .unwrap();
+
+        // The identical #2186 field reproducer fixture used by
+        // `mdx_bridge_gate_2216_field_reproducer_bridges`, wrapped in
+        // frontmatter (the shape `materialise_collection` reads off
+        // disk) — same fixture, different seam under test.
+        let base = include_str!("../tests/fixtures/mdx-bridge-gate-2217/minimal-repro-body.mdx");
+        fs::write(
+            root.join("content/docs/design-token-panel.mdx"),
+            format!("---\ntitle: Design token panel\n---\n\n{base}"),
+        )
+        .unwrap();
+
+        let input = BundlerInput {
+            content_collections: vec![ContentCollectionSpec::new(
+                "docs",
+                PathBuf::from("content/docs"),
+            )],
+            ..make_minimal_input(&tmp)
+        };
+
+        let output = bundle(input).expect("bundle must succeed for the real field reproducer");
+
+        assert!(
+            output.content_bridge_fallback_pages.is_empty(),
+            "the #2186 field reproducer must bridge through materialise_collection's real call \
+             site — a non-empty result here means the page would silently render via \
+             <pre data-zfb-content-fallback> despite its compiled JSX parsing cleanly (epic \
+             #2216). Reported fallback(s): {:?}",
             output.content_bridge_fallback_pages
         );
     }
