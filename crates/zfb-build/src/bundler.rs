@@ -8190,8 +8190,8 @@ fn materialise_collection(
             // import after the compile: the collection pass produces an
             // `mdx://…` import (with `idStripSuffix` applied to the slug so
             // the bundler's bridge key matches the snapshot's stripped
-            // `module_specifier`), UNLESS the compiled JSX would break
-            // esbuild — the defensive skip, which omits the import and
+            // `module_specifier`), UNLESS the compiled JSX provably does
+            // not parse — the defensive skip, which omits the import and
             // refuses to cache so the page falls back to
             // `<pre data-zfb-content-fallback>` and every tick re-warns.
             materialise_mdx_with_skip(
@@ -8206,9 +8206,9 @@ fn materialise_collection(
                 cross_file_links_out,
                 file_headings_out,
                 |compiled| {
-                    if jsx_likely_breaks_downstream_parser(&compiled.jsx_source) {
+                    if let Some(parse_err) = jsx_module_parse_failure(&compiled.jsx_source) {
                         eprintln!(
-                            "zfb bundler: skipping MDX content bridge for {} — compiled JSX contains bare `{{\\letter}}` expressions that esbuild rejects. The page will render via the <pre data-zfb-content-fallback> shape.",
+                            "zfb bundler: skipping MDX content bridge for {} — compiled JSX does not parse ({parse_err}). The page will render via the <pre data-zfb-content-fallback> shape.",
                             from.display(),
                         );
                         return ImportDecision::DoNotCache;
@@ -8250,283 +8250,71 @@ fn materialise_collection(
     Ok(())
 }
 
-/// Heuristic check for compiled JSX that downstream parsers (esbuild's
-/// JSX pass, then SWC at render-time) will reject. The emitter that
-/// `compile_mdx_to_jsx_module_cached` drives does not yet know about
-/// `remark-math` style fences, so LaTeX content from a `$$...$$` block
-/// can leak into the JSX as bare expression containers like `{\infty}`
-/// or `{-\infty}` — JS does not accept `\letter` as an identifier
-/// outside a string literal, so the entire bundle aborts on the first
-/// such file.
+/// Parse gate for the MDX content bridge: `Some(first parse error)` when
+/// the compiled JSX module does NOT parse as a TSX module, `None` when
+/// it parses cleanly and may bridge.
 ///
-/// The check walks the JSX one byte at a time, tracking string-literal
-/// state (`'`, `"`, and template `` ` ``), and flags any `{` that —
-/// outside a string — is followed (optionally by a single `-`) by a
-/// backslash + ASCII letter. That mirrors the `{\foo}` / `{-\foo}`
-/// shape LaTeX leakage produces, while ignoring legitimate JSX such as
-/// `{"…\n…"}` (curly opens a JSX expression, immediately enters a
-/// string literal whose content can contain anything).
+/// SYNC CONTRACT: the parser configuration below is byte-for-byte the
+/// one `zfb-render`'s `SwcPipeline::compile` applies to every bridged
+/// `mdx://` module (`crates/zfb-render/src/swc_pipeline.rs` —
+/// `Syntax::Typescript(TsSyntax { tsx: true, .. })`, `EsVersion::Es2022`,
+/// `parse_module()`), so this gate's claim is exactly "the render-time
+/// compiler cannot parse this module cleanly" — a trip is a true
+/// positive for the real pipeline by construction (#2216/#2218; the
+/// pre-#2216 hand-rolled byte scanner false-positived on parseable
+/// modules, #2217). The per-expression twin of this check is
+/// `mdx_expression_is_valid_js` (`crates/zfb-content/src/mdx_jsx_emit.rs`),
+/// which applies the same parse-and-reject rule to a single MDX
+/// expression at emit time.
 ///
-/// Outside strings, `\letter` is genuinely unparseable by JS — there is
-/// no escape sequence at the expression level — so a true match is a
-/// reliable signal that the file would crash esbuild. False positives
-/// are bounded: the only consequence of a skip is a fallback
-/// `<pre data-zfb-content-fallback>` block on that page, matching the
-/// pre-S4e behaviour.
+/// Trip rule: `Err` from `parse_module()` OR non-empty
+/// `parser.take_errors()`. SWC error-recovers some invalid input into
+/// `Ok`; recovered errors still mean the input violates the grammar,
+/// which esbuild (`--loader:.mdx=jsx`, no recovery) rejects — treating
+/// them as trips preserves the gate's original esbuild-protection
+/// purpose. The chosen failure direction (#2218): err toward LOUD false
+/// negatives — a module this gate passes but esbuild rejects (e.g.
+/// TS-only syntax under the jsx loader) fails the build loudly; the
+/// silent one-page `<pre data-zfb-content-fallback>` degrade happens
+/// only for modules that provably do not parse.
 ///
-/// TEMPORARY (#2217, epic #2216 Wave 1): the scan body lives in
-/// [`jsx_breakage_scan`], which records every string/comment state
-/// transition so the false-positive desync under diagnosis can be
-/// localized byte-by-byte. Set `ZFB_DEBUG_BRIDGE_GATE=1` to dump a
-/// trip report (offset, ±120 surrounding bytes, scanner state, last
-/// transitions) to stderr whenever this returns `true`. Wave 3 removes
-/// or promotes this instrumentation per the Wave 2 decision.
-fn jsx_likely_breaks_downstream_parser(jsx: &str) -> bool {
-    let debug = std::env::var_os("ZFB_DEBUG_BRIDGE_GATE").is_some();
-    // Recording is skipped entirely when diagnostics are off, so the
-    // production path stays allocation-free (`Vec::new` never grows).
-    let diag = jsx_breakage_scan_with(jsx, debug);
-    if debug && diag.trip.is_some() {
-        eprintln!("{}", diag.render_report(jsx));
-    }
-    diag.trip.is_some()
-}
+/// Cost: the caller runs this only on `materialise_mdx_with_skip`'s
+/// full path — the skip path replays the cached `ImportDecision` — so
+/// the parse costs one SWC pass per cache-miss MDX compile (sub-ms at
+/// the field corpus's 8–51 KB, smaller than the MDX compile that just
+/// ran; the render path parses the same module again later anyway). No
+/// caching, no size guard, no scanner pre-filter.
+fn jsx_module_parse_failure(jsx: &str) -> Option<String> {
+    use swc_core::common::sync::Lrc;
+    use swc_core::common::{FileName, SourceMap, Spanned};
+    use swc_core::ecma::ast::EsVersion;
+    use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 
-/// One scanner state transition recorded by [`jsx_breakage_scan`].
-///
-/// TEMPORARY (#2217, epic #2216 Wave 1) diagnosis instrumentation —
-/// see [`jsx_likely_breaks_downstream_parser`]'s doc note.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GateScanEvent {
-    /// Scanner believed it entered a string literal at `offset`.
-    StringOpen {
-        offset: usize,
-        quote: u8,
-    },
-    /// Scanner believed the string opened by the matching
-    /// [`GateScanEvent::StringOpen`] closed at `offset`.
-    StringClose {
-        offset: usize,
-        quote: u8,
-    },
-    LineCommentOpen {
-        offset: usize,
-    },
-    LineCommentClose {
-        offset: usize,
-    },
-    BlockCommentOpen {
-        offset: usize,
-    },
-    BlockCommentClose {
-        offset: usize,
-    },
-}
-
-impl GateScanEvent {
-    fn offset(&self) -> usize {
-        match *self {
-            GateScanEvent::StringOpen { offset, .. }
-            | GateScanEvent::StringClose { offset, .. }
-            | GateScanEvent::LineCommentOpen { offset }
-            | GateScanEvent::LineCommentClose { offset }
-            | GateScanEvent::BlockCommentOpen { offset }
-            | GateScanEvent::BlockCommentClose { offset } => offset,
-        }
-    }
-}
-
-/// Trip record: the gate decided `{` at `offset` starts a bare
-/// `{\letter}` / `{-\letter}` expression (scanner state at that point:
-/// outside every string and comment by construction — that belief being
-/// WRONG for a byte that truly sits inside a string literal is exactly
-/// the #2216 false-positive under diagnosis).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GateTrip {
-    offset: usize,
-}
-
-/// Full scan result: the trip (if any) plus every string/comment state
-/// transition the scanner performed up to that point.
-#[derive(Debug, Clone)]
-struct JsxBreakageDiagnostic {
-    events: Vec<GateScanEvent>,
-    trip: Option<GateTrip>,
-}
-
-impl JsxBreakageDiagnostic {
-    /// Human-readable trip report: offset, ~120 bytes of surrounding
-    /// context, the scanner's state at the trip, and the last recorded
-    /// transitions leading up to it.
-    fn render_report(&self, jsx: &str) -> String {
-        use std::fmt::Write as _;
-        let mut out = String::new();
-        let _ = writeln!(out, "zfb bridge-gate diagnostic (#2217):");
-        match self.trip {
-            None => {
-                let _ = writeln!(out, "  no trip — gate returns false");
-            }
-            Some(GateTrip { offset }) => {
-                let _ = writeln!(
-                    out,
-                    "  TRIP at byte offset {offset} — scanner state there: in_string=None, \
-                     in_line_comment=false, in_block_comment=false (the gate only fires outside \
-                     all three)"
-                );
-                let _ = writeln!(
-                    out,
-                    "  context [{}..{}]:\n  ---\n{}\n  ---",
-                    offset.saturating_sub(120),
-                    (offset + 120).min(jsx.len()),
-                    String::from_utf8_lossy(
-                        &jsx.as_bytes()[offset.saturating_sub(120)..(offset + 120).min(jsx.len())]
-                    )
-                );
-                let _ = writeln!(
-                    out,
-                    "  last {} state transitions before the trip:",
-                    self.events.len().min(24)
-                );
-                for ev in self.events.iter().rev().take(24).rev() {
-                    let o = ev.offset();
-                    let _ = writeln!(
-                        out,
-                        "    {ev:?}  | bytes at {}..{}: {:?}",
-                        o.saturating_sub(20),
-                        (o + 20).min(jsx.len()),
-                        String::from_utf8_lossy(
-                            &jsx.as_bytes()[o.saturating_sub(20)..(o + 20).min(jsx.len())]
-                        )
-                    );
-                }
-            }
-        }
-        out
-    }
-}
-
-/// Recording scan — used by the #2217 diagnosis tests, which always
-/// want the transition log.
-#[cfg(test)]
-fn jsx_breakage_scan(jsx: &str) -> JsxBreakageDiagnostic {
-    jsx_breakage_scan_with(jsx, true)
-}
-
-/// The scan itself — byte-for-byte the pre-#2217 algorithm of
-/// [`jsx_likely_breaks_downstream_parser`], with state transitions
-/// recorded into the returned [`JsxBreakageDiagnostic`] when `record`
-/// is set. The recording is the ONLY addition; control flow is
-/// unchanged, and with `record == false` the scan stays allocation-free
-/// (`Vec::new` never grows), preserving the pre-#2217 production cost.
-fn jsx_breakage_scan_with(jsx: &str, record: bool) -> JsxBreakageDiagnostic {
-    let bytes = jsx.as_bytes();
-    let mut in_string: Option<u8> = None;
-    let mut in_line_comment = false;
-    let mut in_block_comment = false;
-    let mut events: Vec<GateScanEvent> = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-
-        // Line and block comments — `\letter` inside a comment is harmless.
-        if in_line_comment {
-            if c == b'\n' {
-                in_line_comment = false;
-                if record {
-                    events.push(GateScanEvent::LineCommentClose { offset: i });
-                }
-            }
-            i += 1;
-            continue;
-        }
-        if in_block_comment {
-            if c == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                in_block_comment = false;
-                if record {
-                    events.push(GateScanEvent::BlockCommentClose { offset: i });
-                }
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        // String-literal handling (single, double, template).
-        if let Some(q) = in_string {
-            // Escape: skip the next byte regardless of what it is.
-            if c == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if c == q {
-                in_string = None;
-                if record {
-                    events.push(GateScanEvent::StringClose {
-                        offset: i,
-                        quote: q,
-                    });
-                }
-            }
-            i += 1;
-            continue;
-        }
-
-        // Comment starts.
-        if c == b'/' && i + 1 < bytes.len() {
-            match bytes[i + 1] {
-                b'/' => {
-                    in_line_comment = true;
-                    if record {
-                        events.push(GateScanEvent::LineCommentOpen { offset: i });
-                    }
-                    i += 2;
-                    continue;
-                }
-                b'*' => {
-                    in_block_comment = true;
-                    if record {
-                        events.push(GateScanEvent::BlockCommentOpen { offset: i });
-                    }
-                    i += 2;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-
-        // String literal opener.
-        if c == b'"' || c == b'\'' || c == b'`' {
-            in_string = Some(c);
-            if record {
-                events.push(GateScanEvent::StringOpen {
-                    offset: i,
-                    quote: c,
-                });
-            }
-            i += 1;
-            continue;
-        }
-
-        // The pattern of interest: `{\letter` or `{-\letter`, outside
-        // strings and outside comments.
-        if c == b'{' {
-            let mut j = i + 1;
-            // optional unary minus before the backslash (matches `{-\foo}`).
-            if j < bytes.len() && bytes[j] == b'-' {
-                j += 1;
-            }
-            if j + 1 < bytes.len() && bytes[j] == b'\\' && bytes[j + 1].is_ascii_alphabetic() {
-                return JsxBreakageDiagnostic {
-                    events,
-                    trip: Some(GateTrip { offset: i }),
-                };
-            }
-        }
-
-        i += 1;
-    }
-    JsxBreakageDiagnostic { events, trip: None }
+    let cm: Lrc<SourceMap> = Default::default();
+    let fm = cm.new_source_file(FileName::Anon.into(), jsx.to_string());
+    let lexer = Lexer::new(
+        Syntax::Typescript(TsSyntax {
+            tsx: true,
+            decorators: false,
+            dts: false,
+            no_early_errors: false,
+            disallow_ambiguous_jsx_like: false,
+        }),
+        EsVersion::Es2022,
+        StringInput::from(&*fm),
+        None,
+    );
+    let mut parser = Parser::new_from(lexer);
+    let hard_error = parser.parse_module().err();
+    let recovered = parser.take_errors();
+    // Recovered errors are recorded in source order during the single
+    // forward parse, so the earliest error is the first recovered one
+    // when any exist, else the hard error that stopped the parse.
+    let first = recovered.into_iter().next().or(hard_error)?;
+    // `span.lo` is SourceMap-global; subtracting the file's `start_pos`
+    // yields a plain byte offset into the module source.
+    let offset = first.span().lo.0.saturating_sub(fm.start_pos.0);
+    Some(format!("byte {offset}: {}", first.kind().msg()))
 }
 
 /// Per-call staging buffer for [`materialise_source_file`]'s four
@@ -17147,67 +16935,97 @@ mod tests {
     }
 
     #[test]
-    fn jsx_breakage_heuristic_flags_bare_backslash_expressions() {
+    fn jsx_breakage_flags_bare_backslash_expressions() {
         // Positive cases — these are exactly the patterns the MDX
-        // emitter produces from un-escaped LaTeX (`$$\int_{-\infty}…$$`).
-        assert!(jsx_likely_breaks_downstream_parser(
-            r"<_components.p>{-\infty}{\infty}</_components.p>"
-        ));
-        assert!(jsx_likely_breaks_downstream_parser(
-            r"const x = {\foo}; // no quote"
-        ));
+        // emitter produces from un-escaped LaTeX (`$$\int_{-\infty}…$$`);
+        // neither parses as a TSX module.
+        assert!(
+            jsx_module_parse_failure(r"<_components.p>{-\infty}{\infty}</_components.p>").is_some()
+        );
+        assert!(jsx_module_parse_failure(r"const x = {\foo}; // no quote").is_some());
 
-        // Negative cases — these all parse cleanly under esbuild's
-        // JSX pass and must NOT be flagged.
+        // Negative cases — these all parse cleanly as TSX modules and
+        // must NOT be flagged.
         // 1. `\` inside a JSX-expression string literal.
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{"\\infty"}"#));
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{"$$\n\\int"}"#));
+        assert!(jsx_module_parse_failure(r#"{"\\infty"}"#).is_none());
+        assert!(jsx_module_parse_failure(r#"{"$$\n\\int"}"#).is_none());
         // 2. Curly + escape sequence INSIDE a multi-line string
         //    literal — emitter output for fenced code blocks
         //    contains `"...{\n  site:..."` (literal `{` followed
-        //    by an `\n` newline escape, all inside the string).
-        assert!(!jsx_likely_breaks_downstream_parser(
-            r#"{"export default {\n  site: \"x\"\n};"}"#
-        ));
+        //    by an `\n` newline escape, all inside the string). The
+        //    exact payload the pre-#2216 byte scanner misread as a bare
+        //    `{\letter}` once its string tracking desynced (#2217).
+        assert!(jsx_module_parse_failure(r#"{"export default {\n  site: \"x\"\n};"}"#).is_none());
         // 3. Template literal carrying the same shape.
-        assert!(!jsx_likely_breaks_downstream_parser(
-            "`export default {\\n  site: \\\"x\\\"};`"
-        ));
+        assert!(jsx_module_parse_failure("`export default {\\n  site: \\\"x\\\"};`").is_none());
         // 4. Plain JS expressions.
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{ a + b }"#));
-        assert!(!jsx_likely_breaks_downstream_parser(r#"{props.children}"#));
-        assert!(!jsx_likely_breaks_downstream_parser(r#"export default x;"#));
+        assert!(jsx_module_parse_failure(r#"{ a + b }"#).is_none());
+        assert!(jsx_module_parse_failure(r#"{props.children}"#).is_none());
+        assert!(jsx_module_parse_failure(r#"export default x;"#).is_none());
         // 5. Comments may carry arbitrary text including `{\foo`.
-        assert!(!jsx_likely_breaks_downstream_parser(
-            r"// {\infty} explained inline"
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
-            r"/* {\infty} block-commented */"
-        ));
+        assert!(jsx_module_parse_failure(r"// {\infty} explained inline").is_none());
+        assert!(jsx_module_parse_failure(r"/* {\infty} block-commented */").is_none());
         // 6. Issue #206 shapes — inline-code values containing
         //    HTML-tag-like text and curly-brace patterns. The MDX
         //    emitter wraps each value in `js_string_literal_in_braces`
         //    (see `crates/zfb-content/src/mdx_jsx_emit.rs`), producing
-        //    `{"…escaped…"}` shapes. The `{` is followed by `"` —
-        //    neither `-` nor `\\` — so the heuristic must skip.
-        assert!(!jsx_likely_breaks_downstream_parser(
+        //    `{"…escaped…"}` shapes — JSX expressions that immediately
+        //    enter a string literal and parse cleanly.
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"<link rel=\"stylesheet\">"}</_components.code>"#
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
+        )
+        .is_none());
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"<script type=\"module\">"}</_components.code>"#
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
+        )
+        .is_none());
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"{main-deploy,preview-deploy,pr-checks}.yml"}</_components.code>"#
-        ));
-        assert!(!jsx_likely_breaks_downstream_parser(
+        )
+        .is_none());
+        assert!(jsx_module_parse_failure(
             r#"<_components.code>{"@theme { --color-*: initial; }"}</_components.code>"#
-        ));
+        )
+        .is_none());
+
+        // The four #2216 mechanism/direction pins (Wave 2 spec, #2219):
+        // 1. The #2217 desync class, minified, must pass: apostrophes in
+        //    raw JSX text followed by a real `"…{\n…"` string literal.
+        //    The old byte scanner lexed JSX text with JS string rules, so
+        //    the apostrophes flipped its string parity and the string's
+        //    legitimate `{\n` payload read as a bare `{\letter}`. One
+        //    fragment-rooted module so adjacent elements form a single
+        //    expression; a real parse accepts it.
+        assert!(jsx_module_parse_failure(
+            r#"<><Note><_components.p>aren't and picker's</_components.p></Note><_components.p>{"every tab's state"}</_components.p><span dangerouslySetInnerHTML={{__html: "{\n"}} /></>"#
+        )
+        .is_none());
+        // 2. The masking direction of the same desync, must trip: the
+        //    old scanner could swallow a GENUINE bare `{\infty}` inside
+        //    a phantom string opened by an apostrophe (Wave 1's
+        //    delete-paragraph trace proved the masking direction). The
+        //    parse gate must not.
+        assert!(jsx_module_parse_failure(
+            r#"<><_components.p>it's fine</_components.p><_components.p>{\infty}</_components.p></>"#
+        )
+        .is_some());
+        // 3. The byte scanner's documented residual false positive — a
+        //    regex literal carrying `{\d}` bytes (see
+        //    `emit_mdx_expression_braced` in zfb-content) — dissolves
+        //    for free: valid JS, the parse gate passes it.
+        assert!(jsx_module_parse_failure(r#"{/[{\d}]/.test("x")}"#).is_none());
+        // 4. The chosen failure direction (#2218), pinned: TS-only
+        //    syntax TSX-parses but esbuild (`--loader:.mdx=jsx`) rejects
+        //    it loudly — the deliberate false-negative direction; the
+        //    gate must not silently degrade a page for it (the byte
+        //    scanner was equally blind here, so this is not a
+        //    regression).
+        assert!(jsx_module_parse_failure(r#"{x as number}"#).is_none());
     }
 
-    // === TEMPORARY #2217 diagnosis helpers (epic #2216 Wave 1) ==============
-    // Wave 3 removes or promotes everything in this block per the Wave 2
-    // decision. The compile helper reproduces zudolab/zudo-doc's effective
-    // pipeline options at 42b9dad19 (the #2186 field report): codeHighlight
+    // The permanent field-parity compile driver for the #2216 regression
+    // test below. Reproduces zudolab/zudo-doc's effective pipeline options
+    // at 42b9dad19 (the #2186 field report): codeHighlight
     // class mode (prefix "hi-" = the shared default), cjkFriendly (default
     // true), stripMdExt, and the zudoDoc preset's full `markdown.features`
     // block — verified against `pipeline_spec_from_config`
@@ -17249,234 +17067,41 @@ mod tests {
             .jsx_source
     }
 
-    /// Every offset in `jsx` whose bytes match the gate's pattern of
-    /// interest (`{\letter` / `{-\letter`), regardless of scanner state —
-    /// the raw census the per-offset state report below classifies.
-    fn gate_pattern_offsets(jsx: &str) -> Vec<usize> {
-        let b = jsx.as_bytes();
-        let mut v = Vec::new();
-        for i in 0..b.len() {
-            if b[i] == b'{' {
-                let mut j = i + 1;
-                if j < b.len() && b[j] == b'-' {
-                    j += 1;
-                }
-                if j + 1 < b.len() && b[j] == b'\\' && b[j + 1].is_ascii_alphabetic() {
-                    v.push(i);
-                }
-            }
-        }
-        v
-    }
-
-    /// Scanner state immediately BEFORE processing the byte at `offset`,
-    /// reconstructed from the recorded transitions. Only meaningful for
-    /// offsets the scan actually reached (at or before any trip).
-    fn scanner_state_at(diag: &JsxBreakageDiagnostic, offset: usize) -> String {
-        let mut state = "outside".to_string();
-        for ev in &diag.events {
-            if ev.offset() >= offset {
-                break;
-            }
-            state = match ev {
-                GateScanEvent::StringOpen { quote, .. } => format!("in_string({})", *quote as char),
-                GateScanEvent::StringClose { .. } | GateScanEvent::LineCommentClose { .. } => {
-                    "outside".to_string()
-                }
-                GateScanEvent::BlockCommentClose { .. } => "outside".to_string(),
-                GateScanEvent::LineCommentOpen { .. } => "line_comment".to_string(),
-                GateScanEvent::BlockCommentOpen { .. } => "block_comment".to_string(),
-            };
-        }
-        state
-    }
-
-    /// Dump one compiled module + its gate diagnostic to stderr and to
-    /// `$TMPDIR/zfb-2217-diagnosis/<name>.jsx` (for the pinned-esbuild
-    /// cross-check). Returns the diagnostic for assertions.
-    fn dump_2217(name: &str, jsx: &str) -> JsxBreakageDiagnostic {
-        let diag = jsx_breakage_scan(jsx);
-        let dir = std::env::temp_dir().join("zfb-2217-diagnosis");
-        std::fs::create_dir_all(&dir).ok();
-        let path = dir.join(format!("{name}.jsx"));
-        std::fs::write(&path, jsx.as_bytes()).ok();
-        let quote_opens = |q: u8| {
-            diag.events
-                .iter()
-                .filter(|e| matches!(e, GateScanEvent::StringOpen { quote, .. } if *quote == q))
-                .count()
-        };
-        eprintln!(
-            "=== #2217 [{name}] -> {} ({} bytes) | verdict: {} | transitions={} | opens: dq={} sq={} bt={}",
-            path.display(),
-            jsx.len(),
-            if diag.trip.is_some() {
-                "TRIP (gate rejects)"
-            } else {
-                "pass"
-            },
-            diag.events.len(),
-            quote_opens(b'"'),
-            quote_opens(b'\''),
-            quote_opens(b'`'),
-        );
-        // The emitter only ever writes double-quoted JS string literals
-        // (`js_string_literal`) — any single-quote StringOpen is therefore a
-        // phantom open by construction. Show the first one.
-        if let Some(first_sq) = diag
-            .events
-            .iter()
-            .find(|e| matches!(e, GateScanEvent::StringOpen { quote: b'\'', .. }))
-        {
-            let o = first_sq.offset();
-            eprintln!(
-                "    first '-quote StringOpen (phantom by construction) at {o}: {:?}",
-                String::from_utf8_lossy(
-                    &jsx.as_bytes()[o.saturating_sub(80)..(o + 80).min(jsx.len())]
-                )
-            );
-        }
-        for off in gate_pattern_offsets(jsx) {
-            let beyond_trip = diag.trip.is_some_and(|t| off > t.offset);
-            let state = if beyond_trip {
-                "«beyond trip — untracked»".to_string()
-            } else {
-                scanner_state_at(&diag, off)
-            };
-            eprintln!(
-                "    [{name}] gate-pattern at {off}: scanner={state} | {:?}",
-                String::from_utf8_lossy(
-                    &jsx.as_bytes()[off.saturating_sub(60)..(off + 60).min(jsx.len())]
-                )
-            );
-        }
-        if diag.trip.is_some() {
-            eprintln!("{}", diag.render_report(jsx));
-        }
-        diag
-    }
-
-    /// TEMPORARY (#2217, epic #2216 Wave 1): pins the CURRENT
-    /// false-positive so Wave 2 can decide the fix against recorded
-    /// evidence, and prints the byte-level diagnosis (run with
-    /// `-- --nocapture` to read it). The reproducer is #2186's minimal
-    /// one — the failing page's lines 94–100 + 134–162 verbatim
-    /// (fixture file). Wave 3's gate fix is EXPECTED to flip the first
-    /// assertion; it removes or reworks this test per the Wave 2
-    /// decision.
+    /// Permanent regression pin for epic #2216 (field report #2186): the
+    /// checked-in minimized field reproducer — the failing page's lines
+    /// 94–100 + 134–162 verbatim (fixture file) — compiled through the
+    /// zudo-doc parity pipeline must PASS the bridge gate. The pre-#2216
+    /// byte-scanner gate false-positived on exactly this module
+    /// (apostrophes in raw JSX text desynced its string tracking, and a
+    /// JSON fence's legitimate `{\n` payload inside a string literal
+    /// then read as a bare `{\letter}` — #2217's byte-level trace),
+    /// silently degrading the page to `<pre data-zfb-content-fallback>`
+    /// while the build exited 0. The SWC parse gate measures instead of
+    /// predicting, so this module — which parses cleanly — bridges.
     ///
-    /// Optional deep-dive: set `ZFB_2217_EXTRA_MDX` to a comma-separated
-    /// list of `.mdx` files (frontmatter is stripped) to trace arbitrary
-    /// pages — e.g. the full EN/JA pair from the field report — through
-    /// the same parity compile. Self-skipping when unset.
+    /// The genuinely-unparseable (true-positive) contract deliberately
+    /// does NOT get a pipeline-level variant here:
+    /// `emit_mdx_expression_braced` + `mdx_expression_is_valid_js`
+    /// recover invalid expressions at emit time (#1778/#1779), so
+    /// real-pipeline output is deliberately hard to make unparseable.
+    /// The TP contract lives at the unit level
+    /// (`jsx_breakage_flags_bare_backslash_expressions`); the gate stays
+    /// as defense in depth for plugin-injected `JsxRaw` payloads and
+    /// future emitter regressions.
     #[test]
-    fn mdx_bridge_gate_2217_diagnosis_minimal_reproducer() {
+    fn mdx_bridge_gate_2216_field_reproducer_bridges() {
         let base = include_str!("../tests/fixtures/mdx-bridge-gate-2217/minimal-repro-body.mdx");
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-
-        // The reproducer as shipped: the gate trips — the false positive
-        // under diagnosis (#2186 evidence item 1: the same module parses
-        // cleanly under the pinned esbuild 0.25.12; cross-checked outside
-        // this test via the dumped module file).
-        let jsx = zudo_doc_parity_compile(base, root);
-        let diag = dump_2217("repro", &jsx);
+        let jsx = zudo_doc_parity_compile(base, tmp.path());
+        let failure = jsx_module_parse_failure(&jsx);
         assert!(
-            diag.trip.is_some(),
-            "the #2186 minimal reproducer no longer trips the gate — the false positive under \
-             diagnosis is not reproducing; re-measure before trusting the #2216 hypothesis"
+            failure.is_none(),
+            "the #2186 field reproducer's compiled JSX must pass the SWC parse gate — a trip \
+             here means the content bridge would silently degrade the page to \
+             <pre data-zfb-content-fallback> again (epic #2216). Reported parse failure: \
+             {failure:?}"
         );
-
-        // #2186's delta-debugging, replayed on the minimal reproducer:
-        // each of the three blocks is individually necessary — deleting
-        // any ONE clears the verdict.
-        let after_note = base
-            .split_once("</Note>\n")
-            .expect("fixture carries the </Note> line")
-            .1;
-        let no_note = after_note.to_string();
-        let no_paragraph = {
-            let out: String = base
-                .lines()
-                .filter(|l| !l.starts_with("Click **Export**"))
-                .map(|l| format!("{l}\n"))
-                .collect();
-            assert_ne!(out, base, "fixture drifted: the line-135 paragraph is gone");
-            out
-        };
-        let no_fence = base
-            .split_once("```json\n")
-            .expect("fixture carries the ```json fence")
-            .0
-            .to_string();
-        for (name, body) in [
-            ("no-note", &no_note),
-            ("no-paragraph", &no_paragraph),
-            ("no-fence", &no_fence),
-        ] {
-            let jsx = zudo_doc_parity_compile(body, root);
-            let d = dump_2217(name, &jsx);
-            assert!(
-                d.trip.is_none(),
-                "deleting block `{name}` must clear the gate verdict (#2186's delta-debugging); \
-                 it still trips — the minimal reproducer's necessity structure has drifted"
-            );
-        }
-
-        // #2186's line-97 inline-code edit table, replayed on the minimal
-        // reproducer. Verdicts are PRINTED, not asserted — the observed
-        // table is byte-layout-sensitive by nature (that sensitivity is
-        // itself residual (b) under diagnosis).
-        let base_span = "Each `<option>` shows";
-        assert!(
-            base.contains(base_span),
-            "fixture drifted: line-97 inline-code span not found"
-        );
-        for (name, replacement) in [
-            ("opt-original", None),
-            ("opt-word", Some("Each `option` shows")),
-            ("opt-pair", Some("Each `<option></option>` shows")),
-            ("opt-selfclose", Some("Each `<option />` shows")),
-        ] {
-            let body = match replacement {
-                None => base.to_string(),
-                Some(r) => base.replace(base_span, r),
-            };
-            let jsx = zudo_doc_parity_compile(&body, root);
-            let d = jsx_breakage_scan(&jsx);
-            eprintln!(
-                "=== #2217 option-edit [{name}]: {}",
-                if d.trip.is_some() {
-                    "TRIP (gate rejects)"
-                } else {
-                    "pass"
-                }
-            );
-        }
-
-        // Optional full-page traces (see the doc comment).
-        if let Ok(list) = std::env::var("ZFB_2217_EXTRA_MDX") {
-            for p in list.split(',').filter(|s| !s.is_empty()) {
-                let raw = std::fs::read_to_string(p).expect("ZFB_2217_EXTRA_MDX file readable");
-                let body = match zfb_frontmatter::extract(Path::new(p), &raw) {
-                    Ok(uf) => uf.body.unwrap_or_default(),
-                    Err(_) => strip_yaml_frontmatter(&raw).to_string(),
-                };
-                let jsx = zudo_doc_parity_compile(&body, root);
-                let name = Path::new(p)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("extra");
-                let parent = Path::new(p)
-                    .parent()
-                    .and_then(|d| d.file_name())
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("dir");
-                dump_2217(&format!("extra-{parent}-{name}"), &jsx);
-            }
-        }
     }
-    // === end TEMPORARY #2217 diagnosis block ================================
 
     #[test]
     fn materialise_collection_treats_missing_root_as_empty() {

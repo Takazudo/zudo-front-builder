@@ -2388,12 +2388,14 @@ fn js_string_literal_in_braces(s: &str) -> String {
 /// comments `{/* … */}` — reach the downstream JSX/TSX compiler intact.
 /// But when an expression's value begins with a backslash-escape (`\n`,
 /// `\d`, …) it renders a bare `{\letter}` fragment. That is never a
-/// valid *bare* JS expression, and it is the exact shape the bundler's
-/// `jsx_likely_breaks_downstream_parser` gate rejects — a single such
-/// fragment makes esbuild reject the module and the bundler degrade the
-/// ENTIRE page to the `<pre data-zfb-content-fallback>` shape.
+/// valid *bare* JS expression, so the compiled module fails the
+/// bundler's SWC parse gate (`jsx_module_parse_failure` in
+/// `crates/zfb-build/src/bundler.rs`) — a single such fragment makes
+/// the bundler degrade the ENTIRE page to the
+/// `<pre data-zfb-content-fallback>` shape (and esbuild would reject
+/// the module outright).
 ///
-/// So: if emitting `{value}` verbatim would trip that gate, recover the
+/// So: if emitting `{value}` verbatim would leak that shape, recover the
 /// value as a JS string literal (`{"…escaped…"}`) instead. The bytes
 /// stay visibly present and the module parses. Only the breaking shape
 /// is recovered — [`expression_fragment_breaks_downstream_parser`] is
@@ -2401,15 +2403,16 @@ fn js_string_literal_in_braces(s: &str) -> String {
 /// and numeric attribute stays `false` and is emitted verbatim.
 fn emit_mdx_expression_braced(value: &str) -> String {
     let verbatim = format!("{{{value}}}");
-    // The scanner is only a byte-pattern heuristic: it visits `{\letter}`
-    // bytes even inside a regex literal (e.g. `{/[{\d}]/.test(x)}`), which
-    // are perfectly valid JS. Stringifying such an expression would
-    // silently change runtime behavior, so only recover when the value is
-    // genuinely NOT valid JS (the real `\d`-leak class). A valid-but-
-    // gate-tripping expression stays verbatim — it may still trip the real
-    // bundler gate downstream, reproducing the conservative pre-epic
-    // whole-page fallback for that page, which is the correct outcome (the
-    // gate is out of scope; never silently change valid-JS semantics).
+    // The local byte scan is only the emitter's cheap pre-filter for the
+    // recover-invalid-expressions decision: it visits `{\letter}` bytes
+    // even inside a regex literal (e.g. `{/[{\d}]/.test(x)}`), which are
+    // perfectly valid JS. Stringifying such an expression would silently
+    // change runtime behavior, so only recover when the value is
+    // genuinely NOT valid JS (the real `\d`-leak class). A valid
+    // expression stays verbatim — and since #2216 the bundler gate is a
+    // real SWC parse, so a valid regex expression passes it and never
+    // triggers the whole-page fallback (never silently change valid-JS
+    // semantics).
     if expression_fragment_breaks_downstream_parser(&verbatim) && !mdx_expression_is_valid_js(value)
     {
         js_string_literal_in_braces(value)
@@ -2465,18 +2468,18 @@ fn mdx_expression_is_valid_js(value: &str) -> bool {
     )
 }
 
-/// Local mirror of `zfb_build::bundler::jsx_likely_breaks_downstream_parser`
-/// applied to a single emitted JSX fragment.
+/// Emitter-local byte pre-filter applied to a single emitted JSX
+/// fragment: a string/line-comment/block-comment-aware scan for a `{`
+/// (optionally `-`) directly followed by `\` + an ASCII letter — the
+/// byte pattern a leaked string-escape produces outside any JS string.
 ///
-/// `zfb-build` depends on `zfb-content` (not the reverse), so the gate
-/// cannot be imported here; this is the same string/line-comment/
-/// block-comment-aware scan for a `{` (optionally `-`) directly followed
-/// by `\` + an ASCII letter — the byte pattern a leaked string-escape
-/// produces outside any JS string. **Keep in sync with the gate in
-/// `crates/zfb-build/src/bundler.rs`.** A visible divergence is caught
-/// by the `heuristic_says_jsx_breaks` mirror in
-/// `crates/zfb-content/tests/large_mdx_fallback_regression.rs` and the
-/// gate's own unit tests in zfb-build.
+/// Historically this mirrored the bundler's pre-#2216 byte-scan gate
+/// byte-for-byte; since #2216 that gate is a real SWC parse
+/// (`jsx_module_parse_failure` in `crates/zfb-build/src/bundler.rs` —
+/// `zfb-build` depends on `zfb-content`, not the reverse, so nothing
+/// could be imported here anyway), and this scan survives purely as
+/// [`emit_mdx_expression_braced`]'s cheap trigger for the
+/// recover-invalid-expressions decision.
 fn expression_fragment_breaks_downstream_parser(jsx: &str) -> bool {
     let bytes = jsx.as_bytes();
     let mut in_string: Option<u8> = None;
