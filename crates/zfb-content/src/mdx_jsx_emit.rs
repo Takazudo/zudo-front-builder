@@ -2646,8 +2646,16 @@ fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
     // legal array-literal trailing comma) as a single spread element —
     // it genuinely is one, at the AST level. But `{...props,}` is not
     // valid JSX spread-attribute grammar, so anything other than
-    // whitespace between the spread operand and the array's closing `]`
-    // must still be rejected (see this fn's doc comment).
+    // whitespace/comments between the spread operand and the array's
+    // closing `]` must still be rejected (see this fn's doc comment).
+    // Comments ARE allowed here — the leading-comment case
+    // (`/* c */...x`) is already accepted because it sits entirely
+    // outside this byte range, and a trailing comment
+    // (`...x/* c */` or `...x // c\n`) is exactly as valid JS/JSX
+    // trivia as the leading one; a naive `trim().is_empty()` check
+    // treated a trailing comment as "extra tokens" and wrongly
+    // rejected a syntactically valid spread (confirm-guard review,
+    // #2242).
     let expr_end = elem.expr.span().hi.0.saturating_sub(fm.start_pos.0) as usize;
     let array_close = array
         .span
@@ -2656,12 +2664,62 @@ fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
         .saturating_sub(fm.start_pos.0)
         .saturating_sub(1) as usize;
     match wrapped.get(expr_end..array_close) {
-        Some(trailing) if trailing.trim().is_empty() => Ok(()),
+        Some(trailing) if trailing_region_is_only_trivia(trailing) => Ok(()),
         _ => Err(
             "expected the spread operand to be immediately followed by `}` — no trailing \
              comma or extra tokens"
                 .to_string(),
         ),
+    }
+}
+
+/// True iff `s` consists solely of whitespace and/or JS comments
+/// (`/* … */` block comments, `// …` line comments) — the shape a
+/// legitimate trailing comment produces between a spread operand and
+/// the array's closing `]` in [`mdx_spread_attribute_validity`]'s
+/// synthetic `[value];` wrapper. A `//` line comment must be
+/// terminated by a newline within `s` itself (or run to the end of
+/// `s`) to be recognized — matching how the JS lexer actually
+/// delimits it, and safe here because `s` is a genuine substring of
+/// the synthetic source, never truncated mid-comment.
+fn trailing_region_is_only_trivia(mut s: &str) -> bool {
+    loop {
+        // ECMAScript `WhiteSpace` is Unicode `White_Space` PLUS U+FEFF
+        // (ZERO WIDTH NO-BREAK SPACE / BOM, deliberately excluded from
+        // the Unicode property but still whitespace to a JS lexer) —
+        // `char::is_whitespace` alone under-covers NBSP/U+2028/etc. as
+        // ASCII-only would, and over-narrowing here regressed values
+        // the pre-#2242 `trim().is_empty()` check used to accept
+        // (codex review catch, #2242).
+        s = s.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}');
+        if s.is_empty() {
+            return true;
+        }
+        if let Some(rest) = s.strip_prefix("/*") {
+            let Some(end) = rest.find("*/") else {
+                return false;
+            };
+            s = &rest[end + 2..];
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix("//") {
+            // A `//` line comment ends at the next ECMAScript
+            // `LineTerminator` (LF, CR, U+2028 LINE SEPARATOR, or
+            // U+2029 PARAGRAPH SEPARATOR) — not just LF. Stopping at
+            // the terminator's start (rather than consuming it) is
+            // enough: the terminator itself is whitespace too, so the
+            // next loop iteration's leading trim absorbs it. Missing
+            // CR/U+2028/U+2029 here would let real trailing content
+            // (e.g. a comma) hide inside what this scanner mistook
+            // for comment trivia, wrongly accepting invalid JSX
+            // spread grammar (codex review catch, #2242).
+            s = match rest.find(['\n', '\r', '\u{2028}', '\u{2029}']) {
+                Some(pos) => &rest[pos..],
+                None => "",
+            };
+            continue;
+        }
+        return false;
     }
 }
 
@@ -5898,6 +5956,85 @@ mod tests {
             err.contains("byte "),
             "expected a parse-error message (a bare identifier next to another token is a \
              parse error before the trailing-token check even runs), got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_spread_with_a_trailing_block_comment() {
+        // Symmetric with `spread_validity_accepts_a_spread_with_a_leading_block_comment`:
+        // a JS block comment is trivia wherever it sits, so
+        // `{...x/* c */}` is exactly as valid as `{/* c */...x}`. The
+        // trailing-content check must not mistake comment bytes for
+        // "extra tokens" (confirm-guard review, #2242).
+        assert_eq!(mdx_spread_attribute_validity("...x/* trailing */"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_accepts_multiple_trailing_block_comments_and_whitespace() {
+        assert_eq!(
+            mdx_spread_attribute_validity("...x  /* a */ /* b */  "),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn spread_validity_accepts_a_trailing_line_comment_terminated_by_newline() {
+        // A `//` line comment must still be closed by a newline inside
+        // the value itself (mirroring how the JS lexer delimits it) —
+        // this is the shape markdown-rs would hand back for a spread
+        // attribute written across multiple lines.
+        assert_eq!(mdx_spread_attribute_validity("...x // note\n"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_still_rejects_a_trailing_comma_beside_a_comment() {
+        // A comment does not launder an actual trailing comma — the
+        // comma itself must still trip the rejection even when
+        // surrounded by otherwise-legal trivia.
+        let err = mdx_spread_attribute_validity("...x, /* c */")
+            .expect_err("a trailing comma must still be rejected even beside a comment");
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_accepts_trailing_nbsp_and_bom_whitespace() {
+        // NBSP (U+00A0) and ZERO WIDTH NO-BREAK SPACE / BOM (U+FEFF) are
+        // both `WhiteSpace` per the ECMAScript spec even though U+FEFF is
+        // deliberately excluded from Unicode's `White_Space` property —
+        // an ASCII-only trim would regress values the pre-#2242
+        // `trim().is_empty()` check used to accept (codex review catch,
+        // #2242).
+        assert_eq!(mdx_spread_attribute_validity("...x\u{a0}"), Ok(()));
+        assert_eq!(mdx_spread_attribute_validity("...x\u{feff}"), Ok(()));
+    }
+
+    #[test]
+    fn spread_validity_rejects_a_trailing_comma_hidden_behind_a_unicode_line_terminator() {
+        // U+2028 LINE SEPARATOR ends a `//` line comment exactly like
+        // `\n` does per the ECMAScript spec. A scanner that recognizes
+        // only `\n` would treat the comma after it as still inside the
+        // comment and wrongly accept invalid JSX spread grammar (codex
+        // review catch, #2242).
+        let err = mdx_spread_attribute_validity("...x // note\u{2028},").expect_err(
+            "a trailing comma after a U+2028-terminated line comment must still be rejected",
+        );
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spread_validity_rejects_a_trailing_comma_hidden_behind_a_cr_terminated_line_comment() {
+        let err = mdx_spread_attribute_validity("...x // note\r,").expect_err(
+            "a trailing comma after a CR-terminated line comment must still be rejected",
+        );
+        assert!(
+            err.contains("trailing"),
+            "expected the trailing-token message, got: {err}"
         );
     }
 
