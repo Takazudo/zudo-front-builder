@@ -52,7 +52,7 @@ zfb ships a `defaultComponents` map from its root export — a set of element-le
 
 ```tsx
 import { defaultComponents } from "zfb";
-import Note from "../../components/note";
+import { Note } from "../../components/callout";
 
 <post.Content components={{ ...defaultComponents, ...mine, Note }} />;
 ```
@@ -206,66 +206,86 @@ MDX supports a special `wrapper` key in the `components` map: a component that w
 
 ## Authoring `.mdx` with custom components
 
-The bundled `basic-blog` template demonstrates the end-to-end shape (full source at the [zfb-example-blog standalone repo](https://github.com/Takazudo/zfb-example-blog)). The MDX post uses a custom `<Note>` admonition:
+The bundled `basic-blog` template demonstrates the end-to-end shape. Its `hello-zfb.mdx` post writes a `<Tip>` admonition as JSX directly in the body:
 
 ```mdx
 ---
 title: Hello, zfb
 date: 2026-04-20
-description: A short introduction to the basic-blog dogfood example.
+description: What this starter contains and how the pieces fit together.
 ---
 
-Welcome to the **basic-blog** example.
+Welcome to **basic-blog**. This is a working zfb site: a content collection,
+a handful of routes, one interactive island, and Tailwind for styling.
 
-<Note title="MDX in basic-blog">
+<Tip>
 
-  This post is `.mdx`, not plain markdown. The `<Note>` admonition you are
-  reading right now is a custom JSX component passed in via the `components`
-  prop on `<post.Content />` — exactly the same delivery contract Astro's
-  `@astrojs/mdx` exposes.
+Run `zfb check` (or `pnpm typecheck`) to typecheck the project **and**
+validate every post's frontmatter against the collection schema.
 
-</Note>
+</Tip>
 ```
 
-The per-post route resolves `<Note>` against the `components` map by passing it in alongside `defaultComponents`:
+Nothing in the per-post route wires `<Tip>` up. The route passes `defaultComponents` and nothing else:
 
 ```tsx
 // pages/blog/[slug].tsx
-import { defaultComponents } from "zfb";
-import Note from "../../components/note";
+import { defaultComponents } from "@takazudo/zfb";
 
 export default function BlogPostPage({ post }: Props) {
   return (
     <article>
       <h1>{post.data.title}</h1>
-      <post.Content components={{ ...defaultComponents, Note }} />
+      <post.Content components={{ ...defaultComponents }} />
     </article>
   );
 }
 ```
 
-The `Note` component itself is an ordinary Preact (or React) component that receives `title` and `children`:
+The admonitions arrive through the project-root `mdx-components.tsx`, which zfb merges into every entry:
 
 ```tsx
-// components/note.tsx
+// mdx-components.tsx (project root)
+import { Note, Tip, Important, Warning, Caution } from "~/components/callout";
+
+export default { Note, Tip, Important, Warning, Caution };
+```
+
+Putting the five names there rather than in each route is what makes them work in **plain `.md`** posts too. The template enables `markdown.features.githubAlerts` in its `zfb.config.ts`, so a `> [!NOTE]` blockquote is rewritten into a `<Note>` element before rendering — and a PascalCase name missing from the map throws at render time. Wiring them per route would mean every route that renders a post has to remember all five.
+
+The components themselves are ordinary Preact (or React) components. `components/callout.tsx` exports one base component plus five named wrappers, each taking only `children`:
+
+```tsx
+// components/callout.tsx
 import type { ComponentChildren } from "preact";
 
-type Props = {
-  title?: string;
-  children: ComponentChildren;
+type Variant = "note" | "tip" | "important" | "warning" | "caution";
+
+const LABELS: Record<Variant, string> = {
+  note: "Note",
+  tip: "Tip",
+  important: "Important",
+  warning: "Warning",
+  caution: "Caution",
 };
 
-export default function Note({ title, children }: Props) {
+export function Callout({ variant, children }: { variant: Variant; children: ComponentChildren }) {
   return (
-    <aside class="admonition admonition--note" role="note">
-      {title ? <strong>{title}</strong> : null}
+    <aside data-component={variant} role="note">
+      <p>{LABELS[variant]}</p>
       <div>{children}</div>
     </aside>
   );
 }
+
+export function Note({ children }: { children: ComponentChildren }) {
+  return <Callout variant="note">{children}</Callout>;
+}
+
+// …Tip, Important, Warning, and Caution are one line each, like Note.
 ```
 
-The full source lives in the [zfb-example-blog standalone repo](https://github.com/Takazudo/zfb-example-blog) — see `content/blog/hello-zfb.mdx`, `pages/blog/[slug].tsx`, and `components/note.tsx`. A live build is available at [zfb-example-blog.pages.dev](https://zfb-example-blog.pages.dev/).
+The five component names are fixed by the feature, not chosen by you — see [GitHub alerts](../markdown-features/github-alerts.mdx) for the alert syntax, and [Project structure](../getting-started/project-structure.mdx) for where these files sit in the scaffold.
 
 ## Reference
 

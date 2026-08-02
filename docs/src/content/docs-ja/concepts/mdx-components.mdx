@@ -52,7 +52,7 @@ zfb はルートエクスポートから `defaultComponents` マップを提供�
 
 ```tsx
 import { defaultComponents } from "zfb";
-import Note from "../../components/note";
+import { Note } from "../../components/callout";
 
 <post.Content components={{ ...defaultComponents, ...mine, Note }} />;
 ```
@@ -206,66 +206,86 @@ MDX は `components` マップ内の特別な `wrapper` キーをサポートし
 
 ## カスタムコンポーネントで `.mdx` を書く
 
-同梱の `basic-blog` テンプレートが、エンドツーエンドの形を実演しています（全ソースは [zfb-example-blog スタンドアロンリポジトリ](https://github.com/Takazudo/zfb-example-blog) を参照）。この MDX 投稿はカスタムの `<Note>` admonition を使っています。
+同梱の `basic-blog` テンプレートが、エンドツーエンドの形を実演しています。その `hello-zfb.mdx` は、本文に直接 JSX として `<Tip>` admonition を書いています。
 
 ```mdx
 ---
 title: Hello, zfb
 date: 2026-04-20
-description: A short introduction to the basic-blog dogfood example.
+description: What this starter contains and how the pieces fit together.
 ---
 
-Welcome to the **basic-blog** example.
+Welcome to **basic-blog**. This is a working zfb site: a content collection,
+a handful of routes, one interactive island, and Tailwind for styling.
 
-<Note title="MDX in basic-blog">
+<Tip>
 
-  This post is `.mdx`, not plain markdown. The `<Note>` admonition you are
-  reading right now is a custom JSX component passed in via the `components`
-  prop on `<post.Content />` — exactly the same delivery contract Astro's
-  `@astrojs/mdx` exposes.
+Run `zfb check` (or `pnpm typecheck`) to typecheck the project **and**
+validate every post's frontmatter against the collection schema.
 
-</Note>
+</Tip>
 ```
 
-投稿ごとのルートは、`<Note>` を `defaultComponents` と一緒に渡すことで `components` マップに対して解決します。
+投稿ごとのルートには `<Tip>` を配線している箇所はありません。ルートが渡しているのは `defaultComponents` だけです。
 
 ```tsx
 // pages/blog/[slug].tsx
-import { defaultComponents } from "zfb";
-import Note from "../../components/note";
+import { defaultComponents } from "@takazudo/zfb";
 
 export default function BlogPostPage({ post }: Props) {
   return (
     <article>
       <h1>{post.data.title}</h1>
-      <post.Content components={{ ...defaultComponents, Note }} />
+      <post.Content components={{ ...defaultComponents }} />
     </article>
   );
 }
 ```
 
-`Note` コンポーネント自体は、`title` と `children` を受け取るごく普通の Preact（または React）コンポーネントです。
+admonition は、zfb がすべてのエントリにマージするプロジェクトルートの `mdx-components.tsx` から届きます。
 
 ```tsx
-// components/note.tsx
+// mdx-components.tsx (project root)
+import { Note, Tip, Important, Warning, Caution } from "~/components/callout";
+
+export default { Note, Tip, Important, Warning, Caution };
+```
+
+5 つの名前をルートごとではなくここに置いていることが、**素の `.md`** 記事でもこれらを使えるようにしています。テンプレートは `zfb.config.ts` で `markdown.features.githubAlerts` を有効にしているため、`> [!NOTE]` の引用ブロックはレンダリング前に `<Note>` 要素へ書き換えられます。そしてマップに存在しない PascalCase の名前は、レンダリング時に例外を投げます。ルートごとに配線する形にすると、記事をレンダリングするすべてのルートが 5 つすべてを覚えておかなければなりません。
+
+コンポーネント自体は、ごく普通の Preact（または React）コンポーネントです。`components/callout.tsx` はベースとなるコンポーネント 1 つと、`children` だけを受け取る 5 つの名前付きラッパーをエクスポートします。
+
+```tsx
+// components/callout.tsx
 import type { ComponentChildren } from "preact";
 
-type Props = {
-  title?: string;
-  children: ComponentChildren;
+type Variant = "note" | "tip" | "important" | "warning" | "caution";
+
+const LABELS: Record<Variant, string> = {
+  note: "Note",
+  tip: "Tip",
+  important: "Important",
+  warning: "Warning",
+  caution: "Caution",
 };
 
-export default function Note({ title, children }: Props) {
+export function Callout({ variant, children }: { variant: Variant; children: ComponentChildren }) {
   return (
-    <aside class="admonition admonition--note" role="note">
-      {title ? <strong>{title}</strong> : null}
+    <aside data-component={variant} role="note">
+      <p>{LABELS[variant]}</p>
       <div>{children}</div>
     </aside>
   );
 }
+
+export function Note({ children }: { children: ComponentChildren }) {
+  return <Callout variant="note">{children}</Callout>;
+}
+
+// …Tip・Important・Warning・Caution も Note と同じく 1 行ずつ。
 ```
 
-全ソースは [zfb-example-blog スタンドアロンリポジトリ](https://github.com/Takazudo/zfb-example-blog) にあります。`content/blog/hello-zfb.mdx`、`pages/blog/[slug].tsx`、`components/note.tsx` を参照してください。ライブビルドは [zfb-example-blog.pages.dev](https://zfb-example-blog.pages.dev/) で確認できます。
+5 つのコンポーネント名は機能側で固定されており、こちらで選べるものではありません。アラートの記法そのものは [GitHub アラート](../markdown-features/github-alerts.mdx)を、これらのファイルがスキャフォールドのどこに置かれるかは [プロジェクト構造](../getting-started/project-structure.mdx) を参照してください。
 
 ## リファレンス
 

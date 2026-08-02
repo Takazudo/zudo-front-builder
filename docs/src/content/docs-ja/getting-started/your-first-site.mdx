@@ -38,6 +38,8 @@ zfb new my-site --template basic-blog
 
 `--template basic-blog` はデフォルトなので、省略できます。Node.js 依存を一切必要としないプロジェクト向けに `node-free` テンプレートも利用できます。`package.json` を同梱せず、`.tsx` に加えて `.md`/`.html` のページエントリを使います。このページの書き方については [Markdown and HTML Pages](../concepts/md-html-pages.mdx) を参照してください。
 
+`basic-blog` がスキャフォールドするのは、`zfb.config.ts`（JSON ではありません）、3 つのシード記事を持つ `blog` コンテンツコレクション、4 つのルート、そして 1 つのクライアント島です。同梱の `README.md` がツリーの案内になっており、[プロジェクト構造](./project-structure.mdx) が同じ範囲をより詳しく扱います。
+
 ## 開発サーバーを起動する
 
 ```bash
@@ -74,9 +76,19 @@ npx zfb preview
 
 3 つのコマンドはすべて `zfb.config.*` の `outDir` を尊重します。build と preview では、明示的な `--outdir` が常に設定値より優先されます。
 
+## プロジェクトを型チェックする
+
+```bash
+pnpm typecheck
+# または
+npx zfb check
+```
+
+`zfb check` は 1 回の実行で 2 つのことを行います。TypeScript でプロジェクトを型チェックすることと、各コレクションエントリのフロントマターを、`zfb.config.ts` でそのコレクションに宣言された JSON Schema に対して検証することです。ビルド自体はフロントマターを検証しないため、`title` や `date` の欠けた記事はここで捕まります。[CLI リファレンス](../api/cli.mdx) を参照してください。
+
 ## 動作するサンプル
 
-`basic-blog` を使って完全にビルドされたサイトが [https://github.com/Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog) で公開されています。
+[zfb-example-blog](https://github.com/Takazudo/zfb-example-blog) は、読んでそのままデプロイできるスタンドアロンのサンプルサイトです（[ライブビルド](https://zfb-example-blog.pages.dev/)）。同梱テンプレートのコピーではなく独立したリポジトリとして保守されているため、ファイル構成は `zfb new` がスキャフォールドするものとは異なります。手元のプロジェクトの写しではなく、作り込まれた実例として読んでください。その他のサンプルは [サンプル](../guides/examples.mdx) にまとまっています。
 
 ## 次に読むもの
 

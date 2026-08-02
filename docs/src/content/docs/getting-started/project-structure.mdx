@@ -10,33 +10,34 @@ When you run `zfb new my-site`, the `basic-blog` template lays down a small but 
 my-site/
 ├── pages/
 │   ├── index.tsx
-│   ├── blog/
-│   │   ├── [slug].tsx
-│   │   └── page/
-│   │       └── [page].tsx
-│   └── tags/
-│       └── [tag].tsx
+│   ├── about.tsx
+│   ├── 404.tsx
+│   └── blog/
+│       └── [slug].tsx
 ├── layouts/
 │   └── default.tsx
 ├── components/
-│   ├── note.tsx
-│   └── theme-toggle.tsx
+│   ├── callout.tsx
+│   ├── theme-toggle.tsx
+│   └── zfb-shim.d.ts
 ├── content/
 │   └── blog/
-│       ├── deploying-static-sites.md
-│       ├── dev-loop-feel.md
 │       ├── hello-zfb.mdx
-│       ├── ssr-and-islands.md
-│       └── why-rust-cli.md
+│       ├── markdown-showcase.md
+│       └── styling-with-tailwind.md
 ├── lib/
 │   └── types.ts
 ├── styles/
 │   └── global.css
-├── zfb.config.json
+├── mdx-components.tsx
+├── zfb.config.ts
 ├── package.json
 ├── tsconfig.json
+├── README.md
 └── .gitignore
 ```
+
+Every file above is meant to be read and edited — the template has no hidden layer and no generated code you are expected to leave alone.
 
 ## pages/
 
@@ -47,27 +48,49 @@ File-system routing lives here. Every page file under `pages/` (`.tsx`, `.ts`, `
 - `pages/blog/[slug].tsx` → `/blog/:slug` (dynamic route — one HTML file per resolved slug)
 - `pages/docs/[...slug].tsx` → catchall, matches any depth
 
-The default template ships an index page and three dynamic routes: `blog/[slug].tsx` (one HTML file per post), `blog/page/[page].tsx` (paginated listing), and `tags/[tag].tsx` (per-tag archive). A dynamic route file exports a `paths()` function; zfb calls it at build time to expand the parameter into one HTML file per resolved value. See [Dynamic routes](../concepts/dynamic-routes.mdx) for the full API.
+The template ships three static routes and one dynamic route. `index.tsx` lists every post newest-first via `getStaticProps()`, `about.tsx` is a static page with no data loading at all, and `blog/[slug].tsx` exports a `paths()` function that zfb calls at build time to expand `[slug]` into one HTML file per collection entry. See [Dynamic routes](../concepts/dynamic-routes.mdx) for the full API.
+
+`404.tsx` is the one filename with a special meaning: a top-level `pages/404.tsx` emits a flat `dist/404.html` rather than `dist/404/index.html`, which is the file `zfb preview` — and most static hosts — serve for an unmatched request.
+
+The template deliberately stops at one dynamic route. Paginated listings and per-tag archives are a few lines each on top of the same `paths()` contract, so `README.md` links them as next steps instead: [`paginate()`](../api/paginate.mdx) turns a collection into one route per page, and a `pages/tags/[tag].tsx` route groups posts by the `tags` already present in their frontmatter.
 
 ## layouts/
 
-Reusable page wrappers. `layouts/default.tsx` is the shell every page imports — header, footer, common metadata, and so on. Layouts are plain TSX components; you compose them however you like.
+Reusable page wrappers. `layouts/default.tsx` is the shell every page imports — `<head>`, header, footer, and an inline pre-paint script that applies the saved theme before the first frame. Layouts are plain TSX components; you compose them however you like.
 
 ## components/
 
-Plain components and **islands**. The template ships `components/note.tsx` (a server-rendered callout) and `components/theme-toggle.tsx` (a `"use client"` island for toggling dark mode). The `"use client"` directive at the top of a file is what turns a component into a client-side island — components without it render only on the server and ship zero JavaScript. The full mental model is on the [islands page](../concepts/islands.mdx).
+Plain components and **islands**. The template ships two components and one type declaration:
+
+- `components/callout.tsx` exports one base `Callout` plus five named wrappers — `Note`, `Tip`, `Important`, `Warning`, and `Caution`. Those five names are fixed by the [GitHub alerts](../markdown-features/github-alerts.mdx) markdown feature, which rewrites a `> [!NOTE]` blockquote into a `<Note>` element before rendering.
+- `components/theme-toggle.tsx` is the template's only `"use client"` island — it toggles dark mode and is the only component that ships JavaScript to the browser. The `"use client"` directive at the top of a file is what turns a component into a client-side island; components without it render only on the server. The full mental model is on the [islands page](../concepts/islands.mdx).
+- `components/zfb-shim.d.ts` is not a component. It declares the bare `zfb/config` specifier that `zfb.config.ts` imports `defineConfig` from, mapping it onto the real types shipped by `@takazudo/zfb`. The config loader aliases that specifier to an internal stub at parse time, so nothing resolves it on disk — without the shim, TypeScript and `zfb check` would report the import as unresolved.
 
 ## content/
 
-Content collections. `content/blog/` holds five seed entries of a `blog` collection: Markdown and MDX files in a named directory, queryable from pages via `getCollection("blog")`. Collection schemas are declared in `zfb.config.ts` under `collections`.
+Content collections. `content/blog/` holds the three seed entries of a `blog` collection: Markdown and MDX files in a named directory, queryable from pages via `getCollection("blog")`:
+
+- `hello-zfb.mdx` — how a page becomes HTML, and what MDX adds over plain Markdown.
+- `markdown-showcase.md` — worked examples of the markdown features the template turns on (tables, strikethrough, task lists, footnotes, alerts, enriched code blocks, and the heading-marker TOC), each linked to its reference page.
+- `styling-with-tailwind.md` — where the Tailwind setup lives and how dark mode is wired.
+
+Collection schemas are declared in `zfb.config.ts` under `collections`. See [Content Collections](../concepts/content-collections.mdx) for the query API.
+
+## mdx-components.tsx
+
+A project-root component map applied to **every** rendered content entry. zfb discovers this file next to `zfb.config.ts`, copies it into the build, and installs its default export before any page renders — so `<entry.Content />` picks it up with no per-call wiring.
+
+The template's map exports the five alert components from `components/callout.tsx`. That is what makes `> [!NOTE]` work in a plain `.md` post: the `githubAlerts` feature produces a `<Note>` element, and an unresolved PascalCase name throws while rendering. Merge order is `defaultComponents` → this file → the `components` prop on the call site, so a single page can still override any of them locally. See [MDX Components](../concepts/mdx-components.mdx).
 
 ## lib/
 
-Shared TypeScript utilities. The template ships `lib/types.ts` with the frontmatter type definitions used across pages and components. There is no framework magic here — it is a plain TypeScript module you import wherever you need it.
+Shared TypeScript utilities. The template ships `lib/types.ts` with the frontmatter and entry types used across pages and components. There is no framework magic here — it is a plain TypeScript module you import wherever you need it.
 
 ## styles/
 
-Global CSS. `styles/global.css` is the entry point — import it from your root layout. The default template wires up Tailwind here when `tailwind.enabled` is set in the config.
+Global CSS. `styles/global.css` is the entry point, imported from `layouts/default.tsx`. It opens with `@import "tailwindcss";`, defines the project's theme tokens in an `@theme` block, binds Tailwind's `dark:` variant to the `data-theme` attribute the theme toggle writes, and closes with a scoped `.prose` block for rendered Markdown bodies.
+
+The split is deliberate: page chrome in `.tsx` files uses Tailwind utilities inline, while Markdown produces plain tags no utility class can reach, so those are styled once in CSS and opted into with `class="prose"`. The template sets no `tailwind` key in its config — Tailwind is on unless you set `tailwind: { enabled: false }`. See [Styling](../concepts/styling.mdx).
 
 ## public/
 
@@ -86,14 +109,37 @@ When `base` is set in `zfb.config.ts` (e.g. `base: "/pj/site/"`), files in `publ
 
 See [Static Assets](../concepts/static-assets.mdx) for the full reference, including when to use `public/` vs a TSX import for islands.
 
-## zfb.config.json
+## zfb.config.ts
+
+The template scaffolds a TypeScript config that wraps its object in `defineConfig()`, so you get full type checking and IDE completion:
+
+```ts
+import { defineConfig } from "zfb/config";
+
+export default defineConfig({
+  framework: "preact",
+  collections: [{ name: "blog", path: "content/blog", schema: { /* … */ } }],
+  markdown: {
+    gfm: { taskListItem: true, footnoteDefinition: true },
+    features: { githubAlerts: true, codeEnrichment: {}, headingMarkerToc: true },
+  },
+});
+```
+
+Every option zfb already defaults to is omitted on purpose — `outDir`, `publicDir`, and `tailwind` are all left implicit, so the file shows only the decisions the project actually made. What remains is three top-level keys: `framework` (`"preact"`), the `blog` collection (with a JSON Schema that `zfb check` validates every post's frontmatter against), and the markdown opt-ins — GFM task lists and footnotes on top of the always-on tables and strikethrough, plus [GitHub alerts](../markdown-features/github-alerts.mdx), [code enrichment](../markdown-features/code-enrichment.mdx), and the [heading-marker TOC](../markdown-features/heading-marker-toc.mdx). The [markdown features index](../markdown-features/index.mdx) is the full map of what else you can turn on.
 
 The config file uses a camelCase schema. Common keys include `outDir` (default `"dist"`), `publicDir` (default `"public"`), `host` (default `"localhost"`), `port` (default `3000`, the `zfb dev` server default — `zfb preview` falls back to `4321` instead when unset), `framework` (`"preact"` or `"react"`, default `"preact"`), `collections`, `tailwind`, and `plugins`. This is not an exhaustive list — see [defineConfig](../api/define-config.mdx) for the full schema reference.
 
 `outDir` is honored by `zfb dev`, `zfb build`, and `zfb preview`. For build and preview, CLI `--outdir` overrides config `outDir`; the built-in fallback is `dist/`.
 
-The template scaffolds `zfb.config.json`. If you rename it to `zfb.config.ts`, zfb loads it via the bundled esbuild binary and you get full TypeScript types and IDE completion — the schema is identical in both formats.
+A plain `zfb.config.json` is also accepted as a legacy fallback — the schema is identical, but it gets no types and no `defineConfig()`. When both files are present, the `.ts` one wins.
 
-## package.json, tsconfig.json, .gitignore
+## package.json, tsconfig.json, README.md, .gitignore
 
-Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and any libraries your islands import. `zfb new` exact-pins `@takazudo/zfb` and `@takazudo/zfb-runtime` to the version of the CLI that scaffolded the project — an exact pin like `=0.1.0-next.7`, not a `^`/`~` range — so a fresh scaffold never silently drifts to a future release. `tsconfig.json` is configured so TSX in `pages/`, `layouts/`, and `components/` type-checks cleanly. The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control, plus `**/zfb-tailwind-entry-*.css` — the temp entry file the Tailwind pipeline synthesises next to your CSS entry (see [Styling](../concepts/styling.mdx)).
+Standard project plumbing. `package.json` declares the framework runtime dependency (`preact` by default) and four scripts: `dev`, `build`, `preview`, and `typecheck` (which runs `zfb check` — TypeScript plus collection-schema validation). `zfb new` exact-pins `@takazudo/zfb` and `@takazudo/zfb-runtime` to the version of the CLI that scaffolded the project — an exact pin like `=0.1.0-next.7`, not a `^`/`~` range — so a fresh scaffold never silently drifts to a future release.
+
+`tsconfig.json` is configured so TSX across the project type-checks cleanly, with a single path alias: `~/*` resolves to the project root, and the template uses it consistently in every import.
+
+`README.md` is a short tour of the same tree, plus two tables listing which markdown features are on in the starter and which are available but left off, each linked to its reference page.
+
+The shipped `.gitignore` excludes `dist/` and `node_modules/` so build output and dependencies stay out of version control, plus the temp files zfb's pipelines synthesise while a build is in flight — including `**/zfb-tailwind-entry-*.css`, the entry file the Tailwind pipeline writes next to your CSS entry (see [Styling](../concepts/styling.mdx)).

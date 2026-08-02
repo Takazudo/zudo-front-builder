@@ -30,7 +30,7 @@ export default function Counter() {
 
 この 1 つのディレクティブが opt-in のすべてです。これを持たないファイルは純粋なサーバーコンポーネントです。ビルド時に一度レンダリングされるだけで、ブラウザには決して届きません。
 
-[zfb-example-blog のスタンドアロンリポジトリ](https://github.com/Takazudo/zfb-example-blog) にある `theme-toggle.tsx` コンポーネントは、典型的な実例です。`localStorage` と `matchMedia` を読み取り、自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、その後 `useEffect` 内でユーザーの設定に同期する点です。
+同梱の `basic-blog` テンプレートにある `components/theme-toggle.tsx` は、典型的な実例であり、このテンプレート唯一の島でもあります。`localStorage` と `matchMedia` を読み取り、自身の状態を管理し、アクティブなテーマを `document.documentElement.dataset.theme` にミラーします。鍵となるパターンは、初回ペイントでは決定論的で SSR セーフなデフォルトをレンダリングし、その後 `useEffect` 内でユーザーの設定に同期する点です。
 
 ```tsx
 "use client";
