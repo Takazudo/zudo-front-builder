@@ -1665,7 +1665,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         self,
         ctx: BuildContext,
         discover: Option<DiscoveryHook>,
-        mut on_outcome: F,
+        on_outcome: F,
         boot: Option<B>,
     ) -> Result<()>
     where
@@ -1673,7 +1673,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         B: FnOnce(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>,
         P: 'static,
     {
-        let (mut watcher, mut rx) = Watcher::start_with_options(
+        let (watcher, rx) = Watcher::start_with_options(
             &self.config.project_root,
             self.config.watch_roots.iter().map(|p| p.as_path()),
             self.config.extra_watch_paths.iter().map(|p| p.as_path()),
@@ -1685,6 +1685,31 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             "build orchestrator running"
         );
 
+        self.run_drain_loop(ctx, discover, on_outcome, boot, watcher, rx)
+            .await
+    }
+
+    /// The drain loop proper, extracted from [`run_with_boot`](Self::run_with_boot)
+    /// (issue #2253) so tests can drive it with a synthetic, test-owned
+    /// `Change` channel instead of real filesystem events reaching a real
+    /// `Watcher`'s own channel, while still exercising this exact loop body.
+    /// `watcher` and `rx` are already constructed — `run_with_boot` is the
+    /// only production caller, and it always pairs a freshly booted
+    /// `Watcher::start_with_options` with its own receiver.
+    async fn run_drain_loop<F, B>(
+        self,
+        ctx: BuildContext,
+        discover: Option<DiscoveryHook>,
+        mut on_outcome: F,
+        boot: Option<B>,
+        mut watcher: Watcher,
+        mut rx: tokio::sync::mpsc::Receiver<Change>,
+    ) -> Result<()>
+    where
+        F: FnMut(&BuildOutcome) + Send + 'static,
+        B: FnOnce(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>,
+        P: 'static,
+    {
         // Boot hook — runs with the watch already registered (so any edit
         // saved during it is buffered by notify and drained by the loop
         // below) but before the loop consumes events. Its outcome, if any,
@@ -4767,6 +4792,43 @@ mod tests {
         .is_ok()
     }
 
+    /// Spawn [`BuildOrchestrator::run_drain_loop`] (private — accessible
+    /// here because `tests` is a descendant module) wired to a
+    /// test-owned, synthetic `Change` channel instead of a real
+    /// `Watcher`'s own receiver (issue #2253). A real `Watcher` is still
+    /// constructed from `orch`'s own config, mirroring exactly what
+    /// `run_with_boot` does — `register_dynamic_dependency_watches` needs
+    /// a genuine handle, though it is a no-op for the
+    /// `policy_with_plugin_watch_files` policies these tests use. The
+    /// watcher's own receiver is discarded; only the returned `Sender`
+    /// feeds the loop, so event DELIVERY is synthetic while the fixture
+    /// files a caller writes are still real disk state the tick reads.
+    fn spawn_drain_loop<P: AssetPipeline + 'static>(
+        orch: BuildOrchestrator<P>,
+        ctx: BuildContext,
+    ) -> (
+        tokio::task::JoinHandle<Result<()>>,
+        tokio::sync::mpsc::Sender<Change>,
+    ) {
+        let (watcher, _real_rx) = Watcher::start_with_options(
+            &orch.config.project_root,
+            orch.config.watch_roots.iter().map(|p| p.as_path()),
+            orch.config.extra_watch_paths.iter().map(|p| p.as_path()),
+            watch_options_for(&orch.config),
+        )
+        .expect("start test watcher");
+        let (tx, rx) = tokio::sync::mpsc::channel::<Change>(16);
+        let handle = tokio::spawn(orch.run_drain_loop(
+            ctx,
+            None,
+            |_: &BuildOutcome| {},
+            None::<fn(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>>,
+            watcher,
+            rx,
+        ));
+        (handle, tx)
+    }
+
     /// The live-loop wiring proof for issue #2169: `run_with_boot`'s drain
     /// loop must AWAIT the pre-tick hook to completion before dispatching
     /// the tick. The unit tests above prove `maybe_pre_tick_refresh`'s own
@@ -4825,26 +4887,27 @@ mod tests {
             },
         );
         let dist = tempfile::tempdir().unwrap();
-        let run = tokio::spawn(orch.run(noop_ctx(dist.path()), None, |_: &BuildOutcome| {}));
+        let (run, tx) = spawn_drain_loop(orch, noop_ctx(dist.path()));
 
-        // Write fresh watched-file content until the loop demonstrably
-        // reached the hook (proves the dynamic parent watch is live AND the
-        // gate is reached — no fixed settle sleep).
+        // Synthetic delivery (issue #2253): the fixture write is still
+        // real disk state, but the "the watcher observed it" step is
+        // replaced by a direct send on the test-owned channel — no
+        // real-watcher round trip to wait out.
+        std::fs::write(&watched, "v1").expect("write watched file");
+        tx.send(Change {
+            path: watched.clone(),
+            kind: ChangeKind::Modified,
+        })
+        .await
+        .expect("send watched-file change");
         let log_probe = Arc::clone(&log);
-        let watched_writer = watched.clone();
-        let res = zfb_test_utils::watcher_live_handshake(
-            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
-            move |idx| {
-                std::fs::write(&watched_writer, format!("v{idx}")).expect("write watched file");
-            },
-            move || log_probe.lock().unwrap().contains(&"refresh-start"),
-        )
+        let reached_hook = wait_until(10, move || {
+            log_probe.lock().unwrap().contains(&"refresh-start")
+        })
         .await;
         assert!(
-            res.live,
-            "the watched file's dynamic watch never delivered an event that reached the \
-             pre-tick hook within {:?} ({} markers written)",
-            res.elapsed, res.markers_written,
+            reached_hook,
+            "the synthetic watched-file change never reached the pre-tick hook within 10s"
         );
 
         // Open the gate for this and every subsequent hook invocation, then
@@ -4946,31 +5009,38 @@ mod tests {
             pipeline,
         );
         let dist = tempfile::tempdir().unwrap();
-        let run = tokio::spawn(orch.run(noop_ctx(dist.path()), None, |_: &BuildOutcome| {}));
+        let (run, tx) = spawn_drain_loop(orch, noop_ctx(dist.path()));
 
-        // Two full error rounds: hook_calls >= 2 proves the loop survived
-        // the first Err and consulted the hook again; applies >= 2 proves
-        // the ticks themselves kept dispatching. Fresh content per marker
-        // keeps events coming for as long as the condition needs.
-        let hook_calls_probe = Arc::clone(&hook_calls);
-        let applies_probe = Arc::clone(&applies);
-        let watched_writer = watched.clone();
-        let res = zfb_test_utils::watcher_live_handshake(
-            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
-            move |idx| {
-                std::fs::write(&watched_writer, format!("v{idx}")).expect("write watched file");
-            },
-            move || {
-                hook_calls_probe.load(Ordering::SeqCst) >= 2
-                    && applies_probe.lock().unwrap().len() >= 2
-            },
-        )
-        .await;
+        // Two full error rounds, driven one at a time (issue #2253): each
+        // synthetic send is awaited into its own drain-loop batch before
+        // the next is sent, so a batch never coalesces two rounds into
+        // one — hook_calls >= 2 proves the loop survived the first Err
+        // and consulted the hook again; applies >= 2 proves the ticks
+        // themselves kept dispatching.
+        for idx in 1..=2u32 {
+            std::fs::write(&watched, format!("v{idx}")).expect("write watched file");
+            tx.send(Change {
+                path: watched.clone(),
+                kind: ChangeKind::Modified,
+            })
+            .await
+            .expect("send watched-file change");
+            let applies_probe = Arc::clone(&applies);
+            let landed = wait_until(5, move || {
+                applies_probe.lock().unwrap().len() >= idx as usize
+            })
+            .await;
+            assert!(
+                landed,
+                "round {idx}: no tick landed after the (erroring) pre-tick hook ran"
+            );
+        }
         assert!(
-            res.live,
-            "the loop never reached 2 hook calls + 2 ticks after an erroring hook within \
-             {:?} ({} markers written) — an Err is killing the drain loop",
-            res.elapsed, res.markers_written,
+            hook_calls.load(Ordering::SeqCst) >= 2 && applies.lock().unwrap().len() >= 2,
+            "the loop never reached 2 hook calls + 2 ticks after an erroring hook — an Err is \
+             killing the drain loop (hook_calls={}, applies={})",
+            hook_calls.load(Ordering::SeqCst),
+            applies.lock().unwrap().len(),
         );
 
         run.abort();
@@ -5018,29 +5088,26 @@ mod tests {
             pipeline,
         );
         let dist = tempfile::tempdir().unwrap();
-        let run = tokio::spawn(orch.run(noop_ctx(dist.path()), None, |_: &BuildOutcome| {}));
+        let (run, tx) = spawn_drain_loop(orch, noop_ctx(dist.path()));
 
-        // Fresh page files (a boot-watched recursive root) until a tick
-        // lands — proving the loop processed at least one full non-matching
-        // batch end to end.
+        // A synthetic page-file change (issue #2253) — a boot-watched
+        // recursive root with no plugin-watch member, so the batch must
+        // never consult the hook even with a NON-EMPTY registry (an
+        // empty registry would make this pass trivially).
+        let page_path = project_root.join("pages").join("probe-0.tsx");
+        std::fs::write(&page_path, "export default () => null;\n").expect("write page file");
+        tx.send(Change {
+            path: page_path,
+            kind: ChangeKind::Created,
+        })
+        .await
+        .expect("send page-file change");
+
         let applies_probe = Arc::clone(&applies);
-        let pages_dir = project_root.join("pages");
-        let res = zfb_test_utils::watcher_live_handshake(
-            zfb_test_utils::HandshakeOpts::new(Duration::from_secs(10)),
-            move |idx| {
-                std::fs::write(
-                    pages_dir.join(format!("probe-{idx}.tsx")),
-                    "export default () => null;\n",
-                )
-                .expect("write page file");
-            },
-            move || !applies_probe.lock().unwrap().is_empty(),
-        )
-        .await;
+        let landed = wait_until(10, move || !applies_probe.lock().unwrap().is_empty()).await;
         assert!(
-            res.live,
-            "no tick ever landed for the page-file batches within {:?} ({} markers written)",
-            res.elapsed, res.markers_written,
+            landed,
+            "no tick ever landed for the synthetic page-file batch within 10s"
         );
 
         assert_eq!(
