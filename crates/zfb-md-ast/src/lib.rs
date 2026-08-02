@@ -32,10 +32,10 @@ pub use directives::{
 pub use features_config::{
     directives_enabled, feature_enabled, heading_id_strategy, heading_marker_toc_enabled,
     into_directive_def, reading_time_enabled, CodeEnrichmentConfig, DirectiveFullSpec,
-    DirectiveSpec, DirectiveSpecKind, FeatureOptions, FeatureToggle, GithubAutolinksConfig,
-    HeadingIdStrategy, HeadingIdsConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
-    LinkValidationConfig, MarkdownFeaturesConfig, ReadingTimeFeature, ReadingTimeOptions,
-    TocConfig, TocExportConfig, TranscludeConfig,
+    DirectiveSpec, DirectiveSpecKind, FeatureOptions, FeatureToggle, HeadingIdStrategy,
+    HeadingIdsConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+    MarkdownFeaturesConfig, ReadingTimeFeature, ReadingTimeOptions, TocConfig, TocExportConfig,
+    TranscludeConfig,
 };
 pub use hast_text::extract_text;
 pub use read_recorder::{sha256_hex, ReadOutcome, ReadRecorder};

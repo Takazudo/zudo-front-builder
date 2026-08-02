@@ -272,14 +272,13 @@ fn assert_features_fingerprint_covers_every_field(
     use zfb_md_ast::{ReadingTimeFeature, ReadingTimeOptions};
     use zfb_md_extras::{
         CodeEnrichmentConfig, DirectiveFullSpec, DirectiveSpec, FeatureOptions, FeatureToggle,
-        GithubAutolinksConfig, HeadingIdsConfig, HeadingMarkerTocFeature, ImageDimensionsConfig,
-        LinkValidationConfig, MarkdownFeaturesConfig, TocExportConfig, TranscludeConfig,
+        HeadingIdsConfig, HeadingMarkerTocFeature, ImageDimensionsConfig, LinkValidationConfig,
+        MarkdownFeaturesConfig, TocExportConfig, TranscludeConfig,
     };
 
     let MarkdownFeaturesConfig {
         github_alerts,
         reading_time,
-        github_autolinks,
         code_enrichment,
         code_tabs,
         ruby,
@@ -305,9 +304,6 @@ fn assert_features_fingerprint_covers_every_field(
             | ReadingTimeFeature::Bool(_),
         )
         | None => {}
-    }
-    match github_autolinks {
-        Some(GithubAutolinksConfig { repo: _ }) | None => {}
     }
     match code_enrichment {
         Some(CodeEnrichmentConfig {
@@ -2421,26 +2417,6 @@ fn register_features_config_derived(
     if feature_enabled(&features.mermaid) {
         p.push_config_derived_hast_visitor(Box::new(zfb_md_extras::mermaid::MermaidPlugin::new()));
     }
-    // Wave 5 (#574): GitHub-style autolinks — #NNN, user/repo#NNN, SHA.
-    // Uses Option<GithubAutolinksConfig> (not FeatureToggle), so gated with
-    // is_some() + required `repo` field extraction.
-    if let Some(cfg) = features.github_autolinks.as_ref() {
-        if let Some(repo) = cfg.repo.as_ref() {
-            p.push_config_derived_hast_visitor(Box::new(
-                zfb_md_extras::github_autolinks::GithubAutolinksPlugin::new(repo.clone()),
-            ));
-        } else {
-            // `githubAutolinks: {}` (no `repo`) used to silently no-op — the
-            // plugin never got wired and the user got no autolinks with no
-            // indication why. `repo` is required by the feature's own config
-            // schema doc (see `GithubAutolinksConfig`), so surface it as a
-            // build-blocking config error instead of a quiet skip (#1392).
-            p.extend_markdown_diagnostics(vec![MarkdownDiagnostic::error(
-                "githubAutolinks requires repo: \"owner/repo\"",
-            )]);
-        }
-    }
-
     // Wave 5 (#578): toc_export — emit page TOC as MDX named export.
     // Gated on `is_some()` (the config type carries its own fields; no outer
     // `FeatureToggle` wrapper). Must run AFTER HeadingLinksPlugin (already in
@@ -3873,54 +3849,6 @@ mod tests {
             index,
             "dir-only setter must key as the unarmed-fallback state"
         );
-    }
-
-    // #1392: `githubAutolinks: {}` (repo absent) used to silently no-op —
-    // no plugin wired, no signal to the user. It must now surface a
-    // build-blocking config-error diagnostic instead.
-    #[test]
-    fn github_autolinks_without_repo_emits_config_error() {
-        let mut p = Pipeline::new();
-        let features = zfb_md_extras::MarkdownFeaturesConfig {
-            github_autolinks: Some(zfb_md_extras::GithubAutolinksConfig { repo: None }),
-            ..Default::default()
-        };
-        register_features(&mut p, &features);
-
-        let diags = p.take_markdown_diagnostics();
-        assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {diags:?}");
-        match &diags[0] {
-            MarkdownDiagnostic::Generic {
-                severity, message, ..
-            } => {
-                assert_eq!(
-                    *severity,
-                    zfb_md_ast::diagnostics::DiagnosticSeverity::Error
-                );
-                assert!(
-                    message.contains("githubAutolinks requires repo"),
-                    "got: {message}"
-                );
-            }
-            other => panic!("expected a Generic diagnostic, got: {other:?}"),
-        }
-    }
-
-    // The `repo: Some(...)` branch must NOT emit a diagnostic — only the
-    // missing-repo case is a config error.
-    #[test]
-    fn github_autolinks_with_repo_emits_no_diagnostic() {
-        let mut p = Pipeline::new();
-        let features = zfb_md_extras::MarkdownFeaturesConfig {
-            github_autolinks: Some(zfb_md_extras::GithubAutolinksConfig {
-                repo: Some("owner/repo".to_string()),
-            }),
-            ..Default::default()
-        };
-        register_features(&mut p, &features);
-
-        let diags = p.take_markdown_diagnostics();
-        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
     // -----------------------------------------------------------------

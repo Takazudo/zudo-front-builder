@@ -18,11 +18,6 @@ required-features = ["test-utils"]
 name = "reading_time"
 required-features = ["test-utils"]
 
-# Integration test for github_autolinks feature.
-[[test]]
-name = "github_autolinks"
-required-features = ["test-utils"]
-
 # Integration tests for code_enrichment feature.
 [[test]]
 name = "code_enrichment"

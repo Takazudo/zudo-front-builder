@@ -228,7 +228,6 @@ fn default_class_highlight_prefix() -> String {
 ///   "features": {
 ///     "githubAlerts": true,
 ///     "readingTime": { "wpm": 200 },
-///     "githubAutolinks": { "repo": "owner/repo" },
 ///     "codeEnrichment": {
 ///       "diffMarkers": true,
 ///       "lineHighlight": true,
@@ -313,8 +312,8 @@ impl Default for PipelineOptions {
 pub enum FacadeError {
     /// `serde_json` rejected the options document — malformed JSON, an
     /// unknown field (`deny_unknown_fields`), or a value that doesn't
-    /// match the expected shape (e.g. `githubAutolinks: {}` missing
-    /// `repo`, an invalid `headingIds.strategy`).
+    /// match the expected shape (e.g. an unknown field inside
+    /// `codeEnrichment`, an invalid `headingIds.strategy`).
     #[error("invalid pipeline options JSON: {0}")]
     InvalidConfig(#[from] serde_json::Error),
     /// Pipeline construction rejected the resolved options. With

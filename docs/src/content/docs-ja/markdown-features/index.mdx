@@ -46,7 +46,6 @@ export default defineConfig({
     hardBreaks: true,
     features: {
       mermaid: true,
-      githubAutolinks: { repo: "owner/repo" },
       directives: {
         note: "Note",
         tip: "Tip",
@@ -56,7 +55,7 @@ export default defineConfig({
 });
 ```
 
-Boolean shorthand は**普遍ではありません**。値の形に `boolean` を含む行でだけ使えます。`githubAutolinks`、`codeEnrichment`、`tocExport`、`imageDimensions`、`linkValidation`、`transclude`、`headingIds` のような object-only の行には object が必要です。未知のキーは config load 時に拒否されます。
+Boolean shorthand は**普遍ではありません**。値の形に `boolean` を含む行でだけ使えます。`codeEnrichment`、`tocExport`、`imageDimensions`、`linkValidation`、`transclude`、`headingIds` のような object-only の行には object が必要です。未知のキーは config load 時に拒否されます。
 
 ## 機能マップ
 
@@ -77,7 +76,6 @@ Boolean shorthand は**普遍ではありません**。値の形に `boolean` �
 | [見出しマーカー TOC](./heading-marker-toc.mdx) | Opt-in | `markdown.features.headingMarkerToc` | `boolean \| { heading?: string; maxDepth?: number }` | 省略または `false` で off。 |
 | [GitHub アラート](./github-alerts.mdx) | Opt-in | `markdown.features.githubAlerts` | `boolean \| {}` | 省略または `false` で off。 |
 | [読了時間](./reading-time.mdx) | Opt-in | `markdown.features.readingTime` | `boolean \| { wpm?: number }` | 省略または `false` で off。`export const readingTimeMinutes` を出力。 |
-| [GitHub オートリンク](./github-autolinks.mdx) | Opt-in | `markdown.features.githubAutolinks` | `{ repo: string }` | 省略時は off。`repo` 欠落は build-blocking config error。 |
 | [コードブロックのエンリッチメント](./code-enrichment.mdx) | Opt-in | `markdown.features.codeEnrichment` | `{ diffMarkers?: boolean; lineHighlight?: boolean; wordHighlight?: boolean }` | 省略時は off。object form で有効化され、すべての subfeature はデフォルトで on。 |
 | [コードタブ](./code-tabs.mdx) | Opt-in | `markdown.features.codeTabs` | `boolean \| {}` | 省略または `false` で off。 |
 | [ルビ注釈](./ruby.mdx) | Opt-in | `markdown.features.ruby` | `boolean \| {}` | 省略または `false` で off。 |

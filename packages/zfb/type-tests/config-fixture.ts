@@ -8,31 +8,6 @@
 
 import { defineConfig } from "../src/config.js";
 
-export const githubAutolinksWithRepo = defineConfig({
-  markdown: {
-    features: {
-      githubAutolinks: {
-        repo: "owner/repo",
-      },
-    },
-  },
-});
-
-export const githubAutolinksOmitted = defineConfig({
-  markdown: {
-    features: {},
-  },
-});
-
-export const githubAutolinksEmptyObject = defineConfig({
-  markdown: {
-    features: {
-      // @ts-expect-error repo is required when githubAutolinks is configured.
-      githubAutolinks: {},
-    },
-  },
-});
-
 export const bundleInlineLoadersAndRawDefines = defineConfig({
   bundle: {
     loaders: {
