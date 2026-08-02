@@ -1842,6 +1842,27 @@ const REAP_AGE_FLOOR: std::time::Duration = std::time::Duration::from_secs(5 * 6
 /// - Filesystems where advisory locks "succeed" without truly
 ///   conflicting (some NFS configurations) carry the same accepted risk
 ///   as `sweep_stale_probe_sessions`.
+/// - **Windows is untested, not unsupported**: `std::fs::File::try_lock`
+///   is documented to release the lock when the owning process exits or
+///   is killed on every platform Rust supports (`LockFileEx` on Windows,
+///   `flock`/`fcntl` on Unix), so this whole lock-based liveness scheme
+///   should hold there in principle. But `crates/CLAUDE.md`'s T1/T3
+///   matrix runs health/exam/drift-net only on ubuntu/macOS — no CI job
+///   ever executes the Rust test suite on Windows (root `CLAUDE.md`'s T3
+///   cutover manifest, "Windows exam leg" row) — so this reap/teardown
+///   path has never been exercised against a real Windows lock release.
+///   Known Windows-specific hazards this can't rule out without that
+///   lane: `remove_dir_all` on Windows can fail with a sharing-violation
+///   error if any handle (even a since-closed one racing OS cleanup)
+///   still references a file under the directory, and `File::open` on a
+///   directory-mapped path behaves differently than on Unix. Both would
+///   surface as a swallowed I/O error in the `Err(error) if ... =>` arms
+///   below (fail-closed: the candidate is just left untouched), never as
+///   a false deletion — so the accepted risk is under-reaping on
+///   Windows, not the over-reaping this fn is designed to avoid
+///   elsewhere. Do not treat a passing test suite here as Windows proof;
+///   add a `windows-latest` exam leg (per the cutover manifest's trigger)
+///   before relying on this section for a Windows deployment.
 pub fn reap_stale_shadow_sessions(parent: &Path) {
     if keep_shadow_session_enabled() {
         return;
