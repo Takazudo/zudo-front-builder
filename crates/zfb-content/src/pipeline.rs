@@ -2179,6 +2179,18 @@ impl Pipeline {
     /// Parse `input` to mdast, run mdast visitors, transform to hast, run
     /// hast visitors. Returns the resulting hast root.
     ///
+    /// Deliberately does NOT apply `jsx_nested_image_dimensions` /
+    /// `jsx_nested_external_links` (zfb#2247): this HTML path feeds
+    /// `mdast_to_hast`, whose `reconstruct_jsx` fallback (below)
+    /// lossily stringifies markdown nested in JSX (`[label](url)` →
+    /// text `label`) — no nested `<a>`/`<img>` elements exist here to
+    /// treat, and running the mutators would change this path's output
+    /// (a synthesized JSX element gets structurally reconstructed
+    /// instead of stringified, for treated nodes only). Applying them
+    /// only in `apply_mdast_visitors*` (the MDX compile path, which
+    /// keeps `MdxJsxTextElement` nodes structured all the way to
+    /// `JsxEmitter`) keeps this path's output byte-identical.
+    ///
     /// # Errors
     /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
     pub fn run(&mut self, input: &str) -> Result<HastNode, PipelineError> {
@@ -2210,6 +2222,11 @@ impl Pipeline {
     /// All other visitors fall back to the no-context `visit` call via the
     /// default trait implementations, so the output is **byte-identical** to
     /// [`Pipeline::run`] when no context-aware visitors are registered.
+    ///
+    /// Also deliberately does NOT apply `jsx_nested_image_dimensions` /
+    /// `jsx_nested_external_links` (zfb#2247) — same reasoning as
+    /// [`Pipeline::run`]'s doc comment (this is the other HTML-path
+    /// entry point, sharing its `reconstruct_jsx` fallback).
     ///
     /// # Errors
     /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
