@@ -1,8 +1,7 @@
 import { defaultComponents } from "@takazudo/zfb";
 
-import Note from "../../components/note";
-import DefaultLayout from "../../layouts/default";
-import type { BlogEntry } from "../../lib/types";
+import DefaultLayout from "~/layouts/default";
+import type { BlogEntry } from "~/lib/types";
 
 /**
  * Per-post route. The `paths()` export is what the renderer evaluates to
@@ -25,48 +24,50 @@ type Props = {
 export default function BlogPostPage({ post }: Props) {
   const tags = post.data.tags ?? [];
   return (
-    <DefaultLayout title={post.data.title}>
+    <DefaultLayout title={post.data.title} description={post.data.description}>
       <article>
-        <h1>{post.data.title}</h1>
-        <p class="post-meta">
-          <time dateTime={post.data.date}>{post.data.date}</time>
-        </p>
+        <header class="border-b border-neutral-200 pb-6 dark:border-neutral-800">
+          <h1 class="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
+            {post.data.title}
+          </h1>
+          <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-neutral-500">
+            <time dateTime={post.data.date} class="tabular-nums">
+              {post.data.date}
+            </time>
+            {tags.map((tag) => (
+              <span key={tag} class="rounded-full bg-neutral-100 px-2 py-0.5 dark:bg-neutral-900">
+                #{tag}
+              </span>
+            ))}
+          </div>
+        </header>
         {/*
-          Body rendering — `entry.Content` contract.
+          Body rendering — the `entry.Content` contract.
 
           `getCollection("blog")` returns each entry with a `Content`
-          component (see `zfb/content`). We render the body by calling
-          `<post.Content components={...} />` and pass:
+          component. Rendering it as `<post.Content components={...} />`
+          passes element overrides down into the compiled markdown:
 
-          - `defaultComponents` from `zfb` — the htmlOverrides convention
-            (passthroughs for `<p>`, `<a>`, headings, lists, etc.) ported
-            from zudo-doc. Spread first so individual overrides on the
-            right win on key collisions.
-          - `Note` — a custom JSX component used inside the MDX post
-            (`content/blog/hello-zfb.mdx`). MDX resolves `<Note>` against
-            this map at evaluation time, which is what makes
-            `<Note title="…">…</Note>` in the post body actually render.
+          - `defaultComponents` from `zfb` is the htmlOverrides convention
+            (passthroughs for `<p>`, `<a>`, headings, lists, …).
+          - The five alert components (`Note`, `Tip`, …) are NOT passed here.
+            They come from the project-root `mdx-components.tsx`, which zfb
+            merges in for every entry — so any post can use `> [!NOTE]`
+            without each route wiring it up.
 
-          Outside the production renderer (unit tests, dev sandboxes,
-          and the v0 CLI), `Content` falls back to a
-          `<pre data-zfb-content-fallback>` block printing the raw body
-          with a `[zfb fallback render]` marker. That keeps the example
-          self-explanatory even when the bridge is absent.
+          Outside the production renderer (unit tests, dev sandboxes),
+          `Content` falls back to a `<pre data-zfb-content-fallback>` block
+          printing the raw body with a `[zfb fallback render]` marker.
         */}
-        <post.Content components={{ ...defaultComponents, Note }} />
-        {tags.length > 0 ? (
-          <ul class="tag-list">
-            {tags.map((tag) => (
-              <li key={tag}>
-                <a href={`/tags/${encodeURIComponent(tag)}`}>#{tag}</a>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <p>
-          <a href="/">← Back home</a>
-        </p>
+        <div class="prose mt-8">
+          <post.Content components={{ ...defaultComponents }} />
+        </div>
       </article>
+      <p class="mt-14 text-sm">
+        <a href="/#posts" class="text-accent hover:underline">
+          ← All posts
+        </a>
+      </p>
     </DefaultLayout>
   );
 }

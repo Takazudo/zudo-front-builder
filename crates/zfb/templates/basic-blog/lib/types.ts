@@ -2,10 +2,9 @@
  * Shared types for the basic-blog example.
  *
  * `BlogEntry` mirrors the shape returned by `getCollection("blog")` from
- * `zfb/content` — the `data` payload follows the frontmatter schema we
- * keep authoritative in `zfb.config.json` (see also
- * `zfb.config.future.ts` for the typed sibling that will replace the
- * JSON form once the TS config loader lands).
+ * `zfb/content`. Keep `BlogFrontmatter` in step with the collection's
+ * `schema` in `zfb.config.ts` — the schema is what `zfb check` validates
+ * post frontmatter against, this type is what the routes see.
  */
 import type { ContentProps } from "@takazudo/zfb/content";
 
@@ -46,10 +45,12 @@ export type BlogEntry = {
    *
    * ```tsx
    * import { defaultComponents } from "@takazudo/zfb";
-   * import Note from "../components/note";
    *
-   * <post.Content components={{ ...defaultComponents, Note }} />
+   * <post.Content components={{ ...defaultComponents }} />
    * ```
+   *
+   * Overrides that should apply to every entry belong in the project-root
+   * `mdx-components.tsx` instead of every call site.
    */
   Content: (props: ContentProps) => ContentElement;
 };
