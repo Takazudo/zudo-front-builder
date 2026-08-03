@@ -31,19 +31,19 @@ Imports inside CSS work as you would expect — split your styles across files a
 
 ## Tailwind v4
 
-Tailwind v4 is opt-in via `zfb.config.{ts,json}`:
+Tailwind v4 is on by default. A project whose `zfb.config.{ts,json}` carries no `tailwind` key builds with Tailwind enabled — there is nothing to add and no flag to flip. The key exists to opt *out*:
 
 ```json
 {
   "tailwind": {
-    "enabled": true
+    "enabled": false
   }
 }
 ```
 
-When enabled, the `zfb-css` crate runs the bundled `tailwindcss-v4` binary as part of the build. There is **no per-project Tailwind install** — you do not add `tailwindcss` to `package.json` and you do not maintain a `tailwind.config.js`. The compiler is built into zfb itself; [Tailwind is embedded, not installed](#tailwind-v4-tailwind-is-embedded-not-installed) below states the full contract.
+With Tailwind on, the `zfb-css` crate runs the bundled `tailwindcss-v4` binary as part of the build. There is **no per-project Tailwind install** — you do not add `tailwindcss` to `package.json` and you do not maintain a `tailwind.config.js`. The compiler is built into zfb itself; [Tailwind is embedded, not installed](#tailwind-v4-tailwind-is-embedded-not-installed) below states the full contract.
 
-Once Tailwind is on, utility classes work in `.tsx` files under the scanned content roots (see [Where Tailwind looks](#tailwind-v4-where-tailwind-looks) below):
+Utility classes work in `.tsx` files under the scanned content roots (see [Where Tailwind looks](#tailwind-v4-where-tailwind-looks) below):
 
 ```tsx
 export default function Hero() {
@@ -96,8 +96,8 @@ skipped.
 
 While Tailwind is enabled, the build pipeline synthesises a temp entry file named
 `zfb-tailwind-entry-*.css` next to your CSS entry (inside the tracked source tree) and
-removes it once the build finishes. New scaffolds ignore it automatically. If you are
-adding Tailwind to a project scaffolded before this glob shipped, add
+removes it once the build finishes. New scaffolds ignore it automatically. If your
+project was scaffolded before this glob shipped, add
 `**/zfb-tailwind-entry-*.css` to your `.gitignore`.
 
 ## Component-scoped styling
