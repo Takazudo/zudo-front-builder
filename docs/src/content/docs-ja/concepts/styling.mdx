@@ -31,19 +31,19 @@ CSS 内の `import` は期待どおりに動作します。スタイルを複数
 
 ## Tailwind v4
 
-Tailwind v4 は `zfb.config.{ts,json}` から opt-in で有効化します。
+Tailwind v4 はデフォルトで有効です。`zfb.config.{ts,json}` に `tailwind` キーがないプロジェクトは、Tailwind が有効な状態でビルドされます。追加すべき設定も、立てるべきフラグもありません。このキーは、逆に無効化するために存在します。
 
 ```json
 {
   "tailwind": {
-    "enabled": true
+    "enabled": false
   }
 }
 ```
 
-有効にすると、`zfb-css` クレートがビルドの一環として同梱の `tailwindcss-v4` バイナリを実行します。**プロジェクトごとに Tailwind をインストールする必要はありません**。`package.json` に `tailwindcss` を追加することも、`tailwind.config.js` を保守することもありません。コンパイラは zfb 自体に組み込まれています。完全な契約は下記の [Tailwind は zfb に組み込まれている](#tailwind-v4-tailwind-は-zfb-に組み込まれている) を参照してください。
+Tailwind が有効なとき、`zfb-css` クレートがビルドの一環として同梱の `tailwindcss-v4` バイナリを実行します。**プロジェクトごとに Tailwind をインストールする必要はありません**。`package.json` に `tailwindcss` を追加することも、`tailwind.config.js` を保守することもありません。コンパイラは zfb 自体に組み込まれています。完全な契約は下記の [Tailwind は zfb に組み込まれている](#tailwind-v4-tailwind-は-zfb-に組み込まれている) を参照してください。
 
-Tailwind を有効にすると、ユーティリティクラスは走査対象のコンテンツルート配下にある `.tsx` ファイルで動作します（詳細は下記の [Tailwind が見る場所](#tailwind-v4-tailwind-が見る場所) を参照）。
+ユーティリティクラスは、走査対象のコンテンツルート配下にある `.tsx` ファイルで動作します（詳細は下記の [Tailwind が見る場所](#tailwind-v4-tailwind-が見る場所) を参照）。
 
 ```tsx
 export default function Hero() {
@@ -90,7 +90,7 @@ Tailwind の `@source` コンテンツスキャンは、プロジェクトルー
 
 `tailwind: { enabled: false }` を設定すると `AuthoredCssEngine` に切り替わり、あなたが書いた `styles/global.css` がそのまま素通りします。Tailwind の `@import` も、ユーティリティのスキャンも、preflight のリセットも、サブプロセスもありません。CSS Modules のコンパイル、クラス名のハッシュ化、アセットの出力はすべて変わらず動作し続け、Tailwind 固有のステップだけがスキップされます。
 
-Tailwind が有効な間、ビルドパイプラインは CSS エントリの隣に `zfb-tailwind-entry-*.css` という名前の一時エントリファイルを（追跡対象のソースツリー内に）生成し、ビルド完了後に削除します。新規にスキャフォールドしたプロジェクトはこれを自動的に無視します。このグロブが導入される前にスキャフォールドしたプロジェクトに Tailwind を追加する場合は、`.gitignore` に `**/zfb-tailwind-entry-*.css` を追加してください。
+Tailwind が有効な間、ビルドパイプラインは CSS エントリの隣に `zfb-tailwind-entry-*.css` という名前の一時エントリファイルを（追跡対象のソースツリー内に）生成し、ビルド完了後に削除します。新規にスキャフォールドしたプロジェクトはこれを自動的に無視します。このグロブが導入される前にスキャフォールドしたプロジェクトでは、`.gitignore` に `**/zfb-tailwind-entry-*.css` を追加してください。
 
 ## コンポーネントスコープなスタイリング
 
