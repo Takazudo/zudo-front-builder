@@ -18,13 +18,19 @@
     "verbatimModuleSyntax": false,
     "baseUrl": ".",
     "paths": {
-      "~/*": ["./*"],
-      "@/components/*": ["./components/*"],
-      "@/layouts/*": ["./layouts/*"]
+      "~/*": ["./*"]
     },
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["pages/**/*", "layouts/**/*", "components/**/*", "content/**/*", "lib/**/*"],
+  "include": [
+    "zfb.config.ts",
+    "mdx-components.tsx",
+    "pages/**/*",
+    "layouts/**/*",
+    "components/**/*",
+    "content/**/*",
+    "lib/**/*"
+  ],
   "exclude": ["node_modules", "dist"]
 }

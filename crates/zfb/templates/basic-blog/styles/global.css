@@ -1,103 +1,382 @@
 @import "tailwindcss";
 
-:root {
-  --color-bg: #fdfdfc;
-  --color-fg: #1f1f1f;
-  --color-muted: #5b5b5b;
-  --color-accent: #2563eb;
-  --color-border: #e5e5e5;
-  color-scheme: light;
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
-  line-height: 1.6;
+/*
+ * Bind Tailwind's `dark:` variant to the `data-theme` attribute that
+ * `components/theme-toggle.tsx` (and the pre-paint script in
+ * `layouts/default.tsx`) writes onto <html>. Without this, `dark:`
+ * would key off the OS `prefers-color-scheme` and ignore the toggle.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --color-accent: oklch(0.53 0.21 258);
+
+  /*
+   * Code panels keep one palette in both themes: with no `codeHighlight`
+   * block in zfb.config.ts, syntect highlights inline using its default
+   * `base16-ocean.dark` theme, so the surrounding panel has to be dark
+   * for those token colors to stay legible. These two values are that
+   * theme's own background/foreground.
+   */
+  --color-code-bg: #2b303b;
+  --color-code-fg: #c0c5ce;
 }
 
-[data-theme="dark"] {
-  --color-bg: #121212;
-  --color-fg: #f0f0f0;
-  --color-muted: #a0a0a0;
-  --color-accent: #7aa7ff;
-  --color-border: #2a2a2a;
-  color-scheme: dark;
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --color-accent: oklch(0.79 0.13 254);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-accent) 25%, transparent);
+  }
 }
 
-body {
-  margin: 0;
-  padding: 2rem;
-  max-width: 48rem;
-  margin-inline: auto;
-  background: var(--color-bg);
-  color: var(--color-fg);
-}
+/*
+ * Scoped typography for rendered Markdown bodies. Page chrome uses Tailwind
+ * utilities directly in JSX; markdown produces plain tags that no utility can
+ * reach, so they are styled once here and opted into with `class="prose"`.
+ */
+@layer components {
+  .prose {
+    line-height: 1.75;
+  }
 
-a {
-  color: var(--color-accent);
-}
+  .prose > * + * {
+    margin-block-start: 1.25em;
+  }
 
-.site-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-block-end: 1rem;
-  border-block-end: 1px solid var(--color-border);
-  margin-block-end: 2rem;
-}
+  .prose h2,
+  .prose h3,
+  .prose h4 {
+    font-weight: 600;
+    line-height: 1.3;
+    scroll-margin-block-start: 2rem;
+    color: var(--color-neutral-900);
+  }
 
-.site-title {
-  font-weight: 600;
-  text-decoration: none;
-  color: var(--color-fg);
-}
+  [data-theme="dark"] .prose h2,
+  [data-theme="dark"] .prose h3,
+  [data-theme="dark"] .prose h4 {
+    color: var(--color-neutral-50);
+  }
 
-.site-nav {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
-}
+  .prose h2 {
+    margin-block-start: 2.5em;
+    font-size: 1.375rem;
+    letter-spacing: -0.01em;
+  }
 
-.site-footer {
-  margin-block-start: 3rem;
-  padding-block-start: 1rem;
-  border-block-start: 1px solid var(--color-border);
-  color: var(--color-muted);
-  font-size: 0.875rem;
-}
+  .prose h3 {
+    margin-block-start: 2em;
+    font-size: 1.125rem;
+  }
 
-.theme-toggle {
-  border: 1px solid var(--color-border);
-  background: transparent;
-  color: inherit;
-  padding: 0.25rem 0.75rem;
-  border-radius: 0.375rem;
-  cursor: pointer;
-  font: inherit;
-}
+  .prose h4 {
+    margin-block-start: 1.75em;
+    font-size: 1rem;
+  }
 
-.post-meta {
-  color: var(--color-muted);
-  font-size: 0.875rem;
-}
+  /*
+   * Heading anchors are always on: each heading gets an empty
+   * `<a class="hash-link">` that needs generated content to be visible.
+   */
+  .prose .hash-link {
+    color: var(--color-neutral-400);
+    text-decoration: none;
+    opacity: 0;
+    transition: opacity 150ms;
+  }
 
-.post-list {
-  list-style: none;
-  padding: 0;
-  display: grid;
-  gap: 1.5rem;
-}
+  .prose .hash-link::after {
+    content: "#";
+    margin-inline-start: 0.4em;
+  }
 
-.tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  list-style: none;
-  padding: 0;
-}
+  .prose :is(h2, h3, h4):hover .hash-link,
+  .prose .hash-link:focus-visible {
+    opacity: 1;
+  }
 
-.pagination {
-  display: flex;
-  justify-content: space-between;
-  margin-block-start: 2rem;
+  .prose a {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+  }
+
+  .prose a:hover {
+    text-decoration-thickness: 2px;
+  }
+
+  .prose strong {
+    font-weight: 600;
+  }
+
+  .prose ul,
+  .prose ol {
+    padding-inline-start: 1.5rem;
+  }
+
+  .prose ul {
+    list-style: disc;
+  }
+
+  .prose ol {
+    list-style: decimal;
+  }
+
+  .prose li + li {
+    margin-block-start: 0.375em;
+  }
+
+  .prose blockquote {
+    border-inline-start: 3px solid var(--color-neutral-300);
+    padding-inline-start: 1rem;
+    font-style: italic;
+    color: var(--color-neutral-600);
+  }
+
+  [data-theme="dark"] .prose blockquote {
+    border-color: var(--color-neutral-700);
+    color: var(--color-neutral-400);
+  }
+
+  .prose hr {
+    border: 0;
+    border-block-start: 1px solid var(--color-neutral-200);
+  }
+
+  [data-theme="dark"] .prose hr {
+    border-color: var(--color-neutral-800);
+  }
+
+  .prose img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.5rem;
+  }
+
+  /* GFM strikethrough (`~~text~~`). */
+  .prose del {
+    color: var(--color-neutral-500);
+  }
+
+  /* ── GFM tables ──────────────────────────────────────────────────── */
+
+  .prose table {
+    display: block;
+    overflow-x: auto;
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9375rem;
+  }
+
+  .prose th,
+  .prose td {
+    border: 1px solid var(--color-neutral-200);
+    padding: 0.5rem 0.75rem;
+    text-align: start;
+  }
+
+  .prose th {
+    background-color: var(--color-neutral-100);
+    font-weight: 600;
+  }
+
+  [data-theme="dark"] .prose th,
+  [data-theme="dark"] .prose td {
+    border-color: var(--color-neutral-800);
+  }
+
+  [data-theme="dark"] .prose th {
+    background-color: var(--color-neutral-900);
+  }
+
+  /* ── GFM task lists ──────────────────────────────────────────────── */
+
+  /*
+   * The pipeline emits `<input type="checkbox" disabled>` inside the item's
+   * paragraph, so the marker is removed and the box is aligned by hand.
+   */
+  .prose li:has(> p > input[type="checkbox"]) {
+    list-style: none;
+    margin-inline-start: -1.5rem;
+  }
+
+  .prose input[type="checkbox"] {
+    margin-inline-end: 0.5rem;
+    accent-color: var(--color-accent);
+    vertical-align: middle;
+  }
+
+  /* ── GFM footnotes ───────────────────────────────────────────────── */
+
+  .prose [data-footnote-ref] {
+    text-decoration: none;
+    font-weight: 600;
+    padding-inline: 0.15em;
+  }
+
+  .prose .footnotes {
+    margin-block-start: 3rem;
+    padding-block-start: 1.5rem;
+    border-block-start: 1px solid var(--color-neutral-200);
+    font-size: 0.875rem;
+    color: var(--color-neutral-600);
+  }
+
+  [data-theme="dark"] .prose .footnotes {
+    border-color: var(--color-neutral-800);
+    color: var(--color-neutral-400);
+  }
+
+  /* The pipeline emits the backref `<a>` as a SIBLING of the block `<p>`,
+     which would drop it to its own line — inline the paragraph so the
+     arrow flows after the footnote text. */
+  .prose .footnotes li > p {
+    display: inline;
+  }
+
+  .prose [data-footnote-backref] {
+    margin-inline-start: 0.35em;
+    text-decoration: none;
+    /* U+21A9 alone renders with emoji presentation in some font stacks;
+       re-draw it with VS15 (text presentation) so it stays a plain glyph. */
+    font-size: 0;
+  }
+
+  .prose [data-footnote-backref]::after {
+    content: "\21a9\fe0e";
+    font-size: 0.875rem;
+  }
+
+  .prose [data-footnote-backref]:hover::after {
+    text-decoration: underline;
+  }
+
+  /* ── Code ────────────────────────────────────────────────────────── */
+
+  .prose :not(pre) > code {
+    background-color: var(--color-neutral-100);
+    border: 1px solid var(--color-neutral-200);
+    border-radius: 0.25rem;
+    padding: 0.1em 0.35em;
+    font-size: 0.875em;
+  }
+
+  [data-theme="dark"] .prose :not(pre) > code {
+    background-color: var(--color-neutral-800);
+    border-color: var(--color-neutral-700);
+  }
+
+  .prose pre {
+    overflow-x: auto;
+    border-radius: 0.5rem;
+    background-color: var(--color-code-bg);
+    color: var(--color-code-fg);
+    padding: 1rem 0;
+    font-size: 0.875rem;
+    line-height: 1.7;
+  }
+
+  .prose pre code {
+    display: block;
+  }
+
+  .prose pre .line {
+    display: block;
+    padding-inline: 1rem;
+  }
+
+  /*
+   * `title="…"` on a fence wraps the block in a titled container. The
+   * container owns the rounding so the title bar and the <pre> read as
+   * one panel.
+   */
+  .prose .code-block-container {
+    border-radius: 0.5rem;
+    overflow: hidden;
+  }
+
+  .prose .code-block-title {
+    background-color: var(--color-neutral-800);
+    color: var(--color-neutral-300);
+    padding: 0.4rem 1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8125rem;
+  }
+
+  .prose .code-block-container pre {
+    border-radius: 0;
+    margin-block-start: 0;
+  }
+
+  /* codeEnrichment: `{2}` line ranges, `[!code ++]` / `[!code --]`, `/word/`. */
+  .prose .line[data-line-highlight="true"] {
+    background-color: color-mix(in oklab, var(--color-accent) 30%, transparent);
+    box-shadow: inset 3px 0 0 var(--color-accent);
+  }
+
+  .prose .line[data-line-diff="added"] {
+    background-color: rgb(74 222 128 / 0.16);
+    box-shadow: inset 3px 0 0 rgb(74 222 128 / 0.8);
+  }
+
+  .prose .line[data-line-diff="removed"] {
+    background-color: rgb(248 113 113 / 0.16);
+    box-shadow: inset 3px 0 0 rgb(248 113 113 / 0.8);
+  }
+
+  .prose .highlighted-word {
+    background-color: rgb(250 204 21 / 0.25);
+    border-radius: 0.2rem;
+    padding: 0.1em 0.2em;
+  }
+
+  /* ── headingMarkerToc ────────────────────────────────────────────── */
+
+  /*
+   * The generated list is a plain <ul> injected right after the `## TOC`
+   * heading, so it is reached through the heading's slugged id.
+   */
+  .prose h2#toc {
+    /* Match the visual gap of a regular h2 (2.5em at 1.375rem); this
+       heading is much smaller, so an em value here would collapse it. */
+    margin-block-start: 3.5rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-neutral-500);
+  }
+
+  .prose h2#toc + ul {
+    list-style: none;
+    border-inline-start: 2px solid var(--color-neutral-200);
+    padding-inline-start: 1rem;
+    font-size: 0.9375rem;
+  }
+
+  [data-theme="dark"] .prose h2#toc + ul {
+    border-color: var(--color-neutral-800);
+  }
+
+  .prose h2#toc + ul ul {
+    list-style: none;
+    padding-inline-start: 1rem;
+    margin-block-start: 0.375em;
+  }
+
+  .prose h2#toc + ul a {
+    text-decoration: none;
+  }
+
+  .prose h2#toc + ul a:hover {
+    text-decoration: underline;
+  }
 }

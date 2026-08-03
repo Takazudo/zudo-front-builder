@@ -262,9 +262,11 @@ fs.writeFileSync(
 # tests/smoke/node-free/run.sh: grep rendered HTML for markers that can only
 # be present if the content pipeline actually ran. `create-zfb <name>` (no
 # --template) scaffolds the "basic-blog" template (crates/zfb/src/cli.rs
-# default_value), whose pages/index.tsx renders `<h1>basic-blog</h1>` and
-# lists every post in the `blog` content collection, including the seed
-# post's frontmatter title "Hello, zfb" (content/blog/hello-zfb.mdx).
+# default_value), whose pages/index.tsx renders an <h1> reading "basic-blog"
+# and lists every post in the `blog` content collection, including the seed
+# post's frontmatter title "Hello, zfb" (content/blog/hello-zfb.mdx). Both
+# greps match on text, not markup — the heading carries Tailwind utility
+# classes, so the literal tag string is not what lands in the HTML.
 
 DIST_INDEX="$SITE_DIR/dist/index.html"
 

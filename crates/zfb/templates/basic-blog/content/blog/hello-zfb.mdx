@@ -1,31 +1,59 @@
 ---
 title: Hello, zfb
 date: 2026-04-20
-description: A short introduction to the basic-blog dogfood example.
+description: What this starter contains and how the pieces fit together.
 tags:
   - intro
   - framework
 ---
 
-Welcome to the **basic-blog** example. This site is the smallest realistic
-shape of a zfb project: a few pages, a content collection of Markdown posts,
-a single client island, and a layout that pulls everything together.
+Welcome to **basic-blog**. This is a working zfb site: a content collection,
+a handful of routes, one interactive island, and Tailwind for styling. It is
+small enough to read end to end in a few minutes, which is the point.
 
-The point of the example is to be _read_ as much as it is to be built. Every
-file in here is meant to map cleanly onto a single concept in the docs:
-routing lives under `pages/`, content lives under `content/blog/`, and the
-shared chrome lives in `layouts/default.tsx`. If you can read this post,
-the content collection is wired up correctly.
+## How a page becomes HTML
 
-If you are exploring zfb for the first time, start with `pages/index.tsx`
-and follow the imports outward. Most of the moving parts are visible from
-that one file.
+Every file under `pages/` is a route. A page exports a component, and
+optionally a `getStaticProps()` (static route) or `paths()` (dynamic route)
+function that runs at build time. `pages/blog/[slug].tsx` uses `paths()` to
+turn each entry in the `blog` collection into its own page — including this
+one.
 
-<Note title="MDX in basic-blog">
+The collection itself is declared in `zfb.config.ts`, pointing at
+`content/blog/`. Frontmatter is parsed into `entry.data`, and the body is
+compiled into `entry.Content`, a component you render like any other.
 
-  This post is `.mdx`, not plain markdown. The `<Note>` admonition you are
-  reading right now is a custom JSX component passed in via the `components`
-  prop on `<post.Content />` — exactly the same delivery contract Astro's
-  `@astrojs/mdx` exposes. See `pages/blog/[slug].tsx` for the wiring.
+<Tip>
 
-</Note>
+Run `zfb check` (or `pnpm typecheck`) to typecheck the project **and**
+validate every post's frontmatter against the collection schema. A post
+missing `title` or `date` is reported by filename.
+
+</Tip>
+
+## This file is MDX
+
+`.md` and `.mdx` both work in a collection, and both go through the same
+pipeline. The difference is that `.mdx` lets you write JSX in the body — the
+`<Tip>` above is a real Preact component from `components/callout.tsx`,
+resolved through the project-root `mdx-components.tsx` map.
+
+That same map is what makes GitHub-style alerts work in plain `.md` files:
+
+> [!NOTE]
+> This blockquote is written in ordinary Markdown. The `githubAlerts`
+> feature rewrites it into the same `<Note>` component.
+
+See [markdown-showcase](/blog/markdown-showcase) for the full set of markdown
+features this starter turns on, and [styling with Tailwind](/blog/styling-with-tailwind)
+for how the CSS is organised.
+
+## Only one island
+
+The theme toggle in the header is marked `"use client"` and wrapped in
+`<Island when="idle">`. It is the only component that ships JavaScript to the
+browser; everything else on this page is static HTML by the time it reaches
+you.
+
+To add your own interactive component, mark it `"use client"`, wrap it in
+`<Island>` where you use it, and leave the rest of the page alone.
