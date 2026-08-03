@@ -50,6 +50,12 @@ export default function DefaultLayout({
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        {/* Inline data-URI favicon: no public/ dir needed, and it stops the
+            browser's implicit /favicon.ico request from 404-ing the console. */}
+        <link
+          rel="icon"
+          href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232563eb'/%3E%3Ctext x='8' y='12' font-family='ui-monospace,monospace' font-size='10' fill='white' text-anchor='middle'%3Ez%3C/text%3E%3C/svg%3E"
+        />
         <title>{title}</title>
         {description ? <meta name="description" content={description} /> : null}
         {/* Apply theme before paint to avoid FOUC. See script doc above. */}

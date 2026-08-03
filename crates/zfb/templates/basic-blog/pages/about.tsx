@@ -1,3 +1,5 @@
+import type { ComponentChildren } from "preact";
+
 import DefaultLayout from "~/layouts/default";
 
 /**
@@ -5,18 +7,41 @@ import DefaultLayout from "~/layouts/default";
  * component under `pages/` is all a page needs — this file becomes
  * `/about/index.html`.
  */
-const STRUCTURE: { path: string; what: string }[] = [
+const STRUCTURE: { path: string; what: ComponentChildren }[] = [
   {
     path: "pages/",
-    what: "Routes. One file per URL; `[slug].tsx` expands via its `paths()` export.",
+    what: (
+      <>
+        Routes. One file per URL; <code>[slug].tsx</code> expands via its <code>paths()</code>{" "}
+        export.
+      </>
+    ),
   },
   { path: "layouts/", what: "Shared HTML shell — <head>, header, footer, the theme bootstrap." },
-  { path: "components/", what: 'Plain components, plus the one `"use client"` island.' },
+  {
+    path: "components/",
+    what: (
+      <>
+        Plain components, plus the one <code>"use client"</code> island.
+      </>
+    ),
+  },
   {
     path: "content/blog/",
-    what: "The `blog` collection. Markdown and MDX files with frontmatter.",
+    what: (
+      <>
+        The <code>blog</code> collection. Markdown and MDX files with frontmatter.
+      </>
+    ),
   },
-  { path: "styles/", what: "Tailwind entry, theme tokens, and the `.prose` markdown styles." },
+  {
+    path: "styles/",
+    what: (
+      <>
+        Tailwind entry, theme tokens, and the <code>.prose</code> markdown styles.
+      </>
+    ),
+  },
   { path: "lib/", what: "Types shared between routes." },
   {
     path: "mdx-components.tsx",

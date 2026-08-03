@@ -236,6 +236,30 @@
     color: var(--color-neutral-400);
   }
 
+  /* The pipeline emits the backref `<a>` as a SIBLING of the block `<p>`,
+     which would drop it to its own line — inline the paragraph so the
+     arrow flows after the footnote text. */
+  .prose .footnotes li > p {
+    display: inline;
+  }
+
+  .prose [data-footnote-backref] {
+    margin-inline-start: 0.35em;
+    text-decoration: none;
+    /* U+21A9 alone renders with emoji presentation in some font stacks;
+       re-draw it with VS15 (text presentation) so it stays a plain glyph. */
+    font-size: 0;
+  }
+
+  .prose [data-footnote-backref]::after {
+    content: "\21a9\fe0e";
+    font-size: 0.875rem;
+  }
+
+  .prose [data-footnote-backref]:hover::after {
+    text-decoration: underline;
+  }
+
   /* ── Code ────────────────────────────────────────────────────────── */
 
   .prose :not(pre) > code {
@@ -322,7 +346,9 @@
    * heading, so it is reached through the heading's slugged id.
    */
   .prose h2#toc {
-    margin-block-start: 0;
+    /* Match the visual gap of a regular h2 (2.5em at 1.375rem); this
+       heading is much smaller, so an em value here would collapse it. */
+    margin-block-start: 3.5rem;
     font-size: 0.75rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
