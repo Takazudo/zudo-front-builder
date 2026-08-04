@@ -199,6 +199,22 @@ else
   fi
 fi
 
+# ── Root-level JS tests (scripts/**) ───────────────────
+# `pnpm -r` above excludes the workspace ROOT, so vitest suites covering
+# root-level scripts/** would never run here. Mirrors the dedicated step
+# health.yml keeps for the same reason — keeping both surfaces in parity is
+# what stops the local gate and the PR gate from drifting.
+step "Root-level JS tests (vitest, scripts/**)"
+if [ "${B4PUSH_SKIP_JS_TEST:-}" = "1" ]; then
+  skip "root-level JS tests (B4PUSH_SKIP_JS_TEST=1)"
+else
+  if pnpm exec vitest run --config vitest.config.mjs; then
+    pass "root-level JS tests"
+  else
+    fail "root-level JS tests"
+  fi
+fi
+
 # ── Rust lint (clippy) ─────────────────────────────────
 # Fast on a warm tree; on a cold tree it triggers the V8 first-compile, so this
 # step is skippable to keep the pass bounded. CI runs it unconditionally.
