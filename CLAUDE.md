@@ -106,7 +106,9 @@ Three constraints that are load-bearing, not stylistic:
 - **`html-validate` runs *before* the banner injection**, in both jobs. Reversed, the L3 signal would judge CI's injected markup instead of zfb's emitted HTML.
 - **The banner is injected at deploy time** by `scripts/showcase-inject-banner.mjs`, never committed into `crates/zfb/templates/**` — that is what keeps the "this is exactly what you get" claim honest. It is a plain string splice with no HTML parser (a parse/serialize round-trip would normalize markup and perturb `element-permitted-content`).
 
-Root-level vitest suites (`scripts/**/__tests__`) get their **own** step in both `health.yml` and `run-b4push.sh`: `pnpm -r test` excludes the workspace root, so they would otherwise exist and silently never run.
+Root-level vitest suites (`scripts/**/__tests__`, configured by the root `vitest.config.mjs`) only run because both `health.yml` and `run-b4push.sh` pass **`--include-workspace-root`** to `pnpm -r test`. Plain `pnpm -r` skips the workspace root, so without that flag a root-level suite exists and silently never runs. Keep the flag on both surfaces — they must stay identical or the local gate and the PR gate drift.
+
+**Also note:** the showcase deploy jobs hardcode `wrangler@4.85.0` rather than reading it from `docs/package.json` the way the docs workflows do. That is deliberate: `npx wrangler@<string read from a file the PR can edit>` is arbitrary code execution next to the production Cloudflare token, because npm specifiers accept `file:`, `github:`, and remote-tarball forms — not just versions. Keep it in sync with `docs/package.json` by hand when bumping wrangler.
 
 ### Required behavior (agents)
 

@@ -43,6 +43,7 @@
 
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const DOCS_URL = "https://zfb.takazudomodular.com";
 const REPO_URL = "https://github.com/Takazudo/zudo-front-builder";
@@ -164,11 +165,30 @@ function main() {
     `showcase-inject-banner: ${result.injected} injected, ` +
       `${result.files - result.injected} unchanged (of ${result.files} html files) in ${dir}\n`,
   );
+
+  // Fail loudly on a no-op. This runs in the deploy jobs, and a silent
+  // "0 injected" is exactly what a broken invocation looks like — the deploy
+  // would continue and ship an unbannered site behind an all-green run.
+  // 0-of-0 is also a failure: the artifact should never be empty here.
+  if (result.injected === 0) {
+    process.stderr.write(
+      `showcase-inject-banner: injected 0 banners into ${result.files} html file(s) under ${dir}.\n` +
+        `Every page already carried the marker, none had a <body>, or the directory was empty — ` +
+        `all of which mean the deploy would ship without the banner.\n`,
+    );
+    process.exit(1);
+  }
 }
 
 // Guard so importing this module (e.g. from tests) never runs main() as a
 // side effect — mirrors the pure-function-extraction pattern in
 // packages/create-zfb/bin/spawn-error-message.mjs.
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// `pathToFileURL(...).href`, NOT a hand-built `file://${process.argv[1]}`:
+// the naive form compares unequal whenever the path needs percent-encoding
+// (a space in the path is enough) or resolves through a symlink, and the
+// failure mode is silent — main() simply never runs, the process exits 0,
+// and nothing is injected.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }

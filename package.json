@@ -32,7 +32,7 @@
     "format:check:mdx": "pnpm dlx @takazudo/mdx-formatter@1.2.1 --check '**/*.{md,mdx}'",
     "//// === VALIDATION ===": "",
     "b4push": "bash scripts/run-b4push.sh",
-    "//// === ROOT-LEVEL SCRIPTS (scripts/**) ===": "",
+    "//// === ROOT-LEVEL SCRIPTS (scripts/**, run via pnpm -r --include-workspace-root) ===": "",
     "test": "vitest run",
     "test:watch": "vitest",
     "//// === CLIENT-ROUTER L4 (Chromium, runs in CI) ===": "",

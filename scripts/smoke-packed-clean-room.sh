@@ -304,8 +304,19 @@ echo "All packed-clean-room smoke assertions passed."
 # this script runs under `set -euo pipefail` and backs a required status
 # check (Scaffold E2E), so an unguarded unset-variable reference would abort
 # the job with "unbound variable" on every PR.
+#
+# The copy is deliberately NON-FATAL. Every assertion above has already
+# passed by this point, so the smoke test's verdict is settled; this export
+# only feeds a downstream, non-required showcase deploy. Letting a failed
+# copy (e.g. the runner filling up — this duplicates the whole dist/) take
+# down the required `Scaffold E2E` check would invert the blast radius the
+# upload step's `continue-on-error` is there to protect. The downstream
+# deploy job fails on its own `download-artifact` instead, which is where
+# that failure belongs.
 if [[ -n "${ZFB_SMOKE_DIST_OUT:-}" ]]; then
-  mkdir -p "$ZFB_SMOKE_DIST_OUT"
-  cp -R "$SITE_DIR/dist/." "$ZFB_SMOKE_DIST_OUT/"
-  pass "exported dist/ to $ZFB_SMOKE_DIST_OUT"
+  if mkdir -p "$ZFB_SMOKE_DIST_OUT" && cp -R "$SITE_DIR/dist/." "$ZFB_SMOKE_DIST_OUT/"; then
+    pass "exported dist/ to $ZFB_SMOKE_DIST_OUT"
+  else
+    echo "::warning::failed to export dist/ to $ZFB_SMOKE_DIST_OUT — the showcase deploy will fail on its download-artifact step, but this smoke test's assertions all passed." >&2
+  fi
 fi

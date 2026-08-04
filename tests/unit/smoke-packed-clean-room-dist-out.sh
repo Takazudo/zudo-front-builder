@@ -76,11 +76,24 @@ fi
 # variable" under `set -euo pipefail` when the var is unset — and this
 # script backs the required "Scaffold E2E" status check.
 
-if grep -q 'ZFB_SMOKE_DIST_OUT:-' "$SCRIPT"; then
-  pass "the export guard uses the \${ZFB_SMOKE_DIST_OUT:-} form"
+# Checked on CODE ONLY (comments stripped): a `grep` over the whole file
+# would be satisfied by a comment that merely mentions the `:-` form, so it
+# would keep passing the moment someone added a bare reference next to the
+# guarded one. Assertion 5 below then EXECUTES the unset path, which is the
+# property that actually matters.
+
+SCRIPT_CODE=$(sed 's/[[:space:]]*#.*$//' "$SCRIPT")
+
+if printf '%s\n' "$SCRIPT_CODE" | grep -q 'ZFB_SMOKE_DIST_OUT:-'; then
+  pass "the export guard uses the \${ZFB_SMOKE_DIST_OUT:-} form (in code, not just a comment)"
 else
-  fail "no ZFB_SMOKE_DIST_OUT:- guard found in $SCRIPT — a bare reference would abort under set -u"
+  fail "no ZFB_SMOKE_DIST_OUT:- guard found in the code of $SCRIPT — a bare reference would abort under set -u"
 fi
+
+# Deliberately NOT asserting "no bare $ZFB_SMOKE_DIST_OUT anywhere": the
+# uses inside the `if [[ -n "${VAR:-}" ]]` body are bare on purpose and are
+# correct, because that branch only runs when the variable is set. What
+# matters is the unset path, and assertion 5 below executes it.
 
 # ── Assertion 3: no line above Stage 6 mentions ZFB_SMOKE_DIST_OUT ─────────
 # The export must not leak into (or gate) any of the Stage 1-6 assertions —
@@ -151,6 +164,39 @@ else
     pass "positive copy: hidden dotfiles are copied too (cp -R src/. dest/)"
   else
     fail "positive copy: hidden dotfile missing from the exported dir"
+  fi
+
+  # ── Assertion 5: the NEGATIVE path, executed ─────────────────────────────
+  # This is the property the whole guard exists for, and the one a static
+  # grep cannot prove: with ZFB_SMOKE_DIST_OUT unset, the block must be a
+  # true no-op under `set -euo pipefail` — no "unbound variable", exit 0,
+  # and nothing written. A regression here aborts the REQUIRED "Scaffold
+  # E2E" check on every PR in the repo, so it is worth actually running.
+
+  UNSET_SENTINEL="$WORK/must-not-exist"
+  UNSET_OUT=$(SITE_DIR="$FIXTURE_SITE_DIR" ZFB_SMOKE_DIST_OUT= \
+    env -u ZFB_SMOKE_DIST_OUT bash "$EXPORT_RUNNER" 2>&1)
+  UNSET_STATUS=$?
+
+  if [ "$UNSET_STATUS" -eq 0 ]; then
+    pass "negative path: the export block exits 0 when ZFB_SMOKE_DIST_OUT is unset"
+  else
+    fail "negative path: the export block exited $UNSET_STATUS with the var unset — output: $UNSET_OUT"
+  fi
+
+  case "$UNSET_OUT" in
+    *"unbound variable"*)
+      fail "negative path: the export block hit 'unbound variable' under set -u — this would abort the required Scaffold E2E check"
+      ;;
+    *)
+      pass "negative path: no 'unbound variable' error with ZFB_SMOKE_DIST_OUT unset"
+      ;;
+  esac
+
+  if [ ! -e "$UNSET_SENTINEL" ] && [ -z "$UNSET_OUT" ]; then
+    pass "negative path: the export block is silent and writes nothing when unset"
+  else
+    fail "negative path: the export block produced output or wrote files when unset — output: $UNSET_OUT"
   fi
 fi
 

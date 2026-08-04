@@ -91,6 +91,13 @@
 
 name: Node-free smoke
 
+# Least privilege at the workflow level; showcase-preview widens its own job
+# to `pull-requests: write`. Every other workflow in this repo declares this —
+# it matters more here now that this workflow carries the production
+# Cloudflare token.
+permissions:
+  contents: read
+
 # Cancel previous runs on the same ref — smoke artifacts are consumed only
 # within the same run, so cancellation is safe and prevents artifact churn.
 #
@@ -107,8 +114,15 @@ name: Node-free smoke
 #
 # Accepted cost: main-push runs of this whole suite are no longer
 # cancellable. Main pushes are infrequent and should finish anyway.
+#
+# The group key includes `github.event_name` because on a `workflow_run`
+# trigger `github.ref` is the DEFAULT branch — without it, the released-mode
+# smoke would share `node-free-smoke-refs/heads/main` with ordinary main
+# pushes, and (now that main pushes are non-cancellable) a main push could
+# cancel a pending release smoke, whose `if: failure()` notifier does not
+# fire on a cancel.
 concurrency:
-  group: node-free-smoke-${{ github.ref }}
+  group: node-free-smoke-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 on:
@@ -386,9 +400,14 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    # NOTE: the Cloudflare secrets are deliberately NOT job-level `env:`.
+    # They are attached per-step, to the steps that actually talk to
+    # Cloudflare — so the `npx html-validate` and `node
+    # scripts/showcase-inject-banner.mjs` steps below run with no production
+    # token in their environment. npx resolves a package's transitive
+    # closure fresh from the registry at run time (no lockfile, no integrity
+    # check), and there is no reason for that closure to be able to read the
+    # token.
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
@@ -401,18 +420,23 @@ jobs:
           # ran here. Disable it — pnpm is not needed.
           package-manager-cache: false
 
-      - name: Skip when Cloudflare credentials are unavailable
-        id: creds
+      # Fail loudly rather than skipping. This job only ever runs on a push to
+      # main, where the credentials are always expected to be present — a
+      # missing or rotated token is a real breakage, and silently concluding
+      # `success` would mean the showcase quietly stops updating while every
+      # check stays green (showcase-notify keys on `failure`, so it would
+      # never fire either).
+      - name: Require Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
-            echo "::warning::Cloudflare credentials unavailable — skipping showcase deploy."
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID unavailable — cannot deploy the create-zfb showcase."
+            exit 1
           fi
 
       - name: Download showcase dist
-        if: steps.creds.outputs.ok == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: create-zfb-showcase-dist
@@ -423,13 +447,13 @@ jobs:
       # markup CI splices in. Reversed, a banner bug would read as a template
       # regression and vice versa.
       #
-      # Exact patch pin (not `@10`): this step runs in a job holding
-      # CLOUDFLARE_API_TOKEN, and an unpinned `npx` fetch there would
-      # contradict the repo's pin-everything discipline. html-validate is
-      # `^10.0.0` in docs/package.json; this job has no pnpm, hence npx.
+      # Exact patch pin (not `@10`) to match the repo's pin-everything
+      # discipline. npx still resolves html-validate's transitive closure
+      # fresh at run time with no lockfile, which is why this step carries no
+      # Cloudflare credentials in its env (see the job-level NOTE above).
+      # html-validate is `^10.0.0` in docs/package.json; no pnpm here, hence npx.
       # pin-update: bump this the same way as the `uses:` SHAs above.
       - name: Validate emitted HTML (html-validate)
-        if: steps.creds.outputs.ok == 'true'
         working-directory: create-zfb-showcase
         run: npx --yes html-validate@10.0.0 "dist/**/*.html"
 
@@ -437,7 +461,6 @@ jobs:
       # a plain 404 if the template ever loses pages/404.tsx. Fail loudly here
       # instead of shipping a subtly worse site.
       - name: Assert the scaffold emitted a 404 page
-        if: steps.creds.outputs.ok == 'true'
         run: |
           if [ ! -f create-zfb-showcase/dist/404.html ]; then
             echo "::error::create-zfb-showcase/dist/404.html is missing — not_found_handling=\"404-page\" would silently degrade. Did basic-blog lose pages/404.tsx?"
@@ -445,18 +468,28 @@ jobs:
           fi
 
       - name: Inject the showcase banner
-        if: steps.creds.outputs.ok == 'true'
         run: node scripts/showcase-inject-banner.mjs create-zfb-showcase/dist "${{ github.sha }}"
 
+      # wrangler version is HARDCODED, not read from docs/package.json.
+      # Reading it back meant `npx wrangler@<string from a file this PR can
+      # edit>` — and npm specifiers are not just versions: `file:../evil`,
+      # `npm:other-pkg`, `github:owner/repo`, and remote tarballs all parse
+      # and execute. That turned a one-line edit to docs/package.json into
+      # arbitrary code execution next to the production Cloudflare token.
+      # pin-update: keep in sync with docs/package.json's wrangler pin
+      # (guarded there by docs/scripts/check-wrangler-pin.mjs).
       - name: Deploy worker
-        if: steps.creds.outputs.ok == 'true'
-        run: |
-          WRANGLER_VERSION=$(node -p "require('./docs/package.json').devDependencies.wrangler")
-          cd create-zfb-showcase && npx wrangler@"$WRANGLER_VERSION" deploy
+        working-directory: create-zfb-showcase
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.85.0 deploy
 
       - name: Enable workers.dev subdomain (idempotent)
-        if: steps.creds.outputs.ok == 'true'
         continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           RESPONSE=$(curl -sS -X POST \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/zfb-showcase/subdomain" \
@@ -472,8 +505,10 @@ jobs:
           fi
 
       - name: Attach custom domain (idempotent)
-        if: steps.creds.outputs.ok == 'true'
         continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           RESPONSE=$(curl -sS -X POST \
             "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
@@ -494,7 +529,6 @@ jobs:
       # same marker scripts/smoke-packed-clean-room.sh already asserts on, so
       # it can only be present if the real content pipeline ran.
       - name: Post-deploy health check
-        if: steps.creds.outputs.ok == 'true'
         shell: bash
         run: |
           URL="https://create-zfb.takazudomodular.com"
@@ -615,10 +649,9 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          WRANGLER_VERSION=$(node -p "require('./docs/package.json').devDependencies.wrangler")
           PREVIEW_ALIAS="pr-${PR_NUMBER}"
           set +e
-          UPLOAD_OUTPUT=$(cd create-zfb-showcase && npx wrangler@"$WRANGLER_VERSION" versions upload \
+          UPLOAD_OUTPUT=$(cd create-zfb-showcase && npx --yes wrangler@4.85.0 versions upload \
             --preview-alias "$PREVIEW_ALIAS" 2>&1)
           STATUS=$?
           set -e

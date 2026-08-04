@@ -160,15 +160,10 @@ jobs:
       # typecheck step above — its tests import the built `dist/index.js`,
       # which needs the wasm32 toolchain this job doesn't have. Covered by
       # the wasm-md job below instead.
-      - run: pnpm -r --filter '!@takazudo/zfb-md-wasm' test
-
-      # `pnpm -r` above excludes the workspace ROOT (pnpm only includes it with
-      # --include-workspace-root), so vitest suites covering root-level
-      # scripts/** would silently never run in CI. Same shape of gap, and same
-      # fix, as the separate `cargo test --workspace --doc` step below: the
-      # umbrella runner structurally cannot see this surface, so it gets its
-      # own step. Scoped by vitest.config.mjs to scripts/**/__tests__.
-      - run: pnpm exec vitest run --config vitest.config.mjs
+      # --include-workspace-root: `pnpm -r` alone SKIPS the workspace root, so
+      # the root vitest suite covering scripts/** (vitest.config.mjs, scoped to
+      # scripts/**/__tests__) would silently never run here.
+      - run: pnpm -r --include-workspace-root --filter '!@takazudo/zfb-md-wasm' test
 
       - run: pnpm format:check
 
