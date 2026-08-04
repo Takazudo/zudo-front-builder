@@ -21,6 +21,26 @@
 #     │                                   registry), scaffolds + builds a
 #     │                                   site, and asserts dist/ content.
 #     │                                   See scripts/smoke-packed-clean-room.sh.
+#     │                                   ALSO exports that built dist/ (opt-in
+#     │                                   ZFB_SMOKE_DIST_OUT) and uploads it as
+#     │                                   the create-zfb-showcase-dist artifact,
+#     │                                   so the two showcase jobs below reuse
+#     │                                   this exact build instead of
+#     │                                   scaffolding + building a second time.
+#     │     ├─► showcase-deploy (main pushes only) — issue #2284: deploys that
+#     │     │                             artifact to the assets-only
+#     │     │                             zfb-showcase worker at
+#     │     │                             create-zfb.takazudomodular.com, so
+#     │     │                             `npm create zfb` output is visible
+#     │     │                             without running it. NOT a required
+#     │     │                             check; an ALERTING GUARD (post-merge,
+#     │     │                             detects a bad deploy, cannot prevent
+#     │     │                             one). showcase-notify IFTTTs on
+#     │     │                             failure.
+#     │     └─► showcase-preview (PRs from this repo) — issue #2285: same
+#     │                                   artifact uploaded as a pr-<N> preview
+#     │                                   alias + a sticky PR comment. Tolerant
+#     │                                   until the worker exists. NOT required.
 #     └─► built-site-browser-smoke (ubuntu-latest) — issue #1401: builds
 #                                         tests/built-site-smoke/fixture-site/
 #                                         (a real interactive Preact island)
@@ -52,6 +72,16 @@
 # smoke-released: workflow_run after release.yml completes (tag only).
 #   Using workflow_run rather than "push: tags" ensures the GH Release
 #   assets already exist when install.sh tries to download them.
+# showcase-deploy: push to main ONLY — it tests github.ref explicitly, because
+#   the `push:` trigger above also fires on base/**, and a bare "is this a
+#   push?" condition would deploy every epic base branch to production.
+#   Note there is no path filter on `push:`, so the showcase redeploys on
+#   EVERY main commit, README-only ones included. That is intentional (the
+#   binary build it depends on was already running) and more than
+#   docs-deploy.yml does, which is path-filtered to docs/**.
+# showcase-preview: pull_request from this repo only — fork PRs get no secrets
+#   and a read-only token, and dependabot PRs pass the fork test but still
+#   cannot comment.
 
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
@@ -61,11 +91,39 @@
 
 name: Node-free smoke
 
+# Least privilege at the workflow level; showcase-preview widens its own job
+# to `pull-requests: write`. Every other workflow in this repo declares this —
+# it matters more here now that this workflow carries the production
+# Cloudflare token.
+permissions:
+  contents: read
+
 # Cancel previous runs on the same ref — smoke artifacts are consumed only
 # within the same run, so cancellation is safe and prevents artifact churn.
+#
+# ...but ONLY on pull_request. Since #2279 this workflow also drives the
+# create-zfb showcase PRODUCTION deploy on main pushes, and a workflow-level
+# `cancel-in-progress: true` cancels the entire run — every job with it. A
+# job-level `concurrency` block does NOT shield a job from that: job-level
+# concurrency only governs queuing between jobs in its own group, and
+# membership in one group confers nothing in another (the only per-job
+# survival mechanism GitHub documents for cancellation is `if: always()`).
+# Two quick main pushes would therefore kill run #1 mid-`wrangler deploy`,
+# skipping the custom-domain attach, the health check, and the notify — i.e.
+# exactly the alerting guard the deploy exists to be.
+#
+# Accepted cost: main-push runs of this whole suite are no longer
+# cancellable. Main pushes are infrequent and should finish anyway.
+#
+# The group key includes `github.event_name` because on a `workflow_run`
+# trigger `github.ref` is the DEFAULT branch — without it, the released-mode
+# smoke would share `node-free-smoke-refs/heads/main` with ordinary main
+# pushes, and (now that main pushes are non-cancellable) a main push could
+# cancel a pending release smoke, whose `if: failure()` notifier does not
+# fire on a cancel.
 concurrency:
-  group: node-free-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  group: node-free-smoke-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 on:
   pull_request:
@@ -296,7 +354,366 @@ jobs:
       - name: Pack, override, scaffold, build, and assert (packed clean-room)
         env:
           ZFB_LINUX_X64_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
+          ZFB_SMOKE_DIST_OUT: ${{ github.workspace }}/showcase-dist
         run: bash scripts/smoke-packed-clean-room.sh
+
+      # Shares this job's already-built site with the showcase deploy
+      # workflow (issue #2280) instead of making it scaffold+build again.
+      # continue-on-error + if-no-files-found: error is deliberate, not
+      # sloppy: a showcase-side artifact hiccup surfaces as a step
+      # annotation but can never flip this job's conclusion to failure, so
+      # it can never redden the required "Scaffold E2E" check on an
+      # unrelated PR. Downstream, the deploy job fails on its own
+      # download-artifact instead — the correct (non-required) blast radius.
+      - name: Upload showcase dist
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: create-zfb-showcase-dist
+          path: showcase-dist/
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: true
+
+  # ── create-zfb showcase: production deploy (issue #2284) ───────────────────
+  #
+  # `create-zfb` is otherwise invisible — the only way to see what
+  # `npm create zfb@latest my-site` produces is to run it. This job deploys
+  # the REAL scaffold output (the artifact scaffold-e2e just built, from THIS
+  # commit's code) to an assets-only Cloudflare Worker at
+  # create-zfb.takazudomodular.com, so the scaffold is visible from the front
+  # side. The site is never committed — it is generated by the same
+  # scripts/smoke-packed-clean-room.sh run that backs the required check, so
+  # it cannot drift from crates/zfb/templates/.
+  #
+  # NOT a required status check, and deliberately excluded from the `main`
+  # ruleset (18452968) — same reasoning as `Build docs site` and
+  # `Built-site browser smoke (L4)`. In tier terms this is an ALERTING GUARD,
+  # not a gate: it runs post-merge, so it can only detect a bad deploy, never
+  # prevent one.
+  showcase-deploy:
+    name: Showcase deploy (create-zfb, production)
+    needs: scaffold-e2e
+    # The explicit ref test is load-bearing: this workflow's `push:` also
+    # fires on `base/**`, so a bare "is this a push?" condition would deploy
+    # every epic base branch to production.
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # NOTE: the Cloudflare secrets are deliberately NOT job-level `env:`.
+    # They are attached per-step, to the steps that actually talk to
+    # Cloudflare — so the `npx html-validate` and `node
+    # scripts/showcase-inject-banner.mjs` steps below run with no production
+    # token in their environment. npx resolves a package's transitive
+    # closure fresh from the registry at run time (no lockfile, no integrity
+    # check), and there is no reason for that closure to be able to read the
+    # token.
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          # This job runs only `node`/`npx` (no pnpm). setup-node@v5
+          # auto-enables package-manager-cache, detects pnpm-lock.yaml, then
+          # fails with "Unable to locate pnpm" because pnpm/action-setup never
+          # ran here. Disable it — pnpm is not needed.
+          package-manager-cache: false
+
+      # Fail loudly rather than skipping. This job only ever runs on a push to
+      # main, where the credentials are always expected to be present — a
+      # missing or rotated token is a real breakage, and silently concluding
+      # `success` would mean the showcase quietly stops updating while every
+      # check stays green (showcase-notify keys on `failure`, so it would
+      # never fire either).
+      - name: Require Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID unavailable — cannot deploy the create-zfb showcase."
+            exit 1
+          fi
+
+      - name: Download showcase dist
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: create-zfb-showcase-dist
+          path: create-zfb-showcase/dist/
+
+      # Validate BEFORE injecting the banner, never after: this is the L3
+      # build-output signal and it must judge zfb's own emitted HTML, not the
+      # markup CI splices in. Reversed, a banner bug would read as a template
+      # regression and vice versa.
+      #
+      # Exact patch pin (not `@10`) to match the repo's pin-everything
+      # discipline. npx still resolves html-validate's transitive closure
+      # fresh at run time with no lockfile, which is why this step carries no
+      # Cloudflare credentials in its env (see the job-level NOTE above).
+      # html-validate is `^10.0.0` in docs/package.json; no pnpm here, hence npx.
+      # pin-update: bump this the same way as the `uses:` SHAs above.
+      - name: Validate emitted HTML (html-validate)
+        working-directory: create-zfb-showcase
+        run: npx --yes html-validate@10.0.0 "dist/**/*.html"
+
+      # not_found_handling = "404-page" in wrangler.toml silently degrades to
+      # a plain 404 if the template ever loses pages/404.tsx. Fail loudly here
+      # instead of shipping a subtly worse site.
+      - name: Assert the scaffold emitted a 404 page
+        run: |
+          if [ ! -f create-zfb-showcase/dist/404.html ]; then
+            echo "::error::create-zfb-showcase/dist/404.html is missing — not_found_handling=\"404-page\" would silently degrade. Did basic-blog lose pages/404.tsx?"
+            exit 1
+          fi
+
+      - name: Inject the showcase banner
+        run: node scripts/showcase-inject-banner.mjs create-zfb-showcase/dist "${{ github.sha }}"
+
+      # wrangler version is HARDCODED, not read from docs/package.json.
+      # Reading it back meant `npx wrangler@<string from a file this PR can
+      # edit>` — and npm specifiers are not just versions: `file:../evil`,
+      # `npm:other-pkg`, `github:owner/repo`, and remote tarballs all parse
+      # and execute. That turned a one-line edit to docs/package.json into
+      # arbitrary code execution next to the production Cloudflare token.
+      # pin-update: keep in sync with docs/package.json's wrangler pin
+      # (guarded there by docs/scripts/check-wrangler-pin.mjs).
+      - name: Deploy worker
+        working-directory: create-zfb-showcase
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.85.0 deploy
+
+      - name: Enable workers.dev subdomain (idempotent)
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          RESPONSE=$(curl -sS -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/zfb-showcase/subdomain" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"enabled":true}')
+          echo "$RESPONSE"
+          # code 10056 = already configured — treat as success
+          CODE=$(echo "$RESPONSE" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const j=JSON.parse(d);console.log((j.errors||[]).map(e=>e.code).join(','))")
+          if [ -n "$CODE" ] && [ "$CODE" != "10056" ]; then
+            echo "Unexpected error code(s): $CODE" >&2
+            exit 1
+          fi
+
+      - name: Attach custom domain (idempotent)
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          RESPONSE=$(curl -sS -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/domains" \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"hostname":"create-zfb.takazudomodular.com","service":"zfb-showcase","environment":"production","zone_name":"takazudomodular.com"}')
+          echo "$RESPONSE"
+          # 100116 = custom domain already attached; 100122 = zone already has this route
+          CODE=$(echo "$RESPONSE" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const j=JSON.parse(d);console.log((j.errors||[]).map(e=>e.code).join(','))")
+          if [ -n "$CODE" ] && [ "$CODE" != "100116" ] && [ "$CODE" != "100122" ]; then
+            echo "Unexpected error code(s): $CODE" >&2
+            exit 1
+          fi
+
+      # Post-deploy alerting guard: confirms the live site is actually serving
+      # the scaffold, not just that `wrangler deploy` exited 0. "Hello, zfb" is
+      # the seed post title from basic-blog's content/blog/hello-zfb.mdx — the
+      # same marker scripts/smoke-packed-clean-room.sh already asserts on, so
+      # it can only be present if the real content pipeline ran.
+      - name: Post-deploy health check
+        shell: bash
+        run: |
+          URL="https://create-zfb.takazudomodular.com"
+          MARKER="Hello, zfb"
+          BODY_FILE="$RUNNER_TEMP/showcase-health-body.html"
+          max_attempts=6
+          delay=10
+          for attempt in $(seq 1 $max_attempts); do
+            HTTP_CODE=$(curl -sS --max-time 15 -o "$BODY_FILE" -w '%{http_code}' "$URL" || echo "000")
+            if [ "$HTTP_CODE" = "200" ] && grep -q "$MARKER" "$BODY_FILE"; then
+              echo "Health check passed on attempt ${attempt}: HTTP ${HTTP_CODE}, marker '${MARKER}' found."
+              exit 0
+            fi
+            echo "Attempt ${attempt}/${max_attempts}: HTTP ${HTTP_CODE}, marker present: $(grep -q "$MARKER" "$BODY_FILE" 2>/dev/null && echo yes || echo no)"
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "::error::Health check failed after ${max_attempts} attempts — ${URL} did not return HTTP 200 with marker '${MARKER}'."
+              exit 1
+            fi
+            sleep "$delay"
+          done
+
+  # ── create-zfb showcase: notify on production-deploy failure ───────────────
+  showcase-notify:
+    name: Notify on showcase deploy failure
+    needs: showcase-deploy
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.showcase-deploy.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          GITHUB_SHA_VAL: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          SHORT_SHA=$(echo "$GITHUB_SHA_VAL" | cut -c1-7)
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"create-zfb showcase deploy failed\",
+              \"value2\": \"${SHORT_SHA}\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
+
+  # ── create-zfb showcase: per-PR preview deploy + sticky comment (#2285) ────
+  #
+  # Same artifact, same validate-then-inject order as the production job, but
+  # uploaded as a preview version rather than deployed. NOT a required check.
+  showcase-preview:
+    name: Showcase preview (create-zfb, PR)
+    needs: scaffold-e2e
+    # Fork PRs carry neither secrets nor a writable token, so skip cleanly
+    # rather than reddening an external contributor's PR. The dependabot
+    # clause is separate and not redundant: a dependabot PR is branch-based
+    # (it PASSES the fork test) but runs with a read-only GITHUB_TOKEN that
+    # `permissions:` cannot elevate, so the comment step would 403. There is
+    # no .github/dependabot.yml today — this is latent, and costs one line.
+    #
+    # Deliberately NOT pull_request_target: under it, PR-authored code would
+    # run `npx` and a node script with repository secrets in scope.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-level, so sibling jobs in this workflow keep the default token
+    # scope. BOTH keys are required: GitHub sets every unlisted permission to
+    # `none`, so `pull-requests: write` alone would leave checkout with
+    # `contents: none`.
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Download showcase dist
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: create-zfb-showcase-dist
+          path: create-zfb-showcase/dist/
+
+      # Validate before injecting — same reasoning as the production job.
+      - name: Validate emitted HTML (html-validate)
+        working-directory: create-zfb-showcase
+        run: npx --yes html-validate@10.0.0 "dist/**/*.html"
+
+      - name: Inject the showcase banner
+        run: node scripts/showcase-inject-banner.mjs create-zfb-showcase/dist "${{ github.event.pull_request.head.sha }}"
+
+      - name: Upload preview version
+        id: preview
+        # Tolerant by design: `versions upload --preview-alias` requires the
+        # `zfb-showcase` worker to already exist (created by the first
+        # production deploy on merge to main) and the workers.dev subdomain to
+        # be enabled. Before that, the upload legitimately fails — a cold
+        # start, not a bug. Treat it as a graceful no-op (the comment step
+        # posts a "pending" note) rather than reddening the PR.
+        continue-on-error: true
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "::warning::Cloudflare credentials unavailable — skipping preview upload."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PREVIEW_ALIAS="pr-${PR_NUMBER}"
+          set +e
+          UPLOAD_OUTPUT=$(cd create-zfb-showcase && npx --yes wrangler@4.85.0 versions upload \
+            --preview-alias "$PREVIEW_ALIAS" 2>&1)
+          STATUS=$?
+          set -e
+          echo "$UPLOAD_OUTPUT"
+          PREVIEW_URL=$(echo "$UPLOAD_OUTPUT" | grep -oE 'https://[a-zA-Z0-9._-]+\.workers\.dev[^ ]*' | head -1)
+          if [ "$STATUS" -eq 0 ] && [ -n "$PREVIEW_URL" ]; then
+            echo "preview_url=${PREVIEW_URL}" >> "$GITHUB_OUTPUT"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Preview upload unavailable (worker not yet created, or workers.dev subdomain disabled). Status=$STATUS"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upsert sticky PR preview comment
+        # github-token passed explicitly — implicit detection has failed with
+        # 401 Bad credentials on SHA-pinned action runs in this repo (see the
+        # same note in docs-pr-preview.yml).
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          PREVIEW_URL: ${{ steps.preview.outputs.preview_url }}
+          PREVIEW_OK: ${{ steps.preview.outputs.ok }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Distinct from docs-pr-preview.yml's `cf-workers-preview-pr`
+            // marker — a shared marker would make the two workflows
+            // overwrite each other's comment on a PR touching both.
+            const marker = '<!-- cf-workers-preview-create-zfb -->';
+            const previewUrl = process.env.PREVIEW_URL;
+            const ok = process.env.PREVIEW_OK === 'true';
+            const prNumber = Number(process.env.PR_NUMBER);
+            const shortSha = process.env.COMMIT_SHA.slice(0, 7);
+            const intro =
+              'This is the built output of `npm create zfb@latest my-site`, generated from this PR by the same clean-room run that backs the `Scaffold E2E` check.';
+            const body = ok
+              ? `${marker}\n### create-zfb showcase preview\n\n${intro}\n\n- Preview URL: ${previewUrl}\n- Commit: \`${shortSha}\`\n`
+              : `${marker}\n### create-zfb showcase preview\n\n${intro}\n\n⏳ Preview not available yet — it activates once the \`zfb-showcase\` worker exists (after the first production deploy on \`main\`) and the workers.dev subdomain is enabled.\n- Commit: \`${shortSha}\`\n`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
 
   # ── Built-site browser smoke: real `zfb build` output in real Chromium ─────
   #

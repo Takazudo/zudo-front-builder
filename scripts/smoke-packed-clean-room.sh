@@ -292,3 +292,31 @@ fi
 pass "dist/index.html lists the seed post (Hello, zfb)"
 
 echo "All packed-clean-room smoke assertions passed."
+
+# ── Optional: export the built dist for a downstream consumer (issue #2280) ──
+# Opt-in only, and deliberately the LAST thing this script does: once every
+# Stage-6 assertion above has passed, copy the just-built site's dist/ out to
+# a caller-supplied path so another job (e.g. a showcase deploy) can reuse
+# this exact build instead of re-running scaffold+build itself. Unset, this
+# block is a no-op and the script's behavior is byte-identical to before.
+#
+# Guarded with the `:-` form, not a bare `$ZFB_SMOKE_DIST_OUT` reference:
+# this script runs under `set -euo pipefail` and backs a required status
+# check (Scaffold E2E), so an unguarded unset-variable reference would abort
+# the job with "unbound variable" on every PR.
+#
+# The copy is deliberately NON-FATAL. Every assertion above has already
+# passed by this point, so the smoke test's verdict is settled; this export
+# only feeds a downstream, non-required showcase deploy. Letting a failed
+# copy (e.g. the runner filling up — this duplicates the whole dist/) take
+# down the required `Scaffold E2E` check would invert the blast radius the
+# upload step's `continue-on-error` is there to protect. The downstream
+# deploy job fails on its own `download-artifact` instead, which is where
+# that failure belongs.
+if [[ -n "${ZFB_SMOKE_DIST_OUT:-}" ]]; then
+  if mkdir -p "$ZFB_SMOKE_DIST_OUT" && cp -R "$SITE_DIR/dist/." "$ZFB_SMOKE_DIST_OUT/"; then
+    pass "exported dist/ to $ZFB_SMOKE_DIST_OUT"
+  else
+    echo "::warning::failed to export dist/ to $ZFB_SMOKE_DIST_OUT — the showcase deploy will fail on its download-artifact step, but this smoke test's assertions all passed." >&2
+  fi
+fi

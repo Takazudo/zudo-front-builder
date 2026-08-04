@@ -15,7 +15,10 @@ if (actual !== EXPECTED) {
   console.error(
     `wrangler pin mismatch: docs/package.json has "${actual}", expected "${EXPECTED}".\n` +
       `Update docs/package.json AND the EXPECTED constant in check-wrangler-pin.mjs.\n` +
-      `(docs-deploy.yml and docs-pr-preview.yml both read the version from package.json dynamically.)`,
+      `(docs-deploy.yml and docs-pr-preview.yml both read the version from package.json dynamically. ` +
+      `node-free-smoke.yml's showcase jobs pin the same version LITERALLY — deliberately, since ` +
+      `npx-ing a version string read from an editable file is arbitrary code execution next to the ` +
+      `production Cloudflare token — so bumping this pin means updating those literals by hand too.)`,
   );
   process.exit(1);
 }

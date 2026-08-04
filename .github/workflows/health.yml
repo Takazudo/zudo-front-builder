@@ -160,7 +160,10 @@ jobs:
       # typecheck step above — its tests import the built `dist/index.js`,
       # which needs the wasm32 toolchain this job doesn't have. Covered by
       # the wasm-md job below instead.
-      - run: pnpm -r --filter '!@takazudo/zfb-md-wasm' test
+      # --include-workspace-root: `pnpm -r` alone SKIPS the workspace root, so
+      # the root vitest suite covering scripts/** (vitest.config.mjs, scoped to
+      # scripts/**/__tests__) would silently never run here.
+      - run: pnpm -r --include-workspace-root --filter '!@takazudo/zfb-md-wasm' test
 
       - run: pnpm format:check
 

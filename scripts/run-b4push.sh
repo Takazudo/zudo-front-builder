@@ -192,7 +192,11 @@ step "JS test suites (pnpm -r test, excluding zfb-md-wasm)"
 if [ "${B4PUSH_SKIP_JS_TEST:-}" = "1" ]; then
   skip "JS tests (B4PUSH_SKIP_JS_TEST=1)"
 else
-  if pnpm -r --filter '!@takazudo/zfb-md-wasm' test; then
+  # --include-workspace-root: `pnpm -r` alone SKIPS the workspace root, so the
+  # root vitest suite covering scripts/** would never run here. Same flag as
+  # health.yml's step — keeping both surfaces identical is what stops the local
+  # gate and the PR gate from drifting.
+  if pnpm -r --include-workspace-root --filter '!@takazudo/zfb-md-wasm' test; then
     pass "JS tests"
   else
     fail "JS tests"
