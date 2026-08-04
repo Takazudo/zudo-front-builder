@@ -1,0 +1,26 @@
+name = "zfb-showcase"
+compatibility_date = "2024-12-01"
+# No `main` key here (unlike docs/wrangler.toml): the scaffold templates set
+# no adapter, so `zfb build` emits pure-static dist/ with no _worker.js. A
+# `main` pointing at a nonexistent entry script would fail `wrangler deploy`.
+# Also no compatibility_flags = ["nodejs_compat"] — docs/wrangler.toml
+# carries that solely because @takazudo/zfb-adapter-cloudflare's wrapper
+# imports node:async_hooks, and there is no adapter wrapper here.
+#
+# workers_dev / preview_urls required for --preview-alias routing;
+# trade-off: prod is also reachable at zfb-showcase.<account>.workers.dev
+# (duplicate content) — mirrors the trade-off docs/wrangler.toml already
+# accepts.
+workers_dev = true      # required for --preview-alias routing
+preview_urls = true     # required for --preview-alias routing
+
+[assets]
+directory = "./dist"
+# No `binding = "ASSETS"` (unlike docs/wrangler.toml): the binding is only
+# useful when a Worker script is set via `main`, and there is no script
+# here. Same reason `run_worker_first` is absent.
+not_found_handling = "404-page"   # basic-blog ships pages/404.tsx
+
+[[routes]]
+pattern = "create-zfb.takazudomodular.com"
+custom_domain = true
