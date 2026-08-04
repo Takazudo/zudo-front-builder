@@ -162,6 +162,14 @@ jobs:
       # the wasm-md job below instead.
       - run: pnpm -r --filter '!@takazudo/zfb-md-wasm' test
 
+      # `pnpm -r` above excludes the workspace ROOT (pnpm only includes it with
+      # --include-workspace-root), so vitest suites covering root-level
+      # scripts/** would silently never run in CI. Same shape of gap, and same
+      # fix, as the separate `cargo test --workspace --doc` step below: the
+      # umbrella runner structurally cannot see this surface, so it gets its
+      # own step. Scoped by vitest.config.mjs to scripts/**/__tests__.
+      - run: pnpm exec vitest run --config vitest.config.mjs
+
       - run: pnpm format:check
 
       # Compiles every target (incl. benches/examples) AND triggers crates/zfb's
