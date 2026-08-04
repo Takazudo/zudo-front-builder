@@ -292,3 +292,20 @@ fi
 pass "dist/index.html lists the seed post (Hello, zfb)"
 
 echo "All packed-clean-room smoke assertions passed."
+
+# ── Optional: export the built dist for a downstream consumer (issue #2280) ──
+# Opt-in only, and deliberately the LAST thing this script does: once every
+# Stage-6 assertion above has passed, copy the just-built site's dist/ out to
+# a caller-supplied path so another job (e.g. a showcase deploy) can reuse
+# this exact build instead of re-running scaffold+build itself. Unset, this
+# block is a no-op and the script's behavior is byte-identical to before.
+#
+# Guarded with the `:-` form, not a bare `$ZFB_SMOKE_DIST_OUT` reference:
+# this script runs under `set -euo pipefail` and backs a required status
+# check (Scaffold E2E), so an unguarded unset-variable reference would abort
+# the job with "unbound variable" on every PR.
+if [[ -n "${ZFB_SMOKE_DIST_OUT:-}" ]]; then
+  mkdir -p "$ZFB_SMOKE_DIST_OUT"
+  cp -R "$SITE_DIR/dist/." "$ZFB_SMOKE_DIST_OUT/"
+  pass "exported dist/ to $ZFB_SMOKE_DIST_OUT"
+fi

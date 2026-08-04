@@ -296,7 +296,26 @@ jobs:
       - name: Pack, override, scaffold, build, and assert (packed clean-room)
         env:
           ZFB_LINUX_X64_BINARY: ${{ github.workspace }}/smoke-ctx/zfb-bin
+          ZFB_SMOKE_DIST_OUT: ${{ github.workspace }}/showcase-dist
         run: bash scripts/smoke-packed-clean-room.sh
+
+      # Shares this job's already-built site with the showcase deploy
+      # workflow (issue #2280) instead of making it scaffold+build again.
+      # continue-on-error + if-no-files-found: error is deliberate, not
+      # sloppy: a showcase-side artifact hiccup surfaces as a step
+      # annotation but can never flip this job's conclusion to failure, so
+      # it can never redden the required "Scaffold E2E" check on an
+      # unrelated PR. Downstream, the deploy job fails on its own
+      # download-artifact instead — the correct (non-required) blast radius.
+      - name: Upload showcase dist
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: create-zfb-showcase-dist
+          path: showcase-dist/
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: true
 
   # ── Built-site browser smoke: real `zfb build` output in real Chromium ─────
   #
