@@ -48,14 +48,28 @@ fn build_plugin_specs(config: &Config) -> Vec<PluginSpec> {
 /// Spawn the plugin host subprocess if the config declares any
 /// resolved plugins. Returns `Ok(None)` for plugin-less projects so
 /// callers don't have to special-case the "no plugins" path.
+///
+/// Supplies the embedded-esbuild getter (#2308) — the byte-for-byte mirror
+/// of `Config::to_loader_options`'s getter (`config.rs:1640-1641`) — so a
+/// `.ts`/`.tsx`/`.mts`/`.cts` plugin entry can still be bundled for a
+/// `cargo install`-ed `zfb` binary with no workspace `crates/zfb/binaries/`
+/// dir. `build`, `dev`, and `preview` all reach the host through this one
+/// function, so this single supplier covers every command.
 pub async fn maybe_spawn_host(config: &Config) -> Result<Option<PluginHost>> {
     let specs = build_plugin_specs(config);
     if specs.is_empty() {
         return Ok(None);
     }
-    let host = PluginHost::spawn_with_timeout(specs, None, config.plugin_hook_timeout_secs)
-        .await
-        .context("plugin lifecycle: failed to spawn the plugin host")?;
+    let host = PluginHost::spawn_with_timeout(
+        specs,
+        None,
+        config.plugin_hook_timeout_secs,
+        Some(Box::new(|| {
+            crate::render_pipeline::embedded_binary("esbuild").ok()
+        })),
+    )
+    .await
+    .context("plugin lifecycle: failed to spawn the plugin host")?;
     Ok(Some(host))
 }
 
