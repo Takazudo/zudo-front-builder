@@ -27,6 +27,12 @@ lightningcss = "1.0.0-alpha.71"
 sha2 = "0.10"
 hex = "0.4"
 
+# `url()` attribution over the Tailwind `--map` inline sourcemap
+# (#2311/#2315): `sourcemap` parses the Source Map v3 payload (never
+# hand-roll VLQ), `base64` decodes the data-URL it arrives in.
+sourcemap = { workspace = true }
+base64 = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 # Dev-only: drives the one-time zfb-hi.css color-extraction helper (an

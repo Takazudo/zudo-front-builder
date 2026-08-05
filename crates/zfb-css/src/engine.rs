@@ -45,6 +45,22 @@ use sha2::{Digest, Sha256};
 pub trait CssEngine {
     /// Produce utility-class CSS for the given source files.
     fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String>;
+
+    /// Companion assets emitted for package-attributed `url()` references
+    /// resolved during the most recent [`Self::produce_utility_css`] call
+    /// (issue #2316, decision c: hash-upstream, emit-as-CSS-companions).
+    ///
+    /// Default: none. Only an engine that resolves package-attributed
+    /// `url()`s against a real filesystem (currently
+    /// [`TailwindSubprocessEngine`], via the Tailwind compiler's own
+    /// sourcemap) overrides this. [`crate::CssPipeline::build_emitter`]
+    /// calls it once, immediately after `produce_utility_css`, and folds
+    /// the result into [`crate::emitter::CssEmitterOutput::companions`].
+    /// "Take" semantics (draining, not peeking) so a stale companion list
+    /// from an earlier call can never leak into a later one.
+    fn take_package_url_companions(&self) -> Vec<crate::url_attribution::PackageUrlAsset> {
+        Vec::new()
+    }
 }
 
 /// Configuration for [`TailwindSubprocessEngine`].
@@ -75,7 +91,13 @@ pub struct TailwindSubprocessConfig {
     pub input_css: Option<PathBuf>,
 
     /// Extra CLI args appended to the subprocess invocation, for escape
-    /// hatches like `--minify`. These are passed verbatim.
+    /// hatches. These are passed verbatim, EXCEPT that
+    /// [`TailwindSubprocessEngine::produce_utility_css`] hard-errors before
+    /// spawning the CLI if this contains a minification/optimization flag
+    /// (`-m`/`--minify`/`--optimize`) — see
+    /// `reject_minify_flags_incompatible_with_attribution`'s doc comment
+    /// (codex review finding, #2327): those flags are incompatible with the
+    /// package `url()` sourcemap attribution the engine always runs.
     pub extra_args: Vec<OsString>,
 
     /// Content globs (Tailwind v4 `@source` targets) for the **user
@@ -699,6 +721,12 @@ pub struct TailwindSubprocessEngine {
     /// [`Self::produce_utility_css`] (including when the mock path is
     /// taken). Tests assert on this without needing the binary.
     last_entry_css: std::sync::Mutex<Option<String>>,
+    /// Companion assets emitted for package-attributed `url()` references
+    /// resolved on the most recent real (non-mock) `produce_utility_css`
+    /// call. Drained by [`CssEngine::take_package_url_companions`]; the
+    /// mock path clears this rather than populating it, since it never
+    /// runs attribution (see the call site's doc comment).
+    package_url_companions: std::sync::Mutex<Vec<crate::url_attribution::PackageUrlAsset>>,
 }
 
 impl Clone for TailwindSubprocessEngine {
@@ -707,6 +735,12 @@ impl Clone for TailwindSubprocessEngine {
             config: self.config.clone(),
             last_entry_css: std::sync::Mutex::new(
                 self.last_entry_css.lock().ok().and_then(|g| g.clone()),
+            ),
+            package_url_companions: std::sync::Mutex::new(
+                self.package_url_companions
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default(),
             ),
         }
     }
@@ -718,6 +752,7 @@ impl TailwindSubprocessEngine {
         Self {
             config,
             last_entry_css: std::sync::Mutex::new(None),
+            package_url_companions: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -806,6 +841,56 @@ fn entry_dir(cfg: &TailwindSubprocessConfig) -> PathBuf {
     }
 }
 
+/// Tailwind v4 CLI flags (pinned binary v4.2.0) that turn on Lightning CSS
+/// minification/optimization. `-m` is `--minify`'s short form (not a
+/// distinct behavior); `--optimize` runs Lightning CSS's optimizer without
+/// minifying. Both are checked against
+/// [`TailwindSubprocessConfig::extra_args`] by
+/// [`reject_minify_flags_incompatible_with_attribution`].
+const FORBIDDEN_MINIFY_FLAGS: &[&str] = &["--minify", "-m", "--optimize"];
+
+/// Hard-error if `extra_args` requests Tailwind minification/optimization
+/// (codex review finding, #2327).
+///
+/// [`TailwindSubprocessEngine::produce_utility_css`] always runs package
+/// `url()` sourcemap attribution on the real (non-mock) subprocess path
+/// (`--map` + `crate::url_attribution::attribute_and_emit_package_urls`) —
+/// there is no separate opt-out. Attribution's documented trust boundary
+/// (`url_attribution.rs`'s module doc, the "Valid only while zfb never
+/// passes `-m`/`--optimize`" sentence) is that Lightning CSS's rule merging
+/// under either flag destroys the one-declaration-per-line mapping shape
+/// position-based sourcemap lookup depends on — silently risking wrong
+/// attribution, a spurious hard-error, or the wrong asset being emitted,
+/// none of which are safe to let through. Called before anything is spawned
+/// (checked ahead of even the binary-exists check), so a misconfigured
+/// `extra_args` fails loudly and immediately rather than after paying for a
+/// subprocess invocation. The fix is to minify the FINAL emitted CSS
+/// downstream instead of asking Tailwind to do it — not to make the
+/// attribution lookup robust to optimized output (the unbounded parity-chase
+/// #2312 already ruled out for this pipeline).
+fn reject_minify_flags_incompatible_with_attribution(extra_args: &[OsString]) -> Result<()> {
+    for arg in extra_args {
+        // A non-UTF-8 arg can never spell one of these ASCII flags.
+        let Some(arg_str) = arg.to_str() else {
+            continue;
+        };
+        // Split off a `=value` suffix defensively — the pinned CLI takes
+        // both flags as bare booleans today, but a future CLI version
+        // growing an `=` form must not silently bypass this guard.
+        let bare = arg_str.split('=').next().unwrap_or(arg_str);
+        if FORBIDDEN_MINIFY_FLAGS.contains(&bare) {
+            return Err(anyhow!(
+                "TailwindSubprocessConfig::extra_args contains `{arg_str}`, which is \
+                 incompatible with zfb's package `url()` attribution: Lightning CSS's rule \
+                 merging under `-m`/`--minify`/`--optimize` breaks the sourcemap position \
+                 lookup attribution depends on. Remove this flag and minify the final CSS \
+                 downstream instead."
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Delete `zfb-tailwind-entry-*.css` files left in `dir` by a previous run
 /// that died before its [`tempfile::NamedTempFile`] `Drop` could clean up
 /// (SIGKILL / crash / Ctrl-C). See zfb#821.
@@ -874,8 +959,23 @@ impl CssEngine for TailwindSubprocessEngine {
         }
 
         if self.config.mock_subprocess {
+            // The mock path never runs the real subprocess, so it never
+            // parses a sourcemap or resolves package `url()`s. Clear any
+            // companions left over from a prior real call so
+            // `take_package_url_companions` cannot return a stale set
+            // paired with this mock output.
+            if let Ok(mut slot) = self.package_url_companions.lock() {
+                slot.clear();
+            }
             return Ok(self.config.mock_output.clone());
         }
+
+        // #2311/#2315 attribution is unconditional beyond this point (see
+        // the `--map` + `attribute_and_emit_package_urls` call below), so
+        // `extra_args` must be checked for minification/optimization flags
+        // BEFORE anything is spawned — see `reject_minify_flags_incompatible_with_attribution`'s
+        // doc comment for why those flags corrupt the attribution.
+        reject_minify_flags_incompatible_with_attribution(&self.config.extra_args)?;
 
         // Sanity-check: the binary should exist before we try to spawn it.
         // This gives a much clearer error message than the OS-level "no
@@ -953,6 +1053,12 @@ impl CssEngine for TailwindSubprocessEngine {
         cmd.current_dir(&self.config.working_dir);
         cmd.arg("-i").arg(entry_tmp.path());
         cmd.arg("-o").arg(out_tmp.path());
+        // #2311/#2315: record per-declaration provenance so relative `url()`s
+        // inlined from `@import`ed package stylesheets can be attributed to
+        // their origin. The map arrives as a trailing inline comment in the
+        // output file and is parsed + stripped back out at the read below —
+        // the returned CSS bytes stay identical to a `--map`-less run.
+        cmd.arg("--map");
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
@@ -984,9 +1090,28 @@ impl CssEngine for TailwindSubprocessEngine {
             ));
         }
 
-        let css = std::fs::read_to_string(out_tmp.path())
+        let raw = std::fs::read_to_string(out_tmp.path())
             .context("failed to read tailwind output file")?;
+        // Strip the `--map` comment, attribute every relative `url()`, and
+        // emit+rewrite every package-attributed reference that resolves
+        // (#2315 attribution + #2316 emission): a reference that cannot be
+        // resolved still fails the build here — authored/project CSS
+        // passes through byte-for-byte either way.
+        let (css, companions) = crate::url_attribution::attribute_and_emit_package_urls(
+            &raw,
+            &self.config.working_dir,
+        )?;
+        if let Ok(mut slot) = self.package_url_companions.lock() {
+            *slot = companions;
+        }
         Ok(css)
+    }
+
+    fn take_package_url_companions(&self) -> Vec<crate::url_attribution::PackageUrlAsset> {
+        self.package_url_companions
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default()
     }
 }
 
