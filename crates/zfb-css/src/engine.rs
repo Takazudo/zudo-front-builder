@@ -45,6 +45,22 @@ use sha2::{Digest, Sha256};
 pub trait CssEngine {
     /// Produce utility-class CSS for the given source files.
     fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String>;
+
+    /// Companion assets emitted for package-attributed `url()` references
+    /// resolved during the most recent [`Self::produce_utility_css`] call
+    /// (issue #2316, decision c: hash-upstream, emit-as-CSS-companions).
+    ///
+    /// Default: none. Only an engine that resolves package-attributed
+    /// `url()`s against a real filesystem (currently
+    /// [`TailwindSubprocessEngine`], via the Tailwind compiler's own
+    /// sourcemap) overrides this. [`crate::CssPipeline::build_emitter`]
+    /// calls it once, immediately after `produce_utility_css`, and folds
+    /// the result into [`crate::emitter::CssEmitterOutput::companions`].
+    /// "Take" semantics (draining, not peeking) so a stale companion list
+    /// from an earlier call can never leak into a later one.
+    fn take_package_url_companions(&self) -> Vec<crate::url_attribution::PackageUrlAsset> {
+        Vec::new()
+    }
 }
 
 /// Configuration for [`TailwindSubprocessEngine`].
@@ -699,6 +715,12 @@ pub struct TailwindSubprocessEngine {
     /// [`Self::produce_utility_css`] (including when the mock path is
     /// taken). Tests assert on this without needing the binary.
     last_entry_css: std::sync::Mutex<Option<String>>,
+    /// Companion assets emitted for package-attributed `url()` references
+    /// resolved on the most recent real (non-mock) `produce_utility_css`
+    /// call. Drained by [`CssEngine::take_package_url_companions`]; the
+    /// mock path clears this rather than populating it, since it never
+    /// runs attribution (see the call site's doc comment).
+    package_url_companions: std::sync::Mutex<Vec<crate::url_attribution::PackageUrlAsset>>,
 }
 
 impl Clone for TailwindSubprocessEngine {
@@ -707,6 +729,12 @@ impl Clone for TailwindSubprocessEngine {
             config: self.config.clone(),
             last_entry_css: std::sync::Mutex::new(
                 self.last_entry_css.lock().ok().and_then(|g| g.clone()),
+            ),
+            package_url_companions: std::sync::Mutex::new(
+                self.package_url_companions
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default(),
             ),
         }
     }
@@ -718,6 +746,7 @@ impl TailwindSubprocessEngine {
         Self {
             config,
             last_entry_css: std::sync::Mutex::new(None),
+            package_url_companions: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -874,6 +903,14 @@ impl CssEngine for TailwindSubprocessEngine {
         }
 
         if self.config.mock_subprocess {
+            // The mock path never runs the real subprocess, so it never
+            // parses a sourcemap or resolves package `url()`s. Clear any
+            // companions left over from a prior real call so
+            // `take_package_url_companions` cannot return a stale set
+            // paired with this mock output.
+            if let Ok(mut slot) = self.package_url_companions.lock() {
+                slot.clear();
+            }
             return Ok(self.config.mock_output.clone());
         }
 
@@ -992,14 +1029,26 @@ impl CssEngine for TailwindSubprocessEngine {
 
         let raw = std::fs::read_to_string(out_tmp.path())
             .context("failed to read tailwind output file")?;
-        // Strip the `--map` comment and enforce the package `url()` floor
-        // (#2315): a relative `url()` attributed to a `node_modules`
-        // stylesheet fails the build here — authored/project CSS passes
-        // through byte-for-byte.
-        crate::url_attribution::attribute_and_enforce_package_url_floor(
+        // Strip the `--map` comment, attribute every relative `url()`, and
+        // emit+rewrite every package-attributed reference that resolves
+        // (#2315 attribution + #2316 emission): a reference that cannot be
+        // resolved still fails the build here — authored/project CSS
+        // passes through byte-for-byte either way.
+        let (css, companions) = crate::url_attribution::attribute_and_emit_package_urls(
             &raw,
             &self.config.working_dir,
-        )
+        )?;
+        if let Ok(mut slot) = self.package_url_companions.lock() {
+            *slot = companions;
+        }
+        Ok(css)
+    }
+
+    fn take_package_url_companions(&self) -> Vec<crate::url_attribution::PackageUrlAsset> {
+        self.package_url_companions
+            .lock()
+            .map(|mut g| std::mem::take(&mut *g))
+            .unwrap_or_default()
     }
 }
 

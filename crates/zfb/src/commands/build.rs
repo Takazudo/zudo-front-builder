@@ -1352,11 +1352,26 @@ fn run_css_emitter<E: CssEngine>(
     let pipeline = CssPipeline::new(engine, pipe_cfg);
     let emitter_out = pipeline.build_emitter()?;
 
+    // Package-attributed `url()` references the engine resolved and
+    // rewrote `emitter_out.bytes` to point at (issue #2316) become CSS
+    // companions here — the writer-side boundary where zfb-css's
+    // engine-agnostic companion type crosses into zfb-build's
+    // `CompanionFile`, mirroring `production_islands_asset_to_payload`'s
+    // chunk/worker/resource conversion above.
+    let companions = emitter_out
+        .companions
+        .into_iter()
+        .map(|c| CompanionFile {
+            filename: c.filename,
+            bytes: c.bytes,
+        })
+        .collect();
+
     Ok(AssetEmitterPayload {
         bytes: emitter_out.bytes,
         relative_path: css_relative_path(),
         stable_url: emitter_out.stable_url,
-        companions: Vec::new(),
+        companions,
     })
 }
 

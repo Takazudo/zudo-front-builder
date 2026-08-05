@@ -1,6 +1,7 @@
 //! Sourcemap-driven attribution of relative `url()` references in the
-//! compiled Tailwind output, plus the hard-error floor for package-attributed
-//! references (issue #2315, epic #2311).
+//! compiled Tailwind output, plus emission of the referenced assets as CSS
+//! companions and the hard-error floor for the cases that still cannot be
+//! emitted (issue #2315 attribution + #2316 emission, epic #2311).
 //!
 //! ## The problem this closes
 //!
@@ -10,9 +11,13 @@
 //! against the built CSS location and 404s at runtime — while the build exits
 //! 0. This module makes that state impossible: every relative `url()` in the
 //! compiled output is attributed to its origin stylesheet via the compiler's
-//! own sourcemap, and every reference attributed to a `node_modules`
-//! stylesheet **fails the build loudly** (asset emission is a follow-up wave —
-//! until it lands, the floor error below is the guaranteed behaviour).
+//! own sourcemap. A reference attributed to a `node_modules` stylesheet whose
+//! target resolves to a real, contained, regular file is **emitted as a CSS
+//! companion** and the reference is rewritten to point at it (decision c/f,
+//! #2313) — the earlier "attributed but unsupported" floor (#2315) is
+//! replaced for this handled case. A reference whose target is missing, not a
+//! regular file, unreadable, or escapes the package directory **still fails
+//! the build loudly** with the permanent emission-error template.
 //!
 //! ## Why sourcemap-driven (not text matching, not a Rust re-resolver)
 //!
@@ -63,15 +68,43 @@
 //! inside the package root (the attributed `package.json`'s directory).
 //! A package stylesheet can never make zfb touch a path outside that
 //! package's own directory.
+//!
+//! ## Emission (decision c) and URL rewriting form (decision f)
+//!
+//! For every package-attributed reference whose target resolves to a
+//! contained regular file: the asset's bytes are hashed upstream
+//! (`sha256_8`, the existing [`crate::pipeline::hash_8`] /
+//! `zfb_islands::hash_8` convention) into a flat companion filename
+//! `{stem}-{hash8}.{ext}` (`stem` is the asset's own basename, sanitized to
+//! `[A-Za-z0-9._-]` — never the decoded reference path, so identical bytes
+//! always hash to the same companion regardless of how many different
+//! relative paths reach them). The `url()` value span is spliced to
+//! `./{filename}` plus the original `?`/`#` suffix verbatim, preserving the
+//! original quoting style. Companions land beside the hashed CSS entry, so
+//! `./` resolves correctly under any base/CDN URL prefix.
+//!
+//! Dedup is keyed on the asset's **canonical path**: the same file
+//! referenced N times (even across different packages, if byte-identical)
+//! produces exactly one companion; two different files that happen to share
+//! a basename hash to different filenames and never collide. A companion
+//! filename colliding with different bytes is a hard error (practically
+//! unreachable in sha256-8 space).
+//!
+//! **Atomicity:** every referenced asset's bytes are read, and every
+//! companion filename resolved, before any `url()` is spliced — the first
+//! unresolvable reference fails the whole call, so [`attribute_and_emit_package_urls`]
+//! never returns a partially-rewritten stylesheet.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use base64::Engine as _;
+use sha2::{Digest, Sha256};
 use sourcemap::SourceMap;
 
-use crate::url_scanner::{scan_css_urls, CssUrlOccurrence};
+use crate::url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
 
 /// The origin a relative `url()` reference was attributed to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,24 +146,50 @@ pub struct AttributedUrl {
     pub origin: UrlOrigin,
 }
 
+/// One companion asset emitted for a resolved package-attributed `url()`
+/// reference (decision c, #2313). `filename` is the flat, sanitized
+/// `{stem}-{hash8}.{ext}` basename the CSS was rewritten to reference —
+/// safe to hand straight to [`crate::emitter::CssEmitterOutput::companions`]
+/// and, downstream, `zfb_build::pipeline::prod::CompanionFile`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageUrlAsset {
+    /// Flat basename, e.g. `a-1a2b3c4d.woff2`. Never contains a path
+    /// separator or `..`.
+    pub filename: String,
+    /// The asset's raw bytes, read once and reused for every reference
+    /// that dedups to this same companion.
+    pub bytes: Vec<u8>,
+}
+
 /// Engine entry point: strip the trailing `sourceMappingURL` comment from the
 /// raw Tailwind output, attribute every relative `url()` through the parsed
-/// sourcemap, and enforce the package hard-error floor. Returns the stripped
-/// CSS — byte-identical to the pre-`--map` output, since the comment is
-/// trailing and stripping shifts no earlier offsets.
+/// sourcemap, then emit a companion asset for every package-attributed
+/// reference that resolves cleanly and rewrite its `url()` value to point at
+/// the companion. A reference that cannot be resolved (missing, not a
+/// regular file, unreadable, or outside the package directory) still fails
+/// the build with the permanent emission-error template — the only change
+/// from the prior wave's floor is that a *resolvable* reference is now
+/// handled instead of unconditionally erroring.
+///
+/// Returns the rewritten CSS (byte-identical to the pre-`--map` output
+/// outside of package `url()` value spans — the comment is trailing, so
+/// stripping shifts no earlier offsets, and only package-attributed value
+/// spans are ever spliced) plus the companions to ship beside it.
 ///
 /// `base_dir` anchors relative sourcemap `sources` entries (the engine passes
 /// its subprocess working directory; Tailwind emits absolute paths in
 /// practice).
-pub fn attribute_and_enforce_package_url_floor(raw_css: &str, base_dir: &Path) -> Result<String> {
+pub fn attribute_and_emit_package_urls(
+    raw_css: &str,
+    base_dir: &Path,
+) -> Result<(String, Vec<PackageUrlAsset>)> {
     let (css, map_url) = split_sourcemap_comment(raw_css);
     let map = match map_url.and_then(inline_data_url_payload) {
         Some(payload) => Some(parse_inline_sourcemap(payload)?),
         None => None,
     };
     let attributed = attribute_relative_urls(css, map.as_ref(), base_dir)?;
-    enforce_package_url_floor(css, &attributed)?;
-    Ok(css.to_string())
+    rewrite_and_emit_package_urls(css, &attributed)
 }
 
 /// The comment Tailwind's `--map` appends to the output file. Everything
@@ -232,46 +291,220 @@ pub fn attribute_relative_urls(
     Ok(out)
 }
 
-/// The hard-error floor (locked decision d): every package-attributed
-/// relative reference fails the build. A target that is missing, not a
-/// regular file, or escapes the package root gets the emission-error shape
-/// naming the reason; a valid, contained target gets the floor error —
-/// asset emission is not implemented yet, and exiting 0 with a reference
-/// that will 404 is the exact reported harm.
-fn enforce_package_url_floor(css: &str, attributed: &[AttributedUrl]) -> Result<()> {
+/// Resolve, read, and hash every package-attributed reference in
+/// `attributed`, then splice each into `css` as a rewritten companion
+/// reference (decision c/f, #2313). A reference that is missing, not a
+/// regular file, unreadable, or escapes the package root fails the whole
+/// call with the permanent emission-error template naming the reason —
+/// nothing is spliced and no companion list is returned, so a caller can
+/// never publish a partially-rewritten stylesheet (the atomicity
+/// requirement, #2316).
+///
+/// Two passes: first resolve every occurrence (fail fast on the first
+/// unresolvable one), then splice back-to-front so earlier byte spans stay
+/// valid. Authored-origin occurrences are never touched.
+fn rewrite_and_emit_package_urls(
+    css: &str,
+    attributed: &[AttributedUrl],
+) -> Result<(String, Vec<PackageUrlAsset>)> {
+    /// One resolved package reference, ready to splice. `filename` and
+    /// `suffix` are kept apart (rather than pre-joined) so the splice step
+    /// can escape `suffix` for the occurrence's own quote style — the
+    /// filename never needs escaping (it is built from `[A-Za-z0-9._-]`
+    /// only), but `suffix` came from a CSS-escape-decoded query/fragment
+    /// and may itself contain a quote or backslash character that would
+    /// otherwise break out of a requoted replacement (see
+    /// [`escape_suffix_for_quote`]).
+    struct Resolved<'a> {
+        entry: &'a AttributedUrl,
+        filename: String,
+        suffix: &'a str,
+    }
+
+    let mut companions: Vec<PackageUrlAsset> = Vec::new();
+    // Canonical asset path -> already-resolved companion filename. Dedup
+    // rule (decision c): the same file referenced N times emits once.
+    let mut filename_by_canonical: HashMap<PathBuf, String> = HashMap::new();
+    let mut resolved: Vec<Resolved> = Vec::new();
+
     for entry in attributed {
         let UrlOrigin::Package(pkg) = &entry.origin else {
             continue;
         };
         let raw_reference = &css[entry.occurrence.value_span.clone()];
-        let (path_part, _suffix) = split_query_fragment(&entry.occurrence.decoded);
+        let (path_part, suffix) = split_query_fragment(&entry.occurrence.decoded);
         let source_dir = pkg.source.parent().unwrap_or(Path::new("."));
         let target = source_dir.join(path_part);
+
         // Containment: canonicalize FIRST (resolving symlinks), so a symlink
         // escaping the package resolves outside the root and is rejected.
-        let reason = match std::fs::canonicalize(&target) {
-            Err(_) => Some(format!("file not found at {}", target.display())),
-            Ok(asset_canonical) => {
-                let package_root = std::fs::canonicalize(&pkg.package_root)
-                    .unwrap_or_else(|_| pkg.package_root.clone());
-                if !asset_canonical.starts_with(&package_root) {
-                    Some(format!(
-                        "resolves outside the package directory: {}",
-                        asset_canonical.display()
-                    ))
-                } else if !asset_canonical.is_file() {
-                    Some(format!("not a regular file: {}", asset_canonical.display()))
-                } else {
-                    None
+        let asset_canonical = std::fs::canonicalize(&target).map_err(|_| {
+            cannot_emit_error(
+                pkg,
+                raw_reference,
+                &format!("file not found at {}", target.display()),
+            )
+        })?;
+        let package_root =
+            std::fs::canonicalize(&pkg.package_root).unwrap_or_else(|_| pkg.package_root.clone());
+        if !asset_canonical.starts_with(&package_root) {
+            return Err(cannot_emit_error(
+                pkg,
+                raw_reference,
+                &format!(
+                    "resolves outside the package directory: {}",
+                    asset_canonical.display()
+                ),
+            ));
+        }
+        if !asset_canonical.is_file() {
+            return Err(cannot_emit_error(
+                pkg,
+                raw_reference,
+                &format!("not a regular file: {}", asset_canonical.display()),
+            ));
+        }
+
+        let filename = match filename_by_canonical.get(&asset_canonical) {
+            Some(existing) => existing.clone(),
+            None => {
+                let bytes = std::fs::read(&asset_canonical).map_err(|e| {
+                    cannot_emit_error(pkg, raw_reference, &format!("unreadable: {e}"))
+                })?;
+                let filename = package_url_companion_filename(&asset_canonical, &bytes);
+                match companions.iter().find(|c| c.filename == filename) {
+                    // Byte-identical companion already registered (possibly
+                    // from a different canonical path, e.g. two packages
+                    // shipping the same font) — reuse it, no duplicate.
+                    Some(existing) if existing.bytes == bytes => {}
+                    // A companion filename collision with DIFFERENT bytes is
+                    // practically unreachable in sha256-8 space, but must
+                    // never silently overwrite (decision c collision rule).
+                    Some(_) => {
+                        return Err(anyhow!(
+                            "error: companion filename collision with different bytes\n\
+                             \x20 filename: {filename}\n\
+                             \x20 package:    {name}@{version}\n\
+                             \x20 stylesheet: {source}\n\
+                             \x20 asset:      {asset}",
+                            name = pkg.name,
+                            version = pkg.version,
+                            source = pkg.source.display(),
+                            asset = asset_canonical.display(),
+                        ));
+                    }
+                    None => companions.push(PackageUrlAsset {
+                        filename: filename.clone(),
+                        bytes,
+                    }),
                 }
+                filename_by_canonical.insert(asset_canonical.clone(), filename.clone());
+                filename
             }
         };
-        return Err(match reason {
-            Some(reason) => cannot_emit_error(pkg, raw_reference, &reason),
-            None => floor_error(pkg, raw_reference),
+
+        resolved.push(Resolved {
+            entry,
+            filename,
+            suffix,
         });
     }
-    Ok(())
+
+    let mut spliced = css.to_string();
+    for r in resolved.iter().rev() {
+        let quote = r.entry.occurrence.quote;
+        let escaped_suffix = escape_suffix_for_quote(r.suffix, quote);
+        let replacement = format!("./{}{escaped_suffix}", r.filename);
+        let value = match quote {
+            UrlQuote::None => replacement,
+            UrlQuote::Single => format!("'{replacement}'"),
+            UrlQuote::Double => format!("\"{replacement}\""),
+        };
+        spliced.replace_range(r.entry.occurrence.value_span.clone(), &value);
+    }
+
+    Ok((spliced, companions))
+}
+
+/// CSS-escape any byte in `suffix` (the `?`/`#` tail split off the
+/// CSS-escape-decoded `url()` value) that would be unsafe to splice
+/// verbatim into `quote`'s replacement context.
+///
+/// `suffix` comes from [`split_query_fragment`] applied to
+/// [`CssUrlOccurrence::decoded`] — CSS escapes (e.g. `\22` for `"`) have
+/// already been resolved to their literal characters at that point. A
+/// literal quote character matching the target quote style (or, for an
+/// unquoted replacement, a literal quote/paren/backslash/whitespace
+/// character) would otherwise terminate the spliced token early or turn a
+/// well-formed url-token into a bad one. `\` + literal-char is a valid CSS
+/// escape for any of these (CSS Syntax §4.3.7) — none of them is a hex
+/// digit, so the escape can never be misread as the start of a hex escape.
+fn escape_suffix_for_quote(suffix: &str, quote: UrlQuote) -> String {
+    let mut out = String::with_capacity(suffix.len());
+    for c in suffix.chars() {
+        let needs_escape = match quote {
+            UrlQuote::Double => matches!(c, '"' | '\\'),
+            UrlQuote::Single => matches!(c, '\'' | '\\'),
+            UrlQuote::None => matches!(c, '"' | '\'' | '(' | ')' | '\\') || c.is_whitespace(),
+        };
+        if needs_escape {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// SHA-256 of `bytes`, truncated to 8 lowercase hex characters. Mirrors the
+/// `zfb_css::pipeline::hash_8` / `zfb_islands::hash_8` convention (decision
+/// c, #2313: "the existing `hash_8` convention").
+fn sha256_hash8(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    hex::encode(digest)[..8].to_string()
+}
+
+/// Sanitize one filename component (stem or extension) to the
+/// flat-basename-safe alphabet `[A-Za-z0-9._-]`, replacing every other byte
+/// with `_`. Applied to the asset's own basename, never to the decoded
+/// reference path, so path separators and `..` in a crafted reference can
+/// never reach a companion filename (containment already rejected them
+/// earlier, but this keeps the filename builder independently safe).
+fn sanitize_flat_basename_component(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Build the flat companion filename `{stem}-{hash8}.{ext}` for a resolved
+/// package asset (decision c/f, #2313). `stem`/`ext` come from the asset's
+/// own canonical basename — never the decoded `url()` reference — so
+/// identical bytes reached via different relative paths always hash to the
+/// same companion.
+fn package_url_companion_filename(asset_canonical: &Path, bytes: &[u8]) -> String {
+    let basename = asset_canonical
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "asset".to_string());
+    let (stem, ext) = match basename.rfind('.') {
+        Some(idx) if idx > 0 => (&basename[..idx], Some(&basename[idx + 1..])),
+        _ => (basename.as_str(), None),
+    };
+    let stem = sanitize_flat_basename_component(stem);
+    let hash8 = sha256_hash8(bytes);
+    match ext {
+        Some(ext) if !ext.is_empty() => {
+            format!("{stem}-{hash8}.{}", sanitize_flat_basename_component(ext))
+        }
+        _ => format!("{stem}-{hash8}"),
+    }
 }
 
 /// Whether a decoded `url()` value is a relative reference in scope for
@@ -409,27 +642,12 @@ fn split_query_fragment(decoded: &str) -> (&str, &str) {
     }
 }
 
-/// The floor error (locked template): fires for every attributed
-/// package-relative reference until package asset emission lands.
-fn floor_error(pkg: &PackageOrigin, raw_reference: &str) -> anyhow::Error {
-    anyhow!(
-        "error: unsupported `url()` in an imported package stylesheet\n\
-         \x20 package:    {name}@{version}\n\
-         \x20 stylesheet: {source}\n\
-         \x20 reference:  url({raw_reference})\n\
-         \x20 This stylesheet was inlined by `@import`, so its relative `url()` resolves\n\
-         \x20 against the built CSS location and would 404 at runtime. zfb does not yet\n\
-         \x20 emit package stylesheet assets.\n\
-         \x20 workaround: vendor the file into `public/` and reference it by absolute URL\n\
-         \x20             (see concepts/static-assets)",
-        name = pkg.name,
-        version = pkg.version,
-        source = pkg.source.display(),
-    )
-}
-
-/// Emission-shape error (locked template) for a target that is missing, not
-/// a regular file, or escapes the package root.
+/// Emission-shape error (locked template, decision d permanent form): fires
+/// for a package-attributed reference that is missing, not a regular file,
+/// unreadable, or escapes the package root. This is now the ONLY error a
+/// resolvable-vs-unresolvable package reference can produce — a resolvable
+/// target is emitted and rewritten instead of erroring (the prior wave's
+/// "unsupported `url()`" floor is replaced for that case).
 fn cannot_emit_error(pkg: &PackageOrigin, raw_reference: &str, reason: &str) -> anyhow::Error {
     anyhow!(
         "error: cannot emit `url()` asset from an imported package stylesheet\n\
@@ -497,21 +715,31 @@ mod tests {
         attribute_relative_urls(css, Some(map), base).expect("attribution should succeed")
     }
 
-    fn floor_err(css: &str, map: &SourceMap, base: &Path) -> String {
+    /// Run the emission function end to end (attribute + rewrite/emit),
+    /// expecting success.
+    fn emit(css: &str, map: &SourceMap, base: &Path) -> (String, Vec<PackageUrlAsset>) {
+        let attributed = attribute(css, map, base);
+        rewrite_and_emit_package_urls(css, &attributed).expect("emission should succeed")
+    }
+
+    /// Same, expecting a hard error; returns its Display text.
+    fn emit_err(css: &str, map: &SourceMap, base: &Path) -> String {
         let attributed = attribute(css, map, base);
         format!(
             "{}",
-            enforce_package_url_floor(css, &attributed).expect_err("floor must fire")
+            rewrite_and_emit_package_urls(css, &attributed).expect_err("emission must fail")
         )
     }
 
-    // ---- the floor fires (THE acceptance test of this wave) --------------
+    // ---- resolvable references are emitted and rewritten, not floored ----
+    // (THE acceptance test of this wave: #2316 replaces the wave-4 floor for
+    // handled cases.)
 
     #[test]
-    fn package_relative_url_with_existing_asset_fails_with_the_locked_floor_error() {
-        // The reported repro shape: the referenced .woff2 EXISTS — an
-        // unresolvable-only policy would exit 0 here, which is exactly the
-        // silent failure the floor eliminates.
+    fn package_relative_url_with_existing_asset_is_emitted_and_rewritten() {
+        // The reported repro shape: the referenced .woff2 EXISTS. Wave 4
+        // hard-errored here (the guaranteed floor); wave 5 now emits a
+        // companion and rewrites the reference instead.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let stylesheet = write_package(
@@ -523,32 +751,24 @@ mod tests {
         let css = "@font-face{src:url(./files/a.woff2) format('woff2')}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
 
-        let msg = floor_err(css, &map, root);
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1, "exactly one companion: {companions:?}");
+        let companion = &companions[0];
+        assert_eq!(companion.bytes, b"woff2-bytes");
         assert!(
-            msg.contains("unsupported `url()` in an imported package stylesheet"),
-            "floor header missing:\n{msg}"
+            companion.filename.starts_with("a-") && companion.filename.ends_with(".woff2"),
+            "unexpected companion filename: {}",
+            companion.filename
         );
-        assert!(
-            msg.contains("package:    @demo/fonts@1.2.3"),
-            "package identity missing:\n{msg}"
+        let expected = format!(
+            "@font-face{{src:url(./{}) format('woff2')}}\n",
+            companion.filename
         );
-        let canonical = fs::canonicalize(&stylesheet).unwrap();
-        assert!(
-            msg.contains(&format!("stylesheet: {}", canonical.display())),
-            "canonical stylesheet path missing:\n{msg}"
-        );
-        assert!(
-            msg.contains("reference:  url(./files/a.woff2)"),
-            "raw reference missing:\n{msg}"
-        );
-        assert!(
-            msg.contains("vendor the file into `public/`"),
-            "workaround missing:\n{msg}"
-        );
+        assert_eq!(rewritten, expected, "url() must rewrite to the companion");
     }
 
     #[test]
-    fn quoted_package_reference_reports_the_raw_quoted_span() {
+    fn quoted_package_reference_preserves_its_quote_style_and_rewrites_inside_it() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let stylesheet =
@@ -556,33 +776,236 @@ mod tests {
         let css = ".a{background:url(\"./img/logo.png\")}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
 
-        let msg = floor_err(css, &map, root);
-        assert!(
-            msg.contains("reference:  url(\"./img/logo.png\")"),
-            "raw quoted reference missing:\n{msg}"
-        );
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let expected = format!(".a{{background:url(\"./{}\")}}\n", companions[0].filename);
+        assert_eq!(rewritten, expected, "double quotes must be preserved");
     }
 
     #[test]
-    fn query_and_fragment_suffix_still_resolves_the_path_part_and_fires_the_floor() {
+    fn single_quoted_package_reference_preserves_its_quote_style() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet =
+            write_package(root, "plain-pkg", "0.1.0", &[("img/logo.png", "png-bytes")]);
+        let css = ".a{background:url('./img/logo.png')}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let expected = format!(".a{{background:url('./{}')}}\n", companions[0].filename);
+        assert_eq!(rewritten, expected, "single quotes must be preserved");
+    }
+
+    #[test]
+    fn query_and_fragment_suffix_is_preserved_verbatim_after_the_rewritten_basename() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
         let css = "@font-face{src:url(./files/a.woff2?v=1#iefix)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
 
-        let msg = floor_err(css, &map, root);
-        // The path part resolved (file exists, contained) — so this is the
-        // floor error, not a file-not-found — and the reference echoes the
-        // full raw value including the suffix.
-        assert!(
-            msg.contains("unsupported `url()` in an imported package stylesheet"),
-            "expected the floor error:\n{msg}"
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let expected = format!(
+            "@font-face{{src:url(./{}?v=1#iefix)}}\n",
+            companions[0].filename
         );
-        assert!(
-            msg.contains("reference:  url(./files/a.woff2?v=1#iefix)"),
-            "full raw reference (with suffix) missing:\n{msg}"
+        assert_eq!(
+            rewritten, expected,
+            "the ?v=1#iefix suffix must survive verbatim after the rewritten basename"
         );
+    }
+
+    #[test]
+    fn a_css_escaped_quote_in_the_suffix_is_re_escaped_not_spliced_raw() {
+        // codex review finding: `\22` decodes to a literal `"`. Splicing it
+        // unescaped into a double-quoted replacement would terminate the
+        // string early and produce invalid CSS.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        let css = "@font-face{src:url(\"./files/a.woff2?x=\\22\")}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let expected = format!(
+            "@font-face{{src:url(\"./{}?x=\\\"\")}}\n",
+            companions[0].filename
+        );
+        assert_eq!(
+            rewritten, expected,
+            "the decoded quote must be re-escaped for the double-quoted context:\n{rewritten}"
+        );
+        // And the result must re-parse as exactly one url() whose decoded
+        // suffix round-trips to the original literal quote character.
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(reparsed.len(), 1);
+        assert!(reparsed[0].decoded.ends_with("?x=\""));
+    }
+
+    #[test]
+    fn a_backslash_in_the_suffix_is_escaped_in_an_unquoted_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        // `\5c` decodes to a literal backslash.
+        let css = "@font-face{src:url(./files/a.woff2?x=\\5c)}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(reparsed.len(), 1);
+        assert!(
+            reparsed[0].decoded.ends_with("?x=\\"),
+            "decoded suffix must round-trip to a single literal backslash: {:?}",
+            reparsed[0].decoded
+        );
+    }
+
+    #[test]
+    fn unicode_range_and_every_other_declaration_stay_byte_identical_only_url_value_changes() {
+        // The reporter's stated acceptance bar (#2316): subsetting keeps
+        // working because unicode-range is untouched, and nothing else in
+        // the declaration list shifts.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        let css = "@font-face{font-family:A;src:url(./files/a.woff2) format('woff2');\
+                   unicode-range:U+0000-00FF,U+0131,U+0152-0153}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let expected = format!(
+            "@font-face{{font-family:A;src:url(./{}) format('woff2');\
+             unicode-range:U+0000-00FF,U+0131,U+0152-0153}}\n",
+            companions[0].filename
+        );
+        assert_eq!(rewritten, expected);
+        assert!(
+            rewritten.contains("unicode-range:U+0000-00FF,U+0131,U+0152-0153"),
+            "unicode-range must stay byte-identical:\n{rewritten}"
+        );
+    }
+
+    #[test]
+    fn non_font_asset_an_image_is_emitted_too_general_url_support_not_fonts_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(
+            root,
+            "@demo/icons",
+            "2.0.0",
+            &[("img/logo.png", "png-bytes")],
+        );
+        let css = ".a{background-image:url(./img/logo.png)}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        assert!(companions[0].filename.ends_with(".png"));
+        assert_eq!(companions[0].bytes, b"png-bytes");
+        assert!(rewritten.contains(&format!("url(./{})", companions[0].filename)));
+    }
+
+    #[test]
+    fn duplicate_references_to_one_file_emit_a_single_companion() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(
+            root,
+            "@demo/fonts",
+            "1.2.3",
+            &[("files/a.woff2", "shared-bytes")],
+        );
+        let css = "@font-face{src:url(./files/a.woff2)}\n\
+                   .also-uses-it{background:url(./files/a.woff2)}\n";
+        let map = map_of(&[
+            (0, 0, stylesheet.to_str().unwrap()),
+            (1, 0, stylesheet.to_str().unwrap()),
+        ]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(
+            companions.len(),
+            1,
+            "one file referenced twice must emit exactly one companion: {companions:?}"
+        );
+        let filename = &companions[0].filename;
+        assert_eq!(
+            rewritten.matches(&format!("url(./{filename})")).count(),
+            2,
+            "both occurrences must rewrite to the same companion:\n{rewritten}"
+        );
+    }
+
+    #[test]
+    fn two_files_sharing_a_basename_get_distinct_companions_no_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pkg_a = write_package(root, "pkg-a", "1.0.0", &[("assets/x.png", "AAAA")]);
+        let pkg_b = write_package(root, "pkg-b", "2.0.0", &[("assets/x.png", "BBBB")]);
+        let css = ".a{background:url(./assets/x.png)}\n.b{background:url(./assets/x.png)}\n";
+        let map = map_of(&[
+            (0, 0, pkg_a.to_str().unwrap()),
+            (1, 0, pkg_b.to_str().unwrap()),
+        ]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(
+            companions.len(),
+            2,
+            "distinct bytes must not collide: {companions:?}"
+        );
+        assert_ne!(companions[0].filename, companions[1].filename);
+        assert!(rewritten.contains(&format!("url(./{})", companions[0].filename)));
+        assert!(rewritten.contains(&format!("url(./{})", companions[1].filename)));
+    }
+
+    #[test]
+    fn byte_identical_files_from_different_packages_dedup_to_one_companion() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pkg_a = write_package(root, "pkg-a", "1.0.0", &[("assets/x.png", "SAME-BYTES")]);
+        let pkg_b = write_package(root, "pkg-b", "2.0.0", &[("assets/x.png", "SAME-BYTES")]);
+        let css = ".a{background:url(./assets/x.png)}\n.b{background:url(./assets/x.png)}\n";
+        let map = map_of(&[
+            (0, 0, pkg_a.to_str().unwrap()),
+            (1, 0, pkg_b.to_str().unwrap()),
+        ]);
+
+        let (_, companions) = emit(css, &map, root);
+        assert_eq!(
+            companions.len(),
+            1,
+            "byte-identical files from different packages must dedup: {companions:?}"
+        );
+    }
+
+    #[test]
+    fn unresolvable_reference_still_hard_errors_and_no_companion_is_emitted() {
+        // Failure atomicity: a resolvable reference alongside an
+        // unresolvable one must not leave a half-emitted companion set —
+        // the whole call fails.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        let css = "@font-face{src:url(./files/a.woff2)}\n\
+                   .missing{background:url(./files/does-not-exist.png)}\n";
+        let map = map_of(&[
+            (0, 0, stylesheet.to_str().unwrap()),
+            (1, 0, stylesheet.to_str().unwrap()),
+        ]);
+
+        let msg = emit_err(css, &map, root);
+        assert!(
+            msg.contains("cannot emit `url()` asset"),
+            "expected the emission-error shape:\n{msg}"
+        );
+        assert!(msg.contains("file not found at"), "{msg}");
     }
 
     // ---- authored passthrough (must NOT over-fire) -----------------------
@@ -603,7 +1026,10 @@ mod tests {
             matches!(attributed[0].origin, UrlOrigin::Authored { .. }),
             "project CSS must classify as authored"
         );
-        enforce_package_url_floor(css, &attributed).expect("authored CSS never errors");
+        let (rewritten, companions) =
+            rewrite_and_emit_package_urls(css, &attributed).expect("authored CSS never errors");
+        assert_eq!(rewritten, css, "authored CSS stays byte-for-byte unchanged");
+        assert!(companions.is_empty());
     }
 
     #[test]
@@ -637,7 +1063,10 @@ mod tests {
             "workspace-linked package must classify as authored, got {:?}",
             attributed[0].origin
         );
-        enforce_package_url_floor(css, &attributed).expect("workspace package never errors");
+        let (rewritten, companions) = rewrite_and_emit_package_urls(css, &attributed)
+            .expect("workspace package never errors");
+        assert_eq!(rewritten, css);
+        assert!(companions.is_empty());
     }
 
     #[test]
@@ -651,7 +1080,10 @@ mod tests {
         let attributed =
             attribute_relative_urls(css, None, Path::new("/nonexistent")).expect("no error");
         assert!(attributed.is_empty(), "nothing should be attributed");
-        enforce_package_url_floor(css, &attributed).expect("nothing to enforce");
+        let (rewritten, companions) =
+            rewrite_and_emit_package_urls(css, &attributed).expect("nothing to enforce");
+        assert_eq!(rewritten, css);
+        assert!(companions.is_empty());
     }
 
     #[test]
@@ -663,7 +1095,10 @@ mod tests {
         let map = map_of(&[(0, 0, "/$bunfs/root/preflight-9vzsy0yp.css")]);
         let attributed = attribute(css, &map, Path::new("/nonexistent"));
         assert!(matches!(attributed[0].origin, UrlOrigin::Authored { .. }));
-        enforce_package_url_floor(css, &attributed).expect("internals never error");
+        let (rewritten, companions) =
+            rewrite_and_emit_package_urls(css, &attributed).expect("internals never error");
+        assert_eq!(rewritten, css);
+        assert!(companions.is_empty());
     }
 
     // ---- fail-closed anomalies -------------------------------------------
@@ -742,13 +1177,21 @@ mod tests {
             "line 2 must attribute to the authored file, got {:?}",
             attributed[1].origin
         );
-        // And the floor fires on the package one (position-keyed, not
-        // text-keyed — identical text in authored CSS does not suppress it).
-        let msg = format!(
-            "{}",
-            enforce_package_url_floor(css, &attributed).expect_err("floor must fire")
+        // And the package one gets emitted+rewritten (position-keyed, not
+        // text-keyed — identical text in authored CSS does not suppress it),
+        // while the authored line stays untouched.
+        let (rewritten, companions) =
+            rewrite_and_emit_package_urls(css, &attributed).expect("package asset resolves");
+        assert_eq!(companions.len(), 1);
+        assert!(companions[0].filename.contains("a-"));
+        assert!(
+            rewritten.contains(".mine{background:url(./files/a.woff2)}"),
+            "the authored occurrence must stay untouched:\n{rewritten}"
         );
-        assert!(msg.contains("@demo/fonts@1.2.3"), "{msg}");
+        assert!(
+            !rewritten.contains("@font-face{src:url(./files/a.woff2)}"),
+            "the package occurrence must be rewritten:\n{rewritten}"
+        );
     }
 
     #[test]
@@ -800,7 +1243,7 @@ mod tests {
 
         let css = "@font-face{src:url(./files/a.woff2)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
-        let msg = floor_err(css, &map, root);
+        let msg = emit_err(css, &map, root);
         assert!(
             msg.contains("cannot emit `url()` asset"),
             "missing asset must be the emission-shape error:\n{msg}"
@@ -853,7 +1296,7 @@ mod tests {
 
         let css = ".a{background:url(../outside.txt)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
-        let msg = floor_err(css, &map, root);
+        let msg = emit_err(css, &map, root);
         assert!(
             msg.contains("resolves outside the package directory"),
             "containment violation must be named:\n{msg}"
@@ -877,7 +1320,7 @@ mod tests {
 
         let css = ".a{background:url(./assets/f.bin)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
-        let msg = floor_err(css, &map, root);
+        let msg = emit_err(css, &map, root);
         assert!(
             msg.contains("resolves outside the package directory"),
             "symlink escape must fail containment:\n{msg}"
@@ -892,7 +1335,7 @@ mod tests {
 
         let css = ".a{background:url(./files/sub)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
-        let msg = floor_err(css, &map, root);
+        let msg = emit_err(css, &map, root);
         assert!(msg.contains("not a regular file"), "{msg}");
     }
 
@@ -995,9 +1438,9 @@ mod tests {
     }
 
     #[test]
-    fn end_to_end_inline_map_round_trip_authored_ok_and_package_floors() {
+    fn end_to_end_inline_map_round_trip_authored_ok_and_package_emits() {
         // Full engine-entry path: compose raw output with a real encoded
-        // inline sourcemap, run attribute_and_enforce_package_url_floor.
+        // inline sourcemap, run attribute_and_emit_package_urls.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
@@ -1011,7 +1454,7 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(&buf)
         };
 
-        // Authored-only: returns the stripped CSS unchanged.
+        // Authored-only: returns the stripped CSS unchanged, no companions.
         let css = ".mine{background:url(./hero.png)}\n";
         fs::write(root.join("styles/hero.png"), "png").unwrap();
         let map = map_of(&[(0, 0, authored.to_str().unwrap())]);
@@ -1019,17 +1462,33 @@ mod tests {
             "{css}\n/*# sourceMappingURL=data:application/json;base64,{} */\n",
             encode(&map)
         );
-        let out = attribute_and_enforce_package_url_floor(&raw, root).expect("authored passes");
+        let (out, companions) =
+            attribute_and_emit_package_urls(&raw, root).expect("authored passes");
         assert_eq!(out, css, "returned CSS must be the exact stripped bytes");
+        assert!(companions.is_empty());
 
-        // Package-attributed: the floor fires through the same entry point.
+        // Package-attributed: emitted + rewritten through the same entry point.
         let css = "@font-face{src:url(./files/a.woff2)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
         let raw = format!(
             "{css}\n/*# sourceMappingURL=data:application/json;base64,{} */\n",
             encode(&map)
         );
-        let err = attribute_and_enforce_package_url_floor(&raw, root).expect_err("floor fires");
+        let (out, companions) =
+            attribute_and_emit_package_urls(&raw, root).expect("package asset resolves");
+        assert_eq!(companions.len(), 1);
+        assert_eq!(companions[0].bytes, b"bytes");
+        assert!(out.contains(&format!("url(./{})", companions[0].filename)));
+
+        // And the unresolvable-target error still surfaces through the same
+        // entry point (decision d, unchanged for unhandled cases).
+        let css = "@font-face{src:url(./files/does-not-exist.woff2)}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+        let raw = format!(
+            "{css}\n/*# sourceMappingURL=data:application/json;base64,{} */\n",
+            encode(&map)
+        );
+        let err = attribute_and_emit_package_urls(&raw, root).expect_err("still hard-errors");
         assert!(format!("{err}").contains("@demo/fonts@1.2.3"));
     }
 
@@ -1038,9 +1497,10 @@ mod tests {
         // The acceptance criterion "a project with only absolute-URL authored
         // CSS builds unchanged" — even when no sourcemap comment is present.
         let css = ".a{background:url(/img/x.png)}.b{background:url(data:,x)}\n";
-        let out = attribute_and_enforce_package_url_floor(css, Path::new("/nonexistent"))
+        let (out, companions) = attribute_and_emit_package_urls(css, Path::new("/nonexistent"))
             .expect("absolute-only CSS never needs a map");
         assert_eq!(out, css);
+        assert!(companions.is_empty());
     }
 
     // ---- position mechanics ----------------------------------------------

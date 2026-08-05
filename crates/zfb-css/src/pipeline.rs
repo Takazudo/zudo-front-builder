@@ -231,6 +231,12 @@ impl<E: CssEngine> CssPipeline<E> {
             .engine
             .produce_utility_css(&self.config.sources)
             .context("CSS engine stage failed")?;
+        // Package-attributed `url()` companions the engine resolved while
+        // producing `tailwind` above (issue #2316) — must be fetched right
+        // after `produce_utility_css`, before any other call that could
+        // reuse `self.engine` and overwrite its "most recent" companion
+        // snapshot.
+        let companions = self.engine.take_package_url_companions();
 
         let modules = self
             .modules
@@ -260,6 +266,7 @@ impl<E: CssEngine> CssPipeline<E> {
         Ok(CssEmitterOutput {
             bytes: combined.into_bytes(),
             stable_url: zfb_types::STABLE_CSS_URL.to_string(),
+            companions,
         })
     }
 
