@@ -307,13 +307,18 @@ fn rewrite_and_emit_package_urls(
     css: &str,
     attributed: &[AttributedUrl],
 ) -> Result<(String, Vec<PackageUrlAsset>)> {
-    /// One resolved package reference, ready to splice.
+    /// One resolved package reference, ready to splice. `filename` and
+    /// `suffix` are kept apart (rather than pre-joined) so the splice step
+    /// can escape `suffix` for the occurrence's own quote style — the
+    /// filename never needs escaping (it is built from `[A-Za-z0-9._-]`
+    /// only), but `suffix` came from a CSS-escape-decoded query/fragment
+    /// and may itself contain a quote or backslash character that would
+    /// otherwise break out of a requoted replacement (see
+    /// [`escape_suffix_for_quote`]).
     struct Resolved<'a> {
         entry: &'a AttributedUrl,
-        /// `./{filename}` plus the verbatim `?`/`#` suffix — the
-        /// unquoted replacement text; [`Resolved::wrap_quote`] adds
-        /// quoting if the original occurrence carried one.
-        replacement: String,
+        filename: String,
+        suffix: &'a str,
     }
 
     let mut companions: Vec<PackageUrlAsset> = Vec::new();
@@ -400,21 +405,54 @@ fn rewrite_and_emit_package_urls(
 
         resolved.push(Resolved {
             entry,
-            replacement: format!("./{filename}{suffix}"),
+            filename,
+            suffix,
         });
     }
 
     let mut spliced = css.to_string();
     for r in resolved.iter().rev() {
-        let value = match r.entry.occurrence.quote {
-            UrlQuote::None => r.replacement.clone(),
-            UrlQuote::Single => format!("'{}'", r.replacement),
-            UrlQuote::Double => format!("\"{}\"", r.replacement),
+        let quote = r.entry.occurrence.quote;
+        let escaped_suffix = escape_suffix_for_quote(r.suffix, quote);
+        let replacement = format!("./{}{escaped_suffix}", r.filename);
+        let value = match quote {
+            UrlQuote::None => replacement,
+            UrlQuote::Single => format!("'{replacement}'"),
+            UrlQuote::Double => format!("\"{replacement}\""),
         };
         spliced.replace_range(r.entry.occurrence.value_span.clone(), &value);
     }
 
     Ok((spliced, companions))
+}
+
+/// CSS-escape any byte in `suffix` (the `?`/`#` tail split off the
+/// CSS-escape-decoded `url()` value) that would be unsafe to splice
+/// verbatim into `quote`'s replacement context.
+///
+/// `suffix` comes from [`split_query_fragment`] applied to
+/// [`CssUrlOccurrence::decoded`] — CSS escapes (e.g. `\22` for `"`) have
+/// already been resolved to their literal characters at that point. A
+/// literal quote character matching the target quote style (or, for an
+/// unquoted replacement, a literal quote/paren/backslash/whitespace
+/// character) would otherwise terminate the spliced token early or turn a
+/// well-formed url-token into a bad one. `\` + literal-char is a valid CSS
+/// escape for any of these (CSS Syntax §4.3.7) — none of them is a hex
+/// digit, so the escape can never be misread as the start of a hex escape.
+fn escape_suffix_for_quote(suffix: &str, quote: UrlQuote) -> String {
+    let mut out = String::with_capacity(suffix.len());
+    for c in suffix.chars() {
+        let needs_escape = match quote {
+            UrlQuote::Double => matches!(c, '"' | '\\'),
+            UrlQuote::Single => matches!(c, '\'' | '\\'),
+            UrlQuote::None => matches!(c, '"' | '\'' | '(' | ')' | '\\') || c.is_whitespace(),
+        };
+        if needs_escape {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// SHA-256 of `bytes`, truncated to 8 lowercase hex characters. Mirrors the
@@ -776,6 +814,54 @@ mod tests {
         assert_eq!(
             rewritten, expected,
             "the ?v=1#iefix suffix must survive verbatim after the rewritten basename"
+        );
+    }
+
+    #[test]
+    fn a_css_escaped_quote_in_the_suffix_is_re_escaped_not_spliced_raw() {
+        // codex review finding: `\22` decodes to a literal `"`. Splicing it
+        // unescaped into a double-quoted replacement would terminate the
+        // string early and produce invalid CSS.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        let css = "@font-face{src:url(\"./files/a.woff2?x=\\22\")}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let expected = format!(
+            "@font-face{{src:url(\"./{}?x=\\\"\")}}\n",
+            companions[0].filename
+        );
+        assert_eq!(
+            rewritten, expected,
+            "the decoded quote must be re-escaped for the double-quoted context:\n{rewritten}"
+        );
+        // And the result must re-parse as exactly one url() whose decoded
+        // suffix round-trips to the original literal quote character.
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(reparsed.len(), 1);
+        assert!(reparsed[0].decoded.ends_with("?x=\""));
+    }
+
+    #[test]
+    fn a_backslash_in_the_suffix_is_escaped_in_an_unquoted_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        // `\5c` decodes to a literal backslash.
+        let css = "@font-face{src:url(./files/a.woff2?x=\\5c)}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(reparsed.len(), 1);
+        assert!(
+            reparsed[0].decoded.ends_with("?x=\\"),
+            "decoded suffix must round-trip to a single literal backslash: {:?}",
+            reparsed[0].decoded
         );
     }
 
