@@ -1759,6 +1759,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // HTML response; the runner writes to it on every CSS rebuild tick.
     let css_bundle_url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
 
+    // Tracks CSS companion filenames (content-hashed package `url()` assets
+    // rebased into the stylesheet, issue #2317) written by the most recent
+    // CSS generation so the next tick can prune stale files. Deliberately a
+    // SEPARATE `Arc` from islands' `live_companion_filenames` above — see
+    // `publish_dev_css_generation`'s doc comment for why sharing one tracker
+    // across asset kinds would let pruning one kind delete the other's
+    // files.
+    let live_css_companion_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+
     // Step 2: eager initial CSS bundle at boot so the very first page
     // request already carries a `<link rel="stylesheet">` tag.
     // Failures are non-fatal — we warn and let the dev server boot with
@@ -1766,54 +1776,35 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // change.
     let dev_css_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
-    match build_dev_css_and_publish_mirror_roots(
+    let boot_css_result = build_dev_css_and_publish_mirror_roots(
         &project_root,
         &dev_assets_root,
         &cfg,
         &islands_plugin_config.alias_entries,
         &islands_plugin_config.virtual_modules,
         &raw_import_invalidation,
-    ) {
-        Ok(Some(payload)) => {
-            // Write the bytes to the isolated dev-assets root (issue #1189)
-            // so `GET /assets/styles.css` is immediately serveable (unlike
-            // islands, the CSS pipeline does not write to disk as a
-            // side-effect of building).
-            let out_path = dev_assets_root.join(&payload.relative_path);
-            if let Some(parent) = out_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if std::fs::write(&out_path, &payload.bytes).is_ok() {
-                let url = if dev_css_url_prefix.is_empty() {
-                    payload.stable_url
-                } else {
-                    format!("{dev_css_url_prefix}{}", payload.stable_url)
-                };
-                if let Ok(mut guard) = css_bundle_url_handle.write() {
-                    *guard = Some(url);
-                }
-            } else {
-                output::warn(
-                    "initial CSS bundle: failed to write bytes to dist (no <link> until rebuild)",
-                );
-            }
-        }
-        Ok(None) => {
-            // No CSS to ship (no authored globals, no CSS Modules, and —
-            // when Tailwind is enabled — no scannable sources). Leave the
-            // handle at None. Tailwind being disabled no longer implies
-            // None on its own: authored CSS still ships (issue #824).
-        }
-        Err(err) => {
-            output::warn(format!(
-                "initial CSS bundle failed (no <link rel=\"stylesheet\"> \
-                 will be injected until the next successful rebuild): {err:#}"
-            ));
-        }
+    )
+    .and_then(|payload| {
+        publish_dev_css_generation(
+            &dev_assets_root,
+            &dev_css_url_prefix,
+            &css_bundle_url_handle,
+            &live_css_companion_filenames,
+            payload,
+        )
+    });
+    if let Err(err) = boot_css_result {
+        output::warn(format!(
+            "initial CSS bundle failed (no <link rel=\"stylesheet\"> \
+             will be injected until the next successful rebuild): {err:#}"
+        ));
     }
 
-    // Step 3: CssRunner closure — re-invokes the payload builder, writes
-    // fresh bytes to disk, and updates the shared URL handle.
+    // Step 3: CssRunner closure — re-invokes the payload builder and
+    // publishes the new generation (companions + entry + URL) via
+    // `publish_dev_css_generation`, the same writer both this boot pass and
+    // every watcher tick share (issue #2317, mirroring how `rebundle_islands`
+    // is shared between the islands boot pass and its own tick closure).
     let run_css: Option<CssRunner> = {
         let project_root_for_css = project_root.clone();
         // Issue #1189: build + write CSS into the isolated dev-assets root.
@@ -1827,6 +1818,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let plugin_virtual_module_store_for_css = plugin_refresh.store().clone();
         let url_prefix = dev_css_url_prefix.clone();
         let url_handle = Arc::clone(&css_bundle_url_handle);
+        let companion_names_for_css = Arc::clone(&live_css_companion_filenames);
         // Issue #1802: share the same mirror-root publication seam the boot
         // pass uses above, so every CSS rebuild tick (not just boot) keeps
         // the dev-watch registration's source plan current.
@@ -1842,42 +1834,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &plugin_virtual_modules_for_css,
                 &raw_import_invalidation_for_css,
             )?;
-            let mut guard = url_handle.write().unwrap_or_else(|p| {
-                tracing::warn!(
-                    site = "dev.run_css.url_handle",
-                    "rwlock poisoned, recovered"
-                );
-                p.into_inner()
-            });
-            let Some(payload) = payload else {
-                // CSS disabled / no sources this tick — clear the URL so
-                // subsequent HTML responses don't reference a stale file.
-                *guard = None;
-                return Ok(false);
-            };
-            // Write fresh bytes to the isolated dev-assets root so the dev
-            // server serves them immediately. This is the "freshness proof"
-            // the acceptance test checks (byte-for-byte match between
-            // payload.bytes and GET /assets/styles.css).
-            let out_path = dev_assets_root_for_css.join(&payload.relative_path);
-            if let Some(parent) = out_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Err(err) = std::fs::write(&out_path, &payload.bytes) {
-                tracing::warn!("css runner: failed to write bytes to dist: {err}");
-                return Ok(false);
-            }
-            let bundle_url = if url_prefix.is_empty() {
-                payload.stable_url
-            } else {
-                format!("{url_prefix}{}", payload.stable_url)
-            };
-            *guard = Some(bundle_url);
-            // Return true unconditionally on a successful emit so the
-            // orchestrator marks outcome.css_changed = true and the
-            // livereload SSE event fires. The URL is stable so the bytes
-            // update in place on disk.
-            Ok(true)
+            // Propagate any write/companion failure loudly (unlike the boot
+            // caller above, which warns-and-continues) — an emission or disk
+            // failure on a tick should fail the tick, matching decision (d):
+            // "a dev generation fails identically to production and keeps
+            // the previous good generation."
+            publish_dev_css_generation(
+                &dev_assets_root_for_css,
+                &url_prefix,
+                &url_handle,
+                &companion_names_for_css,
+                payload,
+            )
         }))
     };
 
@@ -3378,10 +3346,14 @@ fn rebundle_islands(
                     entry_relative.display()
                 )
             })?;
-        let (names, companion_writes) =
-            prepare_dev_island_companion_writes(&assets_dir, &payload.companions)
-                .context("dev islands: invalid entry/companion filename set")?;
-        write_prepared_dev_island_companions(companion_writes)
+        let (names, companion_writes) = prepare_dev_companion_writes(
+            "islands",
+            &assets_dir,
+            zfb_types::STABLE_ISLANDS_FILENAME,
+            &payload.companions,
+        )
+        .context("dev islands: invalid entry/companion filename set")?;
+        write_prepared_dev_companions("islands", companion_writes)
             .context("dev islands: failed to write companion files")?;
         atomic_write(&islands_out_path, &payload.bytes).with_context(|| {
             format!(
@@ -3390,7 +3362,7 @@ fn rebundle_islands(
             )
         })?;
 
-        prune_dev_island_companions(&assets_dir, &prev, &names);
+        prune_dev_companions("islands", &assets_dir, &prev, &names);
         *prev = names;
     }
     // The bundler does not currently surface a "bytes-changed" bit back
@@ -3769,12 +3741,137 @@ fn build_dev_css_and_publish_mirror_roots(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Dev islands companion helpers
-// ---------------------------------------------------------------------------
+/// Rebuild and publish one dev CSS generation: validates + writes CSS
+/// companions, writes the entry, then prunes the previous generation's stale
+/// companions — the CSS mirror of `rebundle_islands`'s companion lifecycle
+/// (issue #2317, dev-pipeline parity). Shared by the boot pass and the
+/// `run_css` watcher-tick closure above so both publish identically (no
+/// drift), exactly as `rebundle_islands` is shared by the islands boot pass
+/// and its own tick closure.
+///
+/// Serialized under `url_handle`'s write lock, mirroring `rebundle_islands`'s
+/// own `url_handle` lock: a request therefore observes either the prior
+/// published generation or the new one, never a URL pointing at an entry
+/// whose companions are still being written.
+///
+/// `companion_names` MUST be a tracker dedicated to CSS — never islands'
+/// `live_companion_filenames`. Pruning only ever diffs `companion_names`'
+/// previous value against the new generation's set, so passing the wrong
+/// tracker would delete the other asset kind's files the moment either
+/// kind's companion set changed.
+///
+/// `payload = None` means CSS is disabled or has no sources this tick: the
+/// URL is cleared and every previously-tracked CSS companion is pruned
+/// (mirrors `rebundle_islands`'s "no bundle this run" branch), returning
+/// `Ok(false)`.
+///
+/// Any error — an invalid companion filename set, a companion write
+/// failure, or the entry write failure — returns BEFORE touching
+/// `companion_names` or pruning: the previous good entry and companions
+/// stay served untouched, matching decision (d) (#2311): "a dev generation
+/// fails identically to production and keeps the previous good generation."
+fn publish_dev_css_generation(
+    dev_assets_root: &Path,
+    url_prefix: &str,
+    url_handle: &zfb_server::CssBundleUrl,
+    companion_names: &Arc<Mutex<HashSet<String>>>,
+    payload: Option<AssetEmitterPayload>,
+) -> Result<bool> {
+    let mut guard = url_handle.write().unwrap_or_else(|p| {
+        tracing::warn!(
+            site = "dev.publish_dev_css_generation.url_handle",
+            "rwlock poisoned, recovered"
+        );
+        p.into_inner()
+    });
+    let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
 
-type PreparedDevIslandCompanion<'a> = (&'a zfb_build::pipeline::CompanionFile, PathBuf);
-type PreparedDevIslandCompanionSet<'a> = (HashSet<String>, Vec<PreparedDevIslandCompanion<'a>>);
+    let Some(payload) = payload else {
+        // No CSS to ship this tick — clear the URL so subsequent HTML
+        // responses don't reference a stale file, and prune every
+        // previously-tracked companion so a dev session doesn't keep
+        // serving `url()` assets from a stylesheet that no longer exists.
+        *guard = None;
+        let mut prev = companion_names.lock().unwrap_or_else(|p| {
+            tracing::warn!(
+                site = "dev.publish_dev_css_generation.companion_names (clear)",
+                "mutex poisoned, recovered"
+            );
+            p.into_inner()
+        });
+        if let Err(e) = refresh_dev_css_companions(&assets_dir, &[], &prev) {
+            tracing::warn!(
+                error = %e,
+                "dev css: failed to prune stale companions after no-css tick (ignored)"
+            );
+        }
+        *prev = HashSet::new();
+        return Ok(false);
+    };
+
+    let mut prev = companion_names.lock().unwrap_or_else(|p| {
+        tracing::warn!(
+            site = "dev.publish_dev_css_generation.companion_names",
+            "mutex poisoned, recovered"
+        );
+        p.into_inner()
+    });
+    let (names, companion_writes) = prepare_dev_companion_writes(
+        "css",
+        &assets_dir,
+        zfb_types::STABLE_CSS_FILENAME,
+        &payload.companions,
+    )
+    .context("dev css: invalid entry/companion filename set")?;
+    write_prepared_dev_companions("css", companion_writes)
+        .context("dev css: failed to write companion files")?;
+    let out_path =
+        validate_output_path(dev_assets_root, &payload.relative_path).with_context(|| {
+            format!(
+                "dev css: refused to write stable entry relative path {}",
+                payload.relative_path.display()
+            )
+        })?;
+    atomic_write(&out_path, &payload.bytes).with_context(|| {
+        format!(
+            "dev css: failed to write styles.css to disk at {}",
+            out_path.display()
+        )
+    })?;
+    prune_dev_companions("css", &assets_dir, &prev, &names);
+    *prev = names;
+    drop(prev);
+
+    let bundle_url = if url_prefix.is_empty() {
+        payload.stable_url
+    } else {
+        format!("{url_prefix}{}", payload.stable_url)
+    };
+    *guard = Some(bundle_url);
+    // Return true unconditionally on a successful emit so the orchestrator
+    // marks outcome.css_changed = true and the livereload SSE event fires.
+    // The URL is stable so the bytes update in place on disk.
+    Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Dev companion helpers (islands + CSS, issue #2317)
+// ---------------------------------------------------------------------------
+//
+// The validate/write/prune primitives below are asset-kind-agnostic — they
+// operate on a caller-supplied `entry_filename` and companion list, never on
+// islands- or CSS-specific state. Each asset kind gets its own thin wrapper
+// (`refresh_dev_island_chunks` / `refresh_dev_css_companions`) supplying its
+// own stable entry filename, and — critically — each kind's caller tracks
+// its OWN `Arc<Mutex<HashSet<String>>>` of live companion names
+// (`live_companion_filenames` for islands, `live_css_companion_filenames`
+// for CSS, never shared). Because pruning only ever diffs one kind's
+// `prev`/`new` sets against each other, sharing these primitives between
+// kinds can never let one kind's generation replacement delete the other's
+// files — only passing the wrong tracker Arc could, and no call site does.
+
+type PreparedDevCompanion<'a> = (&'a zfb_build::pipeline::CompanionFile, PathBuf);
+type PreparedDevCompanionSet<'a> = (HashSet<String>, Vec<PreparedDevCompanion<'a>>);
 
 /// Write new companion files into `assets_dir`, delete companions from the
 /// previous generation that are no longer in the new set, and return the new
@@ -3795,22 +3892,54 @@ fn refresh_dev_island_chunks(
     companions: &[zfb_build::pipeline::CompanionFile],
     prev_filenames: &HashSet<String>,
 ) -> anyhow::Result<HashSet<String>> {
-    let (new_filenames, companion_writes) =
-        prepare_dev_island_companion_writes(assets_dir, companions)?;
-    write_prepared_dev_island_companions(companion_writes)?;
-    prune_dev_island_companions(assets_dir, prev_filenames, &new_filenames);
+    let (new_filenames, companion_writes) = prepare_dev_companion_writes(
+        "islands",
+        assets_dir,
+        zfb_types::STABLE_ISLANDS_FILENAME,
+        companions,
+    )?;
+    write_prepared_dev_companions("islands", companion_writes)?;
+    prune_dev_companions("islands", assets_dir, prev_filenames, &new_filenames);
+    Ok(new_filenames)
+}
+
+/// CSS companion generation replacement (issue #2317) — the CSS mirror of
+/// `refresh_dev_island_chunks` above. Shares the same validate/write/prune
+/// primitives but is keyed on the CSS stable entry filename
+/// (`zfb_types::STABLE_CSS_FILENAME`) instead of the islands one. Every call
+/// site passes CSS's own tracked filename set (never islands'), so pruning
+/// one kind's stale companions can never touch the other kind's files.
+fn refresh_dev_css_companions(
+    assets_dir: &Path,
+    companions: &[zfb_build::pipeline::CompanionFile],
+    prev_filenames: &HashSet<String>,
+) -> anyhow::Result<HashSet<String>> {
+    let (new_filenames, companion_writes) = prepare_dev_companion_writes(
+        "css",
+        assets_dir,
+        zfb_types::STABLE_CSS_FILENAME,
+        companions,
+    )?;
+    write_prepared_dev_companions("css", companion_writes)?;
+    prune_dev_companions("css", assets_dir, prev_filenames, &new_filenames);
     Ok(new_filenames)
 }
 
 /// Validate the complete stable-entry companion namespace before any dev
 /// write. This mirrors production's final writer check: chunks, workers, and
-/// file-loader resources may be typed separately upstream, but they share one
-/// assets directory on disk.
-fn prepare_dev_island_companion_writes<'a>(
+/// file-loader resources (or, for CSS, rebased package `url()` assets) may be
+/// typed separately upstream, but they share one assets directory on disk.
+///
+/// `asset_kind` (`"islands"` / `"css"`) is used only for error/log text —
+/// see the section doc comment above for why the namespace safety itself
+/// does not depend on it.
+fn prepare_dev_companion_writes<'a>(
+    asset_kind: &str,
     assets_dir: &Path,
+    entry_filename: &str,
     companions: &'a [zfb_build::pipeline::CompanionFile],
-) -> anyhow::Result<PreparedDevIslandCompanionSet<'a>> {
-    validate_companion_file_set(zfb_types::STABLE_ISLANDS_FILENAME, companions)?;
+) -> anyhow::Result<PreparedDevCompanionSet<'a>> {
+    validate_companion_file_set(entry_filename, companions)?;
     let names = companions.iter().map(|c| c.filename.clone()).collect();
     let writes = companions
         .iter()
@@ -3818,7 +3947,7 @@ fn prepare_dev_island_companion_writes<'a>(
             let dest = validate_output_path(assets_dir, Path::new(&companion.filename))
                 .with_context(|| {
                     format!(
-                        "dev islands: refused to write companion relative path {:?}",
+                        "dev {asset_kind}: refused to write companion relative path {:?}",
                         companion.filename
                     )
                 })?;
@@ -3828,17 +3957,18 @@ fn prepare_dev_island_companion_writes<'a>(
     Ok((names, writes))
 }
 
-/// Atomically write a pre-validated generation's companions beside the stable
-/// islands entry. Their destinations were validated against the assets root
+/// Atomically write a pre-validated generation's companions beside the
+/// stable entry. Their destinations were validated against the assets root
 /// before this function is called, so a planted symlink cannot redirect an
 /// otherwise-flat basename.
-fn write_prepared_dev_island_companions(
-    companion_writes: Vec<PreparedDevIslandCompanion<'_>>,
+fn write_prepared_dev_companions(
+    asset_kind: &str,
+    companion_writes: Vec<PreparedDevCompanion<'_>>,
 ) -> anyhow::Result<()> {
     for (companion, dest) in companion_writes {
         atomic_write(&dest, &companion.bytes).with_context(|| {
             format!(
-                "dev islands: failed to write companion file {}",
+                "dev {asset_kind}: failed to write companion file {}",
                 dest.display()
             )
         })?;
@@ -3849,7 +3979,8 @@ fn write_prepared_dev_island_companions(
 /// Prune only stale names from the prior successful generation. A deletion
 /// failure remains non-fatal (and visible through tracing); the next served
 /// entry is already backed by the complete new companion set.
-fn prune_dev_island_companions(
+fn prune_dev_companions(
+    asset_kind: &str,
     assets_dir: &Path,
     prev_filenames: &HashSet<String>,
     new_filenames: &HashSet<String>,
@@ -3861,7 +3992,7 @@ fn prune_dev_island_companions(
                 tracing::warn!(
                     stale = %stale,
                     error = %e,
-                    "dev islands: refused unsafe stale companion deletion (ignored)"
+                    "dev {asset_kind}: refused unsafe stale companion deletion (ignored)"
                 );
                 continue;
             }
@@ -3871,7 +4002,7 @@ fn prune_dev_island_companions(
                 tracing::warn!(
                     path = %path.display(),
                     error = %e,
-                    "dev islands: failed to delete stale companion (ignored)"
+                    "dev {asset_kind}: failed to delete stale companion (ignored)"
                 );
             }
         }
@@ -14735,6 +14866,406 @@ mod tests {
             0,
             "the complete filename set must validate before any companion write"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // publish_dev_css_generation / refresh_dev_css_companions unit tests
+    // (issue #2317 — dev-pipeline parity, including stale-companion pruning)
+    // ---------------------------------------------------------------------------
+
+    fn make_css_payload(
+        bytes: &[u8],
+        companions: Vec<zfb_build::pipeline::CompanionFile>,
+    ) -> AssetEmitterPayload {
+        AssetEmitterPayload {
+            bytes: bytes.to_vec(),
+            relative_path: Path::new(zfb_types::DIST_ASSETS_DIR)
+                .join(zfb_types::STABLE_CSS_FILENAME),
+            stable_url: zfb_types::STABLE_CSS_URL.to_string(),
+            companions,
+        }
+    }
+
+    /// Acceptance criterion (#2317): "under `zfb dev` the repro's fonts are
+    /// served (200, correct bytes) rather than 404" — proven at the unit
+    /// level, not with a live dev server (per the epic's own instructions,
+    /// the wave-7 confirm child owns live e2e): a package `url()` font
+    /// companion lands at exactly the flat path
+    /// `<dev_assets_root>/assets/<filename>` that `zfb-server`'s generic
+    /// `/assets/*` layered lookup already serves from
+    /// (`assets_containment.rs:589-665`) — no server change needed.
+    #[test]
+    fn publish_dev_css_generation_writes_entry_and_font_companion() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev_assets_root = dir.path().to_path_buf();
+        let url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
+        let companion_names: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+
+        let payload = make_css_payload(
+            b"@font-face{src:url(./vendor-font-ABCD1234.woff2)}",
+            vec![make_companion(
+                "vendor-font-ABCD1234.woff2",
+                b"fake woff2 bytes",
+            )],
+        );
+
+        let changed = publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(payload),
+        )
+        .unwrap();
+        assert!(changed);
+
+        let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
+        assert_eq!(
+            std::fs::read(assets_dir.join("vendor-font-ABCD1234.woff2")).unwrap(),
+            b"fake woff2 bytes",
+            "the font companion must be served byte-for-byte, not 404"
+        );
+        assert_eq!(
+            std::fs::read(assets_dir.join(zfb_types::STABLE_CSS_FILENAME)).unwrap(),
+            b"@font-face{src:url(./vendor-font-ABCD1234.woff2)}"
+        );
+        assert_eq!(
+            url_handle.read().unwrap().as_deref(),
+            Some(zfb_types::STABLE_CSS_URL)
+        );
+        assert_eq!(
+            *companion_names.lock().unwrap(),
+            HashSet::from(["vendor-font-ABCD1234.woff2".to_string()])
+        );
+    }
+
+    #[test]
+    fn publish_dev_css_generation_prefixes_the_url_under_a_base_mount() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev_assets_root = dir.path().to_path_buf();
+        let url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
+        let companion_names: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+
+        publish_dev_css_generation(
+            &dev_assets_root,
+            "/foo",
+            &url_handle,
+            &companion_names,
+            Some(make_css_payload(b"body{color:red}", Vec::new())),
+        )
+        .unwrap();
+
+        let expected = format!("/foo{}", zfb_types::STABLE_CSS_URL);
+        assert_eq!(
+            url_handle.read().unwrap().as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn publish_dev_css_generation_prunes_stale_companions_across_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev_assets_root = dir.path().to_path_buf();
+        let url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
+        let companion_names: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
+
+        // Generation 1: two font companions.
+        publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(make_css_payload(
+                b"a",
+                vec![
+                    make_companion("font-a-AAAAAAAA.woff2", b"gen1-a"),
+                    make_companion("font-b-BBBBBBBB.woff2", b"gen1-b"),
+                ],
+            )),
+        )
+        .unwrap();
+        assert!(assets_dir.join("font-a-AAAAAAAA.woff2").exists());
+        assert!(assets_dir.join("font-b-BBBBBBBB.woff2").exists());
+
+        // Generation 2 (an asset's hash changed, and another disappeared
+        // from the CSS entirely — the two ways an asset goes stale): only
+        // the new-hash companion should remain.
+        publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(make_css_payload(
+                b"b",
+                vec![make_companion("font-a-CCCCCCCC.woff2", b"gen2-a")],
+            )),
+        )
+        .unwrap();
+
+        assert!(
+            assets_dir.join("font-a-CCCCCCCC.woff2").exists(),
+            "the new-hash companion must exist"
+        );
+        assert!(
+            !assets_dir.join("font-a-AAAAAAAA.woff2").exists(),
+            "the old-hash companion must be pruned — a dev session must not \
+             accumulate orphans across generations"
+        );
+        assert!(
+            !assets_dir.join("font-b-BBBBBBBB.woff2").exists(),
+            "a companion whose url() reference disappeared entirely must be pruned"
+        );
+        assert_eq!(
+            *companion_names.lock().unwrap(),
+            HashSet::from(["font-a-CCCCCCCC.woff2".to_string()])
+        );
+    }
+
+    #[test]
+    fn publish_dev_css_generation_none_payload_clears_url_and_prunes_all_companions() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev_assets_root = dir.path().to_path_buf();
+        let url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
+        let companion_names: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
+
+        publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(make_css_payload(
+                b"a",
+                vec![make_companion("font-a-AAAAAAAA.woff2", b"gen1-a")],
+            )),
+        )
+        .unwrap();
+        assert!(assets_dir.join("font-a-AAAAAAAA.woff2").exists());
+
+        // The project stopped shipping CSS entirely (no authored globals,
+        // no CSS Modules, empty Tailwind scan) — mirrors `rebundle_islands`'s
+        // "no bundle this run" branch.
+        let changed =
+            publish_dev_css_generation(&dev_assets_root, "", &url_handle, &companion_names, None)
+                .unwrap();
+        assert!(!changed);
+
+        assert!(
+            url_handle.read().unwrap().is_none(),
+            "the URL must be cleared so HTML stops referencing a stylesheet with no source"
+        );
+        assert!(
+            !assets_dir.join("font-a-AAAAAAAA.woff2").exists(),
+            "every previously-tracked CSS companion must be pruned, not just left orphaned"
+        );
+        assert!(companion_names.lock().unwrap().is_empty());
+    }
+
+    /// A failed generation (here: a companion filename set that fails
+    /// validation) must leave the previous good entry AND companions
+    /// exactly as they were — decision (d) (#2311): "a dev generation
+    /// fails identically to production and keeps the previous good
+    /// generation".
+    #[test]
+    fn publish_dev_css_generation_failed_generation_keeps_previous_entry_and_companions() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev_assets_root = dir.path().to_path_buf();
+        let url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
+        let companion_names: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
+
+        publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(make_css_payload(
+                b"good css",
+                vec![make_companion("font-a-AAAAAAAA.woff2", b"good bytes")],
+            )),
+        )
+        .unwrap();
+
+        // A broken generation: two companions collide on the same filename.
+        let broken = make_css_payload(
+            b"BROKEN -- must never be written",
+            vec![
+                make_companion("font-dup-ZZZZZZZZ.woff2", b"first"),
+                make_companion("font-dup-ZZZZZZZZ.woff2", b"second"),
+            ],
+        );
+        let err = publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(broken),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("dev css"));
+
+        assert_eq!(
+            std::fs::read(assets_dir.join(zfb_types::STABLE_CSS_FILENAME)).unwrap(),
+            b"good css",
+            "the previous good stylesheet must still be served"
+        );
+        assert_eq!(
+            std::fs::read(assets_dir.join("font-a-AAAAAAAA.woff2")).unwrap(),
+            b"good bytes",
+            "the previous good companion must still be served"
+        );
+        assert!(
+            !assets_dir.join("font-dup-ZZZZZZZZ.woff2").exists(),
+            "the failed generation's companion must never have been written"
+        );
+        assert_eq!(
+            url_handle.read().unwrap().as_deref(),
+            Some(zfb_types::STABLE_CSS_URL),
+            "the URL must still point at the previous good generation"
+        );
+        assert_eq!(
+            *companion_names.lock().unwrap(),
+            HashSet::from(["font-a-AAAAAAAA.woff2".to_string()]),
+            "the tracked companion set must be untouched by the failed generation"
+        );
+    }
+
+    /// Content-hash-keyed companions (decision (c): `{stem}-{hash8}.{ext}`)
+    /// mean an unchanged asset produces the SAME companion filename across
+    /// ticks. `publish_dev_css_generation` does not special-case this — it
+    /// re-validates and re-writes the companion every generation — but that
+    /// rewrite is harmless/idempotent (identical bytes land at the
+    /// identical path) and, because the name is unchanged, it is never
+    /// pruned. This test documents that contract rather than asserting an
+    /// unimplemented "skip unchanged companions" optimization.
+    #[test]
+    fn publish_dev_css_generation_kept_companion_survives_unrelated_rebuild() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev_assets_root = dir.path().to_path_buf();
+        let url_handle: zfb_server::CssBundleUrl = Arc::new(std::sync::RwLock::new(None));
+        let companion_names: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+        let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
+        let stable_font = "font-stable-STABLE00.woff2";
+
+        publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(make_css_payload(
+                b"gen1",
+                vec![
+                    make_companion(stable_font, b"stable bytes"),
+                    make_companion("font-old-OLDOLD00.woff2", b"old"),
+                ],
+            )),
+        )
+        .unwrap();
+
+        // Unrelated tick: the CSS text changed (e.g. an unrelated authored
+        // rule was edited) but the referenced font asset's bytes did not,
+        // so it keeps the identical content-hashed filename; the old font
+        // was dropped from the CSS.
+        publish_dev_css_generation(
+            &dev_assets_root,
+            "",
+            &url_handle,
+            &companion_names,
+            Some(make_css_payload(
+                b"gen2 -- unrelated authored edit",
+                vec![make_companion(stable_font, b"stable bytes")],
+            )),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read(assets_dir.join(stable_font)).unwrap(),
+            b"stable bytes",
+            "the unchanged font asset must still be present with identical bytes"
+        );
+        assert!(!assets_dir.join("font-old-OLDOLD00.woff2").exists());
+    }
+
+    /// CSS companion tracking is namespaced separately from islands'
+    /// (issue #2317's decision: "track the CSS companion set separately
+    /// from the islands set so pruning one asset kind can never delete the
+    /// other's files"). Drives BOTH generation-replacement paths against
+    /// the SAME assets directory and proves neither prune touches the
+    /// other kind's files.
+    #[test]
+    fn css_and_islands_companion_pruning_never_cross_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets_dir = dir.path().to_path_buf();
+
+        // Seed one companion of each kind.
+        let islands_prev = refresh_dev_island_chunks(
+            &assets_dir,
+            &[make_companion("islands-chunk-AAAA.js", b"chunk")],
+            &HashSet::new(),
+        )
+        .unwrap();
+        let css_prev = refresh_dev_css_companions(
+            &assets_dir,
+            &[make_companion("font-a-BBBB.woff2", b"font")],
+            &HashSet::new(),
+        )
+        .unwrap();
+        assert!(assets_dir.join("islands-chunk-AAAA.js").exists());
+        assert!(assets_dir.join("font-a-BBBB.woff2").exists());
+
+        // A CSS generation that drops its only companion must prune ONLY
+        // the CSS one.
+        let css_next = refresh_dev_css_companions(&assets_dir, &[], &css_prev).unwrap();
+        assert!(css_next.is_empty());
+        assert!(
+            !assets_dir.join("font-a-BBBB.woff2").exists(),
+            "the dropped CSS companion must be pruned"
+        );
+        assert!(
+            assets_dir.join("islands-chunk-AAAA.js").exists(),
+            "pruning a CSS generation must never delete an islands companion"
+        );
+
+        // Symmetric check: an islands generation that drops its only
+        // companion must prune ONLY the islands one. Re-seed a fresh CSS
+        // companion first (the CSS side was cleared above) so the reverse
+        // direction is proven against a non-empty CSS set too.
+        let css_prev2 = refresh_dev_css_companions(
+            &assets_dir,
+            &[make_companion("font-c-DDDD.woff2", b"font2")],
+            &css_next,
+        )
+        .unwrap();
+        let islands_next = refresh_dev_island_chunks(&assets_dir, &[], &islands_prev).unwrap();
+        assert!(islands_next.is_empty());
+        assert!(
+            !assets_dir.join("islands-chunk-AAAA.js").exists(),
+            "the dropped islands companion must be pruned"
+        );
+        assert!(
+            assets_dir.join("font-c-DDDD.woff2").exists(),
+            "pruning an islands generation must never delete a CSS companion"
+        );
+        assert!(!css_prev2.is_empty());
+    }
+
+    #[test]
+    fn refresh_dev_css_companions_rejects_unsafe_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+        let bad_names = [
+            "../escape.woff2",
+            "subdir/font.woff2",
+            "subdir\\font.woff2",
+            "",
+            zfb_types::STABLE_CSS_FILENAME,
+        ];
+        for name in bad_names {
+            let companion = make_companion(name, b"bytes");
+            let result = refresh_dev_css_companions(&assets, &[companion], &HashSet::new());
+            assert!(result.is_err(), "should reject unsafe filename {:?}", name);
+        }
     }
 
     // ── Phase B skip-key tests (issue #940) ─────────────────────────────────
