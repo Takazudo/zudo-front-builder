@@ -91,6 +91,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, error, info, warn};
 
+use crate::plugin_bundler::{self, EmbeddedEsbuildGetter, StagedPluginBundle};
 use crate::plugin_registries::{
     PluginSetupAccumulator, RawPluginSetupOutput, RawSetupRegistration, SetupCommand,
     SetupRegistries, VirtualLoaderId,
@@ -339,6 +340,12 @@ struct HostInner {
     reader_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Dropping the [`_tempdir`] removes the staged plugin-host script.
     _tempdir: tempfile::TempDir,
+    /// Staged `.mjs` bundle artifacts produced for `.ts`/`.tsx`/`.mts`/
+    /// `.cts` plugin entries (#2308). Held for the whole host session —
+    /// same Drop-guard lifetime as `_tempdir` above — each staged file is
+    /// deleted when the host (all its clones) is dropped. Empty when no
+    /// spec needed bundling.
+    _staged_plugin_bundles: Vec<StagedPluginBundle>,
     /// Maximum time any single plugin hook reply is awaited before the
     /// host is force-killed and the build fails with a diagnostic error.
     /// Env: ZFB_PLUGIN_HOOK_TIMEOUT (seconds). Default: 120s.
@@ -449,17 +456,74 @@ impl PluginHost {
     /// `hook_timeout` is the maximum time any single hook reply is awaited.
     /// Pass `None` to auto-resolve from `ZFB_PLUGIN_HOOK_TIMEOUT` / 120s default.
     pub async fn spawn(plugins: Vec<PluginSpec>, node_binary: Option<OsString>) -> Result<Self> {
-        Self::spawn_with_timeout(plugins, node_binary, None).await
+        Self::spawn_with_timeout(plugins, node_binary, None, None).await
     }
 
     /// Like [`spawn`] but with an explicit hook timeout (used by the build
-    /// orchestrator to thread `Config.pluginHookTimeoutSecs`).
+    /// orchestrator to thread `Config.pluginHookTimeoutSecs`) and an
+    /// optional embedded-esbuild getter for bundling `.ts`/`.tsx`/`.mts`/
+    /// `.cts` plugin entries (#2308).
+    ///
+    /// Before the host process boots, every spec whose resolved module is a
+    /// TypeScript-family file (per [`plugin_bundler::needs_bundling`]) is
+    /// bundled into a staged `.mjs` artifact and its `module` field is
+    /// rewritten to the staged file's `file://` URL. Every other spec
+    /// (`.js`/`.mjs`/`.cjs`, and bare packages that resolved to one of
+    /// those) is left byte-identical — same plain-`import()` path the host
+    /// always used.
+    ///
+    /// `embedded_esbuild_getter` is consulted to resolve the esbuild binary
+    /// **only when at least one spec needs bundling**: a pure-JS/`.mjs`
+    /// plugin set never touches esbuild resolution, so it gains no new
+    /// failure mode from this change. Pass `None` when no packaged-build
+    /// embedded getter is available — the env var / workspace binary slot
+    /// tiers still apply (see [`plugin_bundler::resolve_esbuild_for_plugins`]).
     pub async fn spawn_with_timeout(
-        plugins: Vec<PluginSpec>,
+        mut plugins: Vec<PluginSpec>,
         node_binary: Option<OsString>,
         hook_timeout_secs: Option<u64>,
+        embedded_esbuild_getter: Option<EmbeddedEsbuildGetter>,
     ) -> Result<Self> {
         let hook_timeout = resolve_hook_timeout(hook_timeout_secs);
+
+        // Bundle every `.ts`/`.tsx`/`.mts`/`.cts` plugin entry into a staged
+        // `.mjs` artifact before the host ever imports anything (#2308).
+        // Laziness is load-bearing: esbuild resolution only runs when at
+        // least one spec passes `needs_bundling`, so a pure-JS plugin set
+        // never touches it.
+        let mut staged_bundles: Vec<StagedPluginBundle> = Vec::new();
+        if plugins
+            .iter()
+            .any(|spec| plugin_bundler::needs_bundling(&spec.module))
+        {
+            // Keep the resolved esbuild binary — and its extraction
+            // TempDir, if the embedded tier supplied one — alive across
+            // EVERY bundling call in the loop below. Dropping it early
+            // would delete a staged embedded-tier esbuild binary mid-loop.
+            let (_esbuild_tempdir, esbuild_bin) =
+                plugin_bundler::resolve_esbuild_for_plugins(embedded_esbuild_getter)?;
+            for spec in plugins.iter_mut() {
+                if !plugin_bundler::needs_bundling(&spec.module) {
+                    continue;
+                }
+                let entry = url::Url::parse(&spec.module)
+                    .ok()
+                    .and_then(|u| u.to_file_path().ok())
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "plugin bundling: could not resolve a filesystem path from module \
+                             specifier `{}` for plugin `{}`",
+                            spec.module,
+                            spec.name
+                        )
+                    })?;
+                let staged =
+                    plugin_bundler::bundle_plugin_entry(&entry, &esbuild_bin, &spec.name).await?;
+                spec.module = staged.file_url().to_string();
+                staged_bundles.push(staged);
+            }
+        }
+
         let tmp = tempfile::Builder::new()
             .prefix("zfb-plugin-host-")
             .tempdir()
@@ -471,6 +535,12 @@ impl PluginHost {
 
         let node_bin = node_binary.unwrap_or_else(|| OsString::from("node"));
         let mut child = Command::new(&node_bin)
+            // Bundled entries carry `--sourcemap=inline` (#2308) so a
+            // bundled plugin's *runtime* throw maps back to its original
+            // `.ts` source in stack traces. Harmless for plain `.mjs`
+            // plugins — the flag only changes how Node renders a thrown
+            // error's stack.
+            .arg("--enable-source-maps")
             .arg(&host_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -506,6 +576,7 @@ impl PluginHost {
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
             _tempdir: tmp,
+            _staged_plugin_bundles: staged_bundles,
             hook_timeout,
         });
 
@@ -2695,6 +2766,7 @@ mod tests {
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
             _tempdir: tmp,
+            _staged_plugin_bundles: Vec::new(),
             hook_timeout: timeout,
         });
         Some(PluginHost { inner })
@@ -2917,6 +2989,7 @@ mod tests {
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
             _tempdir: tmp,
+            _staged_plugin_bundles: Vec::new(),
             hook_timeout: std::time::Duration::from_secs(1),
         });
         Some((inner, stdout, stderr))
@@ -3164,5 +3237,375 @@ mod tests {
                 ))
             }
         });
+    }
+
+    // --- #2308 plugin TS bundling wiring integration tests -----------------
+
+    /// Build a fake [`EmbeddedEsbuildGetter`] that stages a real, runnable
+    /// esbuild copy into a fresh `TempDir` — the shape a packaged `zfb`
+    /// build's real getter produces. Mirrors
+    /// `plugin_bundler::tests::make_stub_embedded_getter`, which is private
+    /// to its own module — a small, deliberate duplication rather than
+    /// reaching into another module's test code.
+    fn make_stub_embedded_esbuild_getter(
+        real_esbuild: std::path::PathBuf,
+    ) -> EmbeddedEsbuildGetter {
+        Box::new(move || {
+            let dir = tempfile::Builder::new()
+                .prefix("zfb-plugin-runner-embedded-esbuild-stub-")
+                .tempdir()
+                .ok()?;
+            let dest = dir.path().join(real_esbuild.file_name()?);
+            std::fs::copy(&real_esbuild, &dest).ok()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dest).ok()?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dest, perms).ok()?;
+            }
+            Some((dir, dest))
+        })
+    }
+
+    #[tokio::test]
+    async fn mjs_plugin_never_touches_esbuild_resolution() {
+        // Decisions (a)/(c): a plugin set with no `.ts`-family entry must
+        // never call `resolve_esbuild_for_plugins` at all — a panicking
+        // getter proves the laziness gate itself, not merely that
+        // bundling happened to be skipped. This is the ".mjs plugin that
+        // works today still works" acceptance criterion made precise: the
+        // plain plain-`import()` path is exercised with zero esbuild
+        // involvement, byte-identical to before this wiring.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("plain.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "plain-mjs",
+              preBuild() {},
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let getter: EmbeddedEsbuildGetter =
+            Box::new(|| panic!("embedded getter must not be invoked for a pure-.mjs plugin set"));
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "plain-mjs".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect(".mjs plugin should load via the untouched plain-import() path");
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn ts_plugin_entry_with_enum_namespace_and_parameter_properties_loads_through_real_host()
+    {
+        // The reporting issue's documented "failure mode 2" TS constructs
+        // (enum, namespace, constructor parameter properties) already
+        // proved they BUNDLE cleanly in `plugin_bundler::tests` (Wave 3).
+        // This proves the wired-up result actually LOADS AND RUNS through
+        // the real host: a preBuild hook computes a value derived from an
+        // enum, a namespace, and a parameter property, and writes it to a
+        // marker file only reachable if `import()` of the staged bundle
+        // succeeded and the hook actually executed.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("ts-marker.txt");
+        let plugin_path = tmp.path().join("plugin.ts");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+
+            enum Level {{ Low, High }}
+            namespace Labels {{ export const high = "high-marker"; }}
+            class Prop {{ constructor(public level: Level) {{}} }}
+
+            export default {{
+              name: "ts-enum-namespace-paramprop",
+              preBuild() {{
+                const p = new Prop(Level.High);
+                const label = p.level === Level.High ? Labels.high : "low";
+                writeFileSync({marker:?}, label);
+              }},
+            }};
+            "#,
+            marker = marker.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "ts-enum-namespace-paramprop".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect("a .ts entry using enum/namespace/parameter-properties should bundle and load");
+
+        let ctx = BuildHookContext {
+            project_root: tmp.path().to_path_buf(),
+            out_dir: tmp.path().join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker).await.unwrap();
+        assert_eq!(written, "high-marker");
+    }
+
+    #[tokio::test]
+    async fn tsx_plugin_entry_with_paths_alias_loads_through_real_host() {
+        // Covers the remaining two documented failure modes together: a
+        // `.tsx` entry (JSX syntax) importing a sibling through a
+        // `paths`-aliased specifier that esbuild resolves via its
+        // auto-discovered tsconfig. The JSX factory is never invoked here
+        // (only `String(Widget)` is read) so the test needs no runtime
+        // JSX-runtime resolution — it only has to prove the module LOADS
+        // (JSX parsed + transformed, `paths` alias resolved) through the
+        // real host.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        tokio::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["./lib/*"]}}}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::create_dir_all(root.join("lib")).await.unwrap();
+        tokio::fs::write(
+            root.join("lib/marker.ts"),
+            "export const marker = \"paths-alias-marker\";\n",
+        )
+        .await
+        .unwrap();
+        let marker_file = root.join("tsx-marker.txt");
+        let plugin_path = root.join("plugin.tsx");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            import {{ marker }} from "@lib/marker";
+
+            // Never invoked — only present so this .tsx entry actually
+            // exercises esbuild's JSX transform (proving raw JSX syntax
+            // does not survive as a `import()`-time SyntaxError). Calling
+            // it would throw (no JSX runtime is installed in this
+            // fixture), so the hook below never does.
+            const Widget = () => <div>{{marker}}</div>;
+            void Widget;
+
+            export default {{
+              name: "tsx-paths-alias",
+              preBuild() {{
+                // The real proof this test wants: the `@lib/marker`
+                // paths-aliased import resolved and its value reached
+                // plugin code — only possible if the module actually
+                // loaded through the real host.
+                writeFileSync({marker_file:?}, marker);
+              }},
+            }};
+            "#,
+            marker_file = marker_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "tsx-paths-alias".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect("a .tsx entry with a paths alias should bundle and load");
+
+        let ctx = BuildHookContext {
+            project_root: tmp.path().to_path_buf(),
+            out_dir: tmp.path().join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
+        assert_eq!(
+            written, "paths-alias-marker",
+            "the paths-aliased import's value should reach the plugin's own logic"
+        );
+    }
+
+    #[tokio::test]
+    async fn broken_ts_plugin_entry_fails_with_the_locked_bundle_error_not_a_plugin_error() {
+        // Decision (e): a bundle failure is a plain `anyhow` error, never
+        // `PluginError { hook: "init" }` — the host process never even
+        // boots, so there is no plugin code that "ran and threw". Proven
+        // through the real `spawn_with_timeout` call (not just
+        // `bundle_plugin_entry` in isolation, which `plugin_bundler::tests`
+        // already covers), and asserts the error is neither a raw Node
+        // stack nor the config loader's `zfb.config.ts` diagnostic.
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("broken.ts");
+        tokio::fs::write(
+            &plugin_path,
+            "import { nope } from \"./does-not-exist.ts\";\nexport default { name: \"broken\", nope };\n",
+        )
+        .await
+        .unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let result = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "broken".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await;
+        // `PluginHost` doesn't implement `Debug`, so `expect_err` (which
+        // requires `T: Debug` to format the unexpected-Ok case) can't be
+        // used directly here.
+        let err = match result {
+            Ok(_) => {
+                panic!("a deliberately broken .ts entry must fail to bundle, never boot the host")
+            }
+            Err(e) => e,
+        };
+
+        let msg = err.to_string();
+        let expected_prefix = format!(
+            "plugin bundling: esbuild failed for plugin `broken` ({}):",
+            plugin_path.display()
+        );
+        assert!(
+            msg.starts_with(&expected_prefix),
+            "error must match the locked bundle-failure prefix.\nexpected prefix: {expected_prefix}\ngot: {msg}"
+        );
+        assert!(
+            !msg.contains("Evaluating a `zfb.config.ts`"),
+            "the config-loader diagnostic must never leak onto the plugin path: {msg}"
+        );
+        assert!(
+            extract_plugin_error(&err).is_none(),
+            "a bundle failure must be a plain anyhow error, never a PluginError (hook=\"init\" \
+             means the plugin code ran and threw, which never happened here): {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn staged_ts_bundle_survives_until_host_shutdown() {
+        // Decisions (c)/(d): the staged `.mjs` bundle is held on the
+        // `PluginHost` handle (`Vec<StagedPluginBundle>`) for the WHOLE
+        // host session, not dropped right after boot — confirmed by
+        // checking the staged file still exists on disk while the host is
+        // alive, then confirming its removal once the host (its one and
+        // only clone here) is dropped.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("plugin.ts");
+        tokio::fs::write(
+            &plugin_path,
+            "export default { name: \"staged-lifetime-plugin\" };\n",
+        )
+        .await
+        .unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "staged-lifetime-plugin".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect("host should spawn, bundling the .ts entry first");
+
+        // The staged bundle sits next to the entry (decision d), named
+        // with the `.zfb-plugin-bundle-*.mjs` prefix/suffix.
+        let mut staged_files: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(plugin_bundler::PLUGIN_BUNDLE_TEMP_PREFIX)
+                    && name.ends_with(plugin_bundler::PLUGIN_BUNDLE_TEMP_SUFFIX)
+            })
+            .collect();
+        assert_eq!(
+            staged_files.len(),
+            1,
+            "exactly one staged bundle should exist while the host is alive"
+        );
+        let staged_path = staged_files.remove(0).path();
+        assert!(
+            staged_path.exists(),
+            "the staged bundle must still be on disk while the host session is alive"
+        );
+
+        host.shutdown().await.ok();
+        drop(host);
+
+        assert!(
+            !staged_path.exists(),
+            "the staged bundle must be removed once the host (all its clones) is dropped"
+        );
     }
 }
