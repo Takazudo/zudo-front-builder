@@ -14640,8 +14640,16 @@ mod tests {
     /// after config materialisation and is where the pre-fix bug actually
     /// surfaced as an IO error (see the two tests below).
     fn write_nested_node_modules_tsconfig_workspace(workspace: &Path) -> PathBuf {
-        write_reroot_ws_file(workspace, "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n");
-        write_reroot_ws_file(workspace, "node_modules/.workspace-marker", "workspace hoisted\n");
+        write_reroot_ws_file(
+            workspace,
+            "pnpm-workspace.yaml",
+            "packages:\n  - 'apps/*'\n",
+        );
+        write_reroot_ws_file(
+            workspace,
+            "node_modules/.workspace-marker",
+            "workspace hoisted\n",
+        );
         let project_root = workspace.join("apps/site");
         write_reroot_ws_file(
             &project_root,
