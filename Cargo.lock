@@ -6049,6 +6049,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-test",
+ "url",
  "wait-timeout",
  "walkdir",
  "zfb-content",
