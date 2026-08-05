@@ -84,6 +84,7 @@ pub mod modules;
 pub mod native_engine;
 pub mod pipeline;
 pub mod scanner;
+pub mod url_scanner;
 
 pub use authored_engine::AuthoredCssEngine;
 pub use css_imports::resolve_css_imports;
@@ -98,6 +99,7 @@ pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput}
 pub use scanner::{
     scan_css_module_imports, scan_css_module_imports_in_memory, ModuleImportScan, SourceModuleUsage,
 };
+pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
 
 /// The framework-shipped default `--zfb-hi-*` token stylesheet for zfb's
 /// class-mode syntax highlighting (see `assets/zfb-hi.css`).
