@@ -37,8 +37,9 @@
 //!   matches.
 //! - The function name matches ASCII case-insensitively (`URL(` works) and
 //!   must be a standalone ident: `imageurl(` is a function named `imageurl`,
-//!   and `3url(` is a dimension token — neither matches. An escaped spelling
-//!   (`\75 rl(`) decodes to `url` and does match, per ident decoding rules.
+//!   `3url(` is a dimension token, and `@url(`/`#url(` are an at-keyword and
+//!   a hash token — none of them matches. An escaped spelling (`\75 rl(`)
+//!   decodes to `url` and does match, per ident decoding rules.
 //! - `url( "..." )` tokenises as a function containing a string token; the
 //!   reported span is the string token's bytes (quotes included).
 //! - An unquoted value follows url-token rules: it cannot contain unescaped
@@ -89,6 +90,12 @@ pub fn scan_css_urls(css: &str) -> Vec<CssUrlOccurrence> {
             i = skip_comment(bytes, i);
         } else if c == b'"' || c == b'\'' {
             i = consume_string_token(css, i).end;
+        } else if (c == b'@' || c == b'#') && starts_word(bytes, i + 1) {
+            // At-keyword (`@url(...)`) and hash (`#url(...)`) tokens absorb
+            // the following ident sequence, so no url() function can start
+            // inside one — consume the whole token to avoid a false match.
+            let (_, end) = consume_ident_sequence(css, i + 1);
+            i = end;
         } else if is_word_byte(c) || (c == b'\\' && is_valid_escape(bytes, i)) {
             let (name, end) = consume_ident_sequence(css, i);
             if end < len && bytes[end] == b'(' && name.eq_ignore_ascii_case("url") {
@@ -113,6 +120,14 @@ pub fn scan_css_urls(css: &str) -> Vec<CssUrlOccurrence> {
 /// unit (`3url(` per spec) from being misread as a `url(` function.
 fn is_word_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'-' || c >= 0x80
+}
+
+/// Whether a word run ([`is_word_byte`] chars / escapes) starts at `i`.
+fn starts_word(bytes: &[u8], i: usize) -> bool {
+    match bytes.get(i) {
+        Some(&c) => is_word_byte(c) || (c == b'\\' && is_valid_escape(bytes, i)),
+        None => false,
+    }
 }
 
 fn is_css_whitespace(c: u8) -> bool {
@@ -653,6 +668,38 @@ mod tests {
         ] {
             assert!(scan_css_urls(css).is_empty(), "false match in {css:?}");
         }
+    }
+
+    #[test]
+    fn at_keyword_and_hash_prefixed_url_do_not_match() {
+        // `@url(...)` is an at-keyword token and `#url(...)` a hash token —
+        // the ident sequence is absorbed, no url() function exists.
+        for css in [
+            "@url(x.png){color:red}",
+            ".a{color:#url(x.png)}",
+            "@\\75 rl(x.png){}",
+            ".a{color:#\\75 rl(x.png)}",
+        ] {
+            assert!(scan_css_urls(css).is_empty(), "false match in {css:?}");
+        }
+    }
+
+    #[test]
+    fn at_rule_prelude_url_still_matches() {
+        // `@import` is its own at-keyword token; the following `url(...)`
+        // after whitespace is an ordinary url token.
+        let css = "@import url(./theme.css);";
+        let occ = single(css);
+        assert_eq!(occ.decoded, "./theme.css");
+    }
+
+    #[test]
+    fn delim_prefixed_url_still_matches() {
+        // Per CSS Syntax, `.url(` is a `.` delim token followed by a url
+        // token — unlike `@`/`#`, the delim does not absorb the ident.
+        let css = ".url(x.png)";
+        let occ = single(css);
+        assert_eq!(occ.decoded, "x.png");
     }
 
     #[test]
