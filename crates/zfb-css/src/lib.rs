@@ -101,8 +101,8 @@ pub use scanner::{
     scan_css_module_imports, scan_css_module_imports_in_memory, ModuleImportScan, SourceModuleUsage,
 };
 pub use url_attribution::{
-    attribute_and_enforce_package_url_floor, attribute_relative_urls, AttributedUrl, PackageOrigin,
-    UrlOrigin,
+    attribute_and_emit_package_urls, attribute_relative_urls, AttributedUrl, PackageOrigin,
+    PackageUrlAsset, UrlOrigin,
 };
 pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
 
