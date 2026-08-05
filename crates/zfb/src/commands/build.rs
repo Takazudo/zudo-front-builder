@@ -14616,6 +14616,144 @@ mod tests {
         );
     }
 
+    // ---- Issue #2301: production-path regression combining all three ----
+    // #2300 gatekeeper-fix ingredients — a CLAIMED pnpm workspace, the
+    // nested project's OWN `node_modules`, and a tsconfig `extends` chain
+    // resolving INTO it — through both production shadow-staging entry
+    // points. No prior fixture combined all three at once.
+
+    /// Shared workspace topology for issue #2301: a claimed workspace
+    /// (`apps/*`) whose nested project (`apps/site`) ships its own
+    /// `node_modules` containing a `@tsconfig/strict-base` package, with the
+    /// project's own `tsconfig.json` extending it by bare specifier. Returns
+    /// the nested project root; callers add their own pipeline-specific
+    /// trigger (an island glob, or a client-script `?raw` import) on top.
+    ///
+    /// This is the un-migrated twin of #2300's own unit-level fixture
+    /// (`materialise_shadow_typescript_configs_excludes_nested_workspace_node_modules_config`,
+    /// which drives `collect_islands_shadow_configs` /
+    /// `materialise_shadow_typescript_configs` directly) — here the SAME
+    /// topology is driven through the full production entry points
+    /// (`materialise_islands_shadow_with_worker_context` /
+    /// `stage_client_script_preprocessing_with_worker_context`), which also
+    /// exercise the node_modules wholesale-symlink step that runs right
+    /// after config materialisation and is where the pre-fix bug actually
+    /// surfaced as an IO error (see the two tests below).
+    fn write_nested_node_modules_tsconfig_workspace(workspace: &Path) -> PathBuf {
+        write_reroot_ws_file(
+            workspace,
+            "pnpm-workspace.yaml",
+            "packages:\n  - 'apps/*'\n",
+        );
+        write_reroot_ws_file(
+            workspace,
+            "node_modules/.workspace-marker",
+            "workspace hoisted\n",
+        );
+        let project_root = workspace.join("apps/site");
+        write_reroot_ws_file(
+            &project_root,
+            "node_modules/@tsconfig/strict-base/tsconfig.json",
+            r#"{"compilerOptions":{"strict":true}}"#,
+        );
+        write_reroot_ws_file(
+            &project_root,
+            "tsconfig.json",
+            r#"{"extends":"@tsconfig/strict-base/tsconfig.json"}"#,
+        );
+        project_root
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stage_client_script_preprocessing_with_worker_context_excludes_nested_workspace_node_modules_tsconfig(
+    ) {
+        // Pre-fix (before c6cb2ba7 / #2300's migration to
+        // `zfb_types::has_node_modules_segment`), the nested package config's
+        // root-relative path from the WIDENED workspace root is
+        // `apps/site/node_modules/@tsconfig/strict-base/tsconfig.json` —
+        // `node_modules` is not the FIRST component, so the old `.next()`-only
+        // check in `internal_shadow_config_path` never excluded it. It was
+        // wrongly collected and `materialise_shadow_typescript_configs`
+        // materialised a REAL `node_modules` dir under the mirrored project
+        // dir BEFORE the project-node_modules wholesale-symlink step below it
+        // runs — `shadow_symlink`'s `remove_file` cannot remove a directory,
+        // so the subsequent `std::os::unix::fs::symlink` call failed with
+        // EEXIST ("File exists (os error 17)"). Observed pre-fix by
+        // temporarily reverting the `has_node_modules_segment` hunk in this
+        // worktree and running this test: it failed with exactly that EEXIST,
+        // propagated through the `symlink client preprocess stage project
+        // node_modules ... -> ...` context.
+        let workspace = tempdir().unwrap();
+        let project_root = write_nested_node_modules_tsconfig_workspace(workspace.path());
+        write_reroot_ws_file(
+            &project_root,
+            "pages/widget.client.ts",
+            "import text from '../src/message.txt?raw';\nconsole.log(text);\n",
+        );
+        write_reroot_ws_file(
+            &project_root,
+            "src/message.txt",
+            "nested node_modules tsconfig fixture\n",
+        );
+        let entries = vec![zfb_islands::client_scripts::ClientScriptEntry {
+            entry_name: "widget".into(),
+            source_path: project_root.join("pages/widget.client.ts"),
+        }];
+
+        let stage = stage_client_script_preprocessing(&project_root, &entries)
+            .expect(
+                "stage materialisation must not IO-error — a wrongly-collected nested package \
+                 tsconfig would materialise a real node_modules dir before the project \
+                 node_modules symlink step runs, which then fails with EEXIST",
+            )
+            .expect("a project-local raw graph still needs a stage");
+
+        assert!(
+            std::fs::symlink_metadata(stage.root.join("node_modules"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the workspace-hoisted node_modules must be linked wholesale at the stage root"
+        );
+        let project_node_modules_link = stage.bundle_working_dir.join("node_modules");
+        assert!(
+            std::fs::symlink_metadata(&project_node_modules_link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the project's own nested node_modules must be linked wholesale, not shadowed by \
+             a real dir the config-collection pass created first"
+        );
+
+        // The project's own leaf tsconfig IS materialised as a real file —
+        // the gatekeeper excludes the NESTED PACKAGE config from shadow
+        // mirroring, not the project's own leaf.
+        let staged_leaf = stage.bundle_working_dir.join("tsconfig.json");
+        let leaf_meta = std::fs::symlink_metadata(&staged_leaf).unwrap();
+        assert!(
+            leaf_meta.file_type().is_file() && !leaf_meta.file_type().is_symlink(),
+            "the project's own leaf tsconfig must be materialised as a real file"
+        );
+        // ...and its rewritten `extends` still names the canonical REAL
+        // package config (bare-specifier extends are always pinned absolute,
+        // regardless of whether the resolved config was excluded from shadow
+        // mirroring) — proving the gatekeeper excludes shadow MIRRORING of
+        // the package config, not esbuild-visible extends resolution.
+        let leaf_json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&staged_leaf).unwrap()).unwrap();
+        let real_package_config = project_root
+            .join("node_modules/@tsconfig/strict-base/tsconfig.json")
+            .canonicalize()
+            .unwrap();
+        assert_eq!(
+            leaf_json["extends"].as_str(),
+            Some(real_package_config.to_string_lossy().as_ref()),
+            "the leaf's rewritten extends must point at the canonical real package config, \
+             not a staged spelling under the stage's node_modules: {leaf_json:?}"
+        );
+    }
+
     /// Inverted #1667 guard-pin test (issue #1677): a worker whose SOURCE
     /// lives in a sibling workspace package used to fail with the named
     /// #1667 limitation (the #1500 flat-naming contract was project-scoped).
@@ -15127,6 +15265,81 @@ mod tests {
             "export const a = 1;\n",
         );
         (island_src, glob_src, target)
+    }
+
+    /// Issue #2301: the islands-site companion to
+    /// `stage_client_script_preprocessing_with_worker_context_excludes_nested_workspace_node_modules_tsconfig`
+    /// above, driving the SAME shared topology
+    /// (`write_nested_node_modules_tsconfig_workspace`) through
+    /// `materialise_islands_shadow_with_worker_context` instead — the two
+    /// production entry points that independently call
+    /// `collect_islands_shadow_configs` / `materialise_shadow_typescript_configs`
+    /// against the widened workspace root (issue #2163 established the two
+    /// sites as maintained parallel twins).
+    #[cfg(unix)]
+    #[test]
+    fn materialise_islands_shadow_with_worker_context_excludes_nested_workspace_node_modules_tsconfig(
+    ) {
+        let workspace = tempdir().unwrap();
+        let project_root = write_nested_node_modules_tsconfig_workspace(workspace.path());
+        let (island_src, glob_src, _target) = write_basic_glob_shadow_project(&project_root);
+
+        let (islands, scan_meta) = basic_shadow_inputs(
+            &project_root,
+            vec![glob_src.clone()],
+            vec![island_src.clone(), glob_src],
+        );
+        let outcome = materialise_islands_shadow(&project_root, &islands, &scan_meta).expect(
+            "shadow materialisation must not IO-error — a wrongly-collected nested package \
+             tsconfig would materialise a real node_modules dir before the project \
+             node_modules symlink step runs, which then fails with EEXIST",
+        );
+        let shadow = match outcome {
+            IslandsShadowOutcome::Ready(s) => s,
+            IslandsShadowOutcome::KeepStopgap(o) => panic!("supported glob must be ready: {o:?}"),
+        };
+
+        let shadow_root = shadow._tempdir.path();
+        assert!(
+            std::fs::symlink_metadata(shadow_root.join("node_modules"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the workspace-hoisted node_modules must be linked wholesale at the shadow root"
+        );
+        let project_node_modules_link = shadow.bundle_working_dir.join("node_modules");
+        assert!(
+            std::fs::symlink_metadata(&project_node_modules_link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the project's own nested node_modules must be linked wholesale, not shadowed by \
+             a real dir the config-collection pass created first"
+        );
+
+        let staged_leaf = shadow.bundle_working_dir.join("tsconfig.json");
+        let leaf_meta = std::fs::symlink_metadata(&staged_leaf).unwrap();
+        assert!(
+            leaf_meta.file_type().is_file() && !leaf_meta.file_type().is_symlink(),
+            "the project's own leaf tsconfig must be materialised as a real file"
+        );
+        let leaf_json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&staged_leaf).unwrap()).unwrap();
+        let real_package_config = project_root
+            .join("node_modules/@tsconfig/strict-base/tsconfig.json")
+            .canonicalize()
+            .unwrap();
+        assert_eq!(
+            leaf_json["extends"].as_str(),
+            Some(real_package_config.to_string_lossy().as_ref()),
+            "the leaf's rewritten extends must point at the canonical real package config, \
+             not a staged spelling under the shadow's node_modules: {leaf_json:?}"
+        );
+
+        assert!(
+            shadow.remap.contains_key(&island_src),
+            "island source_path must be remapped into the shadow"
+        );
     }
 
     #[test]
