@@ -64,7 +64,7 @@ CSS works the same way — the URL is what the browser ultimately requests:
 
 ## CSS imported from a package: relative asset references
 
-The absolute-URL rule above is about **CSS you author** — your project's global stylesheet and anything it `@import`s from your own source tree. It does not apply to a stylesheet **`@import`ed from an npm package**. A package stylesheet is written against its own directory, so it's normal for it to reference files with a relative `url()`:
+The absolute-URL rule above is about **CSS you author** — your project's global stylesheet and anything it `@import`s from your own source tree. It does not apply to a stylesheet **`@import`ed from an npm package installed into `node_modules`**. A package stylesheet is written against its own directory, so it's normal for it to reference files with a relative `url()`:
 
 ```css
 /* node_modules/some-ui-kit/dist/styles.css */
@@ -74,9 +74,9 @@ The absolute-URL rule above is about **CSS you author** — your project's globa
 }
 ```
 
-zfb resolves that reference against the stylesheet's own location, emits the referenced file as a content-hashed asset beside the compiled CSS — `{stem}-{hash8}.{ext}` in `dist/assets/` — and rewrites the `url()` to a relative reference pointing at it: `./{stem}-{hash8}.{ext}`. Importing the same file twice emits it once. A `?query` or `#fragment` suffix on the original reference is preserved on the rewritten one. This works for any file type a package stylesheet references — fonts, images, anything — not fonts only.
+zfb resolves that reference against the stylesheet's own location, emits the referenced file as a content-hashed asset beside the compiled CSS — `{stem}-{hash8}.{ext}` — and rewrites the `url()` to a relative reference pointing at it: `./{stem}-{hash8}.{ext}`. The browser-facing URL is consistently `/assets/{stem}-{hash8}.{ext}`; on disk it lands in `dist/assets/` for a `zfb build` (or your configured `outDir`, if you've changed it from the default), and in `.zfb-build/dev-assets/assets/` while `zfb dev` is running. Importing the same file twice emits it once. A `?query` or `#fragment` suffix on the original reference is preserved on the rewritten one. This works for any file type a package stylesheet references — fonts, images, anything — not fonts only.
 
-**Your own authored CSS is unaffected.** The global entry, and any project-local `@import`ed stylesheet, keep the [absolute-URL contract](#referencing-assets) above unchanged — a relative `url()` written in your own CSS is passed through untouched, exactly as before. `public/` copying, and `data:` / absolute / full URLs anywhere, are never touched by this rewrite either. The distinction is by **where the stylesheet comes from**, not by anything you opt into: your CSS keeps working the same way it always has, and a package's CSS gets asset emission because a package has no other way to ship files alongside itself.
+**Your own authored CSS is unaffected — including a linked workspace package.** The global entry, any project-local `@import`ed stylesheet, and a stylesheet `@import`ed from a pnpm-workspace-linked sibling package (its canonical path resolves outside `node_modules`, since it's not actually installed there) all keep the [absolute-URL contract](#referencing-assets) above unchanged — a relative `url()` in any of them is passed through untouched, exactly as before. Only a stylesheet whose canonical path resolves inside `node_modules` is treated as a package import. `public/` copying, and `data:` / absolute / full URLs anywhere, are never touched by this rewrite either. The distinction is by **where the stylesheet's canonical path resolves**, not by anything you opt into: your CSS keeps working the same way it always has, and a `node_modules` package's CSS gets asset emission because it has no other way to ship files alongside itself.
 
 ### When it fails
 
