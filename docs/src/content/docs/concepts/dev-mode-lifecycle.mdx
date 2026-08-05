@@ -43,17 +43,22 @@ fast regardless of how large your asset tree is (see
 [Boot is bind-first](#boot-is-bind-first) below).
 
 The asset files a package stylesheet's `url()` points at are likewise not
-watched — nothing under `node_modules` is, by design. Replacing one while the
-dev server is running produces no watcher event, so CSS is never recompiled and
-the served content-hashed companion keeps handing out the old bytes until
-something else triggers a CSS rebuild — restart `zfb dev`, or touch the
-stylesheet that `@import`s the package, to pick the new file up (see
+watched. The stylesheet itself is: `node_modules` sits outside the watch roots,
+but zfb resolves the CSS entry's `@import` graph at boot and registers each
+resolved real path as an extra watch target, so editing a package stylesheet
+reached through `@import` does fire a CSS rerun. The files it references with
+`url()` get no such registration. Replacing one while the dev server is running
+produces no watcher event, so CSS is never recompiled and the served
+content-hashed companion keeps handing out the old bytes until something else
+triggers a CSS rebuild — restart `zfb dev`, or touch the stylesheet that
+`@import`s the package, which _is_ watched, to pick the new file up (see
 [Static Assets — CSS imported from a package](./static-assets.mdx#css-imported-from-a-package-relative-asset-references)).
 This rarely bites in practice: a package asset is not a file you hand-edit, and
 the normal way it changes — `pnpm install` — is something you would follow with
 a restart anyway. Keeping arbitrary `node_modules` asset files out of the
-watched set is a deliberate scope decision — a third dynamic watch-registration
-channel carries real watcher-narrowing risk.
+watched set is a deliberate scope decision — widening the `@import`-graph
+channel to cover every file a `url()` points at carries real watcher-narrowing
+risk.
 
 Editor saves are rarely a single clean event. vim renames a swap file over the
 original; VS Code emits several metadata-then-data events in quick succession; a
