@@ -643,14 +643,30 @@ impl PluginHost {
 
         // Send `init` and wait for the loaded-count reply. Surface a
         // module-load failure as `PluginError`.
-        let result: serde_json::Value = host
+        let result: serde_json::Value = match host
             .request_typed(
                 "init",
                 serde_json::json!({
                     "plugins": plugins,
                 }),
             )
-            .await?;
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                // `init` returning `ok: false` doesn't crash the child — it
+                // stays alive, so the stdout/stderr reader tasks (each
+                // holding their own `Arc<HostInner>` clone) never see EOF
+                // and never exit. Letting `host` merely fall out of scope
+                // here would leak the child process AND everything
+                // `HostInner`'s Drop would otherwise clean up — the staged
+                // plugin-host tempdir and, since #2308, every staged `.ts`
+                // bundle artifact. Force-kill so the readers observe EOF,
+                // drop their clones, and the Arc's refcount can reach zero.
+                host.force_kill_child().await;
+                return Err(e);
+            }
+        };
         debug!(loaded = ?result, "plugin host: init complete");
 
         Ok(host)
@@ -3536,6 +3552,87 @@ mod tests {
             "a bundle failure must be a plain anyhow error, never a PluginError (hook=\"init\" \
              means the plugin code ran and threw, which never happened here): {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn init_failure_for_a_ts_plugin_tears_down_the_host_and_removes_the_staged_bundle() {
+        // Regression for a light-review (codex) finding on #2308: an
+        // `init` failure does NOT crash the child process — `ok: false`
+        // is just an ordinary reply, so the process stays alive. Without
+        // an explicit teardown on that path, the stdout/stderr reader
+        // tasks (each holding their own `Arc<HostInner>` clone) never
+        // observe EOF and never exit, so `host` merely falling out of
+        // scope leaks the child process AND everything `HostInner`'s
+        // Drop would otherwise clean up — the plugin-host tempdir and,
+        // since #2308, the staged `.ts` bundle artifact. Proves the fix:
+        // after a bundled plugin's `init` fails, the staged bundle file
+        // is eventually removed.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("throws-at-import.ts");
+        tokio::fs::write(
+            &plugin_path,
+            "throw new Error(\"boom-at-import\");\nexport default { name: \"throws-at-import\" };\n",
+        )
+        .await
+        .unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let result = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "throws-at-import".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("a plugin that throws at import time must fail init"),
+            Err(e) => e,
+        };
+        assert!(
+            extract_plugin_error(&err).is_some(),
+            "an import-time throw is a genuine `init`-hook failure, not a bundle failure: {err:?}"
+        );
+
+        // The staged bundle sits next to the entry (decision d).
+        let staged: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(plugin_bundler::PLUGIN_BUNDLE_TEMP_PREFIX)
+                    && name.ends_with(plugin_bundler::PLUGIN_BUNDLE_TEMP_SUFFIX)
+            })
+            .collect();
+        // The file may already be gone by the time we list the
+        // directory (cleanup is async and can win the race) — what
+        // matters is that it never survives indefinitely, so only poll
+        // for removal when we actually observed it first.
+        if let Some(entry) = staged.into_iter().next() {
+            let path = entry.path();
+            let removed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while path.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            })
+            .await;
+            assert!(
+                removed.is_ok(),
+                "the staged bundle must be removed once the host tears down after an init failure"
+            );
+        }
     }
 
     #[tokio::test]
