@@ -37,6 +37,36 @@ export default definePlugin({
 
 フックは、`zfb.config.ts` の `plugins` 配列にプラグインが現れる順序で逐次実行されます。いずれかのフックで throw されるとビルド（または dev / preview の起動）が中断し、throw したフックとプラグイン名がエラーバナーに表示されます。
 
+## プラグインの entry ファイル — `.ts`、`.tsx`、`.mts`、`.cts` のサポート
+
+拡張子が `.ts`、`.tsx`、`.mts`、`.cts` のいずれかであるプラグインの `name` entry は、`zfb build`、`zfb dev`、`zfb preview` のいずれでも、ロードされる前に zfb 自身の pinned esbuild でバンドルされます。これにより、`.ts` プラグイン entry では次のことが可能です。
+
+- **複数ファイルに分割できる。** `./helper.js` という specifier が、兄弟の `helper.ts` ソースファイルに解決される場合も含みます。
+- **TypeScript の完全な構文を使える。** `enum`、`namespace`、コンストラクタのパラメータプロパティは、いずれも正しくバンドル・変換されます。
+- **`.tsx` モジュールを import できる。** JSX ごとです。
+- **tsconfig の `paths` エイリアスを使える。** esbuild は entry の実際のディスク上の位置から上に向かって walk し、プラグインプロジェクト自身の `tsconfig.json` を自動検出するため、エイリアス解決はそのまま機能します。
+
+`.js`、`.mjs`、`.cjs` の entry は影響を受けません — これまでどおり、バンドルなしでそのままロードされます。bare package specifier（例: `name: "@acme/my-plugin"`）は、そのパッケージの `exports`/`main` が `.ts` 系ファイルに解決される場合にのみバンドルされます。実際には、公開パッケージがこの形になることはほぼありません。
+
+`.ts` プラグイン entry については、**`tsx`/`esm/api` の register/unregister-per-hook loader シムによる回避策はもう不要です** — バンドルがそれを完全に置き換えます。
+
+### 残っている制限
+
+- `.js`/`.mjs` の entry 自体が `.ts` の隣接ファイルを import している場合、その entry はバンドル**されません** — バンドルするかどうかを決めるのは entry 自身の拡張子だけです。この import は、これまでどおりの素の Node の挙動のままです。つまり、新しいバージョンの Node で strip-only 互換な TypeScript 構文に対してのみ動作し、`node_modules` の下では決して解決されません。これに当たった場合は、entry 自体を `.ts` にリネームしてください。
+- バンドルされたプラグインの内部で、静的なテンプレートプレフィックスを持つ動的な `import()` 呼び出し（例えば `` import(`./mods/${name}.mjs`) ``）は、起動時に存在するファイルに固定されます — esbuild は、実行時に import を解決するのではなく、マッチしたファイルをバンドルへ glob-inline します。ステージされたバンドル自身の `import.meta.url` は、元のソースパスではなくステージされたファイルを指しますが、`dirname()` 相対の読み取りは引き続き正しく動作します（バンドルは entry 自身のディレクトリにステージされます）。
+
+### Node バージョンの下限
+
+プラグインのバンドルは esbuild を `--target=node22` で呼び出します。その結果として、`.ts` プラグイン entry はもはや Node 組み込みの型ストリッピングにまったく依存しなくなり、Node 22.0–22.17 の崖を型ストリッピングの問題としては解消します。これは実際の Node 22.17.0 で検証済みです（4 つのバンドル失敗ケースすべて — 兄弟の `.js`→`.ts` 解決、`enum`/`namespace`/パラメータプロパティ、`.tsx` の import、tsconfig `paths` エイリアス — がバンドル済み出力から正しく実行されました。代替案の `--target=esnext` も試しましたが、そこでは `using` 宣言の反例により不採用と判断しました）。これは Node 22.0 自体での実行テストを構成するものではありません — 22.0 という下限は、esbuild 自身の `node22` ダウンレベリング契約に基づくものであり、その正確な Node バージョンに対して実行したテストに基づくものではありません。
+
+### `.tsx` プラグイン entry における JSX
+
+プラグインプロジェクト自身の `tsconfig.json` が JSX（`jsx` / `jsxImportSource`）を制御し、`paths` エイリアスと同じように entry のディスク上の位置から自動検出されます。tsconfig が存在しない場合は、esbuild のデフォルトである classic transform（`React.createElement`）が適用されます。異なる JSX ランタイムが必要な `.tsx` プラグイン entry は、JSX モードを宣言する自身の tsconfig を用意するか、互換性のある factory を明示的に import する必要があります。
+
+### バンドルエラー
+
+**コンパイルの失敗**（entry 自身のソースが不正、またはその import のいずれかが解決できない場合）は、`` plugin bundling: esbuild failed for plugin `{name}` … `` に続けて、esbuild 自身の診断情報（file:line:col を含む）として現れます。それ以外のバンドル準備段階の問題（esbuild 自体が見つからない、entry のディレクトリが書き込み不可、esbuild サブプロセスの起動失敗やタイムアウトなど）は、esbuild の診断情報を伴わない、それぞれ別個の `plugin bundling: …` メッセージとして現れます。ロード時や `setup`／ライフサイクルフックの実行中にコードが throw するプラグインは、これまでどおりお馴染みのプラグイン `init`／フックエラーとして現れます — バンドルの失敗と実行時の失敗は、区別して報告されます。
+
 ## `setup` — 仮想モジュール、エイリアス、注入ルート、client entry の登録
 
 `zfb build` ホストの起動ごとに **一度**、`zfb dev` ホストの起動ごとに一度、そして `zfb preview`（静的モード）ホストの起動ごとに一度、`preBuild` の前に実行されます。このフックは、プラグインがモジュール解決パイプライン（仮想モジュール + インポートエイリアス）、合成ページルート、package-owned client entry に寄与する場所です。`setup` が完了すると、レジストリはその実行の残りの期間中、凍結されます。以降に走るものが登録を追加したり、削除したり、差し替えたりすることはできません。

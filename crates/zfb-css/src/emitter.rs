@@ -34,6 +34,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+use crate::url_attribution::PackageUrlAsset;
+
 /// Raw bytes + stable URL produced by [`crate::CssPipeline::build_emitter`].
 ///
 /// The `bytes` are the same combined CSS string `CssPipeline::build()`
@@ -57,6 +59,15 @@ pub struct CssEmitterOutput {
     /// can match it against HTML without re-importing `zfb-types`
     /// transitively at the call site.
     pub stable_url: String,
+
+    /// Companion assets emitted for package-attributed `url()` references
+    /// the engine resolved and rewrote `bytes` to reference (issue #2316,
+    /// decision c). Empty for a project with no such references — the
+    /// common case. The caller (`run_css_emitter` in
+    /// `crates/zfb/src/commands/build.rs`) threads these into the css
+    /// `EmittedAsset.companions` slot, which the production pipeline
+    /// writes verbatim beside the hashed CSS entry.
+    pub companions: Vec<PackageUrlAsset>,
 }
 
 /// On-disk relative path under `dist_root` for the (pre-hash) CSS
@@ -135,6 +146,7 @@ mod tests {
             Ok(CssEmitterOutput {
                 bytes: b".x{}".to_vec(),
                 stable_url: zfb_types::STABLE_CSS_URL.to_string(),
+                companions: Vec::new(),
             })
         });
         let out = emitter.emit().unwrap();

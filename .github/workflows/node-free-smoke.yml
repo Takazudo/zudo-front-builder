@@ -89,7 +89,7 @@
 # `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
 # both the SHA and the version comment.
 
-name: Node-free smoke
+name: Binary smoke, scaffold E2E & showcase
 
 # Least privilege at the workflow level; showcase-preview widens its own job
 # to `pull-requests: write`. Every other workflow in this repo declares this —
@@ -970,7 +970,7 @@ jobs:
           curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
             -H 'Content-Type: application/json' \
             -d "{
-              \"value1\": \"Node-free smoke (released) failed\",
+              \"value1\": \"Binary smoke, scaffold E2E & showcase (released) failed\",
               \"value2\": \"${RAW_TAG} (${SHORT_SHA})\",
               \"value3\": \"${RUN_URL}\"
             }" || echo "::warning::IFTTT notification failed"

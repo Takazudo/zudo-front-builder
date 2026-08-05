@@ -43,6 +43,13 @@ roxmltree = "0.20"
 # dep of `axum` at this same 0.1.x line, so pinning it here adds no new
 # version to the dependency graph.
 serde_path_to_error = "0.1"
+# Source Map v3 parser (getsentry). Canonical decoder for both esbuild's
+# `--sourcemap=linked` output (zfb-build renderer) and the Tailwind v4
+# `--map` inline sourcemap that drives `url()` attribution in zfb-css
+# (#2311/#2315). Do NOT hand-roll VLQ decoding anywhere — this crate is
+# the one parser.
+sourcemap = "9"
+base64 = "0.22"
 
 # SWC umbrella crate. Pinning the major version here is the project's
 # single source of truth — both `zfb-render` (TSX→JS pipeline) and

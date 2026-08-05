@@ -37,6 +37,36 @@ export default definePlugin({
 
 Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins` array. A throw in any hook aborts the build (or the dev/preview boot) and surfaces the plugin name + the hook that threw in the error banner.
 
+## Plugin entry files — `.ts`, `.tsx`, `.mts`, `.cts` support
+
+A plugin `name` entry with extension `.ts`, `.tsx`, `.mts`, or `.cts` is bundled with zfb's own pinned esbuild before it is loaded, in `zfb build`, `zfb dev`, and `zfb preview` alike. This means a `.ts` plugin entry can:
+
+- **Split across files**, including a `./helper.js` specifier resolving to a sibling `helper.ts` source file.
+- **Use full TypeScript syntax** — `enum`, `namespace`, and constructor parameter properties all bundle and transform correctly.
+- **Import `.tsx` modules**, JSX and all.
+- **Use tsconfig `paths` aliases** — esbuild auto-discovers the plugin project's own `tsconfig.json` by walking up from the entry's real on-disk location, so alias resolution just works.
+
+`.js`, `.mjs`, and `.cjs` entries are unaffected — they load exactly as before, with no bundling step. A bare package specifier (e.g. `name: "@acme/my-plugin"`) is bundled only if that package's `exports`/`main` resolves to a `.ts`-family file, which in practice is almost never the case for a published package.
+
+**The `tsx`/`esm/api` register/unregister-per-hook loader shim workaround is no longer needed** for `.ts` plugin entries — bundling replaces it outright.
+
+### Remaining limits
+
+- A `.js`/`.mjs` entry that itself imports a `.ts` neighbour is **not** bundled — only the entry's own extension gates bundling. That import keeps today's plain-Node behavior: it works only for strip-only-compatible TypeScript syntax on a new enough Node, and never resolves under `node_modules`. If you hit this, rename the entry itself to `.ts`.
+- Inside a bundled plugin, a dynamic `import()` call with a static template prefix (for example `` import(`./mods/${name}.mjs`) ``) is frozen to whatever files exist at boot time — esbuild glob-inlines the matched files into the bundle rather than resolving the import at runtime. The staged bundle's own `import.meta.url` names the staged file, not the original source path, though `dirname()`-relative reads still work correctly (the bundle is staged in the entry's own directory).
+
+### Node version floor
+
+Plugin bundling invokes esbuild with `--target=node22`. As a consequence, `.ts` plugin entries no longer depend on Node's built-in type stripping at all — closing the Node 22.0–22.17 cliff as a type-stripping problem. This was verified on real Node 22.17.0 (all four bundling failure modes — sibling `.js`→`.ts` resolution, `enum`/`namespace`/parameter properties, a `.tsx` import, and a tsconfig `paths` alias — run correctly from the bundled output; a `--target=esnext` alternative was tried and disproven there via a `using`-declaration counterexample). This does not constitute an execution test on Node 22.0 itself — the 22.0 floor rests on esbuild's own `node22` downleveling contract, not on a test run against that exact Node version.
+
+### JSX in `.tsx` plugin entries
+
+The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`), auto-discovered from the entry's on-disk location the same way `paths` aliases are. With no tsconfig present, esbuild's default classic transform (`React.createElement`) applies. A `.tsx` plugin entry that needs a different JSX runtime must ship its own tsconfig declaring the JSX mode, or import a compatible factory explicitly.
+
+### Bundling errors
+
+A **compilation failure** — the entry's own source is invalid, or one of its imports cannot be resolved — surfaces as `` plugin bundling: esbuild failed for plugin `{name}` … `` followed by esbuild's own diagnostics (including file:line:col). Other bundling-setup problems (esbuild itself missing, the entry's directory not writable, the esbuild subprocess failing to spawn or timing out) surface as their own distinct `plugin bundling: …` messages, without esbuild diagnostics. A plugin whose code throws at load or during its `setup`/lifecycle hooks still surfaces as the familiar plugin `init`/hook error — bundling failures and runtime failures are reported distinctly.
+
 ## `setup` — register virtual modules, aliases, injected routes, and client entries
 
 Runs **once** per `zfb build` host boot, once per `zfb dev` host boot, and once per `zfb preview` (static mode) host boot, before `preBuild`. The hook is where a plugin contributes to the module-resolution pipeline (virtual modules + import aliases), synthetic page routes, and package-owned client entries. After `setup` completes, the registries are frozen for the remainder of the run — nothing that runs later can add a registration, drop one, or replace one.

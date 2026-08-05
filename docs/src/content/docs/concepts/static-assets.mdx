@@ -62,6 +62,42 @@ CSS works the same way — the URL is what the browser ultimately requests:
 }
 ```
 
+## CSS imported from a package: relative asset references
+
+The absolute-URL rule above is about **CSS you author** — your project's global stylesheet and anything it `@import`s from your own source tree. It does not apply to a stylesheet **`@import`ed from an npm package installed into `node_modules`**. A package stylesheet is written against its own directory, so it's normal for it to reference files with a relative `url()`:
+
+```css
+/* node_modules/some-ui-kit/dist/styles.css */
+@font-face {
+  font-family: "Some UI Kit";
+  src: url("./files/font.woff2") format("woff2");
+}
+```
+
+zfb resolves that reference against the stylesheet's own location, emits the referenced file as a content-hashed asset beside the compiled CSS — `{stem}-{hash8}.{ext}` — and rewrites the `url()` to a relative reference pointing at it: `./{stem}-{hash8}.{ext}`. The browser-facing URL is consistently `/assets/{stem}-{hash8}.{ext}`; on disk it lands in `dist/assets/` for a `zfb build` (or your configured `outDir`, if you've changed it from the default), and in `.zfb-build/dev-assets/assets/` while `zfb dev` is running. Importing the same file twice emits it once. A `?query` or `#fragment` suffix on the original reference is preserved on the rewritten one. This works for any file type a package stylesheet references — fonts, images, anything — not fonts only.
+
+**Your own authored CSS is unaffected — including a linked workspace package.** The global entry, any project-local `@import`ed stylesheet, and a stylesheet `@import`ed from a pnpm-workspace-linked sibling package (its canonical path resolves outside `node_modules`, since it's not actually installed there) all keep the [absolute-URL contract](#referencing-assets) above unchanged — a relative `url()` in any of them is passed through untouched, exactly as before. Only a stylesheet whose canonical path resolves inside `node_modules` is treated as a package import. `public/` copying, and `data:` / absolute / full URLs anywhere, are never touched by this rewrite either. The distinction is by **where the stylesheet's canonical path resolves**, not by anything you opt into: your CSS keeps working the same way it always has, and a `node_modules` package's CSS gets asset emission because it has no other way to ship files alongside itself.
+
+### When it fails
+
+The build fails — it never exits 0 with a broken stylesheet — when a package stylesheet's relative `url()` can't be resolved to an emittable file: the referenced path is missing, isn't a regular file, isn't readable, or resolves outside the package's own directory. The error names the package, the source stylesheet, and the reference:
+
+```
+error: cannot emit `url()` asset from an imported package stylesheet
+  package:    {name}@{version}
+  stylesheet: {canonical source path}
+  reference:  url({raw reference})
+  reason:     ...
+```
+
+To fix it: reinstall the package (the referenced file may be missing from an incomplete install), or vendor the file into `public/` and reference it by absolute URL instead of relying on the package's relative reference.
+
+<Note title="Attribution comes from the CSS compiler's source map">
+
+Which package a `url()` reference is attributed to is determined by the CSS compiler's own source map. zfb trusts that mapping and fails the build on any inconsistency it can detect. A source-map bug on the compiler side could in principle misattribute a reference — in practice this surfaces as a loud build error, since the file isn't found at the misattributed location. The one case that stays silent is a coincidence: a wrong source directory that happens to contain a file at the same relative path. That's a known, accepted residual limitation — not a gap zfb is unaware of.
+
+</Note>
+
 ## Do not import static assets as modules
 
 zfb does **not** run a bundler over `public/`. Patterns like the ones below — common in Vite, webpack, and similar toolchains — do not work here:
