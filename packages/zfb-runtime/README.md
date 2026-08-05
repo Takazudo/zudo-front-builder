@@ -48,7 +48,10 @@ constants, and plugin types, none of which require Hono.
 The runtime is **JSX-runtime-agnostic**. It never imports preact or
 react. The caller passes a `FrameworkAdapter` that pins `renderToString`
 to the chosen JSX runtime; both `preact-render-to-string` and
-`react-dom/server` slot in.
+`react-dom/server` slot in. `preact/compat` is a supported target, and
+the `react` peer dependency is **optional**
+(`peerDependenciesMeta.react.optional`) — a preact-only consumer does
+not need `react` installed and does not need `auto-install-peers=true`.
 
 ## Public API
 
@@ -440,3 +443,8 @@ instance — pinning `zfb` as a peer dep makes that explicit and lets pnpm
 hoist a single shared copy. Install matching published versions of
 `@takazudo/zfb-runtime` and `@takazudo/zfb` so that shared state remains
 single-instanced.
+
+Unlike `@takazudo/zfb`, the peer dependency on `react` is **optional**
+here too — preact/compat is a fully supported target, so a preact-only
+project does not need `react` installed and does not need
+`auto-install-peers=true` in its pnpm config.

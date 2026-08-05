@@ -160,7 +160,52 @@ const DEFAULT_WATCH_ROOTS: &[&str] = &[
 /// (issue #1391). These are the mutually-exclusive `zfb.config.*` files:
 /// a project has at most one, so warning about the absent variant(s)
 /// would be pure noise on every boot. See [`missing_watch_targets`].
+///
+/// Subsumed (but kept as its own basename-keyed check, not folded into
+/// [`is_default_watch_root`]) by the broader #2297 suppression below —
+/// every [`DEFAULT_WATCH_ROOTS`] member is now suppressed when missing,
+/// which already covers these two entries by full-path match.
 const WATCH_WARN_SKIP: &[&str] = &["zfb.config.json", "zfb.config.ts"];
+
+/// Is `root` (already normalized — see [`normalize_relative`]) exactly
+/// one of [`DEFAULT_WATCH_ROOTS`], compared on the FULL relative path
+/// rather than the basename?
+///
+/// Issue #2297 — `zfb dev` warned about every missing entry of
+/// `DEFAULT_WATCH_ROOTS`, including convention directories (`content`,
+/// `layouts`, `data`, …) a project deliberately doesn't have and cannot
+/// opt out of. A root equal to a default member is indistinguishable
+/// from "relying on the convention" — even a `CollectionDef::path` that
+/// literally spells out `"content"` carries no signal beyond the
+/// default itself — so it is always suppressed here.
+///
+/// Full-path (not basename) comparison is load-bearing: a configured
+/// collection whose basename merely COLLIDES with a default (e.g.
+/// `custom/content`) must still warn when missing — see
+/// [`missing_watch_targets`].
+fn is_default_watch_root(root: &Path) -> bool {
+    DEFAULT_WATCH_ROOTS.iter().any(|d| Path::new(d) == root)
+}
+
+/// Every configured collection's normalized, in-root relative path
+/// (issue #2297) — the same filtering [`derive_watch_roots`] applies
+/// before it collapses a path nested under an already-covered root
+/// (e.g. `content/blog` under `content`). Out-of-root collections
+/// (`allowOutsideRoot`) are excluded; they ride the absolute extras
+/// watch channel and are already checked there.
+///
+/// A collapsed nested path never appears in `derive_watch_roots`'s
+/// output at all, so [`missing_watch_targets`] must consult this list
+/// independently to keep warning about a genuinely missing configured
+/// collection.
+fn configured_collection_watch_paths(cfg: &config::Config) -> Vec<PathBuf> {
+    cfg.collections
+        .iter()
+        .map(|c| normalize_relative(&c.path))
+        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|p| !collection_path_escapes_root(p))
+        .collect()
+}
 
 /// Strip `.` components so `./src/mdx` and `src/mdx` compare equal in
 /// the dedupe / coverage checks below.
@@ -189,18 +234,13 @@ fn normalize_relative(path: &Path) -> PathBuf {
 ///   and skips them at registration.
 fn derive_watch_roots(cfg: &config::Config) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
-    let mut collection_paths: Vec<PathBuf> = cfg
-        .collections
-        .iter()
-        .map(|c| normalize_relative(&c.path))
-        .filter(|p| !p.as_os_str().is_empty())
-        // #1550 — an out-of-root collection (`allowOutsideRoot`, a `..`
-        // escape) must NOT ride the relative watch-root list: a literal
-        // `project_root.join("../x")` keeps a `..` component that never
-        // matches notify's canonical event paths. Those roots are routed to
-        // the absolute extras channel via [`ResolvedRoots`] instead.
-        .filter(|p| !collection_path_escapes_root(p))
-        .collect();
+    // #1550 — an out-of-root collection (`allowOutsideRoot`, a `..`
+    // escape) must NOT ride the relative watch-root list: a literal
+    // `project_root.join("../x")` keeps a `..` component that never
+    // matches notify's canonical event paths. Those roots are routed to
+    // the absolute extras channel via [`ResolvedRoots`] instead.
+    // `configured_collection_watch_paths` already applies that filter.
+    let mut collection_paths = configured_collection_watch_paths(cfg);
     // Shallow-first so a parent collection root lands before its
     // children and the coverage check below collapses the family to
     // the parent.
@@ -477,31 +517,39 @@ pub(crate) fn resolve_roots(project_root: &Path, cfg: &config::Config) -> Resolv
 /// thin, untested wrapper around unit-testable logic — mirroring the
 /// `fmt_*` / `warn` split in `crate::output`.
 ///
-/// The two `zfb.config.*` entries in [`DEFAULT_WATCH_ROOTS`] are
-/// deliberately EXCLUDED from the warning: they are mutually-exclusive
-/// config *files* (a project carries at most one, and a defaults-only
-/// project carries neither), so at least one is ALWAYS absent. Warning
-/// about them would fire on every single boot and drown out the real
-/// signal this exists for — a missing content/source *directory* that
-/// silently degrades into no-reload. A missing config file is the normal
-/// steady state, not a degraded mode.
+/// Every [`DEFAULT_WATCH_ROOTS`] entry — not just the two `zfb.config.*`
+/// files — is deliberately EXCLUDED from the warning (issue #2297,
+/// extending #1391's config-file-only carve-out). A project cannot opt
+/// out of these convention names, so a defaults-only project missing
+/// `content`/`layouts`/`data`/… is the normal steady state, not a
+/// degraded mode; warning about it would fire on every boot and drown
+/// out the real signal this exists for. `configured_collection_paths`
+/// keeps that real signal alive for a project-configured collection: a
+/// path is checked for existence independently of `watch_roots` even
+/// when [`derive_watch_roots`] collapsed it into a covering default
+/// (e.g. `content/blog` under `content` — it never appears in
+/// `watch_roots` at all in that case), and independently of whether it
+/// happens to already be present in `watch_roots` uncollapsed (deduped
+/// below either way).
 fn missing_watch_targets(
     project_root: &Path,
     watch_roots: &[PathBuf],
     extra_watch_paths: &[PathBuf],
+    configured_collection_paths: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut missing = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
     for root in watch_roots {
         let is_config_file = root
             .file_name()
             .and_then(|n| n.to_str())
             .map(|n| WATCH_WARN_SKIP.contains(&n))
             .unwrap_or(false);
-        if is_config_file {
+        if is_config_file || is_default_watch_root(root) {
             continue;
         }
         let full = project_root.join(root);
-        if !full.exists() {
+        if !full.exists() && seen.insert(full.clone()) {
             missing.push(full);
         }
     }
@@ -509,8 +557,23 @@ fn missing_watch_targets(
     // `resolve_extra_watch_paths`, `session.out_of_root_watch_targets()`, or
     // `resolve_css_import_watch_targets` — all canonicalise before adding).
     for extra in extra_watch_paths {
-        if !extra.exists() {
+        if !extra.exists() && seen.insert(extra.clone()) {
             missing.push(extra.clone());
+        }
+    }
+    // Issue #2297 — a configured collection path collapsed out of
+    // `watch_roots` by `derive_watch_roots` (nested under a covering
+    // default) is otherwise never checked at all. A path equal to a
+    // default (full-path match, matching `is_default_watch_root` above)
+    // is indistinguishable from relying on the convention, so it is
+    // suppressed the same way.
+    for path in configured_collection_paths {
+        if is_default_watch_root(path) {
+            continue;
+        }
+        let full = project_root.join(path);
+        if !full.exists() && seen.insert(full.clone()) {
+            missing.push(full);
         }
     }
     missing
@@ -1445,7 +1508,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // warn about any that don't exist yet so the silent no-reload mode
     // (see `missing_watch_targets` doc) is at least visible in the
     // dev server's own console output before the user hits it.
-    for missing in missing_watch_targets(&project_root, &watch_roots, &extra_watch_paths) {
+    // Issue #2297 — pass the configured collection paths separately so a
+    // path collapsed out of `watch_roots` (nested under a default) still
+    // gets checked.
+    for missing in missing_watch_targets(
+        &project_root,
+        &watch_roots,
+        &extra_watch_paths,
+        &configured_collection_watch_paths(&cfg),
+    ) {
         output::warn(format!(
             "watch target {} does not exist yet — it will not be watched \
              until you restart `zfb dev` after creating it",
@@ -10695,15 +10766,20 @@ mod tests {
         );
     }
 
-    /// Issue #1391 — a configured-but-missing derived watch root (e.g.
-    /// `content/` never created) AND a missing extra watch path must both
-    /// be reported so the boot path can warn the user. A present root and
-    /// a present extra path must NOT show up.
+    /// Issue #2297 (was #1391, updated to the new default-suppression
+    /// contract): a NON-default derived watch root that is missing (e.g.
+    /// a collection root named `assets` — `content` would no longer prove
+    /// anything, since #2297 suppresses every `DEFAULT_WATCH_ROOTS`
+    /// member) AND a missing extra watch path must both be reported so
+    /// the boot path can warn the user. A present root and a present
+    /// extra path must NOT show up.
     #[test]
     fn missing_watch_targets_flags_absent_root_and_extra_path() {
         let dir = tempfile::tempdir().unwrap();
-        // `content` is a derived watch root that does not exist under `dir`.
-        let watch_roots = vec![PathBuf::from("content"), PathBuf::from("pages")];
+        // `assets` stands in for a non-default derived watch root (e.g. a
+        // configured collection path outside `DEFAULT_WATCH_ROOTS`) that
+        // does not exist under `dir`.
+        let watch_roots = vec![PathBuf::from("assets"), PathBuf::from("pages")];
         std::fs::create_dir_all(dir.path().join("pages")).unwrap();
 
         let present_extra = dir.path().join("present-extra");
@@ -10711,11 +10787,11 @@ mod tests {
         let missing_extra = dir.path().join("missing-extra");
         let extra_watch_paths = vec![present_extra, missing_extra.clone()];
 
-        let missing = missing_watch_targets(dir.path(), &watch_roots, &extra_watch_paths);
+        let missing = missing_watch_targets(dir.path(), &watch_roots, &extra_watch_paths, &[]);
 
         assert_eq!(
             missing,
-            vec![dir.path().join("content"), missing_extra],
+            vec![dir.path().join("assets"), missing_extra],
             "must flag exactly the missing root and the missing extra path"
         );
     }
@@ -10727,34 +10803,87 @@ mod tests {
     fn missing_watch_targets_empty_when_everything_exists() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("content")).unwrap();
-        let missing = missing_watch_targets(dir.path(), &[PathBuf::from("content")], &[]);
+        let missing = missing_watch_targets(dir.path(), &[PathBuf::from("content")], &[], &[]);
         assert!(missing.is_empty());
     }
 
-    /// Issue #1391 — the mutually-exclusive `zfb.config.*` entries in
-    /// `DEFAULT_WATCH_ROOTS` must NOT be reported as missing: at least
-    /// one is always absent, so warning about them would spam every boot
-    /// and bury the real content/source-dir signal. Passing the real
-    /// default roots against an empty project must surface the missing
-    /// *directories* but never the config files.
+    /// Issue #2297 (supersedes #1391's config-files-only version): EVERY
+    /// `DEFAULT_WATCH_ROOTS` entry — the mutually-exclusive `zfb.config.*`
+    /// files AND the convention directories (`content`, `layouts`,
+    /// `data`, …) — must NOT be reported as missing. A project cannot
+    /// opt out of these names, so a defaults-only project missing all of
+    /// them is the normal steady state, not a degraded mode. Passing the
+    /// real default roots against an empty project must produce zero
+    /// warnings.
     #[test]
-    fn missing_watch_targets_never_flags_config_files() {
+    fn missing_watch_targets_never_flags_default_roots() {
         let dir = tempfile::tempdir().unwrap();
-        // Empty project: no default dirs, no config files exist.
+        // Empty project: nothing in DEFAULT_WATCH_ROOTS exists on disk.
         let roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
-        let missing = missing_watch_targets(dir.path(), &roots, &[]);
-        for m in &missing {
-            let name = m.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-            assert!(
-                !WATCH_WARN_SKIP.contains(&name),
-                "config file {m:?} must never be reported as a missing watch target"
-            );
-        }
-        // Sanity: the directory roots ARE still reported (e.g. `content`).
+        let missing = missing_watch_targets(dir.path(), &roots, &[], &[]);
         assert!(
-            missing.contains(&dir.path().join("content")),
-            "a missing content/ dir must still be flagged; got {missing:?}"
+            missing.is_empty(),
+            "no DEFAULT_WATCH_ROOTS member may ever be reported missing; got {missing:?}"
         );
+    }
+
+    /// Issue #2297 — a project-configured collection path that is NOT a
+    /// `DEFAULT_WATCH_ROOTS` member must still warn when missing, naming
+    /// the configured path itself (not the collection's logical `name`).
+    #[test]
+    fn missing_watch_targets_still_flags_configured_missing_collection() {
+        let dir = tempfile::tempdir().unwrap();
+        let configured = vec![PathBuf::from("notes")];
+        let missing = missing_watch_targets(dir.path(), &[], &[], &configured);
+        assert_eq!(missing, vec![dir.path().join("notes")]);
+    }
+
+    /// Issue #2297 — a configured collection path whose BASENAME collides
+    /// with a `DEFAULT_WATCH_ROOTS` member (`custom/content` vs
+    /// `content`) must still warn when missing: the suppression
+    /// predicate compares the FULL normalized path, never the basename,
+    /// so this is not wrongly treated as "the default `content` root".
+    #[test]
+    fn missing_watch_targets_flags_basename_colliding_configured_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let configured = vec![PathBuf::from("custom/content")];
+        let missing = missing_watch_targets(dir.path(), &[], &[], &configured);
+        assert_eq!(missing, vec![dir.path().join("custom/content")]);
+    }
+
+    /// Issue #2297 — a collection path collapsed into a covering default
+    /// root by `derive_watch_roots` (e.g. `content/blog` under `content`)
+    /// never appears in `watch_roots` at all, so `missing_watch_targets`
+    /// must check it independently via `configured_collection_paths` —
+    /// otherwise a genuinely missing custom collection under `content/`
+    /// goes completely unwarned.
+    #[test]
+    fn missing_watch_targets_flags_collection_path_collapsed_into_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("content")).unwrap();
+        let watch_roots: Vec<PathBuf> = DEFAULT_WATCH_ROOTS.iter().map(PathBuf::from).collect();
+        assert!(
+            !watch_roots.contains(&PathBuf::from("content/blog")),
+            "sanity: derive_watch_roots-style collapse means the nested \
+             path is never in watch_roots"
+        );
+        let configured = vec![PathBuf::from("content/blog")];
+        let missing = missing_watch_targets(dir.path(), &watch_roots, &[], &configured);
+        assert_eq!(missing, vec![dir.path().join("content/blog")]);
+    }
+
+    /// Issue #2297 — a configured collection path that also appears
+    /// verbatim in `watch_roots` (not collapsed under any default, the
+    /// real shape `derive_watch_roots` + `configured_collection_watch_paths`
+    /// produce together for a top-level custom collection) must produce
+    /// exactly ONE warning, not two.
+    #[test]
+    fn missing_watch_targets_dedupes_configured_path_also_in_watch_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let watch_roots = vec![PathBuf::from("notes")];
+        let configured = vec![PathBuf::from("notes")];
+        let missing = missing_watch_targets(dir.path(), &watch_roots, &[], &configured);
+        assert_eq!(missing, vec![dir.path().join("notes")]);
     }
 
     /// Issue #534 regression — dev's per-route HTML output dir must live

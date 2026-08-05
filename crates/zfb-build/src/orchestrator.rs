@@ -423,9 +423,13 @@ pub struct OrchestratorConfig {
     /// Project root (handed to [`zfb_watcher::Watcher::start`]).
     pub project_root: PathBuf,
 
-    /// Relative source roots to watch. Typical: `["content", "pages",
-    /// "components", "layouts", "styles", "data", "public",
-    /// "zfb.config.ts"]`.
+    /// Relative source roots to watch. Typical (the zfb command layer's
+    /// `DEFAULT_WATCH_ROOTS`, `crates/zfb/src/commands/dev.rs`): `["pages",
+    /// "content", "components", "layouts", "styles", "data", "src",
+    /// "zfb.config.json", "zfb.config.ts"]` plus any configured collection
+    /// path. `public` is deliberately excluded — it is served directly
+    /// from disk and does not feed the dep-graph or the renderer (issue
+    /// #1165).
     pub watch_roots: Vec<PathBuf>,
 
     /// Extra absolute paths to watch in addition to `watch_roots`.

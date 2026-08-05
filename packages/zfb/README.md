@@ -79,7 +79,10 @@ surface. Today it covers:
 
 The package is JSX-runtime-agnostic: the `Island` component does not
 import preact or react, so it works under either framework adapter
-without bundling the wrong runtime.
+without bundling the wrong runtime. `react` is listed as a peer
+dependency but is **optional** (`peerDependenciesMeta.react.optional`)
+— a preact/compat-only consumer does not need `react` installed and
+does not need `auto-install-peers=true`.
 
 ## Usage
 
