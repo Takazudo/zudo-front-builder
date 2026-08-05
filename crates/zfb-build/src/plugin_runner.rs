@@ -3544,6 +3544,10 @@ mod tests {
             "error must match the locked bundle-failure prefix.\nexpected prefix: {expected_prefix}\ngot: {msg}"
         );
         assert!(
+            msg.contains("✘ [ERROR]"),
+            "the error must carry esbuild's own diagnostic marker, not just our wrapper text: {msg}"
+        );
+        assert!(
             !msg.contains("Evaluating a `zfb.config.ts`"),
             "the config-loader diagnostic must never leak onto the plugin path: {msg}"
         );
@@ -3704,5 +3708,438 @@ mod tests {
             !staged_path.exists(),
             "the staged bundle must be removed once the host (all its clones) is dropped"
         );
+    }
+
+    // --- #2309 through-the-host test coverage (complements the wiring
+    // tests above, does not duplicate them) --------------------------------
+
+    #[tokio::test]
+    async fn ts_plugin_dot_js_import_resolves_to_sibling_ts_through_real_host() {
+        // Failure mode 1 (the reporting issue's headline case), promoted
+        // from `plugin_bundler::tests::ts_entry_with_extensionless_js_import_resolves_to_sibling_ts`
+        // (which only proves the BUNDLE inlines the sibling's export) to
+        // the real host: an entry importing `./helper.js` — a path
+        // esbuild resolves to the sibling `helper.ts` source — must
+        // actually LOAD and RUN through `spawn_with_timeout`, not merely
+        // bundle cleanly.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        tokio::fs::write(
+            root.join("helper.ts"),
+            "export const helperMarker = \"dot-js-import-marker\";\n",
+        )
+        .await
+        .unwrap();
+        let marker_file = root.join("marker.txt");
+        let plugin_path = root.join("index.ts");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            import {{ helperMarker }} from "./helper.js";
+
+            export default {{
+              name: "dot-js-import-plugin",
+              preBuild() {{
+                writeFileSync({marker_file:?}, helperMarker);
+              }},
+            }};
+            "#,
+            marker_file = marker_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "dot-js-import-plugin".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect("a `./helper.js` import resolving to sibling helper.ts should bundle and load");
+
+        let ctx = BuildHookContext {
+            project_root: root.to_path_buf(),
+            out_dir: root.join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
+        assert_eq!(written, "dot-js-import-marker");
+    }
+
+    #[tokio::test]
+    async fn tsx_import_actually_executes_through_real_host() {
+        // Wave 4's `tsx_plugin_entry_with_paths_alias_loads_through_real_host`
+        // deliberately never CALLS its Widget component (its own comment
+        // says so) — proving only that JSX syntax survives `import()`.
+        // #2309 asks for a `.tsx` import whose module actually EXECUTES:
+        // the entry here calls the imported component and writes the
+        // values that come back out of the executed JSX call, which is
+        // only possible if esbuild's JSX transform produced runnable code
+        // (not merely parseable code) and the runtime factory it calls
+        // actually ran.
+        //
+        // Classic JSX (`jsxFactory: "h"`, `h` defined in the SAME file as
+        // the JSX usage) is used instead of the automatic runtime so the
+        // test needs no jsx-runtime package staged in a node_modules the
+        // fixture doesn't have — `--packages=external` would otherwise
+        // leave an automatic-runtime import unresolved at Node's import
+        // time.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        tokio::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"jsx":"react","jsxFactory":"h"}}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            root.join("widget.tsx"),
+            r#"export function h(type: string, props: Record<string, unknown> | null, ...children: unknown[]) {
+  return { type, props, children };
+}
+export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-body"}</div>;
+"#,
+        )
+        .await
+        .unwrap();
+        let marker_file = root.join("marker.txt");
+        let plugin_path = root.join("index.ts");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            import {{ Widget }} from "./widget.tsx";
+
+            export default {{
+              name: "tsx-actually-executes",
+              preBuild() {{
+                // Calling Widget() is the whole point of this test — the
+                // marker only reaches disk if the compiled `h(...)` call
+                // actually ran and returned a real value.
+                const vnode = Widget();
+                writeFileSync({marker_file:?}, JSON.stringify(vnode));
+              }},
+            }};
+            "#,
+            marker_file = marker_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "tsx-actually-executes".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect("a .tsx import calling its exported component should bundle and load");
+
+        let ctx = BuildHookContext {
+            project_root: root.to_path_buf(),
+            out_dir: root.join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
+        let vnode: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(
+            vnode["type"].as_str().unwrap(),
+            "div",
+            "the executed JSX call should have produced a real vnode, not a literal: {written}"
+        );
+        assert_eq!(
+            vnode["props"]["data-marker"].as_str().unwrap(),
+            "tsx-widget-marker"
+        );
+        assert_eq!(
+            vnode["children"][0].as_str().unwrap(),
+            "tsx-widget-body",
+            "the component's child text should be present in the ACTUAL call result: {written}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mjs_plugin_import_meta_url_and_relative_fs_read_are_unchanged_through_real_host() {
+        // Regression required by #2309: for an existing (non-TS) plugin,
+        // the Wave-2 contract must hold exactly as it did before #2308 —
+        // no staging happens at all, `import.meta.url` still names the
+        // ORIGINAL on-disk file (not a staged copy — none exists), and a
+        // relative filesystem read next to the plugin file keeps
+        // working. Reuses the panicking-getter laziness proof from
+        // `mjs_plugin_never_touches_esbuild_resolution` so this test also
+        // independently re-confirms bundling never runs for a `.mjs`
+        // entry.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        tokio::fs::write(root.join("sidecar.txt"), "sidecar-marker")
+            .await
+            .unwrap();
+        let marker_file = root.join("marker.txt");
+        let plugin_path = root.join("plugin.mjs");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync, readFileSync }} from "node:fs";
+            import {{ fileURLToPath }} from "node:url";
+            import {{ dirname, join }} from "node:path";
+
+            export default {{
+              name: "mjs-dirname-plugin",
+              preBuild() {{
+                const dir = dirname(fileURLToPath(import.meta.url));
+                const sidecar = readFileSync(join(dir, "sidecar.txt"), "utf8");
+                writeFileSync({marker_file:?}, JSON.stringify({{ dir, sidecar, url: import.meta.url }}));
+              }},
+            }};
+            "#,
+            marker_file = marker_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter: EmbeddedEsbuildGetter =
+            Box::new(|| panic!("embedded getter must not be invoked for a pure-.mjs plugin set"));
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "mjs-dirname-plugin".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect(".mjs plugin should load via the untouched plain-import() path");
+
+        let ctx = BuildHookContext {
+            project_root: root.to_path_buf(),
+            out_dir: root.join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(parsed["sidecar"].as_str().unwrap(), "sidecar-marker");
+        // Compare against the CANONICALIZED root, not the raw tempdir path:
+        // on macOS `std::env::temp_dir()` sits under `/var`, a symlink to
+        // `/private/var`, and Node's ESM loader canonicalizes module paths
+        // (`fs.realpath`) when computing `import.meta.url` — a platform
+        // quirk of the test's tempdir, unrelated to bundling.
+        let canonical_root = std::fs::canonicalize(root).unwrap();
+        assert_eq!(
+            parsed["dir"].as_str().unwrap(),
+            canonical_root.to_string_lossy(),
+            "dirname(fileURLToPath(import.meta.url)) must be the plugin's ORIGINAL directory: {written}"
+        );
+        assert!(
+            parsed["url"].as_str().unwrap().ends_with("plugin.mjs"),
+            "import.meta.url must still name the original on-disk file — no staged copy exists for .mjs: {written}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundled_ts_plugin_dirname_relative_sidecar_read_succeeds_through_real_host() {
+        // The Wave-2 `import.meta.url` contract (#2303 decision record):
+        // the bundle is staged in the ENTRY's own directory, so
+        // `dirname(fileURLToPath(import.meta.url))` still resolves to
+        // that directory even though the staged file's NAME differs from
+        // the entry's. Assert the dirname-relative read succeeds —
+        // deliberately do NOT assert on the staged filename itself (the
+        // decision record is explicit that the filename is allowed to
+        // differ).
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        tokio::fs::write(root.join("sidecar.txt"), "ts-sidecar-marker")
+            .await
+            .unwrap();
+        let marker_file = root.join("marker.txt");
+        let plugin_path = root.join("plugin.ts");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync, readFileSync }} from "node:fs";
+            import {{ fileURLToPath }} from "node:url";
+            import {{ dirname, join }} from "node:path";
+
+            export default {{
+              name: "ts-dirname-plugin",
+              preBuild() {{
+                const dir = dirname(fileURLToPath(import.meta.url));
+                const sidecar = readFileSync(join(dir, "sidecar.txt"), "utf8");
+                writeFileSync({marker_file:?}, JSON.stringify({{ dir, sidecar }}));
+              }},
+            }};
+            "#,
+            marker_file = marker_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "ts-dirname-plugin".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect("a .ts entry reading a dirname-relative sidecar should bundle and load");
+
+        let ctx = BuildHookContext {
+            project_root: root.to_path_buf(),
+            out_dir: root.join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(
+            parsed["sidecar"].as_str().unwrap(),
+            "ts-sidecar-marker",
+            "a dirname-relative sidecar read must succeed for a bundled .ts plugin: {written}"
+        );
+        // See the matching comment in
+        // `mjs_plugin_import_meta_url_and_relative_fs_read_are_unchanged_through_real_host`:
+        // compare against the canonicalized root, not the raw tempdir
+        // path, to sidestep macOS's `/var` -> `/private/var` symlink.
+        let canonical_root = std::fs::canonicalize(root).unwrap();
+        assert_eq!(
+            parsed["dir"].as_str().unwrap(),
+            canonical_root.to_string_lossy(),
+            "the staged bundle's dirname must still be the entry's OWN directory: {written}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundled_ts_plugin_bare_specifier_resolves_from_project_node_modules_through_real_host()
+    {
+        // Decision (b): `--packages=external` leaves bare specifiers
+        // unresolved at bundle time; the entry is staged in ITS OWN
+        // directory (not a shared tempdir), so Node's ordinary ancestor
+        // `node_modules` walk from the staged file's location is
+        // identical to the original entry's. Proves a bundled .ts plugin
+        // importing a bare-specifier dep from the project's
+        // `node_modules` resolves at import time.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let dep_dir = root.join("node_modules/fake-dep");
+        tokio::fs::create_dir_all(&dep_dir).await.unwrap();
+        tokio::fs::write(
+            dep_dir.join("package.json"),
+            r#"{"name":"fake-dep","version":"1.0.0","type":"module","main":"index.mjs"}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dep_dir.join("index.mjs"),
+            "export const depMarker = \"node-modules-dep-marker\";\n",
+        )
+        .await
+        .unwrap();
+
+        let marker_file = root.join("marker.txt");
+        let plugin_path = root.join("plugin.ts");
+        let plugin_src = format!(
+            r#"
+            import {{ writeFileSync }} from "node:fs";
+            import {{ depMarker }} from "fake-dep";
+
+            export default {{
+              name: "ts-bare-specifier-plugin",
+              preBuild() {{
+                writeFileSync({marker_file:?}, depMarker);
+              }},
+            }};
+            "#,
+            marker_file = marker_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "ts-bare-specifier-plugin".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect(
+            "a bare-specifier import from the project's node_modules should resolve at runtime",
+        );
+
+        let ctx = BuildHookContext {
+            project_root: root.to_path_buf(),
+            out_dir: root.join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
+        assert_eq!(written, "node-modules-dep-marker");
     }
 }
