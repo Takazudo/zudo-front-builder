@@ -2385,6 +2385,12 @@ fn internal_shadow_config_path(project_root: &Path, config: &Path) -> Result<Opt
     // `.next()`-only check never excluded it. This mirrors the migration
     // `usable_rel` already received (issues #2051/#2128/#2146, `build.rs`'s
     // `IslandsShadowPaths::usable_rel`).
+    //
+    // Deliberately unsupported (issue #2322): a path-style `extends` (relative
+    // or absolute alike — `config` arrives already resolved) into a workspace
+    // SIBLING's unhoisted `node_modules` — the two wholesale stage symlinks
+    // cover only the workspace-root and project installs. Bare package-name
+    // `extends` is unaffected; a fix adds coverage, not resolution.
     if zfb_types::has_node_modules_segment(relative) {
         return Ok(None);
     }
