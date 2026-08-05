@@ -134,7 +134,9 @@ pub fn attribute_and_enforce_package_url_floor(raw_css: &str, base_dir: &Path) -
 }
 
 /// The comment Tailwind's `--map` appends to the output file. Everything
-/// before it is the exact CSS text a `--map`-less invocation would produce.
+/// before it (minus the CLI's one separator newline — see
+/// [`split_sourcemap_comment`]) is the exact CSS text a `--map`-less
+/// invocation would produce.
 const SOURCEMAP_COMMENT_PREFIX: &str = "/*# sourceMappingURL=";
 
 /// Split a trailing `/*# sourceMappingURL=... */` comment off `raw`, returning
@@ -142,6 +144,12 @@ const SOURCEMAP_COMMENT_PREFIX: &str = "/*# sourceMappingURL=";
 /// only recognised in trailing position (nothing but whitespace after its
 /// `*/`) — a lookalike in the middle of the text is someone's content, not
 /// the compiler's annotation, and is left alone.
+///
+/// External-tool contract (pinned Tailwind v4 CLI, verified empirically):
+/// `--map` writes `{css}\n{comment}` — one separator newline between the
+/// `--map`-less output and the comment. That separator is the comment's, not
+/// the stylesheet's, so it is stripped with it; keeping it would change the
+/// shipped bytes (and every downstream content hash) on every real build.
 pub fn split_sourcemap_comment(raw: &str) -> (&str, Option<&str>) {
     let Some(start) = raw.rfind(SOURCEMAP_COMMENT_PREFIX) else {
         return (raw, None);
@@ -153,7 +161,9 @@ pub fn split_sourcemap_comment(raw: &str) -> (&str, Option<&str>) {
     if !after[end + 2..].trim().is_empty() {
         return (raw, None);
     }
-    (&raw[..start], Some(after[..end].trim()))
+    let css = &raw[..start];
+    let css = css.strip_suffix('\n').unwrap_or(css);
+    (css, Some(after[..end].trim()))
 }
 
 /// Extract the base64 payload of an inline `data:application/json;base64,...`
@@ -331,9 +341,18 @@ fn has_node_modules_component(path: &Path) -> bool {
 /// Walk up from the canonical source path to the nearest `package.json` and
 /// read the package identity. Missing/unreadable/nameless manifest → hard
 /// error naming the source path (locked decision b, step 4).
+///
+/// The walk never crosses a `node_modules` boundary: a stylesheet whose
+/// package ships no `package.json` must hard-error, not walk up past
+/// `node_modules` and adopt the application's own root manifest — that would
+/// attribute the package to the app and widen the containment root to the
+/// whole project.
 fn package_identity(source_canonical: &Path) -> Result<PackageOrigin> {
     let mut dir = source_canonical.parent();
     while let Some(d) = dir {
+        if d.file_name().is_some_and(|n| n == "node_modules") {
+            break;
+        }
         let manifest_path = d.join("package.json");
         if manifest_path.is_file() {
             let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
@@ -903,10 +922,6 @@ mod tests {
 
     #[test]
     fn missing_package_json_is_a_hard_error_naming_the_source_path() {
-        // A node_modules-shaped source with NO package.json anywhere up the
-        // tree. tempdirs live under paths with no package.json ancestors in
-        // practice; if an ancestor manifest ever exists the walk would find
-        // it — acceptable for this fixture.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let orphan_dir = root.join("node_modules/orphan");
@@ -916,23 +931,52 @@ mod tests {
 
         let css = ".a{background:url(./x.png)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
-        let result = attribute_relative_urls(css, Some(&map), root);
-        if let Err(err) = result {
-            let msg = format!("{err}");
-            assert!(msg.contains("no package.json found"), "{msg}");
-            assert!(msg.contains("index.css"), "{msg}");
-        } else {
-            // An ancestor package.json outside the tempdir got picked up —
-            // environment-dependent, but the walk itself behaved as specified.
-        }
+        let err = attribute_relative_urls(css, Some(&map), root)
+            .expect_err("manifest-less package must hard-error");
+        let msg = format!("{err}");
+        assert!(msg.contains("no package.json found"), "{msg}");
+        assert!(msg.contains("index.css"), "{msg}");
+    }
+
+    #[test]
+    fn manifest_walk_never_crosses_node_modules_to_adopt_the_app_manifest() {
+        // A manifest-less package must NOT walk up past node_modules and
+        // attribute itself to the application's root package.json — that
+        // would misname the package AND widen the containment root to the
+        // whole project.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("package.json"),
+            r#"{"name":"my-app","version":"0.0.1"}"#,
+        )
+        .unwrap();
+        let orphan_dir = root.join("node_modules/orphan");
+        fs::create_dir_all(&orphan_dir).unwrap();
+        let stylesheet = orphan_dir.join("index.css");
+        fs::write(&stylesheet, "x\n").unwrap();
+
+        let css = ".a{background:url(./x.png)}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+        let err = attribute_relative_urls(css, Some(&map), root)
+            .expect_err("must hard-error, never adopt the app manifest");
+        let msg = format!("{err}");
+        assert!(msg.contains("no package.json found"), "{msg}");
+        assert!(
+            !msg.contains("my-app"),
+            "the app's own manifest must never be adopted:\n{msg}"
+        );
     }
 
     // ---- sourcemap comment strip + parse ---------------------------------
 
     #[test]
     fn split_strips_only_a_trailing_sourcemap_comment() {
+        // The real CLI shape: `{css}\n{comment}` — the separator newline is
+        // the comment's and must be stripped with it, so the result is
+        // byte-identical to a `--map`-less run.
         let css = ".a{color:red}\n";
-        let raw = format!("{css}/*# sourceMappingURL=data:application/json;base64,e30= */\n");
+        let raw = format!("{css}\n/*# sourceMappingURL=data:application/json;base64,e30= */\n");
         let (stripped, url) = split_sourcemap_comment(&raw);
         assert_eq!(stripped, css, "stripped CSS must be byte-identical");
         assert_eq!(url, Some("data:application/json;base64,e30="));
@@ -972,7 +1016,7 @@ mod tests {
         fs::write(root.join("styles/hero.png"), "png").unwrap();
         let map = map_of(&[(0, 0, authored.to_str().unwrap())]);
         let raw = format!(
-            "{css}/*# sourceMappingURL=data:application/json;base64,{} */\n",
+            "{css}\n/*# sourceMappingURL=data:application/json;base64,{} */\n",
             encode(&map)
         );
         let out = attribute_and_enforce_package_url_floor(&raw, root).expect("authored passes");
@@ -982,7 +1026,7 @@ mod tests {
         let css = "@font-face{src:url(./files/a.woff2)}\n";
         let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
         let raw = format!(
-            "{css}/*# sourceMappingURL=data:application/json;base64,{} */\n",
+            "{css}\n/*# sourceMappingURL=data:application/json;base64,{} */\n",
             encode(&map)
         );
         let err = attribute_and_enforce_package_url_floor(&raw, root).expect_err("floor fires");
