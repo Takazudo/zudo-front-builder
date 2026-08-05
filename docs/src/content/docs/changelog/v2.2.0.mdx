@@ -1,0 +1,72 @@
+---
+title: v2.2.0
+sidebar_position: 20200999
+---
+
+# v2.2.0
+
+Released: 2026-08-06
+
+CSS `url()` references inside package stylesheets are now emitted and rebased. A stylesheet
+`@import`ed from a package can point at its own assets with a relative `url()`, and zfb copies each
+referenced file out to a content-hashed companion and rewrites the reference to match — with
+attribution back to the owning package, and a hard error rather than a silent miss when a reference
+cannot be resolved. The dev pipeline writes and prunes those companions on every tick, matching the
+build pipeline's lifecycle.
+
+Plugin entrypoints written in TypeScript now work end to end: a `.ts` plugin is bundled through
+esbuild before the host spawns it, with `.cts` CommonJS execution repaired and the subprocess wait
+bounded so a hung bundle can no longer stall a build.
+
+`create-zfb`'s scaffold output is also now continuously deployed to
+[create-zfb.takazudomodular.com](https://create-zfb.takazudomodular.com) from the same artifact the
+pre-publish scaffold E2E already builds — so what the showcase serves cannot drift from what
+`npm create zfb@latest` produces.
+
+## Features
+
+- feat(dev): write and prune CSS companions in the dev pipeline (#2317) (527e779b)
+- feat(zfb-css): emit and rebase package url() references (#2316) (1a81312f)
+- feat(zfb-css): sourcemap url() attribution + package hard-error floor (#2315) (e399aa52)
+- feat(zfb-css): pure url() byte-span scanner (#2314) (708f17c8)
+- feat(plugins): wire the .ts bundle step into the spawn path (#2308) (956d367a)
+- feat(zfb-build): add plugin_bundler helper module (#2307) (125706c2)
+- feat(showcase): add deploy-time banner injector script (c768c954)
+- feat(showcase): export packed-clean-room dist via ZFB_SMOKE_DIST_OUT (3b51fab0)
+- feat(create-zfb-showcase): add assets-only Cloudflare worker config (50479c73)
+
+## Bug Fixes
+
+- fix(zfb-css): hex-escape control chars in rewritten url() suffixes; reject minify flags with attribution (7783615d)
+- fix(zfb-css): re-escape the url() suffix for its splice quote context (c8ee68bd)
+- fix(zfb-css): strip the --map separator newline; bound manifest walk at node_modules (f1c3cc3e)
+- fix(zfb-css): url scanner must not match inside at-keyword/hash tokens (b14116c7)
+- fix(plugins): repair .cts CommonJS execution and duplicate-spec module caching (e2fb6155)
+- fix(plugins): force-kill the host when init fails, avoiding a leak (76f6debf)
+- fix(zfb-build): bound the plugin-bundle esbuild subprocess wait (711bfd0e)
+- fix(build): make internal_shadow_config_path reject any node_modules segment (c6cb2ba7)
+- fix(dev): suppress missing-watch-target warnings for default watch roots (3f54f0ee)
+- fix(showcase): close review findings — wrangler ACE, fail-open banner, silent skips (198d2683)
+
+## Other Changes
+
+- docs: correct two overbroad limitation claims (#2328) (9ad28202)
+- docs(architecture): qualify the sibling-extends workarounds by config location (6b2eb2ce)
+- docs(architecture): record sibling unhoisted node_modules extends as unsupported (a672c6b8)
+- docs: qualify the pnpm-install rationale in the dev-watcher asset note (7172771b)
+- docs: document that zfb dev does not watch url()-referenced package assets (454aa211)
+- docs(static-assets): fix codex review findings on package-url docs (76c925cb)
+- docs(static-assets): document package @import url() rebasing (e6163a4a)
+- docs(plugins): scope the bundling-error shape to compilation failures (b175b304)
+- docs(plugins): document .ts plugin entry support (#2310) (afe4c8aa)
+- docs(readme): document preact/compat support and optional react peer (b58efd7c)
+- docs(showcase): link the live create-zfb showcase and record its tier (a1cb6ccc)
+- test(zfb): pin run_css_emitter's companion boundary + tighten the negative-case assertions (18da48ed)
+- test(zfb-build): pin the package url() rebase e2e contract (#2318) (d28b9bd7)
+- test(plugins): add through-the-host .ts plugin coverage (#2309) (3489b5d2)
+- style(build): rustfmt the nested node_modules tsconfig regression test fixture (6631da47)
+- test(build): add production-path regression tests for nested workspace node_modules tsconfig exclusion (84db8fbf)
+- ci(workflows): rename node-free-smoke workflow to describe current scope (d801153a)
+- ci(showcase): deploy the create-zfb scaffold output on main, preview on PRs (44f9f80f)
+- ci(showcase): run the root-level vitest suite in health.yml and b4push (e415bdec)
+- chore(deps): bump zudo-doc to 5.0.1 and zfb family to 2.1.0 in docs (047dfd39)

@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb-md-wasm",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": false,
   "type": "module",
   "description": "zfb's md/mdx -> JS/HTML conversion pipeline compiled to WebAssembly, for browser-side dynamic conversion (CMS live preview with parity to zfb's production output).",
