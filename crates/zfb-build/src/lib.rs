@@ -60,6 +60,7 @@ pub mod module_worker;
 pub mod orchestrator;
 pub mod pipeline;
 pub mod plan;
+pub mod plugin_bundler;
 pub mod plugin_refresh;
 pub mod plugin_registries;
 pub mod plugin_runner;
@@ -112,6 +113,10 @@ pub use pipeline::{
     SsrPublishProbe, StaleProbe,
 };
 pub use plan::{ContentNarrowing, PageSelection, RebuildPlan};
+pub use plugin_bundler::{
+    bundle_plugin_entry, needs_bundling, resolve_esbuild_for_plugins, EmbeddedEsbuildGetter,
+    StagedPluginBundle, PLUGIN_BUNDLE_TEMP_PREFIX, PLUGIN_BUNDLE_TEMP_SUFFIX,
+};
 pub use plugin_refresh::{
     PluginRefreshOutcome, PluginRefreshState, PluginVirtualModuleStore, PluginWatchOwnership,
 };
