@@ -65,7 +65,7 @@ export default definePlugin({
 
 ### バンドルエラー
 
-バンドルの失敗は `` plugin bundling: esbuild failed for plugin `{name}` … `` に続けて、esbuild 自身の診断情報（file:line:col を含む）として現れます。ロード時や `setup`／ライフサイクルフックの実行中にコードが throw するプラグインは、これまでどおりお馴染みのプラグイン `init`／フックエラーとして現れます — バンドルの失敗と実行時の失敗は、区別して報告されます。
+**コンパイルの失敗**（entry 自身のソースが不正、またはその import のいずれかが解決できない場合）は、`` plugin bundling: esbuild failed for plugin `{name}` … `` に続けて、esbuild 自身の診断情報（file:line:col を含む）として現れます。それ以外のバンドル準備段階の問題（esbuild 自体が見つからない、entry のディレクトリが書き込み不可、esbuild サブプロセスの起動失敗やタイムアウトなど）は、esbuild の診断情報を伴わない、それぞれ別個の `plugin bundling: …` メッセージとして現れます。ロード時や `setup`／ライフサイクルフックの実行中にコードが throw するプラグインは、これまでどおりお馴染みのプラグイン `init`／フックエラーとして現れます — バンドルの失敗と実行時の失敗は、区別して報告されます。
 
 ## `setup` — 仮想モジュール、エイリアス、注入ルート、client entry の登録
 

@@ -65,7 +65,7 @@ The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`)
 
 ### Bundling errors
 
-A bundle failure surfaces as `` plugin bundling: esbuild failed for plugin `{name}` … `` followed by esbuild's own diagnostics (including file:line:col). A plugin whose code throws at load or during its `setup`/lifecycle hooks still surfaces as the familiar plugin `init`/hook error — bundling failures and runtime failures are reported distinctly.
+A **compilation failure** — the entry's own source is invalid, or one of its imports cannot be resolved — surfaces as `` plugin bundling: esbuild failed for plugin `{name}` … `` followed by esbuild's own diagnostics (including file:line:col). Other bundling-setup problems (esbuild itself missing, the entry's directory not writable, the esbuild subprocess failing to spawn or timing out) surface as their own distinct `plugin bundling: …` messages, without esbuild diagnostics. A plugin whose code throws at load or during its `setup`/lifecycle hooks still surfaces as the familiar plugin `init`/hook error — bundling failures and runtime failures are reported distinctly.
 
 ## `setup` — register virtual modules, aliases, injected routes, and client entries
 
