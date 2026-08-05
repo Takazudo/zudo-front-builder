@@ -98,6 +98,12 @@ Which package a `url()` reference is attributed to is determined by the CSS comp
 
 </Note>
 
+<Note title="`zfb dev` does not watch the referenced asset files">
+
+The watcher observes your project's source roots, not the package asset files a `url()` points at. Replacing one in place while the dev server is running — dropping a different `.woff2` over the one inside `node_modules`, say — produces no watcher event, so CSS is never recompiled and the served content-hashed companion keeps handing out the old bytes until something else triggers a CSS rebuild. Restart `zfb dev`, or touch the stylesheet that `@import`s the package, to pick the new file up. In practice this rarely bites: package assets change through `pnpm install`, which churns paths the watcher already watches. Keeping arbitrary `node_modules` asset files out of the watched set is a deliberate scope decision — a third dynamic watch-registration channel carries real watcher-narrowing risk.
+
+</Note>
+
 ## Do not import static assets as modules
 
 zfb does **not** run a bundler over `public/`. Patterns like the ones below — common in Vite, webpack, and similar toolchains — do not work here:
