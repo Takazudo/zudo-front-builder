@@ -118,6 +118,12 @@ hex = "0.4"
 # Bounded wait for child processes so a wedged pnpm or esbuild subprocess
 # cannot hang the build indefinitely. Zero transitive deps; cross-platform.
 wait-timeout = "0.2"
+# `file://` URL construction for staged plugin bundles (plugin_bundler.rs).
+# Matches `zfb-config-loader`'s `resolve_plugin_path_to_file_url`, which
+# uses the same crate/version for the identical job — a hand-rolled
+# `format!("file://{}", ...)` would not percent-encode a staged path
+# containing spaces or other URL-unsafe characters.
+url = "2"
 # Issue #228 / #229: shared HTML link rewriter that the production
 # build pass and the dev server both call so dev-mode and prod-mode
 # render the same `<a href>` / `<form action>` URLs under a `base`
