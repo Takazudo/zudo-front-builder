@@ -40,6 +40,24 @@ pub const PLUGIN_BUNDLE_TEMP_SUFFIX: &str = ".mjs";
 /// of stalled-subprocess risk.
 const ESBUILD_BUNDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// `--banner:js` injected into every plugin bundle so a `.cts`/CommonJS
+/// entry's `require(...)` calls keep working after bundling (codex review
+/// finding 1, #2324).
+///
+/// esbuild bundles a CommonJS-shaped entry (e.g. `.cts` using
+/// `require()`/`export =`) into `--format=esm` output by wrapping it and
+/// routing any `require(...)` call through its own `__require` shim. That
+/// shim's fallback (`typeof require !== "undefined" ? require : …`) checks
+/// for an AMBIENT `require` first — but Node ESM modules have no ambient
+/// `require` at all, so without this banner the shim always falls through
+/// to its "Dynamic require of … is not supported" throw, breaking every
+/// `.cts` plugin that uses ordinary CommonJS syntax. Defining a real
+/// top-level `require` via `node:module`'s `createRequire`, anchored to
+/// `import.meta.url` (so relative specifiers resolve from the staged
+/// bundle's own location), makes the shim defer to it instead. A no-op for
+/// pure-ESM sources, which never reference `require` at all.
+const REQUIRE_SHIM_BANNER: &str = "import { createRequire as __zfbCreateRequire } from \"node:module\"; const require = __zfbCreateRequire(import.meta.url);";
+
 /// zfb-build's own mirror of `zfb_config_loader::EmbeddedEsbuildGetter`.
 ///
 /// Deliberately NOT shared with the config-loader's type — refactoring the
@@ -185,6 +203,7 @@ pub async fn bundle_plugin_entry(
         .arg("--sourcemap=inline")
         .arg("--log-level=warning")
         .arg("--color=false")
+        .arg(format!("--banner:js={REQUIRE_SHIM_BANNER}"))
         .arg(format!("--outfile={}", staged_path.display()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -720,6 +739,95 @@ mod tests {
         assert!(
             body.contains("paths-alias-marker"),
             "the paths-aliased module's export should be inlined: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cts_entry_using_require_and_export_equals_bundles_and_executes() {
+        // Codex review finding 1 (P1, #2324): a string-equality check on
+        // the bundled body cannot prove `require(...)` actually works at
+        // runtime — esbuild's `__require` shim text looks identical
+        // whether or not it falls through to its "Dynamic require of …
+        // is not supported" throw. This test EXECUTES the staged bundle
+        // via a real `node` subprocess (skips like the other real-esbuild
+        // tests when `node` isn't on PATH) rather than only inspecting
+        // its source text. The higher-level through-the-host regression
+        // (proving the same shape survives `PluginHost::spawn_with_timeout`
+        // end to end) lives in `plugin_runner.rs`'s
+        // `cts_plugin_using_require_and_export_equals_executes_through_real_host`.
+        let Some(bin) = locate_real_esbuild() else {
+            eprintln!(
+                "[cts_entry_using_require_and_export_equals_bundles_and_executes] no esbuild binary; skipping"
+            );
+            return;
+        };
+        let node_available = Command::new("node")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !node_available {
+            eprintln!(
+                "[cts_entry_using_require_and_export_equals_bundles_and_executes] no node on PATH; skipping"
+            );
+            return;
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        let entry = project.path().join("plugin.cts");
+        // Deliberately ordinary CommonJS-in-.cts constructs: a top-level
+        // `require()` call (so a broken shim fails at import time) and
+        // `export =` instead of `export default`.
+        fs::write(
+            &entry,
+            "const { platform } = require(\"node:os\");\n\
+             const plugin = { marker: \"cts-executes-marker\", platform: platform() };\n\
+             export = plugin;\n",
+        )
+        .unwrap();
+
+        let staged = bundle_plugin_entry(&entry, &bin, "cts-require-plugin")
+            .await
+            .expect("esbuild should bundle a .cts entry using require()/export=");
+
+        // Deliberately a real `.mjs` FILE run as `node runner.mjs`, not
+        // `node -e "<script>"`: `-e` runs the eval string itself as a
+        // CommonJS module, and Node makes THAT module's `require` visible
+        // as an ambient global even inside modules it dynamically
+        // `import()`s — which would silently mask exactly the bug this
+        // test exists to catch (verified directly against Node 24: `node
+        // -e "import('./mod.mjs')"` does NOT reproduce the "Dynamic
+        // require" failure that a genuine `.mjs` entrypoint does). A real
+        // `.mjs` file matches how `plugin-host.mjs` itself is invoked in
+        // production (`node --enable-source-maps plugin-host.mjs`).
+        let runner = project.path().join("runner.mjs");
+        fs::write(
+            &runner,
+            format!(
+                "import({:?}).then(m => {{\n\
+                 \x20 if (m.default.marker !== \"cts-executes-marker\") throw new Error(\"marker mismatch: \" + JSON.stringify(m.default));\n\
+                 \x20 if (typeof m.default.platform !== \"string\") throw new Error(\"require('node:os').platform() did not return a usable value: \" + JSON.stringify(m.default));\n\
+                 }}).catch(e => {{ console.error(e.message); process.exit(1); }});\n",
+                staged.file_url(),
+            ),
+        )
+        .unwrap();
+        let output = Command::new("node")
+            .arg(&runner)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .expect("failed to spawn node to execute the staged .cts bundle");
+        assert!(
+            output.status.success(),
+            "importing the staged .cts bundle must succeed and its top-level require() must \
+             resolve — got: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 
