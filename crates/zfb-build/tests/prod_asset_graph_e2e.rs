@@ -1127,6 +1127,28 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
         );
         append_package_import(fixture.project_root.path(), "@acme/badpkg", "bad.css");
 
+        // Every field of the locked error template is pinned against a
+        // concrete expected value below (not just a prefix) — the
+        // `stylesheet` field names the CANONICALIZED source path
+        // (`package_identity` in url_attribution.rs canonicalizes before
+        // walking up for `package.json`), and the `reason` field's missing
+        // path is `pkg.source.parent()` (also canonical) joined with the
+        // RAW (unresolved) reference — the join is never itself
+        // canonicalized, so the literal `./nope/...` segment survives.
+        let bad_css_canonical = fs::canonicalize(
+            fixture
+                .project_root
+                .path()
+                .join("node_modules")
+                .join("@acme/badpkg")
+                .join("bad.css"),
+        )
+        .unwrap();
+        let expected_missing_target = bad_css_canonical
+            .parent()
+            .unwrap()
+            .join("./nope/does-not-exist.png");
+
         let pipeline = build_real_tailwind_pipeline(fixture.project_root.path(), &dist_dir);
         let err = pipeline
             .build_emitter()
@@ -1146,12 +1168,19 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
             "error must name the package and version; got: {message}",
         );
         assert!(
+            message.contains(&format!("stylesheet: {}", bad_css_canonical.display())),
+            "error must name the exact staged stylesheet path; got: {message}",
+        );
+        assert!(
             message.contains("reference:  url(\"./nope/does-not-exist.png\")"),
             "error must quote the raw reference verbatim; got: {message}",
         );
         assert!(
-            message.contains("reason:     file not found at"),
-            "error must state the missing-file reason with the resolved path; got: {message}",
+            message.contains(&format!(
+                "reason:     file not found at {}",
+                expected_missing_target.display()
+            )),
+            "error must state the exact resolved missing-file path; got: {message}",
         );
 
         // The build must not have written anything to dist/assets — a

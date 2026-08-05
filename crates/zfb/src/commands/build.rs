@@ -7537,6 +7537,90 @@ mod tests {
         );
     }
 
+    /// Stub [`CssEngine`] that returns canned utility CSS and a canned
+    /// package-`url()` companion set on demand — lets a test exercise
+    /// `run_css_emitter`'s companion conversion without a real Tailwind
+    /// subprocess (companions only ever come from
+    /// `TailwindSubprocessEngine`'s real-binary path, never its mock path;
+    /// see [`zfb_css::engine::TailwindSubprocessConfig::with_mock_output`]).
+    struct CompanionStubCssEngine {
+        css: String,
+        companions: RefCell<Vec<zfb_css::url_attribution::PackageUrlAsset>>,
+    }
+
+    impl CssEngine for CompanionStubCssEngine {
+        fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
+            Ok(self.css.clone())
+        }
+
+        fn take_package_url_companions(&self) -> Vec<zfb_css::url_attribution::PackageUrlAsset> {
+            std::mem::take(&mut *self.companions.borrow_mut())
+        }
+    }
+
+    /// Companion boundary crossing for CSS (issue #2318 review finding):
+    /// `run_css_emitter` — the real CLI-layer function every `zfb build`
+    /// invocation calls — must thread `CssEmitterOutput::companions`
+    /// (`zfb_css::url_attribution::PackageUrlAsset`) into
+    /// `AssetEmitterPayload::companions` (`zfb_build::pipeline::CompanionFile`)
+    /// unchanged. This is the CSS-side twin of
+    /// `production_islands_payload_keeps_resource_companions_verbatim` above.
+    ///
+    /// `prod_asset_graph_e2e.rs` (in `zfb-build`, which cannot depend on the
+    /// `zfb` bin crate) proves the real Tailwind binary produces companions
+    /// and that the real `apply_prod_asset_pipeline` ships them correctly —
+    /// but it reimplements this exact conversion by hand rather than calling
+    /// `run_css_emitter` (a deliberate, documented choice in that file: no
+    /// real Tailwind subprocess is needed to prove wiring, and this crate is
+    /// the one place the real function lives). This test closes that gap
+    /// cheaply — no real Tailwind, no `#[ignore]` — by driving
+    /// `run_css_emitter` itself through the [`CompanionStubCssEngine`]: if a
+    /// future edit ever drops or mangles the `.companions` mapping at
+    /// `run_css_emitter`'s call site, this test fails without needing the
+    /// tailwindcss-v4 binary staged.
+    #[test]
+    fn run_css_emitter_threads_package_url_companions_into_asset_payload() {
+        let project_root = tempdir().unwrap();
+        let outdir = tempdir().unwrap();
+        let engine = CompanionStubCssEngine {
+            css: ".icon{background:url(./icon-abc12345.svg)}".to_string(),
+            companions: RefCell::new(vec![zfb_css::url_attribution::PackageUrlAsset {
+                filename: "icon-abc12345.svg".to_string(),
+                bytes: b"<svg>icon</svg>".to_vec(),
+            }]),
+        };
+
+        let payload = run_css_emitter(
+            engine,
+            project_root.path(),
+            outdir.path(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .expect("run_css_emitter must succeed with a stub engine");
+
+        // `combine()` (pipeline.rs) may append a trailing newline when
+        // joining the (empty) framework/modules blocks — its own exact
+        // join shape is covered by pipeline.rs's `combine_*` tests, so
+        // this test only pins that the engine's CSS text survives intact,
+        // not the trailing-byte shape of the join.
+        assert!(
+            String::from_utf8(payload.bytes.clone())
+                .unwrap()
+                .contains(".icon{background:url(./icon-abc12345.svg)}"),
+            "CSS bytes must pass through from the engine unchanged; got: {:?}",
+            payload.bytes,
+        );
+        assert_eq!(
+            payload.companions.len(),
+            1,
+            "expected exactly the one companion the stub engine returned",
+        );
+        assert_eq!(payload.companions[0].filename, "icon-abc12345.svg");
+        assert_eq!(payload.companions[0].bytes, b"<svg>icon</svg>");
+    }
+
     /// Fake [`BuildRunner`] that records the inputs it received and
     /// returns canned outputs. `RefCell` so multiple methods can mutate
     /// shared state through `&self` (tests run single-threaded).
