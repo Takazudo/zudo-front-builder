@@ -61,7 +61,7 @@ use zfb_build::pipeline::{
     ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
 };
 use zfb_css::{
-    css_relative_path, CssPipeline, CssPipelineConfig, TailwindSubprocessConfig,
+    css_relative_path, scan_css_urls, CssPipeline, CssPipelineConfig, TailwindSubprocessConfig,
     TailwindSubprocessEngine,
 };
 use zfb_types::{
@@ -246,6 +246,81 @@ fn first_module_script_src(html: &str) -> Option<String> {
     let rest = &html[start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+/// Stage a `node_modules/<pkg_name>` package with a `package.json`
+/// (name + version only — the minimum `package_identity` needs), one
+/// CSS file under the package root, and any additional package-local
+/// files (path relative to the package root -> bytes). Used to drive
+/// the real-Tailwind package `url()` rebase scenario (issue #2311)
+/// through the SAME entry point (`CssPipeline::build_emitter`) the
+/// happy-path test above exercises, rather than unit-testing
+/// `zfb_css::url_attribution` in isolation.
+fn stage_node_modules_package(
+    project_root: &Path,
+    pkg_name: &str,
+    css_filename: &str,
+    css: &str,
+    files: &[(&str, &[u8])],
+) {
+    let pkg_dir = project_root.join("node_modules").join(pkg_name);
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(
+        pkg_dir.join("package.json"),
+        format!("{{\"name\": \"{pkg_name}\", \"version\": \"1.0.0\"}}"),
+    )
+    .unwrap();
+    fs::write(pkg_dir.join(css_filename), css).unwrap();
+    for (rel, bytes) in files {
+        let path = pkg_dir.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, bytes).unwrap();
+    }
+}
+
+/// Append an `@import` line for a staged `node_modules` package to the
+/// fixture's `styles/global.css`, after the existing `@import
+/// "tailwindcss";` entry point line — mirroring the reporting issue's
+/// exact repro shape (`@import "@fontsource-variable/noto-sans/index.css";`
+/// placed right after the Tailwind import).
+fn append_package_import(project_root: &Path, pkg_name: &str, css_filename: &str) {
+    let global_css = project_root.join("styles").join("global.css");
+    let mut css = fs::read_to_string(&global_css).unwrap();
+    css.push_str(&format!("@import \"{pkg_name}/{css_filename}\";\n"));
+    fs::write(&global_css, css).unwrap();
+}
+
+/// Build a `CssPipeline` driving the REAL (non-mocked) Tailwind v4
+/// subprocess against `project_root`, writing into `dist_dir`. Shared by
+/// every `#[ignore]`d real-binary scenario below so the subprocess
+/// wiring (working dir, content globs, `styles/global.css` as input)
+/// stays identical across the happy path, the package `url()` rebase
+/// case, and the negative case.
+fn build_real_tailwind_pipeline(
+    project_root: &Path,
+    dist_dir: &Path,
+) -> CssPipeline<TailwindSubprocessEngine> {
+    let content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
+        .iter()
+        .map(|root| project_root.join(root).to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let mut tw_cfg = TailwindSubprocessConfig::default()
+        .with_working_dir(project_root.to_path_buf())
+        .with_content_globs(content_globs);
+    let global_css = project_root.join("styles").join("global.css");
+    if global_css.is_file() {
+        tw_cfg = tw_cfg.with_input_css(global_css);
+    }
+    let engine = TailwindSubprocessEngine::new(tw_cfg);
+    let pipe_cfg = CssPipelineConfig {
+        sources: discover_css_source_files(project_root),
+        class_map_dir: None,
+        output_root: dist_dir.to_path_buf(),
+        ..CssPipelineConfig::default()
+    };
+    CssPipeline::new(engine, pipe_cfg)
 }
 
 /// Map a `/assets/styles-<hash>.css` style URL to the on-disk path
@@ -791,6 +866,35 @@ fn worker_bundle_does_not_inline_tailwind_css_marker_after_s5() {
 /// When it runs, the assertions are exactly the happy-path test's
 /// assertions: hashed CSS on disk, HTML rewritten to the hashed URL,
 /// disk-existence holds, no unhashed leak.
+///
+/// ## Package `url()` rebase (issue #2318 — Confirm the repro end to end)
+///
+/// This test also owns the heavy-verification confirm pass for epic #2311
+/// (CSS Import URL Rebase — scanner #2314, attribution + hard-error floor
+/// #2315, emission + rewrite #2316). Two additional scenarios run after the
+/// original happy-path assertions, against fresh fixtures built from the
+/// SAME `stage_minimal_fixture` + `build_real_tailwind_pipeline` entry point
+/// so the confirm exercises the real orchestrator wiring, not
+/// `zfb_css::url_attribution` in isolation (that crate's own unit tests
+/// already cover the byte-level splice logic):
+///
+/// 1. `real_tailwind_binary_rebases_package_url_references_into_companions`:
+///    the reporting issue's shape — a `node_modules` stylesheet with
+///    relative `url()` references reachable only through Tailwind's own
+///    `@import` inlining. Asserts the emitted companions land on disk beside
+///    the hashed CSS, content-hashed and flat, and every `url()` byte span
+///    left in the final hashed CSS resolves to one of them.
+/// 2. `real_tailwind_binary_rejects_package_url_referencing_missing_file`:
+///    the negative case from the locked decisions in #2313 — a package
+///    stylesheet whose `url()` target does not exist on disk fails
+///    `build_emitter()` with the exact "cannot emit" error template,
+///    naming the package, stylesheet, reference, and reason.
+///
+/// Deliberately kept as scenarios inside this single `#[ignore]`d test
+/// rather than new `#[test]` functions in this file — per `crates/CLAUDE.md`
+/// (the manifest is keyed by path + test fn name), adding a new ignored fn
+/// would need a new manifest row and exam.yml filterset entry for no
+/// coverage benefit this env-gated binary doesn't already provide.
 #[test]
 #[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb-build --test \
             prod_asset_graph_e2e -- --include-ignored (ZFB_TAILWIND_BIN or the \
@@ -802,40 +906,16 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
 
     // Build a real (non-mocked) TailwindSubprocessEngine. Honours
     // ZFB_TAILWIND_BIN if set, else falls back to the workspace slot.
-    let content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
-        .iter()
-        .map(|root| {
-            fixture
-                .project_root
-                .path()
-                .join(root)
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect::<Vec<_>>();
-    let mut tw_cfg = TailwindSubprocessConfig::default()
-        .with_working_dir(fixture.project_root.path().to_path_buf())
-        .with_content_globs(content_globs);
-    let global_css = fixture
-        .project_root
-        .path()
-        .join("styles")
-        .join("global.css");
-    if global_css.is_file() {
-        tw_cfg = tw_cfg.with_input_css(global_css);
-    }
-    let engine = TailwindSubprocessEngine::new(tw_cfg);
-    let pipe_cfg = CssPipelineConfig {
-        sources: discover_css_source_files(fixture.project_root.path()),
-        class_map_dir: None,
-        output_root: dist_dir.clone(),
-        ..CssPipelineConfig::default()
-    };
-    let pipeline = CssPipeline::new(engine, pipe_cfg);
+    let pipeline = build_real_tailwind_pipeline(fixture.project_root.path(), &dist_dir);
     let emitter_out = pipeline
         .build_emitter()
         .expect("real TailwindSubprocessEngine must produce CSS bytes");
     assert!(!emitter_out.bytes.is_empty());
+    assert!(
+        emitter_out.companions.is_empty(),
+        "the plain fixture has no package url() references; companions must stay empty: {:?}",
+        emitter_out.companions,
+    );
 
     let head_assets = ProdHeadAssets {
         css_url: Some(STABLE_CSS_URL.to_string()),
@@ -874,6 +954,213 @@ fn prod_asset_graph_with_real_tailwind_binary_against_fixture() {
         "static-fallback contract violated under real Tailwind binary",
     );
     assert!(!html.contains(&format!("\"{STABLE_CSS_URL}\"")));
+
+    // -----------------------------------------------------------------
+    // Scenario: real Tailwind rebases package url() references (#2318).
+    // -----------------------------------------------------------------
+    {
+        let fixture = stage_minimal_fixture();
+        let dist_dir = fixture.project_root.path().join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+
+        // A node_modules package shipping two relative url() references —
+        // the same shape as the reporting issue's fontsource repro
+        // (`@import`ed from `styles/global.css`, referenced only through
+        // Tailwind's own inlining, never authored by the project).
+        stage_node_modules_package(
+            fixture.project_root.path(),
+            "@acme/icons",
+            "icons.css",
+            ".icon-a { background-image: url(\"./assets/icon-a.svg\"); }\n\
+             .icon-b { background-image: url('./assets/icon-b.svg'); }\n",
+            &[
+                ("assets/icon-a.svg", b"<svg>icon-a</svg>"),
+                ("assets/icon-b.svg", b"<svg>icon-b</svg>"),
+            ],
+        );
+        append_package_import(fixture.project_root.path(), "@acme/icons", "icons.css");
+
+        let pipeline = build_real_tailwind_pipeline(fixture.project_root.path(), &dist_dir);
+        let emitter_out = pipeline
+            .build_emitter()
+            .expect("real tailwind must resolve and emit package url() companions");
+
+        assert_eq!(
+            emitter_out.companions.len(),
+            2,
+            "expected two distinct companions (icon-a.svg + icon-b.svg); got {:?}",
+            emitter_out
+                .companions
+                .iter()
+                .map(|c| &c.filename)
+                .collect::<Vec<_>>(),
+        );
+        for companion in &emitter_out.companions {
+            assert!(
+                (companion.filename.starts_with("icon-a-")
+                    || companion.filename.starts_with("icon-b-"))
+                    && companion.filename.ends_with(".svg"),
+                "companion filename must be the flat `{{stem}}-{{hash8}}.{{ext}}` form; got {}",
+                companion.filename,
+            );
+        }
+        let icon_a_companion = emitter_out
+            .companions
+            .iter()
+            .find(|c| c.filename.starts_with("icon-a-"))
+            .expect("icon-a companion");
+        assert_eq!(icon_a_companion.bytes, b"<svg>icon-a</svg>");
+        let icon_b_companion = emitter_out
+            .companions
+            .iter()
+            .find(|c| c.filename.starts_with("icon-b-"))
+            .expect("icon-b companion");
+        assert_eq!(icon_b_companion.bytes, b"<svg>icon-b</svg>");
+
+        // The rewritten CSS bytes must reference the companions by their
+        // hashed filename, never the original node_modules-relative path.
+        let rewritten = String::from_utf8(emitter_out.bytes.clone()).unwrap();
+        assert!(
+            rewritten.contains(&format!("./{}", icon_a_companion.filename)),
+            "rewritten CSS must reference the icon-a companion by its hashed filename: {rewritten}",
+        );
+        assert!(
+            rewritten.contains(&format!("./{}", icon_b_companion.filename)),
+            "rewritten CSS must reference the icon-b companion by its hashed filename: {rewritten}",
+        );
+        assert!(
+            !rewritten.contains("node_modules") && !rewritten.contains("assets/icon-a.svg"),
+            "rewritten CSS must not leak the original node_modules-relative path: {rewritten}",
+        );
+
+        // Thread the companions into ProdAssetEmitterInputs exactly as
+        // `run_css_emitter` (crates/zfb/src/commands/build.rs) does — map
+        // zfb_css::PackageUrlAsset onto zfb_build::pipeline::CompanionFile —
+        // then run the REAL prod pipeline end to end.
+        let companion_files: Vec<CompanionFile> = emitter_out
+            .companions
+            .iter()
+            .map(|c| CompanionFile {
+                filename: c.filename.clone(),
+                bytes: c.bytes.clone(),
+            })
+            .collect();
+        let head_assets = ProdHeadAssets {
+            css_url: Some(STABLE_CSS_URL.to_string()),
+            island_module_urls: Vec::new(),
+        };
+        let pages = vec![stage_html_with_head_inject(
+            &dist_dir,
+            "index.html",
+            "Icons (real tailwind)",
+            &head_assets,
+        )];
+        let inputs = ProdAssetEmitterInputs {
+            css: Some(AssetEmitterPayload {
+                bytes: emitter_out.bytes.clone(),
+                relative_path: css_relative_path(),
+                stable_url: emitter_out.stable_url.clone(),
+                companions: companion_files,
+            }),
+            islands: None,
+            ..Default::default()
+        };
+        apply_prod_asset_pipeline(&dist_dir, pages, inputs)
+            .expect("apply_prod_asset_pipeline must succeed with package url companions");
+
+        // Every companion lands on disk beside the hashed CSS, byte-identical
+        // to the source asset.
+        let assets_dir = dist_dir.join(DIST_ASSETS_DIR);
+        let on_disk_a = fs::read(assets_dir.join(&icon_a_companion.filename))
+            .unwrap_or_else(|e| panic!("icon-a companion missing on disk: {e}"));
+        assert_eq!(on_disk_a, b"<svg>icon-a</svg>");
+        let on_disk_b = fs::read(assets_dir.join(&icon_b_companion.filename))
+            .unwrap_or_else(|e| panic!("icon-b companion missing on disk: {e}"));
+        assert_eq!(on_disk_b, b"<svg>icon-b</svg>");
+
+        // Every url() left in the final hashed CSS on disk resolves to a
+        // real file beside it (the static-fallback contract, extended to
+        // package-attributed companions).
+        let hashed_css_name = fs::read_dir(&assets_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .find(|n| n.starts_with("styles-") && n.ends_with(".css"))
+            .expect("hashed CSS must exist");
+        let hashed_css_bytes = fs::read(assets_dir.join(&hashed_css_name)).unwrap();
+        let hashed_css_text = String::from_utf8(hashed_css_bytes).unwrap();
+        let mut url_occurrences_checked = 0;
+        for occurrence in scan_css_urls(&hashed_css_text) {
+            let decoded = occurrence.decoded.trim();
+            if decoded.is_empty() || decoded.starts_with("data:") {
+                continue;
+            }
+            let resolved = assets_dir.join(decoded.trim_start_matches("./"));
+            assert!(
+                resolved.is_file(),
+                "url({decoded}) in the hashed CSS does not resolve to a file on disk: {}",
+                resolved.display(),
+            );
+            url_occurrences_checked += 1;
+        }
+        assert!(
+            url_occurrences_checked >= 2,
+            "expected to check at least the two companion url() references; checked {url_occurrences_checked}",
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Scenario: real Tailwind + a package url() target that does not
+    // exist on disk must fail the build with the locked error template
+    // (#2318's negative case, decisions locked in #2313).
+    // -----------------------------------------------------------------
+    {
+        let fixture = stage_minimal_fixture();
+        let dist_dir = fixture.project_root.path().join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+
+        stage_node_modules_package(
+            fixture.project_root.path(),
+            "@acme/badpkg",
+            "bad.css",
+            ".missing { background-image: url(\"./nope/does-not-exist.png\"); }\n",
+            &[],
+        );
+        append_package_import(fixture.project_root.path(), "@acme/badpkg", "bad.css");
+
+        let pipeline = build_real_tailwind_pipeline(fixture.project_root.path(), &dist_dir);
+        let err = pipeline
+            .build_emitter()
+            .expect_err("a package url() referencing a missing file must fail the build");
+        // `build_emitter()` wraps the raw attribution error in
+        // `.context("CSS engine stage failed")` — the locked template text
+        // is the wrapped SOURCE, which only Debug's cause-chain rendering
+        // surfaces (`Display`/`{:#}` show just the outer context message).
+        let message = format!("{err:?}");
+        assert!(
+            message
+                .contains("error: cannot emit `url()` asset from an imported package stylesheet"),
+            "error must use the locked template header; got: {message}",
+        );
+        assert!(
+            message.contains("package:    @acme/badpkg@1.0.0"),
+            "error must name the package and version; got: {message}",
+        );
+        assert!(
+            message.contains("reference:  url(\"./nope/does-not-exist.png\")"),
+            "error must quote the raw reference verbatim; got: {message}",
+        );
+        assert!(
+            message.contains("reason:     file not found at"),
+            "error must state the missing-file reason with the resolved path; got: {message}",
+        );
+
+        // The build must not have written anything to dist/assets — a
+        // failed emitter call ships nothing, partially or otherwise.
+        assert!(
+            !dist_dir.join(DIST_ASSETS_DIR).exists(),
+            "no assets/ dir must exist after a failed package url() emission",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
