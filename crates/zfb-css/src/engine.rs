@@ -91,7 +91,13 @@ pub struct TailwindSubprocessConfig {
     pub input_css: Option<PathBuf>,
 
     /// Extra CLI args appended to the subprocess invocation, for escape
-    /// hatches like `--minify`. These are passed verbatim.
+    /// hatches. These are passed verbatim, EXCEPT that
+    /// [`TailwindSubprocessEngine::produce_utility_css`] hard-errors before
+    /// spawning the CLI if this contains a minification/optimization flag
+    /// (`-m`/`--minify`/`--optimize`) — see
+    /// `reject_minify_flags_incompatible_with_attribution`'s doc comment
+    /// (codex review finding, #2327): those flags are incompatible with the
+    /// package `url()` sourcemap attribution the engine always runs.
     pub extra_args: Vec<OsString>,
 
     /// Content globs (Tailwind v4 `@source` targets) for the **user
@@ -835,6 +841,56 @@ fn entry_dir(cfg: &TailwindSubprocessConfig) -> PathBuf {
     }
 }
 
+/// Tailwind v4 CLI flags (pinned binary v4.2.0) that turn on Lightning CSS
+/// minification/optimization. `-m` is `--minify`'s short form (not a
+/// distinct behavior); `--optimize` runs Lightning CSS's optimizer without
+/// minifying. Both are checked against
+/// [`TailwindSubprocessConfig::extra_args`] by
+/// [`reject_minify_flags_incompatible_with_attribution`].
+const FORBIDDEN_MINIFY_FLAGS: &[&str] = &["--minify", "-m", "--optimize"];
+
+/// Hard-error if `extra_args` requests Tailwind minification/optimization
+/// (codex review finding, #2327).
+///
+/// [`TailwindSubprocessEngine::produce_utility_css`] always runs package
+/// `url()` sourcemap attribution on the real (non-mock) subprocess path
+/// (`--map` + `crate::url_attribution::attribute_and_emit_package_urls`) —
+/// there is no separate opt-out. Attribution's documented trust boundary
+/// (`url_attribution.rs`'s module doc, the "Valid only while zfb never
+/// passes `-m`/`--optimize`" sentence) is that Lightning CSS's rule merging
+/// under either flag destroys the one-declaration-per-line mapping shape
+/// position-based sourcemap lookup depends on — silently risking wrong
+/// attribution, a spurious hard-error, or the wrong asset being emitted,
+/// none of which are safe to let through. Called before anything is spawned
+/// (checked ahead of even the binary-exists check), so a misconfigured
+/// `extra_args` fails loudly and immediately rather than after paying for a
+/// subprocess invocation. The fix is to minify the FINAL emitted CSS
+/// downstream instead of asking Tailwind to do it — not to make the
+/// attribution lookup robust to optimized output (the unbounded parity-chase
+/// #2312 already ruled out for this pipeline).
+fn reject_minify_flags_incompatible_with_attribution(extra_args: &[OsString]) -> Result<()> {
+    for arg in extra_args {
+        // A non-UTF-8 arg can never spell one of these ASCII flags.
+        let Some(arg_str) = arg.to_str() else {
+            continue;
+        };
+        // Split off a `=value` suffix defensively — the pinned CLI takes
+        // both flags as bare booleans today, but a future CLI version
+        // growing an `=` form must not silently bypass this guard.
+        let bare = arg_str.split('=').next().unwrap_or(arg_str);
+        if FORBIDDEN_MINIFY_FLAGS.contains(&bare) {
+            return Err(anyhow!(
+                "TailwindSubprocessConfig::extra_args contains `{arg_str}`, which is \
+                 incompatible with zfb's package `url()` attribution: Lightning CSS's rule \
+                 merging under `-m`/`--minify`/`--optimize` breaks the sourcemap position \
+                 lookup attribution depends on. Remove this flag and minify the final CSS \
+                 downstream instead."
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Delete `zfb-tailwind-entry-*.css` files left in `dir` by a previous run
 /// that died before its [`tempfile::NamedTempFile`] `Drop` could clean up
 /// (SIGKILL / crash / Ctrl-C). See zfb#821.
@@ -913,6 +969,13 @@ impl CssEngine for TailwindSubprocessEngine {
             }
             return Ok(self.config.mock_output.clone());
         }
+
+        // #2311/#2315 attribution is unconditional beyond this point (see
+        // the `--map` + `attribute_and_emit_package_urls` call below), so
+        // `extra_args` must be checked for minification/optimization flags
+        // BEFORE anything is spawned — see `reject_minify_flags_incompatible_with_attribution`'s
+        // doc comment for why those flags corrupt the attribution.
+        reject_minify_flags_incompatible_with_attribution(&self.config.extra_args)?;
 
         // Sanity-check: the binary should exist before we try to spawn it.
         // This gives a much clearer error message than the OS-level "no
