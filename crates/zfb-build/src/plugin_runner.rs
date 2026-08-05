@@ -502,10 +502,30 @@ impl PluginHost {
             // would delete a staged embedded-tier esbuild binary mid-loop.
             let (_esbuild_tempdir, esbuild_bin) =
                 plugin_bundler::resolve_esbuild_for_plugins(embedded_esbuild_getter)?;
+
+            // Cache staged bundles by the plugin's ORIGINAL resolved
+            // module URL (codex review finding 2, #2324): before this
+            // cache, two `plugins` entries naming the same TS-family
+            // module each got their OWN separately-named staged `.mjs`
+            // file, so the host imported two distinct URLs and evaluated
+            // the module's top-level side effects twice — diverging from
+            // the pre-existing `.js`/`.mjs`/`.cjs` behaviour, where
+            // repeated `import()` of the identical resolved URL string
+            // hits Node's module cache and evaluates it exactly once (see
+            // `duplicate_ts_plugin_specs_share_one_staged_bundle_and_evaluate_once_through_real_host`
+            // for the measured pre-existing `.mjs` semantics this cache
+            // matches). Handing duplicate specs the SAME staged URL
+            // restores that parity for TS-family entries too.
+            let mut staged_by_original_module: HashMap<String, String> = HashMap::new();
             for spec in plugins.iter_mut() {
                 if !plugin_bundler::needs_bundling(&spec.module) {
                     continue;
                 }
+                if let Some(staged_url) = staged_by_original_module.get(&spec.module) {
+                    spec.module = staged_url.clone();
+                    continue;
+                }
+                let original_module = spec.module.clone();
                 let entry = url::Url::parse(&spec.module)
                     .ok()
                     .and_then(|u| u.to_file_path().ok())
@@ -519,7 +539,9 @@ impl PluginHost {
                     })?;
                 let staged =
                     plugin_bundler::bundle_plugin_entry(&entry, &esbuild_bin, &spec.name).await?;
-                spec.module = staged.file_url().to_string();
+                let staged_url = staged.file_url().to_string();
+                spec.module = staged_url.clone();
+                staged_by_original_module.insert(original_module, staged_url);
                 staged_bundles.push(staged);
             }
         }
@@ -4141,5 +4163,252 @@ export const Widget = () => <div data-marker="tsx-widget-marker">{"tsx-widget-bo
 
         let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
         assert_eq!(written, "node-modules-dep-marker");
+    }
+
+    #[tokio::test]
+    async fn cts_plugin_using_require_and_export_equals_executes_through_real_host() {
+        // Codex review finding 1 (P1, #2324): a `.cts` plugin using
+        // ordinary CommonJS constructs (`require("node:fs")`, `export =`)
+        // is bundled as ESM with `--packages=external`; esbuild's
+        // `__require` shim then defers to an ambient `require`, which
+        // Node ESM has none of, so the entry fails at import time with
+        // "Dynamic require of ... is not supported" — the documented
+        // `.cts` support (`docs/.../plugins.mdx`, "Plugin entry files —
+        // .ts, .tsx, .mts, .cts support") is broken for this common
+        // shape. Reproduced directly against esbuild's raw output before
+        // this test was written (`node --input-type=module -e
+        // "import('./plugin.mjs')..."` on the exact same bundling flags
+        // this test drives through the real host): the import rejects
+        // with `Dynamic require of "node:fs" is not supported`. Fixed by
+        // a `--banner:js` in `plugin_bundler::bundle_plugin_entry` that
+        // defines a real top-level `require` via `node:module`
+        // `createRequire(import.meta.url)` — esbuild's shim checks
+        // `typeof require !== "undefined"` first and defers to it.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let marker_file = root.join("marker.txt");
+        let plugin_path = root.join("plugin.cts");
+        // Deliberately ordinary CommonJS-in-.cts constructs: a top-level
+        // `require()` call (so the failure surfaces at import time, not
+        // lazily inside a hook) and `export =` instead of `export default`.
+        let plugin_src = format!(
+            r#"
+            const {{ writeFileSync }} = require("node:fs");
+
+            const plugin = {{
+              name: "cts-require-plugin",
+              preBuild() {{
+                writeFileSync({marker_file:?}, "cts-require-marker");
+              }},
+            }};
+
+            export = plugin;
+            "#,
+            marker_file = marker_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![PluginSpec {
+                name: "cts-require-plugin".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect(
+            "a .cts entry using top-level require()/export= should bundle and load through the \
+             real host — if this panics with \"Dynamic require of ... is not supported\", the \
+             banner:js require() shim in bundle_plugin_entry is missing or broken",
+        );
+
+        let ctx = BuildHookContext {
+            project_root: root.to_path_buf(),
+            out_dir: root.join("dist"),
+            config: serde_json::json!({}),
+            routes: None,
+        };
+        host.run_pre_build(&ctx).await.expect("preBuild ok");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&marker_file).await.unwrap();
+        assert_eq!(written, "cts-require-marker");
+    }
+
+    #[tokio::test]
+    async fn duplicate_mjs_plugin_specs_share_one_module_record_and_evaluate_once_through_real_host(
+    ) {
+        // Baseline measurement for codex review finding 2 (#2324): the
+        // PRE-EXISTING semantics for a `.js`/`.mjs`/`.cjs` plugin module
+        // named by more than one `PluginSpec`. `.mjs` specs are never
+        // rewritten by the bundling loop (`needs_bundling` is false for
+        // them), so both entries carry the identical `file://` URL string
+        // straight into `plugin-host.mjs`'s `await import(entry.module)`
+        // loop — and Node's ESM module cache is keyed by resolved URL, so
+        // the SECOND `import()` call returns the already-evaluated module
+        // record without re-running its top-level code. This test proves
+        // that with a counter file incremented at MODULE TOP LEVEL (not
+        // inside a hook, so it measures evaluation count, not hook-call
+        // count — both specs' hooks still fire separately, once each, via
+        // `plugin-host.mjs`'s per-registration `plugins` array). The `.ts`
+        // counterpart below (`duplicate_ts_plugin_specs_share_one_staged_bundle_and_evaluate_once_through_real_host`)
+        // asserts the bundling path now matches this exact baseline.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let counter_file = root.join("counter.txt");
+        let plugin_path = root.join("dup.mjs");
+        let plugin_src = format!(
+            r#"
+            import {{ readFileSync, writeFileSync, existsSync }} from "node:fs";
+
+            const counterPath = {counter:?};
+            const prev = existsSync(counterPath) ? Number(readFileSync(counterPath, "utf8")) : 0;
+            writeFileSync(counterPath, String(prev + 1));
+
+            export default {{
+              name: "dup-mjs-plugin",
+              preBuild() {{}},
+            }};
+            "#,
+            counter = counter_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let module_url = file_url_for_test(&plugin_path);
+        let host = PluginHost::spawn(
+            vec![
+                PluginSpec {
+                    name: "dup-a".into(),
+                    module: module_url.clone(),
+                    options: serde_json::json!({}),
+                },
+                PluginSpec {
+                    name: "dup-b".into(),
+                    module: module_url,
+                    options: serde_json::json!({}),
+                },
+            ],
+            None,
+        )
+        .await
+        .expect("host spawns with two specs naming the same .mjs module");
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&counter_file).await.unwrap();
+        assert_eq!(
+            written, "1",
+            "two specs naming the identical .mjs URL must hit Node's module cache and \
+             evaluate the module's top level exactly once: {written}"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_ts_plugin_specs_share_one_staged_bundle_and_evaluate_once_through_real_host()
+    {
+        // Codex review finding 2 (P2, #2324): before the
+        // `staged_by_original_module` cache in `spawn_with_timeout`, each
+        // `PluginSpec` naming the same `.ts` module got its OWN
+        // separately-named staged `.mjs` bundle (a fresh `NamedTempFile`
+        // per bundling call), so the host imported two DISTINCT URLs for
+        // what should be one module — diverging from the `.mjs` baseline
+        // measured above, where Node's module cache collapses repeated
+        // imports of the identical URL to a single evaluation. This test
+        // pins both halves of the fix: exactly ONE staged bundle file
+        // exists on disk while the host is alive (not two), and the
+        // module's top-level counter — identical technique to the `.mjs`
+        // baseline above — shows exactly one evaluation.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let Some(esbuild) = zfb_test_utils::locate_esbuild() else {
+            eprintln!("skipping: no esbuild binary available");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let counter_file = root.join("counter.txt");
+        let plugin_path = root.join("dup.ts");
+        let plugin_src = format!(
+            r#"
+            import {{ readFileSync, writeFileSync, existsSync }} from "node:fs";
+
+            const counterPath: string = {counter:?};
+            const prev: number = existsSync(counterPath) ? Number(readFileSync(counterPath, "utf8")) : 0;
+            writeFileSync(counterPath, String(prev + 1));
+
+            export default {{
+              name: "dup-ts-plugin",
+              preBuild() {{}},
+            }};
+            "#,
+            counter = counter_file.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+
+        let module_url = file_url_for_test(&plugin_path);
+        let getter = make_stub_embedded_esbuild_getter(esbuild);
+        let host = PluginHost::spawn_with_timeout(
+            vec![
+                PluginSpec {
+                    name: "dup-a".into(),
+                    module: module_url.clone(),
+                    options: serde_json::json!({}),
+                },
+                PluginSpec {
+                    name: "dup-b".into(),
+                    module: module_url,
+                    options: serde_json::json!({}),
+                },
+            ],
+            None,
+            None,
+            Some(getter),
+        )
+        .await
+        .expect("host spawns with two specs naming the same .ts module");
+
+        // Exactly one staged bundle on disk — not one per duplicate spec.
+        let staged_files: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(plugin_bundler::PLUGIN_BUNDLE_TEMP_PREFIX)
+                    && name.ends_with(plugin_bundler::PLUGIN_BUNDLE_TEMP_SUFFIX)
+            })
+            .collect();
+        assert_eq!(
+            staged_files.len(),
+            1,
+            "two specs naming the identical .ts module must reuse ONE staged bundle, not stage \
+             a separate copy per duplicate spec"
+        );
+
+        host.shutdown().await.ok();
+
+        let written = tokio::fs::read_to_string(&counter_file).await.unwrap();
+        assert_eq!(
+            written, "1",
+            "two specs sharing one staged bundle URL must hit Node's module cache and evaluate \
+             the module's top level exactly once, matching the .mjs baseline: {written}"
+        );
     }
 }
