@@ -16,10 +16,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tempfile::{NamedTempFile, TempDir};
 use tokio::process::Command;
+use tokio::time;
 use tracing::warn;
 
 use crate::bundler::{resolve_esbuild_binary_with_env, DEFAULT_ESBUILD_SLOT};
@@ -31,6 +33,12 @@ pub const PLUGIN_BUNDLE_TEMP_PREFIX: &str = ".zfb-plugin-bundle-";
 
 /// Filename suffix for staged plugin bundle artifacts.
 pub const PLUGIN_BUNDLE_TEMP_SUFFIX: &str = ".mjs";
+
+/// Wedge-guard deadline for the esbuild subprocess in [`bundle_plugin_entry`]
+/// — a generous backstop, not a performance bound. Mirrors the 5-minute
+/// constant `adapter.rs`'s `run_capturing` already uses for the same class
+/// of stalled-subprocess risk.
+const ESBUILD_BUNDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// zfb-build's own mirror of `zfb_config_loader::EmbeddedEsbuildGetter`.
 ///
@@ -161,7 +169,13 @@ pub async fn bundle_plugin_entry(
         })?;
     let staged_path = staged.path().to_path_buf();
 
-    let output = Command::new(esbuild_bin)
+    // `kill_on_drop` + the `tokio::time::timeout` below is the async
+    // equivalent of `adapter.rs`'s `run_capturing` 5-minute wedge guard: a
+    // stalled esbuild binary (or a `ZFB_ESBUILD_BIN` wrapper whose
+    // descendant inherits and holds the stdout/stderr pipes open) must not
+    // block plugin startup indefinitely. Dropping the timed-out future
+    // drops the `Child`, which kills the direct process.
+    let child = Command::new(esbuild_bin)
         .arg(entry)
         .arg("--bundle")
         .arg("--format=esm")
@@ -172,13 +186,28 @@ pub async fn bundle_plugin_entry(
         .arg("--log-level=warning")
         .arg("--color=false")
         .arg(format!("--outfile={}", staged_path.display()))
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .await
+        .kill_on_drop(true)
+        .spawn()
         .with_context(|| {
             format!("plugin bundling: failed to spawn esbuild for plugin `{plugin_name}`")
         })?;
+
+    let output = match time::timeout(ESBUILD_BUNDLE_TIMEOUT, child.wait_with_output()).await {
+        Ok(result) => result.with_context(|| {
+            format!("plugin bundling: failed to run esbuild for plugin `{plugin_name}`")
+        })?,
+        Err(_) => {
+            bail!(
+                "plugin bundling: esbuild did not exit within {}s while bundling plugin \
+                 `{plugin_name}` ({}) — killed",
+                ESBUILD_BUNDLE_TIMEOUT.as_secs(),
+                entry.display()
+            );
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
