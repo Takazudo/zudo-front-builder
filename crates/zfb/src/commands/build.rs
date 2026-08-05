@@ -2363,11 +2363,14 @@ fn internal_shadow_config_path(project_root: &Path, config: &Path) -> Result<Opt
     let Ok(relative) = normalized_config.strip_prefix(&normalized_root) else {
         return Ok(None);
     };
-    if relative
-        .components()
-        .next()
-        .is_some_and(|component| component.as_os_str() == "node_modules")
-    {
+    // Conscious migration to the canonical whole-path predicate (issue #2300):
+    // in production this runs against the WIDENED workspace root, so a nested
+    // package config (e.g. `apps/site/node_modules/@scope/pkg/tsconfig.json`)
+    // has `apps` as its first component, not `node_modules` — the old
+    // `.next()`-only check never excluded it. This mirrors the migration
+    // `usable_rel` already received (issues #2051/#2128/#2146, `build.rs`'s
+    // `IslandsShadowPaths::usable_rel`).
+    if zfb_types::has_node_modules_segment(relative) {
         return Ok(None);
     }
     let canonical_root = project_root.canonicalize().with_context(|| {
@@ -12134,6 +12137,76 @@ mod tests {
         assert_eq!(
             paths["@hoisted/*"][0],
             shadow.join("src/*").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn materialise_shadow_typescript_configs_excludes_nested_workspace_node_modules_config() {
+        // Issue #2300: production runs `collect_islands_shadow_configs` /
+        // `materialise_shadow_typescript_configs` against the WIDENED
+        // workspace root, so a package config under a nested project's
+        // `node_modules` (e.g. `apps/site/node_modules/@scope/pkg/...`) has
+        // `apps` as its first path component, not `node_modules` — the old
+        // `.next()`-only check in `internal_shadow_config_path` never
+        // excluded it. This is the un-migrated twin of the `usable_rel` fix
+        // (issues #2051/#2128/#2146) — see the comment on
+        // `internal_shadow_config_path` for why this is a conscious,
+        // recorded migration to `zfb_types::has_node_modules_segment`.
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let project = workspace.join("apps/site");
+        let package = project.join("node_modules/@scope/tsconfig-web");
+        let shadow = tmp.path().join("shadow");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(&shadow).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"name":"@scope/tsconfig-web","tsconfig":"base.json"}"#,
+        )
+        .unwrap();
+        let package_config = package.join("base.json");
+        std::fs::write(
+            &package_config,
+            r#"{"compilerOptions":{"paths":{"@nested/*":["src/*"]}}}"#,
+        )
+        .unwrap();
+        let project_config = project.join("tsconfig.json");
+        std::fs::write(&project_config, r#"{"extends":"@scope/tsconfig-web"}"#).unwrap();
+        let source = project.join("src/entry.ts");
+        std::fs::write(&source, "export {};").unwrap();
+
+        // Widened root, matching production (root cause confirmed in #2300).
+        let configs = collect_islands_shadow_configs(&workspace, [&source]).unwrap();
+
+        assert!(
+            configs.contains(&project_config),
+            "the project's own leaf config must still be collected: {configs:?}"
+        );
+        assert!(
+            !configs.contains(&package_config),
+            "a config reached through a node_modules component anywhere in its \
+             root-relative path must be excluded, not just when node_modules \
+             is the first component: {configs:?}"
+        );
+
+        // Copy-mode guard: `shadow_config_scope_uses_paths` walks the leaf's
+        // own extends chain via `read_tsconfig_paths_file_into_map`, so
+        // `paths` inherited from the excluded package config must stay
+        // visible even though the package config itself is gone from the
+        // collected set — the gatekeeper excludes shadow MIRRORING, not
+        // esbuild-visible path resolution.
+        assert!(
+            shadow_config_scope_uses_paths(&workspace, &configs),
+            "paths inherited through the excluded nested package config's \
+             extends chain must still be detected"
+        );
+
+        materialise_shadow_typescript_configs(&workspace, &shadow, &configs).unwrap();
+        assert!(
+            !shadow.join("apps/site/node_modules").exists(),
+            "materialise must not create a real directory shadowing where the \
+             project node_modules symlink needs to land"
         );
     }
 
