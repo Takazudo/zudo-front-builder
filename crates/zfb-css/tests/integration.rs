@@ -54,6 +54,13 @@ fn subprocess_engine_against_real_binary() {
         .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
         .expect("real tailwindcss binary should produce CSS");
     assert!(!css.is_empty(), "real engine should not return empty CSS");
+    // #2315: the engine now passes `--map` for url() attribution; the inline
+    // sourcemap comment must be stripped back out before the CSS is returned
+    // (the CssEngine contract: no source maps embedded in the string).
+    assert!(
+        !css.contains("sourceMappingURL"),
+        "the --map inline sourcemap comment must be stripped from the returned CSS"
+    );
 }
 
 #[test]

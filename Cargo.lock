@@ -6109,11 +6109,13 @@ name = "zfb-css"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64",
  "hex",
  "lightningcss",
  "serde",
  "serde_json",
  "sha2",
+ "sourcemap",
  "syntect",
  "tempfile",
  "thiserror",

@@ -42,7 +42,7 @@ axum = "0.8"
 async-trait = "0.1"
 # Sub 3 / #108: base64-decode dev-middleware response bodies declared
 # with `bodyEncoding: "base64"` (binary plugin responses).
-base64 = "0.22"
+base64 = { workspace = true }
 mime_guess = "2"
 # `fs` (#903): request-path disk fallbacks in `routes.rs` read pages /
 # public assets via `tokio::fs` so they don't block request workers.

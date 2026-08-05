@@ -103,7 +103,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 # to the user's TSX/MDX source. The `sourcemap` crate is the canonical
 # Rust port of Mozilla's source-map library and handles `.map` files
 # emitted by esbuild's `--sourcemap=linked`.
-sourcemap = "9"
+sourcemap = { workspace = true }
 # Cross-process file lock for gated end-to-end tests so parallel
 # worktrees don't race for the same loopback port. Only used
 # in tests; pulled in via the main deps for simplicity.
