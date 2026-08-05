@@ -58,8 +58,12 @@
 //! double coincidence (wrong mapping AND a same-relative-path file existing
 //! there). Valid only while zfb never passes `-m`/`--optimize` — Lightning
 //! CSS's rule merging is coupled to those flags and destroys the
-//! one-declaration-per-line mapping shape. If minification is ever added to
-//! this pipeline, re-verify #2312 Q4d before trusting attribution.
+//! one-declaration-per-line mapping shape. Enforced, not just documented:
+//! `engine.rs`'s `reject_minify_flags_incompatible_with_attribution` hard-errors
+//! before spawning the CLI if `TailwindSubprocessConfig::extra_args`
+//! requests `-m`/`--minify`/`--optimize` (codex review finding, #2327). If
+//! minification is ever added to this pipeline, re-verify #2312 Q4d before
+//! trusting attribution — and relax that guard deliberately.
 //!
 //! ## Containment (decision e)
 //!
@@ -439,9 +443,30 @@ fn rewrite_and_emit_package_urls(
 /// well-formed url-token into a bad one. `\` + literal-char is a valid CSS
 /// escape for any of these (CSS Syntax §4.3.7) — none of them is a hex
 /// digit, so the escape can never be misread as the start of a hex escape.
+///
+/// A newline or other control/non-printable character (e.g. a decoded `\a`)
+/// CANNOT use that literal-character escape strategy (codex review finding,
+/// #2327): `\` + a literal newline is a *line continuation* inside a quoted
+/// string (the character is silently dropped, CSS Syntax §4.3.7), and is not
+/// a valid escape at all in an unquoted url-token (the value becomes a
+/// bad-url-token and the whole reference is dropped on re-parse, CSS Syntax
+/// §4.3.6). These characters are instead re-serialized as a CSS hex escape
+/// (`\<hex> `), which round-trips correctly in both quoting contexts. The
+/// terminator space is always appended, even when the following character is
+/// not itself a hex digit — a redundant terminator is valid CSS and never
+/// changes the decoded value, and always appending it is simpler than
+/// conditioning on the next character while staying correct when that next
+/// character IS a hex digit (which would otherwise be swallowed into the
+/// escape).
 fn escape_suffix_for_quote(suffix: &str, quote: UrlQuote) -> String {
     let mut out = String::with_capacity(suffix.len());
     for c in suffix.chars() {
+        if c.is_control() {
+            out.push('\\');
+            out.push_str(&format!("{:x}", c as u32));
+            out.push(' ');
+            continue;
+        }
         let needs_escape = match quote {
             UrlQuote::Double => matches!(c, '"' | '\\'),
             UrlQuote::Single => matches!(c, '\'' | '\\'),
@@ -861,6 +886,166 @@ mod tests {
         assert!(
             reparsed[0].decoded.ends_with("?x=\\"),
             "decoded suffix must round-trip to a single literal backslash: {:?}",
+            reparsed[0].decoded
+        );
+    }
+
+    #[test]
+    fn a_suffix_with_a_hex_escaped_newline_is_re_escaped_not_spliced_raw_quoted() {
+        // codex review finding (P2): `\a` decodes to a literal newline
+        // (U+000A). Splicing it raw into a double-quoted replacement embeds
+        // an unescaped newline in a CSS string token, which is invalid CSS
+        // (CSS Syntax §4.3.5 — a raw newline inside a string is a
+        // bad-string-token).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        let css = "@font-face{src:url(\"./files/a.woff2?x=\\a\")}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+
+        assert!(
+            !rewritten.contains("?x=\n"),
+            "the decoded newline must never be spliced raw into the quoted string:\n{rewritten:?}"
+        );
+        let expected = format!(
+            "@font-face{{src:url(\"./{}?x=\\a \")}}\n",
+            companions[0].filename
+        );
+        assert_eq!(
+            rewritten, expected,
+            "the newline must be re-serialized as a CSS hex escape, not a literal byte"
+        );
+
+        // And the result must re-parse as exactly one url() whose decoded
+        // suffix round-trips to the original literal newline.
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(reparsed.len(), 1);
+        assert!(
+            reparsed[0].decoded.ends_with("?x=\n"),
+            "decoded suffix must round-trip to a single literal newline: {:?}",
+            reparsed[0].decoded
+        );
+    }
+
+    #[test]
+    fn a_suffix_with_a_hex_escaped_newline_is_re_escaped_not_spliced_raw_unquoted() {
+        // codex review finding (P2): the UNQUOTED branch prefixed the
+        // decoded newline with a bare backslash, producing `\<newline>` — a
+        // line continuation (CSS Syntax §4.3.7) that silently consumes and
+        // removes the character on re-parse, rather than preserving it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        let css = "@font-face{src:url(./files/a.woff2?x=\\a)}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+
+        assert!(
+            !rewritten.contains("\\\n"),
+            "must never emit a backslash-newline line continuation that silently \
+             drops the character:\n{rewritten:?}"
+        );
+        let expected = format!(
+            "@font-face{{src:url(./{}?x=\\a )}}\n",
+            companions[0].filename
+        );
+        assert_eq!(
+            rewritten, expected,
+            "the newline must be re-serialized as a CSS hex escape, not a literal byte"
+        );
+
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(reparsed.len(), 1);
+        assert!(
+            reparsed[0].decoded.ends_with("?x=\n"),
+            "decoded suffix must round-trip to a single literal newline: {:?}",
+            reparsed[0].decoded
+        );
+    }
+
+    #[test]
+    fn a_suffix_with_a_hex_escaped_control_character_round_trips_through_a_hex_escape() {
+        // codex review finding (c): any non-printable control character —
+        // not just newline — must go through the hex-escape path.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        let css = "@font-face{src:url(\"./files/a.woff2?x=\\1\")}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let (rewritten, companions) = emit(css, &map, root);
+        assert_eq!(companions.len(), 1);
+
+        let expected = format!(
+            "@font-face{{src:url(\"./{}?x=\\1 \")}}\n",
+            companions[0].filename
+        );
+        assert_eq!(rewritten, expected);
+
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(reparsed.len(), 1);
+        assert!(
+            reparsed[0].decoded.ends_with("?x=\u{1}"),
+            "decoded suffix must round-trip to the literal U+0001 control character: {:?}",
+            reparsed[0].decoded
+        );
+    }
+
+    #[test]
+    fn hex_escape_terminator_space_prevents_swallowing_a_following_hex_digit_character() {
+        // codex review finding (d): the escape's terminator space must be
+        // present so a hex-escaped control character immediately followed by
+        // a literal hex-digit character (e.g. 'a') does not get re-parsed as
+        // a single, wrong, multi-digit hex escape. Uses the UNQUOTED
+        // replacement form: under the buggy code, the raw (unescaped)
+        // control byte makes the *whole* url-token a bad-url-token per CSS
+        // Syntax §4.3.6 (`is_non_printable`), so `reparsed` comes back empty
+        // — the cleanest observable RED signal for this branch.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let stylesheet = write_package(root, "@demo/fonts", "1.2.3", &[("files/a.woff2", "bytes")]);
+        // Decodes to a literal U+0001 immediately followed by the literal
+        // character 'a' — the escape's own trailing space is consumed as
+        // ITS terminator and therefore does not appear in the decoded
+        // suffix itself.
+        let css = "@font-face{src:url(./files/a.woff2?x=\\1 a)}\n";
+        let map = map_of(&[(0, 0, stylesheet.to_str().unwrap())]);
+
+        let attributed = attribute(css, &map, root);
+        assert_eq!(attributed.len(), 1);
+        assert!(
+            attributed[0].occurrence.decoded.ends_with("?x=\u{1}a"),
+            "fixture sanity check: the escape's own space must be consumed as its \
+             terminator, not appear as a separate character: {:?}",
+            attributed[0].occurrence.decoded
+        );
+
+        let (rewritten, companions) =
+            rewrite_and_emit_package_urls(css, &attributed).expect("emission should succeed");
+        assert_eq!(companions.len(), 1);
+
+        let expected = format!(
+            "@font-face{{src:url(./{}?x=\\1 a)}}\n",
+            companions[0].filename
+        );
+        assert_eq!(rewritten, expected);
+
+        let reparsed = scan_css_urls(&rewritten);
+        assert_eq!(
+            reparsed.len(),
+            1,
+            "a raw non-printable byte in an unquoted url-token makes the whole \
+             token a bad-url-token and drops it on re-parse: {rewritten:?}"
+        );
+        assert!(
+            reparsed[0].decoded.ends_with("?x=\u{1}a"),
+            "re-escaped output must round-trip to U+0001 followed by a separate \
+             literal 'a', not be swallowed into a two-digit hex escape: {:?}",
             reparsed[0].decoded
         );
     }

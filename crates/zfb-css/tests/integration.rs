@@ -10,6 +10,7 @@
 //! locally with `cargo test -- --include-ignored` once a build has staged
 //! the slot, or set `ZFB_TAILWIND_BIN` explicitly.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use zfb_css::{
@@ -73,6 +74,86 @@ fn subprocess_engine_reports_missing_binary_clearly() {
         .expect_err("missing binary must error");
     let msg = format!("{err}");
     assert!(msg.contains("not found"), "got: {msg}");
+}
+
+#[test]
+fn subprocess_engine_rejects_minify_flag_because_it_breaks_url_attribution() {
+    // codex review finding (P2, #2327): `--minify` invalidates the
+    // sourcemap-position assumptions package `url()` attribution depends on
+    // (Lightning CSS's rule merging), yet attribution runs unconditionally
+    // on every real (non-mock) call. Use a nonexistent binary path so a
+    // passing check (not this one) would fail for an unrelated reason
+    // ("not found") instead of silently succeeding — and to prove the
+    // extra_args check runs BEFORE the binary-exists check, not after.
+    let mut cfg = TailwindSubprocessConfig::default()
+        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
+    cfg.extra_args = vec![OsString::from("--minify")];
+    let engine = TailwindSubprocessEngine::new(cfg);
+    let err = engine
+        .produce_utility_css(&[])
+        .expect_err("--minify with attribution enabled must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("--minify") && msg.contains("attribution"),
+        "expected an error naming --minify and attribution, got: {msg}"
+    );
+    assert!(
+        !msg.contains("not found"),
+        "the minify rejection must fire before the binary-exists check, got: {msg}"
+    );
+}
+
+#[test]
+fn subprocess_engine_rejects_short_minify_flag() {
+    // `-m` is `--minify`'s short spelling, not a distinct flag — must be
+    // rejected identically.
+    let mut cfg = TailwindSubprocessConfig::default()
+        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
+    cfg.extra_args = vec![OsString::from("-m")];
+    let engine = TailwindSubprocessEngine::new(cfg);
+    let err = engine
+        .produce_utility_css(&[])
+        .expect_err("-m with attribution enabled must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("-m") && msg.contains("attribution"),
+        "expected an error naming -m and attribution, got: {msg}"
+    );
+}
+
+#[test]
+fn subprocess_engine_rejects_optimize_flag() {
+    let mut cfg = TailwindSubprocessConfig::default()
+        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
+    cfg.extra_args = vec![OsString::from("--optimize")];
+    let engine = TailwindSubprocessEngine::new(cfg);
+    let err = engine
+        .produce_utility_css(&[])
+        .expect_err("--optimize with attribution enabled must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("--optimize") && msg.contains("attribution"),
+        "expected an error naming --optimize and attribution, got: {msg}"
+    );
+}
+
+#[test]
+fn subprocess_engine_extra_args_with_unrelated_flags_still_reach_the_binary_check() {
+    // A non-minify extra arg must NOT be rejected — execution should
+    // continue past the new guard and fail for the ordinary "binary not
+    // found" reason instead, proving unrelated flags are unaffected.
+    let mut cfg = TailwindSubprocessConfig::default()
+        .with_binary_path("/nonexistent/tailwindcss-v4-please-do-not-create");
+    cfg.extra_args = vec![OsString::from("--verbose")];
+    let engine = TailwindSubprocessEngine::new(cfg);
+    let err = engine
+        .produce_utility_css(&[])
+        .expect_err("missing binary must still error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("not found"),
+        "unrelated extra_args must not be rejected by the minify guard, got: {msg}"
+    );
 }
 
 #[test]
