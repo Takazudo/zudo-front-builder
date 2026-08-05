@@ -953,6 +953,12 @@ impl CssEngine for TailwindSubprocessEngine {
         cmd.current_dir(&self.config.working_dir);
         cmd.arg("-i").arg(entry_tmp.path());
         cmd.arg("-o").arg(out_tmp.path());
+        // #2311/#2315: record per-declaration provenance so relative `url()`s
+        // inlined from `@import`ed package stylesheets can be attributed to
+        // their origin. The map arrives as a trailing inline comment in the
+        // output file and is parsed + stripped back out at the read below —
+        // the returned CSS bytes stay identical to a `--map`-less run.
+        cmd.arg("--map");
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
@@ -984,9 +990,16 @@ impl CssEngine for TailwindSubprocessEngine {
             ));
         }
 
-        let css = std::fs::read_to_string(out_tmp.path())
+        let raw = std::fs::read_to_string(out_tmp.path())
             .context("failed to read tailwind output file")?;
-        Ok(css)
+        // Strip the `--map` comment and enforce the package `url()` floor
+        // (#2315): a relative `url()` attributed to a `node_modules`
+        // stylesheet fails the build here — authored/project CSS passes
+        // through byte-for-byte.
+        crate::url_attribution::attribute_and_enforce_package_url_floor(
+            &raw,
+            &self.config.working_dir,
+        )
     }
 }
 

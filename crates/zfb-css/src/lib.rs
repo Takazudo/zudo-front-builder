@@ -84,6 +84,7 @@ pub mod modules;
 pub mod native_engine;
 pub mod pipeline;
 pub mod scanner;
+pub mod url_attribution;
 pub mod url_scanner;
 
 pub use authored_engine::AuthoredCssEngine;
@@ -98,6 +99,10 @@ pub use native_engine::NativeRustEngine;
 pub use pipeline::{link_href, CssPipeline, CssPipelineConfig, CssPipelineOutput};
 pub use scanner::{
     scan_css_module_imports, scan_css_module_imports_in_memory, ModuleImportScan, SourceModuleUsage,
+};
+pub use url_attribution::{
+    attribute_and_enforce_package_url_floor, attribute_relative_urls, AttributedUrl, PackageOrigin,
+    UrlOrigin,
 };
 pub use url_scanner::{scan_css_urls, CssUrlOccurrence, UrlQuote};
 
