@@ -50,6 +50,7 @@ export default defineConfig(
     docHistory: true,
     sidebarResizer: true,
     sidebarToggle: true,
+    tocToggle: true,
     imageEnlarge: true,
     dynamicPageTransition: true,
 
