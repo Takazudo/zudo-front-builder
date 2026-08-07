@@ -20,7 +20,7 @@ category: Concepts
 SSR のみの編集は SSG の HTML 書き込みを生まないため、`Page` SSE イベントが発行されず、開いている
 ブラウザタブが自動リフレッシュされない点です。更新後の SSR 出力を見るには、タブを手動でリロード
 してください。dev 側の SSR 経路の背景については
-[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender--false)
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx#prerender-false-の-dev-と本番の同等性)
 を参照してください。
 
 </Info>
@@ -36,7 +36,7 @@ SSR のみの編集は SSG の HTML 書き込みを生まないため、`Page` S
 `DEFAULT_WATCH_ROOTS` と `derive_watch_roots` を参照してください。）
 
 なお、`public/` は監視ルートに **含まれません**。静的アセットはリクエストごとにディスクから
-ライブで配信されるため（[静的アセット — dev / prod の一致](./static-assets.mdx#dev--prod-の一致)
+ライブで配信されるため（[静的アセット — dev / prod の一致](./static-assets.mdx#dev-prod-の一致)
 を参照）、`public/` 配下のファイルを編集してもウォッチャーイベントは発生せず、ライブリロードも
 起こりません。dev サーバーは次のリクエストで新しいバイトをそのまま配信するだけです。`public/`
 を監視対象から外していることは、アセットツリーがどれだけ大きくてもブート（起動）を高速に保つ
