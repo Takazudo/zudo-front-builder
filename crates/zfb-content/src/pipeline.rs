@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use markdown::mdast::{AttributeContent, AttributeValue, Node as MdastNode};
 use sha2::{Digest, Sha256};
-use zfb_md_ast::diagnostics::MarkdownDiagnostic;
+use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic};
 use zfb_md_ast::{CrossFileLinkCandidate, FileHeadings, HeadingIdStrategy, ReadRecorder};
 
 use crate::dep_manifest::DependencyManifest;
@@ -536,6 +536,9 @@ pub struct Pipeline {
     /// Derived purely from the `features` config (already in the
     /// fingerprint) — NEVER fingerprinted separately.
     link_validation_enabled: bool,
+    /// Severity used when promoting trusted resolver fragment metadata into
+    /// the existing build-wide cross-file candidate channel.
+    resolved_link_fragment_severity: Option<DiagnosticSeverity>,
     /// Configuration-derived spec for reconstructing the code-block hast
     /// chain on demand, so fenced code nested inside an MDX JSX body /
     /// `:::` directive can be highlighted exactly like a top-level fence
@@ -666,6 +669,7 @@ impl Pipeline {
             cross_file_link_candidates: Vec::new(),
             file_headings: Vec::new(),
             link_validation_enabled: false,
+            resolved_link_fragment_severity: None,
             nested_code_chain_spec: None,
         }
     }
@@ -2125,6 +2129,10 @@ impl Pipeline {
         // directives step) when wired. See field doc.
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(node);
+            // Context-free compiles cannot contribute to the build-wide
+            // fragment check. Drain so metadata from this document cannot
+            // leak into a later context-armed compile on the same pipeline.
+            let _ = p.take_resolved_fragment_links();
         }
         // JSX-nested mutation stubs (zfb#2247), applied LAST in the mdast
         // phase — after resolve_links. See the field docs on
@@ -2244,6 +2252,7 @@ impl Pipeline {
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(&mut mdast);
         }
+        self.promote_resolved_fragment_links(ctx);
         // JSX-nested link collection (zfb#2184) MUST stay after the
         // resolve_links application — see the field doc on
         // `jsx_nested_link_collector`.
@@ -2277,6 +2286,7 @@ impl Pipeline {
         if let Some(p) = self.resolve_links.as_mut() {
             p.visit(node);
         }
+        self.promote_resolved_fragment_links(ctx);
         // JSX-nested link collection (zfb#2184) MUST stay after the
         // resolve_links application — see the field doc on
         // `jsx_nested_link_collector`. This hook is what covers the MDX
@@ -2298,6 +2308,34 @@ impl Pipeline {
         if let Some(v) = self.jsx_nested_external_links.as_mut() {
             v.visit(node);
         }
+    }
+
+    /// Move trusted source-map identities captured by `ResolveLinksPlugin`
+    /// into the same cache-replayed channel used by ordinary relative
+    /// cross-file fragment links. The rewritten URL is intentionally never
+    /// parsed back into file space.
+    fn promote_resolved_fragment_links(&mut self, ctx: &mut BuildContext<'_>) {
+        let resolved = self
+            .resolve_links
+            .as_mut()
+            .map(ResolveLinksPlugin::take_resolved_fragment_links)
+            .unwrap_or_default();
+        let Some(severity) = self.resolved_link_fragment_severity else {
+            return;
+        };
+        let (Some(source_path), Some(out)) = (
+            ctx.source_path.as_ref(),
+            ctx.cross_file_links.as_deref_mut(),
+        ) else {
+            return;
+        };
+        out.extend(resolved.into_iter().map(|link| CrossFileLinkCandidate {
+            source_path: source_path.clone(),
+            target_path: zfb_types::normalize_path_lexical(&link.target_path),
+            fragment: link.fragment,
+            raw_href: link.raw_href,
+            severity,
+        }));
     }
 
     /// Run only the hast visitor chain with build context against an
@@ -2542,6 +2580,11 @@ fn register_features_config_derived(
     // current file are already populated by HeadingLinksPlugin. Gated on
     // `is_some()` (uses a rich options struct, not a FeatureToggle).
     if let Some(cfg) = &features.link_validation {
+        p.resolved_link_fragment_severity = Some(if cfg.fail_on_broken.unwrap_or(false) {
+            DiagnosticSeverity::Error
+        } else {
+            DiagnosticSeverity::Warning
+        });
         let mut plugin = zfb_md_extras::link_validation::LinkValidationPlugin::new(cfg.clone());
         if let Some(recorder) = read_recorder {
             plugin = plugin.with_recorder(Arc::clone(recorder));
