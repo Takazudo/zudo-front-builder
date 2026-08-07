@@ -3728,7 +3728,12 @@ pub fn bundle_with_session(
                 // apply again (idempotent) so any future refactor of the
                 // recording path cannot silently break the lookup.
                 let key = normalize_path_lexical(&fh.source_path);
-                let ids: HashSet<String> = fh.headings.iter().map(|h| h.id.clone()).collect();
+                let ids: HashSet<String> = fh
+                    .headings
+                    .iter()
+                    .map(|h| h.id.clone())
+                    .chain(fh.anchor_ids.iter().cloned())
+                    .collect();
                 // If two walks produced an entry for the same file (e.g. via
                 // the cache-hit replay path), merge the id sets rather than
                 // overwriting — both are ground-truth from the same source.

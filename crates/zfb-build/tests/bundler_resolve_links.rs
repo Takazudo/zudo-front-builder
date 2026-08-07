@@ -195,6 +195,131 @@ fn make_input_without_resolve(
     }
 }
 
+/// #2338 regression: resolver-enabled docs with both the default and a
+/// locale-shaped route. The source page deliberately mixes a valid heading,
+/// a valid explicit anchor, a valid locale target, one missing fragment, and
+/// an authored site-absolute URL that must remain outside filesystem
+/// validation.
+fn write_resolver_fragment_fixture(root: &std::path::Path, include_missing: bool) {
+    for d in [
+        "pages",
+        "content/docs",
+        "content/ja/docs",
+        "components",
+        "layouts",
+    ] {
+        fs::create_dir_all(root.join(d)).unwrap();
+    }
+    fs::write(
+        root.join("layouts/default.tsx"),
+        "export default function DefaultLayout({ children }) { return children; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("pages/index.mdx"),
+        "---\ntitle: Home\n---\n\nHome.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/docs/target.mdx"),
+        "---\ntitle: Target\n---\n\n## Real Heading\n\n<div id=\"explicit-anchor\"></div>\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("content/ja/docs/target.mdx"),
+        "---\ntitle: Locale Target\n---\n\n## Locale Heading\n",
+    )
+    .unwrap();
+    let missing = if include_missing {
+        "\n[missing](./target.mdx#missing-heading)\n"
+    } else {
+        ""
+    };
+    fs::write(
+        root.join("content/docs/source.mdx"),
+        format!(
+            "---\ntitle: Source\n---\n\n\
+             [heading](./target.mdx#real-heading)\n\n\
+             [explicit](./target.mdx#explicit-anchor)\n\n\
+             [locale](../ja/docs/target.mdx#locale-heading)\n\n\
+             [site URL](/docs/target/#not-a-filesystem-fragment)\n{missing}"
+        ),
+    )
+    .unwrap();
+}
+
+fn resolver_fragment_input(
+    root: &std::path::Path,
+    esbuild: &std::path::Path,
+    outdir_name: &str,
+) -> BundlerInput {
+    let mut input = make_input_with_resolve(root, esbuild, outdir_name, OnBrokenLinks::Error);
+    input.content_collections.push(ContentCollectionSpec::new(
+        "ja_docs",
+        PathBuf::from("content/ja/docs"),
+    ));
+    input
+        .resolve_markdown_links
+        .as_mut()
+        .unwrap()
+        .routes
+        .push(ResolveMarkdownLinksRoute {
+            docs_dir: PathBuf::from("content/ja/docs"),
+            route_prefix: "/ja/docs/".to_string(),
+        });
+    input.pipeline_spec = zfb_content::PipelineSpec {
+        features: Some(zfb_content::MarkdownFeaturesConfig {
+            link_validation: Some(zfb_content::LinkValidationConfig {
+                fail_on_broken: Some(true),
+            }),
+            ..Default::default()
+        }),
+        build_context_roots: Some((root.to_path_buf(), root.join("public"))),
+        ..Default::default()
+    };
+    input
+}
+
+#[test]
+fn resolve_links_preserves_cross_file_fragments_for_strict_validation() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_resolve_links] no esbuild binary available; skipping.");
+        return;
+    };
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+
+    write_resolver_fragment_fixture(root, true);
+    let err = bundle(resolver_fragment_input(
+        root,
+        &esbuild,
+        "dist-resolved-fragment-broken",
+    ))
+    .expect_err("strict build must reject the resolver-hidden missing fragment");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("./target.mdx#missing-heading"),
+        "diagnostic must retain the authored href: {msg}"
+    );
+    assert_eq!(
+        msg.matches("./target.mdx#missing-heading").count(),
+        1,
+        "one authored occurrence must not be double-reported: {msg}"
+    );
+
+    // Remove only the broken occurrence. Generated heading ids, the explicit
+    // anchor, and the locale-shaped target must all settle successfully; the
+    // authored site URL remains URL-space and is not reverse-resolved.
+    write_resolver_fragment_fixture(root, false);
+    let out = bundle(resolver_fragment_input(
+        root,
+        &esbuild,
+        "dist-resolved-fragment-valid",
+    ))
+    .expect("strict resolver-aware build must accept every real target fragment");
+    assert!(out.bundle_path.exists());
+}
+
 /// (a) Good link rewrites to the rendered route URL in the bundle.
 #[test]
 fn resolve_links_good_link_rewrites_to_route_url() {

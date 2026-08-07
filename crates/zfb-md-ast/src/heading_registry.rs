@@ -118,6 +118,21 @@ impl HeadingRegistry {
             .is_some_and(|ids| ids.contains(id))
     }
 
+    /// Return explicit anchor ids recorded for `source_path` in stable order.
+    /// Used by the compile side channel that replays cross-file metadata.
+    #[must_use]
+    pub fn anchor_ids(&self, source_path: &std::path::Path) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .anchor_ids
+            .get(source_path)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Look up all headings recorded for the given source file.
     ///
     /// Returns `None` if no headings have been registered for that path yet.

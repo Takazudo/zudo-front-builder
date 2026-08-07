@@ -405,6 +405,10 @@ fn mdx_to_jsx_module_inner(
                 compiled_file_headings = Some(FileHeadings {
                     source_path: normalize_path_lexical(&src),
                     headings: channel_entries,
+                    // Filled after the hast visitors run, once every
+                    // structured and JSX/model-side explicit anchor has been
+                    // registered for this document.
+                    anchor_ids: Vec::new(),
                 });
             }
         }
@@ -546,6 +550,16 @@ fn mdx_to_jsx_module_inner(
             Vec::new(),
         )
     };
+
+    // The hast pass has now registered structured explicit anchors (including
+    // generated footnote ids). Snapshot the final set into the cache-replayed
+    // per-file side channel before releasing the build context.
+    if let (Some(fh), Some(ctx)) = (compiled_file_headings.as_mut(), build_ctx.as_ref()) {
+        if let (Some(reg), Some(src)) = (ctx.heading_registry.as_deref(), ctx.source_path.as_ref())
+        {
+            fh.anchor_ids = reg.anchor_ids(src);
+        }
+    }
 
     // Flush context-plugin diagnostics — and the #977 side channels
     // (cross-file link candidates, per-file headings) — into the
@@ -5472,6 +5486,56 @@ mod tests {
         assert!(
             p2.take_cross_file_link_candidates().is_empty() && p2.take_file_headings().is_empty(),
             "drain semantics: a second drain after the hit is empty"
+        );
+    }
+
+    // #2338: resolveMarkdownLinks rewrites the rendered href into URL space,
+    // but its trusted source target + fragment must still enter (and replay
+    // through) the build-wide cross-file validation channel.
+    #[test]
+    fn resolved_fragment_candidate_replays_identically_on_cache_hit() {
+        let cache = MdxModuleCache::new();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let target = root.join("other.md");
+        std::fs::write(&target, "## Target\n").expect("write target");
+        let body = "[x](./other.md#missing)\n";
+        let path = root.join("page.mdx");
+        std::fs::write(&path, body).expect("write page");
+        let feats = serde_json::json!({ "linkValidation": { "failOnBroken": true } });
+
+        let make_pipeline = || {
+            let mut p = fs_features_pipeline(feats.clone(), root);
+            p.add_resolve_links(HashMap::from([(
+                target.clone(),
+                "/docs/other/".to_string(),
+            )]));
+            p.set_resolve_links_source_file(path.clone());
+            p
+        };
+
+        let mut p1 = make_pipeline();
+        compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p1))
+            .expect("fresh compile");
+        let fresh = p1.take_cross_file_link_candidates();
+        assert_eq!(fresh.len(), 1, "resolver metadata must become a candidate");
+        assert_eq!(fresh[0].target_path, target);
+        assert_eq!(fresh[0].fragment, "missing");
+        assert_eq!(fresh[0].raw_href, "./other.md#missing");
+        assert_eq!(
+            fresh[0].severity,
+            zfb_md_ast::diagnostics::DiagnosticSeverity::Error
+        );
+
+        poke_sentinel(&cache);
+        let mut p2 = make_pipeline();
+        let hit = compile_mdx_to_jsx_module_cached(body, &path, Some(&cache), Some(&mut p2))
+            .expect("cache hit");
+        assert_eq!(hit.jsx_source, "__SENTINEL__", "must be a true hit");
+        assert_eq!(
+            p2.take_cross_file_link_candidates(),
+            fresh,
+            "resolver-derived candidates must replay identically"
         );
     }
 

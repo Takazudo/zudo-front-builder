@@ -148,6 +148,10 @@ pub struct FileHeadings {
     /// set the per-compile registry is seeded with (empty slugs are
     /// excluded there too).
     pub headings: Vec<crate::heading_registry::HeadingEntry>,
+    /// Explicit non-heading anchor ids rendered by the file (`id` and legacy
+    /// `a[name]` targets), carried alongside headings for the build-wide
+    /// fragment check.
+    pub anchor_ids: Vec<String>,
 }
 
 /// Per-document build context threaded into pipeline visitors when the
