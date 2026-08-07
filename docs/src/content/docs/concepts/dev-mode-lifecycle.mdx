@@ -19,7 +19,7 @@ updated code immediately after the tick completes — no restart needed. One
 limitation remains: an SSR-only edit produces no SSG HTML writes, so no `Page` SSE
 event is emitted and the open browser tab does not auto-refresh. Manually reload the
 tab to see the updated SSR output. For context on the dev-side SSR path, see
-[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender--false).
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender-false).
 
 </Info>
 
@@ -35,7 +35,7 @@ absolute paths listed in `extraWatchPaths` — via the
 `derive_watch_roots` in `crates/zfb/src/commands/dev.rs` for the canonical list.)
 
 Note that `public/` is **not** a watch root. Static assets are served live from
-disk on each request (see [Static Assets — dev / prod parity](./static-assets.mdx#dev--prod-parity)),
+disk on each request (see [Static Assets — dev / prod parity](./static-assets.mdx#dev-prod-parity)),
 so editing a file under `public/` never produces a watcher event and never
 triggers a livereload — the dev server simply serves the new bytes on the next
 request. Keeping `public/` out of the watched set is also what lets boot stay

@@ -72,6 +72,25 @@ pub struct BrokenLinkDiagnostic {
     pub url: String,
 }
 
+/// Trusted source-space metadata for a successfully resolved Markdown link.
+///
+/// The rendered href is rewritten into URL space, where link validation must
+/// not infer a filesystem target.  This side channel retains the exact source
+/// map key that produced the rewrite so a later build-wide fragment check can
+/// validate it without reinterpreting arbitrary site-absolute URLs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedFragmentLink {
+    pub target_path: PathBuf,
+    pub fragment: String,
+    pub raw_href: String,
+}
+
+#[derive(Debug)]
+struct ResolvedLink {
+    rewritten: String,
+    target_path: PathBuf,
+}
+
 /// Visitor that rewrites `.md` / `.mdx` link URLs.
 ///
 /// After each file's pipeline run, call [`ResolveLinksPlugin::take_broken_links`]
@@ -90,6 +109,9 @@ pub struct ResolveLinksPlugin {
     url_space_dir: Option<PathBuf>,
     /// Broken links accumulated since the last [`take_broken_links`] call.
     broken_links: Vec<BrokenLinkDiagnostic>,
+    /// Successfully resolved relative Markdown links carrying a checkable
+    /// fragment. Drained by `Pipeline` immediately after each mdast pass.
+    resolved_fragment_links: Vec<ResolvedFragmentLink>,
 }
 
 impl ResolveLinksPlugin {
@@ -100,6 +122,7 @@ impl ResolveLinksPlugin {
             options,
             url_space_dir: None,
             broken_links: Vec::new(),
+            resolved_fragment_links: Vec::new(),
         }
     }
 
@@ -109,6 +132,10 @@ impl ResolveLinksPlugin {
     /// until the next pipeline run accumulates new diagnostics.
     pub fn take_broken_links(&mut self) -> Vec<BrokenLinkDiagnostic> {
         std::mem::take(&mut self.broken_links)
+    }
+
+    pub(crate) fn take_resolved_fragment_links(&mut self) -> Vec<ResolvedFragmentLink> {
+        std::mem::take(&mut self.resolved_fragment_links)
     }
 
     /// Update the per-file source directory used to resolve relative link
@@ -185,7 +212,7 @@ impl ResolveLinksPlugin {
     /// `Ok(None)` for URLs that are not md/mdx (nothing to resolve),
     /// and `Err(())` when the URL is an `.md`/`.mdx` href that failed
     /// to resolve (caller should record a [`BrokenLinkDiagnostic`]).
-    fn resolve(&self, url: &str) -> Result<Option<String>, ()> {
+    fn resolve(&self, url: &str) -> Result<Option<ResolvedLink>, ()> {
         // External (scheme-bearing / protocol-relative) hrefs are never local
         // targets — leave them untouched and don't flag a `.md` one as broken.
         // Mirrors the front-guard in StripMdExtensionPlugin.
@@ -281,7 +308,7 @@ impl ResolveLinksPlugin {
     /// segments, so all four candidates apply uniformly — `../` from
     /// `section/article.mdx` probes `section.mdx` … `section/index.md`,
     /// the two file shapes a route directory can map back to.
-    fn lookup_url_space(&self, name: &str, suffix: &str) -> Option<String> {
+    fn lookup_url_space(&self, name: &str, suffix: &str) -> Option<ResolvedLink> {
         // Site-absolute hrefs don't resolve relative to the page URL, so
         // URL space adds nothing over the direct lookup already tried.
         if name.starts_with('/') {
@@ -301,7 +328,10 @@ impl ResolveLinksPlugin {
         ];
         for candidate in candidates {
             if let Some(target) = self.options.source_map.get(&candidate) {
-                return Some(format!("{target}{suffix}"));
+                return Some(ResolvedLink {
+                    rewritten: format!("{target}{suffix}"),
+                    target_path: candidate,
+                });
             }
         }
         None
@@ -310,19 +340,25 @@ impl ResolveLinksPlugin {
     /// Try the given `path_str` against the source map directly, then
     /// via `source_dir`-relative join. Returns `Some(url + suffix)` on
     /// the first match, `None` if no entry is found.
-    fn lookup_path(&self, path_str: &str, suffix: &str) -> Option<String> {
+    fn lookup_path(&self, path_str: &str, suffix: &str) -> Option<ResolvedLink> {
         // Try direct lookup first (caller may have stored relative
         // paths in the map).
         let direct = PathBuf::from(path_str);
         if let Some(target) = self.options.source_map.get(&direct) {
-            return Some(format!("{target}{suffix}"));
+            return Some(ResolvedLink {
+                rewritten: format!("{target}{suffix}"),
+                target_path: direct,
+            });
         }
 
         // Try resolving against source_dir.
         if let Some(dir) = &self.options.source_dir {
             let joined = normalize_join(dir, path_str);
             if let Some(target) = self.options.source_map.get(&joined) {
-                return Some(format!("{target}{suffix}"));
+                return Some(ResolvedLink {
+                    rewritten: format!("{target}{suffix}"),
+                    target_path: joined,
+                });
             }
         }
         None
@@ -332,8 +368,33 @@ impl ResolveLinksPlugin {
 impl MdastVisitor for ResolveLinksPlugin {
     fn visit(&mut self, node: &mut MdastNode) {
         if let MdastNode::Link(l) = node {
-            match self.resolve(&l.url) {
-                Ok(Some(rewritten)) => l.url = rewritten,
+            let raw_href = l.url.clone();
+            match self.resolve(&raw_href) {
+                Ok(Some(resolved)) => {
+                    // Only the resolver's successful source-map match is a
+                    // trusted filesystem identity. Preserve a relative,
+                    // non-percent-encoded fragment before replacing the href
+                    // with its site URL; validation must never reverse-map the
+                    // rewritten URL itself.
+                    if !raw_href.starts_with('/') {
+                        if let Some(fragment) = raw_href.split_once('#').map(|(_, f)| f) {
+                            let path_part = raw_href
+                                .split_once(['?', '#'])
+                                .map_or(raw_href.as_str(), |(path, _)| path);
+                            if !fragment.is_empty()
+                                && !fragment.contains('%')
+                                && !path_part.contains('%')
+                            {
+                                self.resolved_fragment_links.push(ResolvedFragmentLink {
+                                    target_path: resolved.target_path.clone(),
+                                    fragment: fragment.to_string(),
+                                    raw_href,
+                                });
+                            }
+                        }
+                    }
+                    l.url = resolved.rewritten;
+                }
                 Err(()) => {
                     // .md/.mdx link that is not in the source map → broken.
                     self.broken_links

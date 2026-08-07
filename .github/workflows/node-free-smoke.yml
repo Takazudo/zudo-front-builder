@@ -401,24 +401,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # NOTE: the Cloudflare secrets are deliberately NOT job-level `env:`.
-    # They are attached per-step, to the steps that actually talk to
-    # Cloudflare — so the `npx html-validate` and `node
-    # scripts/showcase-inject-banner.mjs` steps below run with no production
-    # token in their environment. npx resolves a package's transitive
-    # closure fresh from the registry at run time (no lockfile, no integrity
-    # check), and there is no reason for that closure to be able to read the
-    # token.
+    # They are attached per-step, only where Cloudflare is contacted, so
+    # checkout, dependency installation, HTML validation, and banner
+    # injection run without production credentials. The tool executables
+    # below come from the frozen root lockfile rather than ad-hoc registry
+    # resolution.
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
-          # This job runs only `node`/`npx` (no pnpm). setup-node@v5
-          # auto-enables package-manager-cache, detects pnpm-lock.yaml, then
-          # fails with "Unable to locate pnpm" because pnpm/action-setup never
-          # ran here. Disable it — pnpm is not needed.
-          package-manager-cache: false
+          cache: "pnpm"
+
+      # Install only the root project: it owns the exact-pinned showcase
+      # tools. Frozen mode makes both binaries and their dependency closures
+      # come from the committed lockfile.
+      - name: Install showcase tools
+        run: pnpm install --frozen-lockfile --filter zudo-front-builder
 
       # Fail loudly rather than skipping. This job only ever runs on a push to
       # main, where the credentials are always expected to be present — a
@@ -447,15 +449,12 @@ jobs:
       # markup CI splices in. Reversed, a banner bug would read as a template
       # regression and vice versa.
       #
-      # Exact patch pin (not `@10`) to match the repo's pin-everything
-      # discipline. npx still resolves html-validate's transitive closure
-      # fresh at run time with no lockfile, which is why this step carries no
-      # Cloudflare credentials in its env (see the job-level NOTE above).
-      # html-validate is `^10.0.0` in docs/package.json; no pnpm here, hence npx.
-      # pin-update: bump this the same way as the `uses:` SHAs above.
+      # The root package owns an exact html-validate pin and the frozen install
+      # above supplies this binary. Keep the actual process cwd at the
+      # generated showcase so its glob is evaluated against that site.
       - name: Validate emitted HTML (html-validate)
         working-directory: create-zfb-showcase
-        run: npx --yes html-validate@10.0.0 "dist/**/*.html"
+        run: ../node_modules/.bin/html-validate "dist/**/*.html"
 
       # not_found_handling = "404-page" in wrangler.toml silently degrades to
       # a plain 404 if the template ever loses pages/404.tsx. Fail loudly here
@@ -470,20 +469,18 @@ jobs:
       - name: Inject the showcase banner
         run: node scripts/showcase-inject-banner.mjs create-zfb-showcase/dist "${{ github.sha }}"
 
-      # wrangler version is HARDCODED, not read from docs/package.json.
-      # Reading it back meant `npx wrangler@<string from a file this PR can
-      # edit>` — and npm specifiers are not just versions: `file:../evil`,
-      # `npm:other-pkg`, `github:owner/repo`, and remote tarballs all parse
-      # and execute. That turned a one-line edit to docs/package.json into
-      # arbitrary code execution next to the production Cloudflare token.
-      # pin-update: keep in sync with docs/package.json's wrangler pin
-      # (guarded there by docs/scripts/check-wrangler-pin.mjs).
+      # Run the root lockfile-installed binary directly. Do not construct an
+      # executable package specifier from PR-editable data beside secrets.
+      # docs/scripts/check-wrangler-pin.mjs keeps a literal trusted version
+      # expectation and checks the root/docs manifests and lock importers.
+      # The working directory is load-bearing: Wrangler must discover this
+      # generated site's config and assets, not the workspace root.
       - name: Deploy worker
         working-directory: create-zfb-showcase
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes wrangler@4.85.0 deploy
+        run: ../node_modules/.bin/wrangler deploy
 
       - name: Enable workers.dev subdomain (idempotent)
         continue-on-error: true
@@ -593,7 +590,7 @@ jobs:
     # no .github/dependabot.yml today — this is latent, and costs one line.
     #
     # Deliberately NOT pull_request_target: under it, PR-authored code would
-    # run `npx` and a node script with repository secrets in scope.
+    # run installed tools and a node script with repository secrets in scope.
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -607,16 +604,20 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
-          package-manager-cache: false
+          cache: "pnpm"
+
+      # Install before any secret-bearing step. Only the exact-pinned root
+      # showcase tools are needed in this job.
+      - name: Install showcase tools
+        run: pnpm install --frozen-lockfile --filter zudo-front-builder
 
       - name: Download showcase dist
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -627,13 +628,14 @@ jobs:
       # Validate before injecting — same reasoning as the production job.
       - name: Validate emitted HTML (html-validate)
         working-directory: create-zfb-showcase
-        run: npx --yes html-validate@10.0.0 "dist/**/*.html"
+        run: ../node_modules/.bin/html-validate "dist/**/*.html"
 
       - name: Inject the showcase banner
         run: node scripts/showcase-inject-banner.mjs create-zfb-showcase/dist "${{ github.event.pull_request.head.sha }}"
 
       - name: Upload preview version
         id: preview
+        working-directory: create-zfb-showcase
         # Tolerant by design: `versions upload --preview-alias` requires the
         # `zfb-showcase` worker to already exist (created by the first
         # production deploy on merge to main) and the workers.dev subdomain to
@@ -642,6 +644,8 @@ jobs:
         # posts a "pending" note) rather than reddening the PR.
         continue-on-error: true
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
@@ -651,7 +655,7 @@ jobs:
           fi
           PREVIEW_ALIAS="pr-${PR_NUMBER}"
           set +e
-          UPLOAD_OUTPUT=$(cd create-zfb-showcase && npx --yes wrangler@4.85.0 versions upload \
+          UPLOAD_OUTPUT=$(../node_modules/.bin/wrangler versions upload \
             --preview-alias "$PREVIEW_ALIAS" 2>&1)
           STATUS=$?
           set -e

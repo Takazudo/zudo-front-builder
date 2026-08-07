@@ -3728,7 +3728,12 @@ pub fn bundle_with_session(
                 // apply again (idempotent) so any future refactor of the
                 // recording path cannot silently break the lookup.
                 let key = normalize_path_lexical(&fh.source_path);
-                let ids: HashSet<String> = fh.headings.iter().map(|h| h.id.clone()).collect();
+                let ids: HashSet<String> = fh
+                    .headings
+                    .iter()
+                    .map(|h| h.id.clone())
+                    .chain(fh.anchor_ids.iter().cloned())
+                    .collect();
                 // If two walks produced an entry for the same file (e.g. via
                 // the cache-hit replay path), merge the id sets rather than
                 // overwriting — both are ground-truth from the same source.
@@ -3736,7 +3741,16 @@ pub fn bundle_with_session(
             }
             map
         };
+        // One source file can be compiled into more than one shadow
+        // destination (notably collection content under an extra `src/`
+        // tree). Each pass replays the same deferred candidates. Collapse
+        // those exact replays while preserving genuinely repeated authored
+        // hrefs through their per-compile occurrence index.
+        let mut seen_candidates: HashSet<&CrossFileLinkCandidate> = HashSet::new();
         for candidate in &all_cross_file_links {
+            if !seen_candidates.insert(candidate) {
+                continue;
+            }
             // target_path is already normalised at record time (#977); apply
             // again for the same idempotence reason as the heading-map keys.
             let target_key = normalize_path_lexical(&candidate.target_path);
