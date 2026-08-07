@@ -108,7 +108,7 @@ pub enum HastNode {
 /// Candidates are a pure function of the compile input (plus
 /// dep-manifest-covered reads), so the compile cache can store and
 /// replay them exactly like markdown diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CrossFileLinkCandidate {
     /// Absolute path of the source file containing the link — diagnostic
     /// location for the post-compile check (NOT a lookup key).
@@ -124,6 +124,11 @@ pub struct CrossFileLinkCandidate {
     pub fragment: String,
     /// The original href as authored, for diagnostic messages.
     pub raw_href: String,
+    /// Zero-based occurrence within this source compile's deferred-candidate
+    /// stream. Together with the source path, this distinguishes repeated
+    /// authored hrefs while allowing the bundler to collapse an identical
+    /// candidate replayed by multiple materialisation passes.
+    pub occurrence_index: usize,
     /// Severity the recording plugin would have emitted
     /// (`failOnBroken` ⇒ `Error`, else `Warning`).
     pub severity: crate::diagnostics::DiagnosticSeverity,

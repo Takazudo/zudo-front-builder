@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 /// Severity of a markdown diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DiagnosticSeverity {
     /// Informational note — does not block the build.
     Info,

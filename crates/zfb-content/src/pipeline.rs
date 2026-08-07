@@ -2329,13 +2329,20 @@ impl Pipeline {
         ) else {
             return;
         };
-        out.extend(resolved.into_iter().map(|link| CrossFileLinkCandidate {
-            source_path: source_path.clone(),
-            target_path: zfb_types::normalize_path_lexical(&link.target_path),
-            fragment: link.fragment,
-            raw_href: link.raw_href,
-            severity,
-        }));
+        let occurrence_base = out.len();
+        out.extend(
+            resolved
+                .into_iter()
+                .enumerate()
+                .map(|(offset, link)| CrossFileLinkCandidate {
+                    source_path: source_path.clone(),
+                    target_path: zfb_types::normalize_path_lexical(&link.target_path),
+                    fragment: link.fragment,
+                    raw_href: link.raw_href,
+                    occurrence_index: occurrence_base + offset,
+                    severity,
+                }),
+        );
     }
 
     /// Run only the hast visitor chain with build context against an

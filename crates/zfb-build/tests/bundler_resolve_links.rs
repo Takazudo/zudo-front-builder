@@ -200,11 +200,11 @@ fn make_input_without_resolve(
 /// a valid explicit anchor, a valid locale target, one missing fragment, and
 /// an authored site-absolute URL that must remain outside filesystem
 /// validation.
-fn write_resolver_fragment_fixture(root: &std::path::Path, include_missing: bool) {
+fn write_resolver_fragment_fixture(root: &std::path::Path, missing_occurrences: usize) {
     for d in [
         "pages",
-        "content/docs",
-        "content/ja/docs",
+        "src/content/docs",
+        "src/content/ja/docs",
         "components",
         "layouts",
     ] {
@@ -221,22 +221,18 @@ fn write_resolver_fragment_fixture(root: &std::path::Path, include_missing: bool
     )
     .unwrap();
     fs::write(
-        root.join("content/docs/target.mdx"),
+        root.join("src/content/docs/target.mdx"),
         "---\ntitle: Target\n---\n\n## Real Heading\n\n<div id=\"explicit-anchor\"></div>\n",
     )
     .unwrap();
     fs::write(
-        root.join("content/ja/docs/target.mdx"),
+        root.join("src/content/ja/docs/target.mdx"),
         "---\ntitle: Locale Target\n---\n\n## Locale Heading\n",
     )
     .unwrap();
-    let missing = if include_missing {
-        "\n[missing](./target.mdx#missing-heading)\n"
-    } else {
-        ""
-    };
+    let missing = "\n[missing](./target.mdx#missing-heading)\n".repeat(missing_occurrences);
     fs::write(
-        root.join("content/docs/source.mdx"),
+        root.join("src/content/docs/source.mdx"),
         format!(
             "---\ntitle: Source\n---\n\n\
              [heading](./target.mdx#real-heading)\n\n\
@@ -254,19 +250,17 @@ fn resolver_fragment_input(
     outdir_name: &str,
 ) -> BundlerInput {
     let mut input = make_input_with_resolve(root, esbuild, outdir_name, OnBrokenLinks::Error);
+    input.content_collections[0].root = PathBuf::from("src/content/docs");
     input.content_collections.push(ContentCollectionSpec::new(
         "ja_docs",
-        PathBuf::from("content/ja/docs"),
+        PathBuf::from("src/content/ja/docs"),
     ));
-    input
-        .resolve_markdown_links
-        .as_mut()
-        .unwrap()
-        .routes
-        .push(ResolveMarkdownLinksRoute {
-            docs_dir: PathBuf::from("content/ja/docs"),
-            route_prefix: "/ja/docs/".to_string(),
-        });
+    let resolve_routes = &mut input.resolve_markdown_links.as_mut().unwrap().routes;
+    resolve_routes[0].docs_dir = PathBuf::from("src/content/docs");
+    resolve_routes.push(ResolveMarkdownLinksRoute {
+        docs_dir: PathBuf::from("src/content/ja/docs"),
+        route_prefix: "/ja/docs/".to_string(),
+    });
     input.pipeline_spec = zfb_content::PipelineSpec {
         features: Some(zfb_content::MarkdownFeaturesConfig {
             link_validation: Some(zfb_content::LinkValidationConfig {
@@ -289,7 +283,7 @@ fn resolve_links_preserves_cross_file_fragments_for_strict_validation() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
-    write_resolver_fragment_fixture(root, true);
+    write_resolver_fragment_fixture(root, 1);
     let err = bundle(resolver_fragment_input(
         root,
         &esbuild,
@@ -307,10 +301,26 @@ fn resolve_links_preserves_cross_file_fragments_for_strict_validation() {
         "one authored occurrence must not be double-reported: {msg}"
     );
 
+    // The occurrence index used for replay dedup must not collapse two
+    // genuinely authored copies of the same href.
+    write_resolver_fragment_fixture(root, 2);
+    let err = bundle(resolver_fragment_input(
+        root,
+        &esbuild,
+        "dist-resolved-fragment-repeated",
+    ))
+    .expect_err("strict build must report both authored broken occurrences");
+    let msg = format!("{err:#}");
+    assert_eq!(
+        msg.matches("./target.mdx#missing-heading").count(),
+        2,
+        "two authored occurrences must survive materialisation dedup: {msg}"
+    );
+
     // Remove only the broken occurrence. Generated heading ids, the explicit
     // anchor, and the locale-shaped target must all settle successfully; the
     // authored site URL remains URL-space and is not reverse-resolved.
-    write_resolver_fragment_fixture(root, false);
+    write_resolver_fragment_fixture(root, 0);
     let out = bundle(resolver_fragment_input(
         root,
         &esbuild,

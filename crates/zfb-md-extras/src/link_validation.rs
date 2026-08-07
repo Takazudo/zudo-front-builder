@@ -732,11 +732,13 @@ fn validate_file_with_fragment(
             // here (idempotent) so the candidate-target key contract
             // survives any refactor of the resolution path.
             if let Some(out) = ctx.cross_file_links.as_deref_mut() {
+                let occurrence_index = out.len();
                 out.push(CrossFileLinkCandidate {
                     source_path: env.source_path.to_path_buf(),
                     target_path: normalize_path_lexical(&resolved),
                     fragment: fragment.to_string(),
                     raw_href: raw_href.to_string(),
+                    occurrence_index,
                     severity: env.severity,
                 });
             }
