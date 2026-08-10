@@ -21,10 +21,10 @@
     "b4push": "pnpm check && pnpm build"
   },
   "dependencies": {
-    "@takazudo/zfb": "2.2.0",
-    "@takazudo/zfb-runtime": "2.2.0",
-    "@takazudo/zfb-md-wasm": "2.2.0",
-    "@takazudo/zfb-adapter-cloudflare": "2.2.0",
+    "@takazudo/zfb": "2.3.0",
+    "@takazudo/zfb-runtime": "2.3.0",
+    "@takazudo/zfb-md-wasm": "2.3.0",
+    "@takazudo/zfb-adapter-cloudflare": "2.3.0",
     "@takazudo/zudo-doc": "5.2.0",
     "@takazudo/zudo-doc-history-server": "5.2.0",
     "@takazudo/zdtp": "0.4.9",
