@@ -15,7 +15,7 @@ each feature is built on.
 
 ## `curl | sh` install fails to resolve a release tag
 
-**Symptom:** the [curl installer](../install/node-free.mdx#linux-macos-—-curl) exits with one of:
+**Symptom:** the [curl installer](../install/node-free.mdx#install-paths-linux-macos-—-curl) exits with one of:
 
 ```
 error: could not resolve the latest release tag from GitHub API
@@ -27,7 +27,7 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **Cause:** `install.sh` resolves a tag from the GitHub Releases API before downloading anything.
 
-- With `ZFB_VERSION` unset, it asks for the latest **non-prerelease** release. This normally resolves; it fails only if the API is unreachable, rate-limited, or the request is otherwise blocked. See [Install without Node](../install/node-free.mdx#linux-macos-—-curl).
+- With `ZFB_VERSION` unset, it asks for the latest **non-prerelease** release. This normally resolves; it fails only if the API is unreachable, rate-limited, or the request is otherwise blocked. See [Install without Node](../install/node-free.mdx#install-paths-linux-macos-—-curl).
 - With `ZFB_VERSION=latest-prerelease`, it scans the most recent 30 releases for one flagged `"prerelease": true`. If none of the last 30 is a prerelease (for example, several stable releases have since shipped and prereleases have rolled off that window), resolution fails the same way.
 
 **Fix:**
@@ -160,4 +160,4 @@ package-specific tooling. See
 
 **Cause:** evaluating a TypeScript config first bundles it with esbuild, and an embedded `zfb-server` does not ship its own esbuild binary the way the `zfb` CLI does.
 
-**Fix:** either switch `config_path` to a `zfb.config.json` file (no esbuild needed at all — the simplest fix), or set the `ZFB_ESBUILD_BIN` environment variable to a usable esbuild CLI binary before calling `build()`. See [Embed as library: config format](./embed-as-library.mdx#config-format-prefer-zfb-config-json) for the full explanation.
+**Fix:** either switch `config_path` to a `zfb.config.json` file (no esbuild needed at all — the simplest fix), or set the `ZFB_ESBUILD_BIN` environment variable to a usable esbuild CLI binary before calling `build()`. See [Embed as library: config format](./embed-as-library.mdx#builder-shape-config-format-prefer-zfb-config-json) for the full explanation.

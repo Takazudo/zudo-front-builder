@@ -73,7 +73,7 @@ export default function SearchPage() {
 
 [`bundle.loaders` と `bundle.define` の設定](../api/define-config.mdx#bundle-設定)も、クライアントスクリプトとその worker に適用されます。define の値は esbuild の生の式で、参照されるとブラウザから見えるようになります。secret には使わないでください。
 
-TypeScript はこれらのバンドルコントラクトを推論しません。クライアントスクリプトでモード値、カスタム loader の import、raw import、define 名を `zfb check` と `tsc` に通すには、[対応する ambient 宣言](../api/define-config.mdx#typescript-ambient-declarations)を追加してください。
+TypeScript はこれらのバンドルコントラクトを推論しません。クライアントスクリプトでモード値、カスタム loader の import、raw import、define 名を `zfb check` と `tsc` に通すには、[対応する ambient 宣言](../api/define-config.mdx#bundle-設定-typescript-ambient-declarations)を追加してください。
 
 ## `?raw` でテキストをインポートする
 

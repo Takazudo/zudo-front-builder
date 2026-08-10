@@ -128,7 +128,7 @@ not_found_handling = "404-page"
 - `compatibility_date` は Workers ランタイムの挙動を固定します。
 - `compatibility_flags = ["nodejs_compat"]` は**必須**です。下の警告を参照してください。
 - `[assets] directory = "./dist"` は静的な出力を組み込みのアセットサーバーに委ねます。
-- `[assets] binding = "ASSETS"` は**推奨**です。これにより生成された `_worker.js` に `env.ASSETS` が公開され、SSR ルートへフォールスルーする前に GET/HEAD リクエストを自ら探ります（`worker-wrapper.mjs` の `canDelegateToAssets()` は、このバインディングが無いとプローブを no-op にします）。デフォルトの `run_worker_first = false` の下でもプラットフォーム自身のアセットルーターがほとんどのヒットをすでに配信しているのに、なぜこのプローブが重要なのかについては [SSR on a Worker — 内側の `env.ASSETS` プローブはデッドコードではない](../concepts/ssr-on-a-worker.mdx#内側の-env-assets-プローブはデッドコードではない) を参照してください。
+- `[assets] binding = "ASSETS"` は**推奨**です。これにより生成された `_worker.js` に `env.ASSETS` が公開され、SSR ルートへフォールスルーする前に GET/HEAD リクエストを自ら探ります（`worker-wrapper.mjs` の `canDelegateToAssets()` は、このバインディングが無いとプローブを no-op にします）。デフォルトの `run_worker_first = false` の下でもプラットフォーム自身のアセットルーターがほとんどのヒットをすでに配信しているのに、なぜこのプローブが重要なのかについては [SSR on a Worker — 内側の `env.ASSETS` プローブはデッドコードではない](../concepts/ssr-on-a-worker.mdx#ディスパッチフロー-内側の-env-assets-プローブはデッドコードではない) を参照してください。
 - `not_found_handling = "404-page"` は**推奨**です。マッチしなかったアセットパスは Worker にフォールスルーし、Worker が `pages/404.tsx` と、あらゆる動的な `prerender = false` ルートを配信します。
 
 <Warning title="`not_found_handling = 'single-page-application'` を設定しないこと">

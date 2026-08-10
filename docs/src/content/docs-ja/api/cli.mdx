@@ -140,7 +140,7 @@ zfb build --no-strict-broken
 zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 ```
 
-静的モード（アダプタなし、または `adapter: "none"`）では、`zfb preview` は `zfb dev` と同じ2つのリクエスト時レイヤーを、通常の静的ファイル配信より前段で実行します: プラグインの `previewMiddleware` 登録、続いて `public/_redirects`（[Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-redirect-rewrite-rules) を参照）。同じ URL に対してプラグインが `_redirects` のルールより常に優先されます。
+静的モード（アダプタなし、または `adapter: "none"`）では、`zfb preview` は `zfb dev` と同じ2つのリクエスト時レイヤーを、通常の静的ファイル配信より前段で実行します: プラグインの `previewMiddleware` 登録、続いて `public/_redirects`（[Static Assets — `_redirects`](../concepts/static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照）。同じ URL に対してプラグインが `_redirects` のルールより常に優先されます。
 
 `_redirects` のマッチャーに到達するのは `GET`/`HEAD` リクエストのみです — これは実際の Workers Static Assets がアセット層（したがって `_redirects`）をこの2つのメソッドに対してしかプローブしない挙動を反映しています。それ以外のメソッドはプラグインハンドラ（すべてのメソッドを受け付けます）に到達するか、405 になります。`GET /old-page` に対して発火するはずのルールが `POST /old-page` では決して発火しません。
 

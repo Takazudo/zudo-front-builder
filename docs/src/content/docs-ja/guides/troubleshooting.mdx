@@ -12,7 +12,7 @@ sidebar_position: 9
 
 ## `curl | sh` インストールがリリースタグを解決できない
 
-**症状:** [curl インストーラ](../install/node-free.mdx#linux-macos-—-curl) が次のいずれかで終了する。
+**症状:** [curl インストーラ](../install/node-free.mdx#インストール経路-linux-macos-—-curl) が次のいずれかで終了する。
 
 ```
 error: could not resolve the latest release tag from GitHub API
@@ -24,7 +24,7 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **原因:** `install.sh` は何かをダウンロードする前に、GitHub Releases API からタグを解決します。
 
-- `ZFB_VERSION` が未設定の場合、最新の **非プレリリース** リリースを要求します。通常はこれで解決できます。失敗するのは、API に到達できない、レート制限を受けている、あるいはリクエストが何らかの理由でブロックされている場合だけです。[Node なしでインストール](../install/node-free.mdx#linux-macos-—-curl) を参照してください。
+- `ZFB_VERSION` が未設定の場合、最新の **非プレリリース** リリースを要求します。通常はこれで解決できます。失敗するのは、API に到達できない、レート制限を受けている、あるいはリクエストが何らかの理由でブロックされている場合だけです。[Node なしでインストール](../install/node-free.mdx#インストール経路-linux-macos-—-curl) を参照してください。
 - `ZFB_VERSION=latest-prerelease` の場合、直近 30 件のリリースを走査して `"prerelease": true` が付いたものを探します。直近 30 件のいずれもプレリリースでない場合（たとえば、その後いくつかの安定版がリリースされ、プレリリースがそのウィンドウから押し出された場合）、同じように解決に失敗します。
 
 **対処:**
@@ -126,4 +126,4 @@ island の worker は `/assets/worker-*.js`、クライアントスクリプト�
 
 **原因:** TypeScript の設定を評価するには、まずそれを esbuild でバンドルする必要がありますが、組み込みの `zfb-server` は `zfb` CLI のように自前の esbuild バイナリを同梱していません。
 
-**対処:** `config_path` を `zfb.config.json` ファイルに切り替える（esbuild は一切不要 — 最もシンプルな修正）か、`build()` を呼び出す前に環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定してください。完全な説明は [ライブラリとして組み込む: 設定形式](./embed-as-library.mdx#設定形式-zfb-config-json-を優先する) を参照してください。
+**対処:** `config_path` を `zfb.config.json` ファイルに切り替える（esbuild は一切不要 — 最もシンプルな修正）か、`build()` を呼び出す前に環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定してください。完全な説明は [ライブラリとして組み込む: 設定形式](./embed-as-library.mdx#ビルダーの形-設定形式-zfb-config-json-を優先する) を参照してください。
