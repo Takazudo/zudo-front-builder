@@ -939,13 +939,14 @@ mod tests {
 
     #[test]
     fn templates_gitignore_ignores_generated_entry_temp_files() {
-        // Drift risk: this glob is hand-derived from zfb-css's private
-        // ENTRY_TMP_PREFIX ("zfb-tailwind-entry-") / ENTRY_TMP_SUFFIX
-        // (".css") constants (crates/zfb-css/src/engine.rs). If those change,
-        // this glob and the shipped .gitignore templates must change too.
-        // The islands glob is the same class of hand-derived constant, taken
-        // from zfb-islands's IN_PROJECT_ENTRY_PREFIX (".zfb-esbuild-entry-") /
-        // IN_PROJECT_ENTRY_SUFFIX (".tsx") (crates/zfb-islands/src/esbuild.rs).
+        // The CSS glob is derived from zfb-css's exported ENTRY_TMP_PREFIX /
+        // ENTRY_TMP_SUFFIX constants (made public in #2345), closing the
+        // #1538 drift risk for this glob: if the create site's shape changes,
+        // this test fails until the shipped .gitignore templates follow.
+        // The remaining globs are still hand-derived. The islands glob comes
+        // from zfb-islands's private IN_PROJECT_ENTRY_PREFIX
+        // (".zfb-esbuild-entry-") / IN_PROJECT_ENTRY_SUFFIX (".tsx")
+        // (crates/zfb-islands/src/esbuild.rs).
         // Belt-and-braces only: the bundler drops its own entry and sweeps
         // stale ones (issue #1970), so this glob just covers the window
         // between a zfb process being killed mid-bundle and the next build.
@@ -957,8 +958,13 @@ mod tests {
         // (".zfb-virtual-") / VIRTUAL_MODULE_TEMP_SUFFIX (".mjs") constants
         // (crates/zfb-plugin-resolver/src/lib.rs). All three cover the same
         // kind of window: after a zfb process is killed mid-bundle.
-        const EXPECTED_GLOBS: [&str; 5] = [
-            "**/zfb-tailwind-entry-*.css",
+        let css_glob = format!(
+            "**/{}*{}",
+            zfb_css::ENTRY_TMP_PREFIX,
+            zfb_css::ENTRY_TMP_SUFFIX
+        );
+        let expected_globs: [&str; 5] = [
+            css_glob.as_str(),
             ".zfb-esbuild-entry-*.tsx",
             ".zfb-islands-tsconfig-*.json",
             ".zfb-worker-tsconfig-*.json",
@@ -973,7 +979,7 @@ mod tests {
                 .get_file(&gitignore_path)
                 .unwrap_or_else(|| panic!("{gitignore_path} missing from template"));
             let contents = String::from_utf8_lossy(gitignore_file.contents());
-            for expected in EXPECTED_GLOBS {
+            for expected in expected_globs {
                 assert!(
                     contents.contains(expected),
                     "{gitignore_path} must contain '{expected}', got:\n{contents}"

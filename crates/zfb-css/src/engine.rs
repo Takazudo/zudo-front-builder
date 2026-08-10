@@ -776,10 +776,19 @@ impl TailwindSubprocessEngine {
 }
 
 /// Filename prefix for the synthesised Tailwind entry temp file. Shared by
-/// the create site and the self-healing sweep so the two never drift.
-const ENTRY_TMP_PREFIX: &str = "zfb-tailwind-entry-";
+/// the create site, the self-healing sweep, and [`is_tailwind_entry_tmp`]
+/// so the three never drift. Public (with [`ENTRY_TMP_SUFFIX`]) so the
+/// scaffold `.gitignore` glob test in `crates/zfb/src/commands/new.rs` can
+/// derive its expected glob instead of hand-copying the string (zfb#1538).
+pub const ENTRY_TMP_PREFIX: &str = "zfb-tailwind-entry-";
 /// Filename suffix (extension) for the synthesised Tailwind entry temp file.
-const ENTRY_TMP_SUFFIX: &str = ".css";
+pub const ENTRY_TMP_SUFFIX: &str = ".css";
+/// Number of random ASCII-alphanumeric characters between
+/// [`ENTRY_TMP_PREFIX`] and [`ENTRY_TMP_SUFFIX`]. Matches `tempfile`'s
+/// default, but passed explicitly to `Builder::rand_bytes` at the create
+/// site so [`is_tailwind_entry_tmp`]'s exact-length match can never drift
+/// from what `tempfile` actually generates (zfb#2345).
+const ENTRY_TMP_RAND_LEN: usize = 6;
 /// Minimum age before the sweep will delete a stranded entry temp file.
 ///
 /// The sweep removes only files older than this so two concurrent builds in
@@ -938,6 +947,37 @@ fn sweep_stale_entry_files_at(dir: &Path, now: std::time::SystemTime) {
     }
 }
 
+/// Does `path` name a live synthesised Tailwind entry temp file
+/// (`zfb-tailwind-entry-<6 alphanumeric>.css`)?
+///
+/// Basename-only and exact: only the final path component is examined, and
+/// the random infix must be exactly [`ENTRY_TMP_RAND_LEN`] ASCII-alphanumeric
+/// characters — the shape `tempfile::Builder` is pinned to at the create
+/// site — so a user file that merely shares the prefix or suffix never
+/// matches. The dev watcher's intake suppression consumes this (zfb#2345):
+/// each CSS pass writes the entry into `input_css`'s parent (a watched
+/// directory, zfb#1300), and without suppression the resulting watch event
+/// re-runs CSS with a fresh temp name, forever. The `zfb` command layer
+/// threads this predicate into the orchestrator's opaque suppression knob —
+/// `zfb-build` itself stays CSS-agnostic.
+///
+/// Deliberately narrower than the stale sweep's prefix+suffix match above:
+/// the sweep only ever deletes files old enough to be orphaned, where
+/// matching broadly is safe; suppression drops live watch events, where
+/// matching broadly would swallow a user's own file.
+pub fn is_tailwind_entry_tmp(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(infix) = name
+        .strip_prefix(ENTRY_TMP_PREFIX)
+        .and_then(|rest| rest.strip_suffix(ENTRY_TMP_SUFFIX))
+    else {
+        return false;
+    };
+    infix.len() == ENTRY_TMP_RAND_LEN && infix.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 impl CssEngine for TailwindSubprocessEngine {
     fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String> {
         // Build the synthesised entry CSS. Read user input_css if set —
@@ -1029,6 +1069,7 @@ impl CssEngine for TailwindSubprocessEngine {
         let mut entry_tmp = tempfile::Builder::new()
             .prefix(ENTRY_TMP_PREFIX)
             .suffix(ENTRY_TMP_SUFFIX)
+            .rand_bytes(ENTRY_TMP_RAND_LEN)
             .tempfile_in(&entry_dir)
             .context("failed to allocate temp file for tailwind entry CSS")?;
         {
@@ -2132,6 +2173,74 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let missing = dir.path().join("does-not-exist");
         sweep_stale_entry_files_at(&missing, future_now()); // must not panic
+    }
+
+    // -----------------------------------------------------------------------
+    // zfb#2345 — exact temp-entry filename predicate (watcher suppression)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn entry_tmp_predicate_matches_the_exact_generated_shape() {
+        assert!(is_tailwind_entry_tmp(Path::new(
+            "zfb-tailwind-entry-a1B2c3.css"
+        )));
+        // Basename-only: the parent directory is irrelevant.
+        assert!(is_tailwind_entry_tmp(Path::new(
+            "/proj/styles/zfb-tailwind-entry-UErIaE.css"
+        )));
+    }
+
+    #[test]
+    fn entry_tmp_predicate_requires_exactly_six_alphanumeric_infix_chars() {
+        // Wrong infix length (5 / 7 / 0).
+        assert!(!is_tailwind_entry_tmp(Path::new(
+            "zfb-tailwind-entry-abc12.css"
+        )));
+        assert!(!is_tailwind_entry_tmp(Path::new(
+            "zfb-tailwind-entry-abc1234.css"
+        )));
+        assert!(!is_tailwind_entry_tmp(Path::new("zfb-tailwind-entry-.css")));
+        // Right length, non-alphanumeric char.
+        assert!(!is_tailwind_entry_tmp(Path::new(
+            "zfb-tailwind-entry-ab-c12.css"
+        )));
+    }
+
+    #[test]
+    fn entry_tmp_predicate_rejects_wrong_prefix_suffix_and_directory_hits() {
+        // Wrong prefix (the OS-temp output file's).
+        assert!(!is_tailwind_entry_tmp(Path::new(
+            "zfb-tailwind-out-a1B2c3.css"
+        )));
+        // Wrong suffix.
+        assert!(!is_tailwind_entry_tmp(Path::new(
+            "zfb-tailwind-entry-a1B2c3.scss"
+        )));
+        // A DIRECTORY component matching the shape never matches — only the
+        // final component is examined.
+        assert!(!is_tailwind_entry_tmp(Path::new(
+            "zfb-tailwind-entry-a1B2c3.css/global.css"
+        )));
+    }
+
+    /// Couples the predicate to what `tempfile` ACTUALLY generates at the
+    /// create site: a file allocated with the same `Builder` settings must
+    /// match, so the exact-length rule can never silently diverge from the
+    /// generator (the reason `ENTRY_TMP_RAND_LEN` is passed explicitly).
+    #[test]
+    fn entry_tmp_predicate_matches_a_builder_generated_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tmp = tempfile::Builder::new()
+            .prefix(ENTRY_TMP_PREFIX)
+            .suffix(ENTRY_TMP_SUFFIX)
+            .rand_bytes(ENTRY_TMP_RAND_LEN)
+            .tempfile_in(dir.path())
+            .expect("allocate entry temp file");
+        assert!(
+            is_tailwind_entry_tmp(tmp.path()),
+            "generated name must match the predicate: {}",
+            tmp.path().display()
+        );
     }
 
     /// The oxide warm-up must run exactly once per binary path even when many
