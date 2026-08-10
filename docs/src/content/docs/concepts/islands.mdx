@@ -180,7 +180,7 @@ are also shared by islands and the workers they start. Define values are raw,
 public code substitutions, so they must never contain secrets.
 
 TypeScript does not infer these bundler contracts. Add the
-[matching ambient declarations](../api/define-config.mdx#typescript-ambient-declarations)
+[matching ambient declarations](../api/define-config.mdx#bundle-settings-typescript-ambient-declarations)
 so mode values, custom-loader imports, raw imports, and define names in island
 code pass `zfb check` and `tsc`.
 

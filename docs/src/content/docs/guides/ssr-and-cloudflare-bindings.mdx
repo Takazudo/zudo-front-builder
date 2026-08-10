@@ -187,7 +187,7 @@ not_found_handling = "404-page"
   GET/HEAD requests ahead of your SSR routes (`canDelegateToAssets()` in
   `worker-wrapper.mjs` no-ops the probe when this binding is absent). See
   [SSR on a Worker — the in-Worker `env.ASSETS` probe is not dead
-  code](../concepts/ssr-on-a-worker.mdx#the-in-worker-env-assets-probe-is-not-dead-code)
+  code](../concepts/ssr-on-a-worker.mdx#the-dispatch-flow-the-in-worker-env-assets-probe-is-not-dead-code)
   for why the probe still matters even though the platform's own asset
   router already serves most hits under the default
   `run_worker_first = false`.

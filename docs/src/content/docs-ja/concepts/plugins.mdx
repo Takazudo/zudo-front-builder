@@ -375,7 +375,7 @@ export default definePlugin({
 - **`preBuild` がない。** `setup` は `"preview"` の下でも実行されます（前述）が、preview は再ビルドを行わないため、それに先行すべき `preBuild`/`postBuild` のステップがありません。
 - **静的モード専用。** `previewMiddleware` は、`zfb preview` がプロジェクト自身の静的ルーター（`adapter: "none"`／省略）を配信するときに実行されます。アダプタモードでは `wrangler dev` がサイト全体を直接配信します — zfb はそこでは自身のルーターを一切起動しないため、`previewMiddleware` の登録は単に実行されません。プロジェクトにプラグインが設定されていてアダプタモードが有効な場合、`zfb preview` は起動時に一度だけ警告します。
 
-`previewMiddleware` は、`devMiddleware` が `zfb dev` で `public/_redirects` より優先されるのとまったく同じように、同じ URL に対して `public/_redirects` より優先されます — [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules) を参照してください。
+`previewMiddleware` は、`devMiddleware` が `zfb dev` で `public/_redirects` より優先されるのとまったく同じように、同じ URL に対して `public/_redirects` より優先されます — [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-リダイレクト／リライトルール) を参照してください。
 
 形については [`ZfbPreviewMiddlewareContext`](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb/src/plugins.ts) を参照してください。
 
@@ -479,4 +479,4 @@ setup の登録が衝突しているか無効な場合、zfb は以下のいず�
 - [`defineConfig`](../api/define-config.mdx) — `plugins: [{ name: "...", options: {...} }]` の配線。
 - [ビルドパイプライン](./build-pipeline.mdx) — 各フックが全体の流れのどこに位置するか。
 - [CLI リファレンス — `zfb preview`](../api/cli.mdx#zfb-preview) — `previewMiddleware` と `_redirects` が静的 preview のリクエストパイプラインにどう組み込まれるか。
-- [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-redirect-rewrite-rules) — `previewMiddleware` が優先されるリダイレクト／リライトルール。
+- [Static Assets — `_redirects`](./static-assets.mdx#_redirects-—-リダイレクト／リライトルール) — `previewMiddleware` が優先されるリダイレクト／リライトルール。

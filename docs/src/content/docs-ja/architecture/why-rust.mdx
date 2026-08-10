@@ -28,7 +28,7 @@ Rust のコンパイラは、use-after-free、データ競合、null 参照を�
 
 ## 配布
 
-zfb は npm 経由で配布される単一バイナリです。`@takazudo/zfb` は npm の optional-deps を介してプリビルドのプラットフォームバイナリを引き込みます — その実行ファイルがフレームワークです。zfb 自体には `node_modules` がなく、監査すべき推移的なツリーもありません。あなたのプロジェクトは import する依存関係（TypeScript、npm パッケージ、ロックファイル）のために自前の `pnpm` を持ち込みますが、フレームワークはそのツリーに含まれません。（ソースからビルドする必要があるコントリビューターは [From source](../getting-started/installation.mdx#from-source-contributors) の手順に従えます。）
+zfb は npm 経由で配布される単一バイナリです。`@takazudo/zfb` は npm の optional-deps を介してプリビルドのプラットフォームバイナリを引き込みます — その実行ファイルがフレームワークです。zfb 自体には `node_modules` がなく、監査すべき推移的なツリーもありません。あなたのプロジェクトは import する依存関係（TypeScript、npm パッケージ、ロックファイル）のために自前の `pnpm` を持ち込みますが、フレームワークはそのツリーに含まれません。（ソースからビルドする必要があるコントリビューターは [From source](../getting-started/installation.mdx#ソースからビルドする（コントリビューター向け）) の手順に従えます。）
 
 単一バイナリはきれいにピン留めされます。CI は必要なバージョンをインストールし、本番デプロイは dev で動いたのと同じバイナリを出荷します。チームが使っているバージョンは 1 つの数字であり、`package.json` のレンジの星座ではありません。
 

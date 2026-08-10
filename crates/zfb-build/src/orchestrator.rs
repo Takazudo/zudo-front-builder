@@ -383,6 +383,54 @@ async fn maybe_pre_tick_refresh(config: &OrchestratorConfig, changes: &[(PathBuf
     }
 }
 
+/// Opt-in watch-intake suppression predicate (issue #2345).
+///
+/// Consulted from [`BuildOrchestrator::run_with_boot`]'s drain loop for
+/// every path in every debounced batch, BEFORE any tick processing —
+/// before `maybe_pre_tick_refresh`, before the tick dispatch, and
+/// therefore before `tick_with_kinds`'s removed-path fold and the
+/// discovery hook. A path the predicate returns `true` for is dropped
+/// from the batch; a batch left empty skips its tick entirely.
+///
+/// Owned by the `zfb` command layer, like
+/// [`OrchestratorConfig::css_mirror_skip_dir_names`]: this crate stores
+/// the closure opaquely and knows nothing about what it matches. The
+/// motivating consumer is the CSS engine's own synthesised Tailwind entry
+/// temp file (`zfb_css::is_tailwind_entry_tmp`), which lands in a watched
+/// directory on every CSS pass — without suppression each pass's watch
+/// event triggers the next CSS pass under a fresh random name, so the
+/// dev loop never goes idle (issue #2343).
+///
+/// Kind-agnostic on purpose — suppression must cover `Created`,
+/// `Modified`, AND `Removed`: a close-after-write can be delivered as
+/// `Modified`, `tick_with_kinds`'s existence reconciliation can change a
+/// kind after the fact, and a `Removed` path bypasses `plan_for_changes`
+/// yet still triggers CSS via the removed-path fold. The invariant is
+/// that a suppressed path's event never reaches ANY tick processing.
+pub type IntakeSuppressionPredicate = std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync + 'static>;
+
+/// Apply the configured [`IntakeSuppressionPredicate`] to a debounced
+/// batch; identity when no predicate is configured. Split out of
+/// [`BuildOrchestrator::run_with_boot`]'s drain loop (mirroring
+/// [`pre_tick_refresh_applies`]) so the batch semantics are unit-testable
+/// without spinning up a watcher; the loop-level test
+/// (`suppressed_only_batches_produce_no_tick_in_the_live_loop`)
+/// separately pins that the drain loop actually filters at this seam —
+/// a helper nobody calls would read as coverage while guarding nothing
+/// (the #1058/#1581 dead-guard lesson).
+fn retain_unsuppressed_changes(
+    config: &OrchestratorConfig,
+    changes: Vec<(PathBuf, ChangeKind)>,
+) -> Vec<(PathBuf, ChangeKind)> {
+    let Some(suppress) = config.intake_suppression.as_ref() else {
+        return changes;
+    };
+    changes
+        .into_iter()
+        .filter(|(path, _)| !suppress(path))
+        .collect()
+}
+
 /// What a [`DiscoveryHook`] invocation did for this tick.
 #[derive(Debug, Clone, Default)]
 pub struct DiscoveryOutcome {
@@ -498,6 +546,16 @@ pub struct OrchestratorConfig {
     /// for the full contract (state-mutating, never narrows the plan,
     /// errors are logged and the tick proceeds).
     pub pre_tick_refresh: Option<PreTickRefreshHook>,
+
+    /// Opt-in watch-intake suppression predicate (issue #2345).
+    ///
+    /// `None` (the default) delivers every debounced batch to the tick
+    /// unchanged. `Some(predicate)` drops matching paths from every
+    /// batch before ANY tick processing, regardless of change kind —
+    /// see [`IntakeSuppressionPredicate`] for the full contract and why
+    /// it must stay kind-agnostic. Owned by the `zfb` command layer;
+    /// stored opaquely here.
+    pub intake_suppression: Option<IntakeSuppressionPredicate>,
 }
 
 impl std::fmt::Debug for OrchestratorConfig {
@@ -518,6 +576,10 @@ impl std::fmt::Debug for OrchestratorConfig {
                 "pre_tick_refresh",
                 &self.pre_tick_refresh.as_ref().map(|_| "<hook>"),
             )
+            .field(
+                "intake_suppression",
+                &self.intake_suppression.as_ref().map(|_| "<predicate>"),
+            )
             .finish()
     }
 }
@@ -537,6 +599,7 @@ impl OrchestratorConfig {
             backend: WatchBackend::default(),
             external_invalidation: None,
             pre_tick_refresh: None,
+            intake_suppression: None,
         }
     }
 
@@ -587,6 +650,14 @@ impl OrchestratorConfig {
     /// (possibly stale) source text.
     pub fn with_pre_tick_refresh(mut self, hook: PreTickRefreshHook) -> Self {
         self.pre_tick_refresh = Some(hook);
+        self
+    }
+
+    /// Set the watch-intake suppression predicate (chainable, issue
+    /// #2345). See [`IntakeSuppressionPredicate`]. Without this, every
+    /// debounced batch reaches the tick unchanged.
+    pub fn with_intake_suppression(mut self, predicate: IntakeSuppressionPredicate) -> Self {
+        self.intake_suppression = Some(predicate);
         self
     }
 }
@@ -1790,6 +1861,23 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
 
             let changes: Vec<(PathBuf, ChangeKind)> =
                 batch.iter().map(|c| (c.path.clone(), c.kind)).collect();
+
+            // Watch-intake suppression (issue #2345) — applied to the raw
+            // batch BEFORE the pre-tick refresh and the tick dispatch, so a
+            // suppressed path's event never reaches ANY tick processing
+            // (including `tick_with_kinds`'s removed-path fold and the
+            // discovery hook). A batch left empty skips its tick entirely —
+            // that skip is what lets the dev loop go idle after a CSS pass
+            // instead of ticking on the pass's own temp-entry write.
+            let unfiltered_len = changes.len();
+            let changes = retain_unsuppressed_changes(&this.config, changes);
+            let suppressed = unfiltered_len - changes.len();
+            if suppressed > 0 && dev_timing_enabled() {
+                eprintln!("[zfb-timing] intake: suppressed {suppressed} watch event(s)");
+            }
+            if changes.is_empty() {
+                continue;
+            }
 
             // Pre-tick plugin refresh (issue #2169) — awaited HERE, before
             // the tick is dispatched to the blocking pool, so the shared
@@ -5118,6 +5206,204 @@ mod tests {
             hook_calls.load(Ordering::SeqCst),
             0,
             "a batch with no plugin-watch member must never consult the pre-tick hook"
+        );
+
+        run.abort();
+        let _ = run.await;
+    }
+
+    // -----------------------------------------------------------------
+    // Watch-intake suppression (issue #2345)
+    // -----------------------------------------------------------------
+
+    /// A test stand-in for `zfb_css::is_tailwind_entry_tmp` — this crate
+    /// must not depend on `zfb-css` (the knob is opaque by design), so the
+    /// suppression tests carry their own shape-alike predicate as plain
+    /// test data.
+    fn temp_entry_suppression() -> IntakeSuppressionPredicate {
+        Arc::new(|path: &Path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("zfb-tailwind-entry-") && n.ends_with(".css"))
+        })
+    }
+
+    /// The over-suppression guard: a mixed batch carrying temp-entry
+    /// events of ALL THREE normalized kinds alongside a real
+    /// `styles/main.css` change must lose exactly the temp events — and
+    /// the surviving change must still plan a CSS rerun.
+    #[test]
+    fn intake_suppression_mixed_batch_drops_temp_entries_and_keeps_the_real_css_change() {
+        let orch = make_orch(CountingPipeline::default());
+        let config = OrchestratorConfig::new(
+            "/proj",
+            vec![PathBuf::from("pages"), PathBuf::from("content")],
+        )
+        .with_intake_suppression(temp_entry_suppression());
+
+        let main_css = PathBuf::from("/proj/styles/main.css");
+        let batch = vec![
+            (
+                PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                ChangeKind::Created,
+            ),
+            (
+                PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                ChangeKind::Modified,
+            ),
+            (
+                PathBuf::from("/proj/styles/zfb-tailwind-entry-d4E5f6.css"),
+                ChangeKind::Removed,
+            ),
+            (main_css.clone(), ChangeKind::Modified),
+        ];
+
+        let filtered = retain_unsuppressed_changes(&config, batch);
+        assert_eq!(
+            filtered,
+            vec![(main_css.clone(), ChangeKind::Modified)],
+            "every temp-entry event (Created/Modified/Removed) must be dropped; \
+             the real CSS change must survive"
+        );
+
+        let plan = orch.plan_for_changes(filtered.into_iter().map(|(path, _)| path));
+        assert!(
+            plan.rerun_css,
+            "the surviving styles/main.css change must still trigger the CSS rerun"
+        );
+    }
+
+    /// A batch consisting ONLY of temp-entry events filters to empty —
+    /// the drain loop's empty-batch skip is what turns this into "no tick
+    /// outcome at all" (pinned at the loop level by
+    /// `suppressed_only_batches_produce_no_tick_in_the_live_loop`).
+    #[test]
+    fn intake_suppression_all_temp_batch_filters_to_empty() {
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")])
+            .with_intake_suppression(temp_entry_suppression());
+        let filtered = retain_unsuppressed_changes(
+            &config,
+            vec![
+                (
+                    PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                    ChangeKind::Created,
+                ),
+                (
+                    PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                    ChangeKind::Modified,
+                ),
+                (
+                    PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                    ChangeKind::Removed,
+                ),
+            ],
+        );
+        assert!(
+            filtered.is_empty(),
+            "an all-temp batch must filter to empty; got {filtered:?}"
+        );
+    }
+
+    /// Without a configured predicate the filter is the identity — the
+    /// pre-#2345 behavior for every existing consumer.
+    #[test]
+    fn intake_suppression_absent_is_identity() {
+        let config = OrchestratorConfig::new("/proj", vec![PathBuf::from("pages")]);
+        let batch = vec![
+            (
+                PathBuf::from("/proj/styles/zfb-tailwind-entry-a1B2c3.css"),
+                ChangeKind::Created,
+            ),
+            (PathBuf::from("/proj/styles/main.css"), ChangeKind::Modified),
+        ];
+        assert_eq!(retain_unsuppressed_changes(&config, batch.clone()), batch);
+    }
+
+    /// The live-loop wiring proof for issue #2345 (the #1058/#1581
+    /// dead-guard lesson: a filter helper nobody calls at the right seam
+    /// would read as coverage). Temp-entry events of all three kinds are
+    /// sent first; a real `styles/main.css` change follows as the bound —
+    /// the channel is FIFO and batches process in order, so by the time
+    /// the real change's tick lands, every temp event has already been
+    /// consumed. Exactly ONE tick total proves the suppressed-only
+    /// batches produced no tick outcome at all (idle quiescence), in
+    /// every possible coalescing of the sends into batches.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn suppressed_only_batches_produce_no_tick_in_the_live_loop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let project_root = root.join("proj");
+        std::fs::create_dir_all(project_root.join("pages")).unwrap();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        let main_css = project_root.join("styles").join("main.css");
+        std::fs::write(&main_css, "body { margin: 0; }\n").unwrap();
+        let temp_entry = project_root
+            .join("styles")
+            .join("zfb-tailwind-entry-a1B2c3.css");
+        std::fs::write(&temp_entry, "/* synthesised entry */\n").unwrap();
+
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(&project_root, vec![PathBuf::from("pages")])
+                .with_debounce(Duration::from_millis(25))
+                .with_intake_suppression(temp_entry_suppression()),
+            Arc::new(Mutex::new(DependencyGraph::new())),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+        let (run, tx) = spawn_drain_loop(orch, noop_ctx(dist.path()));
+
+        // Synthetic delivery (issue #2253): the CSS pass's own temp-entry
+        // lifecycle as the watcher would report it.
+        for kind in [
+            ChangeKind::Created,
+            ChangeKind::Modified,
+            ChangeKind::Removed,
+        ] {
+            tx.send(Change {
+                path: temp_entry.clone(),
+                kind,
+            })
+            .await
+            .expect("send temp-entry change");
+        }
+        tx.send(Change {
+            path: main_css.clone(),
+            kind: ChangeKind::Modified,
+        })
+        .await
+        .expect("send real css change");
+
+        let applies_probe = Arc::clone(&applies);
+        let landed = wait_until(10, move || {
+            applies_probe
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|plan| plan.triggers.contains(&main_css))
+        })
+        .await;
+        assert!(
+            landed,
+            "the real styles/main.css change never produced a tick within 10s"
+        );
+
+        let snapshot = applies.lock().unwrap().clone();
+        assert_eq!(
+            snapshot.len(),
+            1,
+            "the suppressed-only batches must produce NO tick — only the real \
+             css change's single tick may land; got plans: {snapshot:?}"
+        );
+        assert!(
+            snapshot[0].rerun_css,
+            "the surviving real css change must still rerun CSS"
+        );
+        assert!(
+            !snapshot[0].triggers.contains(&temp_entry),
+            "a suppressed temp-entry path must never appear among tick triggers: {:?}",
+            snapshot[0].triggers
         );
 
         run.abort();

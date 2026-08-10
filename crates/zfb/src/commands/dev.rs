@@ -1609,6 +1609,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .map(|name| name.to_string())
                 .collect(),
         )
+        // Issue #2345 — drop the CSS engine's own synthesised
+        // `zfb-tailwind-entry-*.css` temp-file events at watcher intake.
+        // Each CSS pass writes that entry beside `input_css` (a watched
+        // directory, zfb#1300); without suppression the resulting event
+        // classifies as Style and triggers the NEXT CSS pass under a fresh
+        // random name — a rebuild loop that never goes idle (#2343). The
+        // orchestrator stores the predicate opaquely (zfb-build stays
+        // CSS-agnostic); the filename shape lives with its create site in
+        // zfb-css. Suppression is kind-agnostic by contract — see
+        // `IntakeSuppressionPredicate`.
+        .with_intake_suppression(Arc::new(zfb_css::is_tailwind_entry_tmp))
         // Issue #2169 (epic #2166 Sub 3) — the live-watcher wiring #2168
         // deliberately left out: when a tick's batch touches the plugin
         // watch-file set registered above, the orchestrator awaits this
