@@ -91,8 +91,8 @@ pub use authored_engine::AuthoredCssEngine;
 pub use css_imports::resolve_css_imports;
 pub use emitter::{css_relative_path, CssEmitterOutput, CssProductionEmitter};
 pub use engine::{
-    build_synthesised_entry_css, is_tailwind_import_line, CssEngine, TailwindSubprocessConfig,
-    TailwindSubprocessEngine,
+    build_synthesised_entry_css, is_tailwind_entry_tmp, is_tailwind_import_line, CssEngine,
+    TailwindSubprocessConfig, TailwindSubprocessEngine, ENTRY_TMP_PREFIX, ENTRY_TMP_SUFFIX,
 };
 pub use modules::{CssModulesOutput, CssModulesProcessor};
 pub use native_engine::NativeRustEngine;
