@@ -95,7 +95,7 @@ examples because they do not provide tests.
 Each example must include its own `README.md` with:
 
 - A short description of the scenario the example demonstrates.
-- Local run steps: `pnpm install`, `pnpm dev`, `pnpm build`, and `pnpm preview`.
+- Local run steps: `pnpm install`, `pnpm dev`, `pnpm build`, and `pnpm preview`. For an example with `prerender = false` routes that read Cloudflare bindings, qualify `pnpm dev`: it exercises rendering only, not bindings — `pnpm preview` (or `wrangler dev`) is the loop that actually runs the route. See [SSR and Cloudflare Bindings — Local development](https://takazudomodular.com/pj/zudo-front-builder/docs/guides/ssr-and-cloudflare-bindings/#local-development).
 - Cloudflare provisioning steps when the example needs Cloudflare resources.
 - Placeholder IDs in `wrangler.jsonc` or `wrangler.toml`, plus the exact
   `wrangler` commands needed to create real resources.

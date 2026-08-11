@@ -62,7 +62,15 @@ export default async function Products() {
 See the [SSR and Cloudflare Bindings guide][ssr-guide] for the full D1
 lifecycle (`wrangler d1 create`, migrations, preview-vs-prod).
 
+`getCloudflareContext()` only works when a real Cloudflare request scope
+exists. `pnpm dev` (`zfb dev`) does not provide one — it runs the SSR
+render code but exposes no bindings, so the call above throws there. Use
+`wrangler dev` (or `zfb preview`, which wraps it) instead; see
+[Local development][ssr-guide-local-dev] in the same guide for the
+two-loop setup.
+
 [ssr-guide]: https://takazudomodular.com/pj/zudo-front-builder/docs/guides/ssr-and-cloudflare-bindings/
+[ssr-guide-local-dev]: https://takazudomodular.com/pj/zudo-front-builder/docs/guides/ssr-and-cloudflare-bindings/#local-development
 
 `zfb build` will:
 
