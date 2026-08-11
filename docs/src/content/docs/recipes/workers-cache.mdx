@@ -1,0 +1,262 @@
+---
+title: "Example: Workers Cache"
+description: An SSR example that drives Cloudflare Workers Cache entirely from response headers — Cache-Control, Cache-Tag, and Vary — plus a token-protected purge route
+sidebar_position: 18
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+A standalone zfb example where every route is `prerender = false` and caching is expressed
+purely as HTTP: each page sets its own `Cache-Control`, tags its response with `Cache-Tag`,
+and `POST /api/purge` invalidates a tag through `ctx.cache.purge()`.
+
+It is the smallest useful Cloudflare example in the family — no KV namespace, no D1
+database, no bucket. The only thing to provision is one Worker secret.
+
+</Info>
+
+**Live demo:** [zfb-example-workers-cache.takazudomodular.com](https://zfb-example-workers-cache.takazudomodular.com/)
+
+**Repository:** [Takazudo/zfb-example-workers-cache](https://github.com/Takazudo/zfb-example-workers-cache)
+
+<Warning title="The caching this example demonstrates cannot be observed locally">
+
+`pnpm preview` runs the built Worker through Wrangler, and that is the right loop for
+checking the Worker actually boots and the routes return the headers they promise. But
+current local Wrangler dev **does not simulate Workers Cache**: repeated requests still
+re-render, the render timestamp changes every time, and `Cf-Cache-Status` is absent from
+the response entirely.
+
+Nothing is broken when you see that. A `MISS`/`HIT` sequence only exists on a deployed
+Worker. The same limit reaches `POST /api/purge` — `ctx.cache` is undefined locally, and
+the route answers `501` with `cache_context_unavailable` rather than pretending to purge.
+
+</Warning>
+
+## What it demonstrates
+
+- SSR on Cloudflare Workers via `@takazudo/zfb-adapter-cloudflare` — every page in `pages/`
+  is `export const prerender = false`, so nothing is emitted as static HTML and every
+  request reaches the Worker.
+- Per-route cache policy set from the route itself, by returning a `Response` with explicit
+  `Cache-Control` and `Cache-Tag` headers.
+- `Vary`-keyed cache variants: one URL, a separate cached entry per request-header value.
+- Tag-based invalidation from inside the Worker with `ctx.cache.purge({ tags: [...] })`,
+  behind a shared-secret check.
+- A `wrangler.toml` whose **key order** is load-bearing — a TOML footgun that costs real
+  debugging time and generalizes well beyond this example.
+
+## Tech used
+
+| Area | Choice |
+| --- | --- |
+| Framework | zfb + Preact (`framework: "preact"`), HTML via `preact-render-to-string` |
+| zfb version | `@takazudo/zfb` 2.3.0, `@takazudo/zfb-runtime` 2.3.0 |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` 2.3.0 — present and required |
+| Styling | `tailwind: { enabled: true }`; the page chrome itself is hand-written CSS inlined by `components/recipe-page.tsx`, so there is very little Tailwind markup to look at |
+| Rendering | Pure SSR — all four routes are `prerender = false`; the build emits the Worker bundle and one stylesheet — no HTML pages |
+| Cloudflare surface | Workers Static Assets (`[assets]`) plus Workers Cache (`[cache] enabled = true`) |
+| Bindings | `ASSETS` only — no KV, D1, R2, or AI |
+| Secrets | one Worker secret, `PURGE_TOKEN` |
+| Tooling | `wrangler` 4.85.0 as a devDependency; no other runtime dependencies |
+
+## Requirements and configuration
+
+**No Cloudflare resources to provision.** The Cache API is a runtime surface, not an
+account object — there is no namespace to create, no id to paste into `wrangler.toml`, and
+no cache-specific permission to grant. `wrangler.toml` in the repo is complete as checked
+in.
+
+**Works with no Cloudflare account:** `pnpm dev` and `pnpm build` both run offline.
+`pnpm preview` needs Wrangler but not credentials.
+
+**Needs Cloudflare:** observing a cache `HIT`, and exercising the purge route at all.
+
+**One Worker secret,** set after the Worker exists:
+
+```sh
+pnpm exec wrangler secret put PURGE_TOKEN
+```
+
+Skipping it does not leave the purge endpoint open — it leaves it **disabled**. With no
+`PURGE_TOKEN`, the route returns `503` and never calls `ctx.cache.purge()`. Cached entries
+then simply expire on their own `max-age`.
+
+**The live demo is read-only.** Every page is a public `GET`; the only mutating route is
+`POST /api/purge`, which is guarded by the `X-Purge-Token` header and is not exercisable
+without the deployed secret. Do not point purge requests at the live demo.
+
+Deploying to a custom domain (as the live demo does) additionally needs
+`Zone · Workers Routes: Edit` on the deploy token, because the `[[routes]]` block with
+`custom_domain = true` is a zone-level operation. Without it, `wrangler deploy` uploads the
+Worker successfully and then fails at the route step — the Worker is live on
+`*.workers.dev`, but the custom domain never gets attached.
+
+## How it works
+
+### Cache policy is just a header the route returns
+
+There is no cache configuration layer and no framework cache. `lib/http.tsx` wraps
+`preact-render-to-string` in a `Response` and copies three optional values straight onto the
+headers:
+
+```tsx title="lib/http.tsx"
+const headers = new Headers({
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": cacheControl,
+});
+
+if (cacheTag) headers.set("cache-tag", cacheTag);
+if (vary) headers.set("vary", vary);
+```
+
+Each page then declares its own policy as a constant. `/products` asks for a one-minute
+freshness window with a ten-minute grace period, and tags the response so it can be purged
+later:
+
+```tsx title="pages/products.tsx"
+const CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=600";
+```
+
+The route awaits `simulateExpensiveRender()` (a deliberate 180 ms sleep) and stamps
+`renderedAt` into the HTML. That timestamp is the whole observability story: on a real cache
+hit, Cloudflare serves the stored bytes without invoking the Worker, so the timestamp does
+not move. When it changes, the response was re-rendered.
+
+The two non-cacheable routes are equally explicit — `/` and `POST /api/purge` both send
+`Cache-Control: no-store`. Nothing here is implicit, which is exactly the point of the
+recipe: caching is opt-in per route, and it lives next to the code that produces the
+response.
+
+### One URL, several cached entries
+
+`/catalog` reads a request header and prices the same product list for a different market.
+It sets a shorter window and, crucially, tells the cache which header participates in the
+cache key:
+
+```tsx title="pages/catalog.tsx"
+const CACHE_CONTROL = "public, max-age=45, stale-while-revalidate=300";
+const VARY_HEADER = "X-Catalog-Market";
+
+const { request } = getCloudflareContext();
+const market = normalizeMarket(request.headers.get(VARY_HEADER));
+```
+
+The response goes out with `Vary: X-Catalog-Market` and
+`Cache-Tag: products,catalog-market`. Two tags, deliberately: the shared `products` tag is
+what lets a single purge clear the plain product page and every market variant together,
+while `catalog-market` remains available for a narrower purge later.
+
+<Note title="Vary keys on the raw header value">
+
+`normalizeMarket()` folds anything that is not `eu` or `jp` down to `us`, but the cache
+never sees that normalization — it keys on the literal header. A request with
+`X-Catalog-Market: US`, one with `X-Catalog-Market: nonsense`, and one with no header at all
+produce three separate cache entries holding byte-identical HTML. That is fine for a demo
+with three markets; on a real site it is how a `Vary` header quietly shreds your hit rate.
+
+</Note>
+
+### Purging by tag, from inside the Worker
+
+`POST /api/purge` is the write side of the same contract. It compares the `X-Purge-Token`
+header against the `PURGE_TOKEN` secret with a constant-time comparison, then calls the
+cache API through a narrow local type widening — Cloudflare's runtime exposes `ctx.cache`,
+but the adapter's `ctx` type does not yet include it:
+
+```tsx title="pages/api/purge.tsx"
+const cache = (ctx as CacheAwareExecutionContext).cache;
+if (!cache) {
+  return jsonResponse({ ok: false, error: "cache_context_unavailable", /* … */ }, { status: 501 });
+}
+
+const result = await cache.purge({ tags: ["products"] });
+if (!result.success) {
+  return jsonResponse({ ok: false, error: "purge_failed", result }, { status: 502 });
+}
+```
+
+Every failure mode gets its own status rather than a generic 500: `405` for a non-`POST`,
+`503` when the secret is unset, `401` on a token mismatch, `501` when the runtime has no
+cache context (that is the local case), and `502` when Cloudflare accepted the call but
+reported `success: false`. Checking `result.success` matters — the promise resolving is not
+the same as the purge landing.
+
+Read next to a framework, `Cache-Tag: products` plus `purge({ tags: ["products"] })` is the
+same operational shape as Next.js's `revalidateTag("products")`. The difference is that
+here nothing is hidden: there is no build-time pre-warming, and the first request after a
+deploy or a purge is always the one that creates the entry.
+
+## Two load-bearing rules in wrangler.toml
+
+Both of these are silent when you get them wrong, which is why they are worth reading even
+if you never deploy this example.
+
+```toml title="wrangler.toml"
+workers_dev = true
+preview_urls = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+[cache]
+enabled = true
+```
+
+**`workers_dev` and `preview_urls` must stay above both tables.** In TOML, every key after
+a table header belongs to that table — there is no "back to top level". Move `workers_dev`
+below `[assets]` and it is not a top-level setting that got ignored; it is now an *assets*
+field named `workers_dev`. Wrangler warns `Unexpected fields found in assets field` and
+carries on, so the deploy succeeds with the setting silently dropped.
+
+**`preview_urls` is set explicitly because its default is "match `workers_dev`".** Leave it
+out and it looks fine — until someone turns `workers_dev` off, at which point every
+per-deploy preview URL disappears as a side effect of an unrelated change.
+
+<Note title="The compatibility date is pinned for a dated reason">
+
+`compatibility_date = "2026-05-01"` is deliberate, not stale. Wrangler 4.85.0 accepts the
+Workers Cache config at that date, but its local runtime rejected newer compatibility dates
+during verification. Re-check `pnpm preview` before bumping it — and expect this constraint
+to age out as Wrangler moves. Relatedly, Wrangler 4.85.0's `config-schema.json` omits the
+`cache` field entirely, so a schema-aware editor may flag the `[cache]` block even though
+Wrangler itself accepts it.
+
+</Note>
+
+## Run it locally
+
+```sh
+pnpm install
+pnpm dev        # zfb dev — page-authoring loop
+pnpm build      # zfb build
+pnpm preview    # zfb preview → wrangler dev against the built Worker
+pnpm typecheck  # zfb check
+```
+
+`zfb dev` runs `prerender = false` render code through its embedded V8 isolate, but it
+exposes no Cloudflare request scope. In this repo that splits the routes cleanly: `/` and
+`/products` render fine under `pnpm dev`, while `/catalog` and `/api/purge` call
+`getCloudflareContext()` and cannot work there at all. Use `pnpm dev` for layout and copy;
+use `pnpm preview` the moment you touch the two context-bound routes.
+
+And the caveat from the top of this page still applies to `pnpm preview`: it proves the
+Worker boots and the headers are right, not that caching works. Only a deployed Worker can
+show you a `HIT`. The repo's `scripts/smoke.mjs` is built around that distinction — it
+asserts the **cache contract** (each route's `Cache-Control`, and `/catalog`'s `Vary`), and
+merely *observes* and reports the `Cf-Cache-Status` sequence it happened to see, because a
+`HIT` is not reproducible on demand: a cold deploy always misses, and CI is answered by
+whichever edge location is nearest the runner.
+
+## Related docs
+
+- [SSR on a Worker](../concepts/ssr-on-a-worker.mdx) — the mental model for what
+  `prerender = false` actually runs in production.
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — hands-on
+  adapter setup, `getCloudflareContext()`, and the dev-versus-`wrangler dev` split this
+  example runs into.
+- [Static Assets](../concepts/static-assets.mdx) — how the `[assets]` layer decides whether
+  a request reaches your Worker at all.
+- [Examples](../guides/examples.mdx) — the rest of the standalone example repositories.
