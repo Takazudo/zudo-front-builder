@@ -7656,9 +7656,19 @@ fn build_dev_route_tables_inner(
     renderer: &Arc<Mutex<Option<RendererState>>>,
     paths_cache: &mut PathsCache,
 ) -> Result<TimedRouteTables> {
-    let prerender_map = build_prerender_map(router.routes(), project_root, |msg| {
-        crate::output::warn(msg)
-    });
+    let (prerender_map, ssr_request_param_findings) =
+        build_prerender_map(router.routes(), project_root, |msg| {
+            crate::output::warn(msg)
+        });
+    // SSR route-contract guard (#2354): warn-only under `zfb dev` — the
+    // exit code never changes, so a false positive can't break an
+    // existing project on upgrade. `zfb check` is the surface that fails
+    // on this.
+    for finding in &ssr_request_param_findings {
+        crate::output::warn(crate::render_pipeline::render_ssr_request_param_finding(
+            finding,
+        ));
+    }
 
     // Build the source-path → entries map once. Router source paths are
     // project-relative; PageId keys on the same value (the orchestrator

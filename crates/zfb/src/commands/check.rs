@@ -45,10 +45,12 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use zfb_content::frontmatter;
 use zfb_content::schema as zfb_schema;
+use zfb_router::Router;
 
 use crate::cli::CheckArgs;
 use crate::config::{self, CollectionDef};
 use crate::output;
+use crate::render_pipeline::{build_prerender_map, render_ssr_request_param_finding};
 
 pub async fn run(args: &CheckArgs) -> Result<()> {
     let project_root = env::current_dir().context("failed to read current working directory")?;
@@ -74,6 +76,15 @@ pub async fn run(args: &CheckArgs) -> Result<()> {
         output::error(format!("schema: {issue}"));
     }
 
+    // SSR route-contract guard (#2354): unlike `zfb dev` / `zfb build`
+    // (warning only, exit code unchanged), `zfb check` is the explicit
+    // lint surface — this is where the bug class gets caught before
+    // deploy, so a finding here fails the check.
+    let ssr_findings = collect_ssr_request_param_findings(&project_root)?;
+    for finding in &ssr_findings {
+        output::error(render_ssr_request_param_finding(finding));
+    }
+
     let tsc_failed = if args.skip_tsc {
         output::info("skipping tsc (--skip-tsc)");
         false
@@ -81,8 +92,8 @@ pub async fn run(args: &CheckArgs) -> Result<()> {
         run_tsc(&project_root)?
     };
 
-    if !schema_issues.is_empty() || tsc_failed {
-        let parts = render_summary(schema_issues.len(), tsc_failed);
+    if !schema_issues.is_empty() || !ssr_findings.is_empty() || tsc_failed {
+        let parts = render_summary(schema_issues.len(), ssr_findings.len(), tsc_failed);
         bail!("{}", parts);
     }
 
@@ -184,6 +195,42 @@ fn validate_collection(project_root: &Path, collection: &CollectionDef) -> Resul
         }
     }
     Ok(issues)
+}
+
+/// Scan `project_root/pages` (when present) and return every SSR
+/// route-contract finding the detector's gate raises (#2352's
+/// `ssr_request_param_tier`, wired via `render_pipeline::build_prerender_map`
+/// — #2354). `zfb check` is the one consumer of the three with no route
+/// list today: it loads `zfb.config.json`, walks `config.collections[]`,
+/// and shells out to `tsc`, but never scans `pages/` on its own.
+///
+/// Deliberately scans `project_root/pages` ONLY. It does not reproduce
+/// `build.rs`'s package-route overlay
+/// (`crate::commands::package_routes::resolve_build_pages_root`), which
+/// requires booting the plugin host — a lint command staying a lint
+/// command (no bundler, no V8, no plugin host) is worth the declared
+/// blind spot this leaves: a package-*injected* `prerender = false`
+/// route goes unlinted here, though `zfb dev` and `zfb build` still
+/// cover it.
+///
+/// A project with **no** `pages/` directory leaves `zfb check` behaving
+/// exactly as it does today — no error, no new output. Collection-only
+/// and library projects run `zfb check` too, and `build.rs`'s hard "no
+/// `pages/` directory found" error is a *build* behaviour that must not
+/// leak into this lint command.
+fn collect_ssr_request_param_findings(
+    project_root: &Path,
+) -> Result<Vec<crate::render_pipeline::SsrRequestParamFinding>> {
+    let pages_dir = project_root.join("pages");
+    if !pages_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let router = Router::scan(&pages_dir)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("scanning routes under {}", pages_dir.display()))?;
+    let (_prerender_map, findings) =
+        build_prerender_map(router.routes(), project_root, |msg| output::warn(msg));
+    Ok(findings)
 }
 
 fn collect_entry_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
@@ -303,7 +350,7 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
     which_in_path_with_exts(name, extra_exts)
 }
 
-fn render_summary(schema_count: usize, tsc_failed: bool) -> String {
+fn render_summary(schema_count: usize, ssr_count: usize, tsc_failed: bool) -> String {
     let mut parts = Vec::new();
     if schema_count > 0 {
         parts.push(format!(
@@ -311,13 +358,21 @@ fn render_summary(schema_count: usize, tsc_failed: bool) -> String {
             if schema_count == 1 { "" } else { "s" },
         ));
     }
+    // Own labeled count (#2354) — folding this into `schema_count` would
+    // make the tally ambiguous about which kind of issue was found.
+    if ssr_count > 0 {
+        parts.push(format!(
+            "{ssr_count} SSR route contract violation{}",
+            if ssr_count == 1 { "" } else { "s" },
+        ));
+    }
     if tsc_failed {
         parts.push("type errors".to_string());
     }
     if parts.is_empty() {
-        // Defensive — render_summary shouldn't be called when both are
-        // zero. Keep the message non-empty so downstream `bail!` has a
-        // signal.
+        // Defensive — render_summary shouldn't be called when all three
+        // are absent. Keep the message non-empty so downstream `bail!`
+        // has a signal.
         return "check failed".to_string();
     }
     format!("check failed: {}", parts.join(", "))
@@ -531,17 +586,90 @@ mod tests {
         );
     }
 
+    // ----- SSR request-param route discovery (#2354) -----
+
+    /// A project with no `pages/` directory at all must leave `zfb check`
+    /// behaving exactly as it does today — no error, no finding.
+    /// Collection-only and library projects run `zfb check` too.
+    #[test]
+    fn collect_ssr_request_param_findings_is_empty_without_pages_dir() {
+        let tmp = TmpDir::new("no-pages-dir");
+        let findings = collect_ssr_request_param_findings(&tmp.path).unwrap();
+        assert!(findings.is_empty(), "findings: {findings:?}");
+    }
+
+    /// A clean project (a correctly-shaped SSR handler) reports zero
+    /// findings.
+    #[test]
+    fn collect_ssr_request_param_findings_is_empty_for_clean_project() {
+        let tmp = TmpDir::new("clean-project");
+        write(
+            &tmp.path,
+            "pages/api/ping.tsx",
+            "export const frontmatter = { title: \"Ping\" };\n\
+             export const prerender = false;\n\
+             export default function Handler() {\n  return new Response('ok');\n}\n",
+        );
+
+        let findings = collect_ssr_request_param_findings(&tmp.path).unwrap();
+        assert!(findings.is_empty(), "findings: {findings:?}");
+    }
+
+    /// The broken `(request: Request)` shape on a `prerender = false`
+    /// route under `project_root/pages` yields exactly one finding —
+    /// this is what drives `zfb check`'s non-zero exit and its own
+    /// labeled tally count.
+    #[test]
+    fn collect_ssr_request_param_findings_finds_broken_handler_under_pages() {
+        let tmp = TmpDir::new("broken-handler");
+        write(
+            &tmp.path,
+            "pages/api/submit.tsx",
+            "export const frontmatter = { title: \"Submit\" };\n\
+             export const prerender = false;\n\
+             export default async function Handler(request: Request) {\n\
+             \x20\x20return new Response('ok');\n\
+             }\n",
+        );
+
+        let findings = collect_ssr_request_param_findings(&tmp.path).unwrap();
+        assert_eq!(findings.len(), 1, "findings: {findings:?}");
+        assert_eq!(findings[0].route, "/api/submit");
+    }
+
     #[test]
     fn render_summary_shapes() {
-        assert_eq!(render_summary(1, false), "check failed: 1 schema violation");
         assert_eq!(
-            render_summary(3, false),
+            render_summary(1, 0, false),
+            "check failed: 1 schema violation"
+        );
+        assert_eq!(
+            render_summary(3, 0, false),
             "check failed: 3 schema violations"
         );
-        assert_eq!(render_summary(0, true), "check failed: type errors");
+        assert_eq!(render_summary(0, 0, true), "check failed: type errors");
         assert_eq!(
-            render_summary(2, true),
+            render_summary(2, 0, true),
             "check failed: 2 schema violations, type errors"
+        );
+    }
+
+    /// #2354: the SSR route-contract count gets its own label, distinct
+    /// from the schema-violation count — folding the two together would
+    /// make the tally ambiguous about which kind of issue was found.
+    #[test]
+    fn render_summary_labels_ssr_findings_separately() {
+        assert_eq!(
+            render_summary(0, 1, false),
+            "check failed: 1 SSR route contract violation"
+        );
+        assert_eq!(
+            render_summary(0, 2, false),
+            "check failed: 2 SSR route contract violations"
+        );
+        assert_eq!(
+            render_summary(1, 1, true),
+            "check failed: 1 schema violation, 1 SSR route contract violation, type errors"
         );
     }
 
