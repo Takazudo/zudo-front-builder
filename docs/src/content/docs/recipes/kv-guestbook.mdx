@@ -66,7 +66,8 @@ and nothing else.
 ## Requirements and configuration
 
 **Works with no Cloudflare account:** `pnpm install`, `pnpm dev`, `pnpm build`, and
-`pnpm typecheck` (`zfb check`) all run offline. What that gets you is bounded, though:
+`pnpm typecheck` (`zfb check`) need no Cloudflare credentials at all — which is also why
+the repo's CI `build` job is green on a fresh fork. What that gets you is bounded, though:
 `zfb dev` exposes no bindings, so the guestbook routes answer `503` there. You can iterate
 on layout and styling; you cannot post an entry.
 
