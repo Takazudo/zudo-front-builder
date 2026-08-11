@@ -682,10 +682,19 @@ fn first_param_shape<'a, I>(mut params: I, ctx: &Ctx<'_>) -> DefaultExportFirstP
 where
     I: Iterator<Item = &'a Pat>,
 {
-    match params.next() {
+    // TypeScript's `this` pseudo-parameter is erased at compile time and
+    // receives no argument, so the props object still arrives in the
+    // slot after it. Classifying it as the first parameter would report
+    // `function Page(this: Request, props: Props)` — a correct page — at
+    // the strong tier.
+    match params.find(|pat| !is_this_pseudo_param(pat)) {
         Some(pat) => classify_param_pat(pat, ctx),
         None => DefaultExportFirstParam::Absent,
     }
+}
+
+fn is_this_pseudo_param(pat: &Pat) -> bool {
+    matches!(pat, Pat::Ident(bi) if bi.id.sym.as_ref() == "this")
 }
 
 /// Unwrap a default value (`Pat::Assign`) and a rest element
@@ -1850,6 +1859,36 @@ mod tests {
         assert_eq!(
             tier_of("export default function Page(props, request: Request) { return null; }"),
             None,
+        );
+    }
+
+    #[test]
+    fn typescript_this_pseudo_param_is_not_the_first_runtime_parameter() {
+        // `this: T` is erased at compile time and receives no argument —
+        // the props object still lands in the slot after it. Treating it
+        // as the first parameter would report a correct page at the
+        // strong tier.
+        let ok = "export default function Page(this: Request, props: Props) { return null; }";
+        assert_eq!(plain_of(ok).name, "props");
+        assert_eq!(tier_of(ok), None, "the erased `this` must not fire");
+        // The parameter AFTER it is the real one, and still fires.
+        assert_eq!(
+            tier_of(
+                "export default function Handler(this: unknown, request: Request) { return null; }"
+            ),
+            Some(RequestParamTier::Strong),
+        );
+        assert_eq!(
+            param_shape_of(
+                "export default function Page(this: unknown, { params }) { return null; }"
+            ),
+            DefaultExportFirstParam::Destructured,
+        );
+        // A handler whose only declared parameter is the pseudo one takes
+        // no runtime arguments at all.
+        assert_eq!(
+            param_shape_of("export default function Handler(this: Request) { return null; }"),
+            DefaultExportFirstParam::Absent,
         );
     }
 
