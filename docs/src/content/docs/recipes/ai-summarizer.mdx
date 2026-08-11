@@ -1,0 +1,268 @@
+---
+title: "Example: AI Summarizer"
+description: A Preact island posting to a prerender = false Worker route backed by a Cloudflare Workers AI binding, with a deterministic fallback that needs no Cloudflare account
+sidebar_position: 10
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+A small zfb site whose whole interactive surface is one Preact island, backed by a single
+`prerender = false` route that calls **Cloudflare Workers AI**. It exercises islands, the
+Cloudflare adapter's per-request context, and a `wrangler.toml` layout that deliberately
+keeps the AI binding out of the default Wrangler environment — so the app still runs, and
+the endpoint still answers, with no Cloudflare account at all.
+
+</Info>
+
+- **Live demo:** [zfb-example-ai-summarizer.takazudomodular.com](https://zfb-example-ai-summarizer.takazudomodular.com/)
+- **Repository:** [Takazudo/zfb-example-ai-summarizer](https://github.com/Takazudo/zfb-example-ai-summarizer)
+
+## What it demonstrates
+
+- **An island as the entire UI.** `pages/index.tsx` is static HTML that wraps one
+  `"use client"` component in the `<Island>` wrapper — see [Islands](../concepts/islands.mdx).
+- **A `prerender = false` API route.** `pages/api/summarize.tsx` runs on the emitted
+  Worker, reads a `POST` body, and returns JSON.
+- **Reading a Cloudflare binding.** The route gets `request`, `env`, and `ctx` from
+  `getCloudflareContext()` rather than from a handler parameter.
+- **A named Wrangler environment carrying the binding.** `[env.ai]` holds the `AI`
+  binding, the deployed Worker name, and the custom-domain route.
+- **Graceful degradation as a design choice.** When the binding is missing or the model
+  call fails, the route returns a locally computed summary tagged `fallback: true` with a
+  machine-readable `reason`, instead of erroring.
+- **Deploying zfb as a Cloudflare Worker with Static Assets,** with the asset layer sitting
+  in front of the Worker script.
+
+## Tech used
+
+| Piece | What the repo uses |
+| --- | --- |
+| Engine and framework | `@takazudo/zfb` **2.3.0** with `framework: "preact"` (`preact` 10.x, `preact-render-to-string` 6.x); `@takazudo/zfb-runtime` **2.3.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0**, set as `adapter` in `zfb.config.ts` |
+| Styling | Tailwind CSS v4 — `tailwind: { enabled: true }`; `styles/global.css` opens with `@import "tailwindcss"` and then hand-writes the component styles |
+| Rendering mode | SSG for `pages/index.tsx` and `pages/404.tsx`; only `pages/api/summarize.tsx` exports `prerender = false` |
+| Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"`, `[assets]` on `./dist` with the `ASSETS` binding, `not_found_handling = "404-page"`, `run_worker_first = false` |
+| Bindings | one Workers AI binding, `AI` — declared **only** under `[env.ai.ai]` |
+| Compatibility | `compatibility_date = "2026-05-01"`, `compatibility_flags = ["nodejs_compat"]` — the adapter bundle imports `node:async_hooks` |
+| Model call | `@cf/meta/llama-3.2-1b-instruct`, `temperature: 0`, `max_tokens: 220`, input collapsed and capped at 6000 characters |
+| Notable dev deps | `wrangler` 4.85.0, `@cloudflare/workers-types`, plus `concurrently` and `chokidar-cli` for the `dev:cf` rebuild loop |
+
+## Requirements and configuration
+
+**It runs with no Cloudflare account.** `pnpm build` followed by `pnpm preview` hands off to
+`wrangler dev` on the *default* Wrangler environment, which has no `AI` binding at all. The
+endpoint answers immediately with the deterministic fallback (`"fallback": true`,
+`"reason": "missing-ai-binding"`) — no `wrangler login`, no account, nothing to create. The
+repo treats this as its primary zero-account local check.
+
+**Cloudflare is needed only for real model output.** Run `pnpm exec wrangler login` with an
+account that can use Workers AI, then `pnpm dev:cf`, which starts `wrangler dev --env ai`.
+
+**There is nothing to provision.** Workers AI is an account feature, not a resource with an
+id, so `wrangler.toml` carries no placeholder ids to fill in. No KV namespace, no D1
+database, no migrations, no seed data — and no Worker secret either (`wrangler secret put`
+is never needed; the `AI` binding has no credentials of its own).
+
+**A real deploy needs two repo secrets.** `CLOUDFLARE_ACCOUNT_ID`, and a
+`CLOUDFLARE_API_TOKEN` carrying account-scoped *Workers Scripts: Edit*, *Workers AI: Read*,
+and *Account Settings: Read* — **plus** zone-scoped *Workers Routes: Edit*. That last one is
+required only because `wrangler.toml` attaches a custom domain: the Worker upload is
+account-scoped and succeeds without it, then the route step fails. The repo's
+`docs/cloudflare-setup.md` is the ordered walkthrough.
+
+**The live demo is unauthenticated and stateless.** Anyone can `POST` text to
+`/api/summarize`; nothing is stored and nothing is read back, so there is no writable state
+to protect. The response says which path served it — a live model summary
+(`"fallback": false` with the model id) or the local fallback (`"fallback": true` with a
+`reason`).
+
+## How it works
+
+### Why the AI binding lives in a named environment
+
+Most Cloudflare bindings need something you have to create first and then paste an id for —
+a KV namespace, a D1 database. Workers AI needs neither, so the entire binding is two lines
+of TOML. That makes an option available that other bindings do not offer: declare it *only*
+in a named Wrangler environment, and leave the default environment deliberately
+binding-free.
+
+```toml title="wrangler.toml"
+[env.ai]
+name = "zfb-example-ai-summarizer-ai"
+
+[env.ai.ai]
+binding = "AI"
+
+[[env.ai.routes]]
+pattern = "zfb-example-ai-summarizer.takazudomodular.com"
+custom_domain = true
+```
+
+The payoff is the default environment. `wrangler dev` with no `--env` resolves no `AI`
+binding, so it needs no Cloudflare login — and the route still answers, because a missing
+binding is a supported path rather than a crash. That is what turns `pnpm preview` into a
+genuine end-to-end check for a reader who has never signed in to Cloudflare, which is
+otherwise the hardest thing to offer in an AI demo.
+
+The cost is that Wrangler's named environments are not symmetric. Bindings and `[vars]` are
+**not** inherited from the top level into a named environment — which is exactly why
+`[env.ai.ai]` has to be restated there — while `workers_dev` and `preview_urls` **are**, so
+they stay declared once at the top. Naming an environment also renames the deployed Worker:
+`wrangler deploy --env ai` ships `zfb-example-ai-summarizer-ai`, not
+`zfb-example-ai-summarizer`.
+
+<Warning>
+
+That rename is why the custom-domain route is `[[env.ai.routes]]` and not a top-level
+`[[routes]]`. A top-level route would attach the domain to the plain-named
+`zfb-example-ai-summarizer` Worker — which this repo never deploys — and the domain would
+serve nothing.
+
+</Warning>
+
+### The route reads the request from the adapter context
+
+zfb 2.x calls a `prerender = false` route's default export with the page's **props**, not
+with the incoming `Request`. The `Request`, the Worker `env`, and the `ExecutionContext`
+arrive together on the adapter's per-request context instead:
+
+```tsx title="pages/api/summarize.tsx"
+export const prerender = false;
+
+export default async function SummarizeApi(): Promise<Response> {
+  const context = readCloudflareContext();
+
+  if (!context) {
+    return json<ErrorBody>(
+      { error: "This route needs a Worker runtime. Run `pnpm preview` or `pnpm dev:cf`." },
+      503,
+    );
+  }
+
+  const { request, env } = context;
+  // …method check, JSON body read, empty-text guard…
+  const result = await summarizeText(text, env);
+  return json<SummaryResult>(result);
+}
+```
+
+`readCloudflareContext()` is a small local helper that wraps
+`getCloudflareContext<AiEnv>()` in a `try` and returns `null` on throw. That matters because
+`getCloudflareContext()` throws when there is no Worker request scope, and `zfb dev` renders
+pages from an SSG runtime that has none. The `try` turns "wrong runtime" from an exception
+into a `503` whose body names the two commands that do work. For the mechanism underneath —
+the two-layer worker output and the `AsyncLocalStorage` that carries the context — see
+[SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) and
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
+
+### Why POST still reaches the Worker
+
+`wrangler.toml` sets `run_worker_first = false`, so Cloudflare consults the static asset
+layer first and runs the Worker only when no asset matches. That reads like a hazard for an
+API route, and it is not: the asset layer only ever serves `GET` and `HEAD`, so a
+`POST /api/summarize` always falls through to the Worker regardless of this setting. The
+same build also writes `dist/.assetsignore` listing `_worker.js` and `_zfb_inner.mjs`, which
+keeps the Worker bundle out of the public asset store instead of serving it as a
+downloadable file.
+
+### The fallback is a feature not an error path
+
+`lib/ai.ts` never throws. Every path that cannot produce a model summary returns the same
+response shape with `fallback: true` and a `reason`:
+
+```ts title="lib/ai.ts"
+if (!env.AI) {
+  return fallbackSummary(prepared, "missing-ai-binding");
+}
+
+try {
+  const output = await env.AI.run(MODEL, {
+    /* system + user messages, temperature: 0, max_tokens: MAX_OUTPUT_TOKENS */
+  });
+
+  const summary = parseAiText(output);
+  if (!summary || !looksUsable(summary)) {
+    return fallbackSummary(prepared, "empty-ai-output");
+  }
+
+  return {
+    summary,
+    fallback: false,
+    model: MODEL,
+  };
+} catch {
+  return fallbackSummary(prepared, "ai-run-failed");
+}
+```
+
+`fallbackSummary()` splits the input into sentences and emits the first three as bullets
+plus a word-count takeaway — no network, fully deterministic. The four reasons
+(`empty-input`, `missing-ai-binding`, `empty-ai-output`, `ai-run-failed`) turn the response
+into a diagnostic rather than a shrug. In production, `missing-ai-binding` means the Worker
+was deployed **without** `--env ai`; `ai-run-failed` means the binding is there but the
+model call did not land. The island surfaces both, rendering a `Fallback` badge and the
+reason string next to the summary.
+
+This is also why the repo's post-deploy smoke script accepts either answer: asserting on
+live model output would make the check flaky by construction, so it asserts only that the
+response is well-formed.
+
+Two small guards make it safe to paste arbitrary text into the box. The system prompt tells
+the model to treat everything between the `---` delimiters as data and to ignore
+instructions found inside it, and `prepareInput()` collapses whitespace and truncates to
+6000 characters before the call.
+
+## Run it locally
+
+```sh
+pnpm install
+```
+
+| Command | What it runs | The summarize endpoint |
+| --- | --- | --- |
+| `pnpm dev` | `zfb dev` | answers **503** — no Worker request scope |
+| `pnpm build` | `zfb build` | — |
+| `pnpm preview` | `zfb preview`, which hands off to `wrangler dev` on the default env | works; always the deterministic fallback, no login |
+| `pnpm dev:cf` | `pnpm build`, then `wrangler dev --env ai --port 8788` alongside a `chokidar-cli` rebuild watcher | real Workers AI, after `wrangler login` |
+| `pnpm typecheck` | `zfb check` | — |
+
+<Note>
+
+`pnpm dev` is the fast loop for the **UI only**. Use it for the island and the styling, not
+for the endpoint — `zfb dev` renders pages from an SSG runtime with no Worker request scope,
+so `pages/api/summarize.tsx` cannot read the incoming request there and answers `503`
+pointing you at the two commands that can.
+
+</Note>
+
+`dev:cf` watches `pages/`, `components/`, `lib/`, `styles/`, and `zfb.config.ts`, and re-runs
+`pnpm build` on change while `wrangler dev` keeps serving. Check the endpoint directly:
+
+```sh
+curl -X POST http://localhost:8788/api/summarize \
+  -H "content-type: application/json" \
+  -d '{"text":"zfb renders static pages by default and uses prerender = false for request-time routes."}'
+```
+
+The repo also ships `scripts/smoke.mjs`, which asserts the page markup and a well-formed
+summarize response. Point it at whichever port wrangler printed:
+
+```sh
+node scripts/smoke.mjs http://localhost:8787/
+```
+
+Deploying is two commands, and the `--env ai` is not optional:
+
+```sh
+pnpm build
+pnpm exec wrangler deploy --env ai
+```
+
+## Related docs
+
+- [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — the mental model for what `dist/_worker.js` actually is
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — hands-on adapter and `wrangler.toml` setup
+- [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx) — the `"use client"` component model and hydration timing
+- [Styling](../concepts/styling.mdx) — how the built-in Tailwind v4 path works
+- [Examples](../guides/examples.mdx) — the rest of the example sites
