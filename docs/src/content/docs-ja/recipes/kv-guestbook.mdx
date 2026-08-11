@@ -1,0 +1,176 @@
+---
+title: "サンプル: KV Guestbook"
+description: Cloudflare Workers KV をバックエンドにしたサーバーレンダリングのゲストブック。JS なしの HTML フォーム、JSON エンドポイント、トークンで保護された管理用削除を扱います
+sidebar_position: 14
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+zfb と **Cloudflare Workers KV** で作られた、実際に動くゲストブックです。トップページは `prerender = false` のルートで、エントリ一覧をサーバーサイドでレンダリングし、素の HTML フォームの POST を受け取ります。クライアント JavaScript は一切ありません。同じ KV ヘルパーが小さな JSON API と、トークンで保護された管理用削除も支えています。
+
+Cloudflare のバインディングに対する「読み取り」だけでなく **書き込みのパス** を見たいときに読むサンプルです。
+
+</Info>
+
+**ライブデモ:** [zfb-example-kv-guestbook.takazudomodular.com](https://zfb-example-kv-guestbook.takazudomodular.com/)
+
+**リポジトリ:** [Takazudo/zfb-example-kv-guestbook](https://github.com/Takazudo/zfb-example-kv-guestbook)
+
+<Warning title="ライブデモは誰でも書き込めます">
+
+ゲストブックなので誰でも投稿できますし、各エントリの横にある Delete ボタンもあえて開放してあります。訪問者が投稿から削除までのループをひととおり試せるようにするためです。実際に保護されているのは `DELETE /api/entries/<key>` の API エンドポイントで、`ADMIN_TOKEN` という Worker シークレットで守られています。エントリには 90 日の TTL が付いており、放っておいても消えます。
+
+</Warning>
+
+## 何を示すか
+
+- `prerender = false` のトップページが **レンダリング** と **`POST` の処理** の両方を担当する構成。1 つのルートで 2 つのメソッドを扱い、あいだに POST 後リダイレクトを挟みます。
+- `getCloudflareContext()` を通じて、SSR ルートから **Workers KV** バインディングを読み書きする方法。
+- **バインディングが無いときの穏当な劣化**。バインディングに依存するルートはクラッシュせず、制御された `503` を返すので、`zfb dev` は執筆用のループとして使い続けられます。
+- **JavaScript を使わない** インタラクションモデル。`<form method="post">` と `303` リダイレクトだけでページに必要なことがすべて足ります。
+- 共有ヘルパー（`lib/kv.ts`）が HTML ルートと JSON エンドポイントの両方を駆動するので、両者の実装がずれません。
+- Worker シークレットに基づく **Bearer トークンの管理ゲート**。サイトをデプロイするための GitHub Actions シークレットとは別物です。
+- 実運用に近い形のプロビジョニング。KV ネームスペース、Worker シークレット、カスタムドメインが必要になります。
+
+## 使用技術
+
+| 項目 | リポジトリでの実際の値 |
+| --- | --- |
+| フレームワーク | zfb + Preact（`zfb.config.ts` の `framework: "preact"`） |
+| zfb のバージョン | `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — 導入済みかつ必須 |
+| スタイリング | `tailwind: { enabled: true }` で、`styles/global.css` は `@import "tailwindcss";` の 1 行のみ。実際に見えている見た目は `layouts/default.tsx` がインラインで埋め込む手書きの CSS ブロックによるもので、マークアップはユーティリティクラスではなく意味のあるクラス名を使っています |
+| レンダリング方式 | 静的サイトではありません。`pages/index.tsx`、`pages/api/entries.tsx`、`pages/api/entries/[key].tsx` がいずれも `prerender = false` を export しています。事前レンダリングされるのは `pages/404.tsx` だけです |
+| Cloudflare 側の構成 | Workers Static Assets、`main = "./dist/_worker.js"` |
+| バインディング | `GUESTBOOK` としてバインドされた KV ネームスペース 1 つと、`ADMIN_TOKEN` シークレット |
+| 主な依存 | `preact-render-to-string`、`@cloudflare/workers-types`（dev）、`wrangler` 4.85.0（dev） |
+
+検索インデックスもデータベースもクライアントバンドルもありません。実行時に依存するのは KV だけです。
+
+## 必要な準備と設定
+
+**Cloudflare アカウントが無くてもできること:** `pnpm install`、`pnpm dev`、`pnpm build`、`pnpm typecheck`（`zfb check`）はいずれも Cloudflare の認証情報をまったく必要としません。フォークしたてのリポジトリでも CI の `build` ジョブがそのまま緑になるのはこのためです。ただし何が得られるのかははっきりさせておきます。`zfb dev` はバインディングを一切公開しないため、ゲストブックのルートはそこでは `503` を返します。レイアウトやスタイルの調整はできますが、エントリの投稿はできません。
+
+**Cloudflare が必要になるもの:**
+
+- **KV ネームスペース**。その id を `wrangler.toml` の `[[kv_namespaces]]` ブロックにコミットします。バインディング名は `GUESTBOOK` のままにしてください。`lib/kv.ts` はその名前でネームスペースを引いています。
+- **`ADMIN_TOKEN` Worker シークレット**（`wrangler secret put ADMIN_TOKEN`）。これはデプロイ済みの Worker に紐づく Cloudflare 側のシークレットであり、GitHub Actions のシークレットでは *ありません*。この 2 つは混同しやすいところです。設定していないと `DELETE /api/entries/<key>` は `503` を返しますが、読み書きのパスはそのまま動きます。
+- CI からデプロイする場合は、リポジトリシークレットの `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID`。トークンには Account · Workers Scripts（Edit）、Workers KV Storage（Edit）、Account Settings（Read）に加えて、`wrangler.toml` がカスタムドメインを宣言しているため Zone · Workers Routes（Edit）も必要です。
+
+**マイグレーションもシードデータもありません。** KV は空の状態から始まり、誰かが投稿するまでページは "No entries yet." と表示します。
+
+上記すべてを順を追ってゼロから説明したドキュメントが、リポジトリの [`docs/cloudflare-setup.md`](https://github.com/Takazudo/zfb-example-kv-guestbook/blob/main/docs/cloudflare-setup.md) にあります。`wrangler kv namespace create` は `CLOUDFLARE_*` シークレットが指すのと同じアカウントに対して実行する必要があるため、プロビジョニングは `kv-bootstrap.yml` ワークフローが CI 側（＝シークレットが実際に存在する場所）で行い、得られたネームスペース id をステップサマリーとダウンロード可能なアーティファクトとして出力します。あとはそれを `wrangler.toml` に貼るだけです。このワークフローは `workflow_dispatch` 専用で、ネームスペースを作り直すことになったときのために再実行可能なブートストラップとしてリポジトリに残されています。
+
+## 仕組み
+
+サーバーレンダリングされるルートファイルが 3 つ（それに事前レンダリングされる `404` が 1 つ）あり、5 つのメソッドとパスの組み合わせに応答します。
+
+| ルート | 役割 |
+| --- | --- |
+| `GET /` | ゲストブックのページとフォームをレンダリングする |
+| `POST /` | 新規エントリと Delete ボタンの両方を処理し、`/` にリダイレクトする |
+| `GET /api/entries` | 上限付きで取得した現在のエントリ一覧を JSON で返す |
+| `POST /api/entries` | `message` を JSON・フォームエンコード・プレーンテキストのいずれかで受け取る |
+| `DELETE /api/entries/<key>` | `Authorization: Bearer <ADMIN_TOKEN>` があればエントリを 1 件削除する |
+
+### バインディングが無いときはクラッシュせず 503 に落とす
+
+`getCloudflareContext()` は Cloudflare のリクエストスコープが無いときに **例外を投げます**。ビルド時の SSG 中と、`zfb dev` の下がそれにあたります。両方のモードで生き残らせたいルートに対するガイドの助言は「例外を捕まえて分岐しろ」であり、`lib/kv.ts` はまさにそれを全員のために 1 か所で行っています。
+
+```ts title="lib/kv.ts"
+export function getGuestbookContext(): CloudflareContext<Env> | null {
+  try {
+    return getCloudflareContext<Env>();
+  } catch {
+    return null;
+  }
+}
+```
+
+各ルートは同じ 2 つのガード（コンテキストが無い、あるいは `env` に `GUESTBOOK` ネームスペースが無い）から始まり、どちらが原因かを伝える `503` を返します。
+
+```tsx title="pages/index.tsx"
+const cf = getGuestbookContext();
+if (!cf) {
+  return new Response("Cloudflare request context is unavailable.", {
+    status: 503,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+```
+
+見返りは、`zfb dev` が執筆用のループとして使えるままになることです。スタックトレースではなく「ここではバインディングを使えません」と読める応答が返りますし、同じコードパスが本番側の設定ミス（たとえばネームスペース id をコミットし忘れた、など）も、足りないものを名指しするメッセージでカバーします。
+
+### 書き込みはキューに積まれ、ページもそう伝える
+
+`POST` は `kv.put(...)` を `ctx.waitUntil()` に渡し、その完了を待たずに応答を返します。つまりレスポンスは KV の往復を待ちません。エントリは `entry:<ISO timestamp>:<random hex>` という形のキーで書かれ（タイムスタンプのおかげでキー自体がソート可能になります）、`expirationTtl` は 90 日なので、ネームスペースが際限なく育つことはありません。
+
+この速さには目に見える副作用があり、デモはそれを隠しません。KV は結果整合であり、しかも応答を返す時点で書き込みが完了しているとは限らないため、`/` への `303` リダイレクトの結果に、いま投稿したエントリが含まれないことは正当に起こり得ます。ページは `?queued=1` を付けてリダイレクトし、"Entry queued. It may take a moment to appear." と表示します。`POST /api/entries` は同じことを説明する `consistency` フィールドを添えて `202` を返します。「まだ見えない」ことをバグではなく通常の状態として扱うのが、KV の上に誠実に作るやり方です。
+
+### 読み取りには意図的に上限がある
+
+読み取りのパスは、まずキーを一覧し、そのうち上限数だけを実際に取得します。
+
+```ts title="lib/kv.ts"
+export async function listGuestbookEntries(kv: KVNamespace<EntryKey>): Promise<EntryListResult> {
+  const listed = await kv.list({ prefix: ENTRY_PREFIX, limit: LIST_WINDOW_LIMIT });
+  const keys = listed.keys
+    .map((key) => key.name)
+    .filter(isEntryKey)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, READ_FANOUT_LIMIT);
+```
+
+`kv.list()` が返すのはキー名とメタデータだけで、値は含まれません。したがって N 件のエントリを読むには N 回の `kv.get()` サブリクエストが必要です。上限を設けなければ、賑わっているゲストブックはページ表示 1 回で Workers のサブリクエスト上限を突破してしまいます。このリポジトリは list のウィンドウを 40、読み取りのファンアウトを 20 に制限し、get は 6 件ずつのバッチで実行します。さらにエントリと一緒に `listedKeys`・`listComplete`・`fanoutLimit` を返すので、呼び出し側は「ウィンドウで打ち切られたのかどうか」を推測せずに判断できます。
+
+### アセット層に Worker を先に走らせると教える必要があった
+
+これはこのリポジトリに潜んでいたデプロイ特有の罠で、`wrangler.toml` のコメントを丸ごと読む価値があります。`/` は `prerender = false` なので、ビルドは `dist/index.html` を出力しません。ところが Workers Static Assets は Worker より *先に* アセット層を参照し、**ナビゲーションリクエスト**（実際のブラウザが必ず送る `sec-fetch-mode: navigate` を伴うリクエスト）で一致するパスが無い場合には `not_found_handling` で応答します。事前レンダリングされた `dist/404.html` が存在していたため、`/` は 404 ページを返し、Worker は一度も走りませんでした。人間の訪問者にとってサイトは壊れていたのに、そのヘッダーを送らない `curl` は Worker まで到達して正しい `200` を受け取っていた、というわけです。
+
+```toml title="wrangler.toml"
+run_worker_first = ["/", "/api/*"]
+```
+
+`true` ではなくパスのリストに絞ることで、アセットの直接配信は保たれます。`/assets/*` 以下の実在するファイルは、Worker を起動せずにアセット層がそのまま返します。
+
+### 管理ゲートこそ真似する価値のある部分
+
+`DELETE /api/entries/<key>` は `prerender = false` な [動的ルート](/ja/docs/concepts/dynamic-routes) なので、`params.key` はリクエスト時に URL から得られます。このルートは KV に触れる *前に* 認証を確認します。`ADMIN_TOKEN` が未設定なら `503`（未設定である旨）、Bearer トークンが無いか誤っていれば `401` です。比較は両方の値を SHA-256 でハッシュしてダイジェストを突き合わせるので、タイミングからトークンの長さや先頭部分が漏れることはありません。
+
+ページ上の Delete ボタンはこれとは別物です。こちらは隠しフィールド `delete` を持つ普通のフォームとして `/` に POST し、**あえて認証していません**。ライブデモを最後まで試せるようにするためです。ゲストブックのページにもソースコードのコメントにもそう明記されています。開放されたボタンは上に載せたデモ用の仕掛けであって、リファレンスとなるパターンはトークンで保護されたエンドポイントのほうです。
+
+「1 つのルートで 2 つのアクション」という形を真似するなら、もう 1 点だけ注意があります。`Request` のボディはストリームなので一度しか読めません。`readDeleteKey()` は `request.clone().formData()` を覗くので、その下にあるエントリのパーサーのためにオリジナルのボディは手つかずのまま残ります。
+
+## ローカルで動かす
+
+```bash
+pnpm install
+pnpm dev        # zfb dev — 執筆用ループ。バインディング依存のルートはここでは 503
+pnpm build
+pnpm preview    # zfb preview。アダプターモードでは wrangler dev に処理を渡す
+pnpm typecheck  # zfb check
+pnpm smoke      # 本番ドメインに対する読み取り専用チェック
+```
+
+リポジトリはこの制限をそのまま述べています。`pnpm dev` は通常の zfb の執筆作業には有用だが、そこでは Cloudflare のバインディングは利用できず、バインディングに依存するルートはクラッシュせずに制御された `503` を返す。ローカルで Worker と KV のシミュレーションを使うには `pnpm build` の後に `pnpm preview` を使うこと、と。
+
+ローカルで引っかかりやすい点が 2 つあります。
+
+- wrangler はローカルの KV の状態を `.wrangler/` の下に保存します。まっさらなローカルネームスペースが欲しくなったら、このディレクトリを削除してください。
+- `.dev.vars`（git 管理外）がローカルの Worker に `ADMIN_TOKEN` を渡すので、デプロイ済みのシークレットに触れることなく `pnpm preview` 上で管理用削除を試せます。
+
+<Caution title="pnpm dev と pnpm preview を同時に走らせないこと">
+
+リポジトリの `predev` スクリプトは `dist/` を削除しますが、それはプレビュー中の Worker がまさに配信しているディレクトリです。どちらか一方ずつ使ってください。
+
+</Caution>
+
+`pnpm smoke` は読み取り専用のデプロイ後チェックです。`/` がゲストブックの HTML とともに `200` を返すこと、`GET /api/entries` が JSON のエントリ配列を返すことを検証します。デプロイ後のチェックが本番データを変更してはならないので、エントリを書き込むことは決してありません。
+
+## 関連ドキュメント
+
+- [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — `prerender = false`、アダプター、`wrangler.toml`、KV バインディングの実践ガイド。
+- [Worker 上の SSR（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js`、アセットのディスパッチ、`getCloudflareContext()` の考え方。
+- [動的ルート](/ja/docs/concepts/dynamic-routes) — `[key]` というブラケット記法について。
+- [サンプル](/ja/docs/guides/examples) — スタンドアロンのサンプルリポジトリの一覧。

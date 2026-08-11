@@ -1,0 +1,263 @@
+---
+title: "Example: KV Guestbook"
+description: A server-rendered guestbook backed by Cloudflare Workers KV, with a no-JS HTML form, JSON endpoints, and a token-guarded admin delete
+sidebar_position: 14
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+A working guestbook built on zfb and **Cloudflare Workers KV**. The homepage is a
+`prerender = false` route that server-renders the entry list and accepts a plain HTML
+form post — no client JavaScript anywhere — and the same KV helpers back a small JSON
+API plus a token-guarded admin delete.
+
+This is the example to read when you want a **write path** through a Cloudflare
+binding, not just a read.
+
+</Info>
+
+**Live demo:** [zfb-example-kv-guestbook.takazudomodular.com](https://zfb-example-kv-guestbook.takazudomodular.com/)
+
+**Repository:** [Takazudo/zfb-example-kv-guestbook](https://github.com/Takazudo/zfb-example-kv-guestbook)
+
+<Warning title="The live demo is publicly writable">
+
+It is a guestbook, so anyone can post — and the Delete button beside each entry is
+deliberately open too, so a visitor can exercise the whole post-and-delete loop. The
+`DELETE /api/entries/<key>` API endpoint is the part that is actually guarded, by an
+`ADMIN_TOKEN` Worker secret. Entries carry a 90-day TTL and expire on their own.
+
+</Warning>
+
+## What it demonstrates
+
+- A `prerender = false` homepage that both **renders** and **handles a `POST`** — one
+  route, two methods, redirect-after-post in between.
+- Reading and writing a **Workers KV** binding from an SSR route via
+  `getCloudflareContext()`.
+- **Graceful degradation when bindings are absent**: every binding-backed route returns
+  a controlled `503` instead of crashing, so `zfb dev` stays usable for authoring.
+- A **no-JavaScript** interaction model — a `<form method="post">` and a `303` redirect
+  do everything the page needs.
+- Shared helpers (`lib/kv.ts`) driving both the HTML route and the JSON endpoints, so
+  the two never drift.
+- A **bearer-token admin gate** backed by a Worker secret, separate from the GitHub
+  Actions secrets that deploy the site.
+- Provisioning shaped like a real deploy: a KV namespace, a Worker secret, and a custom
+  domain.
+
+## Tech used
+
+| Aspect | What the repo uses |
+| --- | --- |
+| Framework | zfb + Preact (`framework: "preact"` in `zfb.config.ts`) |
+| zfb version | `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — present and required |
+| Styling | `tailwind: { enabled: true }`, with `styles/global.css` a bare `@import "tailwindcss";`. The visible chrome is a hand-written CSS block inlined by `layouts/default.tsx`, and the markup uses semantic class names rather than utilities |
+| Rendering | Not a static site: `pages/index.tsx`, `pages/api/entries.tsx`, and `pages/api/entries/[key].tsx` all export `prerender = false`. Only `pages/404.tsx` is prerendered |
+| Cloudflare surface | Workers Static Assets, `main = "./dist/_worker.js"` |
+| Bindings | One KV namespace bound as `GUESTBOOK`, plus an `ADMIN_TOKEN` secret |
+| Notable deps | `preact-render-to-string`, `@cloudflare/workers-types` (dev), `wrangler` 4.85.0 (dev) |
+
+No search index, no database, no client bundle — the runtime dependency surface is KV
+and nothing else.
+
+## Requirements and configuration
+
+**Works with no Cloudflare account:** `pnpm install`, `pnpm dev`, `pnpm build`, and
+`pnpm typecheck` (`zfb check`) need no Cloudflare credentials at all — which is also why
+the repo's CI `build` job is green on a fresh fork. What that gets you is bounded, though:
+`zfb dev` exposes no bindings, so the guestbook routes answer `503` there. You can iterate
+on layout and styling; you cannot post an entry.
+
+**Needs Cloudflare:**
+
+- A **KV namespace**, with its id committed into the `[[kv_namespaces]]` block of
+  `wrangler.toml`. The binding name must stay `GUESTBOOK` — `lib/kv.ts` looks it up by
+  that exact name.
+- An **`ADMIN_TOKEN` Worker secret** (`wrangler secret put ADMIN_TOKEN`). This is a
+  Cloudflare-side secret attached to the deployed Worker, *not* a GitHub Actions secret;
+  the two are easy to confuse. Without it, `DELETE /api/entries/<key>` returns `503`
+  while reads and writes keep working.
+- For CI deploys, the repo secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+  The token needs Account · Workers Scripts (Edit), Workers KV Storage (Edit), and
+  Account Settings (Read), plus Zone · Workers Routes (Edit) because `wrangler.toml`
+  declares a custom domain.
+
+**No migrations and no seed data.** KV starts empty and the page renders
+"No entries yet." until someone posts.
+
+The repo carries an ordered, from-zero walkthrough of all of the above in
+[`docs/cloudflare-setup.md`](https://github.com/Takazudo/zfb-example-kv-guestbook/blob/main/docs/cloudflare-setup.md).
+Because `wrangler kv namespace create` has to run against the same account the
+`CLOUDFLARE_*` secrets point at, a `kv-bootstrap.yml` workflow does the provisioning in
+CI — where those secrets actually live — and prints the resulting namespace id as a step
+summary and a downloadable artifact for you to paste into `wrangler.toml`. It is
+`workflow_dispatch` only, and stays in the repo as a re-runnable bootstrap.
+
+## How it works
+
+Three server-rendered route files (plus a prerendered `404`), answering five
+method-and-path combinations:
+
+| Route | What it does |
+| --- | --- |
+| `GET /` | Renders the guestbook page and the form |
+| `POST /` | Handles both a new entry and a Delete button, then redirects back to `/` |
+| `GET /api/entries` | Returns the current bounded entry window as JSON |
+| `POST /api/entries` | Accepts a `message` as JSON, form-encoded, or plain text |
+| `DELETE /api/entries/<key>` | Deletes one entry, given `Authorization: Bearer <ADMIN_TOKEN>` |
+
+### A missing binding degrades to 503 instead of crashing
+
+`getCloudflareContext()` **throws** when there is no Cloudflare request scope — during
+build-time SSG, and under `zfb dev`. The guide's advice for a route that should survive
+both modes is to catch the error and branch on it, and that is exactly what `lib/kv.ts`
+does once, for everybody:
+
+```ts title="lib/kv.ts"
+export function getGuestbookContext(): CloudflareContext<Env> | null {
+  try {
+    return getCloudflareContext<Env>();
+  } catch {
+    return null;
+  }
+}
+```
+
+Every route then opens with the same two guards — no context, or no `GUESTBOOK`
+namespace on `env` — and returns a `503` that says which one failed:
+
+```tsx title="pages/index.tsx"
+const cf = getGuestbookContext();
+if (!cf) {
+  return new Response("Cloudflare request context is unavailable.", {
+    status: 503,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+```
+
+The payoff is that `zfb dev` keeps working as an authoring loop. You get a legible
+"bindings are not available here" response rather than a stack trace, and the same code
+path covers a genuine production misconfiguration — a namespace id that was never
+committed, say — with a message that names the missing piece.
+
+### The write is queued, and the page says so
+
+`POST` hands `kv.put(...)` to `ctx.waitUntil()` and returns without awaiting it, so the
+response does not wait on the KV round trip. Entries are written under keys shaped
+`entry:<ISO timestamp>:<random hex>` — the timestamp makes the key itself sortable — with
+an `expirationTtl` of 90 days so the namespace cannot grow without bound.
+
+That speed has a visible consequence, and the demo does not hide it. KV is eventually
+consistent *and* the write has not necessarily settled when the response goes out, so the
+`303` redirect back to `/` can legitimately render without the entry that was just
+posted. The page redirects with `?queued=1` and shows "Entry queued. It may take a moment
+to appear."; `POST /api/entries` answers `202` with a `consistency` field spelling out the
+same thing. Treating "not there yet" as a normal state rather than a bug is the honest
+way to build on KV.
+
+### Reads are bounded on purpose
+
+The read path lists keys first, then fetches only a capped number of them:
+
+```ts title="lib/kv.ts"
+export async function listGuestbookEntries(kv: KVNamespace<EntryKey>): Promise<EntryListResult> {
+  const listed = await kv.list({ prefix: ENTRY_PREFIX, limit: LIST_WINDOW_LIMIT });
+  const keys = listed.keys
+    .map((key) => key.name)
+    .filter(isEntryKey)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, READ_FANOUT_LIMIT);
+```
+
+`kv.list()` returns key names and metadata but not values, so reading N entries costs N
+`kv.get()` subrequests. Left unbounded, a busy guestbook would blow through the Workers
+subrequest budget on a single page view. The repo caps the list window at 40, the read
+fan-out at 20, and runs the gets in batches of 6 — and returns `listedKeys`,
+`listComplete`, and `fanoutLimit` alongside the entries so a caller can see that the
+window was capped rather than guessing.
+
+### The asset layer had to be told to run the Worker first
+
+This is the deploy-shaped trap in the repo, and it is worth reading the comment in
+`wrangler.toml` in full. Because `/` is `prerender = false`, the build emits no
+`dist/index.html`. But Workers Static Assets consults the asset layer *before* the
+Worker, and for a **navigation** request — one carrying `sec-fetch-mode: navigate`, which
+every real browser sends — an unmatched path is answered with `not_found_handling`. With
+a prerendered `dist/404.html` present, `/` served the 404 page and the Worker never ran.
+The site was broken for every human visitor while `curl`, which sends no such header,
+fell through to the Worker and saw a correct `200`.
+
+```toml title="wrangler.toml"
+run_worker_first = ["/", "/api/*"]
+```
+
+Scoping it to a path list rather than `true` keeps direct asset serving intact: real
+files under `/assets/*` are still returned by the asset layer without invoking the
+Worker.
+
+### The admin gate is the part worth copying
+
+`DELETE /api/entries/<key>` is a [dynamic route](../concepts/dynamic-routes.mdx) with
+`prerender = false`, so `params.key` comes from the URL at request time. It checks
+authentication *before* it touches KV: a missing `ADMIN_TOKEN` is a `503` ("not
+configured"), a missing or wrong bearer token is a `401`. The comparison hashes both
+sides with SHA-256 and diffs the digests, so it does not leak the token's length or a
+prefix through timing.
+
+The Delete buttons on the page are a different thing. They post to `/` as an ordinary
+form with a hidden `delete` field, and they are **unauthenticated on purpose** so the
+live demo can be tried end to end. Both the guestbook page and the source comment say so
+plainly: the open button is a demo affordance layered on top, and the token-guarded
+endpoint is the reference pattern.
+
+One subtlety worth noting if you copy the single-route-two-actions shape: a `Request`
+body is a stream and can be read only once. `readDeleteKey()` peeks at
+`request.clone().formData()` so the original body is still intact for the entry parser
+underneath it.
+
+## Run it locally
+
+```bash
+pnpm install
+pnpm dev        # zfb dev — authoring loop; binding routes answer 503 here
+pnpm build
+pnpm preview    # zfb preview; in adapter mode this hands off to wrangler dev
+pnpm typecheck  # zfb check
+pnpm smoke      # read-only check against the live domain
+```
+
+The repo states the limit directly: `pnpm dev` is useful for normal zfb authoring, but
+Cloudflare bindings are not available there, and binding-backed routes return a
+controlled `503` instead of crashing. Use `pnpm build` followed by `pnpm preview` for the
+local Worker and KV simulation.
+
+Two local details that will bite otherwise:
+
+- Wrangler keeps local KV state under `.wrangler/`. Delete that directory when you want a
+  fresh local namespace.
+- `.dev.vars` (git-ignored) supplies `ADMIN_TOKEN` for the local Worker, so the admin
+  delete can be exercised under `pnpm preview` without touching the deployed secret.
+
+<Caution title="Do not run pnpm dev and pnpm preview at once">
+
+The repo's `predev` script removes `dist/`, which is the directory the previewing Worker
+is actively serving. Pick one loop at a time.
+
+</Caution>
+
+`pnpm smoke` is a read-only post-deploy check: it asserts that `/` returns `200` with the
+guestbook HTML and that `GET /api/entries` returns a JSON entries array. It never writes
+an entry, because a post-deploy check must not mutate production data.
+
+## Related reading
+
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — the hands-on
+  guide to `prerender = false`, the adapter, `wrangler.toml`, and KV bindings.
+- [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — the mental model
+  behind `dist/_worker.js`, asset dispatch, and `getCloudflareContext()`.
+- [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `[key]` bracket syntax.
+- [Examples](../guides/examples.mdx) — the index of every standalone example repository.
