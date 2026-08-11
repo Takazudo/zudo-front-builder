@@ -61,7 +61,10 @@ use include_dir::{include_dir, Dir};
 use zfb_build::renderer::RouteUniverseEntry;
 #[cfg(feature = "embed_v8")]
 use zfb_build::EmbeddedV8Host;
-use zfb_content::{extract_tsx_frontmatter, TsxFrontmatterError};
+use zfb_content::{
+    extract_tsx_frontmatter, ssr_request_param_tier, DefaultExportFirstParam, RequestParamTier,
+    TsxFrontmatterError,
+};
 use zfb_render::paths::{resolve_paths, PathsCache, PathsError, Segment as PathsSegment};
 use zfb_render::paths_extract::{extract_paths, PathsExtractError, PathsExtraction};
 use zfb_router::{Route, RouteKind, Segment};
@@ -1182,12 +1185,112 @@ pub fn is_ssr_route(prerender_map: &BTreeMap<String, bool>, template: &str) -> b
     !prerender_map.get(template).copied().unwrap_or(true)
 }
 
+/// A structured SSR route-contract finding (#2354): the epic's silent
+/// `(request: Request)` handler-shape gate fired for one route. Unlike
+/// `warn_unreadable`'s formatted strings, this travels as data so `zfb
+/// check` can count findings and derive an exit code instead of
+/// string-matching warning output.
+///
+/// Rendered to user-facing text by exactly one function,
+/// [`render_ssr_request_param_finding`] — all three consumers (`zfb dev`,
+/// `zfb build`, `zfb check`) share it so the message exists once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SsrRequestParamFinding {
+    /// The route template the offending page serves (e.g. `/api/:slug`).
+    pub route: String,
+    /// Absolute path to the page source file.
+    pub file: PathBuf,
+    /// 1-based line of the offending parameter's identifier.
+    pub line: usize,
+    /// 1-based column; see `line`.
+    pub col: usize,
+    /// Confidence tier — drives the message wording, not whether the
+    /// finding fires at all (see [`RequestParamTier`]).
+    pub tier: RequestParamTier,
+}
+
+/// Render an [`SsrRequestParamFinding`] to user-facing text. The single
+/// shared definition consumed by `zfb dev`, `zfb build`, and `zfb check`
+/// (#2354's acceptance criterion: one message, not three copies).
+///
+/// Names the route, the file and `line:column`, states that the default
+/// export receives the page's props rather than the `Request`, and gives
+/// the fix: drop the parameter and read the request via
+/// `getCloudflareContext()` under an adapter — noting that call is
+/// unavailable under `zfb dev` (see
+/// `docs/src/content/docs/guides/ssr-and-cloudflare-bindings.mdx`).
+/// Heuristic-tier findings are worded as "likely incorrect" (a props
+/// object can legitimately be named `request`/`req`); strong-tier
+/// findings state the problem directly.
+pub fn render_ssr_request_param_finding(finding: &SsrRequestParamFinding) -> String {
+    let verdict = match finding.tier {
+        RequestParamTier::Strong => {
+            "the default export's first parameter is annotated `Request`, but zfb calls a \
+             page's default export with the page's props object, never the incoming Request"
+                .to_string()
+        }
+        RequestParamTier::Heuristic => {
+            "the default export's first parameter is likely incorrect: it is named like a \
+             Request but zfb calls a page's default export with the page's props object, never \
+             the incoming Request (a props object can legitimately carry that name)"
+                .to_string()
+        }
+    };
+    format!(
+        "route {route}: {file}:{line}:{col}: {verdict}. Fix: drop the parameter and read the \
+         request via `getCloudflareContext()` under an adapter (unavailable under `zfb dev`).",
+        route = finding.route,
+        file = finding.file.display(),
+        line = finding.line,
+        col = finding.col,
+    )
+}
+
+/// Join the loop-resolved `prerender` flag and the default export's
+/// first-parameter shape through the detector's full gate
+/// ([`ssr_request_param_tier`]), producing a [`SsrRequestParamFinding`]
+/// when it fires. `route` / `abs` supply the route template and absolute
+/// file path the finding names; the detector itself has no notion of
+/// either.
+fn ssr_param_finding(
+    route: &Route,
+    abs: &Path,
+    prerender: bool,
+    param: &DefaultExportFirstParam,
+) -> Option<SsrRequestParamFinding> {
+    let tier = ssr_request_param_tier(prerender, param)?;
+    // `request_param_tier` (and therefore `ssr_request_param_tier`) only
+    // ever returns `Some` for the `Plain` variant — see its doc comment —
+    // so this match is exhaustive in practice; a non-`Plain` param here
+    // would mean the gate's contract changed underneath us.
+    let DefaultExportFirstParam::Plain(plain) = param else {
+        return None;
+    };
+    Some(SsrRequestParamFinding {
+        route: route.template(),
+        file: abs.to_path_buf(),
+        line: plain.line,
+        col: plain.col,
+        tier,
+    })
+}
+
+/// Returns the `prerender` map (see [`is_ssr_route`]) alongside the list
+/// of [`SsrRequestParamFinding`]s the detector's gate raised while
+/// walking the same routes (#2354). Findings are structured data, not
+/// warning strings — `warn_unreadable` stays scoped to the unreadable-
+/// file / malformed-frontmatter cases it already served before this
+/// signature changed; callers render findings via
+/// [`render_ssr_request_param_finding`] through whatever surface fits
+/// their command (a warning in `zfb dev`/`zfb build`, a counted, exit-
+/// code-driving error in `zfb check`).
 pub fn build_prerender_map(
     routes: &[Route],
     project_root: &Path,
     mut warn_unreadable: impl FnMut(&str),
-) -> BTreeMap<String, bool> {
+) -> (BTreeMap<String, bool>, Vec<SsrRequestParamFinding>) {
     let mut map = BTreeMap::new();
+    let mut findings: Vec<SsrRequestParamFinding> = Vec::new();
     for route in routes {
         let abs = if route.source_path.is_absolute() {
             route.source_path.clone()
@@ -1227,6 +1330,11 @@ pub fn build_prerender_map(
             .unwrap_or_else(|| "<unknown>".into());
         match extract_tsx_frontmatter(&source, &file_name) {
             Ok(fm) => {
+                if let Some(finding) =
+                    ssr_param_finding(route, &abs, fm.prerender, &fm.default_export_param)
+                {
+                    findings.push(finding);
+                }
                 map.insert(route.template(), fm.prerender);
             }
             // A route page with no `export const frontmatter` is valid — the
@@ -1242,7 +1350,21 @@ pub fn build_prerender_map(
             // `true`/absent prerender stays out of the map and rides the
             // missing-key SSG default, preserving the sparse map and #505's
             // "no entry for plain frontmatter-less pages" behavior.
-            Err(TsxFrontmatterError::MissingFrontmatter { prerender, .. }) => {
+            Err(TsxFrontmatterError::MissingFrontmatter {
+                prerender,
+                default_export_param,
+                ..
+            }) => {
+                // The common API-route shape — `export const prerender =
+                // false` with no `frontmatter` export at all — lands
+                // here, not in the `Ok` arm above. The gate must see it
+                // too (#2354), or the single most common shape it exists
+                // to catch would go unlinted.
+                if let Some(finding) =
+                    ssr_param_finding(route, &abs, prerender, &default_export_param)
+                {
+                    findings.push(finding);
+                }
                 if !prerender {
                     map.insert(route.template(), prerender);
                 }
@@ -1259,7 +1381,7 @@ pub fn build_prerender_map(
             }
         }
     }
-    map
+    (map, findings)
 }
 
 /// Verify that `@takazudo/zfb-runtime` is resolvable for the current build.
@@ -1591,7 +1713,8 @@ mod tests {
         ];
 
         let mut warnings: Vec<String> = Vec::new();
-        let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.to_string()));
+        let (map, _findings) =
+            build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.to_string()));
         assert_eq!(map.get("/about"), Some(&true));
         assert_eq!(map.get("/preview"), Some(&false));
         // Absent frontmatter, no prerender: no entry (default SSG), and crucially no warning.
@@ -1630,7 +1753,8 @@ mod tests {
 
         let routes = vec![static_route(vec!["post"], "pages/post.mdx")];
         let mut warnings: Vec<String> = Vec::new();
-        let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.into()));
+        let (map, _findings) =
+            build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.into()));
         assert!(
             map.is_empty(),
             "MDX should be left to the default-true path"
@@ -1668,7 +1792,8 @@ mod tests {
             static_route(vec!["preview2"], "pages/preview2.jsx"),
         ];
         let mut warnings: Vec<String> = Vec::new();
-        let map = build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.into()));
+        let (map, _findings) =
+            build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.into()));
         assert_eq!(
             map.get("/preview"),
             Some(&false),
@@ -1680,6 +1805,201 @@ mod tests {
             ".jsx pages must extract `prerender = false` exactly like .tsx"
         );
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
+    }
+
+    // ----- SSR request-param detector wiring (#2354) -----
+
+    /// #2354 acceptance: a `prerender = false` route whose default export
+    /// takes the mistaken `(request: Request)` shape yields exactly one
+    /// finding, at the strong tier (the annotation is present).
+    #[test]
+    fn build_prerender_map_reports_one_strong_finding_for_broken_ssr_handler() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("submit.tsx"),
+            "export const frontmatter = { title: 'Submit' };\n\
+             export const prerender = false;\n\
+             export default async function Handler(request: Request) {\n\
+             \x20\x20return new Response('ok');\n\
+             }\n",
+        )
+        .unwrap();
+
+        let routes = vec![static_route(vec!["submit"], "pages/submit.tsx")];
+        let (map, findings) = build_prerender_map(&routes, dir.path(), |msg| {
+            panic!("unexpected warning: {msg}")
+        });
+
+        assert_eq!(map.get("/submit"), Some(&false));
+        assert_eq!(findings.len(), 1, "findings: {findings:?}");
+        let finding = &findings[0];
+        assert_eq!(finding.route, "/submit");
+        assert_eq!(finding.tier, RequestParamTier::Strong);
+        assert!(
+            finding.file.ends_with("pages/submit.tsx") || finding.file.ends_with("submit.tsx"),
+            "finding.file = {}",
+            finding.file.display()
+        );
+    }
+
+    /// The identical handler shape on an SSG route (`prerender = true`,
+    /// and separately no `prerender` export at all) never fires the gate
+    /// — condition 1 of the epic's gate is `prerender == false`.
+    #[test]
+    fn build_prerender_map_reports_no_finding_when_route_is_not_ssr() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("prerender-true.tsx"),
+            "export const frontmatter = { title: 'A' };\n\
+             export const prerender = true;\n\
+             export default function Handler(request: Request) { return null; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("prerender-absent.tsx"),
+            "export const frontmatter = { title: 'B' };\n\
+             export default function Handler(request: Request) { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec!["prerender-true"], "pages/prerender-true.tsx"),
+            static_route(vec!["prerender-absent"], "pages/prerender-absent.tsx"),
+        ];
+        let (_map, findings) = build_prerender_map(&routes, dir.path(), |msg| {
+            panic!("unexpected warning: {msg}")
+        });
+        assert!(findings.is_empty(), "findings: {findings:?}");
+    }
+
+    /// A correct `({ params })` handler on a `prerender = false` route
+    /// never fires the gate — condition 3 requires a plain binding
+    /// identifier, and a destructuring pattern fails that.
+    #[test]
+    fn build_prerender_map_reports_no_finding_for_correct_destructured_handler() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("api.tsx"),
+            "export const frontmatter = { title: 'API' };\n\
+             export const prerender = false;\n\
+             export default function Handler({ params }: { params: Record<string, string> }) {\n\
+             \x20\x20return null;\n\
+             }\n",
+        )
+        .unwrap();
+
+        let routes = vec![static_route(vec!["api"], "pages/api.tsx")];
+        let (map, findings) = build_prerender_map(&routes, dir.path(), |msg| {
+            panic!("unexpected warning: {msg}")
+        });
+        assert_eq!(map.get("/api"), Some(&false));
+        assert!(findings.is_empty(), "findings: {findings:?}");
+    }
+
+    /// A page whose `frontmatter` is malformed never enters the prerender
+    /// map (`is_ssr_route` reports it as SSG), so there is nothing to
+    /// lint — the epic's documented boundary. Still warns exactly once
+    /// through the existing `warn_unreadable` closure (unaffected by the
+    /// finding channel).
+    #[test]
+    fn build_prerender_map_reports_no_finding_for_malformed_frontmatter() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("broken.tsx"),
+            "const titleVar = 'x';\n\
+             export const frontmatter = { title: titleVar };\n\
+             export const prerender = false;\n\
+             export default function Handler(request: Request) { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![static_route(vec!["broken"], "pages/broken.tsx")];
+        let mut warnings: Vec<String> = Vec::new();
+        let (map, findings) =
+            build_prerender_map(&routes, dir.path(), |msg| warnings.push(msg.to_string()));
+        assert!(!map.contains_key("/broken"));
+        assert!(findings.is_empty(), "findings: {findings:?}");
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+    }
+
+    /// The common API-route shape: `export const prerender = false` with
+    /// NO `frontmatter` export at all lands in
+    /// `TsxFrontmatterError::MissingFrontmatter`, not the `Ok` arm — the
+    /// gate must still see it (#2354; this is the shape #2350 was filed
+    /// against).
+    #[test]
+    fn build_prerender_map_reports_finding_on_missing_frontmatter_path() {
+        let dir = tempdir().unwrap();
+        let pages = dir.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("noop.tsx"),
+            "export const prerender = false;\n\
+             export default async function Handler(req) {\n\
+             \x20\x20return new Response('ok');\n\
+             }\n",
+        )
+        .unwrap();
+
+        let routes = vec![static_route(vec!["noop"], "pages/noop.tsx")];
+        let (map, findings) = build_prerender_map(&routes, dir.path(), |msg| {
+            panic!("unexpected warning: {msg}")
+        });
+        assert_eq!(map.get("/noop"), Some(&false));
+        assert_eq!(findings.len(), 1, "findings: {findings:?}");
+        assert_eq!(
+            findings[0].tier,
+            RequestParamTier::Heuristic,
+            "`req` is name-only, not annotated"
+        );
+    }
+
+    #[test]
+    fn render_ssr_request_param_finding_strong_states_directly() {
+        let finding = SsrRequestParamFinding {
+            route: "/api/submit".to_string(),
+            file: PathBuf::from("/proj/pages/api/submit.tsx"),
+            line: 5,
+            col: 24,
+            tier: RequestParamTier::Strong,
+        };
+        let msg = render_ssr_request_param_finding(&finding);
+        assert!(msg.contains("/api/submit"), "{msg}");
+        assert!(msg.contains("/proj/pages/api/submit.tsx:5:24"), "{msg}");
+        assert!(msg.contains("props"), "{msg}");
+        assert!(msg.contains("Request"), "{msg}");
+        assert!(msg.contains("getCloudflareContext()"), "{msg}");
+        assert!(msg.contains("zfb dev"), "{msg}");
+        assert!(
+            !msg.contains("likely incorrect"),
+            "strong tier must state the problem directly: {msg}"
+        );
+    }
+
+    #[test]
+    fn render_ssr_request_param_finding_heuristic_hedges() {
+        let finding = SsrRequestParamFinding {
+            route: "/api/submit".to_string(),
+            file: PathBuf::from("/proj/pages/api/submit.tsx"),
+            line: 5,
+            col: 24,
+            tier: RequestParamTier::Heuristic,
+        };
+        let msg = render_ssr_request_param_finding(&finding);
+        assert!(
+            msg.contains("likely incorrect"),
+            "heuristic tier must hedge: {msg}"
+        );
+        assert!(msg.contains("getCloudflareContext()"), "{msg}");
+        assert!(msg.contains("zfb dev"), "{msg}");
     }
 
     /// Embedded vendor short-circuits resolution: when the `cargo install`-ed

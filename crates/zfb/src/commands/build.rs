@@ -6247,7 +6247,17 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         mut static_routes,
         deferred_dynamic,
     } = build_route_universe(routes);
-    let prerender_map = build_prerender_map(routes, project_root, |msg| output::warn(msg));
+    let (prerender_map, ssr_request_param_findings) =
+        build_prerender_map(routes, project_root, |msg| output::warn(msg));
+    // SSR route-contract guard (#2354): warn-only under `zfb build` — a
+    // build on this broken shape must still SUCCEED (the epic's
+    // compatibility guarantee); `zfb check` is the surface that fails on
+    // it.
+    for finding in &ssr_request_param_findings {
+        output::warn(crate::render_pipeline::render_ssr_request_param_finding(
+            finding,
+        ));
+    }
 
     // Pre-filter: split deferred_dynamic by prerender flag, mirroring dev.rs.
     //
@@ -9007,6 +9017,72 @@ mod tests {
             calls[0].1.emitted_wasm_assets,
             vec![PathBuf::from("answer-1234abcd.wasm")],
             "the runtime bundle's bundle-relative Wasm assets must reach the adapter"
+        );
+    }
+
+    /// SSR route-contract guard (#2354), the epic's compatibility
+    /// guarantee: `zfb build` on the broken `(request: Request)` handler
+    /// shape must still SUCCEED — the finding is a warning, never a build
+    /// failure. A regression here would break existing projects on
+    /// upgrade. Mirrors the fixture shape of
+    /// `run_build_with_adapter_set_invokes_adapter_runner_after_render`
+    /// above, swapping the correct zero-parameter handler for the
+    /// mistaken `Request`-annotated one.
+    #[test]
+    fn run_build_succeeds_on_broken_ssr_request_param_shape() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        std::fs::create_dir_all(project_root.join("pages/api")).unwrap();
+        std::fs::write(
+            project_root.join("pages/api/foo.tsx"),
+            "export const frontmatter = { title: \"Foo\" };\nexport const prerender = false;\nexport default async function Handler(request: Request) {\n  return new Response('ok');\n}\n",
+        )
+        .unwrap();
+        // Also stage one SSG page so static_routes is non-empty (the
+        // build short-circuits with 0 pages otherwise, before dispatch).
+        std::fs::write(
+            project_root.join("pages/index.tsx"),
+            "export default function() { return null; }\n",
+        )
+        .unwrap();
+
+        let routes = vec![
+            static_route(vec![], "pages/index.tsx"),
+            Route {
+                source_path: PathBuf::from("pages/api/foo.tsx"),
+                segments: vec![Segment::Static("api".into()), Segment::Static("foo".into())],
+                kind: RouteKind::Static,
+                specificity: 0,
+                output_extension: None,
+                static_html: false,
+            },
+        ];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"));
+        let cfg = Config {
+            adapter: Some("@takazudo/zfb-adapter-cloudflare".into()),
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+        let result = run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        });
+        assert!(
+            result.is_ok(),
+            "a build on the broken SSR request-param shape must still succeed: {:?}",
+            result.err()
         );
     }
 
@@ -16586,7 +16662,7 @@ mod tests {
         .unwrap();
 
         let routes = vec![static_route(vec!["ssr"], "pages/ssr.tsx")];
-        let map = build_prerender_map(&routes, dir.path(), |_| {});
+        let (map, _findings) = build_prerender_map(&routes, dir.path(), |_| {});
 
         // The frontmatter-less SSR page must now register as SSR (the bug was
         // it registered as SSG and never reached the gate).
