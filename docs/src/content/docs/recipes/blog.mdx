@@ -1,0 +1,191 @@
+---
+title: "Example: Blog"
+description: A pure-SSG Markdown/MDX blog with three dynamic-route shapes, one theme-toggle island, and a Tailwind v4 token system, deployed as an assets-only Cloudflare Worker
+sidebar_position: 11
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+A complete, deployed zfb blog: a `blog` content collection of Markdown and MDX posts, three
+different dynamic-route shapes, a single `"use client"` island, and a Tailwind v4 design system.
+It is a **pure static build** — no SSR, no Cloudflare bindings, no adapter — which makes it the
+smallest realistic shape of a content-driven zfb site.
+
+</Info>
+
+**Live demo:** [zfb-example-blog.takazudomodular.com](https://zfb-example-blog.takazudomodular.com/)
+
+**Repository:** [Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog)
+
+## What it demonstrates
+
+- A [content collection](../concepts/content-collections.mdx) named `blog`, mixing `.md` and `.mdx`
+  posts in one directory.
+- Three [dynamic-route](../concepts/dynamic-routes.mdx) shapes from three route files — per-post
+  (`pages/blog/[slug].tsx`), paginated index (`pages/blog/page/[page].tsx`), and per-tag
+  (`pages/tags/[tag].tsx`) — each built by its own `paths()` export.
+- [`paginate()`](../api/paginate.mdx) turning a sorted array into the `paths()` return value directly.
+- A custom MDX component (`<Note>`) reaching the page through the `components` prop on
+  `entry.Content` — see [MDX components](../concepts/mdx-components.mdx).
+- One [island](../concepts/islands.mdx) (`ThemeToggle`) whose first render is SSR-safe, paired with
+  an inline pre-hydration script so the page never paints in the wrong theme.
+- A [Tailwind v4](../concepts/styling.mdx) `@theme` block layered over raw CSS custom properties,
+  with `dark:` re-pointed at a `data-theme` attribute instead of `prefers-color-scheme`.
+
+## Tech used
+
+| Aspect | zfb-example-blog |
+| --- | --- |
+| Framework | zfb **2.3.0** + Preact (`framework: "preact"` in `zfb.config.ts`) |
+| Runtime | `@takazudo/zfb-runtime` **2.3.0** |
+| Styling | Tailwind CSS v4 (`tailwind: { enabled: true }`), one `styles/global.css` |
+| Rendering | **Pure SSG.** No route sets `export const prerender = false` |
+| Content | one collection — `blog` → `content/blog` (4 `.md` + 1 `.mdx`) |
+| Interactivity | one `"use client"` island, mounted with `<Island when="idle">` |
+| Cloudflare surface | Workers Static Assets, **assets-only** — `wrangler.toml` has no `main` key |
+| Bindings | none |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` is **not** a dependency |
+| Other deps | `preact`, `preact-render-to-string`; `wrangler` 4.85.0 as a devDependency |
+
+`zfb build` emits **14 HTML pages**: 1 homepage, 5 posts, 2 paginated index pages, and 6 tag pages.
+"How it works" below traces where each of those numbers comes from.
+
+## Requirements and configuration
+
+**Works locally with no Cloudflare account.** `pnpm install && pnpm build` produces the entire site;
+`pnpm preview` serves it. There is nothing to provision — no bindings, no environment variables, no
+Worker secrets, no migrations or seed data. The posts in `content/blog/` are the whole database.
+
+**Needs Cloudflare only to deploy.** The repo's GitHub Actions workflow runs `wrangler deploy`, which
+uploads `dist/` as the Worker's static assets and attaches the custom domain declared in
+`wrangler.toml`. That requires two repo secrets — `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` —
+and the credentialed jobs self-skip when the token is absent, so forks stay green.
+
+<Warning title="The custom domain needs a zone-scoped permission">
+
+`wrangler.toml` declares `custom_domain = true`, so the API token must carry
+**Zone · Workers Routes · Edit** on the target zone in addition to the account-scoped
+**Workers Scripts · Edit**. Without it, `wrangler deploy` uploads the Worker successfully and *then*
+fails at the route step — the deploy looks half-done and the domain never resolves. The repo's
+`docs/cloudflare-setup.md` documents the full token recipe.
+
+</Warning>
+
+The live demo is a **public, read-only static site**: no authentication, nothing writable, no state
+to corrupt. One rough edge is documented in `wrangler.toml`: `not_found_handling = "404-page"` is set,
+but this project does not emit a `dist/404.html`, so unmatched paths currently fall back to a bare
+Cloudflare 404. The setting is correct in advance of a 404 page being added.
+
+## How it works
+
+### Fourteen pages from four route files
+
+The page count is not a build setting — it falls out of what each `paths()` export returns, so it is
+worth tracing.
+
+`pages/index.tsx` is a static route: 1 page. `pages/blog/[slug].tsx` returns one entry per post, so
+5 posts give 5 pages. `pages/tags/[tag].tsx` walks every post's `tags` frontmatter into a
+`Map<string, BlogEntry[]>` and emits one page per distinct key — the five posts mention `deploy`,
+`framework`, `intro`, `perf`, `ssr`, and `tooling`, so that is 6 pages.
+
+The remaining 2 come from the paginated index, where [`paginate()`](../api/paginate.mdx) does the
+arithmetic for you. Its return value *is* the `paths()` return value — no adapter step in between:
+
+```tsx title="pages/blog/page/[page].tsx"
+export async function paths() {
+  const { getCollection } = await import("@takazudo/zfb/content");
+  const { paginate } = await import("@takazudo/zfb/paginate");
+  const posts = (await getCollection("blog")) as BlogEntry[];
+  const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
+  return paginate(sorted, { pageSize: 3, param: "page" });
+}
+```
+
+`pageSize: 3` over 5 posts yields `/blog/page/1` and `/blog/page/2`. Total: 1 + 5 + 6 + 2 = **14**.
+
+Note the `[...posts]` copy before `.sort()`. The example does this in every route that sorts, on
+purpose: [`getCollection()`](../api/get-collection.mdx) may hand back an array shared between routes,
+and an in-place sort would silently re-order it for every other consumer.
+
+### Avoiding the flash of the wrong theme
+
+The theme toggle is the one interactive thing on the site, and it is the part of the example most
+worth reading, because a naive implementation breaks in two different ways at once.
+
+An island's **first** render must produce identical HTML on the server and during client hydration.
+Reading `localStorage` from a `useState` initialiser violates that: the server has no `localStorage`,
+so it defaults to `"light"`, while the client reads a saved `"dark"` and renders the opposite label —
+a hydration mismatch. So `ThemeToggle` renders a deterministic `"light"` first, then syncs to the
+persisted or system preference inside `useEffect`.
+
+That fixes hydration but not appearance. If nothing else ran, the *page* would still paint in the
+default palette until the island's effect fired. The fix is to separate the two concerns: an inline
+script in `<head>` sets the theme attribute synchronously, before the stylesheet is parsed, so the
+first painted frame is already correct no matter which label the island happens to render.
+
+```tsx title="layouts/default.tsx"
+const THEME_BOOTSTRAP_SCRIPT = `(() => {
+  try {
+    var saved = localStorage.getItem("basic-blog:theme");
+    var hasMM = typeof window !== "undefined" && typeof window.matchMedia === "function";
+    var theme = saved === "light" || saved === "dark"
+      ? saved
+      : (hasMM && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  } catch (e) {
+    document.documentElement.dataset.theme = "light";
+  }
+})();`;
+```
+
+The stylesheet is wired to the same attribute rather than to the media query — `styles/global.css`
+re-points Tailwind's variant with
+`@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *))`, and declares the raw
+`--blog-*` tokens on `:root` with dark overrides under `[data-theme="dark"]`. The `@theme` block then
+re-exports the subset that should generate utilities (`--color-bg: var(--blog-bg)`, and so on). One
+attribute drives the bootstrap script, the island, and every utility class.
+
+The layout itself stays a plain server component; only the toggle ships JavaScript, and
+[`<Island when="idle">`](../api/island.mdx) keeps even that until the browser has spare cycles.
+
+### A custom component inside MDX
+
+`content/blog/hello-zfb.mdx` writes `<Note title="MDX in basic-blog">`. That resolves because the
+per-post route passes `Note` in alongside `defaultComponents` when it renders the entry body:
+
+```tsx title="pages/blog/[slug].tsx"
+<post.Content components={{ ...defaultComponents, Note }} />
+```
+
+`defaultComponents` supplies the HTML-tag overrides (`<p>`, `<a>`, headings, lists); spreading it
+first means individual entries on the right win on key collisions. The `<Note>` component itself is
+deliberately plain — its job in this example is to prove the delivery contract, not to be a
+good-looking admonition.
+
+## Run it locally
+
+Requires Node.js >= 22.12.0 and pnpm 10.x. A plain `pnpm install` brings the `zfb` CLI with it — no
+Rust toolchain and no upstream checkout.
+
+```sh
+pnpm install
+pnpm dev        # zfb dev server with live reload
+pnpm build      # static build into dist/ (14 pages)
+pnpm preview    # serve the built dist/ locally
+pnpm typecheck  # zfb check — collection validation + tsc --noEmit
+```
+
+Because the site is pure SSG, there is no Worker-scope caveat here: everything `zfb dev` serves is
+what production serves. Two small things to know — `predev` runs `rm -rf dist .zfb .zfb-build`, so
+every `pnpm dev` starts from a cold build, and `pnpm typecheck` is `zfb check`, which validates the
+collection in addition to running `tsc`.
+
+## See also
+
+- [Content collections](../concepts/content-collections.mdx) — the `blog` collection this site is built on.
+- [Dynamic routes](../concepts/dynamic-routes.mdx) and [Routing](../concepts/routing.mdx) — the `paths()` contract behind all three route shapes.
+- [`paginate()`](../api/paginate.mdx) — the pagination helper used verbatim above.
+- [Islands](../concepts/islands.mdx) and [`<Island>`](../api/island.mdx) — the hydration boundary and its scheduling strategies.
+- [Styling](../concepts/styling.mdx) — how Tailwind v4 is compiled by the zfb binary, with no per-project install.
+- [Static assets](../concepts/static-assets.mdx) — what ends up in `dist/` next to the HTML.
