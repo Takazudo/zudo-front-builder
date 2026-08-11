@@ -117,6 +117,10 @@ pub fn extract(path: &Path, source: &str) -> Result<UnifiedFrontmatter, Frontmat
                 // does not need it (and remains shape-compatible with
                 // markdown / MDX paths that have no such concept).
                 prerender: _,
+                // Likewise the SSR handler-shape verdict (#2352) — the
+                // three lint surfaces read it off `extract`'s own
+                // result, not through this carrier.
+                default_export_param: _,
             } = tsx_frontmatter::extract(source, file_name)?;
             Ok(UnifiedFrontmatter {
                 value: frontmatter,
