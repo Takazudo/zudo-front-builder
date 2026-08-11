@@ -17,10 +17,10 @@ A polished corporate marketing site (hero, services, about, contact) built as pu
 
 ## What it demonstrates
 
-- **CSS Modules end to end** — six components, six `*.module.css` files, zero utility classes in the source.
+- **CSS Modules end to end** — six components, six `*.module.css` files, zero Tailwind utility classes in the source.
 - **Turning Tailwind off** — the only one of the nine zfb example sites that sets `tailwind: { enabled: false }`. The emitted stylesheet contains this project's authored CSS and nothing else: no preflight, no theme layer, no utility scan.
 - **Scoped class names that do not collide** — `.card` is declared in both `hero.module.css` and `services.module.css` and the two never meet.
-- **Global CSS and scoped CSS in the same project** — one plain `global.css` carries design tokens and a light reset; the `.module.css` files carry everything else.
+- **Global CSS and scoped CSS in the same project** — one plain `global.css` carries the design tokens, a light reset, and a single hand-written `.skip-link` helper; the `.module.css` files carry every component's styles.
 - **A zero-JavaScript page** — no islands, so the build emits one HTML file and one stylesheet, with no `<script>` tag anywhere.
 - **An assets-only Cloudflare Worker** — `wrangler.toml` has an `[assets]` table and deliberately no `main`.
 
