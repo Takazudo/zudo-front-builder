@@ -62,11 +62,13 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceMap, Span, Spanned};
 use swc_core::ecma::ast::{
-    Decl, DefaultDecl, EsVersion, ExportSpecifier, Expr, Lit, ModuleDecl, ModuleExportName,
-    ModuleItem, ObjectLit, Pat, Prop, PropName, PropOrSpread, TsEntityName, TsType, TsTypeAnn,
-    UnaryOp, VarDeclKind,
+    BlockStmt, BlockStmtOrExpr, Decl, DefaultDecl, EsVersion, ExportSpecifier, Expr,
+    ImportSpecifier, Lit, MemberExpr, MemberProp, Module, ModuleDecl, ModuleExportName, ModuleItem,
+    ObjectLit, Pat, Prop, PropName, PropOrSpread, Stmt, TsEntityName, TsType, TsTypeAnn,
+    TsTypeParamDecl, UnaryOp, VarDeclKind,
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+use swc_core::ecma::visit::{Visit, VisitWith};
 use thiserror::Error;
 
 /// Output of [`extract`]. A successful extraction always produces a
@@ -149,6 +151,17 @@ pub struct PlainFirstParam {
     /// them would need a type checker, and guessing from the spelling
     /// is exactly the substring match the spec forbids.
     pub annotation_is_request: bool,
+    /// `true` when the function body reads a `Request`-only member off
+    /// this parameter (`.method`, `.json()`, … — see
+    /// `REQUEST_ONLY_MEMBERS`). Behavioural evidence, independent of the
+    /// type annotation, which is what keeps the gate enforceable for
+    /// `.js` / `.jsx` routes — they can carry `prerender = false` but no
+    /// annotation, so the strong tier would otherwise be unreachable for
+    /// them (#2361). Only consulted for a parameter already named
+    /// `request` / `req`; on its own it is NOT enough to fire the gate,
+    /// because a props object from `getStaticProps` may legitimately
+    /// carry a field like `url`.
+    pub body_uses_request_members: bool,
     /// 1-based location of the parameter's identifier, in this file's
     /// existing `line:column` convention (see [`Ctx::line`]).
     pub line: usize,
@@ -157,14 +170,25 @@ pub struct PlainFirstParam {
 }
 
 /// How confident the detector is that a plain first parameter is the
-/// mistaken `Request` shape. The tiers differ in **wording**
-/// downstream, not in whether the gate fires.
+/// mistaken `Request` shape.
+///
+/// The tiers differ in downstream **wording** everywhere, and since #2361
+/// also in **severity**: `zfb check` fails on `Strong` and only warns on
+/// `Heuristic` (`zfb dev` / `zfb build` warn on both). That split exists
+/// because there is no suppression mechanism — hard-failing a project
+/// whose props parameter is merely *named* `request` would trap it with
+/// no way out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestParamTier {
-    /// The parameter is annotated `Request` (or `globalThis.Request`).
+    /// Near-conclusive. Either the parameter is annotated with the global
+    /// `Request` (and nothing local shadows that name), or it is named
+    /// `request` / `req` **and** the body reads a `Request`-only member.
+    /// The second half is what keeps `.js` / `.jsx` routes enforceable —
+    /// they cannot carry an annotation at all.
     Strong,
-    /// The parameter is *named* `request` / `req`. A props object can
-    /// legitimately carry that name, so downstream wording hedges.
+    /// The parameter is *only* named `request` / `req`. A props object can
+    /// legitimately carry that name, so the wording hedges and `zfb check`
+    /// warns rather than failing.
     Heuristic,
 }
 
@@ -189,6 +213,20 @@ impl DefaultExportFirstParam {
             return Some(RequestParamTier::Strong);
         }
         if HEURISTIC_PARAM_NAMES.contains(&plain.name.as_str()) {
+            // Behavioural evidence promotes the naming heuristic to strong:
+            // a parameter named `request` whose body reads `.method` /
+            // `.json()` / … is near-conclusively the #2350 mistake. This is
+            // load-bearing for `.js` / `.jsx` routes, which cannot carry a
+            // `Request` annotation at all and would otherwise never reach
+            // the strong tier — leaving a tier-gated `zfb check` unable to
+            // enforce the contract for them (#2361).
+            //
+            // The name gate is what makes this safe: body evidence alone is
+            // NOT a path to strong, because a props object legitimately may
+            // carry a field like `url`.
+            if plain.body_uses_request_members {
+                return Some(RequestParamTier::Strong);
+            }
             return Some(RequestParamTier::Heuristic);
         }
         None
@@ -326,6 +364,9 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
     let ctx = Ctx {
         file_name,
         source_map: &cm,
+        // Pre-pass, deliberately before the classification walk below —
+        // see the field's doc comment for why order-independence matters.
+        request_shadowed: request_is_shadowed(&module),
     };
 
     let mut frontmatter: Option<JsonValue> = None;
@@ -559,6 +600,13 @@ impl ExportTarget {
 struct Ctx<'a> {
     file_name: &'a str,
     source_map: &'a Lrc<SourceMap>,
+    /// Does this module declare or import a top-level binding named
+    /// `Request`, shadowing the global Fetch type? Computed by
+    /// [`request_is_shadowed`] in a pre-pass, because a `type` /
+    /// `interface` / `class` declaration may appear AFTER the default
+    /// export — folding it into the classification walk would make the
+    /// verdict depend on declaration order (#2361).
+    request_shadowed: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -623,7 +671,15 @@ fn default_export_first_param(decl: &ModuleDecl, ctx: &Ctx<'_>) -> Option<Defaul
     match decl {
         // `export default function Page(…) {}` / `export default class …`
         ModuleDecl::ExportDefaultDecl(d) => Some(match &d.decl {
-            DefaultDecl::Fn(f) => first_param_shape(f.function.params.iter().map(|p| &p.pat), ctx),
+            DefaultDecl::Fn(f) => first_param_shape(
+                f.function.params.iter().map(|p| &p.pat),
+                FnBody::Block(f.function.body.as_ref()),
+                // A function's own `<Request>` type parameter shadows the
+                // global just as a module-scope declaration does.
+                ctx.request_shadowed
+                    || type_params_shadow_request(f.function.type_params.as_deref()),
+                ctx,
+            ),
             // A class is not a function literal — condition 2 fails.
             DefaultDecl::Class(_) => DefaultExportFirstParam::Opaque,
             // Type-only: there is no runtime default export to call.
@@ -631,8 +687,19 @@ fn default_export_first_param(decl: &ModuleDecl, ctx: &Ctx<'_>) -> Option<Defaul
         }),
         // `export default (…) => {}`, `export default handler`, …
         ModuleDecl::ExportDefaultExpr(e) => Some(match unwrap_ts_wrappers(&e.expr) {
-            Expr::Arrow(a) => first_param_shape(a.params.iter(), ctx),
-            Expr::Fn(f) => first_param_shape(f.function.params.iter().map(|p| &p.pat), ctx),
+            Expr::Arrow(a) => first_param_shape(
+                a.params.iter(),
+                FnBody::Arrow(&a.body),
+                ctx.request_shadowed || type_params_shadow_request(a.type_params.as_deref()),
+                ctx,
+            ),
+            Expr::Fn(f) => first_param_shape(
+                f.function.params.iter().map(|p| &p.pat),
+                FnBody::Block(f.function.body.as_ref()),
+                ctx.request_shadowed
+                    || type_params_shadow_request(f.function.type_params.as_deref()),
+                ctx,
+            ),
             // Identifier references, calls, classes, and everything else
             // are the epic's documented misses — seeing through them
             // would mean resolving bindings across modules.
@@ -678,7 +745,12 @@ fn module_export_name_is_default(name: &ModuleExportName) -> bool {
 /// Classify the FIRST parameter of a function-literal default export.
 /// Zero parameters is [`DefaultExportFirstParam::Absent`] — the correct
 /// API-handler shape.
-fn first_param_shape<'a, I>(mut params: I, ctx: &Ctx<'_>) -> DefaultExportFirstParam
+fn first_param_shape<'a, I>(
+    mut params: I,
+    body: FnBody<'_>,
+    shadowed: bool,
+    ctx: &Ctx<'_>,
+) -> DefaultExportFirstParam
 where
     I: Iterator<Item = &'a Pat>,
 {
@@ -688,7 +760,7 @@ where
     // `function Page(this: Request, props: Props)` — a correct page — at
     // the strong tier.
     match params.find(|pat| !is_this_pseudo_param(pat)) {
-        Some(pat) => classify_param_pat(pat, ctx),
+        Some(pat) => classify_param_pat(pat, body, shadowed, ctx),
         None => DefaultExportFirstParam::Absent,
     }
 }
@@ -697,20 +769,46 @@ fn is_this_pseudo_param(pat: &Pat) -> bool {
     matches!(pat, Pat::Ident(bi) if bi.id.sym.as_ref() == "this")
 }
 
+/// The default export's body, for the behavioural-evidence check. Two
+/// shapes because an arrow may have an expression body
+/// (`(request) => new Response(request.method)`) rather than a block.
+#[derive(Copy, Clone)]
+enum FnBody<'a> {
+    Block(Option<&'a BlockStmt>),
+    Arrow(&'a BlockStmtOrExpr),
+}
+
+impl FnBody<'_> {
+    fn reads_request_members(&self, param_name: &str) -> bool {
+        match self {
+            FnBody::Block(Some(b)) => visit_reads_request_members(*b, param_name),
+            FnBody::Block(None) => false,
+            FnBody::Arrow(b) => visit_reads_request_members(*b, param_name),
+        }
+    }
+}
+
 /// Unwrap a default value (`Pat::Assign`) and a rest element
 /// (`Pat::Rest`) — condition 3 — then classify what is underneath.
-fn classify_param_pat(pat: &Pat, ctx: &Ctx<'_>) -> DefaultExportFirstParam {
+fn classify_param_pat(
+    pat: &Pat,
+    body: FnBody<'_>,
+    shadowed: bool,
+    ctx: &Ctx<'_>,
+) -> DefaultExportFirstParam {
     let mut cur = pat;
     loop {
         cur = match cur {
             Pat::Ident(bi) => {
                 let (line, col) = ctx.line(bi.id.span);
+                let name = bi.id.sym.as_ref().to_owned();
                 return DefaultExportFirstParam::Plain(PlainFirstParam {
-                    name: bi.id.sym.as_ref().to_owned(),
                     annotation_is_request: bi
                         .type_ann
                         .as_deref()
-                        .is_some_and(type_ann_is_global_request),
+                        .is_some_and(|ann| type_ann_is_global_request(ann, shadowed)),
+                    body_uses_request_members: body.reads_request_members(&name),
+                    name,
                     line,
                     col,
                 });
@@ -725,6 +823,154 @@ fn classify_param_pat(pat: &Pat, ctx: &Ctx<'_>) -> DefaultExportFirstParam {
     }
 }
 
+/// Does this module introduce a top-level binding named `Request`,
+/// shadowing the global Fetch type?
+///
+/// When it does, a bare `Request` annotation is NOT evidence of the
+/// `(request: Request)` mistake — it refers to the local type, which may
+/// legitimately be the page's props shape (#2361). The qualified
+/// `globalThis.Request` is unaffected and stays strong-tier even here;
+/// that is the whole point of writing it qualified.
+///
+/// Counts as shadowing (all introduce a module-scope `Request` binding):
+/// an import specifier — value or `import type`, plain or `as Request`;
+/// and a top-level `type` / `interface` / `class` / `enum` declaration,
+/// whether or not it is exported.
+///
+/// Deliberately does NOT count:
+/// - `declare global { interface Request { … } }` — that *augments* the
+///   global rather than shadowing it, so a bare `Request` still means the
+///   Fetch type.
+/// - `export { Request } from "./types"` / `export type { Request } from …`
+///   — a re-export creates no local binding.
+/// - a binding inside the handler's own body — it cannot affect what the
+///   parameter's annotation resolves to.
+/// - a namespace import (`import * as X`), because `X.Request` is already
+///   excluded from the strong tier by [`entity_name_is_global_request`].
+///
+/// A function's own type parameter (`function Page<Request>(request: Request)`)
+/// also shadows, but is per-function rather than module-scope — it is
+/// handled at the classification site by [`type_params_shadow_request`].
+fn request_is_shadowed(module: &Module) -> bool {
+    module.body.iter().any(|item| match item {
+        ModuleItem::ModuleDecl(ModuleDecl::Import(import)) => {
+            import.specifiers.iter().any(import_specifier_binds_request)
+        }
+        ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(e)) => decl_binds_request(&e.decl),
+        ModuleItem::Stmt(Stmt::Decl(decl)) => decl_binds_request(decl),
+        _ => false,
+    })
+}
+
+/// Does this import specifier bind the local name `Request`? The LOCAL
+/// name is what shadows, so `import { Foo as Request }` counts and
+/// `import { Request as Foo }` does not. A namespace import binds `X`,
+/// not `Request`, so it never counts (see [`request_is_shadowed`]).
+fn import_specifier_binds_request(spec: &ImportSpecifier) -> bool {
+    match spec {
+        ImportSpecifier::Named(n) => n.local.sym.as_ref() == "Request",
+        ImportSpecifier::Default(d) => d.local.sym.as_ref() == "Request",
+        ImportSpecifier::Namespace(_) => false,
+    }
+}
+
+/// Does this declaration introduce a type named `Request`? Only the
+/// type-position kinds matter — a `const`/`let`/`fn` named `Request` is a
+/// value binding and cannot be what a type annotation resolves to.
+fn decl_binds_request(decl: &Decl) -> bool {
+    match decl {
+        Decl::TsTypeAlias(a) => a.id.sym.as_ref() == "Request",
+        Decl::TsInterface(i) => i.id.sym.as_ref() == "Request",
+        Decl::TsEnum(e) => e.id.sym.as_ref() == "Request",
+        Decl::Class(c) => c.ident.sym.as_ref() == "Request",
+        _ => false,
+    }
+}
+
+/// Does this function's own type-parameter list shadow `Request`?
+/// `export default function Page<Request>(request: Request)` annotates
+/// the parameter with the type variable, not the Fetch type.
+fn type_params_shadow_request(type_params: Option<&TsTypeParamDecl>) -> bool {
+    type_params.is_some_and(|tp: &TsTypeParamDecl| {
+        tp.params.iter().any(|p| p.name.sym.as_ref() == "Request")
+    })
+}
+
+/// Members that only a `Request` carries — reading one of these off the
+/// first parameter is near-conclusive that the author believes they were
+/// handed the incoming request.
+///
+/// Deliberately excludes plausible props-object field names (`body`,
+/// `params`, `title`, …). `url` and `headers` are borderline but stay in:
+/// this list is only ever consulted for a parameter ALREADY named
+/// `request` / `req`, so a props object would have to be named `request`
+/// *and* carry `.url` to trip it.
+const REQUEST_ONLY_MEMBERS: [&str; 10] = [
+    "method",
+    "headers",
+    "url",
+    "json",
+    "text",
+    "formData",
+    "arrayBuffer",
+    "blob",
+    "bodyUsed",
+    "clone",
+];
+
+/// Does `node` read a `Request`-only member off `param_name`?
+///
+/// This is what keeps the gate enforceable for `.js` / `.jsx` routes.
+/// Those are routable script pages (`zfb_types::SCRIPT_PAGE_EXTENSIONS`)
+/// that can carry `prerender = false`, but they cannot carry a TS
+/// annotation at all — so the strong tier would be unreachable for them
+/// and a tier-gated `zfb check` would never enforce the contract there
+/// (#2361). Behavioural evidence restores it: `request.method` in a plain
+/// JS handler is exactly the bug #2350 reported.
+fn visit_reads_request_members<N>(node: &N, param_name: &str) -> bool
+where
+    N: VisitWith<MemberFinder>,
+{
+    let mut finder = MemberFinder {
+        param: param_name.to_owned(),
+        found: false,
+    };
+    node.visit_with(&mut finder);
+    finder.found
+}
+
+/// Owns its `param` as a `String` so the visitor carries no lifetime,
+/// which keeps [`visit_reads_request_members`]'s `VisitWith` bound simple
+/// enough to accept both a `BlockStmt` and a `BlockStmtOrExpr`.
+struct MemberFinder {
+    param: String,
+    found: bool,
+}
+
+impl Visit for MemberFinder {
+    fn visit_member_expr(&mut self, node: &MemberExpr) {
+        // `<param>.<member>` — the object must be the parameter itself, so
+        // an unrelated `ctx.request.method` does not count.
+        if let Expr::Ident(obj) = &*node.obj {
+            if obj.sym.as_ref() == self.param {
+                let member: Option<String> = match &node.prop {
+                    MemberProp::Ident(i) => Some(i.sym.as_ref().to_owned()),
+                    // `request["method"]` — same read, bracket spelling.
+                    MemberProp::Computed(c) => match &*c.expr {
+                        Expr::Lit(Lit::Str(s)) => Some(wtf8_to_string(&s.value)),
+                        _ => None,
+                    },
+                    MemberProp::PrivateName(_) => None,
+                };
+                if member.is_some_and(|m| REQUEST_ONLY_MEMBERS.contains(&m.as_str())) {
+                    self.found = true;
+                }
+            }
+        }
+        node.visit_children_with(self);
+    }
+}
+
 /// Is this annotation the global `Request`?
 ///
 /// Matched against the type AST — a `TsTypeRef` with no type arguments
@@ -732,24 +978,31 @@ fn classify_param_pat(pat: &Pat, ctx: &Ctx<'_>) -> DefaultExportFirstParam {
 /// `globalThis.Request`. Rendering the type to a string and
 /// substring-matching would accept `MyRequest` and `Request<T>`, which
 /// is precisely what the strong tier must not do (#2352).
-fn type_ann_is_global_request(ann: &TsTypeAnn) -> bool {
-    type_is_global_request(&ann.type_ann)
+/// `shadowed` is true when a module-scope or function-scope binding named
+/// `Request` exists — see [`request_is_shadowed`]. It suppresses only the
+/// BARE `Request` spelling; `globalThis.Request` is explicitly qualified
+/// and stays strong-tier regardless (#2361).
+fn type_ann_is_global_request(ann: &TsTypeAnn, shadowed: bool) -> bool {
+    type_is_global_request(&ann.type_ann, shadowed)
 }
 
-fn type_is_global_request(ty: &TsType) -> bool {
+fn type_is_global_request(ty: &TsType, shadowed: bool) -> bool {
     match ty {
-        TsType::TsParenthesizedType(p) => type_is_global_request(&p.type_ann),
+        TsType::TsParenthesizedType(p) => type_is_global_request(&p.type_ann, shadowed),
         TsType::TsTypeRef(r) => {
             // `Request<T>` carries type arguments — a different type.
-            r.type_params.is_none() && entity_name_is_global_request(&r.type_name)
+            r.type_params.is_none() && entity_name_is_global_request(&r.type_name, shadowed)
         }
         _ => false,
     }
 }
 
-fn entity_name_is_global_request(name: &TsEntityName) -> bool {
+fn entity_name_is_global_request(name: &TsEntityName, shadowed: bool) -> bool {
     match name {
-        TsEntityName::Ident(i) => i.sym.as_ref() == "Request",
+        // A bare `Request` only means the Fetch type when nothing local
+        // shadows it. The qualified arm below is deliberately NOT gated on
+        // `shadowed` — `globalThis.Request` cannot be shadowed.
+        TsEntityName::Ident(i) => !shadowed && i.sym.as_ref() == "Request",
         TsEntityName::TsQualifiedName(q) => {
             // Exactly `globalThis.Request`; any deeper qualification
             // (`foo.globalThis.Request`, `ns.Request`) is some other type.
@@ -1614,6 +1867,198 @@ mod tests {
         match param_shape_of(default_export) {
             DefaultExportFirstParam::Plain(p) => p,
             other => unreachable!("expected a plain first parameter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_shadowed_request_type_does_not_reach_the_strong_tier() {
+        // #2361: every one of these introduces a module-scope `Request`
+        // binding, so a bare `Request` annotation refers to the LOCAL type
+        // and is not evidence of the #2350 mistake. The parameter name
+        // keeps the heuristic tier — it is still worth a warning.
+        for shadow in [
+            "import type { Request } from \"./types\";",
+            // A value import can introduce a type too (an imported class).
+            "import { Request } from \"./types\";",
+            // The LOCAL name is what shadows.
+            "import { Foo as Request } from \"./types\";",
+            "import Request from \"./types\";",
+            "type Request = { params: Record<string, string> };",
+            "interface Request { params: Record<string, string> }",
+            "enum Request { A }",
+            "class Request {}",
+            // Exported declarations shadow exactly the same way.
+            "export type Request = { a: string };",
+            "export interface Request { a: string }",
+            "export class Request {}",
+        ] {
+            let src = format!(
+                "{shadow}\nexport default function Handler(request: Request) {{ return null; }}"
+            );
+            let plain = plain_of(&src);
+            assert!(
+                !plain.annotation_is_request,
+                "a shadowed `Request` must not read as the global type: {shadow:?}"
+            );
+            assert_eq!(
+                tier_of(&src),
+                Some(RequestParamTier::Heuristic),
+                "expected heuristic (name only) for {shadow:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shadow_detection_is_order_independent() {
+        // The declaration may appear AFTER the default export — the shadow
+        // set is computed in a pre-pass precisely so the verdict does not
+        // depend on declaration order (#2361).
+        let src = "export default function Handler(request: Request) { return null; }\n\
+                   type Request = { a: string };";
+        assert!(!plain_of(src).annotation_is_request);
+        assert_eq!(tier_of(src), Some(RequestParamTier::Heuristic));
+    }
+
+    #[test]
+    fn a_function_type_parameter_named_request_shadows_too() {
+        // `<Request>` is a type variable, not the Fetch type.
+        let src = "export default function Handler<Request>(request: Request) { return null; }";
+        assert!(!plain_of(src).annotation_is_request);
+        assert_eq!(tier_of(src), Some(RequestParamTier::Heuristic));
+    }
+
+    #[test]
+    fn globally_qualified_request_stays_strong_even_when_shadowed() {
+        // THE correctness pin for #2361's fix: `globalThis.Request` is
+        // explicitly qualified and cannot be shadowed, so it must survive
+        // a local `Request` declaration at the strong tier. Downgrading it
+        // would silently disarm the gate for anyone writing the
+        // unambiguous spelling.
+        let src = "import type { Request } from \"./types\";\n\
+                   export default function Handler(request: globalThis.Request) { return null; }";
+        assert!(plain_of(src).annotation_is_request);
+        assert_eq!(tier_of(src), Some(RequestParamTier::Strong));
+    }
+
+    #[test]
+    fn shapes_that_do_not_actually_shadow_leave_the_strong_tier_intact() {
+        for non_shadow in [
+            // `declare global` AUGMENTS the global rather than shadowing
+            // it — a bare `Request` still means the Fetch type.
+            "declare global { interface Request { extra?: string } }",
+            // A re-export creates no local binding.
+            "export { Request } from \"./types\";",
+            "export type { Request } from \"./types\";",
+            // The local name here is `Foo`, not `Request`.
+            "import { Request as Foo } from \"./types\";",
+            // A namespace import binds `X`.
+            "import * as X from \"./types\";",
+            // Value bindings cannot be what a type annotation resolves to.
+            "const Request = 1;",
+            "function Request() {}",
+        ] {
+            let src = format!(
+                "{non_shadow}\nexport default function Handler(request: Request) {{ return null; }}"
+            );
+            assert!(
+                plain_of(&src).annotation_is_request,
+                "{non_shadow:?} does not shadow — the annotation is still the global `Request`"
+            );
+            assert_eq!(
+                tier_of(&src),
+                Some(RequestParamTier::Strong),
+                "{non_shadow:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_binding_inside_the_handler_body_does_not_shadow() {
+        // Function-body scope cannot affect what the parameter's own
+        // annotation resolves to.
+        let src =
+            "export default function Handler(request: Request) { class Request {} return null; }";
+        assert!(plain_of(src).annotation_is_request);
+        assert_eq!(tier_of(src), Some(RequestParamTier::Strong));
+    }
+
+    #[test]
+    fn body_evidence_promotes_an_unannotated_request_param_to_strong() {
+        // #2361: `.js` / `.jsx` routes cannot carry an annotation at all,
+        // so without this the strong tier would be unreachable for them
+        // and a tier-gated `zfb check` could never enforce the contract.
+        // Reading a `Request`-only member is the behavioural substitute.
+        for body in [
+            "if (request.method !== \"POST\") { return null; } return null;",
+            "return request.json();",
+            "return request.headers.get(\"x\");",
+            // Bracket spelling is the same read.
+            "return request[\"method\"];",
+        ] {
+            let src = format!("export default async function Handler(request) {{ {body} }}");
+            let plain = plain_of(&src);
+            assert!(
+                !plain.annotation_is_request,
+                "no annotation is present in {body:?}"
+            );
+            assert!(
+                plain.body_uses_request_members,
+                "expected body evidence for {body:?}"
+            );
+            assert_eq!(
+                tier_of(&src),
+                Some(RequestParamTier::Strong),
+                "body evidence must promote to strong for {body:?}"
+            );
+        }
+        // Arrow with an expression body — no block to walk.
+        let arrow = "export default (request) => new Response(request.method);";
+        assert!(plain_of(arrow).body_uses_request_members);
+        assert_eq!(tier_of(arrow), Some(RequestParamTier::Strong));
+    }
+
+    #[test]
+    fn body_evidence_alone_never_fires_without_the_naming_signal() {
+        // A props object from `getStaticProps` may legitimately carry a
+        // field like `url` or `method`, so body evidence is a PROMOTER of
+        // the naming heuristic, never an independent path to strong.
+        for src in [
+            "export default function Page(props) { return props.method; }",
+            "export default function Page(data) { return data.json(); }",
+            "export default function Page(input: MyProps) { return input.url; }",
+        ] {
+            assert_eq!(
+                tier_of(src),
+                None,
+                "body evidence must not fire for a non-`request` name: {src:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn body_evidence_requires_the_member_to_be_read_off_the_parameter_itself() {
+        // `ctx.request.method` reads off a DIFFERENT object; the parameter
+        // is never touched, so there is no evidence about it.
+        let src = "export default function Handler(request) { return ctx.request.method; }";
+        let plain = plain_of(src);
+        assert!(
+            !plain.body_uses_request_members,
+            "a member read off another object is not evidence about the parameter"
+        );
+        // Still heuristic on the name alone — that part is unchanged.
+        assert_eq!(tier_of(src), Some(RequestParamTier::Heuristic));
+    }
+
+    #[test]
+    fn a_request_named_param_without_body_evidence_stays_heuristic() {
+        // The escape-hatch case: a legitimately-named props parameter that
+        // never touches a `Request`-only member warns rather than failing
+        // `zfb check` (#2361's severity split).
+        for src in [
+            "export default function Page(request) { return null; }",
+            "export default function Page(req) { return req.title; }",
+        ] {
+            assert_eq!(tier_of(src), Some(RequestParamTier::Heuristic), "{src:?}");
         }
     }
 

@@ -45,6 +45,7 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use zfb_content::frontmatter;
 use zfb_content::schema as zfb_schema;
+use zfb_content::RequestParamTier;
 use zfb_router::Router;
 
 use crate::cli::CheckArgs;
@@ -80,9 +81,30 @@ pub async fn run(args: &CheckArgs) -> Result<()> {
     // (warning only, exit code unchanged), `zfb check` is the explicit
     // lint surface — this is where the bug class gets caught before
     // deploy, so a finding here fails the check.
-    let ssr_findings = collect_ssr_request_param_findings(&project_root)?;
+    //
+    // Tier-gated since #2361. Only the STRONG tier fails:
+    //   - Strong  = the parameter is annotated `Request` (not shadowed), or
+    //               it is named `request`/`req` AND the body reads a
+    //               `Request`-only member. Near-conclusive, so it is worth
+    //               breaking a build over.
+    //   - Heuristic = named `request`/`req` and nothing more. A props
+    //               object can legitimately carry that name, and there is
+    //               no suppression mechanism, so hard-failing here would
+    //               trap a correct project with no way out. It warns.
+    //
+    // The behavioural-evidence half of Strong is what keeps this
+    // enforceable for `.js` / `.jsx` routes, which cannot carry a TS
+    // annotation at all — without it, Strong would be unreachable there
+    // and the gate would be decorative for those pages.
+    let all_ssr_findings = collect_ssr_request_param_findings(&project_root)?;
+    let (ssr_findings, ssr_warnings): (Vec<_>, Vec<_>) = all_ssr_findings
+        .into_iter()
+        .partition(|f| f.tier == RequestParamTier::Strong);
     for finding in &ssr_findings {
         output::error(render_ssr_request_param_finding(finding));
+    }
+    for finding in &ssr_warnings {
+        output::warn(render_ssr_request_param_finding(finding));
     }
 
     let tsc_failed = if args.skip_tsc {
@@ -635,6 +657,80 @@ mod tests {
         let findings = collect_ssr_request_param_findings(&tmp.path).unwrap();
         assert_eq!(findings.len(), 1, "findings: {findings:?}");
         assert_eq!(findings[0].route, "/api/submit");
+    }
+
+    /// #2361: the tier→severity mapping this command now applies.
+    /// `collect_…` returns BOTH tiers (dev/build warn on both); it is
+    /// `run`'s partition that decides which ones fail the check. These
+    /// pin the tiers the partition will see, so a detector change that
+    /// silently reclassified a shape would fail here.
+    #[test]
+    fn collect_ssr_request_param_findings_reports_tier_per_shape() {
+        use zfb_content::RequestParamTier;
+
+        // Annotated `Request`, nothing shadowing it → Strong → fails check.
+        let strong = TmpDir::new("tier-strong");
+        write(
+            &strong.path,
+            "pages/api/a.tsx",
+            "export const prerender = false;\n\
+             export default async function H(request: Request) { return new Response('ok'); }\n",
+        );
+        let f = collect_ssr_request_param_findings(&strong.path).unwrap();
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].tier, RequestParamTier::Strong);
+
+        // A plain-JS route: no annotation possible, but the body reads
+        // `.method`. Behavioural evidence must reach Strong, or the gate
+        // would be decorative for every `.js` / `.jsx` API route.
+        let js = TmpDir::new("tier-strong-js");
+        write(
+            &js.path,
+            "pages/api/b.js",
+            "export const prerender = false;\n\
+             export default async function H(request) {\n\
+             \x20\x20if (request.method !== 'POST') return new Response('no', { status: 405 });\n\
+             \x20\x20return new Response('ok');\n\
+             }\n",
+        );
+        let f = collect_ssr_request_param_findings(&js.path).unwrap();
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(
+            f[0].tier,
+            RequestParamTier::Strong,
+            "an unannotated JS handler reading `.method` must still be Strong"
+        );
+
+        // Named `request` but never touches a `Request`-only member →
+        // Heuristic → warns, does NOT fail the check. This is the escape
+        // hatch for a legitimately-named props parameter.
+        let heuristic = TmpDir::new("tier-heuristic");
+        write(
+            &heuristic.path,
+            "pages/api/c.tsx",
+            "export const prerender = false;\n\
+             export default function H(request) { return new Response(String(request.title)); }\n",
+        );
+        let f = collect_ssr_request_param_findings(&heuristic.path).unwrap();
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].tier, RequestParamTier::Heuristic);
+
+        // A shadowed `Request` annotation must not be Strong.
+        let shadowed = TmpDir::new("tier-shadowed");
+        write(
+            &shadowed.path,
+            "pages/api/d.tsx",
+            "import type { Request } from \"../../types\";\n\
+             export const prerender = false;\n\
+             export default function H(request: Request) { return new Response('ok'); }\n",
+        );
+        let f = collect_ssr_request_param_findings(&shadowed.path).unwrap();
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(
+            f[0].tier,
+            RequestParamTier::Heuristic,
+            "a locally-shadowed `Request` must not hard-fail the check"
+        );
     }
 
     #[test]

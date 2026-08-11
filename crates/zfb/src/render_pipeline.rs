@@ -1204,8 +1204,9 @@ pub struct SsrRequestParamFinding {
     pub line: usize,
     /// 1-based column; see `line`.
     pub col: usize,
-    /// Confidence tier — drives the message wording, not whether the
-    /// finding fires at all (see [`RequestParamTier`]).
+    /// Confidence tier. Drives the message wording everywhere, and since
+    /// #2361 also the SEVERITY in `zfb check`: Strong fails the check,
+    /// Heuristic only warns. `zfb dev` / `zfb build` warn on both.
     pub tier: RequestParamTier,
 }
 
