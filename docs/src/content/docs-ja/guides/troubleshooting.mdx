@@ -127,3 +127,42 @@ island の worker は `/assets/worker-*.js`、クライアントスクリプト�
 **原因:** TypeScript の設定を評価するには、まずそれを esbuild でバンドルする必要がありますが、組み込みの `zfb-server` は `zfb` CLI のように自前の esbuild バイナリを同梱していません。
 
 **対処:** `config_path` を `zfb.config.json` ファイルに切り替える（esbuild は一切不要 — 最もシンプルな修正）か、`build()` を呼び出す前に環境変数 `ZFB_ESBUILD_BIN` を利用可能な esbuild CLI バイナリに設定してください。完全な説明は [ライブラリとして組み込む: 設定形式](./embed-as-library.mdx#ビルダーの形-設定形式-zfb-config-json-を優先する) を参照してください。
+
+## `prerender = false` のルートが常に 405 を返す
+
+**症状:** SSR ルートの `POST`/`PUT`/`DELETE` ハンドラが、期待どおりのメソッドを使い他の点でも正しいリクエストに対してまで、常に `405 Method Not Allowed` を返す。
+
+**原因:** そのルートのデフォルトエクスポートが、受信した `Request` を受け取るつもりの仮引数を宣言している。
+
+```tsx
+export default async function Handler(request: Request) {
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+zfb がページのデフォルトエクスポートを呼ぶときに渡すのは、`Request` ではなくそのページの **props オブジェクト**です。コントラクトの全体は [デフォルトエクスポートが受け取るのは props であり Request ではない](./ssr-and-cloudflare-bindings.mdx#デフォルトエクスポートが受け取るのは-props-であり-request-ではない) を参照してください。つまり上の `request` の実体は `{}`（あるいは `{ params }`、あるいはそのルートの `paths()` / `getStaticProps()` の props）であり、`request.method` は `undefined` を読み、`undefined !== "POST"` が成り立つため、ハンドラは無条件に 405 を返します。何も例外を投げず、しかも `Request` は props を受け取る仮引数に対しても妥当な TypeScript の型注釈なので `tsc --noEmit` も通ります。コンパイルはきれいに通り、実行時に静かに壊れるということです。
+
+次のコマンドで直接検出できます。
+
+```sh
+grep -rn 'export default \(async \)\?function \w\+(\s*request\s*:' pages/
+```
+
+**対処:** 仮引数を外す（あるいは実際に必要な props だけを分割代入する — `{ params }` など）。そのうえで、本物の `Request` は `getCloudflareContext()` から読んでください。
+
+```tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export default async function Handler() {
+  const { request } = getCloudflareContext();
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+`zfb check` はこの形を検出して非ゼロで終了します。`zfb dev` と `zfb build` はビルドを失敗させずに警告します。実際の 405 を踏んだのではなくそれらの警告からここへたどり着いた場合も、原因と対処は上と同じです。
