@@ -192,8 +192,11 @@ hash is not acceptable for passwords.
 
 The session cookie carries no claims at all. It is 32 random bytes of hex naming a row in a
 `sessions` table, sent with `HttpOnly; Secure; SameSite=Lax; Max-Age=604800`. Every request
-re-resolves the user with a join guarded by `expires_at > datetime('now')`, and a miss deletes the
-expired row on the way past, so stale sessions sweep themselves. Sign-in answers the same
+re-resolves the user with a join guarded by `expires_at > datetime('now')`, and a miss deletes that
+one row on the way past. Note what that does and does not do: it is a lazy sweep of exactly the id
+the request presented, not a background job — the cookie's `Max-Age` matches the session lifetime,
+so an abandoned session's row is simply never presented again and stays in the table. Sign-in
+answers the same
 "Incorrect email or password." for an unknown address and a wrong password, and the digest
 comparison is constant-time.
 
