@@ -1,0 +1,263 @@
+---
+title: "Example: Webshop"
+description: A server-rendered shop with accounts, a cart, and checkout on Cloudflare D1 — every route SSR, zero client-side JavaScript
+sidebar_position: 17
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+A storefront that does the things a content-only site cannot: a catalogue read live from a
+**Cloudflare D1** database, email and password accounts with server-side sessions, a cart, and a
+checkout that snapshots the cart into an order. Every route is `prerender = false`, so this is the
+example to read when you want to see [SSR on a Worker](../concepts/ssr-on-a-worker.mdx) carrying a
+whole application rather than a single dynamic page.
+
+The demo ships **zero client-side JavaScript**. Every button is a `<form method="post">`.
+
+</Info>
+
+**Live demo:** [zfb-example-webshop.takazudomodular.com](https://zfb-example-webshop.takazudomodular.com/)
+
+**Repository:** [Takazudo/zfb-example-webshop](https://github.com/Takazudo/zfb-example-webshop)
+
+## What it demonstrates
+
+- **A fully SSR site.** All seven routes export `prerender = false`. The build emits no HTML at
+  all — only the SSR Worker and a stylesheet.
+- **Reading a D1 binding from a page.** `getCloudflareContext<Env>()` hands the route the Worker
+  `env` and the raw `Request`; the catalogue, cart, and orders are plain SQL against `env.DB`.
+- **Returning a `Response` instead of a VNode.** Routes that set cookies, branch on
+  `request.method`, and issue 303 redirects need the full response object, so they render their
+  Preact tree to a string themselves.
+- **Auth with nothing but Web Crypto.** PBKDF2 password hashing and an opaque server-side session
+  cookie — no auth library, no client JavaScript.
+- **A URL shape forced by a framework constraint.** The order confirmation page is `/order?id=<n>`,
+  a query string rather than a path parameter, for a reason worth understanding.
+- **Tailwind v4 with a semantic token set** registered through an `@theme` block.
+
+## Tech used
+
+| Piece | What the repo actually uses |
+| --- | --- |
+| Framework | zfb with `framework: "preact"` (`zfb.config.ts`), plus `preact-render-to-string` |
+| zfb version | `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — present, and load-bearing |
+| Styling | Tailwind v4 (`tailwind: { enabled: true }`); `styles/global.css` declares oklch colour tokens and two spacing axes in an `@theme` block |
+| Rendering mode | `export const prerender = false` on **every** route — no SSG pages exist |
+| Cloudflare surface | Workers Static Assets — `main = "./dist/_worker.js"` plus an `[assets]` block in `wrangler.toml` |
+| Bindings | One D1 binding, `DB` (`webshop` in production, `webshop-preview` for pull requests) |
+| Client JavaScript | None. No islands, no `<script>` tags, no client bundle in `dist/` |
+| Content collections | None — the catalogue lives in D1, not in `src/content/` |
+| Other npm deps | `wrangler`, `concurrently`, and `chokidar-cli` as devDependencies for the local Cloudflare loop |
+
+## Requirements and configuration
+
+**Works locally without a Cloudflare account.** `pnpm install`, `pnpm build`, and `pnpm typecheck`
+need nothing else. The full shop also runs locally: the README's setup lists no `wrangler login`
+step, because `wrangler d1 migrations apply webshop --local` creates a SQLite database under
+`.wrangler/state/v3/d1/` and `wrangler dev` serves the Worker against it.
+
+**Needs Cloudflare only to deploy.** To run it for real you must provision:
+
+- **Two D1 databases** — `webshop` and `webshop-preview`. They are created once with
+  `wrangler d1 create` (the repo does this through a one-time `d1-bootstrap.yml` workflow) and the
+  resulting `database_id` values are committed into `wrangler.toml`. CI never re-creates them; it
+  only applies migrations.
+- **Migrations and seed data** — `migrations/0001_init.sql` creates `products`, `users`,
+  `sessions`, `cart_items`, `orders`, and `order_items`; `migrations/0002_seed_products.sql` seeds
+  the 12 catalogue products. Users are never seeded — they come from the signup route.
+- **`compatibility_flags = ["nodejs_compat"]`** in `wrangler.toml`. This is not optional: the zfb
+  Cloudflare adapter threads `env` into SSR routes with `AsyncLocalStorage` from `node:async_hooks`,
+  and without the flag the Worker fails to start.
+- **An account-scoped API token** with Workers Scripts (Edit), D1 (Edit), Account Settings (Read),
+  and — because production is served on a custom domain declared as a `[[routes]]` entry — Workers
+  Routes (Edit) on the zone. `docs/cloudflare-setup.md` in the repo is the ordered walkthrough.
+
+**No Worker secrets.** There are none to set; the only binding is `DB`.
+
+<Warning title="The live demo is publicly writable">
+
+Anyone can create an account and place an order on the live site. It takes no payment and collects
+no shipping details — checkout only writes a row to D1 — but the accounts are real rows in a shared
+public database. Use a throwaway email and a password you use nowhere else.
+
+</Warning>
+
+## How it works
+
+### No static HTML at all
+
+Catalogue prices are read from D1 per request, so nothing can be baked at build time. Every page
+declares it:
+
+```tsx title="pages/index.tsx"
+// Catalogue prices and stock live in D1, so this route reads `env.DB`
+// per request — it cannot be statically pre-rendered.
+export const prerender = false;
+```
+
+With no SSG route left, the build output contains no pages:
+
+```text title="dist/"
+dist/_worker.js              # the SSR Worker the adapter emits
+dist/_zfb_inner.mjs          # the inner bundle it calls
+dist/.assetsignore           # keeps the two files above off the public asset path
+dist/assets/styles-*.css     # the compiled Tailwind stylesheet
+dist/assets/app.css
+dist/__zfb/routes.json
+```
+
+That has one consequence most SSR sites never hit. zfb injects the `<link rel="stylesheet">` for
+its hashed stylesheet into **generated HTML**, as a build-time post-process — and here there is no
+generated HTML to inject into. So the layout hard-codes a stable path, `/assets/app.css`, and the
+`build` script runs a postbuild step that copies the hashed file to that fixed name:
+
+```json title="package.json"
+"build": "zfb build && node scripts/stable-css.mjs"
+```
+
+`scripts/stable-css.mjs` is 40 lines of `copyFileSync`, and it fails loudly if it finds anything
+other than exactly one `dist/assets/styles-*.css`. The hashed original stays in place for long-term
+caching; the copy is just the handle the SSR layout needs. See
+[Styling](../concepts/styling.mdx) and [Static Assets](../concepts/static-assets.mdx) for how the
+stylesheet gets there in the first place.
+
+### A route returns a Response not a VNode
+
+zfb will render a returned VNode to HTML for you. These routes cannot use that path: they need to
+branch on `request.method`, attach `Set-Cookie`, and answer with a 303. So they return a `Response`
+and render the Preact tree themselves through a tiny helper in `lib/render.ts`.
+
+```tsx title="pages/checkout.tsx"
+export const prerender = false;
+
+export default async function CheckoutPage(): Promise<Response> {
+  const { env, request } = getCloudflareContext<Env>();
+
+  const user = await getUser(env, request);
+  if (!user) return redirect("/login");
+
+  if (request.method !== "POST") {
+    return redirect("/cart");
+  }
+
+  const orderId = await checkout(env, user.id);
+  if (orderId === null) {
+    // Nothing to buy — back to the (empty) cart.
+    return redirect("/cart");
+  }
+  return redirect(`/order?id=${orderId}`);
+}
+```
+
+`getCloudflareContext<Env>()` is the adapter's accessor for the Worker request scope — see
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx). Everything below it is
+ordinary D1:
+
+```ts title="lib/shop.ts"
+export async function listProducts(env: Env): Promise<Product[]> {
+  const { results } = await env.DB.prepare(
+    "SELECT id, name, description, price_cents, category, emoji FROM products ORDER BY id",
+  ).all<Product>();
+  return results;
+}
+```
+
+### Every interaction is a form post
+
+There is no cart JavaScript, no fetch, no optimistic update. "Add to cart" is a form:
+
+```tsx title="components/product-card.tsx"
+<form method="post" action="/cart">
+  <input type="hidden" name="product_id" value={product.id} />
+  <button type="submit" class="...">
+    Add to cart
+  </button>
+</form>
+```
+
+Sign out is the same shape, posting to `/logout`. Each POST does its write and answers **303 See
+Other**, not 302 — 303 makes the browser issue a `GET` for the target, so refreshing the resulting
+page never re-submits the form. That is the whole interaction model: post, redirect, get. The cost
+is a round-trip per click; the payoff is a shop that works with scripting disabled and ships no
+bundle to parse.
+
+### Passwords and sessions with Web Crypto
+
+`lib/auth.ts` uses only what workerd already exposes. Passwords are hashed with **PBKDF2** through
+`crypto.subtle` — SHA-256, 100,000 iterations, a 256-bit digest and a per-user 16-byte salt, both
+stored as hex. The file notes why: `crypto.subtle` offers neither scrypt nor argon2, and a plain
+hash is not acceptable for passwords.
+
+The session cookie carries no claims at all. It is 32 random bytes of hex naming a row in a
+`sessions` table, sent with `HttpOnly; Secure; SameSite=Lax; Max-Age=604800`. Every request
+re-resolves the user with a join guarded by `expires_at > datetime('now')`, and a miss deletes the
+expired row on the way past, so stale sessions sweep themselves. Sign-in answers the same
+"Incorrect email or password." for an unknown address and a wrong password, and the digest
+comparison is constant-time.
+
+### Checkout snapshots the cart
+
+Placing an order inserts an `orders` row, copies every cart line into `order_items` **with the price
+captured at purchase time**, and empties the cart — so a later catalogue price change cannot rewrite
+order history. D1 has no interactive transactions, so `lib/shop.ts` inserts the order row first (the
+line items need its generated id) and then runs the line inserts plus the cart delete as one
+`env.DB.batch()`.
+
+### Why the order id is a query string
+
+The confirmation page is `/order?id=<n>`, not `/order/<n>`. That is a framework constraint made
+visible: a zfb [dynamic route](../concepts/dynamic-routes.mdx) segment like `[id].tsx` is expanded
+from a build-time `paths()` enumeration, and order ids do not exist until a customer checks out.
+A `prerender = false` route therefore has to sit at a static path, and the id travels in the query
+string, read with `new URL(request.url).searchParams`.
+
+The page is still a durable receipt rather than a one-shot flash message: it re-loads the order from
+D1 on every visit and scopes the query to the signed-in user, so someone else's order id — or an
+invented one — renders a 404.
+
+## Run it locally
+
+```sh
+git clone https://github.com/Takazudo/zfb-example-webshop.git
+cd zfb-example-webshop
+pnpm install
+pnpm build        # zfb build && node scripts/stable-css.mjs
+pnpm typecheck    # zfb check
+```
+
+To exercise the cart, accounts, and checkout you need a real `DB` binding, which means wrangler:
+
+```sh
+pnpm exec wrangler d1 migrations apply webshop --local   # one-time
+pnpm dev:cf
+```
+
+`pnpm dev:cf` applies migrations, runs one `pnpm build`, then uses `concurrently` to run
+`wrangler dev --port 8788` alongside a `chokidar` watcher that re-runs `pnpm build` when
+`pages/`, `components/`, `layouts/`, `lib/`, or `styles/` changes. The README puts edit-to-browser
+latency at roughly one to two seconds. The local SQLite database persists across restarts and only
+resets if you delete `.wrangler/`.
+
+<Warning title="Do not run pnpm dev and pnpm dev:cf together">
+
+The repo's own caveat, in its own words: the cart and accounts read `env.DB`, so they need a real
+Worker binding, and **`zfb dev` does not provide one** — use the `wrangler dev` loop for any work
+that touches D1.
+
+Worse, `pnpm dev`'s `predev` step is `rm -rf dist .zfb .zfb-build`, which deletes the `dist/`
+directory `wrangler dev` is actively serving and leaves wrangler in a state where rebuilds stop
+triggering reloads. Pick one loop. If you ran both, stop everything, run `pnpm build`, and restart
+`pnpm dev:cf`. (`pnpm preview` is not the answer either — the build emits no HTML, so there are no
+static pages for it to serve.)
+
+</Warning>
+
+## Related
+
+- [SSR on a Worker](../concepts/ssr-on-a-worker.mdx) — what `dist/_worker.js` and `dist/_zfb_inner.mjs` actually are, and how `getCloudflareContext()` works
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — reading D1 and KV from an SSR handler, and wiring the bindings up
+- [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `paths()` contract behind the query-string decision
+- [Routing](../concepts/routing.mdx) — how `pages/*.tsx` becomes a URL
+- [Styling](../concepts/styling.mdx) — Tailwind v4 in zfb

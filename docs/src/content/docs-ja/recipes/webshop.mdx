@@ -1,0 +1,261 @@
+---
+title: "Example: Webshop"
+description: アカウント・カート・チェックアウトを Cloudflare D1 で動かすサーバーサイドレンダリングのショップ。全ルートが SSR で、クライアント JavaScript はゼロ
+sidebar_position: 17
+category: Recipes
+---
+
+<Info title="このページの内容">
+
+コンテンツ中心のサイトでは実現できないことをまとめて見せるストアフロントです。**Cloudflare D1**
+から毎リクエスト読み出すカタログ、メールアドレスとパスワードによるアカウントとサーバー側セッション、
+カート、そしてカートの内容を注文として確定させるチェックアウト。全ルートが `prerender = false` なので、
+[Worker 上の SSR](/ja/docs/concepts/ssr-on-a-worker) が単一の動的ページではなくアプリケーション全体を
+支えている様子を読み取れます。
+
+このデモはクライアント JavaScript を **一切** 出力しません。すべてのボタンは `<form method="post">` です。
+
+</Info>
+
+**ライブデモ:** [zfb-example-webshop.takazudomodular.com](https://zfb-example-webshop.takazudomodular.com/)
+
+**リポジトリ:** [Takazudo/zfb-example-webshop](https://github.com/Takazudo/zfb-example-webshop)
+
+## 何を示すか
+
+- **完全な SSR サイト**。7 つのルートすべてが `prerender = false` を export します。ビルド成果物に
+  HTML ページは 1 枚も含まれず、SSR Worker とスタイルシートだけが出力されます。
+- **ページから D1 バインディングを読む**。`getCloudflareContext<Env>()` が Worker の `env` と生の
+  `Request` をルートに渡し、カタログ・カート・注文はいずれも `env.DB` への素の SQL です。
+- **VNode ではなく `Response` を返す**。Cookie をセットし、`request.method` で分岐し、303 リダイレクトを
+  返すには Response オブジェクトそのものが必要なので、これらのルートは Preact ツリーを自分で文字列化します。
+- **Web Crypto だけで組んだ認証**。PBKDF2 によるパスワードハッシュと、不透明なサーバー側セッション
+  Cookie。認証ライブラリもクライアント JavaScript も使いません。
+- **フレームワークの制約が URL の形を決めた例**。注文確認ページはパスパラメータではなく
+  `/order?id=<n>` というクエリ文字列で、そこには理解しておく価値のある理由があります。
+- **Tailwind v4 のセマンティックなトークン設計**。`@theme` ブロックで登録しています。
+
+## 使用技術
+
+| 項目 | リポジトリでの実際の内容 |
+| --- | --- |
+| フレームワーク | `framework: "preact"`（`zfb.config.ts`）と `preact-render-to-string` |
+| zfb バージョン | `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — 導入済みで、動作の要 |
+| スタイリング | Tailwind v4（`tailwind: { enabled: true }`）。`styles/global.css` の `@theme` ブロックで oklch のカラートークンと 2 軸のスペーシングを定義 |
+| レンダリング方式 | **すべての** ルートが `export const prerender = false`。SSG ページは存在しない |
+| Cloudflare の形態 | Workers Static Assets。`wrangler.toml` の `main = "./dist/_worker.js"` と `[assets]` ブロック |
+| バインディング | D1 バインディング `DB` 1 つ（本番は `webshop`、プルリクエストは `webshop-preview`） |
+| クライアント JavaScript | なし。island も `<script>` タグも、`dist/` 内のクライアントバンドルも存在しない |
+| コンテンツコレクション | なし。カタログは `src/content/` ではなく D1 にある |
+| その他の npm 依存 | ローカルの Cloudflare ループ用に `wrangler`・`concurrently`・`chokidar-cli` を devDependencies として使用 |
+
+## 必要なものと設定
+
+**Cloudflare アカウントなしでもローカルで動きます。** `pnpm install`・`pnpm build`・`pnpm typecheck`
+はそれだけで完結します。ショップ本体もローカルで動かせます。README のセットアップ手順に
+`wrangler login` は登場しません。`wrangler d1 migrations apply webshop --local` が
+`.wrangler/state/v3/d1/` 配下に SQLite データベースを作り、`wrangler dev` がそれを相手に Worker を
+動かすからです。
+
+**Cloudflare が必要になるのはデプロイのときだけです。** 実運用するなら次を用意します。
+
+- **2 つの D1 データベース** — `webshop` と `webshop-preview`。`wrangler d1 create` で一度だけ作成し
+  （このリポジトリは一回限りの `d1-bootstrap.yml` ワークフローで実行）、得られた `database_id` を
+  `wrangler.toml` にコミットしています。CI が作り直すことはなく、マイグレーションを適用するだけです。
+- **マイグレーションとシードデータ** — `migrations/0001_init.sql` が `products`・`users`・`sessions`・
+  `cart_items`・`orders`・`order_items` を作成し、`migrations/0002_seed_products.sql` が 12 件の
+  カタログ商品を投入します。ユーザーはシードされません。サインアップのルートから作られます。
+- **`wrangler.toml` の `compatibility_flags = ["nodejs_compat"]`** — 省略できません。zfb の Cloudflare
+  アダプターは `node:async_hooks` の `AsyncLocalStorage` で `env` を SSR ルートに渡しており、この
+  フラグがないと Worker が起動しません。
+- **アカウントスコープの API トークン** — Workers Scripts（Edit）、D1（Edit）、Account Settings（Read）、
+  そして本番が `[[routes]]` で宣言したカスタムドメインで配信されるため Workers Routes（Edit、ゾーン
+  レベル）。順を追った手順はリポジトリの `docs/cloudflare-setup.md` にあります。
+
+**Worker シークレットは不要です。** 設定すべきものはなく、バインディングは `DB` だけです。
+
+<Warning title="ライブデモは誰でも書き込めます">
+
+ライブサイトでは誰でもアカウントを作り、注文を確定できます。決済は行われず配送先も収集しません
+（チェックアウトは D1 に行を書くだけです）が、アカウントは公開された共有データベース上の実データです。
+使い捨てのメールアドレスと、他で使っていないパスワードを使ってください。
+
+</Warning>
+
+## 仕組み
+
+### 静的な HTML は 1 枚も出力されない
+
+カタログの価格はリクエストごとに D1 から読むため、ビルド時に焼き付けられるものは何もありません。
+各ページはそれを明示します。
+
+```tsx title="pages/index.tsx"
+// Catalogue prices and stock live in D1, so this route reads `env.DB`
+// per request — it cannot be statically pre-rendered.
+export const prerender = false;
+```
+
+SSG ルートが 1 つも残らないので、ビルド成果物にページは含まれません。
+
+```text title="dist/"
+dist/_worker.js              # アダプターが出力する SSR Worker
+dist/_zfb_inner.mjs          # それが呼び出す内側のバンドル
+dist/.assetsignore           # 上の 2 ファイルを公開アセットから除外する
+dist/assets/styles-*.css     # コンパイル済みの Tailwind スタイルシート
+dist/assets/app.css
+dist/__zfb/routes.json
+```
+
+ここから、SSR サイトでもめったに踏まない結果がひとつ生まれます。zfb はハッシュ付きスタイルシートへの
+`<link rel="stylesheet">` を、ビルド後の後処理として **生成された HTML** に注入します。ところがこの
+サイトには注入先の HTML が存在しません。そこでレイアウトは `/assets/app.css` という固定パスを直接書き、
+`build` スクリプトがハッシュ付きファイルをその名前へコピーする後処理を挟みます。
+
+```json title="package.json"
+"build": "zfb build && node scripts/stable-css.mjs"
+```
+
+`scripts/stable-css.mjs` は 40 行ほどの `copyFileSync` で、`dist/assets/styles-*.css` がちょうど 1 つで
+なければエラー終了します。ハッシュ付きの本体は長期キャッシュ用にそのまま残り、コピーは SSR レイアウトが
+参照するためのハンドルにすぎません。そのスタイルシートがどう作られるかは
+[スタイリング](/ja/docs/concepts/styling) と [静的アセット](/ja/docs/concepts/static-assets) を参照してください。
+
+### ルートは VNode ではなく Response を返す
+
+zfb は返された VNode を HTML にレンダリングしてくれますが、これらのルートはその経路を使えません。
+`request.method` で分岐し、`Set-Cookie` を付け、303 で応答する必要があるからです。そこで `Response` を
+返し、Preact ツリーの文字列化は `lib/render.ts` の小さなヘルパーで自前で行います。
+
+```tsx title="pages/checkout.tsx"
+export const prerender = false;
+
+export default async function CheckoutPage(): Promise<Response> {
+  const { env, request } = getCloudflareContext<Env>();
+
+  const user = await getUser(env, request);
+  if (!user) return redirect("/login");
+
+  if (request.method !== "POST") {
+    return redirect("/cart");
+  }
+
+  const orderId = await checkout(env, user.id);
+  if (orderId === null) {
+    // Nothing to buy — back to the (empty) cart.
+    return redirect("/cart");
+  }
+  return redirect(`/order?id=${orderId}`);
+}
+```
+
+`getCloudflareContext<Env>()` は Worker のリクエストスコープを取り出すアダプターのアクセサです
+（[SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) を参照）。その下は
+ごく普通の D1 です。
+
+```ts title="lib/shop.ts"
+export async function listProducts(env: Env): Promise<Product[]> {
+  const { results } = await env.DB.prepare(
+    "SELECT id, name, description, price_cents, category, emoji FROM products ORDER BY id",
+  ).all<Product>();
+  return results;
+}
+```
+
+### すべての操作がフォーム送信
+
+カート用の JavaScript も fetch も楽観的更新もありません。「Add to cart」はフォームです。
+
+```tsx title="components/product-card.tsx"
+<form method="post" action="/cart">
+  <input type="hidden" name="product_id" value={product.id} />
+  <button type="submit" class="...">
+    Add to cart
+  </button>
+</form>
+```
+
+サインアウトも同じ形で、`/logout` へ POST します。各 POST は書き込みを済ませたあと 302 ではなく
+**303 See Other** を返します。303 ならブラウザは遷移先を `GET` で取りに行くので、表示されたページを
+リロードしてもフォームが再送信されません。これがこのサイトの操作モデルのすべてです。post して、
+redirect して、get する。代償はクリックごとの往復で、見返りはスクリプトを無効にしても動き、
+解析すべきバンドルを一切送らないショップです。
+
+### Web Crypto によるパスワードとセッション
+
+`lib/auth.ts` は workerd が最初から備えているものしか使いません。パスワードは `crypto.subtle` 経由の
+**PBKDF2** でハッシュ化します。SHA-256、10 万回のイテレーション、256 ビットのダイジェストと
+ユーザーごとの 16 バイトのソルトを、いずれも hex で保存します。理由もファイルに書かれています。
+`crypto.subtle` は scrypt も argon2 も提供しておらず、素のハッシュはパスワードには使えないからです。
+
+セッション Cookie は情報を一切持ちません。中身は 32 バイト分のランダムな hex で、`sessions` テーブルの
+行を指すだけです。`HttpOnly; Secure; SameSite=Lax; Max-Age=604800` を付けて送ります。リクエストごとに
+`expires_at > datetime('now')` で守られた JOIN でユーザーを解決し直し、該当がなければ期限切れの行を
+その場で削除するので、古いセッションは自然に掃除されます。サインインは未登録のメールアドレスでも
+パスワード誤りでも同じ「Incorrect email or password.」を返し、ダイジェストの比較は定数時間です。
+
+### チェックアウトはカートのスナップショット
+
+注文の確定は、`orders` に 1 行を挿入し、カートの各行を **購入時点の価格を保存したまま**
+`order_items` へ写し、カートを空にします。後からカタログの価格を変えても注文履歴は書き換わりません。
+D1 には対話的トランザクションがないため、`lib/shop.ts` はまず注文行を単独で挿入し（行アイテムが
+その採番済み id を必要とするため）、続いて行アイテムの挿入とカートの削除を 1 回の `env.DB.batch()` に
+まとめて実行します。
+
+### 注文 id がクエリ文字列である理由
+
+確認ページは `/order/<n>` ではなく `/order?id=<n>` です。これはフレームワークの制約がそのまま形に
+出たものです。zfb の [動的ルート](/ja/docs/concepts/dynamic-routes) の `[id].tsx` のようなセグメントは
+ビルド時の `paths()` の列挙から展開されますが、注文 id は購入されるまで存在しません。したがって
+`prerender = false` のルートは静的なパスに置くしかなく、id はクエリ文字列に載せて
+`new URL(request.url).searchParams` で読みます。
+
+それでもこのページは一度きりの完了メッセージではなく、再訪できるレシートです。アクセスのたびに D1 から
+注文を読み直し、クエリはサインイン中のユーザーに限定されるので、他人の注文 id や存在しない id は
+404 になります。
+
+## ローカルで動かす
+
+```sh
+git clone https://github.com/Takazudo/zfb-example-webshop.git
+cd zfb-example-webshop
+pnpm install
+pnpm build        # zfb build && node scripts/stable-css.mjs
+pnpm typecheck    # zfb check
+```
+
+カート・アカウント・チェックアウトを実際に動かすには本物の `DB` バインディングが要るので、wrangler を
+使います。
+
+```sh
+pnpm exec wrangler d1 migrations apply webshop --local   # 初回のみ
+pnpm dev:cf
+```
+
+`pnpm dev:cf` はマイグレーションを適用し、`pnpm build` を 1 回走らせたあと、`concurrently` で
+`wrangler dev --port 8788` と、`pages/`・`components/`・`layouts/`・`lib/`・`styles/` の変更で
+`pnpm build` を再実行する `chokidar` ウォッチャーを並走させます。編集からブラウザ反映までは README に
+よればおよそ 1〜2 秒です。ローカルの SQLite データベースは再起動をまたいで保持され、`.wrangler/` を
+削除しない限りリセットされません。
+
+<Warning title="pnpm dev と pnpm dev:cf を同時に実行しないこと">
+
+リポジトリ自身の注意書きはこうです。カートとアカウントは `env.DB` を読むので本物の Worker
+バインディングが必要で、**`zfb dev` はそれを提供しません**。D1 に触れる作業では `wrangler dev` の
+ループを使ってください。
+
+さらに厄介なことに、`pnpm dev` の `predev` は `rm -rf dist .zfb .zfb-build` です。`wrangler dev` が
+配信中の `dist/` を消してしまい、再ビルドしてもリロードが走らない状態に陥ります。どちらか一方だけを
+使ってください。両方走らせてしまったら、すべて停止して `pnpm build` を実行し、`pnpm dev:cf` を
+再起動します（`pnpm preview` も答えにはなりません。ビルドが HTML を出力しないため、配信すべき静的
+ページが存在しないからです）。
+
+</Warning>
+
+## 関連ページ
+
+- [Worker 上の SSR](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js` と `dist/_zfb_inner.mjs` の正体、`getCloudflareContext()` の仕組み
+- [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — SSR ハンドラーから D1 や KV を読む方法とバインディングの設定
+- [動的ルート](/ja/docs/concepts/dynamic-routes) — クエリ文字列を選んだ判断の背景にある `paths()` の契約
+- [ルーティング](/ja/docs/concepts/routing) — `pages/*.tsx` が URL になるまで
+- [スタイリング](/ja/docs/concepts/styling) — zfb における Tailwind v4
