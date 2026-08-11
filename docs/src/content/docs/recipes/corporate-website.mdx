@@ -1,0 +1,163 @@
+---
+title: "Example: Corporate Website"
+description: A statically rendered Preact marketing site styled entirely with CSS Modules — the one zfb example that turns Tailwind off
+sidebar_position: 12
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+A polished corporate marketing site (hero, services, about, contact) built as pure SSG with Preact. It is the CSS Modules demo: `zfb.config.ts` sets `tailwind: { enabled: false }`, and every component owns a scoped `*.module.css` beside it. Read it as the worked companion to [Styling](../concepts/styling.mdx).
+
+</Info>
+
+**Live demo:** [zfb-example-corporate-website.takazudomodular.com](https://zfb-example-corporate-website.takazudomodular.com/)
+
+**Repository:** [Takazudo/zfb-example-corporate-website](https://github.com/Takazudo/zfb-example-corporate-website)
+
+## What it demonstrates
+
+- **CSS Modules end to end** — six components, six `*.module.css` files, zero Tailwind utility classes in the source.
+- **Turning Tailwind off** — the only one of the nine zfb example sites that sets `tailwind: { enabled: false }`. The emitted stylesheet contains this project's authored CSS and nothing else: no preflight, no theme layer, no utility scan.
+- **Scoped class names that do not collide** — `.card` is declared in both `hero.module.css` and `services.module.css` and the two never meet.
+- **Global CSS and scoped CSS in the same project** — one plain `global.css` carries the design tokens, a light reset, and a single hand-written `.skip-link` helper; the `.module.css` files carry every component's styles.
+- **A zero-JavaScript page** — no islands, so the build emits one HTML file and one stylesheet, with no `<script>` tag anywhere.
+- **An assets-only Cloudflare Worker** — `wrangler.toml` has an `[assets]` table and deliberately no `main`.
+
+## Tech used
+
+| Aspect | This demo |
+| --- | --- |
+| Framework | zfb + Preact (`framework: "preact"`) |
+| zfb version | `@takazudo/zfb` and `@takazudo/zfb-runtime` both pinned to **2.3.0** |
+| Styling | **CSS Modules** — `tailwind: { enabled: false }` in `zfb.config.ts` |
+| Rendering | pure SSG — no `export const prerender = false`, no server routes |
+| Cloudflare surface | Workers Static Assets, **assets-only** (no `main` key) |
+| Bindings | none — no AI, KV, D1, R2, or Durable Objects |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` is **not** a dependency |
+| Other deps | `preact`, `preact-render-to-string`; `wrangler` and `typescript` as devDependencies |
+
+<Note title="Not Cloudflare Pages">
+
+The repo migrated off Pages, and the old `*.pages.dev` host is dead. The canonical URL is the custom domain above, attached by a `[[routes]]` entry with `custom_domain = true`.
+
+</Note>
+
+## Requirements and configuration
+
+**Works locally with no Cloudflare account.** Clone, `pnpm install`, `pnpm build`, `pnpm preview`. There is nothing to provision — no bindings, no Worker secrets, no migrations, no seed data. The live demo is a read-only brochure site; its contact form posts to `action="#"` and stores nothing.
+
+**Needs Cloudflare only to deploy.** Two repo secrets, `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, and an API token carrying three permissions: Account · **Workers Scripts** (Edit), Account · **Account Settings** (Read), and Zone · **Workers Routes** (Edit). The Zone permission is the one that attaches the custom domain — without it the upload succeeds, the route step fails, and the site is reachable only on `*.workers.dev`. Both Cloudflare-touching CI jobs self-skip when the token is unset, so a fork or a fresh clone stays green.
+
+The whole Cloudflare surface is this much of `wrangler.toml`:
+
+```toml title="wrangler.toml"
+name = "zfb-example-corporate-website"
+compatibility_date = "2024-12-01"
+
+[assets]
+directory = "./dist"
+not_found_handling = "404-page"
+```
+
+No `main`, so no Worker code ever runs — Cloudflare serves `dist/` straight from the edge. The repo documents the full setup path in `docs/cloudflare-setup.md`.
+
+## How it works
+
+### Turning Tailwind off is a one-line config change
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  framework: "preact",
+  base: "/",
+  tailwind: { enabled: false },
+});
+```
+
+With that flag set, zfb swaps its CSS engine for one that passes your authored `styles/global.css` through verbatim: no Tailwind `@import`, no content scan, no preflight, no subprocess. **CSS Modules compilation, class-name hashing, and asset emission all keep working unchanged** — only the Tailwind-specific steps are skipped. That is what makes this demo possible: opting out of Tailwind does not mean opting out of zfb's CSS pipeline.
+
+<Warning title="Version floor">
+
+`tailwind: { enabled: false }` requires zfb **`0.1.0-next.31` or newer**. Earlier versions dropped all authored CSS when the flag was set ([zfb#824](https://github.com/Takazudo/zudo-front-builder/issues/824)) — a site that looked correct in source and shipped unstyled.
+
+</Warning>
+
+### Each component imports its own stylesheet
+
+The pattern is the same in all six components — a default import, then static member access:
+
+```tsx title="components/hero/hero.tsx"
+import styles from "./hero.module.css";
+
+export default function Hero() {
+  return (
+    <section class={styles.hero}>
+      <div class={styles.inner}>{/* … */}</div>
+    </section>
+  );
+}
+```
+
+Because the rewrite happens at build time, `styles.hero` is resolved during the build and nothing about it survives into the browser. There is no per-module `.css` file in `dist/` either: every module's rules are folded into the single hashed `dist/assets/styles-<hash>.css`.
+
+### Collisions become impossible and the names stay reproducible
+
+`hero.module.css` and `services.module.css` both declare a plain `.card`. In the built stylesheet they are two unrelated selectors:
+
+```css
+.QAAyqq_card { /* from components/hero/hero.module.css */ }
+.y8_AgG_card { /* from components/services/services.module.css */ }
+```
+
+The prefix is a hash of the **project-relative module path**, not of the file's contents and not of the machine's absolute paths. Two consequences follow, and both matter:
+
+- Authors never have to invent globally-unique names. This site has six `.inner` declarations across six modules; each resolves to a different scoped class.
+- Byte-identical sources build to byte-identical class names on any machine. A rebuild on CI produces the same HTML and the same stylesheet as a rebuild on a laptop, so the hashed asset filename is stable and CDN caches survive a no-op deploy.
+
+### Global CSS is still global
+
+Only the `.module.css` suffix opts a file into scoping. The layout imports the plain global sheet next to the component imports:
+
+```tsx title="layouts/default.tsx"
+import "../styles/global.css";
+import SiteHeader from "../components/header/site-header";
+```
+
+`styles/global.css` holds the `:root` design tokens every module consumes (`--color-brand`, `--space-5`, `--text-3xl`, …), a light reset, and one hand-written utility: `.skip-link`. That class reaches the browser unhashed, and the layout writes it as a literal string — `class="skip-link"` — rather than through a `styles.*` lookup. Both mechanisms live in the same file and neither interferes with the other.
+
+TypeScript needs one ambient declaration before it will accept the module imports at all. The repo keeps it in `styles/css-modules.d.ts`:
+
+```ts title="styles/css-modules.d.ts"
+declare module "*.module.css" {
+  const classes: Readonly<Record<string, string>>;
+  export default classes;
+}
+```
+
+### The output is one HTML file and one stylesheet
+
+`layouts/default.tsx` renders the whole document — `<html>`, `<head>`, the `<title>` — as a plain server component. There are no [islands](../concepts/islands.mdx), so `zfb build` emits `dist/index.html`, `dist/assets/styles-<hash>.css`, and no JavaScript at all. The built page carries zero `<script>` tags.
+
+The single-page shape has one visible edge: zfb emits no `404.html` for this site, so an unmatched path currently returns a bare 404. `not_found_handling = "404-page"` is set anyway — it starts serving a real page the moment one exists, and it is the correct setting regardless, since the alternative (`"single-page-application"`) would answer every unknown path with `index.html` and HTTP 200.
+
+## Run it locally
+
+```sh
+pnpm install
+pnpm build      # zfb build   -> dist/
+pnpm preview    # zfb preview -> serves dist/
+pnpm typecheck  # zfb check
+```
+
+`pnpm dev` (`zfb dev`) works too, and — unlike the binding-backed examples in this family — it has **no** functional caveat here. Nothing on this site needs a Worker request scope, and the repo states the guarantee directly: both `zfb dev` and `zfb build` emit the scoped CSS Modules class names in the HTML together with the matching scoped rules in the served stylesheet. The dev-mode page is the production page.
+
+One local-only detail worth knowing: `predev` runs `rm -rf dist .zfb .zfb-build` before `zfb dev`, so a stale build never shadows a dev session.
+
+## See also
+
+- [Styling](../concepts/styling.mdx) — the reference for global CSS, Tailwind v4, and the CSS Modules rules this demo exercises, including the `:export` / `composes` and bare-specifier limitations.
+- [Static assets](../concepts/static-assets.mdx) — how the emitted `dist/assets/` tree is produced and served.
+- [Islands](../concepts/islands.mdx) — what this site deliberately does not use.
+- [Examples](../guides/examples.mdx) — the rest of the zfb example sites.
