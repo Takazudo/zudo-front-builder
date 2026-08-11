@@ -161,3 +161,42 @@ package-specific tooling. See
 **Cause:** evaluating a TypeScript config first bundles it with esbuild, and an embedded `zfb-server` does not ship its own esbuild binary the way the `zfb` CLI does.
 
 **Fix:** either switch `config_path` to a `zfb.config.json` file (no esbuild needed at all — the simplest fix), or set the `ZFB_ESBUILD_BIN` environment variable to a usable esbuild CLI binary before calling `build()`. See [Embed as library: config format](./embed-as-library.mdx#builder-shape-config-format-prefer-zfb-config-json) for the full explanation.
+
+## A `prerender = false` route always returns 405
+
+**Symptom:** an SSR route's `POST`/`PUT`/`DELETE` handler always returns `405 Method Not Allowed`, even for requests that use the expected method and are otherwise correct.
+
+**Cause:** the route's default export declares a parameter meant to receive the incoming `Request`:
+
+```tsx
+export default async function Handler(request: Request) {
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+zfb calls a page's default export with the page's **props object**, not the `Request` — see [The default export receives props, not the Request](./ssr-and-cloudflare-bindings.mdx#the-default-export-receives-props-not-the-request) for the full contract. So `request` above is actually `{}` (or `{ params }`, or the route's `paths()`/`getStaticProps()` props), `request.method` reads `undefined`, `undefined !== "POST"` holds, and the handler 405s unconditionally. Nothing throws, and `Request` is a valid TypeScript annotation for a parameter that receives props, so `tsc --noEmit` passes — this compiles cleanly and fails silently at runtime.
+
+Detect it directly with:
+
+```sh
+grep -rn 'export default \(async \)\?function \w\+(\s*request\s*:' pages/
+```
+
+**Fix:** drop the parameter (or destructure the props you actually need — `{ params }`, etc.) and read the real `Request` through `getCloudflareContext()` instead:
+
+```tsx
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export default async function Handler() {
+  const { request } = getCloudflareContext();
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+`zfb check` flags this shape with a non-zero exit; `zfb dev` and `zfb build` warn about it without failing the build. If you landed here from one of those warnings rather than a live 405, the cause and fix above are the same explanation from the other side.

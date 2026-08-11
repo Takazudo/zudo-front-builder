@@ -51,6 +51,61 @@ If a route exports `prerender = false` but no adapter is configured,
 the build fails fast with an error naming the offending route — zfb
 will not silently drop a route it cannot deploy.
 
+## The default export receives props, not the Request
+
+Every page's default export — SSG or SSR — is called with the page's
+**props object**, never the incoming `Request`. `prerender = false`
+changes *when* the page renders (per request instead of once at build
+time), not *what* its default export is called with:
+
+- `{}` — a static route with no `getStaticProps()` export.
+- `{ params }` — a dynamic route with no `paths()` export (a per-request
+  page whose slugs can't be enumerated ahead of time).
+- `{ params, ...props }` from the matching `paths()` entry, or the props
+  returned by `getStaticProps()`, otherwise.
+
+A handler that declares a parameter meant to receive the `Request`
+receives one of the shapes above instead — and the mistake compiles
+cleanly, because `Request` is a valid TypeScript annotation for a
+parameter that actually receives props. The failure is silent: a
+`request.method !== "POST"` check reads `undefined`, `undefined !==
+"POST"` holds, and the route returns `405` on every request, including
+the ones using the correct method.
+
+```tsx
+// pages/api/products.tsx — ❌ declares `request`, actually receives props
+export const prerender = false;
+
+export default async function Products(request: Request) {
+  if (request.method !== "POST") {
+    // request.method is undefined here — this branch runs on every
+    // request, so the route 405s unconditionally.
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+```tsx
+// pages/api/products.tsx — ✅ no parameter; read the real Request via getCloudflareContext()
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+export default async function Products() {
+  const { request } = getCloudflareContext();
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+If you don't need the incoming `Request` at all, dropping the parameter
+entirely — `export default async function Products()` — is enough. See
+[A `prerender = false` route always returns 405](./troubleshooting.mdx#a-prerender-false-route-always-returns-405)
+if you're debugging this symptom in an existing route.
+
 ## dev-prod parity for `prerender = false`
 
 `zfb dev` runs `prerender = false` routes through the **same render
@@ -64,6 +119,12 @@ response body, and `Content-Type` match between dev and the deployed
 Cloudflare adapter. Values that legitimately vary across runs
 (timestamps stamped into a response, randomly generated request IDs)
 are allowed to differ.
+
+**This parity guarantee is scoped to render code — it does not extend to
+Worker bindings.** `zfb dev` exposes no `env`/`ctx`, so a route that
+calls `getCloudflareContext()` cannot exercise that call under `zfb dev`
+at all, parity or not. See [Local development](#local-development) below
+for the loop that does cover bindings.
 
 What this means in practice:
 
@@ -407,9 +468,14 @@ typo like `env.ANTRHOPIC_KEY`.
 <Warning title="Call it only inside an SSR request">
 
 `getCloudflareContext()` throws if called outside a Worker request
-scope — for example during build-time SSG. That is by design: a route
-that needs bindings **must** export `prerender = false`. If you want a
-route to work in both modes, catch the error and branch on it.
+scope — for example during build-time SSG, **or under `zfb dev`**: `zfb
+dev` runs the SSR render code, but it never establishes a Cloudflare
+request scope, so this call throws there too. See
+[Local development](#local-development) below for the loop that does
+give you a working request scope. That is by design: a route that needs
+bindings **must** export `prerender = false` and run under `wrangler
+dev` / `zfb preview` to actually reach them. If you want a route to work
+in both modes, catch the error and branch on it.
 
 </Warning>
 
