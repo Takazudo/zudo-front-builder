@@ -223,10 +223,16 @@ async function getOrEvalPaths(
  *      `getCollection(name)` resolves from memory. Idempotent across
  *      calls — the latest snapshot wins (matches the documented dev-mode
  *      live-reload contract).
- *   2. Constructs an internal Hono app and registers a GET handler per
- *      `pages[i].route`. The handler imports the page module, calls
- *      `framework.renderToString(module.default({}))`, and returns the
- *      string in a `Response` with the appropriate `Content-Type`.
+ *   2. Constructs an internal Hono app and registers an **all-methods**
+ *      handler (`app.all`, not `app.get`) per `pages[i].route`, so an SSR
+ *      route that dispatches on `request.method` — e.g. a POST endpoint
+ *      under `pages/api/` — actually reaches its handler instead of being
+ *      404'd by the inner router. See the comment at the `app.all` call
+ *      site below. The handler imports the page module, calls
+ *      `framework.renderToString(module.default(componentInput))`, and
+ *      returns the string in a `Response` with the appropriate
+ *      `Content-Type`. (`componentInput` is the page's props object — see
+ *      the derivation table below; it is never the incoming `Request`.)
  *
  * Per-route `componentInput` (the object passed to `module.default(...)`) is
  * derived from the route pattern and the page module's exports:

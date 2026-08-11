@@ -103,6 +103,27 @@ renderer from the package's own TOC/sidebar allocator (which hardcodes the hiera
 with no strategy parameter), breaking in-page TOC links on every h3+ heading. This was tried and
 rejected; it is strictly worse than the anchor churn it avoids.
 
+**No gate validates anchors — and `slugify` strips ASCII punctuation only.** Two facts that combine
+badly, especially in `docs-ja/`:
+
+- `pnpm --filter docs check` is `tsc --noEmit` plus collection-schema validation. It does **not**
+  resolve `#anchor` targets, so a cross-reference that points at nothing passes the gate silently.
+- The slug allocator strips **ASCII** punctuation only. CJK punctuation — `、`, `（`, `）`, `。` —
+  survives into the slug verbatim. A naturally-written heading like `## デフォルトエクスポート（props）について`
+  yields a slug containing the full-width parens, so a hand-written link that assumes they were
+  stripped resolves to nothing, uncaught.
+
+**Prefer punctuation-free headings when they are link targets**, and verify a CJK anchor mechanically
+rather than eyeballing the slug — import the allocator the site itself uses:
+
+```
+docs/node_modules/@takazudo/zudo-doc/dist/extract-headings/index.js
+```
+
+(Found in zfb#2360, during the JA half of epic #2351: that agent verified its three new CJK
+cross-references this way and wrote both new headings punctuation-free so the slugs stayed
+predictable. An actual anchor-validation gate would be a larger, separate decision.)
+
 ## i18n
 
 - English (default): `/docs/...` — content in `src/content/docs/`
