@@ -1,0 +1,278 @@
+---
+title: "Example: JSON API"
+description: A standalone example repo serving two GET JSON endpoints from prerender = false routes on a Cloudflare Worker, with a lazily built MiniSearch index that survives across warm-isolate requests
+sidebar_position: 13
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+`zfb-example-json-api` is the smallest complete SSR starter in the example family: a static
+home page, one Preact island, and two `prerender = false` API routes that return JSON from
+the emitted Worker. It exercises zfb's SSR contract — the literal `prerender` export, reading
+the incoming `Request` through `getCloudflareContext()`, and module-scope state that lives as
+long as the isolate does — with **no Cloudflare bindings to provision**.
+
+</Info>
+
+- **Live demo** — [zfb-example-json-api.takazudomodular.com](https://zfb-example-json-api.takazudomodular.com/)
+- **Repository** — [github.com/Takazudo/zfb-example-json-api](https://github.com/Takazudo/zfb-example-json-api)
+
+## What it demonstrates
+
+- **Two SSR routes on a mostly static site.** `pages/index.tsx` and `pages/404.tsx` prerender
+  to HTML; `pages/api/items.tsx` and `pages/api/search.tsx` opt out with
+  `export const prerender = false` and run in the Worker on every request.
+- **The literal-export contract.** zfb decides SSG-vs-SSR by inspecting the AST at build time,
+  so the export has to be written out literally — a value computed anywhere else silently
+  prerenders instead.
+- **Reading the `Request` without a `Request` parameter.** Both handlers take no arguments and
+  pull `{ request }` out of `getCloudflareContext<Env>()`.
+- **Module-scope state as isolate-lifetime cache.** `/api/search` builds a MiniSearch index on
+  first use and reports `indexBuiltAt` + `indexBuildCount`, so you can watch a warm isolate
+  reuse it.
+- **Query-driven filtering and pagination.** `/api/items` takes `q`, `page`, and `per`, with
+  every parameter clamped to a bounded range before it reaches the data layer.
+- **CORS and method handling by hand.** A shared `lib/cors.ts` answers `OPTIONS` preflights
+  with `204`, rejects non-`GET` with a JSON `405`, and stamps
+  `content-type: application/json` on every body.
+- **An island that consumes its own API.** A `"use client"` component fetches both endpoints in
+  parallel and renders results plus the index metrics.
+
+## Tech used
+
+| Area | What the repo uses |
+|---|---|
+| Framework | zfb + Preact (`framework: "preact"` in `zfb.config.ts`) |
+| zfb version | `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — present, and load-bearing |
+| Styling | Tailwind v4 (`tailwind: { enabled: true }`). `styles/global.css` opens with `@import "tailwindcss"`, then defines the site's own semantic classes — the markup uses `item-card`, `metric-strip`, `toolbar`, not utility classes |
+| Rendering | Mixed. `/` and `/404` prerender; `/api/items` and `/api/search` are `prerender = false` |
+| Cloudflare surface | Workers Static Assets. `main = "./dist/_worker.js"`, `[assets]` with `binding = "ASSETS"`, `not_found_handling = "404-page"`, `run_worker_first = false` |
+| Bindings | **None.** No D1, KV, R2, queues, or secrets — `ASSETS` is the only binding in `wrangler.toml` |
+| Compatibility | `compatibility_date = "2024-12-01"`, `compatibility_flags = ["nodejs_compat"]` (the adapter's `AsyncLocalStorage` needs it) |
+| Notable deps | `minisearch` ^7.2.0, `preact` ^10.29.0, `preact-render-to-string` ^6.6.7; `wrangler` 4.85.0 and `tailwindcss` 4.2.4 as devDependencies |
+| Data | 30 hand-written fictional records in `lib/data.ts`. No database, no fixtures to load |
+
+## Requirements and configuration
+
+**Works locally with no Cloudflare account.** There is nothing to provision before running it:
+no D1 database, no KV namespace, no R2 bucket, no queue, no Worker secrets, and no migrations
+or seed data. The dataset is a plain array in `lib/data.ts`, and the only binding the
+`wrangler.toml` declares is the static-assets binding the adapter wrapper uses. `pnpm build`
+followed by `pnpm preview` gives you the real Worker on localhost.
+
+**Needs Cloudflare only to deploy.** Deployment adds two GitHub Actions secrets —
+`CLOUDFLARE_ACCOUNT_ID` and a `CLOUDFLARE_API_TOKEN` carrying Workers Scripts · Edit, Account
+Settings · Read, and **Zone** · Workers Routes · Edit. The zone permission is not optional
+here: `wrangler.toml` declares a `custom_domain` route, and without it the Worker uploads and
+then the deploy fails on the route step. The repo's `docs/cloudflare-setup.md` is the ordered
+walkthrough.
+
+**The live demo is read-only and unauthenticated.** Both endpoints are `GET`-only with
+`Access-Control-Allow-Origin: *`; nothing writes, so there is no auth to get past and nothing
+you can leave behind.
+
+## How it works
+
+### The prerender export has to be literal
+
+Every SSR route in this repo opens the same way:
+
+```tsx title="pages/api/items.tsx"
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+import { filterItems } from "../../lib/data";
+import { jsonResponse, methodNotAllowed, preflightResponse } from "../../lib/cors";
+
+export const prerender = false;
+
+interface Env {}
+
+// ...bounded integer helper elided
+
+export default async function ItemsApi() {
+  const { request } = getCloudflareContext<Env>();
+  const preflight = preflightResponse(request);
+  if (preflight) {
+    return preflight;
+  }
+  if (request.method !== "GET") {
+    return methodNotAllowed(request.method);
+  }
+  // ...
+}
+```
+
+Two things in that head matter more than they look.
+
+`export const prerender = false;` is written out longhand because zfb reads it with **static
+AST inspection at build time**, never by evaluating the module. It is looking for that exact
+declaration shape. Route the same value through an object, a helper, or a computed expression
+and the detection misses — the route quietly falls back to SSG, gets rendered once at build
+time, and ships as a static file whose body never changes. There is no error, because from the
+build's point of view nothing went wrong. The full support matrix is in
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx); the same literal-only
+rule applies to the `frontmatter` export.
+
+The handler also takes **no parameters**. That is deliberate, and it is the second half of the
+contract: zfb calls a page's default export with the page's props object, not the incoming
+`Request` — so a handler that declares `request: Request` compiles cleanly and then reads
+`undefined` off it at runtime. `getCloudflareContext<Env>()` is the supported way in, returning
+`{ env, request, ctx }` from the `AsyncLocalStorage` scope the emitted `_worker.js` opened for
+this request.
+
+`interface Env {}` being empty is worth a beat too. This demo has no bindings, so there is
+nothing to declare — but the generic is still passed, so the day a KV namespace or a D1
+database shows up, the type lands in one place and every `env.` read is checked against it.
+
+### Module scope is isolate scope
+
+`/api/search` is where the demo stops being a data-formatting exercise. The MiniSearch index is
+built at most once per isolate, not once per request:
+
+```tsx title="pages/api/search.tsx"
+let searchIndex: MiniSearch<SearchDocument> | null = null;
+let indexBuiltAt: string | null = null;
+let indexBuildCount = 0;
+
+function getSearchIndex() {
+  if (!searchIndex) {
+    searchIndex = new MiniSearch<SearchDocument>({
+      // fields, storeFields, boosts, fuzzy: 0.2, prefix: true
+    });
+    searchIndex.addAll(
+      ITEMS.map((item) => ({
+        ...item,
+        tagsText: item.tags.join(" "),
+      })),
+    );
+    indexBuiltAt = new Date().toISOString();
+    indexBuildCount += 1;
+  }
+
+  return {
+    index: searchIndex,
+    builtAt: indexBuiltAt,
+    buildCount: indexBuildCount,
+  };
+}
+```
+
+Those three `let`s live at module scope inside `dist/_zfb_inner.mjs`, which workerd evaluates
+once when the isolate boots and then keeps in memory for as long as that isolate is reused.
+So the first request into a cold isolate pays for the index; every later request into the
+**same** isolate gets it for free.
+
+The interesting part is that the endpoint makes this observable instead of asking you to take
+it on faith. Every response carries `indexBuiltAt` and `indexBuildCount`, and the two answer
+different questions:
+
+- **`indexBuildCount`** proves the lazy guard held. Within one isolate it goes `0 → 1` on the
+  first request and then stays at `1` forever. If you ever see it climb, the `if (!searchIndex)`
+  guard is not doing its job.
+- **`indexBuiltAt`** identifies the isolate generation. Hit `/api/search` twice against the same
+  warm process and the timestamp is byte-identical — that is the reuse. A *changed* timestamp
+  on a later request does not mean the index was rebuilt in place; it means Cloudflare handed
+  you a different, cold isolate, which built its own copy from zero and also reports
+  `indexBuildCount: 1`.
+
+The home page's island surfaces both as live counters, so you can watch the numbers while
+clicking around. This is also the honest caveat about module-scope caching in general: it is a
+per-isolate optimisation with no coordination and no eviction policy. It is exactly right for a
+30-record index derived from code you shipped, and exactly wrong for anything that has to stay
+consistent between two concurrent visitors.
+
+### Keeping a deliberate JSON error out of the styled 404
+
+`wrangler.toml` sets `not_found_handling = "404-page"`, which means an unmatched path gets the
+styled `dist/404.html` built from `pages/404.tsx`. That is what you want for a mistyped URL —
+and a hazard for an API, because the emitted `_worker.js` decides between the asset layer's
+styled page and the inner Worker's own response using the response's `content-type`. A 404 that
+carries only the framework's generic `text/plain` body is indistinguishable from "no route
+matched", so it yields to the styled HTML page — and a client expecting JSON gets a document
+instead.
+
+The repo's answer is that no error body ever leaves without a JSON content type, because they
+all go through one helper:
+
+```ts title="lib/cors.ts"
+export function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
+  const headers = corsHeaders(init.headers);
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json; charset=utf-8");
+  }
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "no-store");
+  }
+  return new Response(JSON.stringify(data, null, 2), {
+    ...init,
+    headers,
+  });
+}
+```
+
+`methodNotAllowed()` builds its `405` on top of it, so does every success path, and any 404 an
+endpoint chooses to return would too. The `cache-control: no-store` default is the same kind of
+call: an API response with request-dependent contents should not be cached by anything on the
+way out unless the route asks for it explicitly.
+
+The routing side of this is `run_worker_first = false`, the zfb default. The asset router runs
+first, and `/api/items` and `/api/search` never exist as files under `dist/` — they are
+`prerender = false` — so every request to them misses the asset layer and falls through to the
+Worker. Static assets never pay the SSR cost, and the Worker only ever sees the dynamic tail.
+The full picture is in
+[SSR on a Worker](../concepts/ssr-on-a-worker.mdx#the-dispatch-flow).
+
+## Run it locally
+
+```sh
+pnpm install
+pnpm dev       # static shell + island iteration
+pnpm build
+pnpm preview   # Worker-shaped API behavior
+```
+
+`pnpm typecheck` runs `zfb check`, and `pnpm smoke` runs `scripts/smoke.mjs` against the
+deployed domain (pass another base URL as an argument to point it elsewhere). `predev` clears
+`build dist .zfb output worker` before every `pnpm dev`, so the dev server never serves a stale
+artifact from an earlier build.
+
+<Warning title="pnpm dev cannot serve these endpoints">
+
+The repo states the limit directly: `zfb dev` routes `prerender = false` code through the SSR
+path, but it does not provision Worker bindings — so **endpoint checks belong in `pnpm build`
+plus `pnpm preview` or `pnpm exec wrangler dev`**.
+
+Worth understanding *why*, because "this demo has no bindings" makes it sound like it should be
+exempt. It is not: `getCloudflareContext()` needs a Worker request scope to exist at all, and
+under `zfb dev` there is none, so the call throws before the absence of bindings ever becomes
+relevant. These handlers read `request` from that context, which is enough to require the
+Worker loop. Use `pnpm dev` for the static shell and island iteration; use `pnpm preview` for
+anything that has to answer with JSON. See
+[dev-prod parity for `prerender = false`](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender-false).
+
+</Warning>
+
+Once a local Worker is up, the repo's own endpoint checks are:
+
+```sh
+curl 'http://localhost:8787/api/items?q=review&page=1&per=5'
+curl 'http://localhost:8787/api/search?q=onboarding'
+curl -i -X OPTIONS 'http://localhost:8787/api/items'
+curl -i -X POST 'http://localhost:8787/api/items'
+```
+
+The last two are the CORS and method paths — a `204` preflight and a JSON `405`. Run the
+search request twice against the same process to watch `indexBuiltAt` hold steady.
+
+## Related
+
+- [SSR on a Worker](../concepts/ssr-on-a-worker.mdx) — the two-layer worker output, the dispatch
+  order, and how `getCloudflareContext()` gets `{ env, request, ctx }` to your handler.
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — the literal-export
+  rule, the props-not-`Request` contract, `wrangler.toml` setup, and the styled-404 precedence
+  rules this repo is configured around.
+- [Islands](../concepts/islands.mdx) — how the `"use client"` item browser becomes a
+  browser-shipped bundle that lives outside the Worker.
+- [Examples](../guides/examples.mdx) — the rest of the standalone example repositories.
