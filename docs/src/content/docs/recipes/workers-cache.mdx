@@ -37,8 +37,8 @@ the route answers `501` with `cache_context_unavailable` rather than pretending 
 ## What it demonstrates
 
 - SSR on Cloudflare Workers via `@takazudo/zfb-adapter-cloudflare` — every page in `pages/`
-  is `export const prerender = false`, so nothing is emitted as static HTML and every
-  request reaches the Worker.
+  is `export const prerender = false`, so nothing is emitted as static HTML and any request
+  not already answered from cache reaches the Worker.
 - Per-route cache policy set from the route itself, by returning a `Response` with explicit
   `Cache-Control` and `Cache-Tag` headers.
 - `Vary`-keyed cache variants: one URL, a separate cached entry per request-header value.

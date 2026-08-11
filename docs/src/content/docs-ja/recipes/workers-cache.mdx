@@ -27,7 +27,7 @@ Cloudflare 系サンプルの中でも最小構成で、KV 名前空間も D1 �
 
 ## 何を示すか
 
-- `@takazudo/zfb-adapter-cloudflare` による Cloudflare Workers 上の SSR。`pages/` 配下のすべてのページが `export const prerender = false` なので、静的 HTML は一切出力されず、すべてのリクエストが Worker に到達します。
+- `@takazudo/zfb-adapter-cloudflare` による Cloudflare Workers 上の SSR。`pages/` 配下のすべてのページが `export const prerender = false` なので、静的 HTML は一切出力されず、キャッシュから返らないリクエストはすべて Worker に到達します。
 - キャッシュ方針をルート自身が決める形。`Cache-Control` と `Cache-Tag` を明示的に付けた `Response` を返すだけです。
 - `Vary` によるキャッシュバリアント。URL は 1 つのまま、リクエストヘッダの値ごとに別のキャッシュエントリになります。
 - Worker 内部からの `ctx.cache.purge({ tags: [...] })` によるタグ単位の無効化。共有シークレットによる検証付きです。
