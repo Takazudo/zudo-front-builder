@@ -934,9 +934,10 @@ where
     let mut finder = MemberFinder {
         param: param_name.to_owned(),
         found: false,
+        rebound: false,
     };
     node.visit_with(&mut finder);
-    finder.found
+    finder.evidence()
 }
 
 /// Owns its `param` as a `String` so the visitor carries no lifetime,
@@ -945,9 +946,56 @@ where
 struct MemberFinder {
     param: String,
     found: bool,
+    /// Set when anything inside the body binds the same name — a nested
+    /// function/arrow parameter, a `let`/`const`/`var`, a `catch` binding,
+    /// a destructuring alias, or a nested `function`/`class` declaration.
+    ///
+    /// Such a binding is a DIFFERENT variable, so its member reads say
+    /// nothing about the outer parameter. Rather than doing real scope
+    /// analysis, any rebinding disqualifies body evidence wholesale — the
+    /// asymmetry justifies it: a miss here just falls back to the heuristic
+    /// tier (a warning), while a false positive fails `zfb check` and
+    /// breaks a correct build.
+    rebound: bool,
+}
+
+impl MemberFinder {
+    /// Body evidence counts only when a member was read AND nothing
+    /// rebound the name anywhere inside the body.
+    fn evidence(&self) -> bool {
+        self.found && !self.rebound
+    }
 }
 
 impl Visit for MemberFinder {
+    /// Every binding position that produces a `BindingIdent`: function and
+    /// arrow parameters, variable declarators, `catch` params, and
+    /// destructuring aliases. Member-expression properties are `IdentName`
+    /// and plain reads are `Ident`, so neither reaches this hook.
+    fn visit_binding_ident(&mut self, node: &swc_core::ecma::ast::BindingIdent) {
+        if node.id.sym.as_ref() == self.param {
+            self.rebound = true;
+        }
+        node.visit_children_with(self);
+    }
+
+    /// `function request() {}` — a declaration name is an `Ident`, not a
+    /// `BindingIdent`, so it needs its own hook.
+    fn visit_fn_decl(&mut self, node: &swc_core::ecma::ast::FnDecl) {
+        if node.ident.sym.as_ref() == self.param {
+            self.rebound = true;
+        }
+        node.visit_children_with(self);
+    }
+
+    /// `class request {}` — same reason as `visit_fn_decl`.
+    fn visit_class_decl(&mut self, node: &swc_core::ecma::ast::ClassDecl) {
+        if node.ident.sym.as_ref() == self.param {
+            self.rebound = true;
+        }
+        node.visit_children_with(self);
+    }
+
     fn visit_member_expr(&mut self, node: &MemberExpr) {
         // `<param>.<member>` — the object must be the parameter itself, so
         // an unrelated `ctx.request.method` does not count.
@@ -2047,6 +2095,42 @@ mod tests {
         );
         // Still heuristic on the name alone — that part is unchanged.
         assert_eq!(tier_of(src), Some(RequestParamTier::Heuristic));
+    }
+
+    #[test]
+    fn body_evidence_ignores_a_nested_binding_that_reuses_the_parameter_name() {
+        // A nested scope may legitimately rebind the name, and its member
+        // reads say nothing about the OUTER props parameter. Attributing
+        // them to it would promote a correct page to Strong and hard-fail
+        // `zfb check` — the exact false-positive class #2361 is about.
+        //
+        // Bias: for this promoter a miss is cheap (falls back to Heuristic,
+        // which warns) while a false positive breaks a build. So ANY
+        // rebinding of the name inside the body disqualifies body evidence,
+        // rather than attempting real scope analysis.
+        for src in [
+            // Nested arrow parameter (codex's reported shape).
+            "export default function Page(request) { return items.map(request => request.method); }",
+            // Nested function expression parameter.
+            "export default function Page(request) { return items.map(function (request) { return request.method; }); }",
+            // Local re-declaration.
+            "export default function Page(request) { const request2 = 1; let request = new Request('/'); return request.method; }",
+            // catch binding.
+            "export default function Page(request) { try { f(); } catch (request) { return request.method; } return null; }",
+            // Destructured rebinding.
+            "export default function Page(request) { const { a: request } = x; return request.method; }",
+        ] {
+            let plain = plain_of(src);
+            assert!(
+                !plain.body_uses_request_members,
+                "a rebinding of the name must disqualify body evidence: {src:?}"
+            );
+            assert_eq!(
+                tier_of(src),
+                Some(RequestParamTier::Heuristic),
+                "must stay heuristic (warn), never promote to strong: {src:?}"
+            );
+        }
     }
 
     #[test]

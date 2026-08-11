@@ -1208,6 +1208,15 @@ pub struct SsrRequestParamFinding {
     /// #2361 also the SEVERITY in `zfb check`: Strong fails the check,
     /// Heuristic only warns. `zfb dev` / `zfb build` warn on both.
     pub tier: RequestParamTier,
+    /// Did the parameter carry a `Request` annotation?
+    ///
+    /// Strong has two paths since #2361 — an annotation, or a
+    /// `request`-named parameter whose body reads a `Request`-only member
+    /// (the only path available to `.js` / `.jsx` routes, which cannot
+    /// carry an annotation at all). The renderer needs to tell them apart:
+    /// saying "is annotated `Request`" about an unannotated JS handler
+    /// would be a factually wrong diagnostic.
+    pub annotation_is_request: bool,
 }
 
 /// Render an [`SsrRequestParamFinding`] to user-facing text. The single
@@ -1225,9 +1234,22 @@ pub struct SsrRequestParamFinding {
 /// findings state the problem directly.
 pub fn render_ssr_request_param_finding(finding: &SsrRequestParamFinding) -> String {
     let verdict = match finding.tier {
-        RequestParamTier::Strong => {
+        // Strong via the annotation. Wording is asserted verbatim by
+        // `crates/zfb/tests/ssr_contract_dev_warning_e2e.rs` — keep it
+        // byte-stable, or update that assertion in the same change.
+        RequestParamTier::Strong if finding.annotation_is_request => {
             "the default export's first parameter is annotated `Request`, but zfb calls a \
              page's default export with the page's props object, never the incoming Request"
+                .to_string()
+        }
+        // Strong via behavioural evidence (#2361): no annotation, but the
+        // body reads a `Request`-only member off a `request`-named
+        // parameter. Claiming an annotation here would be factually wrong,
+        // and this is the ONLY strong path a `.js` / `.jsx` route can take.
+        RequestParamTier::Strong => {
+            "the default export's first parameter is named like a Request and its body reads \
+             Request-only members off it, but zfb calls a page's default export with the \
+             page's props object, never the incoming Request"
                 .to_string()
         }
         RequestParamTier::Heuristic => {
@@ -1273,6 +1295,7 @@ fn ssr_param_finding(
         line: plain.line,
         col: plain.col,
         tier,
+        annotation_is_request: plain.annotation_is_request,
     })
 }
 
@@ -1971,6 +1994,7 @@ mod tests {
             line: 5,
             col: 24,
             tier: RequestParamTier::Strong,
+            annotation_is_request: true,
         };
         let msg = render_ssr_request_param_finding(&finding);
         assert!(msg.contains("/api/submit"), "{msg}");
@@ -1985,6 +2009,52 @@ mod tests {
         );
     }
 
+    /// #2361: Strong has two paths, and the message must not claim an
+    /// annotation that isn't there. A `.js` / `.jsx` route reaches Strong
+    /// purely through behavioural evidence — telling that author their
+    /// parameter "is annotated `Request`" is a factually wrong diagnostic
+    /// about code they can see.
+    #[test]
+    fn render_ssr_request_param_finding_does_not_claim_an_absent_annotation() {
+        let behavioural = SsrRequestParamFinding {
+            route: "/api/broken".to_string(),
+            file: PathBuf::from("/proj/pages/api/broken.js"),
+            line: 3,
+            col: 40,
+            tier: RequestParamTier::Strong,
+            annotation_is_request: false,
+        };
+        let msg = render_ssr_request_param_finding(&behavioural);
+        assert!(
+            !msg.contains("is annotated `Request`"),
+            "must not claim an annotation the source does not carry: {msg}"
+        );
+        assert!(
+            msg.contains("reads Request-only members"),
+            "should name the actual evidence: {msg}"
+        );
+        // Still states the problem directly — it is a strong-tier finding.
+        assert!(
+            !msg.contains("likely incorrect"),
+            "strong tier must not hedge: {msg}"
+        );
+        // The shared tail is unchanged.
+        assert!(msg.contains("/api/broken"), "{msg}");
+        assert!(msg.contains("/proj/pages/api/broken.js:3:40"), "{msg}");
+        assert!(msg.contains("getCloudflareContext()"), "{msg}");
+
+        // And the annotated path keeps its byte-stable wording, which
+        // `ssr_contract_dev_warning_e2e` asserts verbatim.
+        let annotated = SsrRequestParamFinding {
+            annotation_is_request: true,
+            ..behavioural
+        };
+        assert!(
+            render_ssr_request_param_finding(&annotated).contains("is annotated `Request`"),
+            "the annotated path's wording must not drift"
+        );
+    }
+
     #[test]
     fn render_ssr_request_param_finding_heuristic_hedges() {
         let finding = SsrRequestParamFinding {
@@ -1993,6 +2063,7 @@ mod tests {
             line: 5,
             col: 24,
             tier: RequestParamTier::Heuristic,
+            annotation_is_request: false,
         };
         let msg = render_ssr_request_param_finding(&finding);
         assert!(
