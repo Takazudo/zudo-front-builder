@@ -31,8 +31,9 @@ long as the isolate does — with **no Cloudflare bindings to provision**.
 - **Module-scope state as isolate-lifetime cache.** `/api/search` builds a MiniSearch index on
   first use and reports `indexBuiltAt` + `indexBuildCount`, so you can watch a warm isolate
   reuse it.
-- **Query-driven filtering and pagination.** `/api/items` takes `q`, `page`, and `per`, with
-  every parameter clamped to a bounded range before it reaches the data layer.
+- **Query-driven filtering and pagination.** `/api/items` takes `q`, `page`, and `per`; `page`
+  and `per` are clamped to bounded ranges before they reach the data layer, and the requested
+  page is capped at the last page that actually exists.
 - **CORS and method handling by hand.** A shared `lib/cors.ts` answers `OPTIONS` preflights
   with `204`, rejects non-`GET` with a JSON `405`, and stamps
   `content-type: application/json` on every body.
