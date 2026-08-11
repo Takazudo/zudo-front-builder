@@ -39,11 +39,54 @@ export const prerender = false;
 
 ルートが `prerender = false` をエクスポートしているのにアダプターが設定されていない場合、ビルドは問題のルート名を示すエラーとともに即座に失敗します。zfb はデプロイできないルートを黙って取りこぼすことはありません。
 
+## デフォルトエクスポートが受け取るのは props であり Request ではない
+
+ページのデフォルトエクスポートは、SSG でも SSR でも、そのページの **props オブジェクト**で呼び出されます。受信した `Request` が渡されることはありません。`prerender = false` が変えるのはページを**いつ**レンダリングするか（ビルド時に一度ではなく、リクエストごとに）だけであって、デフォルトエクスポートが**何を**渡されるかは変わりません:
+
+- `{}` — `getStaticProps()` をエクスポートしていない静的ルート。
+- `{ params }` — `paths()` をエクスポートしていない動的ルート（スラグを事前に列挙できない、リクエストごとのページ）。
+- それ以外の場合は、マッチした `paths()` エントリの `{ params, ...props }`、または `getStaticProps()` が返した props。
+
+`Request` を受け取るつもりで宣言した仮引数には、上のいずれかの形が渡ってきます。しかもこの間違いはエラーなくコンパイルが通ります。`Request` は、実際には props を受け取る仮引数に対しても妥当な TypeScript の型注釈だからです。失敗の仕方も静かです。`request.method !== "POST"` のチェックは `undefined` を読み、`undefined !== "POST"` が成り立つため、正しいメソッドを使ったリクエストも含めて、ルートは毎回 `405` を返します。
+
+```tsx
+// pages/api/products.tsx — ❌ declares `request`, actually receives props
+export const prerender = false;
+
+export default async function Products(request: Request) {
+  if (request.method !== "POST") {
+    // request.method is undefined here — this branch runs on every
+    // request, so the route 405s unconditionally.
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+```tsx
+// pages/api/products.tsx — ✅ no parameter; read the real Request via getCloudflareContext()
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+export const prerender = false;
+
+export default async function Products() {
+  const { request } = getCloudflareContext();
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  // ...
+}
+```
+
+受信した `Request` がそもそも不要なら、仮引数を単に外す（`export default async function Products()`）だけで十分です。既存のルートでこの症状を追っているところなら、[`prerender = false` のルートが常に 405 を返す](./troubleshooting.mdx#prerender-false-のルートが常に-405-を返す) も参照してください。
+
 ## `prerender = false` の dev と本番の同等性
 
 `zfb dev` は `prerender = false` のルートを、Cloudflare が本番で実行するのと**同じレンダリングコード**を通して動かします。開発サーバーは埋め込みの V8 アイソレート（ビルド時 SSG を駆動するのと同じもの）をホストし、開発ルーターは `prerender = false` の URL をリクエスト時にそのアイソレートへディスパッチします。ビルド時でも静的スナップショットからでもありません。
 
 同等性の保証は**バイト単位ではなく意味的**です。ステータスコード、レスポンスボディ、`Content-Type` は dev とデプロイされた Cloudflare アダプターの間で一致します。実行ごとに正当に変わる値（レスポンスに刻まれるタイムスタンプ、ランダムに生成されるリクエスト ID など）は異なってもよいとされます。
+
+**この同等性の保証が対象とするのはレンダリングコードだけで、Worker バインディングには及びません。** `zfb dev` は `env`/`ctx` を一切公開しないため、`getCloudflareContext()` を呼ぶルートは、同等性がどうであれ `zfb dev` 下ではその呼び出し自体を試せません。バインディングまでカバーするループについては、後述の [ローカル開発](#ローカル開発) を参照してください。
 
 これが実際に意味すること:
 
@@ -277,7 +320,7 @@ export default async function WhoAmI() {
 
 <Warning title="SSR リクエストの内部でのみ呼び出すこと">
 
-`getCloudflareContext()` は Worker のリクエストスコープの外（たとえばビルド時 SSG 中）で呼ばれると例外を投げます。これは設計どおりです。バインディングを必要とするルートは**必ず** `prerender = false` をエクスポートしなければなりません。ルートを両方のモードで動かしたい場合は、エラーをキャッチして分岐してください。
+`getCloudflareContext()` は Worker のリクエストスコープの外で呼ばれると例外を投げます。たとえばビルド時 SSG 中、そして **`zfb dev` 下**です。`zfb dev` は SSR のレンダリングコードそのものは実行しますが、Cloudflare のリクエストスコープを確立することはないため、この呼び出しはそこでも例外になります。実際に機能するリクエストスコープが得られるループについては、後述の [ローカル開発](#ローカル開発) を参照してください。これは設計どおりです。バインディングを必要とするルートは**必ず** `prerender = false` をエクスポートし、そのバインディングに実際に到達するには `wrangler dev` / `zfb preview` の下で動かす必要があります。ルートを両方のモードで動かしたい場合は、エラーをキャッチして分岐してください。
 
 </Warning>
 

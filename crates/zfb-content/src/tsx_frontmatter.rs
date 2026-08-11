@@ -44,6 +44,17 @@
 //!
 //! Any earlier dots are part of the page name. See
 //! [`filename_extension_candidate`].
+//!
+//! ### The default export's first parameter (#2352)
+//!
+//! The same walk also records the *shape* of the default export's first
+//! parameter as a [`DefaultExportFirstParam`]. zfb calls a page's
+//! default export with the page's **props object** — never with a
+//! `Request` — so a `prerender = false` route written as
+//! `export default async function Handler(request: Request)` silently
+//! 405s forever while `tsc` stays happy. Capturing the parameter shape
+//! here (rather than in a second parse) lets the engine surface that
+//! mistake; the gate itself is [`ssr_request_param_tier`].
 
 use std::path::PathBuf;
 
@@ -51,8 +62,9 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use swc_core::common::sync::Lrc;
 use swc_core::common::{FileName, SourceMap, Span, Spanned};
 use swc_core::ecma::ast::{
-    Decl, EsVersion, Expr, Lit, ModuleDecl, ModuleItem, ObjectLit, Pat, Prop, PropName,
-    PropOrSpread, UnaryOp, VarDeclKind,
+    Decl, DefaultDecl, EsVersion, ExportSpecifier, Expr, Lit, ModuleDecl, ModuleExportName,
+    ModuleItem, ObjectLit, Pat, Prop, PropName, PropOrSpread, TsEntityName, TsType, TsTypeAnn,
+    UnaryOp, VarDeclKind,
 };
 use swc_core::ecma::parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
 use thiserror::Error;
@@ -93,6 +105,110 @@ pub struct TsxFrontmatter {
     /// pages are emitted at build time (SSG, `prerender == true`) vs
     /// added to a runtime SSR manifest (`prerender == false`).
     pub prerender: bool,
+    /// Shape of the default export's first parameter (#2352). Joined
+    /// with `prerender` by [`ssr_request_param_tier`] to detect the
+    /// silent `(request: Request)` SSR handler mistake.
+    pub default_export_param: DefaultExportFirstParam,
+}
+
+/// What the module walk could see of the default export's **first**
+/// parameter. Deliberately coarse: this is a lint input, not a type
+/// checker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefaultExportFirstParam {
+    /// No default export at all, a type-only one
+    /// (`export default interface …`), or a default-export function
+    /// literal declaring zero parameters — the correct shape for an
+    /// API route.
+    Absent,
+    /// The first parameter is an object or array destructuring pattern
+    /// (`{ params }`, `[a, b]`) — the ordinary page-props shape.
+    Destructured,
+    /// The first parameter is a plain binding identifier.
+    Plain(PlainFirstParam),
+    /// A default export this walk cannot see through: an identifier
+    /// reference (`export default handler`), a call
+    /// (`export default wrap(handler)`), a class, a `default`-named
+    /// re-export (`export { handler as default }`), or any other
+    /// non-function-literal expression. Never fires the gate — see the
+    /// epic's documented misses.
+    Opaque,
+}
+
+/// A plain (non-destructured) first parameter of the default export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlainFirstParam {
+    /// The binding's name, after unwrapping a default value
+    /// (`Pat::Assign`) or a rest element (`Pat::Rest`).
+    pub name: String,
+    /// `true` only when the TS annotation is the global `Request` —
+    /// a `TsTypeRef` whose entity name is the bare ident `Request` or
+    /// the qualified `globalThis.Request`, carrying no type arguments.
+    /// A local alias (`type Req = Request`), an unrelated `MyRequest`,
+    /// and a generic `Request<T>` all leave this `false`; resolving
+    /// them would need a type checker, and guessing from the spelling
+    /// is exactly the substring match the spec forbids.
+    pub annotation_is_request: bool,
+    /// 1-based location of the parameter's identifier, in this file's
+    /// existing `line:column` convention (see [`Ctx::line`]).
+    pub line: usize,
+    /// 1-based column; see `line`.
+    pub col: usize,
+}
+
+/// How confident the detector is that a plain first parameter is the
+/// mistaken `Request` shape. The tiers differ in **wording**
+/// downstream, not in whether the gate fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestParamTier {
+    /// The parameter is annotated `Request` (or `globalThis.Request`).
+    Strong,
+    /// The parameter is *named* `request` / `req`. A props object can
+    /// legitimately carry that name, so downstream wording hedges.
+    Heuristic,
+}
+
+/// Parameter names that raise the heuristic tier on their own. Exact,
+/// lowercase matches only.
+const HEURISTIC_PARAM_NAMES: [&str; 2] = ["request", "req"];
+
+impl DefaultExportFirstParam {
+    /// Conditions 2-4 of the epic's gate: a function-literal default
+    /// export whose first parameter is a plain binding identifier that
+    /// is either annotated `Request` (strong) or named `request` /
+    /// `req` (heuristic).
+    ///
+    /// Condition 1 (the route's resolved `prerender == false`) is the
+    /// caller's to supply — use [`ssr_request_param_tier`] to join it.
+    pub fn request_param_tier(&self) -> Option<RequestParamTier> {
+        let plain = match self {
+            DefaultExportFirstParam::Plain(p) => p,
+            _ => return None,
+        };
+        if plain.annotation_is_request {
+            return Some(RequestParamTier::Strong);
+        }
+        if HEURISTIC_PARAM_NAMES.contains(&plain.name.as_str()) {
+            return Some(RequestParamTier::Heuristic);
+        }
+        None
+    }
+}
+
+/// The epic's full gate: a `prerender = false` route whose default
+/// export takes the mistaken `Request` first parameter. `Some(tier)`
+/// means "report this page"; the tier picks the wording.
+///
+/// Every consumer (`zfb dev`, `zfb build`, `zfb check`) must call this
+/// rather than re-deriving the rule — one gate, three surfaces.
+pub fn ssr_request_param_tier(
+    prerender: bool,
+    param: &DefaultExportFirstParam,
+) -> Option<RequestParamTier> {
+    if prerender {
+        return None;
+    }
+    param.request_param_tier()
 }
 
 /// All ways extraction can fail. Every variant names the offending
@@ -115,8 +231,18 @@ pub enum TsxFrontmatterError {
     /// `build_prerender_map`) reads it so the `output: static` gate can
     /// reject a frontmatter-less `prerender = false` page instead of
     /// silently shipping it as SSG (#1198).
+    ///
+    /// `default_export_param` rides along for the same reason (#2352):
+    /// an API route commonly declares `export const prerender = false`
+    /// and no `frontmatter` at all, so the handler-shape detector would
+    /// be blind to the single most common shape it exists to catch if
+    /// the verdict were dropped on this path.
     #[error("{file}: missing required `export const frontmatter`")]
-    MissingFrontmatter { file: String, prerender: bool },
+    MissingFrontmatter {
+        file: String,
+        prerender: bool,
+        default_export_param: DefaultExportFirstParam,
+    },
 
     /// The source declared `export const <name>` more than once at the
     /// top level. We refuse to silently pick one.
@@ -218,8 +344,21 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
     let mut frontmatter_seen = false;
     let mut extension_seen = false;
     let mut content_type_seen = false;
+    // First-parameter shape of the default export (#2352). `None` = the
+    // walk has not seen a default export yet; the first one wins (two
+    // default exports are a TS error anyway, and first-wins keeps the
+    // verdict deterministic).
+    let mut default_export_param: Option<DefaultExportFirstParam> = None;
 
     for item in module.body.iter() {
+        // The default-export shape rides on THIS walk — the detector
+        // must not cost a second SWC parse (#2351).
+        if let ModuleItem::ModuleDecl(decl) = item {
+            if default_export_param.is_none() {
+                default_export_param = default_export_first_param(decl, &ctx);
+            }
+        }
+
         // Only `ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(...))`
         // matters here; everything else is a top-level statement,
         // import, default export, type-only export, etc., none of
@@ -340,12 +479,15 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
         }
     }
 
+    let default_export_param = default_export_param.unwrap_or(DefaultExportFirstParam::Absent);
+
     let frontmatter = frontmatter.ok_or_else(|| TsxFrontmatterError::MissingFrontmatter {
         file: file_name.to_string(),
         // Surface the loop-resolved `prerender` instead of discarding it:
         // a lone `export const prerender = false` (no `frontmatter`) must
         // still reach the `output: static` gate (#1198).
         prerender,
+        default_export_param: default_export_param.clone(),
     })?;
 
     Ok(TsxFrontmatter {
@@ -353,6 +495,7 @@ pub fn extract(source: &str, file_name: &str) -> Result<TsxFrontmatter, TsxFront
         extension,
         content_type,
         prerender,
+        default_export_param,
     })
 }
 
@@ -471,6 +614,148 @@ fn unwrap_ts_wrappers(expr: &Expr) -> &Expr {
             Expr::TsTypeAssertion(t) => &t.expr,
             _ => return cur,
         };
+    }
+}
+
+/// Classify a module declaration's default export, if it is one.
+/// `None` means "not a default export" — the caller keeps looking.
+fn default_export_first_param(decl: &ModuleDecl, ctx: &Ctx<'_>) -> Option<DefaultExportFirstParam> {
+    match decl {
+        // `export default function Page(…) {}` / `export default class …`
+        ModuleDecl::ExportDefaultDecl(d) => Some(match &d.decl {
+            DefaultDecl::Fn(f) => first_param_shape(f.function.params.iter().map(|p| &p.pat), ctx),
+            // A class is not a function literal — condition 2 fails.
+            DefaultDecl::Class(_) => DefaultExportFirstParam::Opaque,
+            // Type-only: there is no runtime default export to call.
+            DefaultDecl::TsInterfaceDecl(_) => DefaultExportFirstParam::Absent,
+        }),
+        // `export default (…) => {}`, `export default handler`, …
+        ModuleDecl::ExportDefaultExpr(e) => Some(match unwrap_ts_wrappers(&e.expr) {
+            Expr::Arrow(a) => first_param_shape(a.params.iter(), ctx),
+            Expr::Fn(f) => first_param_shape(f.function.params.iter().map(|p| &p.pat), ctx),
+            // Identifier references, calls, classes, and everything else
+            // are the epic's documented misses — seeing through them
+            // would mean resolving bindings across modules.
+            _ => DefaultExportFirstParam::Opaque,
+        }),
+        // `export { handler as default }` / `export { default } from "…"`
+        // — a real default export whose value lives elsewhere.
+        ModuleDecl::ExportNamed(named) => named
+            .specifiers
+            .iter()
+            .any(export_specifier_names_default)
+            .then_some(DefaultExportFirstParam::Opaque),
+        _ => None,
+    }
+}
+
+/// Does this export specifier introduce a `default` export? Covers both
+/// `export { handler as default }` (aliased) and
+/// `export { default } from "./handler"` (re-exported as-is).
+fn export_specifier_names_default(spec: &ExportSpecifier) -> bool {
+    let named = match spec {
+        ExportSpecifier::Named(n) => n,
+        // `export * as default from "…"` — also a default export.
+        ExportSpecifier::Namespace(ns) => return module_export_name_is_default(&ns.name),
+        ExportSpecifier::Default(_) => return true,
+    };
+    if named.is_type_only {
+        return false;
+    }
+    // The *exported* name is what matters; it falls back to `orig` when
+    // there is no `as` clause (`export { default } from "…"`).
+    let exported = named.exported.as_ref().unwrap_or(&named.orig);
+    module_export_name_is_default(exported)
+}
+
+fn module_export_name_is_default(name: &ModuleExportName) -> bool {
+    match name {
+        ModuleExportName::Ident(i) => i.sym.as_ref() == "default",
+        ModuleExportName::Str(s) => wtf8_to_string(&s.value) == "default",
+    }
+}
+
+/// Classify the FIRST parameter of a function-literal default export.
+/// Zero parameters is [`DefaultExportFirstParam::Absent`] — the correct
+/// API-handler shape.
+fn first_param_shape<'a, I>(mut params: I, ctx: &Ctx<'_>) -> DefaultExportFirstParam
+where
+    I: Iterator<Item = &'a Pat>,
+{
+    // TypeScript's `this` pseudo-parameter is erased at compile time and
+    // receives no argument, so the props object still arrives in the
+    // slot after it. Classifying it as the first parameter would report
+    // `function Page(this: Request, props: Props)` — a correct page — at
+    // the strong tier.
+    match params.find(|pat| !is_this_pseudo_param(pat)) {
+        Some(pat) => classify_param_pat(pat, ctx),
+        None => DefaultExportFirstParam::Absent,
+    }
+}
+
+fn is_this_pseudo_param(pat: &Pat) -> bool {
+    matches!(pat, Pat::Ident(bi) if bi.id.sym.as_ref() == "this")
+}
+
+/// Unwrap a default value (`Pat::Assign`) and a rest element
+/// (`Pat::Rest`) — condition 3 — then classify what is underneath.
+fn classify_param_pat(pat: &Pat, ctx: &Ctx<'_>) -> DefaultExportFirstParam {
+    let mut cur = pat;
+    loop {
+        cur = match cur {
+            Pat::Ident(bi) => {
+                let (line, col) = ctx.line(bi.id.span);
+                return DefaultExportFirstParam::Plain(PlainFirstParam {
+                    name: bi.id.sym.as_ref().to_owned(),
+                    annotation_is_request: bi
+                        .type_ann
+                        .as_deref()
+                        .is_some_and(type_ann_is_global_request),
+                    line,
+                    col,
+                });
+            }
+            Pat::Object(_) | Pat::Array(_) => return DefaultExportFirstParam::Destructured,
+            Pat::Assign(a) => &a.left,
+            Pat::Rest(r) => &r.arg,
+            // `Pat::Expr` is for-in/for-of only and `Pat::Invalid` comes
+            // from a recovered parse; neither is a shape to lint on.
+            Pat::Expr(_) | Pat::Invalid(_) => return DefaultExportFirstParam::Opaque,
+        };
+    }
+}
+
+/// Is this annotation the global `Request`?
+///
+/// Matched against the type AST — a `TsTypeRef` with no type arguments
+/// whose entity name is the bare ident `Request` or the qualified
+/// `globalThis.Request`. Rendering the type to a string and
+/// substring-matching would accept `MyRequest` and `Request<T>`, which
+/// is precisely what the strong tier must not do (#2352).
+fn type_ann_is_global_request(ann: &TsTypeAnn) -> bool {
+    type_is_global_request(&ann.type_ann)
+}
+
+fn type_is_global_request(ty: &TsType) -> bool {
+    match ty {
+        TsType::TsParenthesizedType(p) => type_is_global_request(&p.type_ann),
+        TsType::TsTypeRef(r) => {
+            // `Request<T>` carries type arguments — a different type.
+            r.type_params.is_none() && entity_name_is_global_request(&r.type_name)
+        }
+        _ => false,
+    }
+}
+
+fn entity_name_is_global_request(name: &TsEntityName) -> bool {
+    match name {
+        TsEntityName::Ident(i) => i.sym.as_ref() == "Request",
+        TsEntityName::TsQualifiedName(q) => {
+            // Exactly `globalThis.Request`; any deeper qualification
+            // (`foo.globalThis.Request`, `ns.Request`) is some other type.
+            matches!(&q.left, TsEntityName::Ident(l) if l.sym.as_ref() == "globalThis")
+                && q.right.sym.as_ref() == "Request"
+        }
     }
 }
 
@@ -1045,7 +1330,9 @@ mod tests {
         let err = extract(src, "no-fm.tsx").expect_err("must fail");
         match err {
             // No `prerender` export → carries the SSG default (`true`).
-            TsxFrontmatterError::MissingFrontmatter { file, prerender } => {
+            TsxFrontmatterError::MissingFrontmatter {
+                file, prerender, ..
+            } => {
                 assert_eq!(file, "no-fm.tsx");
                 assert!(prerender, "absent prerender defaults to SSG (true)");
             }
@@ -1062,7 +1349,9 @@ mod tests {
         let src = "export const prerender = false;\nexport default function() { return null; }\n";
         let err = extract(src, "ssr-only.tsx").expect_err("must fail (no frontmatter)");
         match err {
-            TsxFrontmatterError::MissingFrontmatter { file, prerender } => {
+            TsxFrontmatterError::MissingFrontmatter {
+                file, prerender, ..
+            } => {
                 assert_eq!(file, "ssr-only.tsx");
                 assert!(
                     !prerender,
@@ -1305,6 +1594,392 @@ mod tests {
         let out = extract_ok(src);
         assert_eq!(out.frontmatter["offset"].as_i64(), Some(-7));
         assert_eq!(out.frontmatter["plus"].as_i64(), Some(3));
+    }
+
+    // ----- default export first parameter (#2352) -----
+
+    /// Wrap a default export in the minimal page a successful `extract`
+    /// needs, and hand back the captured first-parameter shape.
+    fn param_shape_of(default_export: &str) -> DefaultExportFirstParam {
+        let src = format!("export const frontmatter = {{ title: \"X\" }};\n{default_export}\n");
+        extract_ok(&src).default_export_param
+    }
+
+    /// The gate as a `prerender = false` route sees it.
+    fn tier_of(default_export: &str) -> Option<RequestParamTier> {
+        ssr_request_param_tier(false, &param_shape_of(default_export))
+    }
+
+    fn plain_of(default_export: &str) -> PlainFirstParam {
+        match param_shape_of(default_export) {
+            DefaultExportFirstParam::Plain(p) => p,
+            other => unreachable!("expected a plain first parameter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_annotation_reaches_the_strong_tier_on_every_function_literal_form() {
+        // Condition 2 admits all three function-literal forms; the
+        // annotation makes each one strong.
+        for form in [
+            "export default async function Handler(request: Request) { return null; }",
+            "export default async function (request: Request) { return null; }",
+            "export default async (request: Request) => null;",
+        ] {
+            assert_eq!(
+                tier_of(form),
+                Some(RequestParamTier::Strong),
+                "expected the strong tier for {form:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_global_this_request_reaches_the_strong_tier() {
+        for form in [
+            "export default function Handler(request: globalThis.Request) { return null; }",
+            "export default function (request: globalThis.Request) { return null; }",
+            "export default (request: globalThis.Request) => null;",
+        ] {
+            assert_eq!(
+                tier_of(form),
+                Some(RequestParamTier::Strong),
+                "expected the strong tier for {form:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn request_and_req_names_reach_the_heuristic_tier_without_an_annotation() {
+        for form in [
+            "export default function Handler(request) { return null; }",
+            "export default function (request) { return null; }",
+            "export default (request) => null;",
+            "export default function Handler(req) { return null; }",
+            "export default function (req) { return null; }",
+            "export default (req) => null;",
+        ] {
+            assert_eq!(
+                tier_of(form),
+                Some(RequestParamTier::Heuristic),
+                "expected the heuristic tier for {form:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn plain_param_carries_name_and_source_location() {
+        // The location convention is the file's existing one: 1-based
+        // line/column of the offending node (here, the parameter).
+        let plain = plain_of("export default function Handler(request: Request) { return null; }");
+        assert_eq!(plain.name, "request");
+        assert!(plain.annotation_is_request);
+        // Line 1 is the injected `frontmatter` export, line 2 the handler.
+        assert_eq!(plain.line, 2, "parameter should be reported on line 2");
+        assert!(plain.col >= 1, "column should be 1-based");
+    }
+
+    #[test]
+    fn non_firing_shapes_produce_no_tier() {
+        // The correct API-handler shape, every destructuring form, and a
+        // props parameter. None of these may ever fire.
+        let cases = [
+            (
+                "export default async function Handler() { return null; }",
+                DefaultExportFirstParam::Absent,
+            ),
+            (
+                "export default async () => null;",
+                DefaultExportFirstParam::Absent,
+            ),
+            (
+                "export default function Page({ params }) { return null; }",
+                DefaultExportFirstParam::Destructured,
+            ),
+            (
+                "export default function Page({ title, params }) { return null; }",
+                DefaultExportFirstParam::Destructured,
+            ),
+            (
+                "export default function Page([a, b]) { return null; }",
+                DefaultExportFirstParam::Destructured,
+            ),
+            (
+                "export default ({ params }) => null;",
+                DefaultExportFirstParam::Destructured,
+            ),
+            (
+                "export default class Handler { }",
+                DefaultExportFirstParam::Opaque,
+            ),
+        ];
+        for (form, expected) in cases {
+            let shape = param_shape_of(form);
+            assert_eq!(shape, expected, "unexpected shape for {form:?}");
+            assert_eq!(shape.request_param_tier(), None, "{form:?} must not fire");
+        }
+        // A `props` parameter IS a plain identifier — the shape is
+        // captured, but neither tier applies.
+        for form in [
+            "export default function Page(props) { return null; }",
+            "export default function Page(props: PageProps) { return null; }",
+        ] {
+            assert_eq!(plain_of(form).name, "props");
+            assert_eq!(tier_of(form), None, "{form:?} must not fire");
+        }
+    }
+
+    #[test]
+    fn default_exports_the_walk_cannot_see_through_are_opaque() {
+        // The epic's documented misses. Each is a real default export
+        // whose value lives behind a binding this AST-only walk refuses
+        // to resolve — pinned so the boundary is recorded, not
+        // rediscovered.
+        for form in [
+            "function handler(request: Request) { return null; }\nexport default handler;",
+            "function handler(request: Request) { return null; }\nexport { handler as default };",
+            "export { default } from \"./handler\";",
+            "export default wrap(handler);",
+            "export default handler as Handler;",
+        ] {
+            let shape = param_shape_of(form);
+            assert_eq!(
+                shape,
+                DefaultExportFirstParam::Opaque,
+                "expected Opaque for {form:?}",
+            );
+            assert_eq!(shape.request_param_tier(), None, "{form:?} must not fire");
+        }
+    }
+
+    #[test]
+    fn a_named_export_that_is_not_default_leaves_the_shape_absent() {
+        // Guard against the `default`-detection above over-triggering on
+        // ordinary named re-exports.
+        assert_eq!(
+            param_shape_of(
+                "function handler(request: Request) { return null; }\nexport { handler };"
+            ),
+            DefaultExportFirstParam::Absent,
+        );
+        assert_eq!(
+            param_shape_of("export { thing } from \"./other\";"),
+            DefaultExportFirstParam::Absent,
+        );
+        // `export { default as handler } from "…"` re-exports someone
+        // else's default under a different name — this module has none.
+        assert_eq!(
+            param_shape_of("export { default as handler } from \"./other\";"),
+            DefaultExportFirstParam::Absent,
+        );
+    }
+
+    #[test]
+    fn lookalike_annotations_never_reach_the_strong_tier() {
+        // The precision requirement: matched against the type AST, not a
+        // rendered string. `MyRequest` and `Request<T>` must not be
+        // mistaken for the global `Request`.
+        for form in [
+            "export default function Handler(request: MyRequest) { return null; }",
+            "export default function Handler(request: Request<T>) { return null; }",
+            "export default function Handler(request: WebRequest) { return null; }",
+            "export default function Handler(request: Req) { return null; }",
+            "export default function Handler(request: ns.Request) { return null; }",
+        ] {
+            let plain = plain_of(form);
+            assert!(
+                !plain.annotation_is_request,
+                "{form:?} must not resolve to the global Request",
+            );
+            // The *name* still carries the heuristic tier — that is the
+            // documented behavior (a mis-annotated `request` parameter is
+            // exactly as broken), so assert the tier, not merely "fires".
+            assert_eq!(
+                tier_of(form),
+                Some(RequestParamTier::Heuristic),
+                "{form:?} should fall back to the heuristic tier on its name",
+            );
+        }
+    }
+
+    #[test]
+    fn local_request_type_alias_is_not_resolved() {
+        // `type Req = Request` would need a type checker to follow.
+        // Recorded as a miss of the STRONG tier; the parameter name keeps
+        // the heuristic one.
+        let src =
+            "type Req = Request;\nexport default function Handler(request: Req) { return null; }";
+        let plain = plain_of(src);
+        assert!(!plain.annotation_is_request);
+        assert_eq!(tier_of(src), Some(RequestParamTier::Heuristic));
+        // A parameter named neither `request` nor `req` behind the same
+        // alias is a total miss — the other half of the boundary.
+        let renamed =
+            "type Req = Request;\nexport default function Handler(input: Req) { return null; }";
+        assert_eq!(tier_of(renamed), None);
+    }
+
+    #[test]
+    fn assign_and_rest_patterns_are_unwrapped() {
+        // Condition 3 unwraps a default value and a rest element before
+        // deciding whether the parameter is a plain identifier.
+        assert_eq!(
+            tier_of(
+                "export default function Handler(request = new Request(\"/\")) { return null; }"
+            ),
+            Some(RequestParamTier::Heuristic),
+            "a defaulted `request` is still a plain identifier",
+        );
+        assert_eq!(
+            tier_of(
+                "export default function Handler(request: Request = new Request(\"/\")) { return null; }"
+            ),
+            Some(RequestParamTier::Strong),
+            "the annotation survives the default value",
+        );
+        // `(...args)` unwraps to the plain identifier `args` — captured,
+        // but neither tier applies.
+        let rest = "export default function Handler(...args) { return null; }";
+        assert_eq!(plain_of(rest).name, "args");
+        assert_eq!(tier_of(rest), None);
+        // A destructured rest element stays destructured.
+        assert_eq!(
+            param_shape_of("export default function Page(...[first]) { return null; }"),
+            DefaultExportFirstParam::Destructured,
+        );
+    }
+
+    #[test]
+    fn only_the_first_parameter_is_considered() {
+        // A `Request` in second position is not the shape zfb miscalls.
+        assert_eq!(
+            tier_of("export default function Page({ params }, request: Request) { return null; }"),
+            None,
+        );
+        assert_eq!(
+            tier_of("export default function Page(props, request: Request) { return null; }"),
+            None,
+        );
+    }
+
+    #[test]
+    fn typescript_this_pseudo_param_is_not_the_first_runtime_parameter() {
+        // `this: T` is erased at compile time and receives no argument —
+        // the props object still lands in the slot after it. Treating it
+        // as the first parameter would report a correct page at the
+        // strong tier.
+        let ok = "export default function Page(this: Request, props: Props) { return null; }";
+        assert_eq!(plain_of(ok).name, "props");
+        assert_eq!(tier_of(ok), None, "the erased `this` must not fire");
+        // The parameter AFTER it is the real one, and still fires.
+        assert_eq!(
+            tier_of(
+                "export default function Handler(this: unknown, request: Request) { return null; }"
+            ),
+            Some(RequestParamTier::Strong),
+        );
+        assert_eq!(
+            param_shape_of(
+                "export default function Page(this: unknown, { params }) { return null; }"
+            ),
+            DefaultExportFirstParam::Destructured,
+        );
+        // A handler whose only declared parameter is the pseudo one takes
+        // no runtime arguments at all.
+        assert_eq!(
+            param_shape_of("export default function Handler(this: Request) { return null; }"),
+            DefaultExportFirstParam::Absent,
+        );
+    }
+
+    #[test]
+    fn prerender_true_never_fires_the_gate() {
+        // Condition 1 belongs to the caller. An SSG page whose component
+        // happens to take a parameter named `request` is not this bug.
+        let shape =
+            param_shape_of("export default function Page(request: Request) { return null; }");
+        assert_eq!(shape.request_param_tier(), Some(RequestParamTier::Strong));
+        assert_eq!(
+            ssr_request_param_tier(true, &shape),
+            None,
+            "an SSG route must never be reported",
+        );
+        assert_eq!(
+            ssr_request_param_tier(false, &shape),
+            Some(RequestParamTier::Strong),
+        );
+    }
+
+    #[test]
+    fn interface_default_export_has_no_runtime_parameter() {
+        // Type-only — there is no callable default export at all.
+        assert_eq!(
+            param_shape_of("export default interface Props { title: string }"),
+            DefaultExportFirstParam::Absent,
+        );
+    }
+
+    #[test]
+    fn missing_frontmatter_path_carries_the_handler_verdict() {
+        // The common API-route shape: `prerender = false`, no
+        // `frontmatter` export at all. The detector would be blind to
+        // its own headline case if the verdict were dropped here.
+        let src = "export const prerender = false;\n\
+                   export default async function handler(request: Request) { return new Response(\"\"); }\n";
+        let err = extract(src, "pages/api/submit.tsx").expect_err("must fail (no frontmatter)");
+        match err {
+            TsxFrontmatterError::MissingFrontmatter {
+                file,
+                prerender,
+                default_export_param,
+            } => {
+                assert_eq!(file, "pages/api/submit.tsx");
+                assert!(!prerender);
+                assert_eq!(
+                    ssr_request_param_tier(prerender, &default_export_param),
+                    Some(RequestParamTier::Strong),
+                    "the strong-tier verdict must survive the error path",
+                );
+                match default_export_param {
+                    DefaultExportFirstParam::Plain(p) => {
+                        assert_eq!(p.name, "request");
+                        assert_eq!(p.line, 2, "handler is on line 2 of the snippet");
+                    }
+                    other => unreachable!("expected a plain first parameter, got {other:?}"),
+                }
+            }
+            other => unreachable!("expected MissingFrontmatter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_frontmatter_path_carries_a_non_firing_verdict_too() {
+        // The error path is not a "found something" channel — a
+        // frontmatter-less page with a correct handler reports the shape
+        // it actually has.
+        let src = "export const prerender = false;\nexport default async function handler() { return new Response(\"\"); }\n";
+        let err = extract(src, "pages/api/ok.tsx").expect_err("must fail (no frontmatter)");
+        match err {
+            TsxFrontmatterError::MissingFrontmatter {
+                prerender,
+                default_export_param,
+                ..
+            } => {
+                assert_eq!(default_export_param, DefaultExportFirstParam::Absent);
+                assert_eq!(
+                    ssr_request_param_tier(prerender, &default_export_param),
+                    None
+                );
+            }
+            other => unreachable!("expected MissingFrontmatter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn page_without_a_default_export_reports_absent() {
+        let out = extract_ok("export const frontmatter = { title: \"X\" };");
+        assert_eq!(out.default_export_param, DefaultExportFirstParam::Absent);
+        assert_eq!(out.default_export_param.request_param_tier(), None);
     }
 
     // ----- filename_extension_candidate -----

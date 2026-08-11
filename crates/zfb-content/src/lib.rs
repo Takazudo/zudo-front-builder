@@ -94,7 +94,12 @@ pub use mdx_jsx_emit::{
     parse_mdx_specifier, CompiledMdx, MdxJsxOptions, MdxModuleCache, MdxModuleSpecifier,
     SpecifierError,
 };
+// `DefaultExportFirstParam` / `PlainFirstParam` / `RequestParamTier` and
+// `ssr_request_param_tier` are the SSR handler-shape detector (#2352):
+// one gate definition shared by `zfb dev`, `zfb build`, and `zfb check`
+// so none of the three re-implements the rule.
 pub use tsx_frontmatter::{
-    extract as extract_tsx_frontmatter, filename_extension_candidate, TsxFrontmatter,
+    extract as extract_tsx_frontmatter, filename_extension_candidate, ssr_request_param_tier,
+    DefaultExportFirstParam, PlainFirstParam, RequestParamTier, TsxFrontmatter,
     TsxFrontmatterError,
 };
