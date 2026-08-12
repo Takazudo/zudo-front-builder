@@ -957,18 +957,29 @@ mod tests {
         // from zfb-plugin-resolver's public VIRTUAL_MODULE_TEMP_PREFIX
         // (".zfb-virtual-") / VIRTUAL_MODULE_TEMP_SUFFIX (".mjs") constants
         // (crates/zfb-plugin-resolver/src/lib.rs). All three cover the same
-        // kind of window: after a zfb process is killed mid-bundle.
+        // kind of window: after a zfb process is killed mid-bundle. The
+        // plugin-bundle glob is derived from zfb-build's public
+        // PLUGIN_BUNDLE_TEMP_PREFIX/PLUGIN_BUNDLE_TEMP_SUFFIX constants
+        // (crates/zfb-build/src/plugin_bundler.rs) the same way the CSS glob
+        // is derived, closing the same drift risk (issue #2372); it needs
+        // the "**/" prefix because plugin sources live at arbitrary depth.
         let css_glob = format!(
             "**/{}*{}",
             zfb_css::ENTRY_TMP_PREFIX,
             zfb_css::ENTRY_TMP_SUFFIX
         );
-        let expected_globs: [&str; 5] = [
+        let plugin_bundle_glob = format!(
+            "**/{}*{}",
+            zfb_build::PLUGIN_BUNDLE_TEMP_PREFIX,
+            zfb_build::PLUGIN_BUNDLE_TEMP_SUFFIX
+        );
+        let expected_globs: [&str; 6] = [
             css_glob.as_str(),
             ".zfb-esbuild-entry-*.tsx",
             ".zfb-islands-tsconfig-*.json",
             ".zfb-worker-tsconfig-*.json",
             ".zfb-virtual-*.mjs",
+            plugin_bundle_glob.as_str(),
         ];
         for template_name in ["basic-blog", "node-free"] {
             let dir = TEMPLATES
