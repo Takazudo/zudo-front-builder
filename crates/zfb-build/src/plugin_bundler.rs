@@ -1172,6 +1172,22 @@ mod tests {
         std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy)
     }
 
+    /// The retry's discriminator is `io::Error::kind()`, but what the kernel
+    /// actually hands back is raw errno 26. Nothing else in this module makes
+    /// that mapping falsifiable: were it ever to change, the guard below would
+    /// simply stop matching and the flake would return with every test still
+    /// green. Unix-only — `ExecutableFileBusy` has no Windows counterpart, and
+    /// the retry branch is dead code there by construction.
+    #[cfg(unix)]
+    #[test]
+    fn raw_os_error_26_is_classified_as_executable_file_busy() {
+        assert_eq!(
+            std::io::Error::from_raw_os_error(26).kind(),
+            std::io::ErrorKind::ExecutableFileBusy,
+            "ETXTBSY (errno 26) must map to the ErrorKind the retry guard matches on"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn spawn_retry_absorbs_transient_etxtbsy_and_then_succeeds() {
         let mut attempts = 0u32;
