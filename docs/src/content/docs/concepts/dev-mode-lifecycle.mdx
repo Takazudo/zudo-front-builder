@@ -239,6 +239,26 @@ the first render is free.
 This change pairs with `public/` no longer being a watch root (above): together
 they mean a large `public/` tree neither slows startup nor feeds the watcher.
 
+### The post-ready watcher arming window
+
+The ready banner prints the moment the TCP listener is bound — before the background boot
+task has necessarily finished registering the project's file watches with the OS. On top of
+that, native filesystem-notification backends (macOS FSEvents, and to a lesser degree Linux
+inotify) have their own brief per-stream startup dead window right after a watch is
+registered, during which a file-create event can be dropped entirely rather than merely
+delayed.
+
+Put together: **the ready banner is not a "watcher armed" signal.** An edit saved in the
+first moments after `zfb dev` reports ready can land before the watcher is actually observing
+that path, and the corresponding change is lost rather than queued.
+
+There is no fixed safe delay to wait out. How long the window lasts depends on the OS, the
+size of the watched tree, and machine load, so zfb does not publish — and you should not
+assume — a number of milliseconds after which it is always safe to start editing. If a save
+right away doesn't seem to trigger a rebuild, the recovery is simply to save the file again:
+by the time you notice nothing happened and re-save, the watcher has settled, and the second
+write is reliably observed.
+
 ## Related
 
 - [Build pipeline](./build-pipeline.mdx) — the full pipeline from CLI to
