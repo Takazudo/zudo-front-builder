@@ -34,15 +34,29 @@ pub const PLUGIN_BUNDLE_TEMP_PREFIX: &str = ".zfb-plugin-bundle-";
 /// Filename suffix for staged plugin bundle artifacts.
 pub const PLUGIN_BUNDLE_TEMP_SUFFIX: &str = ".mjs";
 
-/// Age threshold for the stray-bundle sweep below, mirroring
-/// `zfb_css::engine`'s `ENTRY_TMP_STALE_AFTER` (zfb#821).
-const PLUGIN_BUNDLE_TEMP_STALE_AFTER: Duration = Duration::from_secs(60);
+/// Age threshold for the stray-bundle sweep below, modelled on
+/// `zfb_css::engine`'s `ENTRY_TMP_STALE_AFTER` (zfb#821) but deliberately
+/// longer than that constant's 60s: a plugin bundle's staged file is left
+/// unlocked while esbuild writes it (see [`bundle_plugin_entry`]), so this
+/// window must comfortably exceed [`ESBUILD_BUNDLE_TIMEOUT`] or a concurrent
+/// process's sweep could reap an in-flight bundle purely on mtime.
+const PLUGIN_BUNDLE_TEMP_STALE_AFTER: Duration = Duration::from_secs(600);
 
 /// Wedge-guard deadline for the esbuild subprocess in [`bundle_plugin_entry`]
 /// — a generous backstop, not a performance bound. Mirrors the 5-minute
 /// constant `adapter.rs`'s `run_capturing` already uses for the same class
 /// of stalled-subprocess risk.
 const ESBUILD_BUNDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+// The staging window (create the temp file → esbuild writes it → lock it) is
+// unlocked for at most `ESBUILD_BUNDLE_TIMEOUT`, after which the subprocess is
+// killed and the file dropped. Keeping the staleness threshold strictly above
+// that bound is what makes "unlocked AND past the stale window" a sound proof
+// of abandonment rather than a race against a slow bundle.
+const _: () = assert!(
+    PLUGIN_BUNDLE_TEMP_STALE_AFTER.as_secs() > ESBUILD_BUNDLE_TIMEOUT.as_secs(),
+    "PLUGIN_BUNDLE_TEMP_STALE_AFTER must exceed ESBUILD_BUNDLE_TIMEOUT"
+);
 
 /// `--banner:js` injected into every plugin bundle so a `.cts`/CommonJS
 /// entry's `require(...)` calls keep working after bundling (codex review
@@ -196,23 +210,6 @@ pub async fn bundle_plugin_entry(
         })?;
     let staged_path = staged.path().to_path_buf();
 
-    // Locked immediately, BEFORE esbuild ever runs — deliberately NOT the
-    // #1976 write-then-lock convention `zfb-plugin-resolver`'s
-    // `allocate_locked_entry_tmp` uses, where the "write" is a synchronous,
-    // near-instant `std::fs::write` in this same process. Here the
-    // "write" is an external esbuild subprocess that can legitimately run
-    // for most of `ESBUILD_BUNDLE_TIMEOUT` (5 minutes) — locking only
-    // after it exits would leave the freshly-created, still-empty staged
-    // file unlocked for that whole window. A concurrent zfb process's
-    // `sweep_stale_plugin_bundle_files` sweep (issue #2371) ages files
-    // purely on mtime once past 60s, so an unlocked in-progress bundle
-    // older than that would read as abandoned and get reaped out from
-    // under the esbuild process still writing it (`--outfile`) below.
-    // Locking here — before that window opens at all — closes the gap.
-    // Shared (not exclusive), since nothing but a reading module loader
-    // ever opens this file again once esbuild finishes.
-    let _ = staged.as_file().lock_shared();
-
     // `kill_on_drop` + the `tokio::time::timeout` below is the async
     // equivalent of `adapter.rs`'s `run_capturing` 5-minute wedge guard: a
     // stalled esbuild binary (or a `ZFB_ESBUILD_BIN` wrapper whose
@@ -270,6 +267,21 @@ pub async fn bundle_plugin_entry(
         );
     }
 
+    // Locked only now that esbuild has finished writing `--outfile` — the
+    // #1976 write-then-lock convention (`zfb-plugin-resolver`'s
+    // `allocate_locked_entry_tmp`). On Windows `lock_shared` maps to
+    // `LockFileEx`, whose shared range lock blocks WRITES THROUGH OTHER
+    // HANDLES, so locking before the spawn would make esbuild's own
+    // `--outfile` write fail on every `.ts`/`.tsx`/`.mts`/`.cts` plugin —
+    // and `@takazudo/zfb-win32-x64-msvc` is a shipped platform. The
+    // still-unlocked staging window is covered instead by
+    // `PLUGIN_BUNDLE_TEMP_STALE_AFTER` exceeding `ESBUILD_BUNDLE_TIMEOUT`
+    // (see the const assertion above), so a concurrent process's sweep can
+    // never age out a bundle esbuild is still writing. Shared (not
+    // exclusive), since nothing but a reading module loader ever opens this
+    // file again.
+    let _ = staged.as_file().lock_shared();
+
     let file_url = url::Url::from_file_path(&staged_path)
         .map_err(|()| {
             anyhow!(
@@ -292,19 +304,18 @@ pub async fn bundle_plugin_entry(
 ///
 /// On top of the age gate, a stale candidate is spared if a live process
 /// still holds it: `bundle_plugin_entry` takes a *shared* `flock` on its
-/// staged file immediately after creating it — deliberately BEFORE
-/// spawning esbuild, not after it finishes (see the `lock_shared` call's
-/// own doc comment for why the #1976 write-then-lock ordering doesn't
-/// transfer here) — so an EXCLUSIVE `try_lock` succeeding here proves no
-/// such process is still alive, regardless of age — mirroring
+/// staged file once esbuild has written it (#1976's write-then-lock
+/// ordering), so an EXCLUSIVE `try_lock` succeeding here proves no such
+/// process is still alive, regardless of age — mirroring
 /// `zfb_islands::esbuild`'s `sweep_orphaned_in_project_temp_files`
 /// lock-spare check (#1976/#2109). Two zfb processes (e.g. `zfb dev` +
 /// `zfb build`) can stage bundles in the same plugin directory
-/// concurrently; a live bundle — including one still mid-`esbuild`, before
-/// it has written any bytes — must never be reaped. Best-effort
-/// throughout: any individual error (unreadable dir, racing unlink,
-/// permission denied) is ignored — a failed sweep must never fail a
-/// build.
+/// concurrently; a live bundle must never be reaped. A bundle still
+/// mid-`esbuild` is not yet locked, and is covered by the age gate alone —
+/// which is why [`PLUGIN_BUNDLE_TEMP_STALE_AFTER`] is pinned above
+/// [`ESBUILD_BUNDLE_TIMEOUT`]. Best-effort throughout: any individual error
+/// (unreadable dir, racing unlink, permission denied) is ignored — a failed
+/// sweep must never fail a build.
 fn sweep_stale_plugin_bundle_files(stage_dir: &Path) {
     sweep_stale_plugin_bundle_files_at(stage_dir, SystemTime::now());
 }

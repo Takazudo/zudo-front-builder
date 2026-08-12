@@ -100,7 +100,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Console } from "node:console";
-import { existsSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import process from "node:process";
 import readline from "node:readline";
@@ -401,7 +401,17 @@ async function handleSetup(id, msg) {
               // do nothing. A NOT-YET-EXISTING path is fine (watchFiles
               // may legitimately name a file that will be created
               // later), so this check only fires once the path exists.
-              if (existsSync(entry) && statSync(entry).isDirectory()) {
+              // One `statSync` rather than an `existsSync` + `statSync`
+              // pair: a concurrent delete between the two would make the
+              // second call throw ENOENT and abort plugin setup over a path
+              // that is merely absent, which is valid.
+              let entryStat;
+              try {
+                entryStat = statSync(entry);
+              } catch (err) {
+                if (err?.code !== "ENOENT") throw err;
+              }
+              if (entryStat?.isDirectory()) {
                 throw new Error(
                   `addVirtualModule: \`options.watchFiles\` entries must be files ` +
                     `(got ${JSON.stringify(entry)}); directories are not watched recursively`,
