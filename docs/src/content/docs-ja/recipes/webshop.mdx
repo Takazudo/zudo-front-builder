@@ -31,8 +31,8 @@ category: Recipes
   返すには Response オブジェクトそのものが必要なので、これらのルートは Preact ツリーを自分で文字列化します。
 - **Web Crypto だけで組んだ認証**。PBKDF2 によるパスワードハッシュと、不透明なサーバー側セッション
   Cookie。認証ライブラリもクライアント JavaScript も使いません。
-- **フレームワークの制約が URL の形を決めた例**。注文確認ページはパスパラメータではなく
-  `/order?id=<n>` というクエリ文字列で、そこには理解しておく価値のある理由があります。
+- **意図して選ばれた URL の形**。注文確認ページはパスパラメータではなく `/order?id=<n>` という
+  クエリ文字列です。リポジトリが挙げている理由は、今の zfb には当てはまりません。
 - **Tailwind v4 のセマンティックなトークン設計**。`@theme` ブロックで登録しています。
 
 ## 使用技術
@@ -207,11 +207,16 @@ D1 には対話的トランザクションがないため、`lib/shop.ts` はま
 
 ### 注文 id がクエリ文字列である理由
 
-確認ページは `/order/<n>` ではなく `/order?id=<n>` です。これはフレームワークの制約がそのまま形に
-出たものです。zfb の [動的ルート](/ja/docs/concepts/dynamic-routes) の `[id].tsx` のようなセグメントは
-ビルド時の `paths()` の列挙から展開されますが、注文 id は購入されるまで存在しません。したがって
-`prerender = false` のルートは静的なパスに置くしかなく、id はクエリ文字列に載せて
+確認ページは `/order/<n>` ではなく `/order?id=<n>` です。id はクエリ文字列に載せて
 `new URL(request.url).searchParams` で読みます。
+
+これはこのデモが選んだ形であって、zfb の制約ではありません。`pages/order.tsx` にはそう読める古い
+コメントが残っており、`[id].tsx` のようなセグメントはビルド時の `paths()` の列挙からしか展開できない、
+と書かれています。列挙できないという部分は事実です。注文 id は購入されるまで存在しないので、
+列挙すべきものがありません。しかし `prerender = false` の [動的ルート](/ja/docs/concepts/dynamic-routes)
+はリクエスト時にマッチされ、`paths()` の export をまったく必要としません。ランタイムのルーターが
+コンポーネントに `params` を渡すので、`pages/order/[id].tsx` でも同じように動いたはずです。
+[ページモジュールの export](/ja/docs/api/meta-export) を参照してください。
 
 それでもこのページは一度きりの完了メッセージではなく、再訪できるレシートです。アクセスのたびに D1 から
 注文を読み直し、クエリはサインイン中のユーザーに限定されるので、他人の注文 id や存在しない id は
@@ -239,7 +244,7 @@ pnpm dev:cf
 `wrangler dev --port 8788` と、`pages/`・`components/`・`layouts/`・`lib/`・`styles/` の変更で
 `pnpm build` を再実行する `chokidar` ウォッチャーを並走させます。編集からブラウザ反映までは README に
 よればおよそ 1〜2 秒です。ローカルの SQLite データベースは再起動をまたいで保持され、`.wrangler/` を
-削除しない限りリセットされません。
+削除するとリセットされます。
 
 <Warning title="pnpm dev と pnpm dev:cf を同時に実行しないこと">
 
@@ -250,8 +255,9 @@ pnpm dev:cf
 さらに厄介なことに、`pnpm dev` の `predev` は `rm -rf dist .zfb .zfb-build` です。`wrangler dev` が
 配信中の `dist/` を消してしまい、再ビルドしてもリロードが走らない状態に陥ります。どちらか一方だけを
 使ってください。両方走らせてしまったら、すべて停止して `pnpm build` を実行し、`pnpm dev:cf` を
-再起動します（`pnpm preview` も答えにはなりません。ビルドが HTML を出力しないため、配信すべき静的
-ページが存在しないからです）。
+再起動します（`pnpm preview` はビルド結果を確認する 3 つめの方法です。Cloudflare アダプターを設定して
+いれば `zfb preview` は `wrangler dev` に処理を委ね、本物の Worker を配信します。ただし再ビルドは
+しないので、編集に追従する開発ループではなく、完成した `dist/` の確認手段です）。
 
 </Warning>
 
@@ -259,6 +265,6 @@ pnpm dev:cf
 
 - [Worker 上の SSR](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js` と `dist/_zfb_inner.mjs` の正体、`getCloudflareContext()` の仕組み
 - [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — SSR ハンドラーから D1 や KV を読む方法とバインディングの設定
-- [動的ルート](/ja/docs/concepts/dynamic-routes) — クエリ文字列を選んだ判断の背景にある `paths()` の契約
+- [動的ルート](/ja/docs/concepts/dynamic-routes) — `paths()` の契約と、`prerender = false` の動的ルートがリクエスト時にマッチされる仕組み
 - [ルーティング](/ja/docs/concepts/routing) — `pages/*.tsx` が URL になるまで
 - [スタイリング](/ja/docs/concepts/styling) — zfb における Tailwind v4

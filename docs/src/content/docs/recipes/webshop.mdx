@@ -32,8 +32,8 @@ The demo ships **zero client-side JavaScript**. Every button is a `<form method=
   Preact tree to a string themselves.
 - **Auth with nothing but Web Crypto.** PBKDF2 password hashing and an opaque server-side session
   cookie — no auth library, no client JavaScript.
-- **A URL shape forced by a framework constraint.** The order confirmation page is `/order?id=<n>`,
-  a query string rather than a path parameter, for a reason worth understanding.
+- **A deliberate URL shape.** The order confirmation page is `/order?id=<n>`, a query string rather
+  than a path parameter — and the reason the repo gives for it no longer holds.
 - **Tailwind v4 with a semantic token set** registered through an `@theme` block.
 
 ## Tech used
@@ -210,11 +210,16 @@ line items need its generated id) and then runs the line inserts plus the cart d
 
 ### Why the order id is a query string
 
-The confirmation page is `/order?id=<n>`, not `/order/<n>`. That is a framework constraint made
-visible: a zfb [dynamic route](../concepts/dynamic-routes.mdx) segment like `[id].tsx` is expanded
-from a build-time `paths()` enumeration, and order ids do not exist until a customer checks out.
-A `prerender = false` route therefore has to sit at a static path, and the id travels in the query
-string, read with `new URL(request.url).searchParams`.
+The confirmation page is `/order?id=<n>`, not `/order/<n>`. The id travels in the query string and is
+read with `new URL(request.url).searchParams`.
+
+That is this demo's choice, not a limit zfb imposes — and `pages/order.tsx` carries a stale comment
+claiming otherwise, that a `[id].tsx` segment can only come from a build-time `paths()` enumeration.
+The enumeration part is real enough: order ids do not exist until a customer checks out, so there is
+nothing to enumerate. But a [dynamic route](../concepts/dynamic-routes.mdx) with `prerender = false`
+is matched at request time and needs no `paths()` export at all — the runtime router hands the
+component its `params` — so `pages/order/[id].tsx` would have served just as well. See
+[Page module exports](../api/meta-export.mdx).
 
 The page is still a durable receipt rather than a one-shot flash message: it re-loads the order from
 D1 on every visit and scopes the query to the signed-in user, so someone else's order id — or an
@@ -240,7 +245,7 @@ pnpm dev:cf
 `pnpm dev:cf` applies migrations, runs one `pnpm build`, then uses `concurrently` to run
 `wrangler dev --port 8788` alongside a `chokidar` watcher that re-runs `pnpm build` when
 `pages/`, `components/`, `layouts/`, `lib/`, or `styles/` changes. The README puts edit-to-browser
-latency at roughly one to two seconds. The local SQLite database persists across restarts and only
+latency at roughly one to two seconds. The local SQLite database persists across restarts and
 resets if you delete `.wrangler/`.
 
 <Warning title="Do not run pnpm dev and pnpm dev:cf together">
@@ -252,8 +257,9 @@ that touches D1.
 Worse, `pnpm dev`'s `predev` step is `rm -rf dist .zfb .zfb-build`, which deletes the `dist/`
 directory `wrangler dev` is actively serving and leaves wrangler in a state where rebuilds stop
 triggering reloads. Pick one loop. If you ran both, stop everything, run `pnpm build`, and restart
-`pnpm dev:cf`. (`pnpm preview` is not the answer either — the build emits no HTML, so there are no
-static pages for it to serve.)
+`pnpm dev:cf`. (`pnpm preview` is a third way to see the built site — with the Cloudflare adapter
+configured, `zfb preview` hands off to `wrangler dev` and serves the real Worker — but it never
+rebuilds, so it checks a finished `dist/` rather than tracking your edits.)
 
 </Warning>
 
@@ -261,6 +267,6 @@ static pages for it to serve.)
 
 - [SSR on a Worker](../concepts/ssr-on-a-worker.mdx) — what `dist/_worker.js` and `dist/_zfb_inner.mjs` actually are, and how `getCloudflareContext()` works
 - [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — reading D1 and KV from an SSR handler, and wiring the bindings up
-- [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `paths()` contract behind the query-string decision
+- [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `paths()` contract, and how a `prerender = false` dynamic route is matched at request time
 - [Routing](../concepts/routing.mdx) — how `pages/*.tsx` becomes a URL
 - [Styling](../concepts/styling.mdx) — Tailwind v4 in zfb
