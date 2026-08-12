@@ -1,0 +1,321 @@
+---
+title: "サンプル: Reverse Proxy"
+description: メソッド・パス・クエリ・ボディを固定のアップストリームオリジンに転送するキャッチオールの prerender = false ルートと、両方向で意図的に施すヘッダー処理
+sidebar_position: 16
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+[`zfb-example-reverse-proxy`](https://github.com/Takazudo/zfb-example-reverse-proxy)
+のデモです。`/proxy/` 配下のすべてを固定のアップストリームオリジンに転送する、たった 1 つの
+SSR ルートで構成されています。`[...path]` ルートでの `export const prerender = false`、Worker
+の `[vars]` 値を読むための `getCloudflareContext()`、そして zfb のページから `Response` を
+そのままストリーミングして返す、という組み合わせを扱います。
+
+このページの中心にあるのは **ヘッダーポリシー** です。どの方向でどのヘッダーを落とすのか、
+そして `Set-Cookie` と CSP を落とすのが見落としではなく意図的なトレードオフである理由を
+説明します。
+
+</Info>
+
+**ライブデモ:** [zfb-example-reverse-proxy.takazudomodular.com](https://zfb-example-reverse-proxy.takazudomodular.com/)
+
+**リポジトリ:** [github.com/Takazudo/zfb-example-reverse-proxy](https://github.com/Takazudo/zfb-example-reverse-proxy)
+
+## 何を示すか
+
+- **キャッチオールの SSR ルート** — `export const prerender = false` を付けた
+  `pages/proxy/[...path].tsx` が、URL を 1 つも列挙することなく `/proxy/` 配下のすべてに応答する。
+- KV も D1 も R2 も使わず、素の Worker `[vars]` 値（`env.PROXY_ORIGIN`）を
+  `getCloudflareContext()` 経由で読む。
+- **メソッド・パスの残り・クエリ文字列・リクエストボディ** をアップストリームに転送し、
+  レスポンスボディはバッファリングせずにそのまま返す。
+- 両方向での **hop-by-hop ヘッダーの除去** と、`Set-Cookie`・CSP・HSTS を落とすことを
+  明文化したレスポンス側のポリシー。
+- **同一オリジンの `Location` リダイレクトを `/proxy/` 配下に書き換える** ことで、
+  リダイレクトの連鎖がプロキシの内側に留まるようにする。
+- Workers Static Assets との共存。`/proxy/...` はビルド済み静的アセットになることが
+  ないため、`run_worker_first = false` のままでもリクエストは Worker に到達する。
+
+<Warning title="これはオープンプロキシではありません">
+
+このパターンは、自分のドメインの配下に **小さく信頼できる** HTTP 面を露出させるためのものです。
+ドキュメントのミラー、同一組織の API ファサード、サイトと同じデプロイ境界を共有すべきオリジン
+などが該当します。デモの README が示している境界線は、そのまま守るべき内容です。
+
+- 転送先オリジンは **`wrangler.toml` に固定** しておく。ユーザー入力から導出しない。
+- 実アプリケーションでは **ユーザーが指定できるパスを必ず検証する**。このデモがパスの残りを
+  そのまま転送しているのは、アップストリームが固定された公開エコーサービスだからです。
+- 共有エッジキャッシュを無効化しないかぎり、パーソナライズされたレスポンスや非公開の
+  レスポンスをプロキシしてはいけません。このデモは `cacheEverything` を要求しており、
+  エッジキャッシュは訪問者間で共有されます。
+
+</Warning>
+
+## 使用技術
+
+| 項目 | リポジトリでの内容 |
+| --- | --- |
+| フレームワーク | zfb + Preact — `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0**（`zfb.config.ts` の `adapter` に指定） |
+| スタイリング | Tailwind CSS v4（`tailwind: { enabled: true }`）を `styles/global.css` からインポート |
+| レンダリング | `/` と `/404` は SSG。SSR ルートは 1 つだけで、`export const prerender = false` を持つ `pages/proxy/[...path].tsx` |
+| Cloudflare 面 | Workers Static Assets（`main = "./dist/_worker.js"` + `[assets]`）を `custom_domain` ルートで配信 |
+| バインディング | **なし。** 公開の `[vars]` エントリが 1 つだけ（`PROXY_ORIGIN = "https://httpbingo.org"`） |
+| 互換性設定 | `compatibility_date = "2026-05-01"`、`compatibility_flags = ["nodejs_compat"]` |
+| その他の依存 | `preact`、`preact-render-to-string`、`wrangler` 4.85.0 |
+
+アップストリームは httpbin 互換のエコーサービス [`httpbingo.org`](https://httpbingo.org) です。
+挙動が決定的なので、上に挙げた各項目にそれを証明できるエンドポイントが対応します。
+`/anything/...` は転送されたメソッドとクエリをそのまま返し、`/redirect-to` は同一オリジンの
+`Location` を返し、`/cookies/set` は `Set-Cookie` を返し、`/response-headers` は CSP と HSTS を
+通常のヘッダーと一緒に返します。
+
+## 必要なものと設定
+
+**プロビジョニングすべき Cloudflare リソースはありません。** KV ネームスペースも D1
+データベースも R2 バケットも、作成すべき Worker シークレットもありません。
+
+**設定値は 1 つだけで、それは資格情報ではありません。** `PROXY_ORIGIN` は `wrangler.toml` の
+`[vars]` にあり、意図的にコミットされています。
+
+```toml title="wrangler.toml"
+[vars]
+PROXY_ORIGIN = "https://httpbingo.org"
+```
+
+変更するときはこのファイルを編集します。リポジトリは `wrangler secret put PROXY_ORIGIN` を
+明確に禁じています。同名の Worker シークレットはコミットされた var を覆い隠すため、
+デプロイされた挙動がソースと静かに食い違うことになるからです。
+
+**`nodejs_compat` は必須** であり、任意のチューニングではありません。Cloudflare アダプターは
+リクエストごとの `(env, ctx, request)` を `node:async_hooks` の `AsyncLocalStorage` 経由で
+渡しますが、workerd はこれをデフォルトでは公開していません。フラグがないと Worker は起動に
+失敗します。詳しくは [SSR on a Worker（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker)
+を参照してください。
+
+**Cloudflare アカウントなしでもローカルで動く範囲:** `pnpm install`、`pnpm build`、
+`pnpm typecheck`。`zfb preview` は `wrangler dev` を exec するので、ビルド済みの Worker を
+デプロイせずにローカルで実行できます。公開アップストリームに到達できるかぎり、プロキシの
+経路をオフラインで一通り試せます。
+
+**Cloudflare が必要になる範囲:** デプロイのみです。本番は `custom_domain` ルートで配信される
+ため、API トークンにはアカウントレベルの Workers 権限に加えて
+**Zone · Workers Routes · Edit** が必要です。これがないと `wrangler deploy` は Worker の
+アップロードには成功したうえでルート作成の段階で失敗します。ゼロからの手順はリポジトリの
+`docs/cloudflare-setup.md` にあります。
+
+**ライブデモは公開されていて認証はありません。** GET 以外のメソッドも転送しますが、
+アップストリームは固定された公開エコーサービスなので、その先に書き込める対象はありません。
+
+## しくみ
+
+### ルートはパスを列挙しないキャッチオール
+
+`pages/proxy/[...path].tsx` はキャッチオールルートですが、`paths()` を宣言していません。
+必要ないからです。`paths()` は **どの具体的な URL をビルド時に出力するか** を伝えるための
+ものであり、`prerender = false` のルートはビルド時に何も出力しません。代わりにリクエスト時に
+ディスパッチされるので、1 つのファイルが `/proxy/` 配下のすべての URL に応答します。
+
+```tsx title="pages/proxy/[...path].tsx"
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+import { proxyRequest } from "../../lib/proxy";
+
+export const prerender = false;
+
+export default async function ProxyPage(_props: ProxyPageProps) {
+  const { env, request } = getCloudflareContext<Env>();
+  return proxyRequest({
+    request,
+    origin: env.PROXY_ORIGIN,
+    proxyPrefix: "/proxy/",
+  });
+}
+```
+
+注目すべき点が 2 つあります。1 つ目は、`prerender` が **リテラルの `export const`** であること。
+zfb はビルド時の静的 AST 解析でこれを検出するため、間接的な代入にすると黙って SSG に
+フォールバックします。2 つ目は、props が `_props` と名付けられて無視されていること。ルートは
+`params.path` の型を宣言していますが、意図的に一度も読みません。その理由は次の節にあります。
+
+### アップストリーム URL は元のリクエスト URL から導出する
+
+素直に実装するなら `params.path` のセグメントを繋ぎ直すところですが、この実装はそうしません。
+受け取った URL 自身の `pathname` からプレフィックスを切り落とし、`search` は丸ごとコピーします。
+
+```ts title="lib/proxy.ts"
+const pathRemainder = incomingUrl.pathname.slice(prefix.length);
+upstreamOrigin.pathname = joinPaths(upstreamOrigin.pathname, pathRemainder);
+upstreamOrigin.search = incomingUrl.search;
+upstreamOrigin.hash = "";
+```
+
+これが **パーセントエンコードされたパスセグメントとクエリ文字列を厳密に保つ** ための仕掛けです。
+デコード済みのルートパラメータを経由して往復させると、クライアントが送ったのとは異なる形に
+再エンコードされるおそれがあります。プロキシにとってそれは正しさの問題です。呼び出し元が
+一度も要求していない URL をアップストリームが受け取ってしまうからです。`hash` を空にしているのは、
+フラグメントがそもそもネットワーク上に送られないためです。
+
+オリジン自体も使用前に正規化されます。`normalizeProxyOrigin()` は `http:` / `https:` 以外を
+拒否し、設定値から認証情報・クエリ・フラグメントを取り除きます。雑に書かれた `PROXY_ORIGIN` が
+転送するリクエストすべてに余計な状態を紛れ込ませられないようにするためです。
+
+### hop-by-hop ヘッダーは両方向で削除する
+
+`connection`、`keep-alive`、`te`、`trailer`、`transfer-encoding`、`upgrade`、そして
+`proxy-` で始まるものは、リクエストからも **レスポンスからも** 取り除かれます。これらのヘッダーは
+メッセージそのものではなく、1 区間のネットワーク接続を記述するものです。新しい接続にそのまま
+転送しても、良くて無意味、悪ければ明確に誤りになります。Worker が自分で組み直したレスポンスに
+アップストリームの `transfer-encoding` をコピーすれば、もはや存在しないフレーミングを
+宣言してしまいます。
+
+リクエスト側ではさらに `content-length` と `host` も落とします。送出する `Request` は別ホスト
+宛ての新しいオブジェクトであり、どちらの値もアップストリームへの接続に合わせてランタイムが
+組み直すからです。元の値をコピーすればそれと矛盾します。
+
+なお、この集合は **固定リスト** です。`Connection` ヘッダーの中に列挙されたトークンまでは
+解析しないので、そこで指名されたヘッダー（`Connection: X-Hop` と `X-Hop: value` の組）は
+そのまま転送されます。このデモのように固定された既知のアップストリームが相手なら問題あり
+ませんが、もっと予測しにくい相手にこのパターンを向けるなら、まず最初に締めるべき箇所です。
+
+### Set-Cookie と CSP と HSTS は意図的に落とす
+
+レスポンス側ではさらに 4 つのヘッダーを落とします。ここが意図的なトレードオフです。
+
+```ts title="lib/proxy.ts"
+const STRIPPED_UPSTREAM_RESPONSE_HEADERS = new Set([
+  "content-security-policy",
+  "content-security-policy-report-only",
+  "set-cookie",
+  "strict-transport-security",
+]);
+```
+
+理由は、プロキシされたレスポンスがブラウザに届くときに纏っているのが、アップストリームでは
+なく **あなたのオリジン** だからです。これらのヘッダーはいずれも、それを配信したオリジンに
+紐づいて効きます。
+
+- 転送された `Set-Cookie` は **プロキシ側のホスト** にクッキーを設定します。アップストリームは
+  それを要求していないし、自分のものとして見ることもできません。一方であなたのドメインには、
+  `/proxy/` に触れた訪問者ごとに第三者オリジンがクッキーを書き込むことになります。
+- 転送された **CSP** は別サイトのアセット構成に合わせて書かれたものです。あなたのホストに
+  適用しても、役に立たないか、自分のページを壊すかのどちらかです。
+- 転送された **HSTS** がいちばん鋭い刃です。`Strict-Transport-Security` は *ホスト全体* に
+  効くので、他人のサーバーが選んだ `max-age` があなたのドメイン全体に適用されます。
+
+その代償は隠さずに明示されています。すなわち、**アップストリームのセッションと、
+アップストリームのブラウザセキュリティポリシーは意図的に保持されません。** 転送先でログインを
+必要とするものは、この実装のままでは動きません。動かしたいのであれば、クッキーのスコープ設計と
+ポリシーの書き換えを自分で明示的に決める必要があります。デフォルトで受け継ぐものではありません。
+
+### 同一オリジンのリダイレクトはプロキシ配下に書き換える
+
+アップストリームへのリクエストには `redirect: "manual"` を指定しているので、Worker 自身が 3xx を
+受け取ります。透過的に追跡はしません。そのうえで `rewriteLocationHeader()` が `Location` の値を
+アップストリームのリクエスト URL 基準で解決し、**転送先が同一オリジンの場合にのみ**
+`/proxy/` 配下へマッピングし直します。
+
+```ts title="lib/proxy.ts"
+if (target.origin !== options.upstreamRequestUrl.origin) {
+  return location;
+}
+
+const prefix = normalizeProxyPrefix(options.proxyPrefix ?? DEFAULT_PROXY_PREFIX);
+const pathRemainder = target.pathname.replace(/^\/+/, "");
+return `${prefix}${pathRemainder}${target.search}${target.hash}`;
+```
+
+その結果、`https://httpbingo.org/anything/target` は `/proxy/anything/target` になり、ブラウザの
+次の遷移もプロキシの内側に留まります。クロスオリジンの `Location` はそのまま通します。
+書き換えてしまうと無関係なオリジンを黙ってプロキシ面に引き込むことになり、それこそが上の警告が
+排除しているオープンプロキシの挙動だからです。
+
+### ストリーミングとキャッシュと失敗時の挙動
+
+レスポンスは `upstreamResponse.body` から直接組み立てられるので、ボディが Worker 内で
+バッファリングされることはありません。リクエスト側でも、GET と HEAD 以外のすべてのメソッドで
+`request.body` が転送されます。アップストリームへの fetch には Cloudflare 向けのヒントが
+1 つだけ付きます。
+
+```ts title="lib/proxy.ts"
+fetch(upstreamRequest, { cf: { cacheEverything: true } });
+```
+
+これは、キャッシュ可能な GET / HEAD のアップストリームレスポンスを、既定のファイル種別を超えて
+キャッシュ対象として扱うようエッジに依頼するものです。オリジンのキャッシュヘッダーは引き続き
+尊重されます。上の安全上の警告がパーソナライズされたレスポンスを名指ししているのも、この
+キャッシュが **共有** だからです。
+
+失敗経路は 2 つあり、いずれも素通しせずに `cache-control: no-store` 付きのプレーンテキストを
+返します。`PROXY_ORIGIN` が未設定、または絶対 `http:` / `https:` URL として不正な場合は
+**500**、アップストリームへの fetch が例外を投げた場合は元のメッセージを添えて **502** です。
+
+### 静的アセット層との共存
+
+`wrangler.toml` は zfb のデフォルトである `run_worker_first = false` を維持しているので、
+`_worker.js` が動く前にエッジのアセットルーターが一致する静的ファイルを返します。ここでは
+それが正しい設定です。`/proxy/...` はビルド済みアセットになることがないためアセット層では
+マッチせず、そのまま Worker に到達します。一方でプリレンダリングされた `/` と `/404` は
+エッジから直接、Worker を起動せずに配信されます。逆の設定が欲しくなる場面については
+[SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) を参照してください。
+
+## ローカルで動かす
+
+```sh
+pnpm install
+pnpm dev        # zfb dev
+pnpm build      # zfb build
+pnpm preview    # zfb preview（ビルド済み worker に対して wrangler dev を exec する）
+pnpm typecheck  # zfb check
+```
+
+**リポジトリ自身が書いている注意点:** `pnpm dev` が役に立つのは静的なインデックスページに
+対してです。プロキシは Cloudflare の `env.PROXY_ORIGIN` を読むので、SSR のプロキシ経路を
+確認するときはビルドしたうえで `pnpm preview` か Wrangler の dev を直接使ってください。
+
+その背景にあるのは、`zfb dev` が `prerender = false` の **レンダリングコード** を内蔵 V8
+アイソレートで実行する一方、Worker のバインディングを一切公開しないという事実です。読み取る
+べき Cloudflare のリクエストスコープが存在しないため、`getCloudflareContext()` は例外を
+投げます。詳しくは
+[SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) を参照してください。
+
+ローカルの Worker に対してプロキシを試すには、先にビルドしてから Wrangler を直接動かします。
+
+```sh
+pnpm build
+pnpm exec wrangler dev --port 8788
+```
+
+別のシェルで、リポジトリが文書化している 4 つの確認を実行します。どれもデモのインデックス
+ページにあるリンクと 1 対 1 で対応しています。
+
+```sh
+curl -i "http://127.0.0.1:8788/proxy/anything/reverse-proxy?via=zfb"
+curl -i "http://127.0.0.1:8788/proxy/redirect-to?url=/anything/redirect-target&status_code=302"
+curl -i "http://127.0.0.1:8788/proxy/cookies/set?zfb_proxy_cookie=demo"
+curl -i "http://127.0.0.1:8788/proxy/response-headers?Content-Security-Policy=default-src%20%27self%27&Strict-Transport-Security=max-age%3D31536000&X-Demo=kept"
+```
+
+期待される結果は、アップストリームの JSON がそのまま流れてくること、
+`Location: /proxy/anything/redirect-target` が返ること、`Set-Cookie` が返らないこと、
+そして `X-Demo: kept` は残りつつ CSP と HSTS が消えていることです。
+
+リポジトリには `pnpm smoke`（`scripts/smoke.mjs`）も同梱されています。これはライブのホストに
+対して、`/proxy/anything/...` がアップストリーム由来と証明できるボディを返したことを検証します。
+静的アセット層にはそのボディを生成しようがないので、そのドメイン上で Worker 自体が動いたことの
+証明になります。宛先はどこでも指定できます（`pnpm smoke http://127.0.0.1:8788`）。
+
+## 関連ドキュメント
+
+- [SSR on a Worker（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js`
+  の中身、リクエストのディスパッチ、`getCloudflareContext()` を支える `AsyncLocalStorage` の
+  仕組み。
+- [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) —
+  アダプターの導入、`wrangler.toml`、ローカル開発ループという実践的なセットアップガイド。
+- [動的ルート](/ja/docs/concepts/dynamic-routes) — このルートが省略できた `paths()` の契約と、
+  プリレンダリングされるページにとってキャッチオールセグメントが何を意味するか。
+- [静的アセット](/ja/docs/concepts/static-assets) — `public/` と出力される `dist/` が、この
+  Worker の手前に立つアセット層とどう関係するか。
+- [サンプル集](/ja/docs/guides/examples) — 独立した zfb サンプルリポジトリの一覧。

@@ -1,0 +1,181 @@
+---
+title: "サンプル: Workers Cache"
+description: Cache-Control・Cache-Tag・Vary というレスポンスヘッダだけで Cloudflare Workers Cache を制御し、トークンで保護したパージルートを備えた SSR サンプル
+sidebar_position: 18
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+すべてのルートが `prerender = false` で、キャッシュ制御を完全に HTTP として表現している zfb のサンプルリポジトリです。各ページが自分で `Cache-Control` を設定し、`Cache-Tag` でレスポンスにタグを付け、`POST /api/purge` が `ctx.cache.purge()` でタグ単位の無効化を行います。
+
+Cloudflare 系サンプルの中でも最小構成で、KV 名前空間も D1 データベースもバケットも不要です。用意するものは Worker のシークレット 1 つだけです。
+
+</Info>
+
+**ライブデモ:** [zfb-example-workers-cache.takazudomodular.com](https://zfb-example-workers-cache.takazudomodular.com/)
+
+**リポジトリ:** [Takazudo/zfb-example-workers-cache](https://github.com/Takazudo/zfb-example-workers-cache)
+
+<Warning title="このサンプルが示すキャッシュ動作はローカルでは観測できない">
+
+`pnpm preview` はビルド済みの Worker を Wrangler 経由で起動します。Worker が実際に立ち上がるか、各ルートが宣言どおりのヘッダを返すかを確認するにはこれが正しいループです。しかし現在のローカル Wrangler dev は **Workers Cache を再現しません**。同じ URL を何度リクエストしてもその都度再レンダリングされ、レンダリング時刻は毎回変わり、`Cf-Cache-Status` はレスポンスに一切現れません。
+
+これを見ても壊れているわけではありません。`MISS` から `HIT` への遷移はデプロイ済みの Worker 上にしか存在しません。同じ制約は `POST /api/purge` にも及びます。ローカルでは `ctx.cache` が undefined なので、このルートはパージしたふりをせず `501` と `cache_context_unavailable` を返します。
+
+</Warning>
+
+## 何を示すか
+
+- `@takazudo/zfb-adapter-cloudflare` による Cloudflare Workers 上の SSR。`pages/` 配下のすべてのページが `export const prerender = false` なので、静的 HTML は一切出力されず、キャッシュから返らないリクエストはすべて Worker に到達します。
+- キャッシュ方針をルート自身が決める形。`Cache-Control` と `Cache-Tag` を明示的に付けた `Response` を返すだけです。
+- `Vary` によるキャッシュバリアント。URL は 1 つのまま、リクエストヘッダの値ごとに別のキャッシュエントリになります。
+- Worker 内部からの `ctx.cache.purge({ tags: [...] })` によるタグ単位の無効化。共有シークレットによる検証付きです。
+- **キーの順序が意味を持つ** `wrangler.toml`。このサンプルに限らず通用する TOML の落とし穴です。
+
+## 使用技術
+
+| 項目 | 内容 |
+| --- | --- |
+| フレームワーク | zfb + Preact（`framework: "preact"`）、HTML 生成は `preact-render-to-string` |
+| zfb バージョン | `@takazudo/zfb` 2.3.0、`@takazudo/zfb-runtime` 2.3.0 |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` 2.3.0 — 使用しており、必須 |
+| スタイリング | `tailwind: { enabled: true }`。ただしページの見た目そのものは `components/recipe-page.tsx` がインライン展開する手書き CSS なので、Tailwind のクラスはほとんど登場しません |
+| レンダリング | 完全な SSR。4 ルートすべてが `prerender = false` で、ビルド成果物は Worker バンドルとスタイルシート 1 本のみ、HTML ページは出力されません |
+| Cloudflare 面 | Workers Static Assets（`[assets]`）と Workers Cache（`[cache] enabled = true`） |
+| バインディング | `ASSETS` のみ。KV・D1・R2・AI は使いません |
+| シークレット | Worker シークレット `PURGE_TOKEN` 1 つ |
+| ツール | devDependency として `wrangler` 4.85.0。実行時依存はこれ以外にありません |
+
+## 必要な準備と設定
+
+**プロビジョニングすべき Cloudflare リソースはありません。** Cache API はアカウント上のオブジェクトではなくランタイムの機能です。作成する名前空間もなく、`wrangler.toml` に貼り付ける ID もなく、キャッシュ専用の権限を付与する必要もありません。リポジトリの `wrangler.toml` はコミットされた状態でそのまま完成しています。
+
+**Cloudflare アカウントなしで動く範囲:** `pnpm dev` と `pnpm build` はオフラインで動きます。`pnpm preview` は Wrangler を必要としますが、資格情報は不要です。
+
+**Cloudflare が必要な範囲:** キャッシュ `HIT` の観測と、パージルートの実行そのもの。
+
+**Worker シークレットは 1 つ**で、Worker が存在してから設定します。
+
+```sh
+pnpm exec wrangler secret put PURGE_TOKEN
+```
+
+これを省いてもパージ用エンドポイントが無防備になるわけではなく、**無効化される**だけです。`PURGE_TOKEN` が未設定なら、ルートは `503` を返して `ctx.cache.purge()` を呼びません。キャッシュエントリはそれぞれの `max-age` で自然に失効します。
+
+**ライブデモは読み取り専用です。** すべてのページは公開された `GET` で、状態を変えるルートは `POST /api/purge` だけです。これは `X-Purge-Token` ヘッダで保護されており、デプロイ済みのシークレットなしでは実行できません。ライブデモに対してパージリクエストを送らないでください。
+
+ライブデモのようにカスタムドメインへデプロイする場合は、デプロイ用トークンに追加で `Zone · Workers Routes: Edit` が必要です。`custom_domain = true` を含む `[[routes]]` ブロックはゾーンレベルの操作だからです。この権限がないと `wrangler deploy` は Worker のアップロードには成功したうえでルート設定の段階で失敗します。Worker は `*.workers.dev` 上で動いているのに、カスタムドメインだけが割り当てられない状態になります。
+
+## 仕組み
+
+### キャッシュ方針はルートが返すヘッダそのもの
+
+キャッシュ設定用のレイヤーもフレームワーク側のキャッシュも存在しません。`lib/http.tsx` は `preact-render-to-string` の結果を `Response` で包み、3 つのオプション値をそのままヘッダに写しているだけです。
+
+```tsx title="lib/http.tsx"
+const headers = new Headers({
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": cacheControl,
+});
+
+if (cacheTag) headers.set("cache-tag", cacheTag);
+if (vary) headers.set("vary", vary);
+```
+
+各ページは自分の方針を定数として宣言します。`/products` は 1 分の鮮度ウィンドウと 10 分の猶予期間を要求し、あとでパージできるようレスポンスにタグを付けます。
+
+```tsx title="pages/products.tsx"
+const CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=600";
+```
+
+このルートは `simulateExpensiveRender()`（意図的な 180 ミリ秒のスリープ）を待ってから `renderedAt` を HTML に埋め込みます。この時刻表示こそが観測の要です。本物のキャッシュヒットでは Cloudflare が Worker を起動せずに保存済みのバイト列を返すため、時刻は変わりません。時刻が動いたなら、それは再レンダリングされたということです。
+
+キャッシュしない 2 つのルートも同じく明示的で、`/` と `POST /api/purge` はどちらも `Cache-Control: no-store` を返します。暗黙の挙動が一切ないことがこのレシピの主眼です。キャッシュはルート単位のオプトインであり、レスポンスを生成するコードのすぐ隣に書かれています。
+
+### 1 つの URL に複数のキャッシュエントリ
+
+`/catalog` はリクエストヘッダを読み、同じ商品リストを市場ごとの価格で表示します。より短いウィンドウを設定し、そして重要な点として、どのヘッダがキャッシュキーに参加するかをキャッシュに伝えます。
+
+```tsx title="pages/catalog.tsx"
+const CACHE_CONTROL = "public, max-age=45, stale-while-revalidate=300";
+const VARY_HEADER = "X-Catalog-Market";
+
+const { request } = getCloudflareContext();
+const market = normalizeMarket(request.headers.get(VARY_HEADER));
+```
+
+レスポンスには `Vary: X-Catalog-Market` と `Cache-Tag: products,catalog-market` が付きます。タグが 2 つあるのは意図的です。共通の `products` タグがあるおかげで、1 回のパージで通常の商品ページと全市場バリアントをまとめて無効化できます。一方 `catalog-market` は、より狭い範囲のパージ用に残してあります。
+
+<Note title="Vary はヘッダの生の値でキーを作る">
+
+`normalizeMarket()` は `eu` と `jp` 以外をすべて `us` に丸めますが、キャッシュはその正規化を知りません。キャッシュが見るのはヘッダの文字列そのものです。`X-Catalog-Market: US` を送ったリクエスト、`X-Catalog-Market: nonsense` を送ったリクエスト、ヘッダを付けなかったリクエストは、まったく同じ HTML を持つ 3 つの別々のキャッシュエントリになります。市場が 3 つのデモなら問題ありませんが、実サイトではこれがヒット率を静かに崩す典型的な原因です。
+
+</Note>
+
+### Worker の中からタグ単位でパージする
+
+`POST /api/purge` は同じ契約の書き込み側です。`X-Purge-Token` ヘッダと `PURGE_TOKEN` シークレットを定数時間比較で照合し、その後ローカルで狭く型を広げてキャッシュ API を呼びます。Cloudflare のランタイムは `ctx.cache` を持っているものの、アダプター側の `ctx` 型がまだそれを含んでいないためです。
+
+```tsx title="pages/api/purge.tsx"
+const cache = (ctx as CacheAwareExecutionContext).cache;
+if (!cache) {
+  return jsonResponse({ ok: false, error: "cache_context_unavailable", /* … */ }, { status: 501 });
+}
+
+const result = await cache.purge({ tags: ["products"] });
+if (!result.success) {
+  return jsonResponse({ ok: false, error: "purge_failed", result }, { status: 502 });
+}
+```
+
+失敗の種類ごとにステータスが分かれており、まとめて 500 にはしません。`POST` 以外なら `405`、シークレット未設定なら `503`、トークン不一致なら `401`、ランタイムにキャッシュコンテキストがなければ `501`（これがローカルのケースです）、Cloudflare が呼び出しを受け付けたうえで `success: false` を返したら `502` です。`result.success` を確認している点が重要で、Promise が解決したこととパージが成立したことは別だからです。
+
+フレームワークと並べて読むなら、`Cache-Tag: products` と `purge({ tags: ["products"] })` の組み合わせは Next.js の `revalidateTag("products")` と同じ運用上の形です。違うのは、ここでは何も隠れていないことです。ビルド時の事前ウォームアップは存在せず、デプロイ後やパージ後の最初のリクエストが必ずエントリを作る側になります。
+
+## wrangler.toml で効いてくる 2 つのルール
+
+どちらも間違えたときに何も言わずに壊れる種類のものなので、このサンプルをデプロイしない人にも読む価値があります。
+
+```toml title="wrangler.toml"
+workers_dev = true
+preview_urls = true
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+[cache]
+enabled = true
+```
+
+**`workers_dev` と `preview_urls` は両方のテーブルより上に置かなければなりません。** TOML ではテーブルヘッダより後ろのキーはすべてそのテーブルに属し、「トップレベルに戻る」という書き方はありません。`workers_dev` を `[assets]` より下に移すと、それはトップレベル設定が無視されるのではなく、`workers_dev` という名前の *assets* のフィールドになります。Wrangler は `Unexpected fields found in assets field` と警告するだけで処理を続けるため、設定が黙って消えたままデプロイは成功します。
+
+**`preview_urls` を明示しているのは、既定値が「`workers_dev` に一致する」だからです。** 省略しても一見問題ありませんが、あとで誰かが `workers_dev` を false にした瞬間、無関係な変更の副作用としてデプロイごとのプレビュー URL がすべて消えます。
+
+<Note title="互換性日付は理由があって固定されている">
+
+`compatibility_date = "2026-05-01"` は放置された値ではなく意図的なものです。Wrangler 4.85.0 はこの日付では Workers Cache の設定を受け付けますが、検証時点ではローカルランタイムがこれより新しい互換性日付を拒否しました。上げる前に `pnpm preview` で再確認してください。この制約は Wrangler の進化とともに解消される種類のものです。関連して、Wrangler 4.85.0 の `config-schema.json` には `cache` フィールドが載っていないため、スキーマを参照するエディタは Wrangler 自体が受け付ける `[cache]` ブロックを警告することがあります。
+
+</Note>
+
+## ローカルで動かす
+
+```sh
+pnpm install
+pnpm dev        # zfb dev — ページ執筆用のループ
+pnpm build      # zfb build
+pnpm preview    # zfb preview → ビルド済み Worker に対して wrangler dev
+pnpm typecheck  # zfb check
+```
+
+`zfb dev` は `prerender = false` のレンダリングコードを組み込みの V8 アイソレート上で実行しますが、Cloudflare のリクエストスコープは提供しません。このリポジトリではその境界がきれいに分かれています。`/` と `/products` は `pnpm dev` で問題なく表示されますが、`/catalog` と `/api/purge` は `getCloudflareContext()` を呼ぶため、そこではまったく動きません。レイアウトや文言の調整には `pnpm dev` を、コンテキストに依存する 2 ルートに触った時点で `pnpm preview` を使ってください。
+
+そしてこのページ冒頭の注意は `pnpm preview` にもそのまま当てはまります。`pnpm preview` が保証するのは Worker が起動することとヘッダが正しいことであって、キャッシュが効くことではありません。`HIT` を見せられるのはデプロイ済みの Worker だけです。リポジトリの `scripts/smoke.mjs` はこの区別を前提に作られており、**キャッシュ契約**（各ルートの `Cache-Control` と `/catalog` の `Vary`）を検証する一方、`Cf-Cache-Status` の並びは観測して報告するだけに留めています。`HIT` は要求して再現できるものではなく、デプロイ直後は必ずミスしますし、CI のリクエストに応答するのは実行環境から最も近いエッジロケーションだからです。
+
+## 関連ドキュメント
+
+- [Worker 上での SSR](/ja/docs/concepts/ssr-on-a-worker) — `prerender = false` が本番で実際に何を実行しているかのメンタルモデル。
+- [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — アダプターの設定、`getCloudflareContext()`、そしてこのサンプルがぶつかる `zfb dev` と `wrangler dev` の使い分け。
+- [静的アセット](/ja/docs/concepts/static-assets) — `[assets]` レイヤーがリクエストを Worker に渡すかどうかをどう判断するか。
+- [サンプル集](/ja/docs/guides/examples) — 他のスタンドアロンサンプルリポジトリ一覧。

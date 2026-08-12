@@ -1,0 +1,261 @@
+---
+title: "サンプル: AI Summarizer"
+description: Preact アイランドから prerender = false のワーカールートへ POST し、Cloudflare Workers AI バインディングで要約する例。Cloudflare アカウントなしでも動く決定的なフォールバックつき
+sidebar_position: 10
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+インタラクティブな部分が Preact アイランド 1 つだけの小さな zfb サイトです。その裏側には
+**Cloudflare Workers AI** を呼ぶ `prerender = false` のルートが 1 本だけあります。アイランド、
+Cloudflare アダプターのリクエストごとのコンテキスト、そして AI バインディングをあえてデフォルトの
+Wrangler 環境から外した `wrangler.toml` の構成 — Cloudflare アカウントがまったくなくても、アプリは
+動き、エンドポイントも応答します。
+
+</Info>
+
+- **ライブデモ:** [zfb-example-ai-summarizer.takazudomodular.com](https://zfb-example-ai-summarizer.takazudomodular.com/)
+- **リポジトリ:** [Takazudo/zfb-example-ai-summarizer](https://github.com/Takazudo/zfb-example-ai-summarizer)
+
+## 何を示すか
+
+- **UI 全体が 1 つのアイランド。** `pages/index.tsx` は静的な HTML で、`"use client"` なコンポーネントを
+  `<Island>` ラッパーで包んでいるだけです。[アイランド](/ja/docs/concepts/islands) を参照してください。
+- **`prerender = false` の API ルート。** `pages/api/summarize.tsx` は生成されたワーカー上で動き、
+  `POST` のボディを読んで JSON を返します。
+- **Cloudflare バインディングの読み取り。** ルートはハンドラーの引数ではなく
+  `getCloudflareContext()` から `request`・`env`・`ctx` を受け取ります。
+- **バインディングを持つ名前付き Wrangler 環境。** `[env.ai]` が `AI` バインディング、デプロイされる
+  ワーカー名、カスタムドメインのルートをまとめて保持します。
+- **設計判断としてのグレースフルデグラデーション。** バインディングがない場合やモデル呼び出しが
+  失敗した場合、ルートはエラーにせず、`fallback: true` と機械可読な `reason` を添えたローカル生成の
+  要約を返します。
+- **Cloudflare Workers Static Assets としての zfb のデプロイ。** アセットレイヤーがワーカースクリプトの
+  前段に立ちます。
+
+## 使用技術
+
+| 要素 | このリポジトリでの実際 |
+| --- | --- |
+| エンジンとフレームワーク | `@takazudo/zfb` **2.3.0** と `framework: "preact"`（`preact` 10.x、`preact-render-to-string` 6.x）、`@takazudo/zfb-runtime` **2.3.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** を `zfb.config.ts` の `adapter` に指定 |
+| スタイリング | Tailwind CSS v4 — `tailwind: { enabled: true }`。`styles/global.css` は `@import "tailwindcss"` で始まり、以降はコンポーネントのスタイルを手書き |
+| レンダリングモード | `pages/index.tsx` と `pages/404.tsx` は SSG。`prerender = false` を書き出すのは `pages/api/summarize.tsx` だけ |
+| Cloudflare 側の形 | Workers Static Assets — `main = "./dist/_worker.js"`、`./dist` に対する `[assets]` と `ASSETS` バインディング、`not_found_handling = "404-page"`、`run_worker_first = false` |
+| バインディング | Workers AI バインディング `AI` が 1 つ。宣言は **`[env.ai.ai]` の中だけ** |
+| 互換性 | `compatibility_date = "2026-05-01"`、`compatibility_flags = ["nodejs_compat"]` — アダプターのバンドルが `node:async_hooks` を import するため |
+| モデル呼び出し | `@cf/meta/llama-3.2-1b-instruct`、`temperature: 0`、`max_tokens: 220`、入力は空白を畳んで 6000 文字で切り詰め |
+| 主な devDependencies | `wrangler` 4.85.0、`@cloudflare/workers-types`、`dev:cf` の再ビルドループ用に `concurrently` と `chokidar-cli` |
+
+## 必要なものと設定
+
+**Cloudflare アカウントなしで動きます。** `pnpm build` のあと `pnpm preview` を実行すると、
+*デフォルト* の Wrangler 環境で `wrangler dev` に処理が渡ります。この環境には `AI` バインディングが
+まったくありません。エンドポイントはそのまま決定的なフォールバック（`"fallback": true`、
+`"reason": "missing-ai-binding"`）を返します。`wrangler login` も、アカウントも、作成すべきリソースも
+不要です。リポジトリはこれを、アカウント不要のローカル確認手段として第一に位置づけています。
+
+**Cloudflare が要るのは本物のモデル出力を得るときだけです。** Workers AI を使えるアカウントで
+`pnpm exec wrangler login` を実行し、`wrangler dev --env ai` を起動する `pnpm dev:cf` を使います。
+
+**事前に用意するリソースはありません。** Workers AI は ID を持つリソースではなくアカウントの機能なので、
+`wrangler.toml` に埋めるべきプレースホルダー ID はありません。KV ネームスペースも D1 データベースも、
+マイグレーションもシードデータもなく、ワーカーシークレット（`wrangler secret put`）も不要です。`AI`
+バインディング自体は資格情報を持ちません。
+
+**実際にデプロイするにはリポジトリシークレットが 2 つ必要です。** `CLOUDFLARE_ACCOUNT_ID` と、
+アカウントスコープの *Workers Scripts: Edit*・*Workers AI: Read*・*Account Settings: Read* に加えて
+**ゾーンスコープの** *Workers Routes: Edit* を持つ `CLOUDFLARE_API_TOKEN` です。最後の 1 つが要るのは
+`wrangler.toml` がカスタムドメインを紐づけているからで、ワーカーのアップロード自体はアカウントスコープで
+成功し、そのあとのルート作成のステップで失敗します。手順の全体はリポジトリの
+`docs/cloudflare-setup.md` にあります。
+
+**ライブデモは認証なしでステートレスです。** 誰でも `/api/summarize` にテキストを `POST` できますが、
+何も保存されず、何も読み出されないため、守るべき書き込み状態がありません。レスポンス自体が、どちらの
+経路で返ったのかを示します。実際のモデル要約なら `"fallback": false` とモデル ID、ローカルの
+フォールバックなら `"fallback": true` と `reason` です。
+
+## しくみ
+
+### AI バインディングを名前付き環境に置く理由
+
+Cloudflare のバインディングはたいてい、先にリソースを作って ID を貼り付ける必要があります（KV
+ネームスペース、D1 データベースなど）。Workers AI はそのどちらも要らないので、バインディングの宣言は
+TOML で 2 行です。そのおかげで、他のバインディングでは取りにくい選択肢が使えます。バインディングを
+名前付き Wrangler 環境の *中だけ* に宣言し、デフォルト環境はあえてバインディングなしのままにする、
+という構成です。
+
+```toml title="wrangler.toml"
+[env.ai]
+name = "zfb-example-ai-summarizer-ai"
+
+[env.ai.ai]
+binding = "AI"
+
+[[env.ai.routes]]
+pattern = "zfb-example-ai-summarizer.takazudomodular.com"
+custom_domain = true
+```
+
+うまみはデフォルト環境の側にあります。`--env` なしの `wrangler dev` は `AI` バインディングを解決しない
+ので Cloudflare へのログインが要らず、それでいてルートは応答します。バインディングがないことが
+クラッシュではなくサポートされた経路だからです。これによって `pnpm preview` は、Cloudflare に一度も
+サインインしたことがない読者にとっても本物のエンドツーエンド確認になります。AI のデモで、これはいちばん
+提供しにくい体験です。
+
+代償は、Wrangler の名前付き環境が対称ではないことです。バインディングと `[vars]` はトップレベルから
+名前付き環境へ **継承されません** — だからこそ `[env.ai.ai]` をそこで書き直す必要があります。一方
+`workers_dev` と `preview_urls` は継承されるので、トップレベルに一度書くだけで済みます。さらに環境に
+名前を付けると、デプロイされるワーカーの名前も変わります。`wrangler deploy --env ai` が出荷するのは
+`zfb-example-ai-summarizer` ではなく `zfb-example-ai-summarizer-ai` です。
+
+<Warning>
+
+このリネームこそが、カスタムドメインのルートをトップレベルの `[[routes]]` ではなく
+`[[env.ai.routes]]` に書いている理由です。トップレベルのルートはドメインを、このリポジトリが決して
+デプロイしない `zfb-example-ai-summarizer` ワーカーに紐づけてしまい、ドメインは何も返さなくなります。
+
+</Warning>
+
+### ルートはアダプターのコンテキストからリクエストを読む
+
+zfb 2.x は `prerender = false` なルートのデフォルトエクスポートを、受信した `Request` ではなくページの
+**props** で呼び出します。`Request`・ワーカーの `env`・`ExecutionContext` は、代わりにアダプターの
+リクエストごとのコンテキストにまとめて届きます。
+
+```tsx title="pages/api/summarize.tsx"
+export const prerender = false;
+
+export default async function SummarizeApi(): Promise<Response> {
+  const context = readCloudflareContext();
+
+  if (!context) {
+    return json<ErrorBody>(
+      { error: "This route needs a Worker runtime. Run `pnpm preview` or `pnpm dev:cf`." },
+      503,
+    );
+  }
+
+  const { request, env } = context;
+  // …メソッド判定、JSON ボディの読み取り、空テキストのガード…
+  const result = await summarizeText(text, env);
+  return json<SummaryResult>(result);
+}
+```
+
+`readCloudflareContext()` は `getCloudflareContext<AiEnv>()` を `try` で包み、例外時に `null` を返す
+だけの小さなローカルヘルパーです。これが効くのは、`getCloudflareContext()` がワーカーのリクエスト
+スコープの外では throw するからです。`zfb dev` はリクエストスコープを持たない SSG ランタイムでページを
+レンダリングします。この `try` によって「ランタイムが違う」は例外ではなく、動くコマンド名を本文に含む
+`503` になります。その下で何が起きているのか — 2 層構造のワーカー出力と、コンテキストを運ぶ
+`AsyncLocalStorage` — は
+[ワーカー上の SSR（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) と
+[SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) を参照してください。
+
+### POST がワーカーに届く理由
+
+`wrangler.toml` は `run_worker_first = false` を設定しているので、Cloudflare は先に静的アセットレイヤーを
+参照し、一致するアセットがないときにだけワーカーを実行します。API ルートにとって危なそうに見えますが、
+そうではありません。アセットレイヤーが返すのは `GET` と `HEAD` だけなので、`POST /api/summarize` は
+この設定にかかわらず必ずワーカーまで落ちてきます。同じビルドは `dist/.assetsignore` も書き出し、
+`_worker.js` と `_zfb_inner.mjs` を公開アセットストアから除外します。ダウンロード可能なファイルとして
+配信されないようにするためです。
+
+### フォールバックはエラー処理ではなく機能
+
+`lib/ai.ts` は決して throw しません。モデルによる要約を作れなかった経路はすべて、`fallback: true` と
+`reason` を持つ同じ形のレスポンスを返します。
+
+```ts title="lib/ai.ts"
+if (!env.AI) {
+  return fallbackSummary(prepared, "missing-ai-binding");
+}
+
+try {
+  const output = await env.AI.run(MODEL, {
+    /* system + user messages, temperature: 0, max_tokens: MAX_OUTPUT_TOKENS */
+  });
+
+  const summary = parseAiText(output);
+  if (!summary || !looksUsable(summary)) {
+    return fallbackSummary(prepared, "empty-ai-output");
+  }
+
+  return {
+    summary,
+    fallback: false,
+    model: MODEL,
+  };
+} catch {
+  return fallbackSummary(prepared, "ai-run-failed");
+}
+```
+
+`fallbackSummary()` は入力を文に分割し、先頭 3 文を箇条書きにして単語数のまとめを添えます。ネットワークを
+使わない、完全に決定的な処理です。4 つの `reason`（`empty-input`、`missing-ai-binding`、
+`empty-ai-output`、`ai-run-failed`）は、レスポンスを曖昧な失敗ではなく診断情報に変えます。本番で
+`missing-ai-binding` が返るなら、そのワーカーは `--env ai` **なし** でデプロイされています。
+`ai-run-failed` なら、バインディングはあるがモデル呼び出しが届かなかった、ということです。アイランドは
+どちらの状態も UI に出し、要約の隣に `Fallback` バッジと `reason` の文字列を表示します。
+
+リポジトリのデプロイ後スモークテストがどちらの応答も受け入れるのも同じ理由です。生きたモデル出力を
+アサーションにすると検査が構造的に不安定になるため、レスポンスの形が正しいことだけを検査します。
+
+任意のテキストを貼り付けても安全なように、小さなガードが 2 つあります。システムプロンプトはモデルに対し、
+`---` の区切りに挟まれた内容はデータとして扱い、その中の指示は無視するよう指定します。そして
+`prepareInput()` が呼び出し前に空白を畳み、6000 文字で切り詰めます。
+
+## ローカルで動かす
+
+```sh
+pnpm install
+```
+
+| コマンド | 実行される内容 | summarize エンドポイント |
+| --- | --- | --- |
+| `pnpm dev` | `zfb dev` | **503** を返す — ワーカーのリクエストスコープがない |
+| `pnpm build` | `zfb build` | — |
+| `pnpm preview` | `zfb preview`。デフォルト環境の `wrangler dev` に処理を渡す | 動く。常に決定的なフォールバック、ログイン不要 |
+| `pnpm dev:cf` | `pnpm build` のあと `wrangler dev --env ai --port 8788` と `chokidar-cli` の再ビルド監視を並行実行 | `wrangler login` 済みなら本物の Workers AI |
+| `pnpm typecheck` | `zfb check` | — |
+
+<Note>
+
+`pnpm dev` は **UI 専用** の高速ループです。アイランドとスタイリングには使えますが、エンドポイントには
+使えません。`zfb dev` はワーカーのリクエストスコープを持たない SSG ランタイムでページを描画するため、
+`pages/api/summarize.tsx` はそこで受信リクエストを読めず、動くコマンドを案内する `503` を返します。
+
+</Note>
+
+`dev:cf` は `pages/`・`components/`・`lib/`・`styles/`・`zfb.config.ts` を監視し、変更のたびに
+`pnpm build` を再実行します。その間も `wrangler dev` は配信を続けます。エンドポイントを直接叩くには
+次のようにします。
+
+```sh
+curl -X POST http://localhost:8788/api/summarize \
+  -H "content-type: application/json" \
+  -d '{"text":"zfb renders static pages by default and uses prerender = false for request-time routes."}'
+```
+
+リポジトリには `scripts/smoke.mjs` も含まれていて、ページのマークアップと summarize レスポンスの形を
+検査します。wrangler が表示したポートを指定して実行してください。
+
+```sh
+node scripts/smoke.mjs http://localhost:8787/
+```
+
+デプロイはコマンド 2 つですが、`--env ai` は省略できません。
+
+```sh
+pnpm build
+pnpm exec wrangler deploy --env ai
+```
+
+## 関連ドキュメント
+
+- [ワーカー上の SSR（アダプターモード）](/ja/docs/concepts/ssr-on-a-worker) — `dist/_worker.js` が実際に何であるかのメンタルモデル
+- [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — アダプターと `wrangler.toml` の実践的なセットアップ
+- [アイランド](/ja/docs/concepts/islands) と [`<Island>`](/ja/docs/api/island) — `"use client"` のコンポーネントモデルとハイドレーションのタイミング
+- [スタイリング](/ja/docs/concepts/styling) — 組み込みの Tailwind v4 の扱い
+- [サンプル集](/ja/docs/guides/examples) — 他のサンプルサイト

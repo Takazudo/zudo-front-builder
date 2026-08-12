@@ -1,0 +1,140 @@
+---
+title: "サンプル: Blog"
+description: Markdown/MDX の記事、3 種類の動的ルート、テーマ切り替えアイランド、Tailwind v4 のトークン設計を備えた純粋 SSG のブログ。アセットのみの Cloudflare Worker としてデプロイされています
+sidebar_position: 11
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+実際にデプロイされている zfb 製のブログです。Markdown と MDX の記事からなる `blog` コンテンツコレクション、3 種類の動的ルート、`"use client"` アイランド 1 つ、そして Tailwind v4 のデザインシステムで構成されています。**完全な静的ビルド**で、SSR も Cloudflare のバインディングもアダプタも使いません。コンテンツ駆動の zfb サイトとして、現実的な最小構成になっています。
+
+</Info>
+
+**ライブデモ:** [zfb-example-blog.takazudomodular.com](https://zfb-example-blog.takazudomodular.com/)
+
+**リポジトリ:** [Takazudo/zfb-example-blog](https://github.com/Takazudo/zfb-example-blog)
+
+## 何を示すか
+
+- `.md` と `.mdx` の記事を 1 つのディレクトリに混在させた `blog` という[コンテンツコレクション](/ja/docs/concepts/content-collections)。
+- 3 つのルートファイルによる 3 種類の[動的ルート](/ja/docs/concepts/dynamic-routes) — 記事個別ページ（`pages/blog/[slug].tsx`）、ページネーション付き一覧（`pages/blog/page/[page].tsx`）、タグ別ページ（`pages/tags/[tag].tsx`）。それぞれが独自の `paths()` を持ちます。
+- ソート済みの配列をそのまま `paths()` の戻り値に変換する [`paginate()`](/ja/docs/api/paginate)。
+- `entry.Content` の `components` プロパティ経由でページに届く独自の MDX コンポーネント（`<Note>`） — [MDX コンポーネント](/ja/docs/concepts/mdx-components)を参照。
+- 初回レンダリングが SSR セーフな[アイランド](/ja/docs/concepts/islands) 1 つ（`ThemeToggle`）と、誤ったテーマで描画されないようにするインラインの事前スクリプト。
+- 生の CSS カスタムプロパティの上に重ねた [Tailwind v4](/ja/docs/concepts/styling) の `@theme` ブロック。`dark:` バリアントは `prefers-color-scheme` ではなく `data-theme` 属性に向け直されています。
+
+## 使用技術
+
+| 項目 | zfb-example-blog |
+| --- | --- |
+| フレームワーク | zfb **2.3.0** + Preact（`zfb.config.ts` の `framework: "preact"`） |
+| ランタイム | `@takazudo/zfb-runtime` **2.3.0** |
+| スタイリング | Tailwind CSS v4（`tailwind: { enabled: true }`）、`styles/global.css` 1 枚 |
+| レンダリング | **純粋な SSG**。`export const prerender = false` を持つルートはありません |
+| コンテンツ | コレクション 1 つ — `blog` → `content/blog`（`.md` 4 本 + `.mdx` 1 本） |
+| インタラクション | `"use client"` アイランド 1 つを `<Island when="idle">` でマウント |
+| Cloudflare | Workers Static Assets、**アセットのみ** — `wrangler.toml` に `main` キーはありません |
+| バインディング | なし |
+| アダプタ | `@takazudo/zfb-adapter-cloudflare` は依存関係に**含まれていません** |
+| その他の依存 | `preact`、`preact-render-to-string`。`wrangler` 4.85.0 は devDependency |
+
+`zfb build` が出力する HTML は **14 ページ**です。内訳はトップ 1、記事 5、ページネーション一覧 2、タグページ 6。この数字の根拠は後述の「仕組み」で追いかけます。
+
+## 必要な準備と設定
+
+**Cloudflare のアカウントがなくてもローカルで動きます。** `pnpm install && pnpm build` だけでサイト全体が生成され、`pnpm preview` で確認できます。用意すべきものは何もありません — バインディングも環境変数も Worker シークレットもマイグレーションもシードデータも不要です。`content/blog/` の記事がそのままデータベースです。
+
+**Cloudflare が必要になるのはデプロイ時だけです。** リポジトリの GitHub Actions ワークフローが `wrangler deploy` を実行し、`dist/` を Worker の静的アセットとしてアップロードしたうえで、`wrangler.toml` に宣言されたカスタムドメインを紐付けます。必要なリポジトリシークレットは `CLOUDFLARE_API_TOKEN` と `CLOUDFLARE_ACCOUNT_ID` の 2 つで、トークンがない環境では認証を伴うジョブが自動的にスキップされるため、フォークでも CI は緑のままです。
+
+<Warning title="カスタムドメインにはゾーンスコープの権限が必要">
+
+`wrangler.toml` は `custom_domain = true` を宣言しているため、API トークンにはアカウントスコープの **Workers Scripts · Edit** に加えて、対象ゾーンの **Zone · Workers Routes · Edit** が必要です。これがないと `wrangler deploy` は Worker のアップロードまで成功したうえで、ルート作成の段階で失敗します。デプロイが中途半端に終わり、ドメインは解決されないままになります。トークンの詳しい作り方はリポジトリの `docs/cloudflare-setup.md` にあります。
+
+</Warning>
+
+ライブデモは**公開された読み取り専用の静的サイト**です。認証はなく、書き込める箇所も壊せる状態もありません。1 点だけ既知の粗があり、`wrangler.toml` にも記載されています。`not_found_handling = "404-page"` が設定されている一方で、このプロジェクトは `dist/404.html` を出力しないため、マッチしないパスは Cloudflare の素の 404 にフォールバックします。設定自体は 404 ページを追加したときのために正しく先回りしてある、という状態です。
+
+## 仕組み
+
+### 4 つのルートファイルから 14 ページ
+
+ページ数はビルド設定ではなく、それぞれの `paths()` が返すものから決まります。追いかける価値のある部分です。
+
+`pages/index.tsx` は静的ルートなので 1 ページ。`pages/blog/[slug].tsx` は記事 1 本につき 1 エントリを返すので、記事 5 本で 5 ページ。`pages/tags/[tag].tsx` は各記事の `tags` フロントマターを `Map<string, BlogEntry[]>` に集約し、キーごとに 1 ページを出力します。5 本の記事が言及しているタグは `deploy`、`framework`、`intro`、`perf`、`ssr`、`tooling` の 6 つなので 6 ページです。
+
+残る 2 ページはページネーション付き一覧で、計算は [`paginate()`](/ja/docs/api/paginate) が引き受けます。その戻り値が**そのまま** `paths()` の戻り値になり、間に変換処理を挟む必要はありません。
+
+```tsx title="pages/blog/page/[page].tsx"
+export async function paths() {
+  const { getCollection } = await import("@takazudo/zfb/content");
+  const { paginate } = await import("@takazudo/zfb/paginate");
+  const posts = (await getCollection("blog")) as BlogEntry[];
+  const sorted = [...posts].sort((a, b) => b.data.date.localeCompare(a.data.date));
+  return paginate(sorted, { pageSize: 3, param: "page" });
+}
+```
+
+記事 5 本に対する `pageSize: 3` で `/blog/page/1` と `/blog/page/2` の 2 ページ。合計 1 + 5 + 6 + 2 = **14** ページです。
+
+`.sort()` の前に `[...posts]` でコピーしている点にも注目してください。このサンプルはソートするすべてのルートで意図的にこうしています。[`getCollection()`](/ja/docs/api/get-collection) が返す配列は複数のルート間で共有される可能性があり、その場でソートすると他のルートの並び順まで黙って変えてしまうからです。
+
+### 誤ったテーマでの一瞬の描画を避ける
+
+テーマ切り替えはこのサイト唯一のインタラクティブな要素で、素直に実装すると 2 種類の問題が同時に起きるため、サンプルの中でもっとも読む価値のある部分です。
+
+アイランドの**初回**レンダリングは、サーバー側とクライアントのハイドレーション時とで同一の HTML を生成しなければなりません。`useState` の初期化関数で `localStorage` を読むとこの前提が崩れます。サーバーには `localStorage` がないので `"light"` になり、クライアントは保存された `"dark"` を読んで逆のラベルを描画する — ハイドレーションの不一致です。そこで `ThemeToggle` はまず決め打ちの `"light"` を描画し、保存済み設定やシステム設定への同期は `useEffect` の中で行います。
+
+これでハイドレーションは直りますが、見た目は直りません。それだけでは、アイランドの副作用が走るまで**ページ全体**がデフォルトのパレットで描画されてしまいます。解決策は 2 つの関心事を分離することです。`<head>` に置いたインラインスクリプトが、スタイルシートが解析される前に同期的にテーマ属性を設定します。これにより、アイランドがどちらのラベルを描画するかに関係なく、最初に描画されるフレームがすでに正しいテーマになります。
+
+```tsx title="layouts/default.tsx"
+const THEME_BOOTSTRAP_SCRIPT = `(() => {
+  try {
+    var saved = localStorage.getItem("basic-blog:theme");
+    var hasMM = typeof window !== "undefined" && typeof window.matchMedia === "function";
+    var theme = saved === "light" || saved === "dark"
+      ? saved
+      : (hasMM && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    document.documentElement.dataset.theme = theme;
+  } catch (e) {
+    document.documentElement.dataset.theme = "light";
+  }
+})();`;
+```
+
+スタイルシート側もメディアクエリではなく同じ属性に紐付いています。`styles/global.css` は `@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *))` で Tailwind のバリアントを向け直し、生の `--blog-*` トークンを `:root` に宣言して `[data-theme="dark"]` で上書きします。`@theme` ブロックはそのうちユーティリティを生成すべきものだけを再エクスポートします（`--color-bg: var(--blog-bg)` のように）。1 つの属性が、ブートストラップスクリプトとアイランドとすべてのユーティリティクラスを同時に駆動しているわけです。
+
+レイアウト自体は素のサーバーコンポーネントのままで、JavaScript を送るのはトグルだけです。しかも [`<Island when="idle">`](/ja/docs/api/island) によって、ブラウザに余裕ができるまでその実行も遅らせています。
+
+### MDX の中の独自コンポーネント
+
+`content/blog/hello-zfb.mdx` には `<Note title="MDX in basic-blog">` と書かれています。これが解決できるのは、記事ページのルートが本文を描画する際に `defaultComponents` と一緒に `Note` を渡しているからです。
+
+```tsx title="pages/blog/[slug].tsx"
+<post.Content components={{ ...defaultComponents, Note }} />
+```
+
+`defaultComponents` は HTML タグの上書き（`<p>`、`<a>`、見出し、リストなど）を提供します。先にスプレッドしているので、キーが衝突した場合は右側の個別指定が勝ちます。`<Note>` コンポーネント自体はあえて素朴な作りです。このサンプルでの役割は見栄えのする admonition になることではなく、受け渡しの仕組みが機能していることを示すことだからです。
+
+## ローカルで動かす
+
+Node.js >= 22.12.0 と pnpm 10.x が必要です。`pnpm install` だけで `zfb` CLI も入るため、Rust ツールチェインも zfb 本体のチェックアウトも要りません。
+
+```sh
+pnpm install
+pnpm dev        # ライブリロード付きの zfb 開発サーバー
+pnpm build      # dist/ への静的ビルド（14 ページ）
+pnpm preview    # ビルド済みの dist/ をローカルで配信
+pnpm typecheck  # zfb check — コレクション検証 + tsc --noEmit
+```
+
+純粋な SSG なので、Worker のリクエストスコープにまつわる制約はありません。`zfb dev` が配信するものは本番と同じです。細かい点が 2 つあります。`predev` が `rm -rf dist .zfb .zfb-build` を実行するため `pnpm dev` は毎回コールドビルドから始まること、そして `pnpm typecheck` の実体は `zfb check` で、`tsc` に加えてコレクションの検証も行うことです。
+
+## 関連ページ
+
+- [コンテンツコレクション](/ja/docs/concepts/content-collections) — このサイトの土台になっている `blog` コレクション。
+- [動的ルート](/ja/docs/concepts/dynamic-routes)と[ルーティング](/ja/docs/concepts/routing) — 3 種類のルートすべての背後にある `paths()` の契約。
+- [`paginate()`](/ja/docs/api/paginate) — 上で引用したページネーションヘルパー。
+- [アイランド](/ja/docs/concepts/islands)と [`<Island>`](/ja/docs/api/island) — ハイドレーション境界とそのスケジューリング戦略。
+- [スタイリング](/ja/docs/concepts/styling) — プロジェクト個別のインストールなしに zfb バイナリが Tailwind v4 をコンパイルする仕組み。
+- [静的アセット](/ja/docs/concepts/static-assets) — HTML と並んで `dist/` に出力されるもの。

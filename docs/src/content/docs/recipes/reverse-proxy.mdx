@@ -1,0 +1,318 @@
+---
+title: "Example: Reverse Proxy"
+description: A catch-all prerender = false route that forwards method, path, query, and body to a fixed upstream origin, with deliberate header hygiene in both directions
+sidebar_position: 16
+category: Recipes
+---
+
+<Info title="What this page covers">
+
+The [`zfb-example-reverse-proxy`](https://github.com/Takazudo/zfb-example-reverse-proxy)
+demo: one catch-all SSR route that forwards everything under `/proxy/` to a fixed
+upstream origin. It exercises `export const prerender = false` on a `[...path]` route,
+`getCloudflareContext()` for reading a Worker `[vars]` value, and streaming a `Response`
+straight back out of a zfb page.
+
+The substance of this page is the **header policy** — which headers get stripped in each
+direction, and why dropping `Set-Cookie` and CSP is a deliberate trade-off rather than an
+oversight.
+
+</Info>
+
+**Live demo:** [zfb-example-reverse-proxy.takazudomodular.com](https://zfb-example-reverse-proxy.takazudomodular.com/)
+
+**Repository:** [github.com/Takazudo/zfb-example-reverse-proxy](https://github.com/Takazudo/zfb-example-reverse-proxy)
+
+## What it demonstrates
+
+- A **catch-all SSR route** — `pages/proxy/[...path].tsx` with `export const prerender = false`
+  — that answers every URL under `/proxy/` without enumerating any of them.
+- Reading a plain Worker **`[vars]`** value (`env.PROXY_ORIGIN`) through
+  `getCloudflareContext()`, with no KV, D1, or R2 binding involved.
+- Forwarding **method, path remainder, query string, and request body** to the upstream,
+  and streaming the upstream response body back without buffering it.
+- **Hop-by-hop header stripping** in both directions, plus a documented response-side
+  policy that drops `Set-Cookie`, CSP, and HSTS.
+- **Rewriting same-origin `Location` redirects** back under `/proxy/` so a redirect chain
+  stays inside the proxy.
+- Cooperating with Workers Static Assets: `run_worker_first = false` still reaches the
+  Worker, because `/proxy/...` is never a built static asset.
+
+<Warning title="This is not an open proxy">
+
+The pattern is for exposing a **small, trusted** HTTP surface below your own domain — a
+docs mirror, a same-company API facade, an origin that must share the site's deployment
+boundary. The demo's own README states the boundary, and it is worth repeating verbatim
+in intent:
+
+- Keep the target origin **fixed in `wrangler.toml`**. Never derive it from user input.
+- **Validate any user-controlled path** in a real application. This demo forwards the path
+  remainder as-is because its upstream is a fixed, public echo service.
+- Do **not** proxy personalized or private responses unless you also disable shared edge
+  caching — this demo asks for `cacheEverything`, and the edge cache is shared between
+  visitors.
+
+</Warning>
+
+## Tech used
+
+| Piece | What the repo uses |
+| --- | --- |
+| Framework | zfb + Preact — `@takazudo/zfb` **2.3.0**, `@takazudo/zfb-runtime` **2.3.0** |
+| Adapter | `@takazudo/zfb-adapter-cloudflare` **2.3.0**, set as `adapter` in `zfb.config.ts` |
+| Styling | Tailwind CSS v4 (`tailwind: { enabled: true }`), imported by `styles/global.css` |
+| Rendering | SSG for `/` and `/404`; one SSR route — `pages/proxy/[...path].tsx` with `export const prerender = false` |
+| Cloudflare surface | Workers Static Assets (`main = "./dist/_worker.js"` + `[assets]`), served on a `custom_domain` route |
+| Bindings | **None.** One public `[vars]` entry, `PROXY_ORIGIN = "https://httpbingo.org"` |
+| Compatibility | `compatibility_date = "2026-05-01"`, `compatibility_flags = ["nodejs_compat"]` |
+| Other deps | `preact`, `preact-render-to-string`, `wrangler` 4.85.0 |
+
+The upstream is [`httpbingo.org`](https://httpbingo.org), an httpbin-compatible echo
+service. It is deterministic, so each behavior above has an endpoint that proves it:
+`/anything/...` echoes the forwarded method and query, `/redirect-to` emits a same-origin
+`Location`, `/cookies/set` emits `Set-Cookie`, and `/response-headers` emits CSP and HSTS
+alongside an ordinary header.
+
+## Requirements and configuration
+
+**No Cloudflare resources to provision.** There is no KV namespace, no D1 database, no R2
+bucket, and no Worker secret to create.
+
+**One configuration value, and it is not a credential.** `PROXY_ORIGIN` lives in
+`[vars]` in `wrangler.toml` and is deliberately committed:
+
+```toml title="wrangler.toml"
+[vars]
+PROXY_ORIGIN = "https://httpbingo.org"
+```
+
+Change it by editing that file. The repo warns explicitly against
+`wrangler secret put PROXY_ORIGIN` — a Worker secret of the same name shadows the
+committed var, and the deployed behavior then silently disagrees with the source.
+
+**`nodejs_compat` is mandatory**, not optional tuning. The Cloudflare adapter threads the
+per-request `(env, ctx, request)` context through an `AsyncLocalStorage` from
+`node:async_hooks`, which workerd does not expose by default. Without the flag the Worker
+refuses to boot. See [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx).
+
+**Works locally with no Cloudflare account:** `pnpm install`, `pnpm build`, `pnpm typecheck`.
+`zfb preview` execs `wrangler dev`, which runs the built Worker locally without deploying
+anything — so you can exercise the full proxy path offline, subject only to reaching the
+public upstream.
+
+**Needs Cloudflare:** only deployment. Because production is served on a `custom_domain`
+route, the API token needs **Zone · Workers Routes · Edit** in addition to the account-level
+Workers permissions — without it `wrangler deploy` uploads the Worker successfully and
+then fails on route creation. The repo's `docs/cloudflare-setup.md` is the from-zero
+walkthrough.
+
+**The live demo is public and unauthenticated.** It forwards non-GET methods too, but the
+upstream is a fixed public echo service, so there is nothing behind it to write to.
+
+## How it works
+
+### The route is a catch-all that never enumerates paths
+
+`pages/proxy/[...path].tsx` is a catchall route, but it declares no `paths()`. It does not
+need one: `paths()` exists to tell the build **which concrete URLs to emit**, and a
+`prerender = false` route emits nothing at build time. It is dispatched at request time
+instead, so a single file answers every URL under `/proxy/`.
+
+```tsx title="pages/proxy/[...path].tsx"
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+import { proxyRequest } from "../../lib/proxy";
+
+export const prerender = false;
+
+export default async function ProxyPage(_props: ProxyPageProps) {
+  const { env, request } = getCloudflareContext<Env>();
+  return proxyRequest({
+    request,
+    origin: env.PROXY_ORIGIN,
+    proxyPrefix: "/proxy/",
+  });
+}
+```
+
+Two things are worth noticing. First, `prerender` is a **literal `export const`** — zfb
+detects it by static AST inspection at build time, so an indirect assignment would
+silently fall back to SSG. Second, the props are named `_props` and ignored: the route
+types `params.path` but deliberately never reads it, for the reason in the next section.
+
+### The upstream URL is derived from the original request URL
+
+The obvious implementation joins the `params.path` segments back together. This one does
+not — it slices the prefix off the incoming URL's own `pathname` and copies `search`
+wholesale:
+
+```ts title="lib/proxy.ts"
+const pathRemainder = incomingUrl.pathname.slice(prefix.length);
+upstreamOrigin.pathname = joinPaths(upstreamOrigin.pathname, pathRemainder);
+upstreamOrigin.search = incomingUrl.search;
+upstreamOrigin.hash = "";
+```
+
+That is what preserves **percent-encoded path segments and the query string exactly**. Any
+round-trip through decoded route params risks re-encoding the path differently from what
+the client sent, which for a proxy is a correctness bug: the upstream sees a URL its caller
+never asked for. `hash` is cleared because a fragment is never sent over the wire anyway.
+
+The origin itself is normalized before use — `normalizeProxyOrigin()` rejects anything that
+is not `http:` or `https:`, and strips credentials, query, and fragment from the configured
+value, so a sloppy `PROXY_ORIGIN` cannot smuggle extra state into every forwarded request.
+
+### Hop-by-hop headers are stripped in both directions
+
+`connection`, `keep-alive`, `te`, `trailer`, `transfer-encoding`, `upgrade`, and anything
+starting with `proxy-` are removed from the request **and** from the response. These headers
+describe a single network hop, not the message. Forwarding them across a new connection is
+at best meaningless and at worst actively wrong — a `transfer-encoding` copied onto a
+response the Worker re-frames itself would describe framing that no longer exists.
+
+The request side additionally drops `content-length` and `host`, because the outgoing
+`Request` is a new object aimed at a different host: both values are reconstructed by the
+runtime for the upstream connection, and copying the originals would contradict them.
+
+Note that the set is a **fixed list**. The helper does not additionally parse the token list
+inside a `Connection` header, so a header nominated there — `Connection: X-Hop` alongside
+`X-Hop: value` — is still forwarded. That is fine against a fixed, known upstream like this
+demo's, and it is the first thing to tighten if you point the pattern at something less
+predictable.
+
+### Set-Cookie CSP and HSTS are dropped on purpose
+
+The response side strips four more headers, and this is the deliberate trade-off:
+
+```ts title="lib/proxy.ts"
+const STRIPPED_UPSTREAM_RESPONSE_HEADERS = new Set([
+  "content-security-policy",
+  "content-security-policy-report-only",
+  "set-cookie",
+  "strict-transport-security",
+]);
+```
+
+The reason is that a proxied response arrives at the browser wearing **your** origin, not
+the upstream's. Every one of these headers is scoped to the origin that delivers it:
+
+- A forwarded `Set-Cookie` would set a cookie on the **proxy host**. The upstream did not
+  ask for that and cannot see it as its own; meanwhile a third-party origin would be
+  writing cookies onto your domain for every visitor who touches `/proxy/`.
+- A forwarded **CSP** was authored for a different site's asset layout. Applied to your
+  host it either does nothing useful or breaks your own pages.
+- A forwarded **HSTS** is the sharpest edge: `Strict-Transport-Security` pins the *whole
+  host* — a `max-age` chosen by somebody else's server would apply to your entire domain.
+
+The cost is stated plainly rather than hidden: **upstream sessions and upstream browser
+security policy are intentionally not preserved.** Anything that needs a login on the far
+side will not work through this proxy as written, and if you need it to, cookie scoping and
+policy rewriting are decisions you have to make explicitly — not defaults to inherit.
+
+### Same-origin redirects come back under the proxy prefix
+
+The upstream request sets `redirect: "manual"`, so the Worker receives the 3xx itself
+instead of transparently following it. `rewriteLocationHeader()` then resolves the
+`Location` value against the upstream request URL and, **only when the target is
+same-origin**, maps it back under `/proxy/`:
+
+```ts title="lib/proxy.ts"
+if (target.origin !== options.upstreamRequestUrl.origin) {
+  return location;
+}
+
+const prefix = normalizeProxyPrefix(options.proxyPrefix ?? DEFAULT_PROXY_PREFIX);
+const pathRemainder = target.pathname.replace(/^\/+/, "");
+return `${prefix}${pathRemainder}${target.search}${target.hash}`;
+```
+
+So `https://httpbingo.org/anything/target` becomes `/proxy/anything/target`, and the
+browser's next hop stays inside the proxy. A cross-origin `Location` is passed through
+untouched — rewriting it would silently drag an unrelated origin into the proxied surface,
+which is exactly the open-proxy behavior the warning above rules out.
+
+### Streaming caching and failure modes
+
+The response is constructed from `upstreamResponse.body` directly, so the body is never
+buffered in the Worker; on the request side, `request.body` is forwarded for every method
+except GET and HEAD. The upstream fetch carries one Cloudflare hint:
+
+```ts title="lib/proxy.ts"
+fetch(upstreamRequest, { cf: { cacheEverything: true } });
+```
+
+That asks the edge to treat cacheable GET and HEAD upstream responses as cacheable content
+beyond the default file types, while still respecting the origin's cache headers. It is
+also the reason the safety warning names personalized responses specifically — that cache
+is **shared**.
+
+Two failure paths return a plain-text error with `cache-control: no-store` rather than
+falling through: **500** when `PROXY_ORIGIN` is missing or not a valid absolute
+`http:`/`https:` URL, and **502** when the upstream fetch throws, with the underlying
+message attached.
+
+### It coexists with the static asset layer
+
+`wrangler.toml` keeps zfb's default `run_worker_first = false`, so the edge asset router
+serves a matching static file before `_worker.js` ever runs. That is the right setting
+here: `/proxy/...` is never a built asset, so those requests miss the asset layer and reach
+the Worker anyway, while the prerendered `/` and `/404` are served straight off the edge
+for free. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx)
+for when you would want the opposite.
+
+## Run it locally
+
+```sh
+pnpm install
+pnpm dev        # zfb dev
+pnpm build      # zfb build
+pnpm preview    # zfb preview (execs wrangler dev against the built worker)
+pnpm typecheck  # zfb check
+```
+
+**The caveat, in the repo's own words:** `pnpm dev` is useful for the static index page;
+because the proxy reads Cloudflare `env.PROXY_ORIGIN`, use `pnpm preview` or direct
+Wrangler dev after building when checking the SSR proxy path.
+
+The underlying reason is that `zfb dev` runs `prerender = false` **render code** through
+its embedded V8 isolate but exposes no Worker bindings at all, so `getCloudflareContext()`
+throws under it — there is no Cloudflare request scope to read. See
+[dev-prod parity for `prerender = false`](../guides/ssr-and-cloudflare-bindings.mdx#dev-prod-parity-for-prerender-false).
+
+To exercise the proxy against a local Worker, build first and run Wrangler directly:
+
+```sh
+pnpm build
+pnpm exec wrangler dev --port 8788
+```
+
+Then, in another shell, the four checks the repo documents — each one maps to a link on the
+demo's index page:
+
+```sh
+curl -i "http://127.0.0.1:8788/proxy/anything/reverse-proxy?via=zfb"
+curl -i "http://127.0.0.1:8788/proxy/redirect-to?url=/anything/redirect-target&status_code=302"
+curl -i "http://127.0.0.1:8788/proxy/cookies/set?zfb_proxy_cookie=demo"
+curl -i "http://127.0.0.1:8788/proxy/response-headers?Content-Security-Policy=default-src%20%27self%27&Strict-Transport-Security=max-age%3D31536000&X-Demo=kept"
+```
+
+Expected: upstream JSON streamed back; `Location: /proxy/anything/redirect-target`; no
+`Set-Cookie`; and `X-Demo: kept` surviving while CSP and HSTS are gone.
+
+The repo also ships `pnpm smoke` (`scripts/smoke.mjs`), which asserts against a live host
+that `/proxy/anything/...` returned a body that demonstrably came from the upstream — the
+static asset layer could never produce it, so it proves the Worker itself ran on the
+domain. Point it anywhere: `pnpm smoke http://127.0.0.1:8788`.
+
+## Related reading
+
+- [SSR on a Worker (adapter mode)](../concepts/ssr-on-a-worker.mdx) — what `dist/_worker.js`
+  contains, how requests are dispatched, and the `AsyncLocalStorage` mechanism behind
+  `getCloudflareContext()`.
+- [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx) — the hands-on
+  setup guide: adapter install, `wrangler.toml`, and the local development loop.
+- [Dynamic Routes](../concepts/dynamic-routes.mdx) — the `paths()` contract this route gets
+  to skip, and what catchall segments mean for a prerendered page.
+- [Static Assets](../concepts/static-assets.mdx) — how `public/` and the emitted `dist/`
+  relate to the asset layer sitting in front of this Worker.
+- [Examples](../guides/examples.mdx) — the index of every standalone zfb example repository.

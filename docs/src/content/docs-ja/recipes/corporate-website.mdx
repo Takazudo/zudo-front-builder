@@ -1,0 +1,163 @@
+---
+title: "サンプル: Corporate Website"
+description: CSS Modules だけでスタイリングした静的生成の Preact サイト。zfb のサンプル 9 つのうち唯一 Tailwind を無効にしている例
+sidebar_position: 12
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+ヒーロー・サービス・会社紹介・問い合わせのセクションを持つコーポレートサイトを、純粋な SSG として Preact で構築したサンプルです。CSS Modules のデモでもあり、`zfb.config.ts` で `tailwind: { enabled: false }` を指定し、各コンポーネントが自分専用の `*.module.css` を隣に持ちます。[スタイリング](/ja/docs/concepts/styling) の実例版として読んでください。
+
+</Info>
+
+**ライブデモ:** [zfb-example-corporate-website.takazudomodular.com](https://zfb-example-corporate-website.takazudomodular.com/)
+
+**リポジトリ:** [Takazudo/zfb-example-corporate-website](https://github.com/Takazudo/zfb-example-corporate-website)
+
+## 何を示すか
+
+- **CSS Modules だけで完結させる** — 6 つのコンポーネント、6 つの `*.module.css`、ソースに Tailwind のユーティリティクラスは一切なし。
+- **Tailwind を切る** — zfb のサンプルサイト 9 つのうち、`tailwind: { enabled: false }` を指定しているのはこれだけです。出力されるスタイルシートにはこのプロジェクトが書いた CSS しか含まれず、preflight もテーマレイヤーもユーティリティのスキャン結果も入りません。
+- **衝突しないスコープ付きクラス名** — `.card` は `hero.module.css` と `services.module.css` の両方で宣言されていますが、両者が干渉することはありません。
+- **グローバル CSS とスコープ付き CSS の同居** — 1 枚のプレーンな `global.css` がデザイントークンと軽いリセット、そして手書きの `.skip-link` を 1 つだけ担い、各コンポーネントのスタイルはすべて `*.module.css` が持ちます。
+- **JavaScript が 1 バイトも出ないページ** — アイランドを使っていないため、ビルド結果は HTML 1 枚とスタイルシート 1 枚だけで、`<script>` タグはどこにもありません。
+- **アセット専用の Cloudflare Worker** — `wrangler.toml` には `[assets]` テーブルがあり、`main` キーは意図的に置いていません。
+
+## 使用技術
+
+| 項目 | このデモでの内容 |
+| --- | --- |
+| フレームワーク | zfb + Preact（`framework: "preact"`） |
+| zfb バージョン | `@takazudo/zfb` と `@takazudo/zfb-runtime` をどちらも **2.3.0** に固定 |
+| スタイリング | **CSS Modules** — `zfb.config.ts` で `tailwind: { enabled: false }` |
+| レンダリング | 純粋な SSG — `export const prerender = false` もサーバールートもなし |
+| Cloudflare 側 | Workers Static Assets の **アセット専用**構成（`main` キーなし） |
+| バインディング | なし — AI・KV・D1・R2・Durable Objects いずれも未使用 |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` は依存に **含まれていない** |
+| その他の依存 | `preact`、`preact-render-to-string`。devDependencies に `wrangler` と `typescript` |
+
+<Note title="Cloudflare Pages ではない">
+
+このリポジトリは Pages から移行済みで、旧 `*.pages.dev` のホストはすでに死んでいます。正規の URL は上記のカスタムドメインで、`custom_domain = true` を持つ `[[routes]]` エントリによって割り当てられています。
+
+</Note>
+
+## 必要な準備と設定
+
+**Cloudflare アカウントなしでもローカルでは動きます。** クローンして `pnpm install`、`pnpm build`、`pnpm preview` だけです。用意すべきものは何もありません。バインディングも Worker シークレットもマイグレーションもシードデータも不要です。ライブデモは読み取り専用のブローシャーサイトで、問い合わせフォームは `action="#"` に post するだけで何も保存しません。
+
+**Cloudflare が要るのはデプロイのときだけです。** リポジトリシークレットは `CLOUDFLARE_ACCOUNT_ID` と `CLOUDFLARE_API_TOKEN` の 2 つ、API トークンには 3 つの権限が必要です。アカウント · **Workers Scripts**（Edit）、アカウント · **Account Settings**（Read）、ゾーン · **Workers Routes**（Edit）。カスタムドメインを取り付けるのは最後のゾーン権限で、これが欠けるとアップロード自体は成功するのにルート設定の段階で失敗し、サイトは `*.workers.dev` からしか見えなくなります。Cloudflare に触れる CI ジョブはトークン未設定なら自動的にスキップされるので、フォークやクローン直後でも赤くなりません。
+
+Cloudflare 側の設定はこれだけです。
+
+```toml title="wrangler.toml"
+name = "zfb-example-corporate-website"
+compatibility_date = "2024-12-01"
+
+[assets]
+directory = "./dist"
+not_found_handling = "404-page"
+```
+
+`main` がないので Worker のコードは一切動きません。Cloudflare がエッジから `dist/` をそのまま配信します。セットアップ手順の全体はリポジトリの `docs/cloudflare-setup.md` にあります。
+
+## 仕組み
+
+### Tailwind を切るのは設定 1 行
+
+```ts title="zfb.config.ts"
+import { defineConfig } from "@takazudo/zfb/config";
+
+export default defineConfig({
+  framework: "preact",
+  base: "/",
+  tailwind: { enabled: false },
+});
+```
+
+このフラグを立てると、zfb は CSS エンジンを、書かれたままの `styles/global.css` をそのまま通すものへ差し替えます。Tailwind の `@import` もコンテンツスキャンも preflight もサブプロセスも走りません。一方で **CSS Modules のコンパイル、クラス名のハッシュ化、アセットの出力はそのまま動き続けます**。このデモが成立するのはそのためです。Tailwind をやめることは、zfb の CSS パイプラインをやめることではありません。
+
+<Warning title="必要な zfb バージョン">
+
+`tailwind: { enabled: false }` には zfb **`0.1.0-next.31` 以降**が必要です。それ以前のバージョンでは、このフラグを立てると書いた CSS がすべて捨てられていました（[zfb#824](https://github.com/Takazudo/zudo-front-builder/issues/824)）。ソースは正しいのにスタイルの当たらないサイトが出荷されてしまう挙動です。
+
+</Warning>
+
+### コンポーネントが自分のスタイルシートを読み込む
+
+6 つのコンポーネントすべてが同じ形です。デフォルトインポートして、静的なメンバーアクセスで参照します。
+
+```tsx title="components/hero/hero.tsx"
+import styles from "./hero.module.css";
+
+export default function Hero() {
+  return (
+    <section class={styles.hero}>
+      <div class={styles.inner}>{/* … */}</div>
+    </section>
+  );
+}
+```
+
+書き換えはビルド時に行われるため、`styles.hero` はビルド中に解決され、その仕組み自体はブラウザーに届きません。`dist/` にモジュールごとの `.css` が出ることもなく、すべてのモジュールのルールが 1 枚のハッシュ付き `dist/assets/styles-<hash>.css` にまとめられます。
+
+### 衝突がなくなり名前も再現する
+
+`hero.module.css` と `services.module.css` はどちらもただの `.card` を宣言しています。ビルド後のスタイルシートでは、これは無関係な 2 つのセレクターになります。
+
+```css
+.QAAyqq_card { /* components/hero/hero.module.css 由来 */ }
+.y8_AgG_card { /* components/services/services.module.css 由来 */ }
+```
+
+接頭辞はファイルの内容でもマシン上の絶対パスでもなく、**プロジェクトからの相対パス**のハッシュです。ここから 2 つの帰結が生まれ、どちらも重要です。
+
+- 書き手はグローバルに一意な名前を考える必要がありません。このサイトには 6 つのモジュールにまたがって `.inner` の宣言が 6 つありますが、それぞれ別のスコープ付きクラスに解決されます。
+- ソースがバイト単位で同じなら、どのマシンでビルドしてもクラス名までバイト単位で一致します。CI でのリビルドはノート PC でのリビルドと同じ HTML と同じスタイルシートを生むため、ハッシュ付きのファイル名も安定し、変更のないデプロイで CDN キャッシュが無駄に捨てられることもありません。
+
+### グローバル CSS はグローバルのまま
+
+スコープ化されるかどうかを決めるのは `.module.css` という接尾辞だけです。レイアウトはコンポーネントの import と並べて、プレーンなグローバルシートを読み込んでいます。
+
+```tsx title="layouts/default.tsx"
+import "../styles/global.css";
+import SiteHeader from "../components/header/site-header";
+```
+
+`styles/global.css` には、各モジュールが参照する `:root` のデザイントークン（`--color-brand`、`--space-5`、`--text-3xl` など）と軽いリセット、そして手書きのユーティリティが 1 つだけ入っています。`.skip-link` です。このクラスはハッシュ化されないままブラウザーへ届き、レイアウト側も `styles.*` の参照ではなく `class="skip-link"` という文字列リテラルで書いています。2 つの仕組みが同じファイルに同居していて、互いに干渉しません。
+
+なお、TypeScript にモジュールの import を受け入れさせるには、アンビエント宣言が 1 つ必要です。このリポジトリでは `styles/css-modules.d.ts` に置いています。
+
+```ts title="styles/css-modules.d.ts"
+declare module "*.module.css" {
+  const classes: Readonly<Record<string, string>>;
+  export default classes;
+}
+```
+
+### 出力は HTML 1 枚とスタイルシート 1 枚
+
+`layouts/default.tsx` は `<html>` から `<head>`、`<title>` までドキュメント全体を、ただのサーバーコンポーネントとしてレンダリングします。[アイランド](/ja/docs/concepts/islands) を使っていないので、`zfb build` が出力するのは `dist/index.html` と `dist/assets/styles-<hash>.css` だけで、JavaScript はまったく出ません。ビルド後のページに `<script>` タグは 1 つもありません。
+
+1 ページ構成であることの影響が 1 つだけ見えています。zfb はこのサイトに対して `404.html` を出力しないため、未知のパスは現状そっけない 404 を返します。それでも `not_found_handling = "404-page"` は設定してあります。404 ページが用意された瞬間から実際のページを返すようになりますし、もう一方の選択肢である `"single-page-application"` は未知のパスすべてに `index.html` を HTTP 200 で返してしまうため、いずれにせよこちらが正しい設定です。
+
+## ローカルで動かす
+
+```sh
+pnpm install
+pnpm build      # zfb build   -> dist/
+pnpm preview    # zfb preview -> serves dist/
+pnpm typecheck  # zfb check
+```
+
+`pnpm dev`（`zfb dev`）も使えます。しかもこのサンプルに限っては、バインディングを使う他のサンプルと違って機能上の注意点が**ありません**。このサイトには Worker のリクエストスコープを必要とする部分がなく、リポジトリ自身も保証を明記しています。`zfb dev` と `zfb build` はどちらも、スコープ付きの CSS Modules クラス名を HTML に出力し、対応するスコープ付きのルールを配信される CSS に出力します。開発時に見えているページが、そのまま本番のページです。
+
+ローカル固有の細かい点として、`predev` が `zfb dev` の前に `rm -rf dist .zfb .zfb-build` を実行します。古いビルド成果物が開発中のセッションを覆い隠すことはありません。
+
+## 関連ドキュメント
+
+- [スタイリング](/ja/docs/concepts/styling) — グローバル CSS・Tailwind v4・このデモが使っている CSS Modules のルール（`:export` や `composes` の非対応、ベア指定子の制限を含む）のリファレンスです。
+- [静的アセット](/ja/docs/concepts/static-assets) — 出力される `dist/assets/` がどう作られ、どう配信されるか。
+- [アイランド](/ja/docs/concepts/islands) — このサイトが意図的に使っていない機能です。
+- [サンプル集](/ja/docs/guides/examples) — 他の zfb サンプルサイト。

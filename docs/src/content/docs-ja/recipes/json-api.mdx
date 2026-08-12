@@ -1,0 +1,191 @@
+---
+title: "サンプル: JSON API"
+description: prerender = false のルートから 2 つの GET JSON エンドポイントを Cloudflare Worker 上で提供し、遅延構築した MiniSearch インデックスをウォームな isolate 間で使い回すスタンドアロンのサンプルリポジトリ
+sidebar_position: 13
+category: Recipes
+---
+
+<Info title="このページで扱うこと">
+
+`zfb-example-json-api` は、サンプル群のなかで最も小さい完結した SSR スターターです。静的なホームページ、Preact アイランド 1 つ、そして生成された Worker から JSON を返す `prerender = false` の API ルート 2 本で構成されています。zfb の SSR コントラクト — リテラルな `prerender` エクスポート、`getCloudflareContext()` 経由で受け取るリクエスト、isolate と同じ寿命を持つモジュールスコープの状態 — を、**プロビジョニングすべき Cloudflare のバインディングなし**で体験できます。
+
+</Info>
+
+- **ライブデモ** — [zfb-example-json-api.takazudomodular.com](https://zfb-example-json-api.takazudomodular.com/)
+- **リポジトリ** — [github.com/Takazudo/zfb-example-json-api](https://github.com/Takazudo/zfb-example-json-api)
+
+## 何を示すか
+
+- **ほぼ静的なサイトに置かれた 2 本の SSR ルート**。`pages/index.tsx` と `pages/404.tsx` は HTML にプリレンダリングされ、`pages/api/items.tsx` と `pages/api/search.tsx` は `export const prerender = false` でそこから抜けて、リクエストごとに Worker 上で動きます。
+- **リテラルエクスポートのコントラクト**。zfb は SSG か SSR かをビルド時の AST 検査で判定するため、このエクスポートはリテラルに書き下す必要があります。値をどこか別の場所で組み立てると、検出されずに静かにプリレンダリングされます。
+- **`Request` 仮引数を使わずに Request を読む**。どちらのハンドラも引数を取らず、`getCloudflareContext<Env>()` から `{ request }` を取り出します。
+- **isolate の寿命だけ生きるキャッシュとしてのモジュールスコープ**。`/api/search` は初回利用時に MiniSearch インデックスを構築し、`indexBuiltAt` と `indexBuildCount` を返すので、ウォームな isolate がインデックスを再利用する様子を観察できます。
+- **クエリによる絞り込みとページネーション**。`/api/items` は `q`・`page`・`per` を受け取ります。`page` と `per` はデータ層に届く前に上下限へクランプされ、要求されたページ番号は実在する最終ページまでに切り詰められます。
+- **CORS とメソッド処理を自前で書く**。共有モジュール `lib/cors.ts` が `OPTIONS` プリフライトに `204` を返し、`GET` 以外を JSON の `405` で弾き、すべてのボディに `content-type: application/json` を付けます。
+- **自分の API を叩くアイランド**。`"use client"` のコンポーネントが両エンドポイントを並行に fetch し、結果とインデックスのメトリクスを描画します。
+
+## 使用技術
+
+| 項目 | リポジトリでの内容 |
+|---|---|
+| フレームワーク | zfb + Preact（`zfb.config.ts` の `framework: "preact"`） |
+| zfb のバージョン | `@takazudo/zfb` **2.3.0**、`@takazudo/zfb-runtime` **2.3.0** |
+| アダプター | `@takazudo/zfb-adapter-cloudflare` **2.3.0** — 導入済みで、かつ本質的に必要 |
+| スタイリング | Tailwind v4（`tailwind: { enabled: true }`）。`styles/global.css` は `@import "tailwindcss"` で始まり、その後はこのサイト独自のセマンティックなクラスを定義しています。マークアップで使われているのは `item-card`・`metric-strip`・`toolbar` などで、ユーティリティクラスではありません |
+| レンダリング | 混在。`/` と `/404` はプリレンダリング、`/api/items` と `/api/search` は `prerender = false` |
+| Cloudflare 側の形態 | Workers Static Assets。`main = "./dist/_worker.js"`、`[assets]` に `binding = "ASSETS"`、`not_found_handling = "404-page"`、`run_worker_first = false` |
+| バインディング | **なし**。D1・KV・R2・キュー・シークレットはいずれも未使用で、`wrangler.toml` にあるバインディングは `ASSETS` だけです |
+| 互換性設定 | `compatibility_date = "2024-12-01"`、`compatibility_flags = ["nodejs_compat"]`（アダプターの `AsyncLocalStorage` に必要） |
+| 主な依存 | `minisearch` ^7.2.0、`preact` ^10.29.0、`preact-render-to-string` ^6.6.7。devDependencies に `wrangler` 4.85.0 と `tailwindcss` 4.2.4 |
+| データ | `lib/data.ts` に手書きされた架空のレコード 30 件。データベースも、読み込むべきフィクスチャもありません |
+
+## 必要なものと設定
+
+**Cloudflare アカウントなしでローカルで動きます。** 事前にプロビジョニングするものは何もありません。D1 データベースも、KV ネームスペースも、R2 バケットも、キューも、Worker シークレットも不要で、マイグレーションやシードデータもありません。データセットは `lib/data.ts` のただの配列であり、`wrangler.toml` が宣言しているバインディングはアダプターのラッパーが使う静的アセットのものだけです。`pnpm build` のあとに `pnpm preview` を実行すれば、実物の Worker が localhost で動きます。
+
+**Cloudflare が要るのはデプロイのときだけです。** デプロイには GitHub Actions のシークレットが 2 つ必要です。`CLOUDFLARE_ACCOUNT_ID` と、Workers Scripts · Edit、Account Settings · Read、そして **Zone** · Workers Routes · Edit を持つ `CLOUDFLARE_API_TOKEN` です。この Zone 権限は省略できません。`wrangler.toml` が `custom_domain` ルートを宣言しているため、これがないと Worker のアップロードだけ成功してルート作成のステップで失敗します。順を追った手順はリポジトリの `docs/cloudflare-setup.md` にあります。
+
+**ライブデモは読み取り専用で、認証もありません。** どちらのエンドポイントも `Access-Control-Allow-Origin: *` の `GET` 専用です。書き込みは一切行われないので、突破すべき認証もなければ、何かを残してしまう心配もありません。
+
+## 仕組み
+
+### prerender エクスポートはリテラルでなければならない
+
+このリポジトリの SSR ルートは、どちらも同じ書き出しで始まります。
+
+```tsx title="pages/api/items.tsx"
+import { getCloudflareContext } from "@takazudo/zfb-adapter-cloudflare";
+
+import { filterItems } from "../../lib/data";
+import { jsonResponse, methodNotAllowed, preflightResponse } from "../../lib/cors";
+
+export const prerender = false;
+
+interface Env {}
+
+// ...範囲を制限する整数ヘルパーは省略
+
+export default async function ItemsApi() {
+  const { request } = getCloudflareContext<Env>();
+  const preflight = preflightResponse(request);
+  if (preflight) {
+    return preflight;
+  }
+  if (request.method !== "GET") {
+    return methodNotAllowed(request.method);
+  }
+  // ...
+}
+```
+
+この冒頭部分には、見た目以上に重要な点が 2 つあります。
+
+`export const prerender = false;` をわざわざ長い形で書いているのは、zfb がこれを **ビルド時の静的な AST 検査** で読んでいるからです。モジュールを評価しているわけではなく、まさにこの宣言の形を探しています。同じ値をオブジェクト経由やヘルパー関数、あるいは計算式で与えると検出は外れ、そのルートは静かに SSG へフォールバックし、ビルド時に一度だけレンダリングされて、ボディが決して変わらない静的ファイルとして配信されます。エラーは出ません。ビルドから見れば何も問題は起きていないからです。対応形式の一覧は [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) にあります。同じリテラル限定のルールは `frontmatter` エクスポートにも適用されます。
+
+そしてハンドラは **引数を取りません**。これは意図的で、コントラクトのもう半分にあたります。zfb がページのデフォルトエクスポートを呼ぶときに渡すのは、受信した `Request` ではなくそのページの props オブジェクトです。そのため `request: Request` と宣言したハンドラはきれいにコンパイルが通ったうえで、実行時にそこから `undefined` を読むことになります。サポートされた入口は `getCloudflareContext<Env>()` で、生成された `_worker.js` がこのリクエストのために開いた `AsyncLocalStorage` のスコープから `{ env, request, ctx }` を返します。
+
+`interface Env {}` が空であることにも触れておく価値があります。このデモにはバインディングがないので宣言すべきものがないのですが、それでもジェネリクスは渡してあります。KV ネームスペースや D1 データベースを足す日が来たときに、型を 1 か所に書けばすべての `env.` の読み出しがそれで検査されるようになります。
+
+### モジュールスコープは isolate のスコープ
+
+`/api/search` は、このデモが単なるデータ整形の練習で終わらなくなる場所です。MiniSearch のインデックスは、リクエストごとではなく isolate ごとに最大 1 回だけ構築されます。
+
+```tsx title="pages/api/search.tsx"
+let searchIndex: MiniSearch<SearchDocument> | null = null;
+let indexBuiltAt: string | null = null;
+let indexBuildCount = 0;
+
+function getSearchIndex() {
+  if (!searchIndex) {
+    searchIndex = new MiniSearch<SearchDocument>({
+      // fields, storeFields, boosts, fuzzy: 0.2, prefix: true
+    });
+    searchIndex.addAll(
+      ITEMS.map((item) => ({
+        ...item,
+        tagsText: item.tags.join(" "),
+      })),
+    );
+    indexBuiltAt = new Date().toISOString();
+    indexBuildCount += 1;
+  }
+
+  return {
+    index: searchIndex,
+    builtAt: indexBuiltAt,
+    buildCount: indexBuildCount,
+  };
+}
+```
+
+この 3 つの `let` は `dist/_zfb_inner.mjs` のモジュールスコープに置かれます。workerd はこのモジュールを isolate の起動時に一度だけ評価し、その isolate が再利用されるかぎりメモリ上に保持し続けます。したがって、コールドな isolate に入った最初のリクエストだけがインデックス構築のコストを払い、**同じ** isolate に入るそれ以降のリクエストは無料でその成果を受け取ります。
+
+面白いのは、この挙動を「そういうものだ」と信じさせるのではなく、エンドポイントが観測可能にしている点です。すべてのレスポンスが `indexBuiltAt` と `indexBuildCount` を含んでいて、この 2 つはそれぞれ別の問いに答えます。
+
+- **`indexBuildCount`** は遅延構築のガードが効いていることを示します。1 つの isolate のなかでは初回リクエストで `0 → 1` になり、以降はずっと `1` のままです。この値が増えていくようなら、`if (!searchIndex)` のガードが機能していません。
+- **`indexBuiltAt`** は isolate の世代を示します。同じウォームなプロセスに対して `/api/search` を 2 回叩けば、タイムスタンプは完全に同一です。それが再利用の証拠です。あとのリクエストでタイムスタンプが *変わった* 場合、それはインデックスがその場で作り直されたという意味ではありません。Cloudflare が別のコールドな isolate を割り当てたということであり、その isolate はゼロから自前のインデックスを構築して、やはり `indexBuildCount: 1` を返します。
+
+ホームページのアイランドはこの 2 つをライブのカウンターとして表示するので、操作しながら数値の動きを見られます。これはモジュールスコープのキャッシュ全般についての正直な注意書きでもあります。それは調整機構も追い出しポリシーも持たない、isolate 単位の最適化です。コードとして出荷済みのデータから導かれる 30 件のインデックスにはまさに最適であり、2 人の同時アクセス者のあいだで整合していなければならないものにはまったく不向きです。
+
+### 意図的な JSON エラーをスタイル付き 404 に飲み込ませない
+
+`wrangler.toml` は `not_found_handling = "404-page"` を設定しているので、マッチしなかったパスには `pages/404.tsx` からビルドされた `dist/404.html` が返ります。URL の打ち間違いに対してはそれが望ましい挙動ですが、API にとっては落とし穴でもあります。生成された `_worker.js` は、アセット層のスタイル付きページと内側の Worker 自身のレスポンスのどちらを返すかを、レスポンスの `content-type` で判断するからです。フレームワーク標準の `text/plain` のボディしか持たない 404 は「どのルートにもマッチしなかった」場合と区別がつかないため、スタイル付きの HTML ページに道を譲ります。JSON を期待していたクライアントには HTML ドキュメントが返ることになります。
+
+このリポジトリの答えは、エラーのボディをすべて 1 つのヘルパー経由にすることで、JSON の content type を持たないレスポンスが外に出ないようにする、というものです。
+
+```ts title="lib/cors.ts"
+export function jsonResponse(data: unknown, init: ResponseInit = {}): Response {
+  const headers = corsHeaders(init.headers);
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json; charset=utf-8");
+  }
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "no-store");
+  }
+  return new Response(JSON.stringify(data, null, 2), {
+    ...init,
+    headers,
+  });
+}
+```
+
+`methodNotAllowed()` はこの上に `405` を組み立てますし、成功時の経路もすべて同じです。エンドポイントが 404 を返すことにした場合も同様になります。`cache-control: no-store` を既定にしているのも同じ種類の判断で、リクエストごとに内容が変わる API レスポンスは、ルートが明示的に求めないかぎり途中の誰にもキャッシュされるべきではない、ということです。
+
+ルーティング側でこれを支えているのが、zfb の既定である `run_worker_first = false` です。先に走るのはアセットルーターですが、`/api/items` と `/api/search` は `prerender = false` なので `dist/` 配下にファイルとして存在しません。したがってそれらへのリクエストは必ずアセット層で外れ、Worker へ落ちてきます。静的アセットが SSR のコストを払うことはなく、Worker が見るのは動的な部分だけです。全体像は [SSR on a Worker](/ja/docs/concepts/ssr-on-a-worker#ディスパッチフロー) にあります。
+
+## ローカルで動かす
+
+```sh
+pnpm install
+pnpm dev       # 静的なシェルとアイランドの反復開発
+pnpm build
+pnpm preview   # Worker と同じ形での API の挙動
+```
+
+`pnpm typecheck` は `zfb check` を実行し、`pnpm smoke` はデプロイ済みのドメインに対して `scripts/smoke.mjs` を実行します（別のベース URL を引数で渡せば向き先を変えられます）。`predev` は `pnpm dev` のたびに `build dist .zfb output worker` を削除するので、開発サーバーが以前のビルド成果物を配信してしまうことはありません。
+
+<Warning title="pnpm dev ではこれらのエンドポイントを提供できない">
+
+リポジトリはこの制約をはっきり書いています。`zfb dev` は `prerender = false` のコードを SSR の経路に通しますが、Worker のバインディングは用意しません。したがって **エンドポイントの確認は `pnpm build` と、`pnpm preview` あるいは `pnpm exec wrangler dev` の組み合わせで行う** ことになります。
+
+「このデモにはバインディングがないのだから対象外では」と思えるだけに、*なぜ* そうなるかを押さえておく価値があります。対象外ではありません。`getCloudflareContext()` はそもそも Worker のリクエストスコープが存在することを前提としており、`zfb dev` にはそれがないので、バインディングの有無が問題になる前に呼び出しが例外を投げます。このデモのハンドラはそのコンテキストから `request` を読んでいて、それだけで Worker のループが必要になります。`pnpm dev` は静的なシェルとアイランドの反復開発に使い、JSON を返さなければならないものには `pnpm preview` を使ってください。[`prerender = false` の dev と本番の同等性](/ja/docs/guides/ssr-and-cloudflare-bindings#prerender-false-の-dev-と本番の同等性) も参照してください。
+
+</Warning>
+
+ローカルの Worker が立ち上がったら、リポジトリが用意しているエンドポイントの確認手順は次のとおりです。
+
+```sh
+curl 'http://localhost:8787/api/items?q=review&page=1&per=5'
+curl 'http://localhost:8787/api/search?q=onboarding'
+curl -i -X OPTIONS 'http://localhost:8787/api/items'
+curl -i -X POST 'http://localhost:8787/api/items'
+```
+
+後半の 2 つは CORS とメソッドの経路です。プリフライトの `204` と、JSON の `405` が返ります。同じプロセスに対して検索リクエストを 2 回実行すれば、`indexBuiltAt` が変わらないことを確認できます。
+
+## 関連
+
+- [SSR on a Worker](/ja/docs/concepts/ssr-on-a-worker) — 2 層構成の Worker 出力、ディスパッチの順序、そして `getCloudflareContext()` がハンドラに `{ env, request, ctx }` を届ける仕組み。
+- [SSR と Cloudflare バインディング](/ja/docs/guides/ssr-and-cloudflare-bindings) — リテラルエクスポートのルール、`Request` ではなく props を受け取るコントラクト、`wrangler.toml` の設定、そしてこのリポジトリが前提にしているスタイル付き 404 の優先順位。
+- [Islands](/ja/docs/concepts/islands) — `"use client"` のアイテムブラウザが、Worker の外側に置かれるブラウザ向けバンドルになる仕組み。
+- [サンプル](/ja/docs/guides/examples) — ほかのスタンドアロンなサンプルリポジトリ一覧。
