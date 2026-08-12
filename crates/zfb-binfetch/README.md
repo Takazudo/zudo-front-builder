@@ -10,7 +10,7 @@ setting permissions, and atomically moving the file into its final slot.
 ## Public API
 
 - **`FetchOpts`** - retry and timeout knobs:
-  - `attempts` defaults to `3`.
+  - `attempts` defaults to `5`.
   - `connect_timeout` defaults to 15 seconds per attempt.
   - `overall_timeout` defaults to `None`; this avoids aborting a large but
     healthy slow download. Callers may opt into a whole-request deadline.

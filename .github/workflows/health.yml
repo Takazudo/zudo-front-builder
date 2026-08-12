@@ -136,6 +136,24 @@ jobs:
           # the `shared-key` on exam.yml's quarantine-heavy rust-cache step.
           shared-key: "workspace-all-targets"
 
+      # Cache the SHA-verified staged esbuild + tailwindcss binaries so the
+      # zfb build script skips its downloads in the steady state (issue 2385
+      # — a GitHub-release CDN blip failed the tailwind fetch and turned this
+      # required check red twice on main). Keyed on the two files holding
+      # every version + SHA-256 pin; slot content is target-specific, so the
+      # key names the target triple (shared with every other x86_64-linux job
+      # carrying this step). Opportunistic by design: continue-on-error keeps
+      # a cache-infrastructure failure falling through to the SHA-verified
+      # download instead of becoming a new way to fail the job, and there are
+      # deliberately no restore-keys — an old pin's binaries would only be
+      # hashed and re-downloaded anyway.
+      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        continue-on-error: true
+        with:
+          path: crates/zfb/binaries
+          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
+
       - run: pnpm install --frozen-lockfile
 
       # TypeScript typecheck gate (issue #1332): b4push has run this since its
@@ -567,6 +585,18 @@ jobs:
           # are not interchangeable (different feature set, different
           # rmeta).
           prefix-key: "v2-zfb-no-v8"
+
+      # Staged-binaries cache (issue 2385) — same step as the health job
+      # above (the build script runs feature-independently, so this job
+      # downloads too); see that step's comment for the full rationale.
+      # The key is deliberately identical: slot content depends only on the
+      # target platform, so both jobs share one cache entry.
+      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        continue-on-error: true
+        with:
+          path: crates/zfb/binaries
+          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       # crates/zfb/build.rs vendors framework npm packages (preact, react,
       # etc.) from node_modules/.pnpm at compile time. Without this, the
