@@ -1,13 +1,16 @@
 ---
 title: Recipes
-description: Self-contained patterns for using zfb. Curated section — one topic per page, copy-pasteable.
+description: Self-contained patterns and worked example sites for zfb. Curated section — one topic per page.
 sidebar_position: 25
 category: Recipes
 ---
 
-A maintainer-curated set of small, focused patterns for composing zfb's primitives — `addVirtualModule`, `postBuild` plugins, `ctx.routes`, non-HTML pages, MDX components — into concrete solutions you can adapt.
+A maintainer-curated section holding two kinds of page:
 
-Each recipe is:
+- **Focused recipes** compose zfb's primitives — `addVirtualModule`, `postBuild` plugins, `ctx.routes`, non-HTML pages, MDX components — into one concrete solution you can adapt.
+- **Worked example sites** take a whole deployable project and explain it end to end. Each has a public repository you can clone and a live deployment you can open.
+
+Either way, a page here is:
 
 - A single article on a single topic
 - Written as an explanation, not a code dump — the _why_ matters as much as the _how_
@@ -17,3 +20,17 @@ Each recipe is:
 
 - [Enlargeable Images](./enlargeable-images.mdx) — reproduce the old `imageEnlarge` built-in in userland using the `img` component override. Covers the server-side (no JS) and islands variants, plus the `no-enlarge` opt-out.
 - [Admonitions](./admonitions.mdx) — register `:::note`, `:::tip`, `:::info`, `:::warning`, `:::danger`, `:::caution`, and `:::details` using the `directives` feature with minimal component stubs and CSS hooks.
+
+## Example sites
+
+Nine standalone repositories, each a complete zfb project deployed and running on Cloudflare. Every page below covers one of them — what it demonstrates, the exact stack it uses, how it works, and how to run it locally — and links to the repository so you can clone it. [Examples](../guides/examples.mdx) puts the same nine side by side as a comparison matrix.
+
+- [AI Summarizer](./ai-summarizer.mdx) — one Preact island posting to a `prerender = false` route backed by a Workers AI binding, with a deterministic fallback so the endpoint still answers with no Cloudflare account.
+- [Blog](./blog.mdx) — a pure-SSG Markdown and MDX blog: three dynamic-route shapes, `paginate()`, one theme-toggle island, and a Tailwind v4 token system. No SSR, no adapter.
+- [Corporate Website](./corporate-website.mdx) — a static Preact marketing site styled entirely with CSS Modules. The one example that sets `tailwind: { enabled: false }`, so the emitted stylesheet is its authored CSS and nothing else.
+- [JSON API](./json-api.mdx) — the smallest complete SSR starter: two `prerender = false` GET endpoints, one of which builds a MiniSearch index lazily and reuses it across warm-isolate requests. Nothing to provision.
+- [KV Guestbook](./kv-guestbook.mdx) — a write path through a Cloudflare binding. One route both renders the entry list and handles a no-JavaScript form post against Workers KV, alongside a token-guarded admin delete.
+- [Password Gate](./password-gate.mdx) — a static site fronted by a hand-written Worker with `run_worker_first = true`, the one example that talks to Cloudflare without the zfb adapter. Its live demo answers `401` by design.
+- [Reverse Proxy](./reverse-proxy.mdx) — a catch-all `prerender = false` route forwarding method, path, query, and body to a fixed upstream, with a deliberate header policy in both directions.
+- [Webshop](./webshop.mdx) — a fully SSR shop on Cloudflare D1 with accounts, a cart, and checkout. Every route is `prerender = false` and every button is a form, so the build emits no HTML and no client JavaScript.
+- [Workers Cache](./workers-cache.mdx) — caching expressed purely as HTTP: per-route `Cache-Control`, `Cache-Tag`, and `Vary`, plus a token-protected purge route calling `ctx.cache.purge()`.
