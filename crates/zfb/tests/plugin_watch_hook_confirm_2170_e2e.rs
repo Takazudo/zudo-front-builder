@@ -145,6 +145,42 @@
 //! invalidation), so a failure names which half of the contract broke
 //! rather than reporting an ambiguous single timeout.
 //!
+//! ## Diagnostics & Hygiene additions (issue #2374, epic #2368)
+//!
+//! The same scenario, in the same dev session, also confirms three more
+//! contracts the Plugin Diagnostics & Hygiene epic added around this
+//! plugin-host wiring — extending `preset.mjs` (see its own header
+//! comment) rather than adding a second dev-server boot to this file:
+//!
+//! - **Log rendering (#2369).** `preset.mjs`'s `setup` hook calls
+//!   `logger.info(...)` once at boot; the loader itself calls
+//!   `console.log(...)` on every invocation (routed through #2373's global
+//!   `console` redirection). Both must reach the captured terminal output
+//!   formatted exactly like every other plugin log line —
+//!   `` zfb info: [plugin:<name>] <message> `` (`plugin_runner.rs`'s
+//!   `format_plugin_log_line`) — asserted right after the existing V1→V2
+//!   freshness pass above, by which point both lines have necessarily been
+//!   written.
+//! - **Failed re-invoke surfaces exactly once (#2370).** Writing the
+//!   `THROW-ON-REINVOKE` sentinel to `note.txt` makes the SAME loader
+//!   throw on its next forced re-invoke. `dev.rs`'s
+//!   `fmt_plugin_refresh_failures` is the single user-facing rendering
+//!   site for this (`zfb-build`'s own `tracing::warn!` inside
+//!   `plugin_refresh.rs::refresh` is invisible without a subscriber
+//!   attached) — the test asserts its diagnostic line appears, and
+//!   appears EXACTLY ONCE, naming both the plugin and the specifier.
+//! - **Last-good serving + recovery.** While the diagnostic is showing,
+//!   both routes must keep serving the last successfully published
+//!   content (`V2-NOTE-CONTENT-FRESH`) — proving `PluginRefreshState`'s
+//!   all-or-nothing atomicity (documented in `plugin_refresh.rs`) held
+//!   under a real throw, not just the crate's own unit tests. Writing a
+//!   valid value back to `note.txt` afterwards must then recover fresh
+//!   content on both routes, and must NOT re-print the failure
+//!   diagnostic — the orchestrator's pre-tick hook only ever fires for a
+//!   tick whose changed paths touch a registered plugin watch file, and
+//!   this fixture registers exactly one (`note.txt` itself), so nothing
+//!   between the failing edit and the recovery edit can re-trigger it.
+//!
 //! ## Modeled on
 //!
 //! `crates/zfb/tests/dev_supervision_e2e.rs`'s spawn/boot helpers and its
@@ -195,7 +231,11 @@ use zfb_test_utils::{
 /// CPU/memory.
 static SERIAL: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-const OVERALL_DEADLINE: Duration = Duration::from_secs(180);
+// Bumped from 180s (issue #2374): the scenario now runs two more
+// watch-triggered edits (a failing re-invoke, then a recovery) each with
+// their own bounded SSE/freshness/log polls on top of the original
+// #2170 V1→V2 pass, inside the SAME dev session.
+const OVERALL_DEADLINE: Duration = Duration::from_secs(240);
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(30);
 const SSE_DEADLINE: Duration = Duration::from_secs(30);
@@ -668,6 +708,161 @@ async fn run_scenario() -> ScenarioOutcome {
         &session,
     )
     .await;
+
+    // ------------------------------------------------------------------
+    // Issue #2374, assertion 1: the setup-time `logger.info` call and the
+    // loader's own `console.log` call must both have reached the captured
+    // terminal output by now — setup ran once at host boot (before the
+    // ready banner), and the loader has been invoked at least once (the
+    // initial load above, plus the forced re-invoke that produced
+    // V2-NOTE-CONTENT-FRESH). Both are formatted exactly like every other
+    // plugin log line: `plugin_runner.rs`'s `format_plugin_log_line`
+    // ("zfb {level}: [plugin:{plugin}] {message}").
+    // ------------------------------------------------------------------
+    let logs_so_far = session.logs();
+    assert!(
+        logs_so_far.contains(
+            "zfb info: [plugin:plugin-watch-hook-confirm-preset] plugin-watch-hook-confirm-preset: setup ran"
+        ),
+        "expected the plugin's setup-time `logger.info` line in the captured dev terminal \
+         output (issue #2374) — the setup hook's log rendering may have regressed.\n{}",
+        session.logs(),
+    );
+    assert!(
+        logs_so_far.contains(
+            "zfb info: [plugin:plugin-watch-hook-confirm-preset] plugin-watch-hook-confirm-preset: virtual:note loader read"
+        ),
+        "expected the virtual:note loader's `console.log` line — routed through issue #2373's \
+         global console redirection — in the captured dev terminal output (issue #2374).\n{}",
+        session.logs(),
+    );
+
+    // ------------------------------------------------------------------
+    // Issue #2374, assertion 2: a loader that throws on a watch-triggered
+    // re-invoke must surface a visible, single-owner error line naming
+    // the plugin, while both routes keep serving the last successfully
+    // published content. `THROW-ON-REINVOKE` is a sentinel this same
+    // `virtual:note` loader recognizes (see preset.mjs) — never written
+    // by the V1/V2 pass above, so this cannot be a false positive from
+    // an unrelated failure.
+    // ------------------------------------------------------------------
+    const FAILURE_MARKER: &str = "plugin \"plugin-watch-hook-confirm-preset\" failed to reload \
+                                   virtual module \"virtual:note\"";
+
+    let sse_before_failure = subscribe_sse(&client, &base).await;
+    fs::write(
+        session.root.join("plugin-watched/note.txt"),
+        "THROW-ON-REINVOKE\n",
+    )
+    .expect("edit plugin-watched/note.txt to the throw sentinel");
+
+    let ev = next_sse_event_name(sse_before_failure, SSE_DEADLINE)
+        .await
+        .expect("read SSE stream after the throw-sentinel edit");
+    assert!(
+        ev.is_some(),
+        "editing note.txt to the throw sentinel must still broadcast SOME SSE event — \
+         `is_plugin_watch_target` marks css/ssr-reload regardless of whether the pre-tick \
+         refresh itself succeeds (timed out after {}s).\n{}",
+        SSE_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    // Bounded, condition-keyed poll of captured stderr for the
+    // single-owner failure line (dev.rs's `fmt_plugin_refresh_failures`,
+    // rendered via `output::warn`).
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if session.logs().contains(FAILURE_MARKER) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "expected the single-owner plugin-refresh failure line ({FAILURE_MARKER:?}) \
+                 after writing the throw sentinel to note.txt; it never appeared.\n{}",
+                session.logs(),
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
+    let occurrences_after_failure = session.logs().matches(FAILURE_MARKER).count();
+    assert_eq!(
+        occurrences_after_failure,
+        1,
+        "the failed-reinvoke diagnostic must name the plugin EXACTLY ONCE (single-owner \
+         rendering, issue #2374) — observed {occurrences_after_failure} occurrences.\n{}",
+        session.logs(),
+    );
+
+    // Last-good serving: both routes must keep the last successfully
+    // published content, never blank, never the throw sentinel.
+    poll_until_response_contains(
+        &client,
+        &format!("{base}/"),
+        "V2-NOTE-CONTENT-FRESH",
+        "failed re-invoke: SSR-only route keeps serving the last-good content",
+        &session,
+    )
+    .await;
+    poll_until_response_contains(
+        &client,
+        &format!("{base}/prerendered/"),
+        "V2-NOTE-CONTENT-FRESH",
+        "failed re-invoke: prerendered route keeps serving the last-good content",
+        &session,
+    )
+    .await;
+
+    // Recovery: a subsequent successful re-invoke must restore fresh
+    // content on both routes, and must NOT reprint the failure
+    // diagnostic — the pre-tick hook only fires for a tick whose changed
+    // paths touch a registered plugin watch file, and this fixture
+    // registers exactly one (note.txt itself), which this edit is the
+    // first to touch again since the failure above.
+    let sse_recovery = subscribe_sse(&client, &base).await;
+    fs::write(
+        session.root.join("plugin-watched/note.txt"),
+        "V3-NOTE-CONTENT-RECOVERED\n",
+    )
+    .expect("edit plugin-watched/note.txt back to a valid value");
+
+    let ev = next_sse_event_name(sse_recovery, SSE_DEADLINE)
+        .await
+        .expect("read SSE stream after the recovery edit");
+    assert!(
+        ev.is_some(),
+        "the recovery edit must broadcast SOME SSE event (timed out after {}s).\n{}",
+        SSE_DEADLINE.as_secs(),
+        session.logs(),
+    );
+
+    poll_until_response_contains(
+        &client,
+        &format!("{base}/"),
+        "V3-NOTE-CONTENT-RECOVERED",
+        "recovery: SSR-only route serves fresh content after a successful re-invoke",
+        &session,
+    )
+    .await;
+    poll_until_response_contains(
+        &client,
+        &format!("{base}/prerendered/"),
+        "V3-NOTE-CONTENT-RECOVERED",
+        "recovery: prerendered route serves fresh content after a successful re-invoke",
+        &session,
+    )
+    .await;
+
+    let occurrences_after_recovery = session.logs().matches(FAILURE_MARKER).count();
+    assert_eq!(
+        occurrences_after_recovery,
+        1,
+        "the failed-reinvoke diagnostic must not reappear after a successful recovery edit — \
+         observed {occurrences_after_recovery} occurrences.\n{}",
+        session.logs(),
+    );
 
     ScenarioOutcome::Completed
 }
