@@ -4,7 +4,12 @@ use std::time::Duration;
 
 /// Options controlling fetch behaviour.
 pub struct FetchOpts {
-    /// Number of attempts before giving up. Default: 3.
+    /// Number of attempts before giving up. Default: 5.
+    ///
+    /// Raised from 3 (zfb#2385): a GitHub-release CDN blip defeated the old
+    /// ~1.5 s total backoff twice on `main` — 5 attempts with doubling
+    /// backoff gives ~7.5 s of total sleep, still bounded for a genuinely
+    /// dead URL while absorbing brief connection-level outages.
     pub attempts: u32,
     /// TCP connect timeout per attempt. Default: 15 s.
     pub connect_timeout: Duration,
@@ -27,7 +32,7 @@ pub struct FetchOpts {
 impl Default for FetchOpts {
     fn default() -> Self {
         Self {
-            attempts: 3,
+            attempts: 5,
             connect_timeout: Duration::from_secs(15),
             overall_timeout: None,
             initial_backoff: Duration::from_millis(500),
@@ -207,6 +212,26 @@ mod tests {
     }
 
     // ── tests ────────────────────────────────────────────────────────────────
+
+    /// The default retry budget is a product decision (zfb#2385: 3 attempts /
+    /// ~1.5 s of backoff lost to a real CDN blip twice), so pin it — every
+    /// other test here injects its own opts, which means a silent regression
+    /// of the defaults would otherwise stay green.
+    #[test]
+    fn default_opts_pin_the_retry_budget() {
+        let opts = FetchOpts::default();
+        assert_eq!(opts.attempts, 5, "default attempts are a pinned budget");
+        assert_eq!(
+            opts.initial_backoff,
+            Duration::from_millis(500),
+            "default backoff base is a pinned budget"
+        );
+        assert_eq!(opts.connect_timeout, Duration::from_secs(15));
+        assert!(
+            opts.overall_timeout.is_none(),
+            "no whole-request deadline by default — see FetchOpts::overall_timeout"
+        );
+    }
 
     /// Attempt 1 truncates; attempt 2 serves the full body.
     /// Assert: Ok, file == full body, counter == 2.

@@ -156,6 +156,25 @@ jobs:
           prefix-key: "v2-zfb"
           shared-key: "workspace-all-targets"
 
+      # Staged-binaries cache (issue 2385) — see health.yml's identically
+      # named step for the full rationale. Same key as health.yml's x86_64
+      # jobs so this weekly job shares their cache entry (a tailwind CDN blip
+      # here would file a tracking issue + notify at 04:17 UTC Saturday for
+      # nothing).
+      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        continue-on-error: true
+        with:
+          # Only the two gitignored executable slots — never the whole dir:
+          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
+          # and an exact-key restore would untar stale cached copies of those
+          # over the checkout whenever a PR edits them without touching the
+          # hashed pin files (codex review, zfb#2385 PR).
+          path: |
+            crates/zfb/binaries/esbuild/esbuild
+            crates/zfb/binaries/tailwindcss-v4
+          key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
+
       - run: pnpm install --frozen-lockfile
 
       # Compiles every target AND triggers crates/zfb's build.rs to download +
@@ -357,6 +376,26 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           prefix-key: "v2-zfb-macos-exam"
+
+      # Staged-binaries cache (issue 2385) — see health.yml's identically
+      # named step for the full rationale. macos-15 runners are Apple Silicon,
+      # so this leg's key names the darwin-arm64 triple (the build script
+      # stages darwin-arm64 binaries here). Weekly cadence sits near GitHub's
+      # 7-day cache retention boundary, so treat this entry as opportunistic —
+      # a cold week just re-downloads once.
+      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        continue-on-error: true
+        with:
+          # Only the two gitignored executable slots — never the whole dir:
+          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
+          # and an exact-key restore would untar stale cached copies of those
+          # over the checkout whenever a PR edits them without touching the
+          # hashed pin files (codex review, zfb#2385 PR).
+          path: |
+            crates/zfb/binaries/esbuild/esbuild
+            crates/zfb/binaries/tailwindcss-v4
+          key: zfb-staged-binaries-v1-aarch64-apple-darwin-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       # Install dependencies before cargo build so build.rs (embed_framework_packages)
       # can find node_modules/.pnpm/preact@*/node_modules/preact/ etc. — same

@@ -219,6 +219,28 @@ jobs:
         with:
           prefix-key: "v2-zfb-smoke-${{ matrix.platform.target }}"
 
+      # Staged-binaries cache (issue 2385) — see health.yml's identically
+      # named step for the full rationale. Keyed on matrix.platform.target
+      # because the build script downloads binaries for the TARGET platform
+      # (the arm64 leg stages arm64 binaries into the same slot paths). The
+      # cross leg works host-side: cross mounts the workspace into its
+      # container, so a restored slot is visible to the build script and its
+      # SHA check skips the download. The x86_64 leg's key matches health.yml
+      # so those jobs share one cache entry.
+      - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        continue-on-error: true
+        with:
+          # Only the two gitignored executable slots — never the whole dir:
+          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
+          # and an exact-key restore would untar stale cached copies of those
+          # over the checkout whenever a PR edits them without touching the
+          # hashed pin files (codex review, zfb#2385 PR).
+          path: |
+            crates/zfb/binaries/esbuild/esbuild
+            crates/zfb/binaries/tailwindcss-v4
+          key: zfb-staged-binaries-v1-${{ matrix.platform.target }}-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
+
       # Install cross-rs for the arm64 cross-compile target (same as release.yml).
       # cross wraps cargo build inside a Docker container providing the aarch64 sysroot;
       # Cross.toml at repo root pins the image to a GLIBC 2.23 base (≤ 2.35 floor).

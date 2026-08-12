@@ -196,7 +196,7 @@ fn binary_already_correct(path: &Path, expected_hex: &str) -> bool {
 // ---------------------------------------------------------------------------
 //
 // Downloads are handled by `zfb_binfetch::fetch_to_file`, which streams each
-// URL directly to a caller-supplied temp path with retry (3 attempts by
+// URL directly to a caller-supplied temp path with retry (5 attempts by
 // default), connect + overall timeouts, and automatic cleanup of partial
 // writes on failure. The caller owns SHA-256 verification, chmod, and atomic
 // rename into the final slot. See `crates/zfb-binfetch/src/lib.rs` for the
