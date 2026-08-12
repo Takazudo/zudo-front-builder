@@ -30,3 +30,8 @@ dist
 # VIRTUAL_MODULE_TEMP_SUFFIX). Removed on Drop, so this only covers the
 # window after a zfb process is killed mid-bundle.
 .zfb-virtual-*.mjs
+
+# Plugin TS bundle temp file synthesised by zfb-build's plugin bundler
+# (see zfb-build's PLUGIN_BUNDLE_TEMP_PREFIX/PLUGIN_BUNDLE_TEMP_SUFFIX).
+# Plugin sources live at arbitrary depth, so this glob is not root-anchored.
+**/.zfb-plugin-bundle-*.mjs
