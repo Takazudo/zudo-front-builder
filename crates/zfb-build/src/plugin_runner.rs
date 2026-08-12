@@ -2088,6 +2088,187 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn setup_hook_virtual_module_rejects_directory_watch_files() {
+        // #2373: a directory watchFiles entry was silently accepted but
+        // permanently inert — the Rust side registers a NON-recursive
+        // file-parent watch and matches ownership by exact path, so
+        // nothing under the directory was ever actually watched. This is
+        // a deliberate validation tightening (previously silently inert
+        // — issue #2367 confirms nothing could ever have relied on it
+        // working), not a behavior change plugins could depend on.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let watched_dir = tmp.path().join("watched-dir");
+        tokio::fs::create_dir(&watched_dir).await.unwrap();
+        let plugin_path = tmp.path().join("dirwatcher.mjs");
+        let plugin_src = format!(
+            r#"
+            export default {{
+              name: "dirwatcher",
+              setup({{ addVirtualModule }}) {{
+                addVirtualModule("virtual:dir", () => 'export default 1', {{
+                  watchFiles: [{dir:?}],
+                }});
+              }},
+            }};
+            "#,
+            dir = watched_dir.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "dirwatcher".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let err = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect_err("a directory watchFiles entry must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("directories are not watched recursively"),
+            "expected a directory-rejection error, got: {msg}"
+        );
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn console_log_from_plugin_arrives_as_a_log_envelope_attributed_to_the_plugin() {
+        // #2373: drives `plugin-host.mjs` directly over its stdio wire
+        // protocol rather than through `PluginHost` (whose `{log:...}`
+        // dispatch in `handle_line` emits under the `target: "zfb_plugin"`
+        // tracing target — invisible to `tracing-test`'s crate-scoped
+        // default filter, so `logs_contain` can't observe it here). Going
+        // straight to the wire lets this test assert on the EXACT
+        // envelope the host emits: proof a redirected `console.log`
+        // arrives as a well-formed `{"log":{"level":"info","plugin":...,
+        // "message":...}}` line — not a raw, unparseable line that would
+        // fall into the Rust side's parse-failure warning path — and that
+        // `plugin` correctly names the emitting plugin.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("console-plugin.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "console-plugin",
+              preBuild() {
+                console.log("hello from console.log");
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host_path = tmp.path().join("plugin-host.mjs");
+        tokio::fs::write(&host_path, PLUGIN_HOST_MJS).await.unwrap();
+
+        let mut child = Command::new("node")
+            .arg("--enable-source-maps")
+            .arg(&host_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("node spawns");
+        let mut stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut lines = BufReader::new(stdout).lines();
+
+        let init_msg = serde_json::json!({
+            "id": 1,
+            "kind": "init",
+            "plugins": [{
+                "module": file_url_for_test(&plugin_path),
+                "name": "console-plugin",
+                "options": {},
+            }],
+        });
+        stdin
+            .write_all(format!("{init_msg}\n").as_bytes())
+            .await
+            .unwrap();
+        let init_reply = lines.next_line().await.unwrap().expect("init reply line");
+        let init_reply: serde_json::Value = serde_json::from_str(&init_reply).unwrap();
+        assert_eq!(
+            init_reply["ok"],
+            serde_json::json!(true),
+            "init failed: {init_reply}"
+        );
+
+        let pre_build_msg = serde_json::json!({
+            "id": 2,
+            "kind": "preBuild",
+            "ctx": {
+                "projectRoot": tmp.path(),
+                "outDir": tmp.path().join("dist"),
+                "config": {},
+            },
+        });
+        stdin
+            .write_all(format!("{pre_build_msg}\n").as_bytes())
+            .await
+            .unwrap();
+
+        // The `console.log` call happens synchronously before `preBuild`
+        // returns, so its log-envelope line is written to stdout before
+        // the `preBuild` reply line — the same ordering the Rust reader
+        // relies on in production.
+        let log_line = lines.next_line().await.unwrap().expect("log line");
+        let log_json: serde_json::Value = serde_json::from_str(&log_line).unwrap_or_else(|e| {
+            panic!(
+                "log line must be well-formed JSON, not a raw parse-failure line: {e}\nline: {log_line}"
+            )
+        });
+        assert_eq!(
+            log_json,
+            serde_json::json!({
+                "log": {
+                    "level": "info",
+                    "plugin": "console-plugin",
+                    "message": "hello from console.log",
+                }
+            }),
+        );
+
+        let reply_line = lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("preBuild reply line");
+        let reply_json: serde_json::Value = serde_json::from_str(&reply_line).unwrap();
+        assert_eq!(
+            reply_json["ok"],
+            serde_json::json!(true),
+            "preBuild failed: {reply_json}"
+        );
+
+        stdin
+            .write_all(b"{\"id\":3,\"kind\":\"shutdown\"}\n")
+            .await
+            .unwrap();
+        let _ = lines.next_line().await;
+        let _ = child.wait().await;
+    }
+
+    #[tokio::test]
     async fn setup_hook_accepts_inject_route_in_build_mode() {
         // #1193: `injectRoute` during a build is now ACCEPTED end-to-end
         // through the JS host (it contributes a package-owned build
