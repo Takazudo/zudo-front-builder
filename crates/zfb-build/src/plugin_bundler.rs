@@ -210,6 +210,19 @@ pub async fn bundle_plugin_entry(
         })?;
     let staged_path = staged.path().to_path_buf();
 
+    // Claim ownership before esbuild runs where the platform allows it. A
+    // Unix `flock` is advisory and invisible to esbuild — which never locks
+    // its own `--outfile` — so the lock costs nothing and covers the one case
+    // the age gate below cannot: a process frozen (laptop sleep, SIGSTOP)
+    // past the staleness window with esbuild still to finish, where the
+    // wedge-guard timeout cannot fire either because the whole task is
+    // suspended. Windows is excluded deliberately: there `lock_shared` maps
+    // to `LockFileEx`, whose shared range lock blocks writes through OTHER
+    // handles, so locking here would make esbuild's own `--outfile` write
+    // fail (see the post-write lock below).
+    #[cfg(unix)]
+    let _ = staged.as_file().lock_shared();
+
     // `kill_on_drop` + the `tokio::time::timeout` below is the async
     // equivalent of `adapter.rs`'s `run_capturing` 5-minute wedge guard: a
     // stalled esbuild binary (or a `ZFB_ESBUILD_BIN` wrapper whose
@@ -267,19 +280,20 @@ pub async fn bundle_plugin_entry(
         );
     }
 
-    // Locked only now that esbuild has finished writing `--outfile` — the
-    // #1976 write-then-lock convention (`zfb-plugin-resolver`'s
-    // `allocate_locked_entry_tmp`). On Windows `lock_shared` maps to
-    // `LockFileEx`, whose shared range lock blocks WRITES THROUGH OTHER
-    // HANDLES, so locking before the spawn would make esbuild's own
-    // `--outfile` write fail on every `.ts`/`.tsx`/`.mts`/`.cts` plugin —
-    // and `@takazudo/zfb-win32-x64-msvc` is a shipped platform. The
-    // still-unlocked staging window is covered instead by
-    // `PLUGIN_BUNDLE_TEMP_STALE_AFTER` exceeding `ESBUILD_BUNDLE_TIMEOUT`
-    // (see the const assertion above), so a concurrent process's sweep can
-    // never age out a bundle esbuild is still writing. Shared (not
-    // exclusive), since nothing but a reading module loader ever opens this
-    // file again.
+    // Lock now that esbuild has finished writing `--outfile` — the #1976
+    // write-then-lock convention (`zfb-plugin-resolver`'s
+    // `allocate_locked_entry_tmp`). This is the ONLY point Windows can lock
+    // at: `lock_shared` maps to `LockFileEx` there, whose shared range lock
+    // blocks WRITES THROUGH OTHER HANDLES, so locking before the spawn would
+    // make esbuild's own `--outfile` write fail on every
+    // `.ts`/`.tsx`/`.mts`/`.cts` plugin — and `@takazudo/zfb-win32-x64-msvc`
+    // is a shipped platform. Windows' unlocked staging window is covered
+    // instead by `PLUGIN_BUNDLE_TEMP_STALE_AFTER` exceeding
+    // `ESBUILD_BUNDLE_TIMEOUT` (see the const assertion above), so a
+    // concurrent process's sweep can never age out a bundle esbuild is still
+    // writing. On Unix the lock is already held from before the spawn and
+    // this call is a harmless re-assert. Shared (not exclusive), since
+    // nothing but a reading module loader ever opens this file again.
     let _ = staged.as_file().lock_shared();
 
     let file_url = url::Url::from_file_path(&staged_path)
@@ -304,15 +318,16 @@ pub async fn bundle_plugin_entry(
 ///
 /// On top of the age gate, a stale candidate is spared if a live process
 /// still holds it: `bundle_plugin_entry` takes a *shared* `flock` on its
-/// staged file once esbuild has written it (#1976's write-then-lock
-/// ordering), so an EXCLUSIVE `try_lock` succeeding here proves no such
+/// staged file, so an EXCLUSIVE `try_lock` succeeding here proves no such
 /// process is still alive, regardless of age — mirroring
 /// `zfb_islands::esbuild`'s `sweep_orphaned_in_project_temp_files`
 /// lock-spare check (#1976/#2109). Two zfb processes (e.g. `zfb dev` +
 /// `zfb build`) can stage bundles in the same plugin directory
-/// concurrently; a live bundle must never be reaped. A bundle still
-/// mid-`esbuild` is not yet locked, and is covered by the age gate alone —
-/// which is why [`PLUGIN_BUNDLE_TEMP_STALE_AFTER`] is pinned above
+/// concurrently; a live bundle must never be reaped. On Windows that lock
+/// can only be taken once esbuild has finished writing (#1976's
+/// write-then-lock ordering — see the call sites), so a bundle still
+/// mid-`esbuild` rests on the age gate alone there; that is why
+/// [`PLUGIN_BUNDLE_TEMP_STALE_AFTER`] is pinned above
 /// [`ESBUILD_BUNDLE_TIMEOUT`]. Best-effort throughout: any individual error
 /// (unreadable dir, racing unlink, permission denied) is ignored — a failed
 /// sweep must never fail a build.
