@@ -52,6 +52,9 @@ pub mod adapter;
 pub mod atomic;
 pub mod bundler;
 pub mod content_provenance;
+/// Internal: bounded ETXTBSY spawn retries shared by the crate's two esbuild
+/// spawn sites (#2378, #2380). Not part of the public surface.
+pub(crate) mod etxtbsy;
 pub mod glob_expand;
 pub mod head_inject;
 pub mod link_base_rewrite;
