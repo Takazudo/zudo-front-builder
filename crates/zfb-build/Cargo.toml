@@ -135,7 +135,10 @@ lol_html = "2.8.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread"] }
+# `test-util` enables `start_paused` on `#[tokio::test]` for virtual-time
+# backoff in plugin_bundler.rs's ETXTBSY retry tests (zfb#2378), matching
+# the same dev-only opt-in in `zfb-config-loader` and `zfb` (zfb#1014).
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "rt-multi-thread", "test-util"] }
 # Route scanning for the e2e integration test: discovers pages and their
 # dynamic-route templates without re-authoring the zfb-router walk.
 zfb-router = { path = "../zfb-router" }

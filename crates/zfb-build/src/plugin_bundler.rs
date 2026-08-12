@@ -58,6 +58,20 @@ const _: () = assert!(
     "PLUGIN_BUNDLE_TEMP_STALE_AFTER must exceed ESBUILD_BUNDLE_TIMEOUT"
 );
 
+/// Bounded ETXTBSY spawn retries for the esbuild subprocess in
+/// [`bundle_plugin_entry`] (issue #2378). Same budget and linear backoff
+/// (10ms, 20ms, …) as `zfb-config-loader`'s identically-named constants,
+/// which fixed this exact race class for its own subprocess spawns
+/// (zfb#1008): the race window is fork-to-exec sized, so a handful of
+/// short retries is far more than enough without delaying genuine failures.
+///
+/// Replicated here rather than shared: `zfb-build` does not depend on
+/// `zfb-config-loader`, and that crate's helper is shaped around
+/// spawn-and-collect-`Output` (it owns a timeout too), while this call site
+/// needs the retry around the bare `spawn()` alone.
+const ETXTBSY_MAX_RETRIES: u32 = 5;
+const ETXTBSY_RETRY_DELAY: Duration = Duration::from_millis(10);
+
 /// `--banner:js` injected into every plugin bundle so a `.cts`/CommonJS
 /// entry's `require(...)` calls keep working after bundling (codex review
 /// finding 1, #2324).
@@ -165,6 +179,41 @@ impl StagedPluginBundle {
     }
 }
 
+/// Drive `attempt` until it returns anything other than a retryable
+/// `ExecutableFileBusy` ("Text file busy", raw OS error 26), with at most
+/// [`ETXTBSY_MAX_RETRIES`] linearly backed-off retries.
+///
+/// The esbuild binary being spawned may have JUST been written — a packaged
+/// `zfb` extracts the embedded binary into a tempdir before spawning it. If
+/// an unrelated thread forks while that write's fd is briefly open, the
+/// forked child holds the fd until its own `execve`, and our `execve` of the
+/// freshly-written file fails with ETXTBSY (issue #2378; `zfb-config-loader`
+/// hit and fixed the identical race in zfb#1008).
+///
+/// Retrying is side-effect free because the discriminator guarantees it:
+/// ETXTBSY can only originate from the `execve` inside `spawn()`, so a
+/// matching error means the child never ran. Every other error — including
+/// the `NotFound` of a missing binary — returns on the first attempt, so
+/// callers' error wording and latency are unchanged.
+async fn spawn_with_etxtbsy_retry<T, F>(mut attempt: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    let mut etxtbsy_attempts = 0u32;
+    loop {
+        match attempt() {
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && etxtbsy_attempts < ETXTBSY_MAX_RETRIES =>
+            {
+                etxtbsy_attempts += 1;
+                time::sleep(ETXTBSY_RETRY_DELAY * etxtbsy_attempts).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Bundle a plugin entry (a `.ts`/`.tsx`/`.mts`/`.cts` file) into a staged
 /// `.mjs` artifact using `esbuild_bin`.
 ///
@@ -229,7 +278,8 @@ pub async fn bundle_plugin_entry(
     // descendant inherits and holds the stdout/stderr pipes open) must not
     // block plugin startup indefinitely. Dropping the timed-out future
     // drops the `Child`, which kills the direct process.
-    let child = Command::new(esbuild_bin)
+    let mut command = Command::new(esbuild_bin);
+    command
         .arg(entry)
         .arg("--bundle")
         .arg("--format=esm")
@@ -244,8 +294,12 @@ pub async fn bundle_plugin_entry(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+
+    // Only the spawn is retried, and only on ETXTBSY — see
+    // `spawn_with_etxtbsy_retry` for why that is side-effect free.
+    let child = spawn_with_etxtbsy_retry(|| command.spawn())
+        .await
         .with_context(|| {
             format!("plugin bundling: failed to spawn esbuild for plugin `{plugin_name}`")
         })?;
@@ -1102,6 +1156,99 @@ mod tests {
         assert!(
             msg.starts_with(&expected_prefix),
             "error must match the locked prefix exactly.\nexpected prefix: {expected_prefix}\ngot: {msg}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // ETXTBSY spawn retry (#2378). The retry loop's contract is attempt
+    // counting and error classification, driven through the injectable
+    // `attempt` seam because a real ETXTBSY is a fork-to-exec-sized race
+    // no test can induce on demand. Virtual time (`start_paused`) keeps
+    // the linear-backoff sleeps instant. Mirrors `zfb-config-loader`'s
+    // `output_bounded_with` tests (zfb#1008).
+    // -------------------------------------------------------------------
+
+    fn etxtbsy() -> std::io::Error {
+        std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spawn_retry_absorbs_transient_etxtbsy_and_then_succeeds() {
+        let mut attempts = 0u32;
+        let result = spawn_with_etxtbsy_retry(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(etxtbsy())
+            } else {
+                Ok("spawned")
+            }
+        })
+        .await;
+
+        assert_eq!(result.expect("should succeed after retries"), "spawned");
+        assert_eq!(attempts, 3, "expected 2 ETXTBSY attempts plus 1 success");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spawn_retry_exhausts_its_budget_and_surfaces_the_original_error() {
+        let mut attempts = 0u32;
+        let result = spawn_with_etxtbsy_retry(|| {
+            attempts += 1;
+            Err::<(), _>(etxtbsy())
+        })
+        .await;
+
+        let err = result.expect_err("a permanently busy binary must still fail");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::ExecutableFileBusy,
+            "the original error must surface, not a retry-specific one"
+        );
+        assert_eq!(
+            attempts,
+            ETXTBSY_MAX_RETRIES + 1,
+            "expected 1 initial attempt plus {ETXTBSY_MAX_RETRIES} retries"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn spawn_retry_never_retries_a_non_etxtbsy_failure() {
+        let mut attempts = 0u32;
+        let result = spawn_with_etxtbsy_retry(|| {
+            attempts += 1;
+            Err::<(), _>(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .await;
+
+        assert_eq!(
+            result.expect_err("a missing binary must fail").kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(attempts, 1, "a non-ETXTBSY failure must not be retried");
+    }
+
+    /// The retry loop must not disturb the locked spawn-failure wording (or
+    /// delay it): a missing binary is `NotFound`, so it returns on the first
+    /// attempt with the same message it always carried. No real esbuild
+    /// needed — staging succeeds and the spawn is what fails.
+    #[tokio::test]
+    async fn missing_esbuild_binary_reports_the_locked_spawn_error_shape() {
+        let project = tempfile::tempdir().unwrap();
+        let entry = project.path().join("index.ts");
+        fs::write(&entry, "export default {};\n").unwrap();
+
+        let err = bundle_plugin_entry(
+            &entry,
+            Path::new("/nonexistent/zfb-plugin-bundler-esbuild"),
+            "missing-esbuild-plugin",
+        )
+        .await
+        .expect_err("spawning a nonexistent esbuild must fail");
+
+        let msg = err.to_string();
+        assert_eq!(
+            msg, "plugin bundling: failed to spawn esbuild for plugin `missing-esbuild-plugin`",
+            "error must match the locked spawn-failure shape exactly"
         );
     }
 
