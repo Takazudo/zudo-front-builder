@@ -1247,6 +1247,7 @@ impl PluginHost {
                 Ok(Some(line)) => {
                     if !line.trim().is_empty() {
                         warn!(target: "zfb_plugin", "{line}");
+                        eprintln!("{}", Self::format_plugin_host_warn_line("stderr", &line));
                     }
                     continue;
                 }
@@ -1267,6 +1268,27 @@ impl PluginHost {
         }
     }
 
+    /// Format a plugin `{log:{level,plugin,message}}` envelope for the
+    /// visible `eprintln!` channel, matching this crate's dual-channel
+    /// convention (`tracing` + `eprintln!`, see [`Self::run_stdout_reader`]'s
+    /// doc comment for #2104's rationale — no `tracing_subscriber` is
+    /// installed anywhere in the `zfb` binary, so `eprintln!` is the
+    /// channel production users actually see). `level` is the already-
+    /// normalised label (`"warn"`/`"error"`/`"info"`) a caller matched on,
+    /// not the raw, unvalidated `log.level` string from the wire.
+    fn format_plugin_log_line(level: &str, plugin: &str, message: &str) -> String {
+        format!("zfb {level}: [plugin:{plugin}] {message}")
+    }
+
+    /// Format a plugin-host line that has no plugin to attribute — either
+    /// a raw stderr write from the host subprocess, or a non-JSON stdout
+    /// line that failed to parse as a `{log:...}`/reply envelope — for the
+    /// same visible `eprintln!` channel. `source` names which pipe it came
+    /// from (`"stderr"` / `"stdout"`) so a reader can tell the two apart.
+    fn format_plugin_host_warn_line(source: &str, detail: &str) -> String {
+        format!("zfb warn: [plugin-host {source}] {detail}")
+    }
+
     async fn handle_line(inner: &Arc<HostInner>, line: &str) {
         if line.trim().is_empty() {
             return;
@@ -1275,6 +1297,7 @@ impl PluginHost {
             Ok(p) => p,
             Err(e) => {
                 warn!(error = %e, raw = %line, "plugin host: failed to parse stdout line");
+                eprintln!("{}", Self::format_plugin_host_warn_line("stdout", line));
                 return;
             }
         };
@@ -1282,12 +1305,24 @@ impl PluginHost {
             HostLine::Log(LogLine { log }) => match log.level.as_str() {
                 "warn" => {
                     warn!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                    eprintln!(
+                        "{}",
+                        Self::format_plugin_log_line("warn", &log.plugin, &log.message)
+                    );
                 }
                 "error" => {
                     error!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                    eprintln!(
+                        "{}",
+                        Self::format_plugin_log_line("error", &log.plugin, &log.message)
+                    );
                 }
                 _ => {
                     info!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                    eprintln!(
+                        "{}",
+                        Self::format_plugin_log_line("info", &log.plugin, &log.message)
+                    );
                 }
             },
             HostLine::Reply(reply) => {
@@ -1327,6 +1362,40 @@ pub fn annotate_with_plugin_error(err: anyhow::Error) -> anyhow::Error {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    // --- Visible-channel line formatting (issue #2369) -----------------
+    //
+    // Pure helpers, so these assert the exact rendered text directly
+    // rather than trying to capture in-process `eprintln!` output (awkward
+    // and race-prone with parallel test execution sharing one stderr).
+
+    #[test]
+    fn format_plugin_log_line_attributes_plugin_and_level_for_all_three_levels() {
+        assert_eq!(
+            PluginHost::format_plugin_log_line("info", "my-plugin", "hello"),
+            "zfb info: [plugin:my-plugin] hello"
+        );
+        assert_eq!(
+            PluginHost::format_plugin_log_line("warn", "my-plugin", "careful"),
+            "zfb warn: [plugin:my-plugin] careful"
+        );
+        assert_eq!(
+            PluginHost::format_plugin_log_line("error", "my-plugin", "boom"),
+            "zfb error: [plugin:my-plugin] boom"
+        );
+    }
+
+    #[test]
+    fn format_plugin_host_warn_line_tags_the_source_pipe() {
+        assert_eq!(
+            PluginHost::format_plugin_host_warn_line("stderr", "uncaught at plugin-host.mjs:12"),
+            "zfb warn: [plugin-host stderr] uncaught at plugin-host.mjs:12"
+        );
+        assert_eq!(
+            PluginHost::format_plugin_host_warn_line("stdout", "not json at all"),
+            "zfb warn: [plugin-host stdout] not json at all"
+        );
+    }
 
     fn file_url_for_test(p: &Path) -> String {
         // Minimal `file://` URL for absolute paths we control in
