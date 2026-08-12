@@ -25,6 +25,7 @@ use tokio::time;
 use tracing::warn;
 
 use crate::bundler::{resolve_esbuild_binary_with_env, DEFAULT_ESBUILD_SLOT};
+use crate::etxtbsy::spawn_with_etxtbsy_retry;
 
 /// Filename prefix for staged plugin bundle artifacts
 /// (`.zfb-plugin-bundle-*.mjs`), following the #1976 temp-file naming
@@ -229,7 +230,8 @@ pub async fn bundle_plugin_entry(
     // descendant inherits and holds the stdout/stderr pipes open) must not
     // block plugin startup indefinitely. Dropping the timed-out future
     // drops the `Child`, which kills the direct process.
-    let child = Command::new(esbuild_bin)
+    let mut command = Command::new(esbuild_bin);
+    command
         .arg(entry)
         .arg("--bundle")
         .arg("--format=esm")
@@ -244,8 +246,12 @@ pub async fn bundle_plugin_entry(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+
+    // Only the spawn is retried, and only on ETXTBSY — see
+    // `spawn_with_etxtbsy_retry` for why that is side-effect free.
+    let child = spawn_with_etxtbsy_retry(|| command.spawn())
+        .await
         .with_context(|| {
             format!("plugin bundling: failed to spawn esbuild for plugin `{plugin_name}`")
         })?;
@@ -1102,6 +1108,32 @@ mod tests {
         assert!(
             msg.starts_with(&expected_prefix),
             "error must match the locked prefix exactly.\nexpected prefix: {expected_prefix}\ngot: {msg}"
+        );
+    }
+
+    /// The ETXTBSY retry (#2378) must not disturb the locked spawn-failure
+    /// wording (or delay it): a missing binary is `NotFound`, so it returns on
+    /// the first attempt with the same message it always carried. The retry
+    /// loop's own contract is pinned in `crate::etxtbsy`. No real esbuild
+    /// needed — staging succeeds and the spawn is what fails.
+    #[tokio::test]
+    async fn missing_esbuild_binary_reports_the_locked_spawn_error_shape() {
+        let project = tempfile::tempdir().unwrap();
+        let entry = project.path().join("index.ts");
+        fs::write(&entry, "export default {};\n").unwrap();
+
+        let err = bundle_plugin_entry(
+            &entry,
+            Path::new("/nonexistent/zfb-plugin-bundler-esbuild"),
+            "missing-esbuild-plugin",
+        )
+        .await
+        .expect_err("spawning a nonexistent esbuild must fail");
+
+        let msg = err.to_string();
+        assert_eq!(
+            msg, "plugin bundling: failed to spawn esbuild for plugin `missing-esbuild-plugin`",
+            "error must match the locked spawn-failure shape exactly"
         );
     }
 

@@ -40,6 +40,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
+use crate::etxtbsy::spawn_with_etxtbsy_retry_blocking;
+
 /// Adapter selection from `zfb.config.json`.
 ///
 /// `None` corresponds to the default `adapter: "none"` (or omitted)
@@ -315,7 +317,17 @@ pub(crate) fn run_capturing(cmd: &mut Command) -> Result<Output> {
             .context("cloning stderr temp file")?,
     ));
 
-    let mut child = cmd.spawn().context("spawning subprocess")?;
+    // Bounded ETXTBSY retry (issue #2380). `run_esbuild` (bundler.rs) reaches
+    // its esbuild subprocess through this helper, so this is where the main
+    // bundler's spawn meets the same just-written-binary race the plugin
+    // bundler hit in #2378 — see `crate::etxtbsy` for why only
+    // `ExecutableFileBusy` is retried and why doing so is side-effect free.
+    // This helper's other caller (the adapter's `pnpm exec`) is covered too:
+    // pnpm is not a freshly-written binary, so the branch simply never fires
+    // there. Non-ETXTBSY failures keep this context's wording and
+    // first-attempt latency, here and in every caller that wraps it further.
+    let mut child =
+        spawn_with_etxtbsy_retry_blocking(|| cmd.spawn()).context("spawning subprocess")?;
 
     let status = match child
         .wait_timeout(TIMEOUT)
@@ -760,5 +772,23 @@ mod tests {
             "sh exited non-zero: {}",
             output.status
         );
+    }
+
+    /// The ETXTBSY retry (#2380) wraps this helper's `spawn()`, which is the
+    /// path `bundler::run_esbuild` takes. A missing binary is `NotFound`, not
+    /// `ExecutableFileBusy`, so it must still surface immediately with the
+    /// locked context — unretried, and with its `io::ErrorKind` intact for
+    /// callers that inspect the cause. The retry loop's own bound and
+    /// classification are pinned in `crate::etxtbsy`.
+    #[test]
+    fn run_capturing_reports_a_missing_binary_immediately_with_the_locked_context() {
+        let mut cmd = Command::new("/nonexistent/zfb-run-capturing-test-binary");
+        let err = run_capturing(&mut cmd).expect_err("spawning a nonexistent binary must fail");
+
+        assert_eq!(err.to_string(), "spawning subprocess");
+        let io_err = err
+            .downcast_ref::<std::io::Error>()
+            .expect("the cause must still be the raw io::Error");
+        assert_eq!(io_err.kind(), std::io::ErrorKind::NotFound);
     }
 }
