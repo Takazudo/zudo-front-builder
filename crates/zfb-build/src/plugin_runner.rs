@@ -68,7 +68,7 @@
 //!   shared) — only the plugin-module hook (`previewMiddleware` vs
 //!   `devMiddleware`) and JS-host message `kind` differ.
 //! - [`PluginHost::shutdown`] sends a `shutdown` command, waits the
-//!   child, and joins the reader task (bounded). It is idempotent — the
+//!   child, and joins both reader tasks (bounded). It is idempotent — the
 //!   host is `Clone` and only the first caller across all clones tears
 //!   down; later/overlapping calls are no-ops. Drop also kills the
 //!   process — the explicit shutdown is the graceful path.
@@ -306,7 +306,7 @@ struct HostInner {
     child: Mutex<Option<Child>>,
     /// Latch that makes [`PluginHost::shutdown`] idempotent. The first
     /// caller to flip this false→true owns the teardown (send `shutdown`,
-    /// take + wait the child, join the reader). Every other call — on any
+    /// take + wait the child, join the readers). Every other call — on any
     /// of the [`Clone`]d handles the dev server holds — returns `Ok(())`
     /// immediately without touching the child or sending a second
     /// `shutdown` command. This is what stops an in-flight
@@ -338,6 +338,12 @@ struct HostInner {
     /// actually dies, so shutdown joins this with a deadline instead of
     /// detaching and hoping. `None` once joined.
     reader_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Stderr-reader join handle, kept for the same reason and joined by the
+    /// same bounded teardown. Without it, a plugin's raw `process.stderr`
+    /// write issued just before its final hook returns could still be sitting
+    /// in the pipe buffer when the command returns and the Tokio runtime is
+    /// dropped, silently losing the line. `None` once joined.
+    stderr_reader_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Dropping the [`_tempdir`] removes the staged plugin-host script.
     _tempdir: tempfile::TempDir,
     /// Staged `.mjs` bundle artifacts produced for `.ts`/`.tsx`/`.mts`/
@@ -597,6 +603,7 @@ impl PluginHost {
             force_killed: AtomicBool::new(false),
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
+            stderr_reader_handle: Mutex::new(None),
             _tempdir: tmp,
             _staged_plugin_bundles: staged_bundles,
             hook_timeout,
@@ -644,10 +651,8 @@ impl PluginHost {
         // practice, but a programmer error there shouldn't deadlock
         // on a full pipe buffer.
         //
-        // Disposition (issue #2104, epic #2099): this task is separately
-        // detached from the stdout reader above (no `JoinHandle` is
-        // stashed anywhere for it, and `shutdown()` never joins it) — but
-        // it gets the SAME EOF disposition as the stdout reader rather
+        // Disposition (issue #2104, epic #2099): this task gets the SAME
+        // EOF disposition as the stdout reader rather
         // than a silently different one just because it's a separate
         // task: silence when this pipe closes as the expected result of a
         // `shutdown()` or hook-timeout `force_kill_child()` already in
@@ -658,8 +663,16 @@ impl PluginHost {
         // that shared state. The loop body lives in
         // [`Self::run_stderr_reader`] alongside its stdout counterpart for
         // the same testability reason.
+        // Its handle is stashed and joined by `shutdown()` alongside the
+        // stdout reader's: a plugin that writes to `process.stderr` right
+        // before its last hook returns leaves those bytes in the pipe when
+        // the command's own work is done, and a detached task would lose
+        // them to the runtime drop.
         let inner_for_stderr = Arc::clone(&inner);
-        tokio::spawn(Self::run_stderr_reader(inner_for_stderr, stderr));
+        let stderr_reader_handle = tokio::spawn(Self::run_stderr_reader(inner_for_stderr, stderr));
+        *inner.stderr_reader_handle.try_lock().expect(
+            "stderr_reader_handle uncontended at spawn time — no other handle exists yet",
+        ) = Some(stderr_reader_handle);
 
         let host = PluginHost { inner };
 
@@ -1051,23 +1064,38 @@ impl PluginHost {
             }
         }
 
-        // Join the reader task with a bound. Once the child is gone its
-        // stdout closes and the reader loop returns on its own; the deadline
-        // is a guard against a wedged pipe so teardown can't hang here.
-        if let Some(handle) = self.inner.reader_handle.lock().await.take() {
-            let abort = handle.abort_handle();
-            match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => warn!(error = %e, "plugin host: reader task join failed"),
-                Err(_) => {
-                    warn!("plugin host: reader task did not finish within shutdown budget");
-                    // Bounded teardown: abort the wedged reader rather than
-                    // dropping its JoinHandle (which would only detach it).
-                    abort.abort();
-                }
+        // Join both reader tasks with a bound. Once the child is gone its
+        // pipes close and each reader loop returns on its own, having drained
+        // whatever the plugin wrote last; the deadline is a guard against a
+        // wedged pipe so teardown can't hang here.
+        Self::join_reader_task(&self.inner.reader_handle, "stdout").await;
+        Self::join_reader_task(&self.inner.stderr_reader_handle, "stderr").await;
+        Ok(())
+    }
+
+    /// Join one reader task, bounded by the shutdown budget, aborting it if
+    /// the deadline passes.
+    async fn join_reader_task(
+        slot: &Mutex<Option<tokio::task::JoinHandle<()>>>,
+        which: &'static str,
+    ) {
+        let Some(handle) = slot.lock().await.take() else {
+            return;
+        };
+        let abort = handle.abort_handle();
+        match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(error = %e, reader = which, "plugin host: reader task join failed"),
+            Err(_) => {
+                warn!(
+                    reader = which,
+                    "plugin host: reader task did not finish within shutdown budget"
+                );
+                // Bounded teardown: abort the wedged reader rather than
+                // dropping its JoinHandle (which would only detach it).
+                abort.abort();
             }
         }
-        Ok(())
     }
 
     async fn request_typed<T: serde::de::DeserializeOwned>(
@@ -1247,6 +1275,7 @@ impl PluginHost {
                 Ok(Some(line)) => {
                     if !line.trim().is_empty() {
                         warn!(target: "zfb_plugin", "{line}");
+                        eprintln!("{}", Self::format_plugin_host_warn_line("stderr", &line));
                     }
                     continue;
                 }
@@ -1267,6 +1296,27 @@ impl PluginHost {
         }
     }
 
+    /// Format a plugin `{log:{level,plugin,message}}` envelope for the
+    /// visible `eprintln!` channel, matching this crate's dual-channel
+    /// convention (`tracing` + `eprintln!`, see [`Self::run_stdout_reader`]'s
+    /// doc comment for #2104's rationale — no `tracing_subscriber` is
+    /// installed anywhere in the `zfb` binary, so `eprintln!` is the
+    /// channel production users actually see). `level` is the already-
+    /// normalised label (`"warn"`/`"error"`/`"info"`) a caller matched on,
+    /// not the raw, unvalidated `log.level` string from the wire.
+    fn format_plugin_log_line(level: &str, plugin: &str, message: &str) -> String {
+        format!("zfb {level}: [plugin:{plugin}] {message}")
+    }
+
+    /// Format a plugin-host line that has no plugin to attribute — either
+    /// a raw stderr write from the host subprocess, or a non-JSON stdout
+    /// line that failed to parse as a `{log:...}`/reply envelope — for the
+    /// same visible `eprintln!` channel. `source` names which pipe it came
+    /// from (`"stderr"` / `"stdout"`) so a reader can tell the two apart.
+    fn format_plugin_host_warn_line(source: &str, detail: &str) -> String {
+        format!("zfb warn: [plugin-host {source}] {detail}")
+    }
+
     async fn handle_line(inner: &Arc<HostInner>, line: &str) {
         if line.trim().is_empty() {
             return;
@@ -1275,6 +1325,7 @@ impl PluginHost {
             Ok(p) => p,
             Err(e) => {
                 warn!(error = %e, raw = %line, "plugin host: failed to parse stdout line");
+                eprintln!("{}", Self::format_plugin_host_warn_line("stdout", line));
                 return;
             }
         };
@@ -1282,12 +1333,24 @@ impl PluginHost {
             HostLine::Log(LogLine { log }) => match log.level.as_str() {
                 "warn" => {
                     warn!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                    eprintln!(
+                        "{}",
+                        Self::format_plugin_log_line("warn", &log.plugin, &log.message)
+                    );
                 }
                 "error" => {
                     error!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                    eprintln!(
+                        "{}",
+                        Self::format_plugin_log_line("error", &log.plugin, &log.message)
+                    );
                 }
                 _ => {
                     info!(target: "zfb_plugin", plugin = %log.plugin, "{}", log.message);
+                    eprintln!(
+                        "{}",
+                        Self::format_plugin_log_line("info", &log.plugin, &log.message)
+                    );
                 }
             },
             HostLine::Reply(reply) => {
@@ -1327,6 +1390,40 @@ pub fn annotate_with_plugin_error(err: anyhow::Error) -> anyhow::Error {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    // --- Visible-channel line formatting (issue #2369) -----------------
+    //
+    // Pure helpers, so these assert the exact rendered text directly
+    // rather than trying to capture in-process `eprintln!` output (awkward
+    // and race-prone with parallel test execution sharing one stderr).
+
+    #[test]
+    fn format_plugin_log_line_attributes_plugin_and_level_for_all_three_levels() {
+        assert_eq!(
+            PluginHost::format_plugin_log_line("info", "my-plugin", "hello"),
+            "zfb info: [plugin:my-plugin] hello"
+        );
+        assert_eq!(
+            PluginHost::format_plugin_log_line("warn", "my-plugin", "careful"),
+            "zfb warn: [plugin:my-plugin] careful"
+        );
+        assert_eq!(
+            PluginHost::format_plugin_log_line("error", "my-plugin", "boom"),
+            "zfb error: [plugin:my-plugin] boom"
+        );
+    }
+
+    #[test]
+    fn format_plugin_host_warn_line_tags_the_source_pipe() {
+        assert_eq!(
+            PluginHost::format_plugin_host_warn_line("stderr", "uncaught at plugin-host.mjs:12"),
+            "zfb warn: [plugin-host stderr] uncaught at plugin-host.mjs:12"
+        );
+        assert_eq!(
+            PluginHost::format_plugin_host_warn_line("stdout", "not json at all"),
+            "zfb warn: [plugin-host stdout] not json at all"
+        );
+    }
 
     fn file_url_for_test(p: &Path) -> String {
         // Minimal `file://` URL for absolute paths we control in
@@ -2016,6 +2113,187 @@ mod tests {
             "expected an absolute-path error, got: {msg}"
         );
         host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn setup_hook_virtual_module_rejects_directory_watch_files() {
+        // #2373: a directory watchFiles entry was silently accepted but
+        // permanently inert — the Rust side registers a NON-recursive
+        // file-parent watch and matches ownership by exact path, so
+        // nothing under the directory was ever actually watched. This is
+        // a deliberate validation tightening (previously silently inert
+        // — issue #2367 confirms nothing could ever have relied on it
+        // working), not a behavior change plugins could depend on.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let watched_dir = tmp.path().join("watched-dir");
+        tokio::fs::create_dir(&watched_dir).await.unwrap();
+        let plugin_path = tmp.path().join("dirwatcher.mjs");
+        let plugin_src = format!(
+            r#"
+            export default {{
+              name: "dirwatcher",
+              setup({{ addVirtualModule }}) {{
+                addVirtualModule("virtual:dir", () => 'export default 1', {{
+                  watchFiles: [{dir:?}],
+                }});
+              }},
+            }};
+            "#,
+            dir = watched_dir.to_string_lossy().to_string(),
+        );
+        tokio::fs::write(&plugin_path, plugin_src).await.unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "dirwatcher".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        let err = host
+            .run_setup(
+                tmp.path(),
+                crate::plugin_registries::SetupCommand::Dev,
+                &serde_json::json!({}),
+            )
+            .await
+            .expect_err("a directory watchFiles entry must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("directories are not watched recursively"),
+            "expected a directory-rejection error, got: {msg}"
+        );
+        host.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn console_log_from_plugin_arrives_as_a_log_envelope_attributed_to_the_plugin() {
+        // #2373: drives `plugin-host.mjs` directly over its stdio wire
+        // protocol rather than through `PluginHost` (whose `{log:...}`
+        // dispatch in `handle_line` emits under the `target: "zfb_plugin"`
+        // tracing target — invisible to `tracing-test`'s crate-scoped
+        // default filter, so `logs_contain` can't observe it here). Going
+        // straight to the wire lets this test assert on the EXACT
+        // envelope the host emits: proof a redirected `console.log`
+        // arrives as a well-formed `{"log":{"level":"info","plugin":...,
+        // "message":...}}` line — not a raw, unparseable line that would
+        // fall into the Rust side's parse-failure warning path — and that
+        // `plugin` correctly names the emitting plugin.
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("console-plugin.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "console-plugin",
+              preBuild() {
+                console.log("hello from console.log");
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host_path = tmp.path().join("plugin-host.mjs");
+        tokio::fs::write(&host_path, PLUGIN_HOST_MJS).await.unwrap();
+
+        let mut child = Command::new("node")
+            .arg("--enable-source-maps")
+            .arg(&host_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("node spawns");
+        let mut stdin = child.stdin.take().expect("child stdin");
+        let stdout = child.stdout.take().expect("child stdout");
+        let mut lines = BufReader::new(stdout).lines();
+
+        let init_msg = serde_json::json!({
+            "id": 1,
+            "kind": "init",
+            "plugins": [{
+                "module": file_url_for_test(&plugin_path),
+                "name": "console-plugin",
+                "options": {},
+            }],
+        });
+        stdin
+            .write_all(format!("{init_msg}\n").as_bytes())
+            .await
+            .unwrap();
+        let init_reply = lines.next_line().await.unwrap().expect("init reply line");
+        let init_reply: serde_json::Value = serde_json::from_str(&init_reply).unwrap();
+        assert_eq!(
+            init_reply["ok"],
+            serde_json::json!(true),
+            "init failed: {init_reply}"
+        );
+
+        let pre_build_msg = serde_json::json!({
+            "id": 2,
+            "kind": "preBuild",
+            "ctx": {
+                "projectRoot": tmp.path(),
+                "outDir": tmp.path().join("dist"),
+                "config": {},
+            },
+        });
+        stdin
+            .write_all(format!("{pre_build_msg}\n").as_bytes())
+            .await
+            .unwrap();
+
+        // The `console.log` call happens synchronously before `preBuild`
+        // returns, so its log-envelope line is written to stdout before
+        // the `preBuild` reply line — the same ordering the Rust reader
+        // relies on in production.
+        let log_line = lines.next_line().await.unwrap().expect("log line");
+        let log_json: serde_json::Value = serde_json::from_str(&log_line).unwrap_or_else(|e| {
+            panic!(
+                "log line must be well-formed JSON, not a raw parse-failure line: {e}\nline: {log_line}"
+            )
+        });
+        assert_eq!(
+            log_json,
+            serde_json::json!({
+                "log": {
+                    "level": "info",
+                    "plugin": "console-plugin",
+                    "message": "hello from console.log",
+                }
+            }),
+        );
+
+        let reply_line = lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("preBuild reply line");
+        let reply_json: serde_json::Value = serde_json::from_str(&reply_line).unwrap();
+        assert_eq!(
+            reply_json["ok"],
+            serde_json::json!(true),
+            "preBuild failed: {reply_json}"
+        );
+
+        stdin
+            .write_all(b"{\"id\":3,\"kind\":\"shutdown\"}\n")
+            .await
+            .unwrap();
+        let _ = lines.next_line().await;
+        let _ = child.wait().await;
     }
 
     #[tokio::test]
@@ -2803,6 +3081,7 @@ mod tests {
             force_killed: AtomicBool::new(false),
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
+            stderr_reader_handle: Mutex::new(None),
             _tempdir: tmp,
             _staged_plugin_bundles: Vec::new(),
             hook_timeout: timeout,
@@ -3026,6 +3305,7 @@ mod tests {
             force_killed: AtomicBool::new(false),
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
+            stderr_reader_handle: Mutex::new(None),
             _tempdir: tmp,
             _staged_plugin_bundles: Vec::new(),
             hook_timeout: std::time::Duration::from_secs(1),
@@ -3115,6 +3395,73 @@ mod tests {
         assert!(
             !logs_contain("stderr reader ended unexpectedly"),
             "a shutdown-initiated stderr EOF must not turn routine shutdown into noise"
+        );
+    }
+
+    /// `shutdown()` must JOIN the stderr reader, not leave it detached: a
+    /// plugin's raw `process.stderr` write issued from its last hook is only
+    /// guaranteed to have been processed once that task has run to EOF, and a
+    /// detached task can still be holding the line when the command returns
+    /// and the runtime is dropped.
+    ///
+    /// The join is asserted structurally — the handle slot is `Some` while the
+    /// host is live and `None` (taken by the join) once shutdown returns —
+    /// rather than by observing the drained line: the reader emits it on the
+    /// `zfb_plugin` tracing target and via `eprintln!`, neither of which
+    /// `logs_contain` can see, and a timing-based assertion would pass with
+    /// the join removed whenever the line happened to arrive early anyway.
+    #[tokio::test]
+    async fn shutdown_joins_the_stderr_reader_that_drains_final_hook_writes() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("late-stderr.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "late-stderr",
+              setup() {
+                process.stderr.write("zfb-late-stderr-marker\n");
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "late-stderr".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        assert!(
+            host.inner.stderr_reader_handle.lock().await.is_some(),
+            "the stderr reader's join handle must be stashed at spawn time"
+        );
+        host.run_setup(
+            tmp.path(),
+            crate::plugin_registries::SetupCommand::Build,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("setup ok");
+
+        let watchdog = std::time::Duration::from_secs(8);
+        tokio::time::timeout(watchdog, host.shutdown())
+            .await
+            .expect("shutdown must finish within the watchdog")
+            .expect("shutdown Ok");
+
+        assert!(
+            host.inner.stderr_reader_handle.lock().await.is_none(),
+            "shutdown must take and join the stderr reader handle"
         );
     }
 

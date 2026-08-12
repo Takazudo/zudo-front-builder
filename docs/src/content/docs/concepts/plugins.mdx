@@ -9,6 +9,8 @@ zfb plugins are plain ES modules whose default export is a `ZfbPlugin` object. T
 
 This page documents the contract for plugin authors. The companion API reference is on [`defineConfig.plugins`](../api/define-config.mdx).
 
+The plugin host boots for every command that can actually run plugin code — `zfb build`, `zfb dev`, and `zfb preview`. `zfb check` never boots it: it is a pure lint command (`tsc --noEmit` plus content-collection schema validation), so a plugin's `setup`/`preBuild`/etc. never runs during `zfb check`.
+
 ## When you actually need a plugin
 
 Reach for a plugin when you need one of the four capabilities that `setup` provides — the same four the sections below document. If none of these apply, a plain script is the right tool instead (see [When you don't — write a recipe](#when-you-don-t-—-write-a-recipe) below). For the broader engine-vs-script mental model, see [Design Philosophy](./design-philosophy.mdx).
@@ -36,6 +38,20 @@ export default definePlugin({
 ```
 
 Hooks run sequentially in the order plugins appear in `zfb.config.ts`'s `plugins` array. A throw in any hook aborts the build (or the dev/preview boot) and surfaces the plugin name + the hook that threw in the error banner.
+
+## Logging from a plugin
+
+Both `ctx.logger` (available on every hook context) and the global `console` object render on the `zfb dev` / `zfb build` / `zfb preview` terminal, attributed to the plugin that produced them:
+
+```text
+zfb <level>: [plugin:<name>] <message>
+```
+
+- `ctx.logger.info(msg)`, `.warn(msg)`, and `.error(msg)` each render at exactly that level.
+- `console.log`, `.info`, `.dir`, `.table`, and the rest of `console`'s stdout-side methods render at level `info`. `console.warn`, `.error`, `.trace`, `.assert`, and the rest of its stderr-side methods render at level `error` — **not** `warn`. This follows Node's own `Console` API, which has only two underlying output streams (stdout and stderr), not one per level; if you need an actual `warn`-level line, call `ctx.logger.warn(...)` instead of `console.warn(...)`.
+- Attribution follows the plugin whose code is actually executing when the call happens — including inside an `await`ed operation — so overlapping hook calls and concurrent `devMiddleware`/`previewMiddleware` request handlers are each attributed to the right plugin, never mixed up. A log line produced outside any plugin's code (host bootstrap) is attributed to `plugin-host`.
+
+A raw write to the plugin-host subprocess's own stderr that bypasses `console` entirely (e.g. from a native dependency), or a line the host could not parse at all, has no plugin to attribute and renders as `zfb warn: [plugin-host stderr] <line>` / `zfb warn: [plugin-host stdout] <line>` instead.
 
 ## Plugin entry files — `.ts`, `.tsx`, `.mts`, `.cts` support
 
@@ -66,6 +82,18 @@ The plugin project's own `tsconfig.json` governs JSX (`jsx` / `jsxImportSource`)
 ### Bundling errors
 
 A **compilation failure** — the entry's own source is invalid, or one of its imports cannot be resolved — surfaces as `` plugin bundling: esbuild failed for plugin `{name}` … `` followed by esbuild's own diagnostics (including file:line:col). Other bundling-setup problems (esbuild itself missing, the entry's directory not writable, the esbuild subprocess failing to spawn or timing out) surface as their own distinct `plugin bundling: …` messages, without esbuild diagnostics. A plugin whose code throws at load or during its `setup`/lifecycle hooks still surfaces as the familiar plugin `init`/hook error — bundling failures and runtime failures are reported distinctly.
+
+### Where the staged bundle lives
+
+A `.ts`/`.tsx`/`.mts`/`.cts` plugin entry is bundled into a temp file named `.zfb-plugin-bundle-<random>.mjs`, staged in the **entry's own directory** — never a shared system tempdir. This placement is load-bearing, not incidental: the bundle is built with esbuild's `--packages=external` flag, so every bare import (`from "some-npm-package"`) is left unresolved at bundle time and instead resolved by Node's own `import()` at load time, walking up ancestor `node_modules` directories from the **staged file's own location** (`import.meta.url`) — exactly the walk the original, un-bundled entry would have done. Staging next to the entry keeps that resolution identical for both a project-local plugin (dependencies hoisted into the project's `node_modules`) and a package plugin (its own nested `node_modules`).
+
+The staged file is deleted automatically when the plugin host that created it shuts down. If a `zfb` process is killed before it gets the chance (`SIGKILL`, an interrupted debugger session), it can leave a stray `.zfb-plugin-bundle-*.mjs` file behind; the next time a `.ts`/`.tsx`/`.mts`/`.cts` plugin bundle is staged in that same directory, zfb sweeps stranded files from previous runs automatically. A candidate is only ever removed once it is **both** older than 60 seconds **and** not still held by a live process's advisory lock — a bundle genuinely in progress, even one older than 60 seconds because its host is paused, is never touched.
+
+<Note title="Existing projects: add the gitignore entry">
+
+New scaffolds ignore staged plugin bundles automatically. If your project predates this glob, add `**/.zfb-plugin-bundle-*.mjs` to your `.gitignore` — plugin sources can live at any depth, so the glob is not root-anchored (mirrors how the Tailwind entry-file glob is documented in [Styling — Where Tailwind looks](./styling.mdx#tailwind-v4-where-tailwind-looks)).
+
+</Note>
 
 ## `setup` — register virtual modules, aliases, injected routes, and client entries
 
@@ -143,9 +171,18 @@ addVirtualModule(
 `zfb dev` watches those paths. A change to one re-invokes **that loader alone** with the memo bypassed, replaces the memoised source with the fresh result, and re-renders, so live reload delivers a page built from the edited file. Loaders whose declared files did not change are never re-invoked.
 
 - **Absolute paths only.** A relative or empty entry throws during `setup` and aborts the boot. Entries reach the dev watcher verbatim and are never resolved against the project root, so a relative entry has no anchor to resolve against — the same rule, for the same reason, as [`extraWatchPaths`](../api/define-config.mdx).
+- **Entries must be files — a directory is rejected.** zfb watches a `watchFiles` entry by registering a non-recursive watch on its **parent** directory and matching on the exact path, so nothing under a directory entry would ever actually be observed. Rather than silently compile into a no-op, an entry that already exists as a directory throws during `setup` and aborts the boot. An entry naming a path that does **not exist yet** is fine — the directory check only runs once the path exists.
+- **A not-yet-created file is still watched — once its parent directory exists.** `watchFiles` may legitimately name a file your loader will create and read back later. zfb registers the watch on the file's parent directory (not the file itself, so a delete/recreate stays observable); if the parent doesn't exist at the moment zfb tries, the registration is skipped and retried automatically on a later tick, so the file starts being watched as soon as its parent directory shows up on disk — no `zfb dev` restart needed.
 - **Declared at registration, not discovered.** The list is fixed once `setup` returns. A loader that enumerates a directory watches only the files that existed at boot; a file created afterwards is outside the watch set and needs a `zfb dev` restart to enter it. There is no `addWatchFile()` a loader can call while it runs.
 - **Registrations are still frozen.** A refresh replaces a loader's *result*. It cannot add a specifier, remove one, or swap the loader function — the set of virtual modules is whatever `setup` registered.
-- **A failed re-invoke keeps the last good source.** If a re-invoked loader throws — a half-written file, JSON caught mid-save — zfb retains the previously memoised source, logs the error, and keeps watching. The refresh is all-or-nothing: when one change re-invokes several loaders and any of them fails, none of the fresh sources are published, so a run never serves a half-updated mix. The next change that loads cleanly replaces the memo, so deleting and recreating a file recovers on its own.
+- **A failed re-invoke keeps the last good source — and says so on the terminal.** If a re-invoked loader throws — a half-written file, JSON caught mid-save — zfb retains the previously memoised source and prints a warning naming the plugin and the specifier:
+
+  ```text
+  plugin "<name>" failed to reload virtual module "<specifier>": <error>
+    serving the last-good output for now; zfb will retry on the next change to a registered plugin watch file
+  ```
+
+  The refresh is all-or-nothing: when one change re-invokes several loaders and any of them fails, none of the fresh sources are published, so a run never serves a half-updated mix. The next change that loads cleanly replaces the memo, so deleting and recreating a file recovers on its own.
 - **Dev-only.** `zfb build` invokes each loader exactly once and never re-invokes it, so `watchFiles` has no effect on shipped output. Declaring it unconditionally is fine.
 - **Distinct from `extraWatchPaths`.** [`extraWatchPaths`](../api/define-config.mdx) makes the dev watcher *notice* an out-of-root file and rebuild — but a rebuild on its own still replays the memoised loader source. `watchFiles` is the part that invalidates the loader, and it gets the path watched too: a file declared here needs no matching `extraWatchPaths` entry.
 

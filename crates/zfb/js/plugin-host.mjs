@@ -1,9 +1,11 @@
 // AUTO-LOADED by zfb-build's plugin runner (Phase B Sub 3 / issue #108,
 // extended for the new `setup` hook in epic #253 / sub-issue #255, for
 // the `previewMiddleware` hook + `"preview"` setup command in the
-// Preview Parity epic #1541 / sub-issue #1542, and for the
+// Preview Parity epic #1541 / sub-issue #1542, for the
 // `addVirtualModule` `watchFiles` option + forced `virtualLoad` reload
-// in the Plugin Watch Hook epic #2166 / sub-issue #2167).
+// in the Plugin Watch Hook epic #2166 / sub-issue #2167, and for global
+// `console` redirection + directory `watchFiles` rejection in the
+// Plugin Diagnostics & Hygiene epic #2368 / sub-issue #2373).
 // Do not edit unless you also update the Rust caller in
 // `crates/zfb-build/src/plugin_runner.rs`.
 //
@@ -96,9 +98,13 @@
 // take pains never to embed a literal newline in a payload (JSON
 // stringification escapes them as `\n` inside strings).
 
+import { AsyncLocalStorage } from "node:async_hooks";
+import { Console } from "node:console";
+import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import process from "node:process";
 import readline from "node:readline";
+import { Writable } from "node:stream";
 
 const { stdin, stdout, exit } = process;
 
@@ -147,6 +153,62 @@ function sendErr(id, plugin, hook, err) {
   send({ id, ok: false, error: { plugin, hook, message } });
 }
 
+// #2373: attributes every `console.*` call made while a plugin's code is
+// on the stack back to that plugin. The host processes hook calls and
+// dev/preview requests concurrently, so a mutable "current plugin"
+// variable would misattribute logs from overlapping calls — an
+// AsyncLocalStorage context (entered by `runAsPlugin` below around
+// every plugin module import, hook invocation, virtual-module loader,
+// and per-request middleware handler) follows the actual async call
+// chain instead. `getStore()` is undefined outside any such context
+// (host bootstrap, the readline loop itself), hence the "plugin-host"
+// fallback.
+const pluginContext = new AsyncLocalStorage();
+
+function currentPluginLabel() {
+  return pluginContext.getStore() ?? "plugin-host";
+}
+
+// Runs `fn` with `pluginName` attributed to any `console.*` call it (or
+// anything it awaits) makes. `fn` may be sync or async; its return
+// value (including a pending Promise) passes through unchanged.
+function runAsPlugin(pluginName, fn) {
+  return pluginContext.run(pluginName, fn);
+}
+
+// Backs the `Console` instance below: one `Writable` per stream side,
+// forwarding every write as a `{log:...}` envelope through the same
+// `send()` the rest of the host uses, instead of letting it hit the
+// real stdout/stderr (stdout is the JSON-RPC channel to the Rust
+// parent — a raw plugin `console.log` write there would corrupt the
+// protocol; that hazard is the reason this redirection exists).
+function makeEnvelopeStream(level) {
+  return new Writable({
+    write(chunk, _encoding, callback) {
+      const text = chunk.toString();
+      // `Console` always appends exactly one trailing "\n" per call;
+      // strip only that one so a message ending in a blank line isn't
+      // silently altered.
+      const message = text.endsWith("\n") ? text.slice(0, -1) : text;
+      send({ log: { level, plugin: currentPluginLabel(), message } });
+      callback();
+    },
+  });
+}
+
+// Replaces the global `console` at host startup with a `Console`
+// instance built over the envelope streams above. A stream-backed
+// `Console` covers the FULL console API (`log`, `info`, `warn`,
+// `error`, `dir`, `table`, `trace`, `assert`, `timeEnd`, ...) — every
+// method funnels through `stdout`/`stderr` internally, so nothing needs
+// patching method-by-method. `console.log`/`info`/`dir`/`table`/...
+// write to the `stdout` stream (mapped to level "info"); `warn`/
+// `error`/`trace`/`assert`/... write to `stderr` (mapped to "error").
+globalThis.console = new Console({
+  stdout: makeEnvelopeStream("info"),
+  stderr: makeEnvelopeStream("error"),
+});
+
 function makeLogger(pluginName) {
   return {
     info(msg) {
@@ -168,7 +230,7 @@ async function handleInit(id, msg) {
   for (const entry of msg.plugins ?? []) {
     let mod;
     try {
-      mod = await import(entry.module);
+      mod = await runAsPlugin(entry.name ?? entry.module, () => import(entry.module));
     } catch (err) {
       sendErr(id, entry.name ?? entry.module, "init", err);
       return;
@@ -217,7 +279,7 @@ async function runBuildHook(id, hookName, ctx) {
       hookCtx.routes = ctx.routes;
     }
     try {
-      await fn.call(p.mod, hookCtx);
+      await runAsPlugin(p.name, () => fn.call(p.mod, hookCtx));
     } catch (err) {
       sendErr(id, p.name, hookName, err);
       return;
@@ -331,6 +393,30 @@ async function handleSetup(id, msg) {
                     `(got ${JSON.stringify(entry)}); zfb does not resolve watchFiles against the project root`,
                 );
               }
+              // #2373: a directory entry is silently accepted but
+              // permanently inert downstream — the Rust side registers
+              // a NON-recursive file-parent watch and matches ownership
+              // by exact path, so nothing under the directory is ever
+              // watched. Reject it here rather than let it compile and
+              // do nothing. A NOT-YET-EXISTING path is fine (watchFiles
+              // may legitimately name a file that will be created
+              // later), so this check only fires once the path exists.
+              // One `statSync` rather than an `existsSync` + `statSync`
+              // pair: a concurrent delete between the two would make the
+              // second call throw ENOENT and abort plugin setup over a path
+              // that is merely absent, which is valid.
+              let entryStat;
+              try {
+                entryStat = statSync(entry);
+              } catch (err) {
+                if (err?.code !== "ENOENT") throw err;
+              }
+              if (entryStat?.isDirectory()) {
+                throw new Error(
+                  `addVirtualModule: \`options.watchFiles\` entries must be files ` +
+                    `(got ${JSON.stringify(entry)}); directories are not watched recursively`,
+                );
+              }
             }
             // Copy rather than alias the caller's array (codex review,
             // #2167): the registration is only serialized at the end of
@@ -429,7 +515,7 @@ async function handleSetup(id, msg) {
       },
     };
     try {
-      await fn.call(p.mod, ctx);
+      await runAsPlugin(p.name, () => fn.call(p.mod, ctx));
     } catch (err) {
       sendErr(id, p.name, "setup", err);
       return;
@@ -483,7 +569,7 @@ async function runVirtualLoad(id, msg, entry) {
   }
   let source;
   try {
-    source = await entry.loader();
+    source = await runAsPlugin(entry.plugin, () => entry.loader());
   } catch (err) {
     sendErr(id, entry.plugin, "setup", err);
     return;
@@ -550,7 +636,7 @@ async function registerMiddleware(id, msg, { hookName, handlers, idPrefix }) {
       },
     };
     try {
-      await fn.call(p.mod, ctx);
+      await runAsPlugin(p.name, () => fn.call(p.mod, ctx));
     } catch (err) {
       sendErr(id, p.name, hookName, err);
       return;
@@ -577,7 +663,7 @@ async function invokeMiddleware(id, msg, { hookName, handlers }) {
   const { plugin, handler } = entry;
   let resp;
   try {
-    resp = await handler(msg.request);
+    resp = await runAsPlugin(plugin, () => handler(msg.request));
   } catch (err) {
     sendErr(id, plugin, hookName, err);
     return;
