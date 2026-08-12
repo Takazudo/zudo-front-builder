@@ -22,9 +22,13 @@
 // and be referenced by `name`.
 
 /**
- * Logger handed to every plugin hook. The Rust side wraps `tracing` so
- * the same lines show up alongside the rest of the build's structured
- * logs. Hooks should prefer this over `console.log`.
+ * Logger handed to every plugin hook. `info`/`warn`/`error` each render on
+ * the `zfb dev`/`zfb build`/`zfb preview` terminal at exactly that level,
+ * attributed to the plugin: `zfb <level>: [plugin:<name>] <message>`.
+ * `console.*` is redirected the same way, but note it maps onto only two
+ * underlying streams (stdout -> info, stderr -> warn/error/trace/assert ->
+ * error) — `console.warn` therefore renders as `zfb error:`, not
+ * `zfb warn:`. Prefer this logger over `console.*` when the level matters.
  */
 export type ZfbPluginLogger = {
   info(msg: string): void;
