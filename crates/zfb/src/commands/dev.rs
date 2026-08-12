@@ -579,6 +579,54 @@ fn missing_watch_targets(
     missing
 }
 
+/// Build a `specifier -> plugin display name` lookup from the boot-time
+/// virtual-module registry (issue #2370, epic #2368's secondary ask on
+/// #2367). `PluginRefreshOutcome.failed` (returned per re-invoke, see the
+/// pre-tick hook below) carries only `(specifier, error)` — no plugin
+/// name — so this map is captured once at boot, while `setup_registries`
+/// is still around, and consulted per failed entry at render time.
+fn plugin_names_by_specifier(
+    registry: &zfb_build::VirtualModuleRegistry,
+) -> BTreeMap<String, String> {
+    registry
+        .iter()
+        .map(|(specifier, entry)| (specifier.clone(), entry.plugin.clone()))
+        .collect()
+}
+
+/// Render the dev-terminal diagnostic for every failed virtual-module
+/// re-invoke in one `PluginRefreshState::refresh` call (issue #2370).
+///
+/// `crates/zfb-build/src/plugin_refresh.rs`'s `refresh` already logs each
+/// failure via `tracing::warn!` (invisible without a subscriber attached)
+/// and retains the atomicity contract's last-good memo, queuing the
+/// specifier for retry on the next qualifying tick — this is the ONE
+/// user-facing rendering site (zfb-build stays silent on purpose) so the
+/// diagnostic prints exactly once. Pure formatter, no plugin host
+/// involved: `plugin_names` is the boot-time lookup built by
+/// [`plugin_names_by_specifier`], and a specifier missing from it (should
+/// not happen — every failed specifier came from the same registry) falls
+/// back to "unknown plugin" rather than panicking.
+fn fmt_plugin_refresh_failures(
+    failed: &[(String, String)],
+    plugin_names: &BTreeMap<String, String>,
+) -> Vec<String> {
+    failed
+        .iter()
+        .map(|(specifier, error)| {
+            let plugin = plugin_names
+                .get(specifier)
+                .map(String::as_str)
+                .unwrap_or("unknown plugin");
+            format!(
+                "plugin \"{plugin}\" failed to reload virtual module \"{specifier}\": {error}\n  \
+                 serving the last-good output for now; zfb will retry on the next change \
+                 to a registered plugin watch file"
+            )
+        })
+        .collect()
+}
+
 /// Load `public/_redirects` for the initial dev-server boot (issue
 /// #1546). A missing file is the common case — `_redirects` support is
 /// opt-in — so it stays silent and produces an empty [`Redirects`]; any
@@ -1587,6 +1635,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         root_inventory.collection_roots(),
     ));
 
+    // Issue #2370 — the plugin display names the pre-tick refresh hook's
+    // failure rendering needs, captured once here (while
+    // `setup_registries` is still around) since `PluginRefreshOutcome`
+    // itself carries only `(specifier, error)`. `Arc`-wrapped so the
+    // 'static hook closure below can cheaply clone it per tick.
+    let plugin_names_for_refresh_failures =
+        Arc::new(plugin_names_by_specifier(&setup_registries.virtual_modules));
+
     let orch_config = OrchestratorConfig::new(&project_root, watch_roots.clone())
         .with_extra_watch_paths(extra_watch_paths)
         // Issue #2174 — `watchPollFallback`/`watchPollIntervalMs` select
@@ -1627,14 +1683,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // output is already in the shared store when the tick's
         // snapshot-at-use-time consumers (main bundler, V8 host hooks,
         // islands/CSS/client-scripts closures) read it. `refresh` reports
-        // per-loader failures via its outcome (logging them itself, and
-        // keeping the store's last-good memo — its atomicity contract),
-        // so this closure always returns `Ok`; the orchestrator's own
-        // error tolerance is for hook-infrastructure failures only.
+        // per-loader failures via its outcome — it logs them itself via
+        // `tracing::warn!`, but that's invisible without a subscriber
+        // attached, so issue #2370 renders `outcome.failed` here too (the
+        // ONE user-facing site, via `fmt_plugin_refresh_failures`) and
+        // retains the store's last-good memo — its atomicity contract.
+        // This closure always returns `Ok`; the orchestrator's own error
+        // tolerance is for hook-infrastructure failures only.
         .with_pre_tick_refresh({
             let plugin_refresh_for_hook = plugin_refresh.clone();
+            let plugin_names_for_hook = plugin_names_for_refresh_failures.clone();
             Arc::new(move |changed_paths: Vec<PathBuf>| {
                 let refresh = plugin_refresh_for_hook.clone();
+                let plugin_names = plugin_names_for_hook.clone();
                 Box::pin(async move {
                     let outcome = refresh.refresh(&changed_paths).await;
                     if !outcome.refreshed.is_empty() {
@@ -1642,6 +1703,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             refreshed = ?outcome.refreshed,
                             "plugin virtual modules refreshed before tick"
                         );
+                    }
+                    if !outcome.failed.is_empty() {
+                        for message in fmt_plugin_refresh_failures(&outcome.failed, &plugin_names) {
+                            output::warn(message);
+                        }
                     }
                     Ok(())
                 }) as zfb_build::PreTickRefreshFuture
@@ -11036,6 +11102,84 @@ mod tests {
         let configured = vec![PathBuf::from("notes")];
         let missing = missing_watch_targets(dir.path(), &watch_roots, &[], &configured);
         assert_eq!(missing, vec![dir.path().join("notes")]);
+    }
+
+    /// Issue #2370 (epic #2368, secondary ask on #2367) — a failed
+    /// virtual-module re-invoke must be surfaced on the dev terminal
+    /// naming the plugin, the specifier, and the error, plus the
+    /// atomicity-contract note (last-good output still served, retry
+    /// queued for the next tick). Pure formatter — no plugin host
+    /// needed, matching the `fmt_*` / `output::warn` split the rest of
+    /// this module already follows (see `missing_watch_targets`'s doc).
+    #[test]
+    fn fmt_plugin_refresh_failures_names_plugin_specifier_and_error() {
+        let mut plugin_names = BTreeMap::new();
+        plugin_names.insert("virtual:data".to_string(), "my-plugin".to_string());
+        let failed = vec![(
+            "virtual:data".to_string(),
+            "ENOENT: no such file".to_string(),
+        )];
+
+        let messages = fmt_plugin_refresh_failures(&failed, &plugin_names);
+
+        assert_eq!(messages.len(), 1);
+        assert!(
+            messages[0].contains("my-plugin"),
+            "must name the plugin: {}",
+            messages[0]
+        );
+        assert!(
+            messages[0].contains("virtual:data"),
+            "must name the specifier: {}",
+            messages[0]
+        );
+        assert!(
+            messages[0].contains("ENOENT: no such file"),
+            "must include the error: {}",
+            messages[0]
+        );
+        assert!(
+            messages[0].contains("last-good") && messages[0].contains("retry"),
+            "must note last-good output is still served and a retry is queued: {}",
+            messages[0]
+        );
+    }
+
+    /// A specifier absent from the boot-time lookup (should not happen —
+    /// every failed specifier in `PluginRefreshOutcome.failed` is drawn
+    /// from the same registry the lookup was built from) must not panic;
+    /// it falls back to a generic label instead.
+    #[test]
+    fn fmt_plugin_refresh_failures_falls_back_when_specifier_unknown() {
+        let plugin_names = BTreeMap::new();
+        let failed = vec![("virtual:mystery".to_string(), "boom".to_string())];
+
+        let messages = fmt_plugin_refresh_failures(&failed, &plugin_names);
+
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("unknown plugin"));
+        assert!(messages[0].contains("virtual:mystery"));
+        assert!(messages[0].contains("boom"));
+    }
+
+    /// `PluginRefreshState::refresh` can report more than one failed
+    /// specifier per batch (every specifier the failed batch touched) —
+    /// each must render its own line, not just the first.
+    #[test]
+    fn fmt_plugin_refresh_failures_renders_one_line_per_failure() {
+        let mut plugin_names = BTreeMap::new();
+        plugin_names.insert("virtual:a".to_string(), "plugin-a".to_string());
+        plugin_names.insert("virtual:b".to_string(), "plugin-b".to_string());
+        let failed = vec![
+            ("virtual:a".to_string(), "err a".to_string()),
+            ("virtual:b".to_string(), "err b".to_string()),
+        ];
+
+        let messages = fmt_plugin_refresh_failures(&failed, &plugin_names);
+
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].contains("plugin-a") && messages[0].contains("virtual:a"));
+        assert!(messages[1].contains("plugin-b") && messages[1].contains("virtual:b"));
     }
 
     /// Issue #534 regression — dev's per-route HTML output dir must live
