@@ -5,15 +5,16 @@ Single source of truth for pinned external tool versions (`wrangler`,
 
 All crates that need to compare or display these version strings import from here rather
 than duplicating them. `zfb preview` runs `pnpm exec wrangler --version` at
-startup and aborts with a clear error if the reported version does not match;
-`zfb-islands` and `crates/zfb/build.rs` import the esbuild version pin from
-this crate.
+startup and treats the wrangler constant as the **minimum supported version**:
+older aborts with upgrade guidance, equal passes silently, newer proceeds with
+an info/warning line (issue 2379). `zfb-islands` and `crates/zfb/build.rs`
+import the esbuild version pin from this crate.
 
 ## Constants
 
 | Constant | Current value | Purpose |
 | --------------------------- | --------------- | ----------------------------------------------------------------- |
-| `EXPECTED_WRANGLER_VERSION` | `"4.85.0"` | Checked by `zfb preview` against the live `wrangler` CLI version |
+| `EXPECTED_WRANGLER_VERSION` | `"4.85.0"` | Minimum supported `wrangler` version, gated by `zfb preview` against the live CLI |
 | `EXPECTED_WORKERD_VERSION` | `"1.20260424.1"` | Documents the locked `workerd` transitive dependency |
 | `EXPECTED_ESBUILD_VERSION` | `"0.25.12"` | Used by `zfb-islands` version checks and by `crates/zfb/build.rs` download URLs |
 
@@ -48,6 +49,6 @@ cargo test -p zfb-toolchain-pins
 
 This crate contains only constants — the command compiles the crate and runs
 zero unit tests. The pins are exercised by consumer crates: `zfb preview`
-checks `wrangler --version` against `EXPECTED_WRANGLER_VERSION`, while
-`zfb-islands` checks the esbuild subprocess version against
-`EXPECTED_ESBUILD_VERSION`.
+gates `wrangler --version` on `EXPECTED_WRANGLER_VERSION` as the minimum
+supported version, while `zfb-islands` checks the esbuild subprocess version
+against `EXPECTED_ESBUILD_VERSION`.

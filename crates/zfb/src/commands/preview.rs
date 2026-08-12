@@ -713,10 +713,12 @@ fn adapter_outdir_diverges_from_default(outdir: &Path) -> bool {
 ///    config, so a missing config would otherwise surface as a
 ///    confusing wrangler-side error rather than a zfb one.
 /// 2. [`ensure_wrangler_version`] — a pre-flight `pnpm exec wrangler
-///    --version` gate against [`EXPECTED_WRANGLER_VERSION`]. A mismatch
-///    aborts with an actionable error pointing at the version-pin
-///    procedure. Can be bypassed by setting the
-///    [`SKIP_WRANGLER_VERSION_CHECK_ENV`] env var to `1`.
+///    --version` gate treating [`EXPECTED_WRANGLER_VERSION`] as the
+///    minimum supported version (zfb's tested baseline). Below the
+///    baseline aborts with a consumer-actionable error; a newer
+///    wrangler proceeds with an info/warning line (issue 2379). Can be
+///    bypassed by setting the [`SKIP_WRANGLER_VERSION_CHECK_ENV`] env
+///    var to `1`.
 async fn run_via_wrangler(project_root: &Path, host: &str, port: u16) -> Result<()> {
     ensure_wrangler_config_exists(project_root)?;
     ensure_wrangler_version(project_root).await?;
@@ -774,8 +776,20 @@ fn ensure_wrangler_config_exists(project_root: &Path) -> Result<()> {
     );
 }
 
-/// Run `pnpm exec wrangler --version` and abort if the reported
-/// version does not match [`EXPECTED_WRANGLER_VERSION`]. Skipped when
+/// Run `pnpm exec wrangler --version` and gate on
+/// [`EXPECTED_WRANGLER_VERSION`] as the **minimum supported version**
+/// (issue 2379 relaxed this from an exact-equality pin, which broke
+/// every consumer on a routine wrangler bump):
+///
+/// - equal to the baseline → silent pass;
+/// - newer, same major → info line, proceed;
+/// - newer major → warning (untested), proceed;
+/// - below the baseline → hard error with consumer-actionable guidance;
+/// - unparseable version → warning, proceed (fail open — only a
+///   positively known below-minimum version fails closed).
+///
+/// The mapping lives in the pure [`action_for_wrangler_version`] seam;
+/// this wrapper only owns the subprocess. Skipped entirely when
 /// [`SKIP_WRANGLER_VERSION_CHECK_ENV`] is set to a truthy value.
 async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
     if env_truthy(SKIP_WRANGLER_VERSION_CHECK_ENV, |name| {
@@ -806,25 +820,147 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    match parse_wrangler_version(&stdout) {
-        Some(reported) if reported == EXPECTED_WRANGLER_VERSION => Ok(()),
-        Some(reported) => Err(anyhow::anyhow!(
-            "wrangler version mismatch: expected `{expected}` (pinned in zfb), \
-             got `{reported}`. \
-             Update both the `wrangler` entry in package.json and \
-             EXPECTED_WRANGLER_VERSION in crates/zfb-toolchain-pins/src/lib.rs in \
-             lock-step (see the External tool version pins section in CONTRIBUTING.md), then run \
-             `pnpm install`. To bypass this gate temporarily, set \
-             {env}=1 (not recommended for steady-state use).",
-            expected = EXPECTED_WRANGLER_VERSION,
+    match action_for_wrangler_version(&stdout, EXPECTED_WRANGLER_VERSION) {
+        WranglerVersionAction::ContinueSilent => Ok(()),
+        WranglerVersionAction::ContinueInfo(msg) => {
+            output::info(msg);
+            Ok(())
+        }
+        WranglerVersionAction::ContinueWarn(msg) => {
+            output::warn(msg);
+            Ok(())
+        }
+        WranglerVersionAction::Fail(msg) => Err(anyhow::anyhow!(msg)),
+    }
+}
+
+/// How the reported wrangler version relates to zfb's tested baseline
+/// ([`EXPECTED_WRANGLER_VERSION`]). Produced by
+/// [`classify_wrangler_version`]; consumed by
+/// [`action_for_wrangler_version`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WranglerVersionVerdict {
+    /// Same version as the baseline (build metadata ignored).
+    Match,
+    /// Newer than the baseline within the same major.
+    NewerSameMajor,
+    /// A major version beyond the baseline's.
+    NewerMajor,
+    /// Older than the baseline — the only fail-closed verdict.
+    BelowMinimum,
+    /// Not a `MAJOR.MINOR.PATCH[-pre][+build]` shape we can order.
+    Unparseable,
+}
+
+/// What the preview pre-flight should do about a version verdict.
+/// A dedicated enum (rather than acting inline) so tests can prove
+/// that newer/unparseable versions actually *continue* and that the
+/// right severity and message are selected — not just that
+/// classification is correct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WranglerVersionAction {
+    ContinueSilent,
+    ContinueInfo(String),
+    ContinueWarn(String),
+    Fail(String),
+}
+
+/// Parse `MAJOR.MINOR.PATCH[-prerelease][+build]` into its numeric core
+/// triple plus a has-prerelease flag. Build metadata (`+…`) is ordering
+/// noise per semver and is stripped; an empty prerelease (`4.85.0-`) or
+/// a fourth core segment (`4.85.0.1`) is malformed and returns `None`.
+/// Deliberately hand-rolled — a 3-tuple compare does not justify a
+/// `semver` crate dependency (the workspace carries none).
+fn parse_semver_lite(version: &str) -> Option<(u64, u64, u64, bool)> {
+    let without_build = version.split_once('+').map_or(version, |(v, _)| v);
+    let (core, prerelease) = match without_build.split_once('-') {
+        Some((_, "")) => return None,
+        Some((core, _)) => (core, true),
+        None => (without_build, false),
+    };
+    let mut parts = core.split('.');
+    let (maj, min, patch) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let number = |s: &str| -> Option<u64> {
+        if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        s.parse().ok()
+    };
+    Some((number(maj)?, number(min)?, number(patch)?, prerelease))
+}
+
+/// Order `reported` against the `baseline` (minimum supported version).
+/// A prerelease sorts below its own bare triple (semver spec item 11),
+/// so `4.85.0-rc.1` is [`WranglerVersionVerdict::BelowMinimum`] against
+/// baseline `4.85.0` while `5.0.0-rc.1` is still
+/// [`WranglerVersionVerdict::NewerMajor`] — the core triple wins first.
+fn classify_wrangler_version(reported: &str, baseline: &str) -> WranglerVersionVerdict {
+    let Some((r_maj, r_min, r_patch, r_pre)) = parse_semver_lite(reported) else {
+        return WranglerVersionVerdict::Unparseable;
+    };
+    let Some((b_maj, b_min, b_patch, b_pre)) = parse_semver_lite(baseline) else {
+        // The baseline is a compile-time constant; failing to parse it
+        // is a zfb bug, not a consumer state — fail open like any other
+        // unorderable input rather than punishing the consumer.
+        return WranglerVersionVerdict::Unparseable;
+    };
+    // Key = (core triple, is_release) so that a bare release outranks a
+    // prerelease of the same triple.
+    let reported_key = ((r_maj, r_min, r_patch), !r_pre);
+    let baseline_key = ((b_maj, b_min, b_patch), !b_pre);
+    match reported_key.cmp(&baseline_key) {
+        std::cmp::Ordering::Equal => WranglerVersionVerdict::Match,
+        std::cmp::Ordering::Less => WranglerVersionVerdict::BelowMinimum,
+        std::cmp::Ordering::Greater if r_maj > b_maj => WranglerVersionVerdict::NewerMajor,
+        std::cmp::Ordering::Greater => WranglerVersionVerdict::NewerSameMajor,
+    }
+}
+
+/// The pure parse → classify → act seam behind
+/// [`ensure_wrangler_version`]: take the raw `pnpm exec wrangler
+/// --version` stdout and decide what the pre-flight does. Only
+/// [`WranglerVersionVerdict::BelowMinimum`] fails closed; every other
+/// non-match continues with a message, because the baseline is a tested
+/// minimum, not a real known incompatibility (issue 2379) — failing
+/// closed on newer or unparseable output is exactly the dead end that
+/// issue reports. The failure message must stay actionable *for a
+/// consumer project*: it names their own `package.json`, never a file
+/// inside the zfb repository.
+fn action_for_wrangler_version(stdout: &str, baseline: &str) -> WranglerVersionAction {
+    let Some(reported) = parse_wrangler_version(stdout) else {
+        return WranglerVersionAction::ContinueWarn(format!(
+            "preview: could not parse a wrangler version from `pnpm exec wrangler --version` \
+             output: {raw:?} — proceeding anyway (zfb's tested baseline is `{baseline}`). \
+             Set {env}=1 to silence this gate if wrangler's output format has changed.",
+            raw = stdout.trim(),
+            env = SKIP_WRANGLER_VERSION_CHECK_ENV,
+        ));
+    };
+    match classify_wrangler_version(&reported, baseline) {
+        WranglerVersionVerdict::Match => WranglerVersionAction::ContinueSilent,
+        WranglerVersionVerdict::NewerSameMajor => WranglerVersionAction::ContinueInfo(format!(
+            "preview: wrangler `{reported}` is newer than zfb's tested baseline `{baseline}` — \
+             proceeding."
+        )),
+        WranglerVersionVerdict::NewerMajor => WranglerVersionAction::ContinueWarn(format!(
+            "preview: wrangler `{reported}` is a major version beyond zfb's tested baseline \
+             `{baseline}` — untested, preview may break. Pin `wrangler` to `{baseline}` in this \
+             project's package.json if it does."
+        )),
+        WranglerVersionVerdict::BelowMinimum => WranglerVersionAction::Fail(format!(
+            "wrangler `{reported}` is below zfb's minimum supported version `{baseline}`. \
+             Update the `wrangler` entry in this project's package.json to at least `{baseline}` \
+             (e.g. `pnpm add -D wrangler@^{baseline}`), then run `pnpm install`. To bypass this \
+             gate temporarily, set {env}=1 (not recommended for steady-state use).",
             env = SKIP_WRANGLER_VERSION_CHECK_ENV,
         )),
-        None => Err(anyhow::anyhow!(
-            "could not parse a wrangler version from `pnpm exec wrangler --version` \
-             output: {raw:?}. Expected something containing `{expected}`. \
-             Set {env}=1 to bypass this gate if the output format has changed.",
-            raw = stdout.trim(),
-            expected = EXPECTED_WRANGLER_VERSION,
+        WranglerVersionVerdict::Unparseable => WranglerVersionAction::ContinueWarn(format!(
+            "preview: could not interpret wrangler version `{reported}` (zfb's tested baseline \
+             is `{baseline}`) — proceeding anyway. Set {env}=1 to silence this gate if \
+             wrangler's version format has changed.",
             env = SKIP_WRANGLER_VERSION_CHECK_ENV,
         )),
     }
@@ -844,11 +980,12 @@ async fn ensure_wrangler_version(project_root: &Path) -> Result<()> {
 /// accepted. The fallback is intentionally narrow — a broad "first
 /// version-shaped token in any output" rule can match an unrelated
 /// version string (e.g. a copyright year `2024.10.0`) in multi-token
-/// output that lacks a `wrangler` label, producing a confusing
-/// "version mismatch" instead of "could not parse".
+/// output that lacks a `wrangler` label, feeding the version gate a
+/// number wrangler never reported.
 ///
-/// Returns `None` if no token matches, which the caller turns into a
-/// "could not parse" error.
+/// Returns `None` if no token matches, which the caller treats as an
+/// unparseable banner (warn + continue — see
+/// [`action_for_wrangler_version`]).
 fn parse_wrangler_version(stdout: &str) -> Option<String> {
     let tokens: Vec<&str> = stdout.split_whitespace().collect();
 
@@ -871,7 +1008,8 @@ fn parse_wrangler_version(stdout: &str) -> Option<String> {
     // Narrow fallback: accept a bare-version shim that prints a single
     // version-shaped token and nothing else. Refusing to scan multi-token
     // output avoids false positives (e.g. copyright years, pre-release
-    // annotations) that would surface a confusing "version mismatch".
+    // annotations) that would feed the version gate a number wrangler
+    // never reported.
     if tokens.len() == 1 {
         if let Some(v) = version_shape(tokens[0]) {
             return Some(v);
@@ -1576,8 +1714,8 @@ mod tests {
     #[test]
     fn parse_wrangler_version_strips_leading_v_prefix() {
         // Wrangler doesn't emit a leading `v` today, but other CLIs in
-        // the ecosystem do — strip it so the equality check downstream
-        // continues to match `4.85.0` even if upstream changes its banner.
+        // the ecosystem do — strip it so the version gate downstream
+        // still sees `4.85.0` even if upstream changes its banner.
         assert_eq!(
             parse_wrangler_version("⛅ wrangler v4.85.0").as_deref(),
             Some("4.85.0"),
@@ -1588,8 +1726,8 @@ mod tests {
     fn parse_wrangler_version_handles_prerelease_suffix() {
         // We accept any token whose head matches `MAJOR.MINOR.PATCH…`,
         // which lets prereleases round-trip through the parser. The
-        // version-equality check downstream is what enforces strict
-        // pinning — the parser's job is only extraction.
+        // classification downstream (`classify_wrangler_version`) is
+        // what orders them — the parser's job is only extraction.
         assert_eq!(
             parse_wrangler_version("⛅ wrangler 5.0.0-rc.1").as_deref(),
             Some("5.0.0-rc.1"),
@@ -1634,12 +1772,158 @@ mod tests {
         // A multi-token output with version-shaped strings but no `wrangler`
         // label must return None rather than matching an unrelated token (e.g.
         // a copyright year). Previously the broad fallback would have returned
-        // "2024.10.0" here, causing a confusing "version mismatch" error.
+        // "2024.10.0" here, feeding the version gate a number wrangler never
+        // reported.
         let stdout = "Copyright 2024.10.0 Cloudflare.";
         assert_eq!(
             parse_wrangler_version(stdout),
             None,
             "must not match a version-shaped token in multi-token output without a wrangler label",
+        );
+    }
+
+    // ---- wrangler version-gate classification (issue 2379) -----------
+
+    #[test]
+    fn classify_matches_equal_version_and_ignores_build_metadata() {
+        use WranglerVersionVerdict::*;
+        assert_eq!(classify_wrangler_version("4.85.0", "4.85.0"), Match);
+        // Build metadata is ordering noise per semver — `+build.1` still
+        // matches the bare baseline.
+        assert_eq!(classify_wrangler_version("4.85.0+build.1", "4.85.0"), Match);
+    }
+
+    #[test]
+    fn classify_newer_same_major_covers_patch_and_minor_drift() {
+        use WranglerVersionVerdict::*;
+        assert_eq!(
+            classify_wrangler_version("4.85.1", "4.85.0"),
+            NewerSameMajor
+        );
+        // The observed real-world case from issue 2379: 36 releases of
+        // routine drift past the baseline.
+        assert_eq!(
+            classify_wrangler_version("4.121.0", "4.85.0"),
+            NewerSameMajor
+        );
+    }
+
+    #[test]
+    fn classify_newer_major_including_its_prereleases() {
+        use WranglerVersionVerdict::*;
+        assert_eq!(classify_wrangler_version("5.0.0", "4.85.0"), NewerMajor);
+        // A prerelease of a NEWER core is still newer than the baseline —
+        // the core triple wins before the prerelease flag is considered.
+        assert_eq!(
+            classify_wrangler_version("5.0.0-rc.1", "4.85.0"),
+            NewerMajor
+        );
+    }
+
+    #[test]
+    fn classify_below_minimum_covers_patch_minor_and_major() {
+        use WranglerVersionVerdict::*;
+        assert_eq!(classify_wrangler_version("1.2.2", "1.2.3"), BelowMinimum);
+        assert_eq!(classify_wrangler_version("4.84.9", "4.85.0"), BelowMinimum);
+        assert_eq!(classify_wrangler_version("3.99.9", "4.85.0"), BelowMinimum);
+    }
+
+    #[test]
+    fn classify_same_triple_prerelease_is_below_minimum() {
+        // Semver spec item 11: a prerelease orders below its own bare
+        // triple, so `4.85.0-rc.1` is older than the `4.85.0` baseline.
+        assert_eq!(
+            classify_wrangler_version("4.85.0-rc.1", "4.85.0"),
+            WranglerVersionVerdict::BelowMinimum
+        );
+    }
+
+    #[test]
+    fn classify_malformed_versions_are_unparseable() {
+        use WranglerVersionVerdict::*;
+        assert_eq!(
+            classify_wrangler_version("4.85.0foo", "4.85.0"),
+            Unparseable
+        );
+        // A fourth core segment is not a semver shape we can order.
+        assert_eq!(classify_wrangler_version("4.85.0.1", "4.85.0"), Unparseable);
+        // Empty prerelease is malformed.
+        assert_eq!(classify_wrangler_version("4.85.0-", "4.85.0"), Unparseable);
+    }
+
+    // ---- wrangler version-gate verdict → action mapping --------------
+
+    #[test]
+    fn action_match_continues_silently() {
+        assert_eq!(
+            action_for_wrangler_version("⛅️ wrangler 4.85.0", "4.85.0"),
+            WranglerVersionAction::ContinueSilent
+        );
+    }
+
+    #[test]
+    fn action_observed_newer_banner_continues_with_info() {
+        // The exact real-world banner from issue 2379 — the case the old
+        // exact-equality gate wrongly hard-failed. Must CONTINUE (info),
+        // proving the end-to-end parse → classify → act path.
+        let action = action_for_wrangler_version("⛅️ wrangler 4.121.0", "4.85.0");
+        let WranglerVersionAction::ContinueInfo(msg) = action else {
+            panic!("wrangler 4.121.0 must continue with info, got {action:?}");
+        };
+        assert!(
+            msg.contains("4.121.0") && msg.contains("4.85.0"),
+            "info line must name both versions, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn action_newer_major_continues_with_warning() {
+        let action = action_for_wrangler_version("⛅️ wrangler 5.2.0", "4.85.0");
+        let WranglerVersionAction::ContinueWarn(msg) = action else {
+            panic!("a newer major must continue with a warning, got {action:?}");
+        };
+        assert!(
+            msg.contains("5.2.0") && msg.contains("4.85.0"),
+            "warning must name both versions, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn action_unparseable_banner_continues_with_warning() {
+        // No version token at all — fail open with a warning rather than
+        // recreating the issue-2379 dead end on a banner reshuffle.
+        let action = action_for_wrangler_version("hello world\n", "4.85.0");
+        assert!(
+            matches!(action, WranglerVersionAction::ContinueWarn(_)),
+            "unparseable output must continue with a warning, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn action_below_minimum_fails_with_consumer_actionable_message() {
+        let action = action_for_wrangler_version("⛅️ wrangler 4.84.0", "4.85.0");
+        let WranglerVersionAction::Fail(msg) = action else {
+            panic!("below-minimum must fail closed, got {action:?}");
+        };
+        // The message must be actionable for a CONSUMER project: their
+        // own package.json and the escape hatch…
+        assert!(
+            msg.contains("package.json"),
+            "failure must point at the consumer's package.json, got: {msg}"
+        );
+        assert!(
+            msg.contains("pnpm add -D wrangler@^4.85.0"),
+            "failure must give a concrete upgrade command, got: {msg}"
+        );
+        assert!(
+            msg.contains(SKIP_WRANGLER_VERSION_CHECK_ENV),
+            "failure must mention the skip env escape hatch, got: {msg}"
+        );
+        // …and must NOT send them into the zfb repository — the exact
+        // dead end issue 2379 reports.
+        assert!(
+            !msg.contains("zfb-toolchain-pins") && !msg.contains("CONTRIBUTING.md"),
+            "failure must not reference zfb-internal files, got: {msg}"
         );
     }
 

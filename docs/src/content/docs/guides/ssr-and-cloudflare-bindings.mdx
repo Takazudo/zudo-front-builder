@@ -413,9 +413,11 @@ entries with an existing ignore file rather than overwriting it.
 
 ### Wrangler rules and size limits
 
-zfb pins Wrangler to **exactly `4.85.0`**. Use the version in your project's
-lockfile (for example, through `pnpm exec wrangler`); do not treat `4.85.0` as
-a minimum-version hint.
+zfb's tested Wrangler baseline is **`4.85.0`**, and `zfb preview` enforces it
+as the **minimum supported version**: an older Wrangler aborts with upgrade
+guidance, while an equal or newer one proceeds (newer versions print an info
+line, or a warning on an untested major). Use the version in your project's
+lockfile (for example, through `pnpm exec wrangler`).
 
 The standard route needs no custom `[[rules]]` block: Wrangler's default module
 rules classify imported `.wasm` files as `CompiledWasm` while it bundles `main`.

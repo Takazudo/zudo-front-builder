@@ -14,15 +14,18 @@
 //!
 //! See `CONTRIBUTING.md "External tool version pins"` for the full runbook.
 
-/// Pinned `wrangler` CLI version. `zfb preview` runs
-/// `pnpm exec wrangler --version` before handing off to
-/// `wrangler dev` and aborts with a clear error if the reported
-/// version does not match this constant.
+/// Tested `wrangler` CLI baseline, enforced by `zfb preview` as the
+/// **minimum supported version** (issue 2379 relaxed this from an
+/// exact-equality pin): before handing off to `wrangler dev`, preview
+/// runs `pnpm exec wrangler --version` and aborts with a
+/// consumer-actionable error only when the reported version is *older*
+/// than this constant. An equal version passes silently; a newer one
+/// proceeds with an info line (or a warning on an untested major).
 ///
 /// Kept in lock-step with the exact-pinned `wrangler` entry in the root
-/// `package.json` (and with [`EXPECTED_WORKERD_VERSION`] below) so the
-/// preview pipeline is reproducible. To bump, see `CONTRIBUTING.md
-/// "External tool version pins"`.
+/// `package.json` (and with [`EXPECTED_WORKERD_VERSION`] below) so this
+/// repo's own CI and e2e runs stay reproducible. To bump, see
+/// `CONTRIBUTING.md "External tool version pins"`.
 pub const EXPECTED_WRANGLER_VERSION: &str = "4.85.0";
 
 /// Pinned `workerd` package version. Not controlled directly (workerd
