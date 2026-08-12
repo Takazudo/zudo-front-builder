@@ -165,7 +165,14 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         continue-on-error: true
         with:
-          path: crates/zfb/binaries
+          # Only the two gitignored executable slots — never the whole dir:
+          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
+          # and an exact-key restore would untar stale cached copies of those
+          # over the checkout whenever a PR edits them without touching the
+          # hashed pin files (codex review, zfb#2385 PR).
+          path: |
+            crates/zfb/binaries/esbuild/esbuild
+            crates/zfb/binaries/tailwindcss-v4
           key: zfb-staged-binaries-v1-x86_64-unknown-linux-gnu-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       - run: pnpm install --frozen-lockfile
@@ -380,7 +387,14 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         continue-on-error: true
         with:
-          path: crates/zfb/binaries
+          # Only the two gitignored executable slots — never the whole dir:
+          # crates/zfb/binaries/ also holds TRACKED files (.gitkeep, READMEs),
+          # and an exact-key restore would untar stale cached copies of those
+          # over the checkout whenever a PR edits them without touching the
+          # hashed pin files (codex review, zfb#2385 PR).
+          path: |
+            crates/zfb/binaries/esbuild/esbuild
+            crates/zfb/binaries/tailwindcss-v4
           key: zfb-staged-binaries-v1-aarch64-apple-darwin-${{ hashFiles('crates/zfb/build.rs', 'crates/zfb-toolchain-pins/src/lib.rs') }}
 
       # Install dependencies before cargo build so build.rs (embed_framework_packages)
