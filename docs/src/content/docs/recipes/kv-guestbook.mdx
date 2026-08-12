@@ -180,6 +180,23 @@ fan-out at 20, and runs the gets in batches of 6 — and returns `listedKeys`,
 `listComplete`, and `fanoutLimit` alongside the entries so a caller can see that the
 window was capped rather than guessing.
 
+<Warning title="This bounded read only stays correct while the window is not full">
+
+The keys are `entry:<ISO timestamp>:<random>`, and `kv.list()` returns them in
+**lexicographic** order — which for an ISO timestamp means **oldest first**. So the window
+is the oldest 40 keys, and sorting *that page* descending picks the newest 20 **of the
+oldest 40**. While fewer than `LIST_WINDOW_LIMIT` unexpired entries exist the two orders
+coincide and the page is correct, which is why the demo looks right. Once the guestbook
+grows past the window, newly posted entries stop appearing — for up to the 90-day
+`ENTRY_TTL_SECONDS`.
+
+Copy the subrequest-budget lesson, not this ordering. A real implementation needs keys
+that sort newest-first (invert the timestamp, e.g. `entry:<9999999999999 - epochMs>:…`)
+or a separate index listing recent keys, so the bounded window is the newest page rather
+than the oldest one.
+
+</Warning>
+
 ### The asset layer had to be told to run the Worker first
 
 This is the deploy-shaped trap in the repo, and it is worth reading the comment in
