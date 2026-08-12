@@ -152,7 +152,7 @@ Static preview serves whatever `zfb build` emitted under the selected output dir
 
 When `zfb.config.json`'s `adapter` field names a supported adapter (e.g. `@takazudo/zfb-adapter-cloudflare`), `zfb preview` hands off to `wrangler dev` instead of zfb's own static server — the output directory selected from `--outdir` or config `outDir` then only pre-checks that the directory exists, since wrangler's own config controls what it actually serves. See [SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
 
-Adapter preview runs a pre-flight `pnpm exec wrangler --version` check before handing off. Set `ZFB_SKIP_WRANGLER_VERSION_CHECK=1` only as a temporary escape hatch when that pin is being updated.
+Adapter preview runs a pre-flight `pnpm exec wrangler --version` check before handing off, treating zfb's tested baseline as the **minimum supported version**: an older wrangler aborts with upgrade guidance, while an equal or newer one proceeds (newer versions print an info line, or a warning on an untested major). Set `ZFB_SKIP_WRANGLER_VERSION_CHECK=1` only as a temporary escape hatch (e.g. if wrangler's version output format changes).
 
 <Caution title="Adapter mode: zfb serves nothing">
 
@@ -232,7 +232,7 @@ The following environment variables affect `zfb` globally (not specific to one s
 | `ZFB_ESBUILD_BIN` | unset | Absolute path to an esbuild binary. Used by the bundler, islands compiler, tests, and TypeScript config loading (`zfb.config.ts`) when an embedded/staged esbuild binary is unavailable or should be overridden. |
 | `ZFB_TAILWIND_BIN` | unset | Absolute path to a Tailwind CSS v4 binary. Overrides the embedded/staged Tailwind binary used by the CSS engine. An empty value is treated the same as unset, matching the `ZFB_ESBUILD_BIN` contract above. |
 | `ZFB_DEBUG_SNAPSHOT` | unset | Set to `1` or `true` to log the content snapshot's entry count and serialized byte size to stderr during `zfb build`, for monitoring V8 memory pressure on large sites. See [Incremental Rebuild](../concepts/incremental-rebuild.mdx). |
-| `ZFB_SKIP_WRANGLER_VERSION_CHECK` | unset | Set to `1`, `true`, or `yes` to bypass the `zfb preview` adapter-mode wrangler version gate. Intended for temporary release-engineering use. |
+| `ZFB_SKIP_WRANGLER_VERSION_CHECK` | unset | Set to `1`, `true`, or `yes` to bypass the `zfb preview` adapter-mode wrangler minimum-version gate. Intended for temporary release-engineering use. |
 
 <Note>
 

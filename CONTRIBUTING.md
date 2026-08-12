@@ -139,6 +139,8 @@ The pin sources are:
 5. Run `cargo test -p zfb` to make sure the version-gate tests still pass.
 6. Commit `package.json`, `pnpm-lock.yaml`, and the constants change in one commit so the pin moves atomically.
 
+Note: the exact pin above governs **this repo's own** reproducibility (CI, e2e, lockfile). The consumer-facing `zfb preview` gate treats `EXPECTED_WRANGLER_VERSION` as the **minimum supported version** (issue 2379): an older wrangler aborts with upgrade guidance, an equal one passes silently, and a newer one proceeds with an info line (or a warning on an untested major) — so a consumer's routine wrangler bump never breaks `pnpm preview`.
+
 If you ever need to bypass the wrangler version gate (e.g. while a bump is mid-flight on a feature branch), set `ZFB_SKIP_WRANGLER_VERSION_CHECK=1` for the duration of the `zfb preview` invocation. Do not check this in.
 
 ### Bumping esbuild

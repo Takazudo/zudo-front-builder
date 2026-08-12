@@ -154,7 +154,7 @@ zfb preview [--port <port>] [--host [<host>]] [--outdir <dir>]
 
 `zfb.config.json` の `adapter` フィールドがサポート対象のアダプタ（例: `@takazudo/zfb-adapter-cloudflare`）を指定している場合、`zfb preview` は zfb 自身の静的サーバーではなく `wrangler dev` に処理を引き渡します。この場合、`--outdir` または config の `outDir` から選ばれた出力ディレクトリは、存在するかを事前確認するだけになります。実際に何を配信するかは wrangler 自身の設定が制御するためです。[SSR と Cloudflare バインディング](../guides/ssr-and-cloudflare-bindings.mdx) を参照してください。
 
-アダプタの preview は、処理を引き渡す前に `pnpm exec wrangler --version` の事前チェックを実行します。その pin を更新している間の一時的な escape hatch としてのみ、`ZFB_SKIP_WRANGLER_VERSION_CHECK=1` を設定してください。
+アダプタの preview は、処理を引き渡す前に `pnpm exec wrangler --version` の事前チェックを実行し、zfb がテスト済みのベースラインを **最小サポートバージョン** として扱います。それより古い wrangler はアップグレード案内とともに中断しますが、同じかそれより新しいものは続行します（新しいバージョンでは情報行を、未テストのメジャーバージョンでは警告を出力します）。`ZFB_SKIP_WRANGLER_VERSION_CHECK=1` は、一時的な escape hatch としてのみ設定してください（例: wrangler のバージョン出力形式が変わった場合）。
 
 <Caution title="アダプタモード: zfb は何も配信しない">
 
@@ -234,7 +234,7 @@ zfb check --skip-tsc
 | `ZFB_ESBUILD_BIN` | 未設定 | esbuild バイナリへの絶対パス。埋め込み / staged 済みの esbuild バイナリが利用できない、または上書きしたい場合に、バンドラ、islands コンパイラ、テスト、TypeScript 設定ロード（`zfb.config.ts`）で使用されます。 |
 | `ZFB_TAILWIND_BIN` | 未設定 | Tailwind CSS v4 バイナリへの絶対パス。CSS エンジンが使用する埋め込み / staged 済みの Tailwind バイナリを上書きします。空文字列は未設定と同じ扱いになります（上記の `ZFB_ESBUILD_BIN` と同じ契約）。 |
 | `ZFB_DEBUG_SNAPSHOT` | 未設定 | `1` または `true` を設定すると、`zfb build` 実行時にコンテンツスナップショットのエントリ数とシリアライズ後のバイト数を stderr に出力します。大規模サイトでの V8 メモリ負荷の監視に使えます。[インクリメンタルリビルド](../concepts/incremental-rebuild.mdx) を参照してください。 |
-| `ZFB_SKIP_WRANGLER_VERSION_CHECK` | 未設定 | `1`、`true`、または `yes` を設定すると、`zfb preview` のアダプタモードにおける wrangler バージョンゲートを迂回します。一時的なリリースエンジニアリング用途を意図しています。 |
+| `ZFB_SKIP_WRANGLER_VERSION_CHECK` | 未設定 | `1`、`true`、または `yes` を設定すると、`zfb preview` のアダプタモードにおける wrangler 最小バージョンゲートを迂回します。一時的なリリースエンジニアリング用途を意図しています。 |
 
 <Note>
 
