@@ -1,13 +1,16 @@
 ---
 title: レシピ
-description: zfb を使うための自己完結したパターン集。キュレーションされたセクションで、1 ページ 1 トピック、コピー & ペーストで使えます。
+description: zfb を使うための自己完結したパターンと、作り込まれたサンプルサイトの解説。キュレーションされたセクションで、1 ページ 1 トピックです。
 sidebar_position: 25
 category: Recipes
 ---
 
-zfb のプリミティブ（`addVirtualModule`、`postBuild` プラグイン、`ctx.routes`、非 HTML ページ、MDX コンポーネント）を組み合わせて、あなた自身のケースに応用できる具体的な解決策にまとめる、メンテナーがキュレーションした小さく焦点を絞ったパターン集です。
+メンテナーがキュレーションしたセクションで、2 種類のページがあります。
 
-各レシピは次のようなものです。
+- **レシピ** — zfb のプリミティブ（`addVirtualModule`、`postBuild` プラグイン、`ctx.routes`、非 HTML ページ、MDX コンポーネント）を組み合わせて、あなた自身のケースに応用できる具体的な解決策にまとめます。
+- **サンプルサイト** — デプロイ可能なプロジェクト 1 つを丸ごと解説します。それぞれにクローンできる公開リポジトリと、稼働中のデモがあります。
+
+どちらのページも次のようなものです。
 
 - 1 トピックにつき 1 記事
 - コードの羅列ではなく解説として書かれる — _なぜ_ そうするのかは _どうやって_ と同じくらい重要です
@@ -17,3 +20,17 @@ zfb のプリミティブ（`addVirtualModule`、`postBuild` プラグイン、`
 
 - [Enlargeable Images](/ja/docs/recipes/enlargeable-images) — かつての組み込み機能 `imageEnlarge` を、`img` コンポーネントのオーバーライドを使ってユーザーランドで再現します。サーバーサイド（JS なし）版とアイランド版の両方、そして `no-enlarge` によるオプトアウトを扱います。
 - [Admonitions](/ja/docs/recipes/admonitions) — `directives` 機能を使い、最小限のコンポーネントスタブと CSS フックで `:::note`、`:::tip`、`:::info`、`:::warning`、`:::danger`、`:::caution`、`:::details` を登録します。
+
+## サンプルサイト
+
+9 つのスタンドアロンなリポジトリで、それぞれが Cloudflare 上で実際に稼働している完全な zfb プロジェクトです。以下の各ページは、そのサンプルが何を示しているか、どのような技術構成か、どう動くか、ローカルでどう実行するかを解説し、クローンできるリポジトリへリンクしています。同じ 9 つを並べて見比べるには [サンプル](/ja/docs/guides/examples) の比較表を参照してください。
+
+- [AI Summarizer](/ja/docs/recipes/ai-summarizer) — 1 つの Preact アイランドが `prerender = false` のルートへ POST し、そのルートが Workers AI バインディングを呼びます。決定的なフォールバックがあるため、Cloudflare アカウントなしでもエンドポイントは応答します。
+- [Blog](/ja/docs/recipes/blog) — Markdown と MDX による純粋 SSG のブログ。3 種類の動的ルート、`paginate()`、テーマ切り替えアイランド 1 つ、Tailwind v4 のトークン設計を扱います。SSR もアダプタもありません。
+- [Corporate Website](/ja/docs/recipes/corporate-website) — CSS Modules だけでスタイリングした静的な Preact のマーケティングサイト。`tailwind: { enabled: false }` を設定している唯一のサンプルで、出力される CSS は自分で書いたものだけになります。
+- [JSON API](/ja/docs/recipes/json-api) — もっとも小さく完結した SSR スターター。`prerender = false` の GET エンドポイントが 2 つあり、一方は MiniSearch のインデックスを遅延構築してウォームな isolate 間で使い回します。事前に用意するものはありません。
+- [KV Guestbook](/ja/docs/recipes/kv-guestbook) — Cloudflare バインディングへの書き込み経路。1 つのルートが投稿一覧のレンダリングと JavaScript なしのフォーム POST の両方を Workers KV に対して処理し、トークンで保護された管理用削除も備えます。
+- [Password Gate](/ja/docs/recipes/password-gate) — `run_worker_first = true` の手書き Worker を静的サイトの前段に置きます。zfb アダプタを使わずに Cloudflare とやり取りする唯一のサンプルで、ライブデモは意図的に `401` を返します。
+- [Reverse Proxy](/ja/docs/recipes/reverse-proxy) — キャッチオールの `prerender = false` ルートが、メソッド・パス・クエリ・ボディを固定のアップストリームへ転送します。両方向でのヘッダー処理を意図的に設計しています。
+- [Webshop](/ja/docs/recipes/webshop) — アカウント・カート・チェックアウトを備えた Cloudflare D1 上の全 SSR ショップ。すべてのルートが `prerender = false` で、すべてのボタンがフォームなので、ビルドは HTML もクライアント JavaScript も出力しません。
+- [Workers Cache](/ja/docs/recipes/workers-cache) — キャッシュを HTTP だけで表現します。ルートごとの `Cache-Control`、`Cache-Tag`、`Vary` に加えて、`ctx.cache.purge()` を呼ぶトークン保護つきのパージルートを備えます。

@@ -1,43 +1,59 @@
 ---
 title: Examples
-description: An index of the standalone Cloudflare Workers and Cloudflare Pages example repositories that demonstrate zfb in real, deployable projects.
+description: A comparison matrix of the nine standalone Cloudflare Workers repositories that demonstrate zfb in real, deployable projects.
 sidebar_position: 5
 ---
 
-zfb ships a set of standalone example repositories, each one a small,
-deployable project that demonstrates a single Cloudflare recipe end to end.
-Every repo is independently `pnpm install`-able and includes its own README
-with local run steps and Cloudflare provisioning commands — clone one to see
-the whole thing assembled rather than copying snippets piecemeal.
+zfb ships nine standalone example repositories, each one a small, deployable
+project that demonstrates a single Cloudflare recipe end to end. Every repo is
+independently `pnpm install`-able and includes its own README with local run
+steps and Cloudflare provisioning commands — clone one to see the whole thing
+assembled rather than copying snippets piecemeal.
 
-<Note title="Demo URLs go live after first deploy">
+This page is the comparison matrix. Each row links to a full walkthrough under
+[Recipes](../recipes/index.mdx), which explains what that example demonstrates,
+how it works, and how to run it locally.
 
-Each Worker demo URL below resolves once that repo's Cloudflare secrets are
-configured and it has deployed at least once. Until then, some links may
-404 — check the repo's README for its current deploy status.
+All nine deploy as **Cloudflare Workers** on `takazudomodular.com` subdomains.
+Seven ship server code; two are assets-only Workers that serve a static build
+and run no Worker script at all.
+
+<Note title="password-gate answers 401 by design">
+
+Every demo below is deployed and live, with one deliberate exception:
+[zfb-example-password-gate.takazudomodular.com](https://zfb-example-password-gate.takazudomodular.com/)
+answers `401 Unauthorized` with a login page instead of showing you a site.
+That is the example working — gating the content is its entire point.
 
 </Note>
 
-## Cloudflare Workers (Static Assets) — 7
+## Worker-backed examples
 
-These deploy as a **Cloudflare Worker with Static Assets**, the pattern
-covered in [SSR and Cloudflare Bindings](./ssr-and-cloudflare-bindings.mdx).
+These seven emit or hand-write a Worker script that runs on every request they
+own. Six use `@takazudo/zfb-adapter-cloudflare` to run `prerender = false`
+routes — the pattern covered in
+[SSR and Cloudflare Bindings](./ssr-and-cloudflare-bindings.mdx). The seventh,
+`password-gate`, installs no adapter and puts a Worker of its own in front of a
+static build.
 
-| Example                                                                       | Demo                                                                     | What it shows                                                                                                                       |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| [ai-summarizer](https://github.com/Takazudo/zfb-example-ai-summarizer)         | [Demo](https://zfb-example-ai-summarizer-ai.takazudo.workers.dev/)        | Preact island UI + a Workers AI–backed `/api/summarize` route, with a deterministic local fallback when the `AI` binding is absent. |
-| [json-api](https://github.com/Takazudo/zfb-example-json-api)                   | [Demo](https://zfb-example-json-api.takazudo.workers.dev/)                | SSR/API starter: `/api/items` (filter + paginate) and `/api/search` (lazy MiniSearch index), consumed by one island.                |
-| [kv-guestbook](https://github.com/Takazudo/zfb-example-kv-guestbook)           | [Demo](https://zfb-example-kv-guestbook.takazudo.workers.dev/)            | Workers KV guestbook: a `prerender = false` no-JS form + JSON API + admin delete, backed by a KV namespace.                         |
-| [password-gate](https://github.com/Takazudo/zfb-example-password-gate)         | [Demo](https://zfb-example-password-gate.takazudo.workers.dev/)           | Static preview site behind a hand-written Worker password gate (`run_worker_first = true`).                                        |
-| [reverse-proxy](https://github.com/Takazudo/zfb-example-reverse-proxy)         | [Demo](https://zfb-example-reverse-proxy.takazudo.workers.dev/)           | Catch-all SSR reverse proxy (`/proxy/...` → `PROXY_ORIGIN`) with hop-by-hop / cookie / security-header hygiene.                     |
-| [workers-cache](https://github.com/Takazudo/zfb-example-workers-cache)         | [Demo](https://zfb-example-workers-cache.takazudo.workers.dev/)           | SSR Workers Cache recipe: explicit cache headers + `Cache-Tag` + a token-protected purge route (`ctx.cache.purge()`).               |
-| [webshop](https://github.com/Takazudo/zfb-example-webshop)                     | [Demo](https://zfb-example-webshop.takazudo.workers.dev/)                 | SSR shop on Cloudflare (migrated Pages → Workers Static Assets) + D1 (per-preview databases, migrations in CI).                     |
+| Example | Rendering | Bindings and secrets | Styling | Links |
+| --- | --- | --- | --- | --- |
+| [AI Summarizer](../recipes/ai-summarizer.mdx) | SSG plus one `prerender = false` API route (adapter) | Workers AI `AI`, declared only in the named `ai` environment | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-ai-summarizer) · [demo](https://zfb-example-ai-summarizer.takazudomodular.com/) |
+| [JSON API](../recipes/json-api.mdx) | SSG plus two `prerender = false` API routes (adapter) | none | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-json-api) · [demo](https://zfb-example-json-api.takazudomodular.com/) |
+| [KV Guestbook](../recipes/kv-guestbook.mdx) | SSR for every route except `/404` (adapter) | Workers KV `GUESTBOOK`, `ADMIN_TOKEN` secret | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-kv-guestbook) · [demo](https://zfb-example-kv-guestbook.takazudomodular.com/) |
+| [Password Gate](../recipes/password-gate.mdx) | Pure SSG behind a hand-written Worker, `run_worker_first = true`, no adapter | `SITE_PASSWORD` secret | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-password-gate) · [demo](https://zfb-example-password-gate.takazudomodular.com/) |
+| [Reverse Proxy](../recipes/reverse-proxy.mdx) | SSG plus one catch-all `prerender = false` route (adapter) | none, one public `PROXY_ORIGIN` var | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-reverse-proxy) · [demo](https://zfb-example-reverse-proxy.takazudomodular.com/) |
+| [Webshop](../recipes/webshop.mdx) | SSR on every route, no HTML emitted (adapter) | D1 `DB` | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-webshop) · [demo](https://zfb-example-webshop.takazudomodular.com/) |
+| [Workers Cache](../recipes/workers-cache.mdx) | SSR on every route, no HTML emitted (adapter) | `PURGE_TOKEN` secret | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-workers-cache) · [demo](https://zfb-example-workers-cache.takazudomodular.com/) |
 
-## Cloudflare Pages — 2
+## Static examples
 
-These deploy as a static site to **Cloudflare Pages** and are live today.
+These two deploy the `dist/` directory as **Workers Static Assets** with no
+Worker script: `wrangler.toml` carries an `[assets]` table and deliberately no
+`main` key, and `@takazudo/zfb-adapter-cloudflare` is not a dependency. They are
+the shape to copy when a site needs no server code at all.
 
-| Example                                                                              | Demo                                                    | What it shows                                                                     |
-| --------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| [blog](https://github.com/Takazudo/zfb-example-blog)                                    | [Demo](https://zfb-example-blog.pages.dev/)                 | Tailwind blog with content collections, pagination, tags, and a hydrated theme-toggle island. |
-| [corporate-website](https://github.com/Takazudo/zfb-example-corporate-website)          | [Demo](https://zfb-example-corporate-website.pages.dev/)    | Static corporate site using CSS Modules.                                          |
+| Example | Rendering | Bindings and secrets | Styling | Links |
+| --- | --- | --- | --- | --- |
+| [Blog](../recipes/blog.mdx) | Pure SSG, assets-only Worker | none | Tailwind v4 | [repo](https://github.com/Takazudo/zfb-example-blog) · [demo](https://zfb-example-blog.takazudomodular.com/) |
+| [Corporate Website](../recipes/corporate-website.mdx) | Pure SSG, assets-only Worker | none | CSS Modules, `tailwind: { enabled: false }` | [repo](https://github.com/Takazudo/zfb-example-corporate-website) · [demo](https://zfb-example-corporate-website.takazudomodular.com/) |
