@@ -68,7 +68,7 @@
 //!   shared) — only the plugin-module hook (`previewMiddleware` vs
 //!   `devMiddleware`) and JS-host message `kind` differ.
 //! - [`PluginHost::shutdown`] sends a `shutdown` command, waits the
-//!   child, and joins the reader task (bounded). It is idempotent — the
+//!   child, and joins both reader tasks (bounded). It is idempotent — the
 //!   host is `Clone` and only the first caller across all clones tears
 //!   down; later/overlapping calls are no-ops. Drop also kills the
 //!   process — the explicit shutdown is the graceful path.
@@ -306,7 +306,7 @@ struct HostInner {
     child: Mutex<Option<Child>>,
     /// Latch that makes [`PluginHost::shutdown`] idempotent. The first
     /// caller to flip this false→true owns the teardown (send `shutdown`,
-    /// take + wait the child, join the reader). Every other call — on any
+    /// take + wait the child, join the readers). Every other call — on any
     /// of the [`Clone`]d handles the dev server holds — returns `Ok(())`
     /// immediately without touching the child or sending a second
     /// `shutdown` command. This is what stops an in-flight
@@ -338,6 +338,12 @@ struct HostInner {
     /// actually dies, so shutdown joins this with a deadline instead of
     /// detaching and hoping. `None` once joined.
     reader_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Stderr-reader join handle, kept for the same reason and joined by the
+    /// same bounded teardown. Without it, a plugin's raw `process.stderr`
+    /// write issued just before its final hook returns could still be sitting
+    /// in the pipe buffer when the command returns and the Tokio runtime is
+    /// dropped, silently losing the line. `None` once joined.
+    stderr_reader_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Dropping the [`_tempdir`] removes the staged plugin-host script.
     _tempdir: tempfile::TempDir,
     /// Staged `.mjs` bundle artifacts produced for `.ts`/`.tsx`/`.mts`/
@@ -597,6 +603,7 @@ impl PluginHost {
             force_killed: AtomicBool::new(false),
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
+            stderr_reader_handle: Mutex::new(None),
             _tempdir: tmp,
             _staged_plugin_bundles: staged_bundles,
             hook_timeout,
@@ -644,10 +651,8 @@ impl PluginHost {
         // practice, but a programmer error there shouldn't deadlock
         // on a full pipe buffer.
         //
-        // Disposition (issue #2104, epic #2099): this task is separately
-        // detached from the stdout reader above (no `JoinHandle` is
-        // stashed anywhere for it, and `shutdown()` never joins it) — but
-        // it gets the SAME EOF disposition as the stdout reader rather
+        // Disposition (issue #2104, epic #2099): this task gets the SAME
+        // EOF disposition as the stdout reader rather
         // than a silently different one just because it's a separate
         // task: silence when this pipe closes as the expected result of a
         // `shutdown()` or hook-timeout `force_kill_child()` already in
@@ -658,8 +663,16 @@ impl PluginHost {
         // that shared state. The loop body lives in
         // [`Self::run_stderr_reader`] alongside its stdout counterpart for
         // the same testability reason.
+        // Its handle is stashed and joined by `shutdown()` alongside the
+        // stdout reader's: a plugin that writes to `process.stderr` right
+        // before its last hook returns leaves those bytes in the pipe when
+        // the command's own work is done, and a detached task would lose
+        // them to the runtime drop.
         let inner_for_stderr = Arc::clone(&inner);
-        tokio::spawn(Self::run_stderr_reader(inner_for_stderr, stderr));
+        let stderr_reader_handle = tokio::spawn(Self::run_stderr_reader(inner_for_stderr, stderr));
+        *inner.stderr_reader_handle.try_lock().expect(
+            "stderr_reader_handle uncontended at spawn time — no other handle exists yet",
+        ) = Some(stderr_reader_handle);
 
         let host = PluginHost { inner };
 
@@ -1051,23 +1064,38 @@ impl PluginHost {
             }
         }
 
-        // Join the reader task with a bound. Once the child is gone its
-        // stdout closes and the reader loop returns on its own; the deadline
-        // is a guard against a wedged pipe so teardown can't hang here.
-        if let Some(handle) = self.inner.reader_handle.lock().await.take() {
-            let abort = handle.abort_handle();
-            match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => warn!(error = %e, "plugin host: reader task join failed"),
-                Err(_) => {
-                    warn!("plugin host: reader task did not finish within shutdown budget");
-                    // Bounded teardown: abort the wedged reader rather than
-                    // dropping its JoinHandle (which would only detach it).
-                    abort.abort();
-                }
+        // Join both reader tasks with a bound. Once the child is gone its
+        // pipes close and each reader loop returns on its own, having drained
+        // whatever the plugin wrote last; the deadline is a guard against a
+        // wedged pipe so teardown can't hang here.
+        Self::join_reader_task(&self.inner.reader_handle, "stdout").await;
+        Self::join_reader_task(&self.inner.stderr_reader_handle, "stderr").await;
+        Ok(())
+    }
+
+    /// Join one reader task, bounded by the shutdown budget, aborting it if
+    /// the deadline passes.
+    async fn join_reader_task(
+        slot: &Mutex<Option<tokio::task::JoinHandle<()>>>,
+        which: &'static str,
+    ) {
+        let Some(handle) = slot.lock().await.take() else {
+            return;
+        };
+        let abort = handle.abort_handle();
+        match tokio::time::timeout(std::time::Duration::from_secs(2), handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(error = %e, reader = which, "plugin host: reader task join failed"),
+            Err(_) => {
+                warn!(
+                    reader = which,
+                    "plugin host: reader task did not finish within shutdown budget"
+                );
+                // Bounded teardown: abort the wedged reader rather than
+                // dropping its JoinHandle (which would only detach it).
+                abort.abort();
             }
         }
-        Ok(())
     }
 
     async fn request_typed<T: serde::de::DeserializeOwned>(
@@ -3053,6 +3081,7 @@ mod tests {
             force_killed: AtomicBool::new(false),
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
+            stderr_reader_handle: Mutex::new(None),
             _tempdir: tmp,
             _staged_plugin_bundles: Vec::new(),
             hook_timeout: timeout,
@@ -3276,6 +3305,7 @@ mod tests {
             force_killed: AtomicBool::new(false),
             death_reported: AtomicBool::new(false),
             reader_handle: Mutex::new(None),
+            stderr_reader_handle: Mutex::new(None),
             _tempdir: tmp,
             _staged_plugin_bundles: Vec::new(),
             hook_timeout: std::time::Duration::from_secs(1),
@@ -3365,6 +3395,73 @@ mod tests {
         assert!(
             !logs_contain("stderr reader ended unexpectedly"),
             "a shutdown-initiated stderr EOF must not turn routine shutdown into noise"
+        );
+    }
+
+    /// `shutdown()` must JOIN the stderr reader, not leave it detached: a
+    /// plugin's raw `process.stderr` write issued from its last hook is only
+    /// guaranteed to have been processed once that task has run to EOF, and a
+    /// detached task can still be holding the line when the command returns
+    /// and the runtime is dropped.
+    ///
+    /// The join is asserted structurally — the handle slot is `Some` while the
+    /// host is live and `None` (taken by the join) once shutdown returns —
+    /// rather than by observing the drained line: the reader emits it on the
+    /// `zfb_plugin` tracing target and via `eprintln!`, neither of which
+    /// `logs_contain` can see, and a timing-based assertion would pass with
+    /// the join removed whenever the line happened to arrive early anyway.
+    #[tokio::test]
+    async fn shutdown_joins_the_stderr_reader_that_drains_final_hook_writes() {
+        if !host_node_available() {
+            eprintln!("skipping: node not on PATH");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_path = tmp.path().join("late-stderr.mjs");
+        tokio::fs::write(
+            &plugin_path,
+            r#"
+            export default {
+              name: "late-stderr",
+              setup() {
+                process.stderr.write("zfb-late-stderr-marker\n");
+              },
+            };
+            "#,
+        )
+        .await
+        .unwrap();
+        let host = PluginHost::spawn(
+            vec![PluginSpec {
+                name: "late-stderr".into(),
+                module: file_url_for_test(&plugin_path),
+                options: serde_json::json!({}),
+            }],
+            None,
+        )
+        .await
+        .expect("host spawns");
+        assert!(
+            host.inner.stderr_reader_handle.lock().await.is_some(),
+            "the stderr reader's join handle must be stashed at spawn time"
+        );
+        host.run_setup(
+            tmp.path(),
+            crate::plugin_registries::SetupCommand::Build,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("setup ok");
+
+        let watchdog = std::time::Duration::from_secs(8);
+        tokio::time::timeout(watchdog, host.shutdown())
+            .await
+            .expect("shutdown must finish within the watchdog")
+            .expect("shutdown Ok");
+
+        assert!(
+            host.inner.stderr_reader_handle.lock().await.is_none(),
+            "shutdown must take and join the stderr reader handle"
         );
     }
 

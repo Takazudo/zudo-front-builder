@@ -56,7 +56,7 @@
 //! into the entry's OWN parent directory — see that function's doc comment
 //! — so this is the exact directory `sweep_stale_plugin_bundle_files`
 //! scans) and its mtime is backdated past
-//! `PLUGIN_BUNDLE_TEMP_STALE_AFTER` (60s) via `File::set_modified`, mirroring
+//! `PLUGIN_BUNDLE_TEMP_STALE_AFTER` (600s) via `File::set_modified`, mirroring
 //! the established backdate idiom used by `dev_poll_backend_e2e.rs` and
 //! `bundler.rs`'s `backdate_dir_mtime`. This file has a FIXED, hand-chosen
 //! name distinct from any name `tempfile::Builder` would ever generate for
@@ -111,13 +111,15 @@ use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 use zfb_test_utils::{locate_esbuild, zfb_binary};
 
-/// Mirrors `zfb_build::plugin_bundler::PLUGIN_BUNDLE_TEMP_STALE_AFTER`
-/// (60s) — not imported directly since `plugin_bundler` is a private module
-/// or would pull in a heavier dependency surface than this black-box e2e
-/// needs; the sweep's own unit tests in that crate already pin the
-/// constant's value, so this is a second, independent measurement of the
-/// public contract rather than a coupling to the private constant.
-const STALE_BACKDATE: Duration = Duration::from_secs(120);
+/// Comfortably past `zfb_build::plugin_bundler::PLUGIN_BUNDLE_TEMP_STALE_AFTER`
+/// (600s — itself pinned above the 5-minute esbuild bundle timeout, since a
+/// staged bundle is unlocked while esbuild writes it) — not imported directly
+/// since `plugin_bundler` is a private module or would pull in a heavier
+/// dependency surface than this black-box e2e needs; the sweep's own unit
+/// tests in that crate already pin the constant's value, so this is a second,
+/// independent measurement of the public contract rather than a coupling to
+/// the private constant.
+const STALE_BACKDATE: Duration = Duration::from_secs(1200);
 
 fn host_node_available() -> bool {
     Command::new("node")
