@@ -56,8 +56,7 @@ use markdown::mdast::{
 };
 
 use crate::pipeline::{
-    constructs_for_jsx_emit, constructs_for_pipeline, BuildContext, MdastVisitor,
-    ResolvedGfmConstructs, SecondaryParseTarget,
+    constructs_for_target, BuildContext, MdastVisitor, ResolvedGfmConstructs, SecondaryParseTarget,
 };
 use crate::plugins::{unwrap_nested_links, CjkAutolinkBoundaryPlugin};
 use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
@@ -1673,10 +1672,7 @@ fn reparse_block(text: &str, ctx: SecondaryParseCtx) -> Vec<MdastNode> {
         target,
     } = ctx;
     let opts = markdown::ParseOptions {
-        constructs: match target {
-            SecondaryParseTarget::Html => constructs_for_pipeline(gfm),
-            SecondaryParseTarget::Jsx => constructs_for_jsx_emit(gfm),
-        },
+        constructs: constructs_for_target(gfm, target),
         ..markdown::ParseOptions::mdx()
     };
     let fallback = || {

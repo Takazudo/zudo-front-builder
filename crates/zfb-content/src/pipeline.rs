@@ -50,7 +50,7 @@ use crate::syntect_highlight::Highlighter;
 // and `zfb::config`'s `pub use zfb_content::ResolvedGfmConstructs` are
 // unaffected.
 pub use zfb_md_ast::gfm_constructs::{
-    constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
+    constructs_for_jsx_emit, constructs_for_pipeline, constructs_for_target, ResolvedGfmConstructs,
 };
 
 /// Version prefix for the [`Pipeline::config_fingerprint`] descriptor.

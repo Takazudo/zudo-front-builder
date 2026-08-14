@@ -31,7 +31,9 @@ pub mod nested_link;
 pub mod read_recorder;
 
 pub use cjk_autolink::CjkAutolinkBoundaryPlugin;
-pub use gfm_constructs::{constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs};
+pub use gfm_constructs::{
+    constructs_for_jsx_emit, constructs_for_pipeline, constructs_for_target, ResolvedGfmConstructs,
+};
 pub use nested_link::unwrap_nested_links;
 
 pub use directives::{
@@ -265,12 +267,17 @@ pub trait MdastVisitor {
 
     /// Announce which emit path the imminent visit is feeding.
     ///
-    /// Called by every `Pipeline` mdast dispatch loop on every visitor
-    /// immediately before visiting, with a target hardcoded per loop —
-    /// never caller-supplied. Visitors that re-parse markdown override
-    /// this to store the value and consult it when choosing constructs;
-    /// see [`SecondaryParseTarget`]. The default is a no-op, so every
-    /// other implementor is unaffected.
+    /// Called by every `Pipeline` mdast dispatch loop on every visitor in
+    /// the registered mdast chain, immediately before visiting, with a
+    /// target hardcoded per loop — never caller-supplied. Visitors that
+    /// re-parse markdown override this to store the value and consult it
+    /// when choosing constructs; see [`SecondaryParseTarget`]. The
+    /// default is a no-op, so every other implementor is unaffected.
+    ///
+    /// `Pipeline`'s dedicated single-visitor slots (resolve-links, the
+    /// JSX-nested collector and mutators) are deliberately NOT announced
+    /// to — none of them re-enters the parser. A future plugin that does
+    /// must either join the mdast chain or have its slot announced too.
     ///
     /// Implementors must overwrite their stored target unconditionally
     /// on each call — a pipeline instance is reused across documents and

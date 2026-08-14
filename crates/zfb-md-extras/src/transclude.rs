@@ -78,9 +78,8 @@ use std::sync::Arc;
 
 use markdown::mdast::Node as MdastNode;
 use zfb_md_ast::{
-    constructs_for_jsx_emit, constructs_for_pipeline, unwrap_nested_links, BuildContext,
-    CjkAutolinkBoundaryPlugin, MdastVisitor, ReadOutcome, ReadRecorder, ResolvedGfmConstructs,
-    SecondaryParseTarget,
+    constructs_for_target, unwrap_nested_links, BuildContext, CjkAutolinkBoundaryPlugin,
+    MdastVisitor, ReadOutcome, ReadRecorder, ResolvedGfmConstructs, SecondaryParseTarget,
 };
 
 use crate::TranscludeConfig;
@@ -121,12 +120,11 @@ pub struct TranscludePlugin {
     /// Which emit path the current pipeline run is feeding (zfb#2397).
     ///
     /// Set by [`MdastVisitor::set_secondary_parse_target`] at the top of
-    /// every `Pipeline` mdast dispatch loop, and consulted at the parse
-    /// call to choose between [`constructs_for_pipeline`] (`Html` — math
-    /// off, byte-identical to before) and [`constructs_for_jsx_emit`]
-    /// (`Jsx` — math on). The same plugin instance serves both paths, so
-    /// this cannot be a construction-time knob; `with_gfm`'s signature
-    /// is deliberately unchanged.
+    /// every `Pipeline` mdast dispatch loop, and handed to
+    /// [`constructs_for_target`] at the parse call: `Html` keeps math off
+    /// (byte-identical to before), `Jsx` turns it on. The same plugin
+    /// instance serves both paths, so this cannot be a construction-time
+    /// knob; `with_gfm`'s signature is deliberately unchanged.
     ///
     /// Defaults to `Html`, the conservative choice: a plugin driven
     /// outside a `Pipeline` loop (tests, direct `visit_with_context`
@@ -549,10 +547,7 @@ fn resolve_and_expand(
     // matching what the top-level parse of each path uses: math off for
     // HTML, on for JSX. See [`ExpandEnv::target`].
     let opts = markdown::ParseOptions {
-        constructs: match env.target {
-            SecondaryParseTarget::Html => constructs_for_pipeline(env.gfm),
-            SecondaryParseTarget::Jsx => constructs_for_jsx_emit(env.gfm),
-        },
+        constructs: constructs_for_target(env.gfm, env.target),
         ..markdown::ParseOptions::mdx()
     };
     let mut included_mdast = match markdown::to_mdast(&content, &opts) {

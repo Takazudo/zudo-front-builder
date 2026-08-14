@@ -126,3 +126,22 @@ pub fn constructs_for_jsx_emit(resolved: ResolvedGfmConstructs) -> markdown::Con
         ..constructs_for_pipeline(resolved)
     }
 }
+
+/// Pick between the two builders above by emit path (zfb#2397).
+///
+/// The one place the target → builder mapping is written down. Both
+/// secondary parse sites call this rather than matching themselves, for
+/// the same reason [`ResolvedGfmConstructs`] exists rather than a bare
+/// `markdown::Constructs`: a mapping duplicated per call site is a
+/// mapping that can drift, silently, the next time a construct is
+/// threaded through.
+#[must_use]
+pub fn constructs_for_target(
+    resolved: ResolvedGfmConstructs,
+    target: crate::SecondaryParseTarget,
+) -> markdown::Constructs {
+    match target {
+        crate::SecondaryParseTarget::Html => constructs_for_pipeline(resolved),
+        crate::SecondaryParseTarget::Jsx => constructs_for_jsx_emit(resolved),
+    }
+}
