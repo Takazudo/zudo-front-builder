@@ -78,8 +78,9 @@ use std::sync::Arc;
 
 use markdown::mdast::Node as MdastNode;
 use zfb_md_ast::{
-    constructs_for_pipeline, unwrap_nested_links, BuildContext, CjkAutolinkBoundaryPlugin,
-    MdastVisitor, ReadOutcome, ReadRecorder, ResolvedGfmConstructs,
+    constructs_for_target, BuildContext, MdastVisitor, ReadOutcome, ReadRecorder,
+    ResolvedGfmConstructs, SecondaryParseNormalization, SecondaryParsePlacement,
+    SecondaryParseTarget,
 };
 
 use crate::TranscludeConfig;
@@ -114,18 +115,22 @@ pub struct TranscludePlugin {
     /// `markdown.gfm` config instead of silently parsing with every GFM
     /// construct off.
     ///
-    /// This is the HTML/collection-walker construct set
-    /// ([`constructs_for_pipeline`]) — math stays off, as it was before
-    /// #2390. The same plugin instance serves both `Pipeline::run` and
-    /// the JSX-emit path, so it cannot be path-aware, and enabling math
-    /// here would change HTML-path output (that path renders `Math` into
-    /// a real `<pre><code class="language-math …">` element, it does not
-    /// pass it through). Consequence, unchanged by #2390 and NOT
-    /// cosmetic: on the JSX-emit path LaTeX in an included file leaks
-    /// out as bare `{…}` expression containers that esbuild rejects,
-    /// falling the whole page back to `<pre data-zfb-content-fallback>`.
-    /// Tracked separately; see the #2390 changelog entry.
+    /// The math constructs on top of this set are chosen per-run from
+    /// [`TranscludePlugin::target`], not stored here — see that field.
     gfm: ResolvedGfmConstructs,
+    /// Which emit path the current pipeline run is feeding (zfb#2397).
+    ///
+    /// Set by [`MdastVisitor::set_secondary_parse_target`] at the top of
+    /// every `Pipeline` mdast dispatch loop, and handed to
+    /// [`constructs_for_target`] at the parse call: `Html` keeps math off
+    /// (byte-identical to before), `Jsx` turns it on. The same plugin
+    /// instance serves both paths, so this cannot be a construction-time
+    /// knob; `with_gfm`'s signature is deliberately unchanged.
+    ///
+    /// Defaults to `Html`, the conservative choice: a plugin driven
+    /// outside a `Pipeline` loop (tests, direct `visit_with_context`
+    /// callers) keeps exactly the pre-#2397 construct set.
+    target: SecondaryParseTarget,
     /// The project's `markdown.cjkFriendly` setting (zfb#1105).
     ///
     /// Stored raw rather than pre-ANDed with `gfm.autolink_literal`:
@@ -140,6 +145,16 @@ pub struct TranscludePlugin {
     /// spliced in later, so the included subtree is never reached by
     /// the pipeline's own copy of the pass.
     cjk_friendly: bool,
+    /// The project's `markdown.hardBreaks` setting (zfb#2398).
+    ///
+    /// Stored raw, un-ANDed with anything — unlike `cjk_friendly` it does
+    /// not depend on `gfm.autolink_literal`. The one gate it does carry is
+    /// the include site's PLACEMENT, applied per expansion rather than
+    /// here (zfb#2402): see [`SecondaryParsePlacement`]. Travels here for
+    /// the same structural reason as `cjk_friendly`: `HardBreaksPlugin`
+    /// sits at a fixed mdast-chain index in the pipeline's own chain and
+    /// never sees a transcluded subtree spliced in later.
+    hard_breaks: bool,
 }
 
 impl TranscludePlugin {
@@ -155,6 +170,8 @@ impl TranscludePlugin {
             recorder: None,
             gfm: ResolvedGfmConstructs::ALL_OFF,
             cjk_friendly: false,
+            hard_breaks: false,
+            target: SecondaryParseTarget::Html,
         }
     }
 
@@ -172,6 +189,20 @@ impl TranscludePlugin {
         self
     }
 
+    /// Apply `HardBreaksPlugin` to an included file's parsed subtree
+    /// when `hard_breaks` is `true` (zfb#2398), matching the project's
+    /// `markdown.hardBreaks` setting. Unlike `cjk_friendly`, this is
+    /// never gated on `gfm.autolink_literal` — the two features are
+    /// unrelated. It IS gated on the include site's placement: an
+    /// `:::include` nested inside a literal `<Note>…</Note>` skips the
+    /// pass on the HTML target, where a `Break` inside JSX is deleted
+    /// rather than rendered (zfb#2402, [`SecondaryParsePlacement`]).
+    #[must_use]
+    pub fn with_hard_breaks(mut self, hard_breaks: bool) -> Self {
+        self.hard_breaks = hard_breaks;
+        self
+    }
+
     /// Attach the read-recorder this plugin reports include reads
     /// through (zfb#944). The SAME `Arc` must also be set on the
     /// pipeline via `Pipeline::set_read_recorder` so the compile-cache
@@ -186,6 +217,10 @@ impl TranscludePlugin {
 impl MdastVisitor for TranscludePlugin {
     /// No-op when called without context — cannot resolve file paths.
     fn visit(&mut self, _node: &mut MdastNode) {}
+
+    fn set_secondary_parse_target(&mut self, target: SecondaryParseTarget) {
+        self.target = target;
+    }
 
     /// Context-aware path: resolves include directives using `ctx.source_path`
     /// and `ctx.project_root`.
@@ -219,8 +254,18 @@ impl MdastVisitor for TranscludePlugin {
             recorder: self.recorder.as_deref(),
             gfm: self.gfm,
             cjk_friendly: self.cjk_friendly,
+            hard_breaks: self.hard_breaks,
+            target: self.target,
         };
-        expand_includes_in_node(node, &source_dir, &env, &mut visited, 0, ctx);
+        expand_includes_in_node(
+            node,
+            &source_dir,
+            &env,
+            &mut visited,
+            0,
+            SecondaryParsePlacement::TopLevelSibling,
+            ctx,
+        );
     }
 }
 
@@ -240,35 +285,43 @@ struct ExpandEnv<'a> {
     /// fields on [`TranscludePlugin`].
     gfm: ResolvedGfmConstructs,
     cjk_friendly: bool,
+    /// The project's `hardBreaks` setting (zfb#2398) — see the matching
+    /// field on [`TranscludePlugin`].
+    hard_breaks: bool,
+    /// Which emit path this run feeds — decides whether the included
+    /// file parses with math constructs on. See the matching field on
+    /// [`TranscludePlugin`].
+    target: SecondaryParseTarget,
 }
 
-/// Apply the post-parse normalisations that [`ExpandEnv::gfm`] makes
-/// mandatory to a freshly parsed included subtree (zfb#2390).
+/// Apply the shared secondary-parse normalisation (zfb#2390, zfb#2402) to
+/// a freshly parsed included subtree.
 ///
-/// The pipeline runs both of these immediately after its own top-level
-/// `markdown::to_mdast`, ahead of the visitor chain. This site parses
-/// AFTER that point, so nothing else will ever normalise what it
-/// produces — every `to_mdast` call site owns its own output.
+/// The passes themselves, their order, and their gating live in
+/// [`SecondaryParseNormalization`] — shared with `zfb_content`'s
+/// `DirectiveRegistry::reparse_block`, the twin secondary parse site,
+/// which ran a verbatim copy of this sequence until zfb#2402.
 ///
-/// - `unwrap_nested_links` (zfb#2388) removes autolink literals that
-///   markdown-rs fires inside a link label, which would otherwise emit an
-///   `<a>` nested in an `<a>` — invalid HTML that fails `html-validate`'s
-///   `element-permitted-content`.
-/// - [`CjkAutolinkBoundaryPlugin`] (zfb#1105) stops a bare URL flush
-///   against CJK text from swallowing the trailing CJK run into the
-///   `href`.
-///
-/// Both are gated on `autolink_literal`, the construct that produces the
-/// defects they remove, so an included file parsed without it keeps
-/// byte-identical output.
-fn normalize_included_subtree(node: &mut MdastNode, env: &ExpandEnv<'_>) {
-    if !env.gfm.autolink_literal {
-        return;
-    }
-    unwrap_nested_links(node);
-    if env.cjk_friendly {
-        CjkAutolinkBoundaryPlugin::new().visit(node);
-    }
+/// `placement` is where this subtree will land in the host tree, which
+/// this function cannot see for itself: an include site is usually a
+/// top-level sibling, but [`expand_includes_in_node`] descends into
+/// `MdxJsxFlowElement` too, so an `:::include` written inside a literal
+/// `<Note>…</Note>` splices into a JSX body — where a `Break` is deleted
+/// rather than rendered on the HTML path. The expansion walk knows which
+/// container it descended through and threads the answer here.
+fn normalize_included_subtree(
+    node: &mut MdastNode,
+    env: &ExpandEnv<'_>,
+    placement: SecondaryParsePlacement,
+) {
+    SecondaryParseNormalization::new(
+        env.gfm,
+        env.cjk_friendly,
+        env.hard_breaks,
+        placement,
+        env.target,
+    )
+    .apply(node);
 }
 
 /// Recursively scan `node`'s children for `:::include` paragraphs and
@@ -276,22 +329,33 @@ fn normalize_included_subtree(node: &mut MdastNode, env: &ExpandEnv<'_>) {
 ///
 /// Dispatches to [`expand_includes_in_children`] on the appropriate child
 /// vec for each container node type. Non-container nodes are skipped.
+///
+/// `placement` is where the CURRENT child vec sits. Descending through
+/// the `MdxJsxFlowElement` arm switches it to
+/// [`SecondaryParsePlacement::InsideJsxElement`] for everything below,
+/// which is what stops [`HardBreaksPlugin`] from deleting an included
+/// file's newlines on the HTML path (zfb#2402). The `ListItem` /
+/// `Blockquote` arms inherit unchanged — both render `Break` correctly on
+/// both paths, so the gate is JSX-specific, not "anything nested".
 fn expand_includes_in_node(
     node: &mut MdastNode,
     source_dir: &Path,
     env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
+    placement: SecondaryParsePlacement,
     ctx: &mut BuildContext<'_>,
 ) {
-    let children = match node {
-        MdastNode::Root(r) => &mut r.children,
-        MdastNode::ListItem(li) => &mut li.children,
-        MdastNode::Blockquote(bq) => &mut bq.children,
-        MdastNode::MdxJsxFlowElement(j) => &mut j.children,
+    let (children, placement) = match node {
+        MdastNode::Root(r) => (&mut r.children, placement),
+        MdastNode::ListItem(li) => (&mut li.children, placement),
+        MdastNode::Blockquote(bq) => (&mut bq.children, placement),
+        MdastNode::MdxJsxFlowElement(j) => {
+            (&mut j.children, SecondaryParsePlacement::InsideJsxElement)
+        }
         _ => return,
     };
-    expand_includes_in_children(children, source_dir, env, visited, depth, ctx);
+    expand_includes_in_children(children, source_dir, env, visited, depth, placement, ctx);
 }
 
 /// Scan a `Vec<MdastNode>` (the children of a container) for `:::include`
@@ -301,21 +365,26 @@ fn expand_includes_in_node(
 /// blockquotes, list items, etc. are found.
 ///
 /// `depth` is the current nesting level; `env.max_depth` is the configured
-/// bound.
+/// bound. `placement` is where this child vec sits in the host tree — see
+/// [`expand_includes_in_node`].
 fn expand_includes_in_children(
     children: &mut Vec<MdastNode>,
     source_dir: &Path,
     env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
+    placement: SecondaryParsePlacement,
     ctx: &mut BuildContext<'_>,
 ) {
     let mut i = 0;
     while i < children.len() {
         match extract_include_attrs(&children[i]) {
             IncludeMatch::Ok(attrs) => {
-                // Found an `:::include` paragraph at `i`.
-                let replacement = resolve_and_expand(&attrs, source_dir, env, visited, depth, ctx);
+                // Found an `:::include` paragraph at `i`. Its replacement
+                // nodes take this vec's placement — they are spliced into
+                // exactly the slot the directive paragraph occupied.
+                let replacement =
+                    resolve_and_expand(&attrs, source_dir, env, visited, depth, placement, ctx);
 
                 // Remove the directive paragraph.
                 children.remove(i);
@@ -345,7 +414,15 @@ fn expand_includes_in_children(
             }
             IncludeMatch::NotInclude => {
                 // Not an include directive — recurse into container children.
-                expand_includes_in_node(&mut children[i], source_dir, env, visited, depth, ctx);
+                expand_includes_in_node(
+                    &mut children[i],
+                    source_dir,
+                    env,
+                    visited,
+                    depth,
+                    placement,
+                    ctx,
+                );
                 i += 1;
             }
         }
@@ -372,6 +449,7 @@ fn resolve_and_expand(
     env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
+    placement: SecondaryParsePlacement,
     ctx: &mut BuildContext<'_>,
 ) -> Vec<MdastNode> {
     let max_depth = env.max_depth;
@@ -528,8 +606,12 @@ fn resolve_and_expand(
     // (zfb#2390) — a bare `ParseOptions::mdx()` here inherits
     // `Constructs::default()`, where every `gfm_*` flag is false, so the
     // same markdown used to render differently inline vs transcluded.
+    //
+    // The math constructs on top of that follow the emit path (zfb#2397),
+    // matching what the top-level parse of each path uses: math off for
+    // HTML, on for JSX. See [`ExpandEnv::target`].
     let opts = markdown::ParseOptions {
-        constructs: constructs_for_pipeline(env.gfm),
+        constructs: constructs_for_target(env.gfm, env.target),
         ..markdown::ParseOptions::mdx()
     };
     let mut included_mdast = match markdown::to_mdast(&content, &opts) {
@@ -546,7 +628,7 @@ fn resolve_and_expand(
         }
     };
 
-    normalize_included_subtree(&mut included_mdast, env);
+    normalize_included_subtree(&mut included_mdast, env, placement);
 
     let MdastNode::Root(root) = included_mdast else {
         return Vec::new();
@@ -572,6 +654,7 @@ fn resolve_and_expand(
         env,
         visited,
         depth + 1,
+        placement,
         ctx,
     );
 

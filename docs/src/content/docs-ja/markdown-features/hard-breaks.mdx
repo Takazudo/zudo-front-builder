@@ -50,6 +50,10 @@ second paragraph
 
 このオプションが書き換えるのは、prose-like な Markdown node 内の soft line break だけです。フェンス付きコード、インラインコード、生 HTML、MDX JSX / expression content は分割しません。
 
+セカンダリパースサイトを経由するコンテンツ — `:::include` で取り込まれたファイルや、
+ディレクティブレジストリによって再パースされるディレクティブ本体 — も、この設定に
+従うようになりました（#2398）。
+
 ## 順序に関する注意
 
 `HardBreaksPlugin` は mdast フェーズで [CJK フレンドリーな強調](./cjk-friendly.mdx) の後に実行されます。これにより、soft line break が明示的な break node に分割される前に、CJK emphasis の再トークン化が intact な text node を検査できます。

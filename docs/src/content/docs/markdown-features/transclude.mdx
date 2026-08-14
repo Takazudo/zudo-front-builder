@@ -108,11 +108,15 @@ off, regardless of configuration, so the snippet above rendered as literal text
 while the identical markup in the page rendered as a table. If you have content
 that relied on that, turn the relevant `markdown.gfm.*` flag off.
 
-One divergence remains: math (`$$…$$`) is **not** enabled on the transclusion
-path. On the HTML path this means math in an included file renders differently
-from math written inline. On the MDX/JSX path it is more serious — the LaTeX
-leaks out as bare `{…}` expression containers, which the bundler rejects and
-falls the whole page back to its raw-content placeholder. Keep math out of
-included files until this is fixed.
+Math (`$$…$$` and `$…$`) follows the same rule as of zfb #2397: an included
+file is parsed with whatever the page around it is being compiled for. On the
+MDX/JSX path math parses, so a formula in an included file renders exactly as
+it would inline. On the HTML path math stays off — there, as at the top level,
+`$$…$$` is literal text.
+
+Before #2397 math was off on both paths. On the MDX/JSX path that was not
+cosmetic: the LaTeX leaked out as bare `{…}` expression containers, which the
+bundler rejects, falling the whole page back to its raw-content placeholder.
+Math in included files is now safe to use.
 
 See [GFM](./gfm.mdx) for the full construct list and its defaults.

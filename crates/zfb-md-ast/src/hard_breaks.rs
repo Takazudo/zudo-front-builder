@@ -20,7 +20,7 @@
 
 use markdown::mdast::{Break, Node as MdastNode, Text};
 
-use crate::pipeline::MdastVisitor;
+use crate::MdastVisitor;
 
 /// Visitor that splits `Text` nodes containing `\n` into `Text` / `Break`
 /// sequences so soft line breaks render as `<br>`.

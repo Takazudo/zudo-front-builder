@@ -18,7 +18,27 @@ Included files now inherit the project's resolved `markdown.gfm` configuration a
 
 The same hardcoded construct set was fixed at a second parse site — the body of a directive written **without** blank lines, and the page prose sitting between two such runs (`DirectiveRegistry::reparse_block`). In practice that one is **not** expected to change rendered output: the re-parse is only reached for content the main parse left as a single plain text run, and the main parse now shares the same constructs. It is fixed to keep the two parse sites in lockstep rather than to change behaviour.
 
-**Known remaining divergence:** math constructs stay off on both paths, unchanged by this fix. On the HTML path `$$…$$` in an included file renders differently from the same content written inline. On the MDX/JSX path the consequence is worse and worth stating plainly: LaTeX leaks out as bare `{…}` expression containers that esbuild rejects, falling the whole page back to `<pre data-zfb-content-fallback>`. Enabling math here would change HTML-path output (that path renders math into real `<pre><code class="language-math …">` elements), and one plugin instance serves both pipelines, so this needs its own fix rather than a flag flip.
+The divergence #2390 left open — math constructs staying off at both secondary parse sites — is closed by #2397 below.
+
+**Math in transcluded files now matches the surrounding page** (#2397):
+
+This finishes what #2390 started: content reached through a secondary parse site now renders the same as the equivalent content written inline, on **each** path separately.
+
+zfb parses markdown with a different construct set per path. The HTML serializer keeps math off, so `$$…$$` is literal text; the MDX/JSX path turns it on, because the emitter has dedicated arms for math nodes. Both secondary parse sites — transclusion, and the re-parse of a directive body written without blank lines — hardcoded the HTML set, so they diverged from the top level whenever a page was compiled to JSX.
+
+For MDX/JSX pages that was not a rendering nuance. A single `$$…$$` in an included file leaked LaTeX as bare `{…}` expression containers, esbuild rejected the module, and the bundler's defensive skip degraded the **entire page** to `<pre data-zfb-content-fallback>`. Math in included files is now safe.
+
+**HTML-path output is unchanged.** Math stays off there, exactly as before — turning it on would change rendered output for every existing project and would pull in markdown-rs's single-dollar behaviour, where a literal `$` in prose becomes math. The asymmetry being removed is between transcluded and inline content, not between the two paths.
+
+The directive re-parse site was brought into lockstep the same way. As with #2390's GFM change, it is **not** expected to alter rendered output: that re-parse is only reached for content the main parse left as a single plain text run, and math rich enough to render differently is tokenised by the main parse first.
+
+**CJK-friendly emphasis and hard breaks now apply inside transcluded files and directive bodies** (#2398):
+
+`CjkFriendlyPlugin` and `HardBreaksPlugin` are visitors in the pipeline's own mdast chain, so they never saw a subtree parsed later by `TranscludePlugin` or `DirectiveRegistry::reparse_block` — the same class of gap #2390 and #2397 fixed for GFM and math constructs. On a CJK site with `markdown.cjkFriendly` on (the default), CJK emphasis flanking was corrected in the page body but not inside `:::include`d snippets or collapsed directive bodies; with `markdown.hardBreaks` on, soft line breaks became `<br>` in the page but not in that same content.
+
+Both passes now run at both secondary parse sites, gated on the project's own `cjkFriendly` / `hardBreaks` settings rather than on any GFM construct. **This changes rendered output for existing sites** that transclude CJK-flanked emphasis markup, or newline-sensitive prose, and were relying on the secondary-parse gap to leave it untouched — set `cjkFriendly: false` / `hardBreaks: false` to keep the old output; a project that never enabled either is unaffected.
+
+**One deliberate asymmetry:** `HardBreaksPlugin` is gated by where the re-parsed content *lands*, not by which site produced it. Content that ends up among the children of an MDX JSX element — a collapsed directive body, prose between nested directive runs, or an `:::include` written inside a literal `<Note>…</Note>` — gets hard breaks on the JSX-emit path only. On the HTML path such an element renders through a lossy catch-all that stringifies `Break` nodes to an **empty string**, so applying the plugin there would silently delete the author's newlines instead of turning them into `<br>` — a regression, not parity. HTML-path output for that content is unchanged. Top-level transcluded content is unaffected by the gate and gets `<br>` on both paths. `CjkFriendlyPlugin` has no such asymmetry and applies on both paths at both sites.
 
 ### Build compatibility
 

@@ -1442,7 +1442,7 @@ impl MarkdownConfig {
 /// flags. Matching the conservative-default rule everywhere (and only
 /// here) is what keeps snapshot ↔ bundler hashes byte-identical — the
 /// content_bridge land mine in
-/// `crates/zfb-content/src/content_bridge.rs:118-153`.
+/// `zfb_content::content_bridge::build_snapshot_with_config`.
 #[must_use]
 pub fn resolve_gfm_constructs(markdown: Option<&MarkdownConfig>) -> ResolvedGfmConstructs {
     match markdown {

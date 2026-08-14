@@ -52,6 +52,9 @@ This option handles:
 - `**bold**` and `*italic*` adjacent to CJK characters.
 - GFM bare URL autolink boundaries adjacent to CJK characters, when
   `gfm.autolinkLiteral` is enabled.
+- Content reached through a secondary parse site — transcluded files
+  (`:::include`) and directive bodies re-parsed by the directive registry —
+  now follows this setting too (#2398).
 
 Literal `*` and `**` repair can span supported parsed-inline siblings while
 preserving those nodes intact. For example:

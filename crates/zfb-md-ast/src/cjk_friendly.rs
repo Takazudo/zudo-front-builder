@@ -32,15 +32,14 @@
 //!   controlled.
 //! - `MdxFlowExpression` / `MdxTextExpression` — `{...}` JS code.
 //!
-//! Place this plugin in [`Pipeline::with_defaults`] BEFORE any visitor
-//! that depends on emphasis being already tokenised (e.g. visitors that
-//! synthesize anchor labels from heading text and might miss children
-//! we have just inserted).
+//! Place this plugin in `Pipeline::with_defaults` (`zfb-content`) BEFORE
+//! any visitor that depends on emphasis being already tokenised (e.g.
+//! visitors that synthesize anchor labels from heading text and might
+//! miss children we have just inserted).
 //!
 //! [upstream]: https://www.npmjs.com/package/remark-cjk-friendly
 //! [markdown-cjk-friendly]: https://github.com/tats-u/markdown-cjk-friendly
 //! [spec]: https://github.com/tats-u/markdown-cjk-friendly/blob/main/specification.md
-//! [`Pipeline::with_defaults`]: crate::pipeline::Pipeline::with_defaults
 
 use std::ops::Range;
 
@@ -49,7 +48,17 @@ use markdown::{
     unist::{Point, Position},
 };
 
-use crate::pipeline::MdastVisitor;
+use crate::MdastVisitor;
+
+/// The canonical repro this module's doc comment walks through:
+/// `これは**重要。**テスト`, whose closing `**` plain CommonMark refuses to
+/// treat as a closing flanker.
+///
+/// Public because it is a fixture several crates' tests must agree on —
+/// it had four independent copies before zfb#2402, at which point a
+/// "typo fix" to any one of them would have silently left it testing
+/// something else.
+pub const FLANKED_EMPHASIS_REPRO: &str = "これは**重要。**テスト";
 
 /// Visitor that rewrites Text nodes containing CJK-flanked `*` / `**`
 /// runs into proper Emphasis/Strong mdast nodes.
@@ -665,10 +674,11 @@ fn wrap_sibling(
 
 // --- CJK character classification ---------------------------------
 
-// `is_cjk` itself lives in `zfb-md-ast` so the GFM autolink boundary pass
-// (`zfb_md_ast::cjk_autolink`) can reach it without depending on this
-// crate. Re-exported here to keep its original public path.
-pub use zfb_md_ast::cjk::is_cjk;
+// `is_cjk` lives in the sibling `cjk` module so the GFM autolink boundary
+// pass (`crate::cjk_autolink`) can reach it too. Re-exported here to keep
+// this module's original public path (`zfb_content::plugins::cjk_friendly::is_cjk`
+// pre-#2398, now `zfb_md_ast::cjk_friendly::is_cjk`).
+pub use crate::cjk::is_cjk;
 
 /// CommonMark Unicode punctuation, including symbol categories, generated from
 /// the punctuation table shipped by the pinned markdown-rs parser. Keeping the

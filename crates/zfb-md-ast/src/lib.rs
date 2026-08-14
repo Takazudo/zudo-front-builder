@@ -20,19 +20,27 @@ use markdown::mdast::Node as MdastNode;
 
 pub mod cjk;
 pub mod cjk_autolink;
+pub mod cjk_friendly;
 pub mod diagnostics;
 pub mod directives;
 pub mod features_config;
 pub mod gfm_constructs;
+pub mod hard_breaks;
 pub mod hast_text;
 pub mod heading_registry;
 pub mod mdx_jsx;
 pub mod nested_link;
 pub mod read_recorder;
+pub mod secondary_parse;
 
 pub use cjk_autolink::CjkAutolinkBoundaryPlugin;
-pub use gfm_constructs::{constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs};
+pub use cjk_friendly::CjkFriendlyPlugin;
+pub use gfm_constructs::{
+    constructs_for_jsx_emit, constructs_for_pipeline, constructs_for_target, ResolvedGfmConstructs,
+};
+pub use hard_breaks::HardBreaksPlugin;
 pub use nested_link::unwrap_nested_links;
+pub use secondary_parse::{SecondaryParseNormalization, SecondaryParsePlacement};
 
 pub use directives::{
     AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,
@@ -227,6 +235,33 @@ impl<'a> BuildContext<'a> {
     }
 }
 
+/// Which emit path the pipeline run currently under way is feeding.
+///
+/// Only meaningful to visitors that re-enter `markdown::to_mdast` from
+/// *inside* the mdast visitor chain (`TranscludePlugin`,
+/// `DirectiveRegistry::reparse_block`). Those secondary parse sites pick
+/// their own `markdown::Constructs`, and the correct set differs per
+/// path: the HTML serializer renders `Math` / `InlineMath` into real
+/// `<pre><code class="language-math …">` elements, so math must stay off
+/// there to keep output byte-identical, while the JSX emitter has
+/// dedicated arms for those nodes and needs math ON — without it LaTeX
+/// leaks out as bare `{…}` expression containers that esbuild rejects,
+/// falling the whole page back to `<pre data-zfb-content-fallback>`.
+///
+/// Delivered per-run via [`MdastVisitor::set_secondary_parse_target`]
+/// rather than at plugin construction: one plugin instance serves both
+/// paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondaryParseTarget {
+    /// `Pipeline::run` / `Pipeline::run_with_context` — the HTML
+    /// serializer and collection walker.
+    Html,
+    /// `Pipeline::apply_mdast_visitors` /
+    /// `Pipeline::apply_mdast_visitors_with_context` — the MDX → JSX
+    /// emit path.
+    Jsx,
+}
+
 /// Mdast visitor: mutates an mdast tree in place.
 ///
 /// Implementors typically call [`MdastNode::children_mut`] to recurse, or
@@ -235,6 +270,26 @@ impl<'a> BuildContext<'a> {
 pub trait MdastVisitor {
     /// Visit (and possibly mutate) `node`.
     fn visit(&mut self, node: &mut MdastNode);
+
+    /// Announce which emit path the imminent visit is feeding.
+    ///
+    /// Called by every `Pipeline` mdast dispatch loop on every visitor in
+    /// the registered mdast chain, immediately before visiting, with a
+    /// target hardcoded per loop — never caller-supplied. Visitors that
+    /// re-parse markdown override this to store the value and consult it
+    /// when choosing constructs; see [`SecondaryParseTarget`]. The
+    /// default is a no-op, so every other implementor is unaffected.
+    ///
+    /// `Pipeline`'s dedicated single-visitor slots (resolve-links, the
+    /// JSX-nested collector and mutators) are deliberately NOT announced
+    /// to — none of them re-enters the parser. A future plugin that does
+    /// must either join the mdast chain or have its slot announced too.
+    ///
+    /// Implementors must overwrite their stored target unconditionally
+    /// on each call — a pipeline instance is reused across documents and
+    /// across both paths, so a stale value from a previous run is the
+    /// failure mode to avoid.
+    fn set_secondary_parse_target(&mut self, _target: SecondaryParseTarget) {}
 
     /// Visit with optional build context (wave-6 seam).
     ///

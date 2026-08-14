@@ -50,7 +50,7 @@ use crate::syntect_highlight::Highlighter;
 // and `zfb::config`'s `pub use zfb_content::ResolvedGfmConstructs` are
 // unaffected.
 pub use zfb_md_ast::gfm_constructs::{
-    constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
+    constructs_for_jsx_emit, constructs_for_pipeline, constructs_for_target, ResolvedGfmConstructs,
 };
 
 /// Version prefix for the [`Pipeline::config_fingerprint`] descriptor.
@@ -290,7 +290,7 @@ fn sort_value_keys(value: &mut serde_json::Value) {
 // Re-exported here under their historical paths so existing consumers of
 // `zfb_content::pipeline::{HastNode, HastVisitor, ...}` continue to
 // resolve.
-pub use zfb_md_ast::{BuildContext, HastNode, HastVisitor, MdastVisitor};
+pub use zfb_md_ast::{BuildContext, HastNode, HastVisitor, MdastVisitor, SecondaryParseTarget};
 
 /// Pipeline error type.
 #[derive(Debug, thiserror::Error)]
@@ -332,6 +332,21 @@ pub struct Pipeline {
     /// Not a fingerprint input of its own: `cjk_friendly` is already
     /// covered by the descriptor.
     cjk_friendly: bool,
+    /// The project's `markdown.hardBreaks` setting, as supplied to the
+    /// constructor (zfb#2398).
+    ///
+    /// Mirrors [`Pipeline::cjk_friendly`] exactly: set unconditionally by
+    /// every full-config constructor, before any visitor wiring, so
+    /// `register_features_config_derived` can forward the project's raw
+    /// setting to the same two secondary parse sites (transclude and
+    /// `DirectiveRegistry::reparse_block`), which re-enter
+    /// `markdown::to_mdast` from inside the visitor chain and so are
+    /// never reached by the chain-index-N `HardBreaksPlugin` copy
+    /// `Pipeline` wires into its own chain (zfb#2398).
+    ///
+    /// Not a fingerprint input of its own: `hard_breaks` is already
+    /// covered by the descriptor.
+    hard_breaks: bool,
     /// When the `StripMdExtensionPlugin` is wired into the pipeline,
     /// this flag controls whether the plugin appends `/` to internal
     /// hrefs after stripping `.md`/`.mdx` (and to any extensionless
@@ -556,7 +571,7 @@ impl Pipeline {
     /// agrees on the same parser constructs — which is what keeps the
     /// snapshot ↔ bundler JSX `content_hash` byte-identical. The
     /// land-mine comment at
-    /// `crates/zfb-content/src/content_bridge.rs:118-153` calls this
+    /// `zfb_content::content_bridge::build_snapshot_with_config` calls this
     /// out explicitly.
     ///
     /// `gfm_label_start_footnote` is mirrored to the resolved
@@ -576,6 +591,7 @@ impl Pipeline {
             },
             gfm_constructs: resolved,
             cjk_friendly: false,
+            hard_breaks: false,
             add_trailing_slash: true,
             resolve_links: None,
             jsx_nested_link_collector: None,
@@ -1488,7 +1504,7 @@ impl Pipeline {
     /// this entry point so every site that materialises MDX content
     /// agrees on the same parser constructs — the snapshot ↔ bundler
     /// hash parity requirement called out in
-    /// `crates/zfb-content/src/content_bridge.rs:118-153`.
+    /// `zfb_content::content_bridge::build_snapshot_with_config`.
     #[must_use]
     pub fn with_defaults_and_theme_and_gfm(
         theme: Option<&str>,
@@ -1866,6 +1882,9 @@ impl Pipeline {
         // sites see the project's setting rather than a branch outcome
         // (zfb#2390 — see the field doc).
         p.cjk_friendly = cjk_friendly;
+        // Same rationale as `p.cjk_friendly` above, for `markdown.hardBreaks`
+        // (zfb#2398 — see the field doc).
+        p.hard_breaks = hard_breaks;
         // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
         // Config-derived wiring throughout this constructor is pushed via
         // the non-invalidating helpers (invalidation rule — see
@@ -2065,6 +2084,7 @@ impl Pipeline {
     /// map lookup sees the final mdast link nodes.
     pub fn apply_mdast_visitors(&mut self, node: &mut MdastNode) {
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Jsx);
             v.visit(node);
         }
         // Apply ResolveLinksPlugin last in the mdast phase (after the
@@ -2168,6 +2188,7 @@ impl Pipeline {
         self.normalize_nested_links(&mut mdast);
 
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Html);
             v.visit(&mut mdast);
         }
 
@@ -2210,6 +2231,7 @@ impl Pipeline {
         self.normalize_nested_links(&mut mdast);
 
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Html);
             v.visit_with_context(&mut mdast, ctx);
         }
         if let Some(p) = self.resolve_links.as_mut() {
@@ -2244,6 +2266,7 @@ impl Pipeline {
         ctx: &mut BuildContext<'_>,
     ) {
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Jsx);
             v.visit_with_context(node, ctx);
         }
         if let Some(p) = self.resolve_links.as_mut() {
@@ -2439,10 +2462,17 @@ fn register_features_config_derived(
     // parsed later cannot rely on them).
     let secondary_parse_gfm = p.gfm_constructs;
     let secondary_parse_cjk_friendly = p.cjk_friendly;
+    // `markdown.hardBreaks` (zfb#2398), threaded to the same two secondary
+    // parse sites for the same reason as `secondary_parse_cjk_friendly`
+    // above: `HardBreaksPlugin` is a visitor at a fixed chain index and
+    // never sees a subtree parsed later, from inside the chain, by
+    // transclude or the directive registry.
+    let secondary_parse_hard_breaks = p.hard_breaks;
 
     if let Some(cfg) = &features.transclude {
         let mut plugin = zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone())
-            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
+            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly)
+            .with_hard_breaks(secondary_parse_hard_breaks);
         if let Some(recorder) = read_recorder {
             plugin = plugin.with_recorder(Arc::clone(recorder));
         }
@@ -2495,8 +2525,9 @@ fn register_features_config_derived(
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_ast::into_directive_def;
 
-        let mut registry =
-            DirectiveRegistry::new().with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
+        let mut registry = DirectiveRegistry::new()
+            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly)
+            .with_hard_breaks(secondary_parse_hard_breaks);
         if let Some(dir_map) = &features.directives {
             for (name, spec) in dir_map {
                 registry.register(into_directive_def(name, spec));
@@ -2779,12 +2810,45 @@ pub fn mdast_to_hast_with_model(
             // points at a marker that was never emitted — so assert the
             // two walks covered the same set.
             //
-            // JSX path only. `JsxEmitStrategy::HtmlPath`'s
+            // Extended to the HTML path by issue #2396: previously this
+            // was JSX-path-only, because `JsxEmitStrategy::HtmlPath`'s
             // `reconstruct_jsx` is a documented lossy fallback that
             // stringifies an MDX JSX element's children instead of
-            // recursing, so a footnote inside a JSX body legitimately
-            // goes unclaimed there; asserting would fire on valid input.
-            if matches!(strategy, JsxEmitStrategy::JsxPath(_)) {
+            // recursing — a footnote inside a JSX body used to go
+            // unclaimed there, which would have fired this very assert
+            // on valid input. `reconstruct_jsx` now gets DEDICATED
+            // recursive handling for footnotes specifically
+            // (`subtree_contains_footnote` + `footnote_aware_stringify`),
+            // so the invariant holds on both paths — verified by this
+            // crate's full test suite (including a same-document,
+            // six-container-variant sweep nested inside JSX) with the
+            // gate temporarily removed, zero failures. `reconstruct_jsx`
+            // remains lossy in general for every OTHER construct
+            // (Image/Table/Code/Math nested in JSX, out of #2396's
+            // scope — see its "Out of scope" section); this assert only
+            // ever inspects footnote occurrence counts, so that general
+            // lossiness cannot trip it.
+            //
+            // The one theoretical gap — a `FootnoteReference` stranded
+            // inside a `LinkReference` (reference-style link) that
+            // `mdast_to_hast_inner`'s own catch-all drops whole — is
+            // NOT reachable through real parsing: markdown-rs's
+            // `[^label]` footnote-reference tokenizer takes priority
+            // over reference-link bracket matching, so
+            // `[text[^n]][ref]` never parses into a `LinkReference`
+            // containing a `FootnoteReference` (confirmed by inspecting
+            // the produced mdast directly — the sibling test below,
+            // `a_reference_in_a_dropped_subtree_trips_the_walk_parity_
+            // guard`, has to hand-build that exact shape because
+            // markdown-rs cannot produce it).
+            //
+            // The image-reference spelling `![text[^n]][ref]` is safe for
+            // a DIFFERENT reason worth stating, since a reader checking
+            // this invariant will reach for it next: markdown-rs folds
+            // the whole image label into the `ImageReference`'s `alt`
+            // string and emits no `FootnoteReference` node at all, so
+            // both walks agree at zero rather than agreeing on one.
+            {
                 debug_assert_eq!(
                     fc.consumed_total(),
                     model.total_references(),
@@ -3244,13 +3308,16 @@ fn emit_jsx_raw(
     if let JsxEmitStrategy::JsxPath(emit) = strategy {
         return emit(node, fc);
     }
-    // HTML-path strategy: preserve pre-#121 behaviour exactly.
+    // HTML-path strategy: preserve pre-#121 behaviour exactly, except for
+    // footnotes (issue #2396) — `reconstruct_jsx` needs the same `fc` the
+    // main walk uses so a `FootnoteReference`/`FootnoteDefinition` nested
+    // in a JSX body claims from (and is counted by) the one shared cursor.
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
-            reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children)
+            reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children, fc)
         }
         MdastNode::MdxJsxTextElement(j) => {
-            reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children)
+            reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children, fc)
         }
         MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
         MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
@@ -3379,10 +3446,19 @@ fn task_list_checkbox_hast(checked: bool) -> HastNode {
 /// would change long-standing HTML snapshot output (admonition bodies
 /// would gain `<p>` wrappers), which the issue brief explicitly
 /// forbids ("Pipeline::run behaviour unchanged").
+///
+/// Footnotes are the one exception (issue #2396): `fc` is threaded
+/// through so a `FootnoteReference`/`FootnoteDefinition` anywhere in the
+/// children (including nested inside another JSX element) is caught by
+/// the `subtree_contains_footnote` gate in the fallback arm below and
+/// rendered through `footnote_aware_stringify` instead of the plain
+/// `other.to_string()`, which silently drops the reference marker and
+/// inlines the definition body at the wrong spot.
 fn reconstruct_jsx(
     name: Option<&str>,
     attrs: &[AttributeContent],
     children: &[MdastNode],
+    fc: &FootnoteRenderCtx<'_>,
 ) -> String {
     let tag = name.unwrap_or("");
     let attrs_str = render_attrs(attrs);
@@ -3401,19 +3477,85 @@ fn reconstruct_jsx(
             MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
             MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
             MdastNode::MdxJsxFlowElement(j) => {
-                reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children)
+                reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children, fc)
             }
             MdastNode::MdxJsxTextElement(j) => {
-                reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children)
+                reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children, fc)
             }
             // Fallback: stringify the markdown text content. This loses
             // formatting but keeps content visible; downstream plugins
             // generally avoid putting markdown inside JSX bodies anyway.
+            // Gated on whether the subtree contains a footnote node
+            // (issue #2396) so every OTHER subtree keeps taking the
+            // exact `other.to_string()` path — byte-identity for
+            // non-footnote input is structural, not dependent on a
+            // hand-copied mirror of markdown-rs's own dispatch staying
+            // in sync across crate bumps.
+            other if subtree_contains_footnote(other) => footnote_aware_stringify(other, fc),
             other => other.to_string(),
         })
         .collect();
 
     format!("<{tag}{space}{attrs_str}>{inner}</{tag}>")
+}
+
+/// True if `node` or anything reachable through its `Node::children()`
+/// subtree is a `FootnoteReference` or `FootnoteDefinition`. Used only to
+/// decide, per child, whether `reconstruct_jsx`'s fallback arm needs the
+/// footnote-aware stringifier — see that arm's doc comment.
+fn subtree_contains_footnote(node: &MdastNode) -> bool {
+    if matches!(
+        node,
+        MdastNode::FootnoteReference(_) | MdastNode::FootnoteDefinition(_)
+    ) {
+        return true;
+    }
+    node.children()
+        .is_some_and(|children| children.iter().any(subtree_contains_footnote))
+}
+
+/// Recursive stringifier for a JSX-body subtree that
+/// `subtree_contains_footnote` flagged as containing a footnote node.
+///
+/// Mirrors markdown-rs's own `Node::to_string()` dispatch (recurse
+/// containers via `Node::children()`, literals return their `value`,
+/// voids return an empty string) so every non-footnote node in the
+/// subtree renders exactly as `to_string()` would — `Node::children()`
+/// returns `Some` for precisely the set of variants `to_string()` treats
+/// as containers, so generic recursion through it reproduces that
+/// dispatch without hand-copying its ~30 arms. The two footnote variants
+/// are special-cased instead of falling through to that mirror:
+///
+/// - `FootnoteReference` is one of `to_string()`'s "voids" (renders as
+///   `""`), which is exactly the "reference vanishes" bug this issue
+///   fixes. Here it claims its next occurrence from the shared cursor
+///   (mirroring the top-level `MdastNode::FootnoteReference` arm in
+///   `mdast_to_hast_inner`) and renders the same `<sup><a>` marker
+///   through the serializer — consistent with how `Html` nodes already
+///   splice raw markup verbatim into this lossy string.
+/// - `FootnoteDefinition` is one of `to_string()`'s "containers", which
+///   would inline its body at the definition point. It always
+///   stringifies to empty here, matching the top-level
+///   `MdastNode::FootnoteDefinition` arm in `mdast_to_hast_inner` — a
+///   definition's body renders exactly once, in the footnote section
+///   `mdast_to_hast_with` appends at document end.
+fn footnote_aware_stringify(node: &MdastNode, fc: &FootnoteRenderCtx<'_>) -> String {
+    match node {
+        MdastNode::FootnoteReference(r) => fc
+            .next_reference(&r.identifier)
+            .map(|(entry, footnote_ref)| {
+                crate::serializer::serialize(&footnote_reference_marker(entry, footnote_ref))
+            })
+            .unwrap_or_default(),
+        MdastNode::FootnoteDefinition(_) => String::new(),
+        other => match other.children() {
+            Some(children) => children
+                .iter()
+                .map(|c| footnote_aware_stringify(c, fc))
+                .collect(),
+            None => other.to_string(),
+        },
+    }
 }
 
 /// Render an MDX attribute list back to JSX-ish source text.
@@ -4080,6 +4222,54 @@ mod tests {
             .expect("parse ok")
     }
 
+    /// The `<Note>` JsxRaw string an HTML-path render collapses a
+    /// `<Note>` element into. Every footnote-nested-in-JSX test starts
+    /// from this, whether the element came from literal JSX syntax or
+    /// from a `:::note` directive.
+    fn note_jsx(h: &HastNode) -> String {
+        let mut raws = Vec::new();
+        collect_raw(h, &mut raws);
+        raws.into_iter()
+            .find(|r| r.starts_with("<Note>"))
+            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"))
+    }
+
+    /// The association triple every footnote-nested-in-JSX test asserts:
+    /// the reference marker renders inside the JSX body, the definition
+    /// body is NOT inlined there, and it renders exactly once in the
+    /// appended footnote section. Returns the definition element so a
+    /// caller can go on to assert about its subtree (e.g. the backref).
+    fn assert_footnote_renders_once<'a>(
+        h: &'a HastNode,
+        jsx: &str,
+        label: &str,
+        body: &str,
+    ) -> &'a HastNode {
+        assert!(
+            jsx.contains(&format!("<sup><a href=\"#user-content-fn-{label}\"")),
+            "expected the footnote reference marker for [^{label}] inside the \
+             JSX body: {jsx:?}"
+        );
+        assert!(
+            !jsx.contains(body),
+            "definition body must not be inlined inside the JSX body: {jsx:?}"
+        );
+
+        let mut elements = Vec::new();
+        collect_elements(h, &mut elements);
+        let definition_target = elements
+            .iter()
+            .find(|e| attr(e, "id") == Some(format!("user-content-fn-{label}").as_str()))
+            .copied()
+            .unwrap_or_else(|| panic!("expected the rendered definition element: {h:#?}"));
+        assert!(
+            flatten_text(definition_target).contains(body),
+            "definition body must render exactly once, in the footnote \
+             section: {definition_target:#?}"
+        );
+        definition_target
+    }
+
     // 1. A single reference and its definition are ASSOCIATED: the
     // reference renders a visible marker element that links (by some
     // id) to the definition's rendered location, and the definition's
@@ -4634,6 +4824,290 @@ mod tests {
 
         let strategy_fn = |_: &MdastNode, _: &FootnoteRenderCtx<'_>| -> String { String::new() };
         let _ = mdast_to_hast_with(&root, &JsxEmitStrategy::JsxPath(&strategy_fn));
+    }
+
+    // ── issue #2396: footnote-aware `reconstruct_jsx` on the HTML path ──
+    //
+    // Before this fix, `reconstruct_jsx`'s catch-all (`other =>
+    // other.to_string()`) silently dropped a `FootnoteReference` nested
+    // inside a JSX body (`to_string()` treats it as a "void", rendering
+    // `""`) while the footnote SECTION still appended a
+    // `data-footnote-backref` pointing at an anchor that was never
+    // emitted, and inlined a nested `FootnoteDefinition`'s body as plain
+    // text at the definition point AND rendered it again in the
+    // section. `subtree_contains_footnote` + `footnote_aware_stringify`
+    // fix both defects for exactly the subtrees that contain a footnote,
+    // leaving every other subtree on the byte-identical `to_string()`
+    // path.
+
+    /// Repro shape 1 (issue #2396's primary repro): a `note`-directive
+    /// body reaching `MdxJsxFlowElement` via `DirectiveRegistry::
+    /// reparse_block`, which produces a `FootnoteReference` nested
+    /// INSIDE a `Paragraph` — not as a direct JSX child. `reparse_block`
+    /// is only reachable when the collapsed single-Paragraph shape
+    /// (`single_text_collapsed`) sees the whole `:::note … :::` run as
+    /// ONE merged `Text` child, which requires the TOP-LEVEL parse to
+    /// never split it — so the pipeline's own top-level constructs run
+    /// with `footnote_definition` OFF (leaving `[^n]` / `[^n]: …` as
+    /// inert literal text there, since a real `FootnoteDefinition`
+    /// always interrupts the merged paragraph) while the registry's own
+    /// `with_gfm` turns `footnote_definition` ON for the re-parse of the
+    /// extracted body text. This is a deliberately constructed test
+    /// pipeline (not the production `secondary_parse_gfm` wiring, which
+    /// always mirrors the pipeline's own constructs) built to exercise
+    /// `reparse_block` directly and deterministically.
+    #[test]
+    fn directive_body_footnote_reference_and_definition_are_associated_on_html_path() {
+        use crate::plugins::directives::DirectiveRegistry;
+
+        let mut p = Pipeline::with_resolved_gfm_constructs(ResolvedGfmConstructs::ALL_OFF);
+        let mut registry = DirectiveRegistry::new().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        registry.register(zfb_md_ast::DirectiveDef {
+            name: "note".to_string(),
+            kind: zfb_md_ast::DirectiveKind::Container,
+            component_name: "Note".to_string(),
+            title_from_label: false,
+            attrs: Vec::new(),
+        });
+        p.add_mdast_visitor(registry.into_visitor());
+        let src = ":::note\nSome text.[^n]\n[^n]: the note body.\n:::\n";
+        let h = p.run(src).expect("parse ok");
+
+        let jsx = note_jsx(&h);
+
+        // The reference marker exists inside the JSX body with an href
+        // pointing at a real `#`-anchor (not dropped by the catch-all),
+        // and the definition renders exactly once in the appended
+        // section rather than inline.
+        let definition_target = assert_footnote_renders_once(&h, &jsx, "n", "the note body.");
+        assert!(
+            jsx.contains("data-footnote-ref"),
+            "reference marker must carry data-footnote-ref: {jsx:?}"
+        );
+        let marker_id = "user-content-fnref-n";
+        assert!(
+            jsx.contains(&format!("id=\"{marker_id}\"")),
+            "reference marker must carry its own occurrence id: {jsx:?}"
+        );
+
+        // The backref round-trips: the definition's own subtree carries
+        // a backreference link pointing at the marker's id.
+        let mut def_subtree = Vec::new();
+        collect_elements(definition_target, &mut def_subtree);
+        let expected_backref = format!("#{marker_id}");
+        assert!(
+            def_subtree
+                .iter()
+                .any(|e| attr(e, "href") == Some(expected_backref.as_str())),
+            "definition must contain a backreference link to {expected_backref}: {definition_target:#?}"
+        );
+    }
+
+    /// Repro shape 2: literal `<Note>` JSX syntax (blank-line-separated
+    /// body) produces `FootnoteReference`/`FootnoteDefinition` as DIRECT
+    /// children of the `MdxJsxFlowElement` — no `reparse_block` involved
+    /// at all, proving the fix is not shape-specific.
+    #[test]
+    fn literal_jsx_footnote_reference_and_definition_are_associated_on_html_path() {
+        let h = run_with_footnotes("<Note>\n\nSome text.[^n]\n\n[^n]: the note body.\n\n</Note>\n");
+
+        let jsx = note_jsx(&h);
+        assert_footnote_renders_once(&h, &jsx, "n", "the note body.");
+    }
+
+    /// Container sweep: a footnote reference nested one level deeper
+    /// inside every container variant that can appear in a JSX body
+    /// (Paragraph, Table cell, Blockquote, ListItem, Emphasis, and a
+    /// nested JSX element) still renders its marker instead of being
+    /// dropped. This is also the positive-coverage gate for extending
+    /// the walk-parity `debug_assert_eq!` to the HTML path — see the
+    /// `debug_assert_eq!` gate in `mdast_to_hast_with` for the decision
+    /// this test enables.
+    #[test]
+    fn container_sweep_footnote_reference_renders_in_every_variant_nested_in_jsx() {
+        let src = "<Note>\n\n\
+                   Paragraph text.[^p]\n\n\
+                   | Col |\n| --- |\n| Cell.[^t] |\n\n\
+                   > Quote.[^b]\n\n\
+                   - Item.[^l]\n\n\
+                   *Emph.[^e]*\n\n\
+                   <Inner>\n\nNested.[^j]\n\n</Inner>\n\n\
+                   </Note>\n\n\
+                   [^p]: P body.\n\n[^t]: T body.\n\n[^b]: B body.\n\n\
+                   [^l]: L body.\n\n[^e]: E body.\n\n[^j]: J body.\n";
+        let h = run_with_footnotes(src);
+
+        let jsx = note_jsx(&h);
+
+        for label in ["p", "t", "b", "l", "e", "j"] {
+            assert!(
+                jsx.contains(&format!("<sup><a href=\"#user-content-fn-{label}\"")),
+                "expected a footnote marker for [^{label}] nested inside JSX: {jsx:?}"
+            );
+        }
+
+        // The model and the emit walk agree: every container variant's
+        // reference was claimed, none stranded (the same invariant the
+        // `debug_assert_eq!` below checks, verified positively here
+        // against a REAL parse rather than a hand-built tree). All 6
+        // markers live inside the single JsxRaw string (`collect_elements`
+        // does not descend into it), so count occurrences directly.
+        assert_eq!(
+            jsx.matches("data-footnote-ref").count(),
+            6,
+            "expected exactly 6 reference markers, one per container variant: {jsx:?}"
+        );
+    }
+
+    /// Scope-guard negative control (acceptance criterion 4): a
+    /// reference-style link definition nested in JSX, with NO footnote
+    /// anywhere in the subtree, is still silently swallowed by the
+    /// catch-all — `subtree_contains_footnote` is `false` so the arm
+    /// takes the untouched `other.to_string()` path, true by
+    /// construction. Mirrors `catch_all_still_swallows_reference_style_
+    /// link_definitions` above, scoped to inside JSX.
+    #[test]
+    fn catch_all_still_swallows_reference_style_link_definitions_nested_in_jsx() {
+        let h = run("<Note>\n\nPara text.\n\n[label]: /elsewhere \"Title\"\n\n</Note>\n");
+
+        let jsx = note_jsx(&h);
+        assert!(
+            jsx.contains("Para text."),
+            "the surrounding paragraph must still render: {jsx:?}"
+        );
+        assert!(
+            !jsx.contains("/elsewhere") && !jsx.contains("Title"),
+            "the definition's url/title must not leak into rendered text \
+             (still silently dropped by the catch-all), got: {jsx:?}"
+        );
+    }
+
+    fn directive_body_footnote_and_cjk_pipeline() -> (Pipeline, String) {
+        let mut directives = std::collections::HashMap::new();
+        directives.insert(
+            "note".to_string(),
+            zfb_md_ast::DirectiveSpec::Short("Note".to_string()),
+        );
+        let features = zfb_md_ast::MarkdownFeaturesConfig {
+            directives: Some(directives),
+            ..Default::default()
+        };
+        let p = Pipeline::with_defaults_and_full_config(
+            None,
+            ResolvedGfmConstructs::ALL_ON,
+            None,
+            true,  // cjk_friendly
+            false, // hard_breaks — orthogonal to this test
+            Some(&features),
+        )
+        .expect("pipeline builds");
+        // The CJK fixture is `zfb_md_ast::cjk_friendly`'s own canonical
+        // repro rather than a fourth hand-copy of it (zfb#2402).
+        let repro = zfb_md_ast::cjk_friendly::FLANKED_EMPHASIS_REPRO;
+        let src = format!(":::note\n\n{repro}[^n]\n\n[^n]: the note body.\n\n:::\n");
+        (p, src)
+    }
+
+    /// Cross-fix interaction (zfb#2399): a directive body carrying BOTH a
+    /// footnote reference/definition (zfb#2396) and CJK-flanked emphasis
+    /// (zfb#2398), checked at the mdast level. Deliberately BLANK-LINE-
+    /// SEPARATED `:::note` syntax (not the collapsed, blank-line-less
+    /// form) — the main top-level parse produces an ordinary `Paragraph`
+    /// for the directive's body BEFORE `DirectiveRegistry` ever wraps it
+    /// into an `MdxJsxFlowElement`, so `CjkFriendlyPlugin` (chain index
+    /// 0, which deliberately does NOT descend into JSX bodies — see its
+    /// module doc, "JSX bodies are author-controlled") corrects the
+    /// emphasis while it is still a plain Paragraph child, exactly like
+    /// `transcluded_cjk_emphasis_flanking_is_corrected` in
+    /// `gfm_secondary_parse_sites.rs` does for the transclude site. This
+    /// also sidesteps the COLLAPSED-directive-body pre-emption zfb#2401
+    /// documents for the (unrelated) `reparse_block` call site — this
+    /// test never reaches `reparse_block` at all.
+    ///
+    /// Checked at the mdast level (not the rendered HTML string)
+    /// deliberately: `reconstruct_jsx`'s fallback arm — `footnote_aware_
+    /// stringify` when the subtree contains a footnote, `other.to_
+    /// string()` otherwise — has ALWAYS discarded Strong/Emphasis
+    /// wrapper syntax for a JSX-body child, footnote or no footnote (see
+    /// #2396's "Out of scope" section: "everything except footnotes must
+    /// stay exactly as lossy as today"). Asserting `<strong>` in the
+    /// serialized JsxRaw string would measure that pre-existing,
+    /// unrelated lossiness, not whether the two fixes compose — so this
+    /// replays `Pipeline::run`'s own mdast-phase half (parse +
+    /// `mdast_visitors` chain, no hast conversion) and inspects the tree
+    /// directly.
+    #[test]
+    fn directive_body_footnote_and_cjk_emphasis_compose_at_the_mdast_level() {
+        let (p, src) = directive_body_footnote_and_cjk_pipeline();
+        let mut p = p;
+        let mut mdast = markdown::to_mdast(&src, &p.parse_options).expect("parse ok");
+        for v in &mut p.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Html);
+            v.visit(&mut mdast);
+        }
+
+        fn find_note(node: &MdastNode) -> Option<&markdown::mdast::MdxJsxFlowElement> {
+            if let MdastNode::MdxJsxFlowElement(j) = node {
+                if j.name.as_deref() == Some("Note") {
+                    return Some(j);
+                }
+            }
+            node.children()?.iter().find_map(find_note)
+        }
+        let note = find_note(&mdast)
+            .unwrap_or_else(|| panic!("expected a <Note> MdxJsxFlowElement: {mdast:#?}"));
+
+        fn has_corrected_strong(nodes: &[MdastNode]) -> bool {
+            nodes.iter().any(|n| match n {
+                MdastNode::Strong(s) => s
+                    .children
+                    .iter()
+                    .any(|c| matches!(c, MdastNode::Text(t) if t.value == "重要。")),
+                _ => n
+                    .children()
+                    .is_some_and(|children| has_corrected_strong(children)),
+            })
+        }
+        assert!(
+            has_corrected_strong(&note.children),
+            "CJK emphasis must be corrected into a real Strong node inside \
+             the directive body, alongside a footnote: {:#?}",
+            note.children
+        );
+
+        fn has_footnote_ref(nodes: &[MdastNode]) -> bool {
+            nodes.iter().any(|n| match n {
+                MdastNode::FootnoteReference(r) if r.identifier == "n" => true,
+                _ => n
+                    .children()
+                    .is_some_and(|children| has_footnote_ref(children)),
+            })
+        }
+        assert!(
+            has_footnote_ref(&note.children),
+            "expected a FootnoteReference(\"n\") inside the directive body \
+             alongside the corrected CJK emphasis: {:#?}",
+            note.children
+        );
+    }
+
+    /// The HTML-rendering half of the same cross-fix interaction: the
+    /// footnote marker actually renders and the definition renders
+    /// exactly once, and the walk-parity `debug_assert_eq!` in
+    /// `mdast_to_hast_with` does not fire for a subtree that also
+    /// carries CJK-corrected emphasis — this test running to completion
+    /// without panicking (a debug build) IS that half of the acceptance
+    /// criterion.
+    #[test]
+    fn directive_body_footnote_and_cjk_emphasis_render_on_the_html_path() {
+        let (mut p, src) = directive_body_footnote_and_cjk_pipeline();
+        let h = p.run(&src).expect("parse ok");
+
+        // The whole point of THIS test is that the association triple
+        // still holds for a JSX body that also carries CJK-corrected
+        // emphasis — same assertions, different subject.
+        let jsx = note_jsx(&h);
+        assert_footnote_renders_once(&h, &jsx, "n", "the note body.");
     }
 
     // ── zfb#2247: shared mdast-phase wiring for the JSX-nested mutation

@@ -55,9 +55,11 @@ use markdown::mdast::{
     Node as MdastNode, Text,
 };
 
-use crate::pipeline::{constructs_for_pipeline, BuildContext, MdastVisitor, ResolvedGfmConstructs};
-use crate::plugins::{unwrap_nested_links, CjkAutolinkBoundaryPlugin};
+use crate::pipeline::{
+    constructs_for_target, BuildContext, MdastVisitor, ResolvedGfmConstructs, SecondaryParseTarget,
+};
 use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
+use zfb_md_ast::{SecondaryParseNormalization, SecondaryParsePlacement};
 
 // Directive definition types moved to `zfb-md-ast` so `zfb-md-extras`
 // (which cannot depend on `zfb-content`) can produce `Vec<DirectiveDef>`
@@ -105,14 +107,66 @@ pub struct DirectiveRegistry {
     /// `transform_block_container` instead. Threading the constructs
     /// here removes a latent inconsistency and keeps the parse sites in
     /// lockstep; it is not the surface #2390's changelog entry warns
-    /// about (that is transclude). Math stays off, same as the
-    /// transclude site.
+    /// about (that is transclude). The math constructs on top of this
+    /// set follow [`DirectiveRegistry::target`].
     gfm: ResolvedGfmConstructs,
     /// The project's `markdown.cjkFriendly` setting (zfb#1105), ANDed
     /// with `gfm.autolink_literal` at the single point that consumes it
     /// so the inconsistent combination is unrepresentable — see the
     /// matching field on `zfb_md_extras::transclude::TranscludePlugin`.
     cjk_friendly: bool,
+    /// The project's `markdown.hardBreaks` setting (zfb#2398), passed raw
+    /// — unlike `cjk_friendly` it is never ANDed with `gfm.autolink_literal`
+    /// (the two features are unrelated). [`reparse_block`]'s callers each
+    /// declare their own downstream [`SecondaryParsePlacement`], which
+    /// decides whether `HardBreaksPlugin` is safe to apply at the current
+    /// [`DirectiveRegistry::target`] — see [`DirectiveRegistry::flush_prose`]
+    /// and [`DirectiveRegistry::build_collapsed_body`].
+    hard_breaks: bool,
+    /// Which emit path the current pipeline run is feeding (zfb#2397).
+    ///
+    /// Overwritten unconditionally by
+    /// [`MdastVisitor::set_secondary_parse_target`] at the top of every
+    /// `Pipeline` mdast dispatch loop; never read as carry-over from a
+    /// previous run. [`reparse_block`] turns it into the math half of
+    /// its construct set — off for `Html` (byte-identical to before), on
+    /// for `Jsx`, matching what each path's own top-level parse uses.
+    ///
+    /// As with the `gfm` field above, this rarely changes end-to-end
+    /// output, and for the same reason: on the JSX path the main parse
+    /// already has math on, so it tokenises the math into `InlineMath` /
+    /// `Math` nodes, the paragraph gains multiple inline children, and
+    /// `single_text_collapsed` declines — routing to
+    /// `transform_block_container` and never reaching [`reparse_block`].
+    /// Threading it keeps the two parse sites in lockstep; the surface
+    /// #2397 actually fixes is transclude.
+    ///
+    /// Defaults to `Html`, so a registry driven outside a `Pipeline`
+    /// loop keeps exactly the pre-#2397 construct set. Also combined with
+    /// each call site's [`SecondaryParsePlacement`] (zfb#2398) to decide
+    /// whether `HardBreaksPlugin` may run there — see `hard_breaks` above.
+    target: SecondaryParseTarget,
+}
+
+/// The knobs [`reparse_block`] needs, bundled into one argument so this
+/// secondary parse site can grow parser settings without growing a
+/// positional parameter list.
+///
+/// `zfb_md_extras::transclude::ExpandEnv` — the twin at the other
+/// secondary parse site — carries these same four knobs, but as loose
+/// fields alongside its recursion state (`project_root`, `recorder`,
+/// `max_depth`), so it is not a knobs bundle in the way this struct is.
+/// What the two sites genuinely share is the normalisation those knobs
+/// drive: [`SecondaryParseNormalization`].
+#[derive(Debug, Clone, Copy)]
+struct SecondaryParseCtx {
+    gfm: ResolvedGfmConstructs,
+    cjk_friendly: bool,
+    /// The registry's `hard_breaks` setting — [`reparse_block`] ANDs this
+    /// with the caller-supplied [`SecondaryParsePlacement`] rather than
+    /// applying it unconditionally (zfb#2398).
+    hard_breaks: bool,
+    target: SecondaryParseTarget,
 }
 
 impl Default for DirectiveRegistry {
@@ -128,6 +182,8 @@ impl Default for DirectiveRegistry {
             has_text_dirs: false,
             gfm: ResolvedGfmConstructs::ALL_OFF,
             cjk_friendly: false,
+            hard_breaks: false,
+            target: SecondaryParseTarget::Html,
         }
     }
 }
@@ -150,6 +206,18 @@ impl DirectiveRegistry {
     pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Self {
         self.gfm = gfm;
         self.cjk_friendly = cjk_friendly;
+        self
+    }
+
+    /// Apply `HardBreaksPlugin` at [`reparse_block`]'s call sites when
+    /// `hard_breaks` is `true` (zfb#2398), matching the project's
+    /// `markdown.hardBreaks` setting. Passed raw, un-ANDed with anything
+    /// here — each call site declares its own downstream
+    /// [`SecondaryParsePlacement`], which decides whether the pass is safe
+    /// there (see [`Self::flush_prose`] / [`Self::build_collapsed_body`]).
+    #[must_use]
+    pub fn with_hard_breaks(mut self, hard_breaks: bool) -> Self {
+        self.hard_breaks = hard_breaks;
         self
     }
 
@@ -191,6 +259,15 @@ impl DirectiveRegistry {
     pub fn get(&self, name: &str) -> Option<&DirectiveDef> {
         self.defs.get(name)
     }
+
+    fn secondary_parse_ctx(&self) -> SecondaryParseCtx {
+        SecondaryParseCtx {
+            gfm: self.gfm,
+            cjk_friendly: self.cjk_friendly,
+            hard_breaks: self.hard_breaks,
+            target: self.target,
+        }
+    }
 }
 
 impl MdastVisitor for DirectiveRegistry {
@@ -201,6 +278,10 @@ impl MdastVisitor for DirectiveRegistry {
                 self.visit(c);
             }
         }
+    }
+
+    fn set_secondary_parse_target(&mut self, target: SecondaryParseTarget) {
+        self.target = target;
     }
 
     /// Context-armed pipelines (real builds) surface directive
@@ -262,9 +343,14 @@ impl DirectiveRegistry {
             // check so a `:::::note` (5-colon) outer opener is handled too.
             if let Some((text_value, line_no, base_col)) = single_text_collapsed(&children[i]) {
                 if container_opener_colons(first_line(&text_value).trim_end()).is_some() {
-                    if let Some(replacement) =
-                        self.transform_collapsed_run(&text_value, Some((line_no, base_col)))
-                    {
+                    if let Some(replacement) = self.transform_collapsed_run(
+                        &text_value,
+                        Some((line_no, base_col)),
+                        // This paragraph IS a top-level sibling in
+                        // `children`, and the replacement is spliced into
+                        // its slot — so is any prose flushed from it.
+                        SecondaryParsePlacement::TopLevelSibling,
+                    ) {
                         // `transform_collapsed_run` owns the paragraph: it has
                         // transformed every recognised run and warned every
                         // unknown exactly once. Splice in its result and skip
@@ -535,10 +621,20 @@ impl DirectiveRegistry {
     /// `first_pos` carries the `(line, column)` source position of the
     /// paragraph's opener for diagnostics, or `None` when unknown (recursive
     /// body re-segmentation has no reliable per-line position).
+    ///
+    /// `placement` is where this call's returned nodes will land, which
+    /// the two callers answer differently and this method cannot work out
+    /// for itself: `transform_children` splices the result in as top-level
+    /// siblings, while [`DirectiveRegistry::build_collapsed_body`] hands
+    /// it to `build_flow_jsx` as the CHILDREN of an `MdxJsxFlowElement`.
+    /// It is forwarded to [`DirectiveRegistry::flush_prose`] for the prose
+    /// between recognised runs, which lands in whichever of those two
+    /// slots its caller occupies (zfb#2402).
     fn transform_collapsed_run(
         &mut self,
         value: &str,
         first_pos: Option<(usize, usize)>,
+        placement: SecondaryParsePlacement,
     ) -> Option<Vec<MdastNode>> {
         let lines: Vec<&str> = value.split('\n').collect();
         let mut out: Vec<MdastNode> = Vec::new();
@@ -561,7 +657,7 @@ impl DirectiveRegistry {
                         if let Some(def) = self.defs.get(&parsed.name).cloned() {
                             if def.kind == DirectiveKind::Container {
                                 // Flush any pending prose before this run.
-                                self.flush_prose(&lines, prose_start, i, &mut out);
+                                self.flush_prose(&lines, prose_start, i, placement, &mut out);
                                 let (line_no, col_no) = pos_for(i, first_pos);
                                 let validated_opt =
                                     self.run_validation(&def, &parsed, line_no, col_no);
@@ -617,7 +713,7 @@ impl DirectiveRegistry {
             return None;
         }
         // Flush trailing prose after the last recognised run.
-        self.flush_prose(&lines, prose_start, lines.len(), &mut out);
+        self.flush_prose(&lines, prose_start, lines.len(), placement, &mut out);
         Some(out)
     }
 
@@ -626,7 +722,25 @@ impl DirectiveRegistry {
     /// nothing. Used to emit prose that sits between collapsed directive runs
     /// (or unmatched/unknown fence lines) verbatim, including literal `:::`
     /// markers that did not form a recognised directive.
-    fn flush_prose(&self, lines: &[&str], start: usize, end: usize, out: &mut Vec<MdastNode>) {
+    ///
+    /// `placement` comes from the caller
+    /// ([`DirectiveRegistry::transform_collapsed_run`]) because this
+    /// method's output lands wherever its caller's does, and that differs
+    /// per call chain (zfb#2402): prose between two TOP-LEVEL collapsed
+    /// runs splices in as an ordinary sibling, where a `Break` renders as
+    /// a real `<br>` on both paths; prose between two runs NESTED in a
+    /// collapsed container's body becomes a child of the outer
+    /// `MdxJsxFlowElement`, where the HTML path deletes it. The gate is
+    /// the same one [`DirectiveRegistry::build_collapsed_body`] applies —
+    /// see [`SecondaryParsePlacement`].
+    fn flush_prose(
+        &self,
+        lines: &[&str],
+        start: usize,
+        end: usize,
+        placement: SecondaryParsePlacement,
+        out: &mut Vec<MdastNode>,
+    ) {
         if start >= end {
             return;
         }
@@ -634,7 +748,7 @@ impl DirectiveRegistry {
         if text.trim().is_empty() {
             return;
         }
-        out.extend(reparse_block(&text, self.gfm, self.cjk_friendly));
+        out.extend(reparse_block(&text, self.secondary_parse_ctx(), placement));
     }
 
     /// Build the JSX children of a collapsed container from its raw body
@@ -656,12 +770,24 @@ impl DirectiveRegistry {
         if body_text.trim().is_empty() {
             return Vec::new();
         }
+        // Everything this method produces — whether the recursion's JSX
+        // runs and inter-run prose, or the plain-markdown fallback below —
+        // becomes the CHILDREN of the `MdxJsxFlowElement` the caller
+        // builds with `build_flow_jsx`. On the HTML path that element is
+        // rendered by a lossy `reconstruct_jsx` catch-all that stringifies
+        // `Break` to an EMPTY STRING, so `HardBreaksPlugin` must stay off
+        // there or it DELETES newlines from directive bodies rather than
+        // turning them into `<br>`; the JSX path has a real emit arm for
+        // `Break`, and is the only target where this is a genuine parity
+        // fix (zfb#2398, extended to the recursion's own prose by
+        // zfb#2402).
+        let placement = SecondaryParsePlacement::InsideJsxElement;
         // Recurse: a nested `:::tip … :::` inside the body is itself a
         // collapsed run. `None` means "no directive in the body" — emit the
         // body as plain markdown blocks.
-        match self.transform_collapsed_run(&body_text, None) {
+        match self.transform_collapsed_run(&body_text, None, placement) {
             Some(nodes) => nodes,
-            None => reparse_block(&body_text, self.gfm, self.cjk_friendly),
+            None => reparse_block(&body_text, self.secondary_parse_ctx(), placement),
         }
     }
 
@@ -1608,14 +1734,37 @@ fn find_collapsed_closer(lines: &[&str], from: usize, open_colons: usize) -> Opt
 /// as literal text while the identical markup at top level rendered
 /// normally.
 ///
+/// The math constructs on top of that follow the emit path (zfb#2397),
+/// matching what the top-level parse of each path uses: math off for
+/// HTML, on for JSX. See [`SecondaryParseCtx::target`].
+///
 /// The pipeline normalises its own top-level parse ahead of the visitor
 /// chain; this site parses from *within* that chain, so it owns the same
-/// normalisation for what it produces. See
-/// `zfb_md_extras::transclude::normalize_included_subtree` for the twin
-/// at the other secondary parse site.
-fn reparse_block(text: &str, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Vec<MdastNode> {
+/// normalisation for what it produces. The passes, their order, and their
+/// gating live in [`SecondaryParseNormalization`], shared with
+/// `zfb_md_extras::transclude::normalize_included_subtree`, the twin at
+/// the other secondary parse site (zfb#2402).
+///
+/// `placement` (zfb#2398) is the caller's answer to a question this
+/// function cannot see: where the nodes it returns will land. Only
+/// `HardBreaksPlugin` cares — see [`SecondaryParsePlacement`] — and
+/// `reparse_block` never inspects `ctx.target` for that purpose itself.
+/// See `DirectiveRegistry::flush_prose` /
+/// `DirectiveRegistry::build_collapsed_body` for what each caller passes
+/// and why.
+fn reparse_block(
+    text: &str,
+    ctx: SecondaryParseCtx,
+    placement: SecondaryParsePlacement,
+) -> Vec<MdastNode> {
+    let SecondaryParseCtx {
+        gfm,
+        cjk_friendly,
+        hard_breaks,
+        target,
+    } = ctx;
     let opts = markdown::ParseOptions {
-        constructs: constructs_for_pipeline(gfm),
+        constructs: constructs_for_target(gfm, target),
         ..markdown::ParseOptions::mdx()
     };
     let fallback = || {
@@ -1630,12 +1779,8 @@ fn reparse_block(text: &str, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> 
     let Ok(mut root) = markdown::to_mdast(text, &opts) else {
         return fallback();
     };
-    if gfm.autolink_literal {
-        unwrap_nested_links(&mut root);
-        if cjk_friendly {
-            CjkAutolinkBoundaryPlugin::new().visit(&mut root);
-        }
-    }
+    SecondaryParseNormalization::new(gfm, cjk_friendly, hard_breaks, placement, target)
+        .apply(&mut root);
     match root {
         MdastNode::Root(root) => root.children,
         _ => fallback(),
@@ -3913,6 +4058,17 @@ padded body
         any_node(nodes, &|n| matches!(n, MdastNode::Link(l) if l.url == url))
     }
 
+    fn has_break(nodes: &[MdastNode]) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::Break(_)))
+    }
+
+    fn has_strong_wrapping(nodes: &[MdastNode], text: &str) -> bool {
+        any_node(
+            nodes,
+            &|n| matches!(n, MdastNode::Strong(s) if s.children.iter().any(|c| matches!(c, MdastNode::Text(t) if t.value == text))),
+        )
+    }
+
     /// A collapsed `:::note … :::` run carrying every GFM construct, in the
     /// single-multi-line-`Text` shape the main parse produces for it.
     const COLLAPSED_GFM_BODY: &str = ":::note\n\
@@ -4057,6 +4213,314 @@ padded body
                 matches!(n, MdastNode::Link(l) if l.url.contains('を'))
             }),
             "trailing CJK was swallowed into the href: {out:#?}"
+        );
+    }
+
+    // ── CJK-friendly emphasis + hard breaks at this parse site (zfb#2398) ──
+
+    /// A CJK-flanked strong marker `CjkFriendlyPlugin` corrects — see
+    /// `zfb_md_ast::cjk_friendly`'s module docs for why plain CommonMark
+    /// leaves this as literal `*` text. Shared with that module's other
+    /// test sites rather than re-spelled here (zfb#2402).
+    const CJK_EMPHASIS_BODY: &str = zfb_md_ast::cjk_friendly::FLANKED_EMPHASIS_REPRO;
+
+    /// zfb#2398 at this parse site: `CjkFriendlyPlugin` applies to a
+    /// collapsed directive body on the default (Html) target — decoupled
+    /// from `target`, unlike `HardBreaksPlugin` below.
+    #[test]
+    fn collapsed_directive_body_corrects_cjk_emphasis_flanking() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, true);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(&format!(":::note\n{CJK_EMPHASIS_BODY}\n:::"))],
+        );
+
+        assert!(
+            has_strong_wrapping(&out, "重要。"),
+            "CJK emphasis flanking must be corrected in a collapsed directive body: {out:#?}"
+        );
+    }
+
+    /// Same fixture on the Jsx target: `CjkFriendlyPlugin` is not gated on
+    /// `target`, so it must correct there too.
+    #[test]
+    fn collapsed_directive_body_corrects_cjk_emphasis_flanking_on_the_jsx_target() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, true);
+        r.set_secondary_parse_target(SecondaryParseTarget::Jsx);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(&format!(":::note\n{CJK_EMPHASIS_BODY}\n:::"))],
+        );
+
+        assert!(
+            has_strong_wrapping(&out, "重要。"),
+            "CJK emphasis flanking must be corrected on the Jsx target too: {out:#?}"
+        );
+    }
+
+    /// `cjkFriendly: false` leaves the collapsed body literal — no
+    /// regression from the #2398 wiring.
+    #[test]
+    fn collapsed_directive_body_keeps_cjk_emphasis_literal_when_off() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(&format!(":::note\n{CJK_EMPHASIS_BODY}\n:::"))],
+        );
+
+        assert!(
+            !has_strong_wrapping(&out, "重要。"),
+            "CJK emphasis must stay literal when cjkFriendly is off: {out:#?}"
+        );
+    }
+
+    /// zfb#2398, the Jsx-only gate: `HardBreaksPlugin` applies at this call
+    /// site only when the pipeline run is feeding the JSX-emit path — a
+    /// collapsed directive body re-parses INTO the JSX children of the
+    /// `MdxJsxFlowElement` the directive builds, and only the JSX emitter
+    /// has a real arm for `Break`.
+    #[test]
+    fn collapsed_directive_body_inserts_break_on_the_jsx_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        r.set_secondary_parse_target(SecondaryParseTarget::Jsx);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(":::note\nfirst line\nsecond line\n:::")],
+        );
+
+        assert!(
+            has_break(&out),
+            "HardBreaksPlugin must apply on the Jsx target: {out:#?}"
+        );
+    }
+
+    /// The Html-target counterpart of the test above: `HardBreaksPlugin`
+    /// must NOT run. On the HTML path this body lands inside an
+    /// `MdxJsxFlowElement` that `reconstruct_jsx` renders through a lossy
+    /// catch-all which stringifies `Break` to an EMPTY STRING — applying
+    /// the plugin here would delete newlines from directive bodies rather
+    /// than turn them into `<br>` (a regression, not parity).
+    ///
+    /// This mdast-level test (driving the registry directly) is the
+    /// meaningful, revert-sensitive proof of the gate — an HTML-level
+    /// end-to-end assertion through the full `Pipeline` cannot exercise
+    /// this call site at all when `hardBreaks` is on: the pipeline's own
+    /// top-level `HardBreaksPlugin` (wired earlier in the mdast chain,
+    /// pre-dating zfb#2398) already splits a collapsed directive's single
+    /// multi-line `Text` child before `DirectiveRegistry` ever runs,
+    /// which routes the directive through `transform_block_container`
+    /// instead and never reaches `reparse_block`. See the explanatory
+    /// comment in `gfm_secondary_parse_sites.rs` where the HTML-level
+    /// test would otherwise have gone, for the full argument.
+    #[test]
+    fn collapsed_directive_body_does_not_insert_break_on_the_html_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        // Default target is Html — no explicit set needed.
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(":::note\nfirst line\nsecond line\n:::")],
+        );
+
+        assert!(
+            !has_break(&out),
+            "HardBreaksPlugin must NOT apply on the Html target (Jsx-only gate): {out:#?}"
+        );
+    }
+
+    /// `hardBreaks: false` inserts no `Break` on either target — no
+    /// regression from the #2398 wiring.
+    #[test]
+    fn collapsed_directive_body_inserts_no_break_when_hard_breaks_is_off() {
+        for target in [SecondaryParseTarget::Html, SecondaryParseTarget::Jsx] {
+            let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+            r.set_secondary_parse_target(target);
+            let out = run_with_registry(
+                &mut r,
+                vec![text_para(":::note\nfirst line\nsecond line\n:::")],
+            );
+
+            assert!(
+                !has_break(&out),
+                "hardBreaks off must insert no Break on {target:?}: {out:#?}"
+            );
+        }
+    }
+
+    /// `flush_prose` applies `HardBreaksPlugin` on BOTH targets — inter-run
+    /// prose splices in as top-level siblings, so `Break` renders as a real
+    /// `<br>` on the HTML path too (unlike the directive-body site above).
+    #[test]
+    fn inter_run_prose_inserts_break_on_both_targets() {
+        for target in [SecondaryParseTarget::Html, SecondaryParseTarget::Jsx] {
+            let mut r = registry_with_admonitions()
+                .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+                .with_hard_breaks(true);
+            r.set_secondary_parse_target(target);
+            let out = run_with_registry(
+                &mut r,
+                vec![text_para(
+                    ":::note\nfirst.\n:::\n\
+                     prose line one\n\
+                     prose line two\n\
+                     :::note\nsecond.\n:::",
+                )],
+            );
+
+            assert!(
+                has_break(&out),
+                "inter-run prose must insert Break on {target:?}: {out:#?}"
+            );
+        }
+    }
+
+    /// A collapsed `:::note` whose body holds prose ABOVE a nested
+    /// `:::tip` run — the shape that drives `build_collapsed_body` →
+    /// `transform_collapsed_run` → `flush_prose`, where the flushed prose
+    /// becomes a CHILD of the outer `<Note>` rather than a top-level
+    /// sibling.
+    const NESTED_RUN_PROSE_BODY: &str = ":::note\n\
+         prose line one\n\
+         prose line two\n\
+         :::tip\n\
+         inner.\n\
+         :::\n\
+         :::";
+
+    /// zfb#2402: `flush_prose` reached through the recursion is subject to
+    /// the SAME Jsx-only gate as the directive body around it. The
+    /// original #2398 wiring hardcoded "top-level sibling" at that call
+    /// site, which is true only for the outermost
+    /// `transform_collapsed_run` — the recursive one hands its output to
+    /// `build_flow_jsx` as `MdxJsxFlowElement` children, where the HTML
+    /// path's `reconstruct_jsx` stringifies a `Break` to the empty string
+    /// and DELETES the author's newline.
+    ///
+    /// Driven at the mdast level (`DirectiveRegistry` directly) rather
+    /// than through the full `Pipeline` for the reason zfb#2401
+    /// documents: with `markdown.hardBreaks` on, the pipeline's own
+    /// top-level `HardBreaksPlugin` splits the collapsed paragraph's
+    /// single multi-line `Text` child before `DirectiveRegistry` runs, so
+    /// `single_text_collapsed` declines and this call site is unreachable
+    /// end-to-end.
+    #[test]
+    fn nested_inter_run_prose_does_not_insert_break_on_the_html_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        // Default target is Html — no explicit set needed.
+        let out = run_with_registry(&mut r, vec![text_para(NESTED_RUN_PROSE_BODY)]);
+
+        // Positive control: the nested run really was recognised, so the
+        // prose above it really did travel through the recursion's
+        // `flush_prose` (and not the outer, top-level one).
+        assert_eq!(out.len(), 1, "one outer <Note> element: {out:#?}");
+        assert!(
+            any_node(&out, &|n| {
+                matches!(n, MdastNode::MdxJsxFlowElement(j) if j.name.as_deref() == Some("Tip"))
+            }),
+            "the nested :::tip must transform, proving the recursion ran: {out:#?}"
+        );
+        assert!(
+            !has_break(&out),
+            "HardBreaksPlugin must NOT apply to prose flushed INSIDE a \
+             collapsed directive body on the Html target — a Break there is \
+             deleted, not rendered (zfb#2402): {out:#?}"
+        );
+    }
+
+    /// The Jsx-target counterpart: the same nested prose DOES get its
+    /// `Break`, because the JSX emitter has a real arm for it. Without
+    /// this half, the test above would also pass with `HardBreaksPlugin`
+    /// removed from `flush_prose` altogether.
+    #[test]
+    fn nested_inter_run_prose_inserts_break_on_the_jsx_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        r.set_secondary_parse_target(SecondaryParseTarget::Jsx);
+        let out = run_with_registry(&mut r, vec![text_para(NESTED_RUN_PROSE_BODY)]);
+
+        assert!(
+            has_break(&out),
+            "HardBreaksPlugin must still apply to nested prose on the Jsx \
+             target: {out:#?}"
+        );
+    }
+
+    // ── cross-fix interaction: footnote × hard-breaks (zfb#2399) ────────
+    //
+    // Per zfb#2401 (pre-existing, unrelated to this epic): a collapsed
+    // directive body is, by construction, a multi-line paragraph with an
+    // embedded `\n` in its single `Text` child — and when
+    // `markdown.hardBreaks` is on, the pipeline's OWN top-level
+    // `HardBreaksPlugin` (wired earlier in the mdast chain than
+    // `DirectiveRegistry`) already splits that shape before
+    // `DirectiveRegistry` ever runs, making `reparse_block` UNREACHABLE
+    // for this shape through the full `Pipeline`. The meaningful,
+    // revert-sensitive proof that the footnote-aware stringifier
+    // (zfb#2396) and the Jsx-only hard-breaks gate (zfb#2398) compose is
+    // therefore here, driving `DirectiveRegistry` directly — the same
+    // isolation technique `collapsed_directive_body_inserts_break_on_
+    // the_jsx_target` / `..._does_not_insert_break_on_the_html_target`
+    // use above.
+
+    /// Html target: `HardBreaksPlugin` must NOT insert a `Break` (the
+    /// Jsx-only gate), and a footnote reparsed in the SAME body must
+    /// still associate correctly — proving the gate's placement decision
+    /// and the footnote-aware reparse don't interfere with each other.
+    #[test]
+    fn collapsed_directive_body_footnote_and_hard_breaks_compose_on_the_html_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        // Default target is Html.
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nfirst line\nsecond line.[^n]\n[^n]: the note body.\n:::",
+            )],
+        );
+
+        assert!(
+            has_footnote_definition(&out),
+            "footnote definition must still parse alongside hardBreaks: {out:#?}"
+        );
+        assert!(
+            !has_break(&out),
+            "HardBreaksPlugin must not insert Break on the Html target even \
+             with a footnote reparsed in the same body (Jsx-only gate, \
+             zfb#2398): {out:#?}"
+        );
+    }
+
+    /// Jsx target counterpart: `HardBreaksPlugin` DOES apply there, and
+    /// must not be disturbed by the footnote also being reparsed in the
+    /// same body.
+    #[test]
+    fn collapsed_directive_body_footnote_and_hard_breaks_compose_on_the_jsx_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        r.set_secondary_parse_target(SecondaryParseTarget::Jsx);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nfirst line\nsecond line.[^n]\n[^n]: the note body.\n:::",
+            )],
+        );
+
+        assert!(
+            has_footnote_definition(&out),
+            "footnote definition must still parse alongside hardBreaks: {out:#?}"
+        );
+        assert!(
+            has_break(&out),
+            "HardBreaksPlugin must insert Break on the Jsx target alongside \
+             a footnote reparsed in the same body: {out:#?}"
         );
     }
 }
