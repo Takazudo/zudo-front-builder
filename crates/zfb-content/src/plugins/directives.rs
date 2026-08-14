@@ -3854,4 +3854,203 @@ padded body
             "later registration must override the earlier one for the same name"
         );
     }
+
+    // ── GFM constructs at the `reparse_block` parse site (zfb#2390) ─────
+    //
+    // `reparse_block` is reached only through the COLLAPSED shape — a
+    // directive run written without blank lines, which `markdown::to_mdast`
+    // hands back as one Paragraph with a single multi-line `Text` child
+    // (`single_text_collapsed`). The blank-line-separated form is parsed by
+    // the main parse and never reaches this code at all.
+    //
+    // These tests build that exact shape directly rather than going through
+    // a Pipeline, for two reasons. It is the only way to guarantee the
+    // re-parse is what produced a node: a body containing inline markup
+    // makes the main parse emit MULTIPLE inline children, which routes to
+    // `transform_block_container` instead and would silently test the wrong
+    // path. And a block construct such as a table, written inside a
+    // collapsed fence in real source, is consumed by the MAIN parse — the
+    // table absorbs the `:::` closer as a row, so the directive is never
+    // recognised (pre-existing, unrelated to #2390, and unaffected by it).
+
+    /// Collect every mdast node in `nodes`, depth-first, that satisfies
+    /// `pred` — the re-parsed body is nested inside the emitted
+    /// `MdxJsxFlowElement`, so assertions cannot look at the top level only.
+    fn any_node(nodes: &[MdastNode], pred: &dyn Fn(&MdastNode) -> bool) -> bool {
+        nodes.iter().any(|n| {
+            pred(n)
+                || n.children()
+                    .is_some_and(|children| any_node(children, pred))
+        })
+    }
+
+    fn has_table(nodes: &[MdastNode]) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::Table(_)))
+    }
+
+    fn has_strikethrough(nodes: &[MdastNode]) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::Delete(_)))
+    }
+
+    fn has_task_list_item(nodes: &[MdastNode]) -> bool {
+        any_node(
+            nodes,
+            &|n| matches!(n, MdastNode::ListItem(li) if li.checked.is_some()),
+        )
+    }
+
+    fn has_footnote_definition(nodes: &[MdastNode]) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::FootnoteDefinition(_)))
+    }
+
+    fn has_link_to(nodes: &[MdastNode], url: &str) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::Link(l) if l.url == url))
+    }
+
+    /// A collapsed `:::note … :::` run carrying every GFM construct, in the
+    /// single-multi-line-`Text` shape the main parse produces for it.
+    const COLLAPSED_GFM_BODY: &str = ":::note\n\
+        | a | b |\n\
+        | - | - |\n\
+        | 1 | 2 |\n\
+        ~~struck~~\n\
+        - [x] done\n\
+        See https://example.com/x for more.\n\
+        Ref.[^n]\n\
+        [^n]: the note body.\n\
+        :::";
+
+    #[test]
+    fn collapsed_directive_body_reparses_with_the_registrys_gfm_constructs() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        let out = run_with_registry(&mut r, vec![text_para(COLLAPSED_GFM_BODY)]);
+
+        assert!(has_table(&out), "GFM table did not parse: {out:#?}");
+        assert!(
+            has_strikethrough(&out),
+            "GFM strikethrough did not parse: {out:#?}"
+        );
+        assert!(
+            has_task_list_item(&out),
+            "GFM task list item did not parse: {out:#?}"
+        );
+        assert!(
+            has_link_to(&out, "https://example.com/x"),
+            "GFM autolink literal did not parse: {out:#?}"
+        );
+        assert!(
+            has_footnote_definition(&out),
+            "GFM footnote definition did not parse: {out:#?}"
+        );
+    }
+
+    #[test]
+    fn collapsed_directive_body_keeps_every_gfm_construct_off_by_default() {
+        // `registry_with_admonitions` uses `DirectiveRegistry::new`, i.e. the
+        // ALL_OFF default — this pins that a registry built without
+        // `with_gfm` behaves exactly as it did before #2390.
+        let mut r = registry_with_admonitions();
+        let out = run_with_registry(&mut r, vec![text_para(COLLAPSED_GFM_BODY)]);
+
+        assert!(!has_table(&out), "table must stay literal: {out:#?}");
+        assert!(
+            !has_strikethrough(&out),
+            "strikethrough must stay literal: {out:#?}"
+        );
+        assert!(
+            !has_task_list_item(&out),
+            "task list item must stay literal: {out:#?}"
+        );
+        assert!(
+            !has_link_to(&out, "https://example.com/x"),
+            "autolink literal must stay literal: {out:#?}"
+        );
+        assert!(
+            !has_footnote_definition(&out),
+            "footnote definition must stay literal: {out:#?}"
+        );
+        // Positive control: the body WAS emitted, so the assertions above
+        // cannot be passing merely because nothing was produced.
+        assert_eq!(out.len(), 1, "the directive still transforms: {out:#?}");
+    }
+
+    /// `flush_prose` re-parses ordinary page prose that merely sits BETWEEN
+    /// two collapsed directive runs — a wider blast radius than "directive
+    /// bodies", which is why the #2390 changelog entry names it separately.
+    #[test]
+    fn inter_run_prose_reparses_with_the_registrys_gfm_constructs() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nfirst.\n:::\n\
+                 ~~struck~~\n\
+                 See https://example.com/x for more.\n\
+                 :::note\nsecond.\n:::",
+            )],
+        );
+
+        assert!(
+            has_strikethrough(&out),
+            "inter-run prose: strikethrough did not parse: {out:#?}"
+        );
+        assert!(
+            has_link_to(&out, "https://example.com/x"),
+            "inter-run prose: autolink literal did not parse: {out:#?}"
+        );
+    }
+
+    /// zfb#2388 at this parse site. The pipeline unwraps nested autolinks
+    /// right after its OWN top-level parse, ahead of the visitor chain — a
+    /// subtree re-parsed from inside that chain is out of its reach, so
+    /// `reparse_block` has to normalise its own output or ship an `<a>`
+    /// nested in an `<a>`.
+    #[test]
+    fn collapsed_directive_body_unwraps_nested_autolinks() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nsee it\n[http://localhost:4321](http://localhost:4321)\n:::",
+            )],
+        );
+
+        // Positive control first: the author's link must exist at all,
+        // otherwise "no nesting" would pass on an empty tree.
+        assert!(
+            has_link_to(&out, "http://localhost:4321"),
+            "the author's link must survive: {out:#?}"
+        );
+        assert!(
+            !any_node(&out, &|n| {
+                matches!(n, MdastNode::Link(l)
+                    if any_node(&l.children, &|c| matches!(c, MdastNode::Link(_))))
+            }),
+            "autolink literal left nested inside a link label: {out:#?}"
+        );
+    }
+
+    /// zfb#1105 at this parse site, gated the same way the pipeline gates
+    /// its own `CjkAutolinkBoundaryPlugin` wiring.
+    #[test]
+    fn collapsed_directive_body_stops_autolinks_at_a_cjk_boundary() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, true);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\n案内\n詳しくは https://example.com/xを参照。\n:::",
+            )],
+        );
+
+        assert!(
+            has_link_to(&out, "https://example.com/x"),
+            "the URL must autolink at exactly the ASCII boundary: {out:#?}"
+        );
+        assert!(
+            !any_node(&out, &|n| {
+                matches!(n, MdastNode::Link(l) if l.url.contains('を'))
+            }),
+            "trailing CJK was swallowed into the href: {out:#?}"
+        );
+    }
 }
