@@ -228,6 +228,16 @@ fn flatten_links(children: Vec<MdastNode>) -> Vec<MdastNode> {
 /// `mailto:` prepended. `ftp://` is NOT autolinked by `markdown-rs` at all,
 /// so it needs no arm.
 ///
+/// The visible text is checked against what the autolink tokeniser would
+/// actually have accepted, not just against the url — mirroring Guard A in
+/// [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink). Matching on the url
+/// alone would misread ordinary author links whose destination happens to
+/// echo their label: `[/foo](/foo)` satisfies `url == visible`, and
+/// `[example.com](http://example.com)` satisfies the `http://` arm, yet
+/// `markdown-rs` autolinks neither (a bare host needs a `www.` prefix or a
+/// scheme). Inside an MDX `<a>` both would otherwise lose their
+/// destination.
+///
 /// The one case this cannot separate is an author hand-writing
 /// `[https://x.com](https://x.com)` — byte-identical to what the autolink
 /// pass produces. Unresolvable in mdast, and the same ambiguity
@@ -242,9 +252,17 @@ fn is_autolink_literal(link: &markdown::mdast::Link) -> bool {
         return false;
     };
     let visible = t.value.as_str();
-    link.url == visible
-        || link.url.strip_prefix("http://") == Some(visible)
-        || link.url.strip_prefix("mailto:") == Some(visible)
+
+    // `http(s)://…` — the scheme is part of the visible text.
+    if link.url == visible && (visible.starts_with("http://") || visible.starts_with("https://")) {
+        return true;
+    }
+    // `www.…` — `http://` prepended to a visible host that must start `www.`.
+    if visible.starts_with("www.") && link.url.strip_prefix("http://") == Some(visible) {
+        return true;
+    }
+    // `user@host` — `mailto:` prepended to a visible address.
+    visible.contains('@') && link.url.strip_prefix("mailto:") == Some(visible)
 }
 
 #[cfg(test)]
@@ -436,6 +454,27 @@ mod tests {
         let mut tree = root(vec![para(vec![jsx_text(
             "a",
             vec![link("/y", vec![text("inner")])],
+        )])]);
+        let expected = tree.clone();
+
+        unwrap_nested_links(&mut tree);
+
+        assert_eq!(tree, expected);
+    }
+
+    /// Author links whose destination merely echoes their label are NOT
+    /// autolinks — markdown-rs autolinks neither a bare path nor a bare
+    /// host without `www.` or a scheme. Matching on the url alone would
+    /// destroy both.
+    #[test]
+    fn preserves_author_links_whose_url_echoes_their_label() {
+        let mut tree = root(vec![para(vec![jsx_text(
+            "a",
+            vec![
+                link("/foo", vec![text("/foo")]),
+                link("http://example.com", vec![text("example.com")]),
+                link("mailto:team", vec![text("team")]),
+            ],
         )])]);
         let expected = tree.clone();
 
