@@ -227,6 +227,33 @@ impl<'a> BuildContext<'a> {
     }
 }
 
+/// Which emit path the pipeline run currently under way is feeding.
+///
+/// Only meaningful to visitors that re-enter `markdown::to_mdast` from
+/// *inside* the mdast visitor chain (`TranscludePlugin`,
+/// `DirectiveRegistry::reparse_block`). Those secondary parse sites pick
+/// their own `markdown::Constructs`, and the correct set differs per
+/// path: the HTML serializer renders `Math` / `InlineMath` into real
+/// `<pre><code class="language-math …">` elements, so math must stay off
+/// there to keep output byte-identical, while the JSX emitter has
+/// dedicated arms for those nodes and needs math ON — without it LaTeX
+/// leaks out as bare `{…}` expression containers that esbuild rejects,
+/// falling the whole page back to `<pre data-zfb-content-fallback>`.
+///
+/// Delivered per-run via [`MdastVisitor::set_secondary_parse_target`]
+/// rather than at plugin construction: one plugin instance serves both
+/// paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecondaryParseTarget {
+    /// `Pipeline::run` / `Pipeline::run_with_context` — the HTML
+    /// serializer and collection walker.
+    Html,
+    /// `Pipeline::apply_mdast_visitors` /
+    /// `Pipeline::apply_mdast_visitors_with_context` — the MDX → JSX
+    /// emit path.
+    Jsx,
+}
+
 /// Mdast visitor: mutates an mdast tree in place.
 ///
 /// Implementors typically call [`MdastNode::children_mut`] to recurse, or
@@ -235,6 +262,21 @@ impl<'a> BuildContext<'a> {
 pub trait MdastVisitor {
     /// Visit (and possibly mutate) `node`.
     fn visit(&mut self, node: &mut MdastNode);
+
+    /// Announce which emit path the imminent visit is feeding.
+    ///
+    /// Called by every `Pipeline` mdast dispatch loop on every visitor
+    /// immediately before visiting, with a target hardcoded per loop —
+    /// never caller-supplied. Visitors that re-parse markdown override
+    /// this to store the value and consult it when choosing constructs;
+    /// see [`SecondaryParseTarget`]. The default is a no-op, so every
+    /// other implementor is unaffected.
+    ///
+    /// Implementors must overwrite their stored target unconditionally
+    /// on each call — a pipeline instance is reused across documents and
+    /// across both paths, so a stale value from a previous run is the
+    /// failure mode to avoid.
+    fn set_secondary_parse_target(&mut self, _target: SecondaryParseTarget) {}
 
     /// Visit with optional build context (wave-6 seam).
     ///

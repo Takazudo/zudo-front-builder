@@ -55,7 +55,10 @@ use markdown::mdast::{
     Node as MdastNode, Text,
 };
 
-use crate::pipeline::{constructs_for_pipeline, BuildContext, MdastVisitor, ResolvedGfmConstructs};
+use crate::pipeline::{
+    constructs_for_jsx_emit, constructs_for_pipeline, BuildContext, MdastVisitor,
+    ResolvedGfmConstructs, SecondaryParseTarget,
+};
 use crate::plugins::{unwrap_nested_links, CjkAutolinkBoundaryPlugin};
 use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
 
@@ -105,14 +108,47 @@ pub struct DirectiveRegistry {
     /// `transform_block_container` instead. Threading the constructs
     /// here removes a latent inconsistency and keeps the parse sites in
     /// lockstep; it is not the surface #2390's changelog entry warns
-    /// about (that is transclude). Math stays off, same as the
-    /// transclude site.
+    /// about (that is transclude). The math constructs on top of this
+    /// set follow [`DirectiveRegistry::target`].
     gfm: ResolvedGfmConstructs,
     /// The project's `markdown.cjkFriendly` setting (zfb#1105), ANDed
     /// with `gfm.autolink_literal` at the single point that consumes it
     /// so the inconsistent combination is unrepresentable — see the
     /// matching field on `zfb_md_extras::transclude::TranscludePlugin`.
     cjk_friendly: bool,
+    /// Which emit path the current pipeline run is feeding (zfb#2397).
+    ///
+    /// Overwritten unconditionally by
+    /// [`MdastVisitor::set_secondary_parse_target`] at the top of every
+    /// `Pipeline` mdast dispatch loop; never read as carry-over from a
+    /// previous run. [`reparse_block`] turns it into the math half of
+    /// its construct set — off for `Html` (byte-identical to before), on
+    /// for `Jsx`, matching what each path's own top-level parse uses.
+    ///
+    /// As with the `gfm` field above, this rarely changes end-to-end
+    /// output, and for the same reason: on the JSX path the main parse
+    /// already has math on, so it tokenises the math into `InlineMath` /
+    /// `Math` nodes, the paragraph gains multiple inline children, and
+    /// `single_text_collapsed` declines — routing to
+    /// `transform_block_container` and never reaching [`reparse_block`].
+    /// Threading it keeps the two parse sites in lockstep; the surface
+    /// #2397 actually fixes is transclude.
+    ///
+    /// Defaults to `Html`, so a registry driven outside a `Pipeline`
+    /// loop keeps exactly the pre-#2397 construct set.
+    target: SecondaryParseTarget,
+}
+
+/// The knobs [`reparse_block`] needs, bundled into one argument so this
+/// secondary parse site can grow parser settings without growing a
+/// positional parameter list. Mirrors
+/// `zfb_md_extras::transclude::ExpandEnv`, the twin at the other
+/// secondary parse site.
+#[derive(Debug, Clone, Copy)]
+struct SecondaryParseCtx {
+    gfm: ResolvedGfmConstructs,
+    cjk_friendly: bool,
+    target: SecondaryParseTarget,
 }
 
 impl Default for DirectiveRegistry {
@@ -128,6 +164,7 @@ impl Default for DirectiveRegistry {
             has_text_dirs: false,
             gfm: ResolvedGfmConstructs::ALL_OFF,
             cjk_friendly: false,
+            target: SecondaryParseTarget::Html,
         }
     }
 }
@@ -191,6 +228,14 @@ impl DirectiveRegistry {
     pub fn get(&self, name: &str) -> Option<&DirectiveDef> {
         self.defs.get(name)
     }
+
+    fn secondary_parse_ctx(&self) -> SecondaryParseCtx {
+        SecondaryParseCtx {
+            gfm: self.gfm,
+            cjk_friendly: self.cjk_friendly,
+            target: self.target,
+        }
+    }
 }
 
 impl MdastVisitor for DirectiveRegistry {
@@ -201,6 +246,10 @@ impl MdastVisitor for DirectiveRegistry {
                 self.visit(c);
             }
         }
+    }
+
+    fn set_secondary_parse_target(&mut self, target: SecondaryParseTarget) {
+        self.target = target;
     }
 
     /// Context-armed pipelines (real builds) surface directive
@@ -634,7 +683,7 @@ impl DirectiveRegistry {
         if text.trim().is_empty() {
             return;
         }
-        out.extend(reparse_block(&text, self.gfm, self.cjk_friendly));
+        out.extend(reparse_block(&text, self.secondary_parse_ctx()));
     }
 
     /// Build the JSX children of a collapsed container from its raw body
@@ -661,7 +710,7 @@ impl DirectiveRegistry {
         // body as plain markdown blocks.
         match self.transform_collapsed_run(&body_text, None) {
             Some(nodes) => nodes,
-            None => reparse_block(&body_text, self.gfm, self.cjk_friendly),
+            None => reparse_block(&body_text, self.secondary_parse_ctx()),
         }
     }
 
@@ -1608,14 +1657,26 @@ fn find_collapsed_closer(lines: &[&str], from: usize, open_colons: usize) -> Opt
 /// as literal text while the identical markup at top level rendered
 /// normally.
 ///
+/// The math constructs on top of that follow the emit path (zfb#2397),
+/// matching what the top-level parse of each path uses: math off for
+/// HTML, on for JSX. See [`SecondaryParseCtx::target`].
+///
 /// The pipeline normalises its own top-level parse ahead of the visitor
 /// chain; this site parses from *within* that chain, so it owns the same
 /// normalisation for what it produces. See
 /// `zfb_md_extras::transclude::normalize_included_subtree` for the twin
 /// at the other secondary parse site.
-fn reparse_block(text: &str, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Vec<MdastNode> {
+fn reparse_block(text: &str, ctx: SecondaryParseCtx) -> Vec<MdastNode> {
+    let SecondaryParseCtx {
+        gfm,
+        cjk_friendly,
+        target,
+    } = ctx;
     let opts = markdown::ParseOptions {
-        constructs: constructs_for_pipeline(gfm),
+        constructs: match target {
+            SecondaryParseTarget::Html => constructs_for_pipeline(gfm),
+            SecondaryParseTarget::Jsx => constructs_for_jsx_emit(gfm),
+        },
         ..markdown::ParseOptions::mdx()
     };
     let fallback = || {

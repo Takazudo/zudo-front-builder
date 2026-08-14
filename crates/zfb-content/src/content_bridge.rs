@@ -987,7 +987,7 @@ mod tests {
     /// `content_hash` as an independent bundler-shaped compile that
     /// uses the same constructs. Diverging here is exactly the
     /// `<pre data-zfb-content-fallback>` failure mode the docstring at
-    /// lines 118-153 warns about.
+    /// `build_snapshot_with_config`'s docstring warns about.
     ///
     /// We exercise BOTH endpoints of the new config surface:
     /// `gfm: false` (every GFM construct off — strikethrough should
@@ -1043,7 +1043,7 @@ mod tests {
                 bridge_spec.content_hash,
                 "snapshot ↔ bundler hash divergence under gfm={label}: \
                  snapshot={snap}, bundler={bridge} — this is the \
-                 sub-#61 / zfb#132 hazard (see content_bridge.rs:118-153)",
+                 sub-#61 / zfb#132 hazard (see `build_snapshot_with_config`)",
                 snap = snap_spec.content_hash,
                 bridge = bridge_spec.content_hash,
             );
@@ -1057,6 +1057,88 @@ mod tests {
                 "unexpected fallback marker in compiled JSX under gfm={label}"
             );
         }
+    }
+
+    /// zfb#2397's parity guard: a page whose transcluded content contains
+    /// math must hash identically on the snapshot side and on an
+    /// independent bundler-shaped compile.
+    ///
+    /// Making the secondary parse sites path-aware means the constructs
+    /// they use now depend on which emit path is running. Both consumers
+    /// here run the JSX-emit path, so they must agree — a divergence would
+    /// be the `<pre data-zfb-content-fallback>` land mine
+    /// [`build_snapshot_with_config`] warns about, arriving through a new
+    /// door.
+    ///
+    /// Structurally the two sides cannot disagree, because
+    /// `PipelineSpec::build_pipeline` is the single construction path both
+    /// use; this test pins that rather than assuming it. It also asserts
+    /// the compiled JSX really contains the safe math shape, so it can
+    /// never pass vacuously by both sides failing to transclude at all.
+    #[test]
+    fn snapshot_specifier_matches_bridge_hash_for_a_transcluded_math_page() {
+        use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, parse_mdx_specifier};
+
+        let tmp = TmpDir::new("snapshot-transcluded-math");
+        // The snippet lives OUTSIDE the collection root so the walker does
+        // not also pick it up as an entry of its own.
+        tmp.write("shared/snippet.md", "$$\n\\int_{-\\infty}^{\\infty}\n$$\n");
+        let mdx = "---\ntitle: \"Math\"\n---\n\n:::include{file=\"../shared/snippet.md\"}\n";
+        let body = "\n:::include{file=\"../shared/snippet.md\"}\n";
+        let path = tmp.write("docs/math.mdx", mdx);
+
+        let spec = PipelineSpec {
+            features: Some(zfb_md_extras::MarkdownFeaturesConfig {
+                transclude: Some(zfb_md_extras::TranscludeConfig::default()),
+                ..Default::default()
+            }),
+            build_context_roots: Some((tmp.path.clone(), tmp.path.join("public"))),
+            ..Default::default()
+        };
+
+        let snap = build_snapshot_with_config(
+            &[CollectionConfig::new("docs", tmp.path.join("docs"))],
+            &spec,
+        )
+        .expect("snapshot must succeed");
+        let entry = snap
+            .collections
+            .get("docs")
+            .expect("docs collection")
+            .iter()
+            .find(|e| e.slug == "math")
+            .expect("math entry");
+
+        let mut pipeline = spec
+            .build_pipeline()
+            .expect("bundler-shaped pipeline builds");
+        let compiled = compile_mdx_to_jsx_module_cached(body, &path, None, Some(&mut pipeline))
+            .expect("bundler-style compile must succeed");
+
+        assert!(
+            compiled.jsx_source.contains("language-math math-display"),
+            "the transcluded math must actually reach the emitted JSX — \
+             otherwise this test would pin agreement on two empty results:\n{}",
+            compiled.jsx_source,
+        );
+        assert!(
+            !compiled.jsx_source.contains("{-\\infty}"),
+            "raw LaTeX leaked into a JSX expression container:\n{}",
+            compiled.jsx_source,
+        );
+
+        let snap_spec =
+            parse_mdx_specifier(&entry.module_specifier).expect("snapshot specifier parses");
+        let bridge_spec =
+            parse_mdx_specifier(&compiled.specifier).expect("bundler specifier parses");
+        assert_eq!(
+            snap_spec.content_hash,
+            bridge_spec.content_hash,
+            "snapshot ↔ bundler hash divergence for a transcluded-math page: \
+             snapshot={snap}, bundler={bridge}",
+            snap = snap_spec.content_hash,
+            bridge = bridge_spec.content_hash,
+        );
     }
 
     /// Smoke check that the two extreme GFM choices produce *different*

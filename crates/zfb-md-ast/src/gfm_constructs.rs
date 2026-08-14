@@ -15,9 +15,9 @@
 /// matching `resolve_gfm_constructs` free function). Threaded into
 /// every site that builds [`markdown::ParseOptions`] so the snapshot
 /// walker, bundler, and dev loader stay in lockstep on the parser
-/// constructs — divergence here is the
-/// `content_bridge.rs:118-153` land mine (snapshot ↔ bundler
-/// `content_hash` divergence → `<pre data-zfb-content-fallback>`).
+/// constructs — divergence here is the land mine documented on
+/// `zfb_content::content_bridge::build_snapshot_with_config` (snapshot ↔
+/// bundler `content_hash` divergence → `<pre data-zfb-content-fallback>`).
 ///
 /// Threading this 5-bool type rather than a bare `markdown::Constructs`
 /// is deliberate: the `gfm_footnote_definition` ↔
@@ -92,6 +92,12 @@ impl Default for ResolvedGfmConstructs {
 /// [`constructs_for_jsx_emit`], where the emitter has dedicated arms for
 /// those nodes and the alternative — LaTeX leaking out as bare `{…}`
 /// expression containers that esbuild rejects — is worse.
+///
+/// The two secondary parse sites (transclude, the collapsed-directive
+/// re-parse) pick between the two builders per run from
+/// `zfb_md_ast::SecondaryParseTarget`, so a transcluded or re-parsed
+/// fragment matches whichever path its host document is compiling for
+/// (zfb#2397).
 #[must_use]
 pub fn constructs_for_pipeline(resolved: ResolvedGfmConstructs) -> markdown::Constructs {
     markdown::Constructs {
