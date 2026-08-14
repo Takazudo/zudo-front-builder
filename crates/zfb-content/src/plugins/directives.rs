@@ -4352,4 +4352,77 @@ padded body
             );
         }
     }
+
+    // ── cross-fix interaction: footnote × hard-breaks (zfb#2399) ────────
+    //
+    // Per zfb#2401 (pre-existing, unrelated to this epic): a collapsed
+    // directive body is, by construction, a multi-line paragraph with an
+    // embedded `\n` in its single `Text` child — and when
+    // `markdown.hardBreaks` is on, the pipeline's OWN top-level
+    // `HardBreaksPlugin` (wired earlier in the mdast chain than
+    // `DirectiveRegistry`) already splits that shape before
+    // `DirectiveRegistry` ever runs, making `reparse_block` UNREACHABLE
+    // for this shape through the full `Pipeline`. The meaningful,
+    // revert-sensitive proof that the footnote-aware stringifier
+    // (zfb#2396) and the Jsx-only hard-breaks gate (zfb#2398) compose is
+    // therefore here, driving `DirectiveRegistry` directly — the same
+    // isolation technique `collapsed_directive_body_inserts_break_on_
+    // the_jsx_target` / `..._does_not_insert_break_on_the_html_target`
+    // use above.
+
+    /// Html target: `HardBreaksPlugin` must NOT insert a `Break` (the
+    /// Jsx-only gate), and a footnote reparsed in the SAME body must
+    /// still associate correctly — proving the gate's placement decision
+    /// and the footnote-aware reparse don't interfere with each other.
+    #[test]
+    fn collapsed_directive_body_footnote_and_hard_breaks_compose_on_the_html_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        // Default target is Html.
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nfirst line\nsecond line.[^n]\n[^n]: the note body.\n:::",
+            )],
+        );
+
+        assert!(
+            has_footnote_definition(&out),
+            "footnote definition must still parse alongside hardBreaks: {out:#?}"
+        );
+        assert!(
+            !has_break(&out),
+            "HardBreaksPlugin must not insert Break on the Html target even \
+             with a footnote reparsed in the same body (Jsx-only gate, \
+             zfb#2398): {out:#?}"
+        );
+    }
+
+    /// Jsx target counterpart: `HardBreaksPlugin` DOES apply there, and
+    /// must not be disturbed by the footnote also being reparsed in the
+    /// same body.
+    #[test]
+    fn collapsed_directive_body_footnote_and_hard_breaks_compose_on_the_jsx_target() {
+        let mut r = registry_with_admonitions()
+            .with_gfm(ResolvedGfmConstructs::ALL_ON, false)
+            .with_hard_breaks(true);
+        r.set_secondary_parse_target(SecondaryParseTarget::Jsx);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nfirst line\nsecond line.[^n]\n[^n]: the note body.\n:::",
+            )],
+        );
+
+        assert!(
+            has_footnote_definition(&out),
+            "footnote definition must still parse alongside hardBreaks: {out:#?}"
+        );
+        assert!(
+            has_break(&out),
+            "HardBreaksPlugin must insert Break on the Jsx target alongside \
+             a footnote reparsed in the same body: {out:#?}"
+        );
+    }
 }

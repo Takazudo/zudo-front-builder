@@ -4986,6 +4986,155 @@ mod tests {
         );
     }
 
+    fn directive_body_footnote_and_cjk_pipeline() -> (Pipeline, &'static str) {
+        let mut directives = std::collections::HashMap::new();
+        directives.insert(
+            "note".to_string(),
+            zfb_md_ast::DirectiveSpec::Short("Note".to_string()),
+        );
+        let features = zfb_md_ast::MarkdownFeaturesConfig {
+            directives: Some(directives),
+            ..Default::default()
+        };
+        let p = Pipeline::with_defaults_and_full_config(
+            None,
+            ResolvedGfmConstructs::ALL_ON,
+            None,
+            true,  // cjk_friendly
+            false, // hard_breaks — orthogonal to this test
+            Some(&features),
+        )
+        .expect("pipeline builds");
+        let src = ":::note\n\nこれは**重要。**テスト[^n]\n\n[^n]: the note body.\n\n:::\n";
+        (p, src)
+    }
+
+    /// Cross-fix interaction (zfb#2399): a directive body carrying BOTH a
+    /// footnote reference/definition (zfb#2396) and CJK-flanked emphasis
+    /// (zfb#2398), checked at the mdast level. Deliberately BLANK-LINE-
+    /// SEPARATED `:::note` syntax (not the collapsed, blank-line-less
+    /// form) — the main top-level parse produces an ordinary `Paragraph`
+    /// for the directive's body BEFORE `DirectiveRegistry` ever wraps it
+    /// into an `MdxJsxFlowElement`, so `CjkFriendlyPlugin` (chain index
+    /// 0, which deliberately does NOT descend into JSX bodies — see its
+    /// module doc, "JSX bodies are author-controlled") corrects the
+    /// emphasis while it is still a plain Paragraph child, exactly like
+    /// `transcluded_cjk_emphasis_flanking_is_corrected` in
+    /// `gfm_secondary_parse_sites.rs` does for the transclude site. This
+    /// also sidesteps the COLLAPSED-directive-body pre-emption zfb#2401
+    /// documents for the (unrelated) `reparse_block` call site — this
+    /// test never reaches `reparse_block` at all.
+    ///
+    /// Checked at the mdast level (not the rendered HTML string)
+    /// deliberately: `reconstruct_jsx`'s fallback arm — `footnote_aware_
+    /// stringify` when the subtree contains a footnote, `other.to_
+    /// string()` otherwise — has ALWAYS discarded Strong/Emphasis
+    /// wrapper syntax for a JSX-body child, footnote or no footnote (see
+    /// #2396's "Out of scope" section: "everything except footnotes must
+    /// stay exactly as lossy as today"). Asserting `<strong>` in the
+    /// serialized JsxRaw string would measure that pre-existing,
+    /// unrelated lossiness, not whether the two fixes compose — so this
+    /// replays `Pipeline::run`'s own mdast-phase half (parse +
+    /// `mdast_visitors` chain, no hast conversion) and inspects the tree
+    /// directly.
+    #[test]
+    fn directive_body_footnote_and_cjk_emphasis_compose_at_the_mdast_level() {
+        let (p, src) = directive_body_footnote_and_cjk_pipeline();
+        let mut p = p;
+        let mut mdast = markdown::to_mdast(src, &p.parse_options).expect("parse ok");
+        for v in &mut p.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Html);
+            v.visit(&mut mdast);
+        }
+
+        fn find_note(node: &MdastNode) -> Option<&markdown::mdast::MdxJsxFlowElement> {
+            if let MdastNode::MdxJsxFlowElement(j) = node {
+                if j.name.as_deref() == Some("Note") {
+                    return Some(j);
+                }
+            }
+            node.children()?.iter().find_map(find_note)
+        }
+        let note = find_note(&mdast)
+            .unwrap_or_else(|| panic!("expected a <Note> MdxJsxFlowElement: {mdast:#?}"));
+
+        fn has_corrected_strong(nodes: &[MdastNode]) -> bool {
+            nodes.iter().any(|n| match n {
+                MdastNode::Strong(s) => s
+                    .children
+                    .iter()
+                    .any(|c| matches!(c, MdastNode::Text(t) if t.value == "重要。")),
+                _ => n
+                    .children()
+                    .is_some_and(|children| has_corrected_strong(children)),
+            })
+        }
+        assert!(
+            has_corrected_strong(&note.children),
+            "CJK emphasis must be corrected into a real Strong node inside \
+             the directive body, alongside a footnote: {:#?}",
+            note.children
+        );
+
+        fn has_footnote_ref(nodes: &[MdastNode]) -> bool {
+            nodes.iter().any(|n| match n {
+                MdastNode::FootnoteReference(r) if r.identifier == "n" => true,
+                _ => n
+                    .children()
+                    .is_some_and(|children| has_footnote_ref(children)),
+            })
+        }
+        assert!(
+            has_footnote_ref(&note.children),
+            "expected a FootnoteReference(\"n\") inside the directive body \
+             alongside the corrected CJK emphasis: {:#?}",
+            note.children
+        );
+    }
+
+    /// The HTML-rendering half of the same cross-fix interaction: the
+    /// footnote marker actually renders and the definition renders
+    /// exactly once, and the walk-parity `debug_assert_eq!` in
+    /// `mdast_to_hast_with` does not fire for a subtree that also
+    /// carries CJK-corrected emphasis — this test running to completion
+    /// without panicking (a debug build) IS that half of the acceptance
+    /// criterion.
+    #[test]
+    fn directive_body_footnote_and_cjk_emphasis_render_on_the_html_path() {
+        let (mut p, src) = directive_body_footnote_and_cjk_pipeline();
+        let h = p.run(src).expect("parse ok");
+
+        let mut raws = Vec::new();
+        collect_raw(&h, &mut raws);
+        let jsx = raws
+            .iter()
+            .find(|r| r.starts_with("<Note>"))
+            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"));
+
+        assert!(
+            jsx.contains("<sup><a href=\"#user-content-fn-n\""),
+            "expected the footnote reference marker inside the JSX body \
+             alongside corrected CJK emphasis: {jsx:?}"
+        );
+        assert!(
+            !jsx.contains("the note body."),
+            "definition body must not be inlined inside the JSX body: {jsx:?}"
+        );
+
+        let mut elements = Vec::new();
+        collect_elements(&h, &mut elements);
+        let definition_target = elements
+            .iter()
+            .find(|e| attr(e, "id") == Some("user-content-fn-n"))
+            .copied()
+            .unwrap_or_else(|| panic!("expected the rendered definition element: {h:#?}"));
+        assert!(
+            flatten_text(definition_target).contains("the note body."),
+            "definition body must render exactly once, in the footnote \
+             section: {definition_target:#?}"
+        );
+    }
+
     // ── zfb#2247: shared mdast-phase wiring for the JSX-nested mutation
     // stubs (#2248 ImageDimensions, #2249 ExternalLinks). Infrastructure
     // only — both stubs are no-ops; these tests pin registration wiring,
