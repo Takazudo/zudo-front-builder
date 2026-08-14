@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+### Behavior changes
+
+**Transcluded files and re-parsed directive bodies now honour `markdown.gfm`** (#2390):
+
+Three surfaces used to be parsed with **every GFM construct off**, no matter what `markdown.gfm` said — no tables, strikethrough, task lists, footnotes, or autolink literals:
+
+- files pulled in by `:::include{file="./snippet.md"}`;
+- the body of a directive written **without** blank lines (`:::note` … `:::` on consecutive lines);
+- ordinary page prose sitting **between** two such blank-line-less directive runs.
+
+Both parse sites hardcoded a bare `ParseOptions::mdx()`, whose construct set inherits the parser default where every `gfm_*` flag is `false`. The visible symptom was that identical markdown rendered differently depending on where it was written — a pipe table in the page became a table, the byte-identical table in an included file stayed literal text. Since 2.5.0 turned `autolinkLiteral` on by default, bare URLs in included files also silently stopped autolinking.
+
+All three now inherit the project's resolved `markdown.gfm` configuration, so they render the same as the equivalent content written inline.
+
+**This changes rendered output for existing sites.** If a project transcludes GFM-flavoured content and was (knowingly or not) relying on it staying literal, that content now renders as GFM. Set the relevant `markdown.gfm.*` flags to `false` to keep the old output. A project that never enabled GFM is unaffected.
+
+**Known remaining divergence:** math constructs stay off on these paths, so `$$…$$` in an included file still renders differently from the same content written inline. The two paths share one plugin instance across the HTML and JSX-emit pipelines, and enabling math would change HTML-path output, so this is deliberately left alone.
+
 ### Build compatibility
 
 **Explicit workspace-root alias claims** (#1883):
