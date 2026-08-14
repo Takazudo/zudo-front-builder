@@ -370,3 +370,79 @@ fn html_collapsed_directive_body_with_math_stays_literal_text() {
         "the math spelling must survive as literal text: {html}"
     );
 }
+
+// ── 5. cross-fix interaction: math × CJK (zfb#2399) ────────────────────
+
+/// A pipeline like [`pipeline`] but with `cjkFriendly` on — the math fix
+/// (#2397) turns `Math`/`InlineMath` on in subtrees the CJK/hard-breaks
+/// plugins (#2398) now visit at the same two secondary parse sites, so
+/// this proves those plugins skip math nodes safely rather than merely
+/// not crashing on them.
+fn pipeline_cjk(gfm: ResolvedGfmConstructs) -> Pipeline {
+    let mut directives = HashMap::new();
+    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
+    let features = MarkdownFeaturesConfig {
+        transclude: Some(TranscludeConfig::default()),
+        directives: Some(directives),
+        ..Default::default()
+    };
+    Pipeline::with_defaults_and_full_config(None, gfm, None, true, false, Some(&features))
+        .expect("pipeline builds")
+}
+
+/// Like [`compile_jsx_in`] but built on [`pipeline_cjk`].
+fn compile_jsx_in_cjk(dir: &std::path::Path, gfm: ResolvedGfmConstructs, input: &str) -> String {
+    let mut p = pipeline_cjk(gfm);
+    p.set_build_context_roots(dir.to_path_buf(), dir.join("public"));
+    let opts = zfb_content::MdxJsxOptions::default()
+        .with_filename("page.mdx".to_string())
+        .with_source_path(dir.join("page.mdx"));
+    zfb_content::mdx_to_jsx_module_with_pipeline(input, opts, &mut p).expect("compile ok")
+}
+
+/// CJK-flanked emphasis (the shape plain CommonMark leaves unparsed —
+/// see `zfb_md_ast::cjk_friendly`'s module docs) plus the same block +
+/// inline math payload as [`MATH_BODY`], so a regression in either
+/// plugin's math-skipping shows up rather than being masked by the other
+/// construct.
+const CJK_AND_MATH_BODY: &str = "\
+これは**重要。**テスト
+
+Lead in.
+
+$$
+\\int_{-\\infty}^{\\infty} f(x)\\,dx
+$$
+
+When $x \\to \\infty$ the limit holds.
+";
+
+/// Math × CJK, JSX path (zfb#2399 acceptance criterion 1): a transcluded
+/// file carrying BOTH CJK emphasis and `$$math$$` — CJK correction
+/// applies AND math still emits the safe shape. `CjkFriendlyPlugin` and
+/// `HardBreaksPlugin` are wired into `reparse_block`/`TranscludePlugin`
+/// unconditionally (not gated on math being present), so this pins that
+/// they walk past `Math`/`InlineMath` nodes without corrupting or
+/// swallowing them.
+#[test]
+fn jsx_emit_transcluded_math_and_cjk_emphasis_compose() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), CJK_AND_MATH_BODY);
+
+    let jsx = compile_jsx_in_cjk(dir.path(), ResolvedGfmConstructs::ALL_ON, &include);
+
+    assert!(
+        jsx.contains("<_components.strong>{\"重要。\"}</_components.strong>"),
+        "CJK emphasis must be corrected inside the transcluded JSX body \
+         alongside math: {jsx}"
+    );
+    assert!(
+        jsx.contains("language-math math-display"),
+        "transcluded block math did not parse alongside CJK emphasis: {jsx}"
+    );
+    assert!(
+        jsx.contains("language-math math-inline"),
+        "transcluded inline math did not parse alongside CJK emphasis: {jsx}"
+    );
+    assert_no_bare_latex_expression_container(&jsx, "JSX emit, transcluded, math+CJK");
+}
