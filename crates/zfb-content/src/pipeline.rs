@@ -43,109 +43,15 @@ use crate::plugins::{
 };
 use crate::syntect_highlight::Highlighter;
 
-/// Resolved per-construct GFM flags.
-///
-/// Output of `zfb::config::MarkdownConfig::resolve_constructs` (and the
-/// matching `resolve_gfm_constructs` free function). Threaded into
-/// every site that builds [`markdown::ParseOptions`] so the snapshot
-/// walker, bundler, and dev loader stay in lockstep on the parser
-/// constructs — divergence here is the
-/// `content_bridge.rs:118-153` land mine (snapshot ↔ bundler
-/// `content_hash` divergence → `<pre data-zfb-content-fallback>`).
-///
-/// Defined here in `zfb-content` (the lowest crate that actually
-/// touches `markdown::Constructs`) so consumers can wire it into the
-/// pipeline without an upward dependency on `zfb`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResolvedGfmConstructs {
-    /// GFM strikethrough (`~~text~~`).
-    pub strikethrough: bool,
-    /// GFM pipe-style tables.
-    pub table: bool,
-    /// GFM autolink literal (bare URLs).
-    pub autolink_literal: bool,
-    /// GFM task list items (`- [x]` / `- [ ]`).
-    pub task_list_item: bool,
-    /// GFM footnote definitions (`[^ref]: …`).
-    pub footnote_definition: bool,
-}
-
-impl ResolvedGfmConstructs {
-    /// Conservative default — strikethrough, table, and autolink
-    /// literal on; task-list-item and footnote-definition off. See
-    /// `zfb::config::ResolvedGfmConstructs::CONSERVATIVE` for the full
-    /// rationale; both constants must stay in sync.
-    pub const CONSERVATIVE: Self = Self {
-        strikethrough: true,
-        table: true,
-        autolink_literal: true,
-        task_list_item: false,
-        footnote_definition: false,
-    };
-
-    /// Every GFM construct ON.
-    pub const ALL_ON: Self = Self {
-        strikethrough: true,
-        table: true,
-        autolink_literal: true,
-        task_list_item: true,
-        footnote_definition: true,
-    };
-
-    /// Every GFM construct OFF.
-    pub const ALL_OFF: Self = Self {
-        strikethrough: false,
-        table: false,
-        autolink_literal: false,
-        task_list_item: false,
-        footnote_definition: false,
-    };
-}
-
-impl Default for ResolvedGfmConstructs {
-    /// `Default` is the conservative default — the only `Default` that
-    /// makes sense without further context.
-    fn default() -> Self {
-        Self::CONSERVATIVE
-    }
-}
-
-/// Build `markdown::Constructs` for the HTML-serializer / collection
-/// walker pipeline (`Pipeline::run`) from a resolved GFM flag set.
-///
-/// Math constructs are deliberately left at their `Constructs::mdx()`
-/// default values here. The HTML serializer path treats math nodes as
-/// passthrough; enabling them here would not change the serializer
-/// output. The JSX-emit path enables `math_flow` / `math_text`
-/// separately, where the JSX emitter has dedicated arms for them.
-#[must_use]
-pub fn constructs_for_pipeline(resolved: ResolvedGfmConstructs) -> markdown::Constructs {
-    markdown::Constructs {
-        gfm_strikethrough: resolved.strikethrough,
-        gfm_table: resolved.table,
-        gfm_autolink_literal: resolved.autolink_literal,
-        gfm_task_list_item: resolved.task_list_item,
-        gfm_footnote_definition: resolved.footnote_definition,
-        // `gfm_label_start_footnote` is the inline-side of footnotes
-        // (`[^ref]` reference markers); markdown-rs treats it as a
-        // pair with `gfm_footnote_definition`, so we mirror the flag.
-        gfm_label_start_footnote: resolved.footnote_definition,
-        ..markdown::Constructs::mdx()
-    }
-}
-
-/// Same as [`constructs_for_pipeline`] but additionally turns on
-/// `math_flow` + `math_text`. Used at the JSX emit site so `$$…$$`
-/// and `$…$` parse into dedicated `Math` / `InlineMath` mdast nodes
-/// (zfb#93).
-#[must_use]
-pub fn constructs_for_jsx_emit(resolved: ResolvedGfmConstructs) -> markdown::Constructs {
-    markdown::Constructs {
-        math_flow: true,
-        math_text: true,
-        ..constructs_for_pipeline(resolved)
-    }
-}
+// `ResolvedGfmConstructs` and the two `constructs_for_*` builders live in
+// `zfb-md-ast` so `zfb-md-extras` can name the resolved flag set at its own
+// parse sites (transclude re-parses every included file) without an upward
+// dependency on this crate. Re-exported here so `zfb_content::pipeline::*`
+// and `zfb::config`'s `pub use zfb_content::ResolvedGfmConstructs` are
+// unaffected.
+pub use zfb_md_ast::gfm_constructs::{
+    constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
+};
 
 /// Version prefix for the [`Pipeline::config_fingerprint`] descriptor.
 /// Bump when the descriptor schema changes so entries written by an
@@ -409,6 +315,23 @@ pub struct Pipeline {
     /// constructors enforce this by building both from one
     /// `ResolvedGfmConstructs` input.
     gfm_constructs: ResolvedGfmConstructs,
+    /// The project's `markdown.cjkFriendly` setting, as supplied to the
+    /// constructor (zfb#1105).
+    ///
+    /// Set unconditionally by every constructor, BEFORE any visitor
+    /// wiring runs — deliberately not inside the `if cjk_friendly` block
+    /// that pushes [`CjkAutolinkBoundaryPlugin`], so it records the
+    /// project's setting rather than "did we happen to take that
+    /// branch". `register_features_config_derived` forwards it to the
+    /// two secondary parse sites (transclude and
+    /// `DirectiveRegistry::reparse_block`), which call
+    /// `markdown::to_mdast` from *within* the visitor chain and so are
+    /// never reached by the chain-index-0 plugin (zfb#2390). Each site
+    /// ANDs it with `autolink_literal` itself.
+    ///
+    /// Not a fingerprint input of its own: `cjk_friendly` is already
+    /// covered by the descriptor.
+    cjk_friendly: bool,
     /// When the `StripMdExtensionPlugin` is wired into the pipeline,
     /// this flag controls whether the plugin appends `/` to internal
     /// hrefs after stripping `.md`/`.mdx` (and to any extensionless
@@ -652,6 +575,7 @@ impl Pipeline {
                 ..markdown::ParseOptions::mdx()
             },
             gfm_constructs: resolved,
+            cjk_friendly: false,
             add_trailing_slash: true,
             resolve_links: None,
             jsx_nested_link_collector: None,
@@ -1631,6 +1555,10 @@ impl Pipeline {
         }
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
+        // Recorded BEFORE any visitor wiring, so the two secondary parse
+        // sites see the project's setting rather than a branch outcome
+        // (zfb#2390 — see the field doc).
+        p.cjk_friendly = cjk_friendly;
         // mdast phase. Config-derived wiring — pushed through the
         // non-invalidating helpers (invalidation rule — see
         // `push_config_derived_mdast_visitor`).
@@ -1646,6 +1574,11 @@ impl Pipeline {
             // already in the config fingerprint, so this stays
             // non-invalidating.
             if resolved.autolink_literal {
+                // Note this plugin is a visitor at chain index 0, so it never
+                // sees a subtree parsed LATER in the chain by transclude or
+                // the directive registry; `p.cjk_friendly` (set above, before
+                // any wiring) is how those two secondary parse sites apply the
+                // same fix to their own output (zfb#2390).
                 p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
             }
             p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
@@ -1929,6 +1862,10 @@ impl Pipeline {
         }
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
+        // Recorded BEFORE any visitor wiring, so the two secondary parse
+        // sites see the project's setting rather than a branch outcome
+        // (zfb#2390 — see the field doc).
+        p.cjk_friendly = cjk_friendly;
         // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
         // Config-derived wiring throughout this constructor is pushed via
         // the non-invalidating helpers (invalidation rule — see
@@ -1938,6 +1875,11 @@ impl Pipeline {
             // CjkFriendlyPlugin; see the twin wiring in `build_defaults` for
             // the ordering / gating / fingerprint rationale.
             if resolved.autolink_literal {
+                // Note this plugin is a visitor at chain index 0, so it never
+                // sees a subtree parsed LATER in the chain by transclude or
+                // the directive registry; `p.cjk_friendly` (set above, before
+                // any wiring) is how those two secondary parse sites apply the
+                // same fix to their own output (zfb#2390).
                 p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
             }
             p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
@@ -2484,8 +2426,23 @@ fn register_features_config_derived(
     // `MdastVisitor::visit_with_context` and requires a BuildContext
     // (source_path + project_root) to resolve file paths. When the pipeline
     // is driven via `run_with_context`, the context is automatically threaded.
+    // Both secondary parse sites below (transclude here, the directive
+    // registry further down) call `markdown::to_mdast` themselves from
+    // inside the visitor chain. Before zfb#2390 both hardcoded a bare
+    // `ParseOptions::mdx()`, whose `Constructs::mdx()` inherits
+    // `Constructs::default()` — every `gfm_*` flag false — so the same
+    // markdown rendered differently depending on whether it was written
+    // inline or reached through one of these paths. They now inherit the
+    // pipeline's own resolved set, plus the post-parse normalisations
+    // that set makes mandatory (the pipeline applies those to its own
+    // parse before the chain starts, which is exactly why a subtree
+    // parsed later cannot rely on them).
+    let secondary_parse_gfm = p.gfm_constructs;
+    let secondary_parse_cjk_friendly = p.cjk_friendly;
+
     if let Some(cfg) = &features.transclude {
-        let mut plugin = zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone());
+        let mut plugin = zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone())
+            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
         if let Some(recorder) = read_recorder {
             plugin = plugin.with_recorder(Arc::clone(recorder));
         }
@@ -2538,7 +2495,8 @@ fn register_features_config_derived(
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_ast::into_directive_def;
 
-        let mut registry = DirectiveRegistry::new();
+        let mut registry =
+            DirectiveRegistry::new().with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
         if let Some(dir_map) = &features.directives {
             for (name, spec) in dir_map {
                 registry.register(into_directive_def(name, spec));

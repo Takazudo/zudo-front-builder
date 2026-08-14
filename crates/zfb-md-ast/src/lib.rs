@@ -18,13 +18,21 @@ use std::path::PathBuf;
 
 use markdown::mdast::Node as MdastNode;
 
+pub mod cjk;
+pub mod cjk_autolink;
 pub mod diagnostics;
 pub mod directives;
 pub mod features_config;
+pub mod gfm_constructs;
 pub mod hast_text;
 pub mod heading_registry;
 pub mod mdx_jsx;
+pub mod nested_link;
 pub mod read_recorder;
+
+pub use cjk_autolink::CjkAutolinkBoundaryPlugin;
+pub use gfm_constructs::{constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs};
+pub use nested_link::unwrap_nested_links;
 
 pub use directives::{
     AttrSchema, AttrType, AttrValidationResult, DirectiveDef, DirectiveDiagnostic, DirectiveKind,

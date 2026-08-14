@@ -77,7 +77,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use markdown::mdast::Node as MdastNode;
-use zfb_md_ast::{BuildContext, MdastVisitor, ReadOutcome, ReadRecorder};
+use zfb_md_ast::{
+    constructs_for_pipeline, unwrap_nested_links, BuildContext, CjkAutolinkBoundaryPlugin,
+    MdastVisitor, ReadOutcome, ReadRecorder, ResolvedGfmConstructs,
+};
 
 use crate::TranscludeConfig;
 
@@ -100,16 +103,73 @@ pub struct TranscludePlugin {
     /// compile cache can validate a dependency manifest before serving
     /// a cached entry. `None` keeps the pre-#944 behaviour exactly.
     recorder: Option<Arc<ReadRecorder>>,
+    /// GFM constructs an included file is parsed with (zfb#2390).
+    ///
+    /// Defaults to [`ResolvedGfmConstructs::ALL_OFF`], reproducing the
+    /// bare `ParseOptions::mdx()` this site used before #2390 — so a
+    /// plugin built by [`TranscludePlugin::new`] alone stays
+    /// byte-identical. `zfb-content`'s feature wiring calls
+    /// [`TranscludePlugin::with_gfm`] with the pipeline's own resolved
+    /// set, which is what makes a transcluded file honour the project's
+    /// `markdown.gfm` config instead of silently parsing with every GFM
+    /// construct off.
+    ///
+    /// This is the HTML/collection-walker construct set
+    /// ([`constructs_for_pipeline`]) — math stays off, as it was before
+    /// #2390. The same plugin instance serves both `Pipeline::run` and
+    /// the JSX-emit path, so it cannot be path-aware, and enabling math
+    /// here would change HTML-path output (that path renders `Math` into
+    /// a real `<pre><code class="language-math …">` element, it does not
+    /// pass it through). Consequence, unchanged by #2390 and NOT
+    /// cosmetic: on the JSX-emit path LaTeX in an included file leaks
+    /// out as bare `{…}` expression containers that esbuild rejects,
+    /// falling the whole page back to `<pre data-zfb-content-fallback>`.
+    /// Tracked separately; see the #2390 changelog entry.
+    gfm: ResolvedGfmConstructs,
+    /// The project's `markdown.cjkFriendly` setting (zfb#1105).
+    ///
+    /// Stored raw rather than pre-ANDed with `gfm.autolink_literal`:
+    /// the two travel together into [`TranscludePlugin::with_gfm`], and
+    /// combining them here — at the single point that consumes them —
+    /// makes the inconsistent state (boundary fix demanded while
+    /// autolinking is off) unrepresentable rather than merely
+    /// documented.
+    ///
+    /// It has to travel at all because `CjkAutolinkBoundaryPlugin` is a
+    /// visitor at mdast-chain index 0 while transcluded nodes are
+    /// spliced in later, so the included subtree is never reached by
+    /// the pipeline's own copy of the pass.
+    cjk_friendly: bool,
 }
 
 impl TranscludePlugin {
     /// Create a new plugin from the given config.
+    ///
+    /// Parses included files with every GFM construct OFF. Use
+    /// [`TranscludePlugin::with_gfm`] to inherit the project's resolved
+    /// `markdown.gfm` configuration.
     #[must_use]
     pub fn new(config: TranscludeConfig) -> Self {
         Self {
             config,
             recorder: None,
+            gfm: ResolvedGfmConstructs::ALL_OFF,
+            cjk_friendly: false,
         }
+    }
+
+    /// Parse included files with `gfm`, applying the post-parse
+    /// normalisations those constructs make mandatory (zfb#2390).
+    ///
+    /// `cjk_friendly` is the project's `markdown.cjkFriendly` setting,
+    /// passed raw — this is the one place it is ANDed with
+    /// `gfm.autolink_literal`, mirroring the gate the pipeline uses when
+    /// it wires `CjkAutolinkBoundaryPlugin` into its own chain.
+    #[must_use]
+    pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Self {
+        self.gfm = gfm;
+        self.cjk_friendly = cjk_friendly;
+        self
     }
 
     /// Attach the read-recorder this plugin reports include reads
@@ -157,6 +217,8 @@ impl MdastVisitor for TranscludePlugin {
             project_root: &project_root,
             max_depth: self.config.max_depth,
             recorder: self.recorder.as_deref(),
+            gfm: self.gfm,
+            cjk_friendly: self.cjk_friendly,
         };
         expand_includes_in_node(node, &source_dir, &env, &mut visited, 0, ctx);
     }
@@ -173,6 +235,40 @@ struct ExpandEnv<'a> {
     /// Read-recorder for the compile-cache dependency manifest
     /// (zfb#944); `None` when the plugin was built without one.
     recorder: Option<&'a ReadRecorder>,
+    /// GFM constructs each included file is parsed with, and the
+    /// project's `cjkFriendly` setting (zfb#2390) — see the matching
+    /// fields on [`TranscludePlugin`].
+    gfm: ResolvedGfmConstructs,
+    cjk_friendly: bool,
+}
+
+/// Apply the post-parse normalisations that [`ExpandEnv::gfm`] makes
+/// mandatory to a freshly parsed included subtree (zfb#2390).
+///
+/// The pipeline runs both of these immediately after its own top-level
+/// `markdown::to_mdast`, ahead of the visitor chain. This site parses
+/// AFTER that point, so nothing else will ever normalise what it
+/// produces — every `to_mdast` call site owns its own output.
+///
+/// - `unwrap_nested_links` (zfb#2388) removes autolink literals that
+///   markdown-rs fires inside a link label, which would otherwise emit an
+///   `<a>` nested in an `<a>` — invalid HTML that fails `html-validate`'s
+///   `element-permitted-content`.
+/// - [`CjkAutolinkBoundaryPlugin`] (zfb#1105) stops a bare URL flush
+///   against CJK text from swallowing the trailing CJK run into the
+///   `href`.
+///
+/// Both are gated on `autolink_literal`, the construct that produces the
+/// defects they remove, so an included file parsed without it keeps
+/// byte-identical output.
+fn normalize_included_subtree(node: &mut MdastNode, env: &ExpandEnv<'_>) {
+    if !env.gfm.autolink_literal {
+        return;
+    }
+    unwrap_nested_links(node);
+    if env.cjk_friendly {
+        CjkAutolinkBoundaryPlugin::new().visit(node);
+    }
 }
 
 /// Recursively scan `node`'s children for `:::include` paragraphs and
@@ -428,8 +524,15 @@ fn resolve_and_expand(
     }
 
     // ── Parse as mdast ────────────────────────────────────────────────────
-    let opts = markdown::ParseOptions::mdx();
-    let included_mdast = match markdown::to_mdast(&content, &opts) {
+    // Constructs come from the host project's resolved `markdown.gfm`
+    // (zfb#2390) — a bare `ParseOptions::mdx()` here inherits
+    // `Constructs::default()`, where every `gfm_*` flag is false, so the
+    // same markdown used to render differently inline vs transcluded.
+    let opts = markdown::ParseOptions {
+        constructs: constructs_for_pipeline(env.gfm),
+        ..markdown::ParseOptions::mdx()
+    };
+    let mut included_mdast = match markdown::to_mdast(&content, &opts) {
         Ok(tree) => tree,
         Err(e) => {
             emit_error(
@@ -442,6 +545,8 @@ fn resolve_and_expand(
             return Vec::new();
         }
     };
+
+    normalize_included_subtree(&mut included_mdast, env);
 
     let MdastNode::Root(root) = included_mdast else {
         return Vec::new();

@@ -55,7 +55,8 @@ use markdown::mdast::{
     Node as MdastNode, Text,
 };
 
-use crate::pipeline::{BuildContext, MdastVisitor};
+use crate::pipeline::{constructs_for_pipeline, BuildContext, MdastVisitor, ResolvedGfmConstructs};
+use crate::plugins::{unwrap_nested_links, CjkAutolinkBoundaryPlugin};
 use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
 
 // Directive definition types moved to `zfb-md-ast` so `zfb-md-extras`
@@ -74,13 +75,61 @@ pub use zfb_md_ast::{
 /// (or [`MdxJsxTextElement`] for inline text directives) nodes, and
 /// records [`DirectiveDiagnostic`]s for unknown directive names it
 /// encounters.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DirectiveRegistry {
     defs: HashMap<String, DirectiveDef>,
     diagnostics: Vec<DirectiveDiagnostic>,
     /// True if any registered directive has `kind == Text`. Cached so
     /// the inline scanner can be skipped in the common case.
     has_text_dirs: bool,
+    /// GFM constructs [`reparse_block`] parses with (zfb#2390).
+    ///
+    /// Defaults to [`ResolvedGfmConstructs::ALL_OFF`], reproducing the
+    /// bare `ParseOptions::mdx()` that site used before #2390 — so a
+    /// registry built by [`DirectiveRegistry::new`] alone stays
+    /// byte-identical. `zfb-content`'s feature wiring calls
+    /// [`DirectiveRegistry::with_gfm`] with the pipeline's own resolved
+    /// set.
+    ///
+    /// This governs the two `reparse_block` callers: a collapsed
+    /// (blank-line-less) directive body, and — via `flush_prose` —
+    /// ordinary page prose that merely sits between two collapsed
+    /// directive runs.
+    ///
+    /// Note this rarely changes end-to-end pipeline output, and that is
+    /// by design rather than by accident: `reparse_block` is reachable
+    /// only through `single_text_collapsed`, and now that the main parse
+    /// shares these same constructs, content rich enough to render
+    /// differently is generally already tokenised into multiple inline
+    /// children by that main parse and routed to
+    /// `transform_block_container` instead. Threading the constructs
+    /// here removes a latent inconsistency and keeps the parse sites in
+    /// lockstep; it is not the surface #2390's changelog entry warns
+    /// about (that is transclude). Math stays off, same as the
+    /// transclude site.
+    gfm: ResolvedGfmConstructs,
+    /// The project's `markdown.cjkFriendly` setting (zfb#1105), ANDed
+    /// with `gfm.autolink_literal` at the single point that consumes it
+    /// so the inconsistent combination is unrepresentable — see the
+    /// matching field on `zfb_md_extras::transclude::TranscludePlugin`.
+    cjk_friendly: bool,
+}
+
+impl Default for DirectiveRegistry {
+    /// Empty registry that re-parses with every GFM construct OFF.
+    ///
+    /// Hand-written rather than derived: a derived `Default` would give
+    /// `ResolvedGfmConstructs::default()`, which is `CONSERVATIVE` (three
+    /// constructs ON) — silently changing what a bare registry does.
+    fn default() -> Self {
+        Self {
+            defs: HashMap::new(),
+            diagnostics: Vec::new(),
+            has_text_dirs: false,
+            gfm: ResolvedGfmConstructs::ALL_OFF,
+            cjk_friendly: false,
+        }
+    }
 }
 
 impl DirectiveRegistry {
@@ -88,6 +137,20 @@ impl DirectiveRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Re-parse collapsed directive bodies and inter-run prose with
+    /// `gfm`, applying the post-parse normalisations those constructs
+    /// make mandatory (zfb#2390).
+    ///
+    /// `cjk_friendly` is the project's `markdown.cjkFriendly` setting,
+    /// passed raw — it is ANDed with `gfm.autolink_literal` here rather
+    /// than by the caller.
+    #[must_use]
+    pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Self {
+        self.gfm = gfm;
+        self.cjk_friendly = cjk_friendly;
+        self
     }
 
     /// Register a directive. Later registrations under the same name
@@ -571,7 +634,7 @@ impl DirectiveRegistry {
         if text.trim().is_empty() {
             return;
         }
-        out.extend(reparse_block(&text));
+        out.extend(reparse_block(&text, self.gfm, self.cjk_friendly));
     }
 
     /// Build the JSX children of a collapsed container from its raw body
@@ -598,7 +661,7 @@ impl DirectiveRegistry {
         // body as plain markdown blocks.
         match self.transform_collapsed_run(&body_text, None) {
             Some(nodes) => nodes,
-            None => reparse_block(&body_text),
+            None => reparse_block(&body_text, self.gfm, self.cjk_friendly),
         }
     }
 
@@ -1537,16 +1600,45 @@ fn find_collapsed_closer(lines: &[&str], from: usize, open_colons: usize) -> Opt
 /// return its top-level block nodes. Used to materialise collapsed-directive
 /// bodies and inter-run prose as proper mdast (Paragraph/list/etc.), matching
 /// the shape the blank-line-separated form produces.
-fn reparse_block(text: &str) -> Vec<MdastNode> {
-    match markdown::to_mdast(text, &markdown::ParseOptions::mdx()) {
-        Ok(MdastNode::Root(root)) => root.children,
-        _ => vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
+///
+/// Constructs come from the host project's resolved `markdown.gfm`
+/// (zfb#2390) — a bare `ParseOptions::mdx()` inherits
+/// `Constructs::default()`, where every `gfm_*` flag is false, so a table
+/// or task list written inside a collapsed directive body used to render
+/// as literal text while the identical markup at top level rendered
+/// normally.
+///
+/// The pipeline normalises its own top-level parse ahead of the visitor
+/// chain; this site parses from *within* that chain, so it owns the same
+/// normalisation for what it produces. See
+/// `zfb_md_extras::transclude::normalize_included_subtree` for the twin
+/// at the other secondary parse site.
+fn reparse_block(text: &str, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Vec<MdastNode> {
+    let opts = markdown::ParseOptions {
+        constructs: constructs_for_pipeline(gfm),
+        ..markdown::ParseOptions::mdx()
+    };
+    let fallback = || {
+        vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
             children: vec![MdastNode::Text(Text {
                 value: text.to_string(),
                 position: None,
             })],
             position: None,
-        })],
+        })]
+    };
+    let Ok(mut root) = markdown::to_mdast(text, &opts) else {
+        return fallback();
+    };
+    if gfm.autolink_literal {
+        unwrap_nested_links(&mut root);
+        if cjk_friendly {
+            CjkAutolinkBoundaryPlugin::new().visit(&mut root);
+        }
+    }
+    match root {
+        MdastNode::Root(root) => root.children,
+        _ => fallback(),
     }
 }
 
@@ -3766,6 +3858,205 @@ padded body
             flow(&out[0]).name.as_deref(),
             Some("MyCaution"),
             "later registration must override the earlier one for the same name"
+        );
+    }
+
+    // ── GFM constructs at the `reparse_block` parse site (zfb#2390) ─────
+    //
+    // `reparse_block` is reached only through the COLLAPSED shape — a
+    // directive run written without blank lines, which `markdown::to_mdast`
+    // hands back as one Paragraph with a single multi-line `Text` child
+    // (`single_text_collapsed`). The blank-line-separated form is parsed by
+    // the main parse and never reaches this code at all.
+    //
+    // These tests build that exact shape directly rather than going through
+    // a Pipeline, for two reasons. It is the only way to guarantee the
+    // re-parse is what produced a node: a body containing inline markup
+    // makes the main parse emit MULTIPLE inline children, which routes to
+    // `transform_block_container` instead and would silently test the wrong
+    // path. And a block construct such as a table, written inside a
+    // collapsed fence in real source, is consumed by the MAIN parse — the
+    // table absorbs the `:::` closer as a row, so the directive is never
+    // recognised (pre-existing, unrelated to #2390, and unaffected by it).
+
+    /// Collect every mdast node in `nodes`, depth-first, that satisfies
+    /// `pred` — the re-parsed body is nested inside the emitted
+    /// `MdxJsxFlowElement`, so assertions cannot look at the top level only.
+    fn any_node(nodes: &[MdastNode], pred: &dyn Fn(&MdastNode) -> bool) -> bool {
+        nodes.iter().any(|n| {
+            pred(n)
+                || n.children()
+                    .is_some_and(|children| any_node(children, pred))
+        })
+    }
+
+    fn has_table(nodes: &[MdastNode]) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::Table(_)))
+    }
+
+    fn has_strikethrough(nodes: &[MdastNode]) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::Delete(_)))
+    }
+
+    fn has_task_list_item(nodes: &[MdastNode]) -> bool {
+        any_node(
+            nodes,
+            &|n| matches!(n, MdastNode::ListItem(li) if li.checked.is_some()),
+        )
+    }
+
+    fn has_footnote_definition(nodes: &[MdastNode]) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::FootnoteDefinition(_)))
+    }
+
+    fn has_link_to(nodes: &[MdastNode], url: &str) -> bool {
+        any_node(nodes, &|n| matches!(n, MdastNode::Link(l) if l.url == url))
+    }
+
+    /// A collapsed `:::note … :::` run carrying every GFM construct, in the
+    /// single-multi-line-`Text` shape the main parse produces for it.
+    const COLLAPSED_GFM_BODY: &str = ":::note\n\
+        | a | b |\n\
+        | - | - |\n\
+        | 1 | 2 |\n\
+        ~~struck~~\n\
+        - [x] done\n\
+        See https://example.com/x for more.\n\
+        Ref.[^n]\n\
+        [^n]: the note body.\n\
+        :::";
+
+    #[test]
+    fn collapsed_directive_body_reparses_with_the_registrys_gfm_constructs() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        let out = run_with_registry(&mut r, vec![text_para(COLLAPSED_GFM_BODY)]);
+
+        assert!(has_table(&out), "GFM table did not parse: {out:#?}");
+        assert!(
+            has_strikethrough(&out),
+            "GFM strikethrough did not parse: {out:#?}"
+        );
+        assert!(
+            has_task_list_item(&out),
+            "GFM task list item did not parse: {out:#?}"
+        );
+        assert!(
+            has_link_to(&out, "https://example.com/x"),
+            "GFM autolink literal did not parse: {out:#?}"
+        );
+        assert!(
+            has_footnote_definition(&out),
+            "GFM footnote definition did not parse: {out:#?}"
+        );
+    }
+
+    #[test]
+    fn collapsed_directive_body_keeps_every_gfm_construct_off_by_default() {
+        // `registry_with_admonitions` uses `DirectiveRegistry::new`, i.e. the
+        // ALL_OFF default — this pins that a registry built without
+        // `with_gfm` behaves exactly as it did before #2390.
+        let mut r = registry_with_admonitions();
+        let out = run_with_registry(&mut r, vec![text_para(COLLAPSED_GFM_BODY)]);
+
+        assert!(!has_table(&out), "table must stay literal: {out:#?}");
+        assert!(
+            !has_strikethrough(&out),
+            "strikethrough must stay literal: {out:#?}"
+        );
+        assert!(
+            !has_task_list_item(&out),
+            "task list item must stay literal: {out:#?}"
+        );
+        assert!(
+            !has_link_to(&out, "https://example.com/x"),
+            "autolink literal must stay literal: {out:#?}"
+        );
+        assert!(
+            !has_footnote_definition(&out),
+            "footnote definition must stay literal: {out:#?}"
+        );
+        // Positive control: the body WAS emitted, so the assertions above
+        // cannot be passing merely because nothing was produced.
+        assert_eq!(out.len(), 1, "the directive still transforms: {out:#?}");
+    }
+
+    /// `flush_prose` re-parses ordinary page prose that merely sits BETWEEN
+    /// two collapsed directive runs — a wider blast radius than "directive
+    /// bodies", which is why the #2390 changelog entry names it separately.
+    #[test]
+    fn inter_run_prose_reparses_with_the_registrys_gfm_constructs() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nfirst.\n:::\n\
+                 ~~struck~~\n\
+                 See https://example.com/x for more.\n\
+                 :::note\nsecond.\n:::",
+            )],
+        );
+
+        assert!(
+            has_strikethrough(&out),
+            "inter-run prose: strikethrough did not parse: {out:#?}"
+        );
+        assert!(
+            has_link_to(&out, "https://example.com/x"),
+            "inter-run prose: autolink literal did not parse: {out:#?}"
+        );
+    }
+
+    /// zfb#2388 at this parse site. The pipeline unwraps nested autolinks
+    /// right after its OWN top-level parse, ahead of the visitor chain — a
+    /// subtree re-parsed from inside that chain is out of its reach, so
+    /// `reparse_block` has to normalise its own output or ship an `<a>`
+    /// nested in an `<a>`.
+    #[test]
+    fn collapsed_directive_body_unwraps_nested_autolinks() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, false);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\nsee it\n[http://localhost:4321](http://localhost:4321)\n:::",
+            )],
+        );
+
+        // Positive control first: the author's link must exist at all,
+        // otherwise "no nesting" would pass on an empty tree.
+        assert!(
+            has_link_to(&out, "http://localhost:4321"),
+            "the author's link must survive: {out:#?}"
+        );
+        assert!(
+            !any_node(&out, &|n| {
+                matches!(n, MdastNode::Link(l)
+                    if any_node(&l.children, &|c| matches!(c, MdastNode::Link(_))))
+            }),
+            "autolink literal left nested inside a link label: {out:#?}"
+        );
+    }
+
+    /// zfb#1105 at this parse site, gated the same way the pipeline gates
+    /// its own `CjkAutolinkBoundaryPlugin` wiring.
+    #[test]
+    fn collapsed_directive_body_stops_autolinks_at_a_cjk_boundary() {
+        let mut r = registry_with_admonitions().with_gfm(ResolvedGfmConstructs::ALL_ON, true);
+        let out = run_with_registry(
+            &mut r,
+            vec![text_para(
+                ":::note\n案内\n詳しくは https://example.com/xを参照。\n:::",
+            )],
+        );
+
+        assert!(
+            has_link_to(&out, "https://example.com/x"),
+            "the URL must autolink at exactly the ASCII boundary: {out:#?}"
+        );
+        assert!(
+            !any_node(&out, &|n| {
+                matches!(n, MdastNode::Link(l) if l.url.contains('を'))
+            }),
+            "trailing CJK was swallowed into the href: {out:#?}"
         );
     }
 }

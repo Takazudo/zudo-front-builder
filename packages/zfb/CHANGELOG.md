@@ -4,6 +4,22 @@
 
 ## Unreleased
 
+### Behavior changes
+
+**Transcluded files now honour `markdown.gfm`** (#2390):
+
+Files pulled in by `:::include{file="./snippet.md"}` were parsed with **every GFM construct off**, no matter what `markdown.gfm` said — no tables, strikethrough, task lists, footnotes, or autolink literals.
+
+The symptom was that identical markdown rendered differently depending on where it was written: a pipe table in the page became a table, the byte-identical table in an included file stayed literal text. Since 2.5.0 turned `autolinkLiteral` on by default, bare URLs in included files also silently stopped autolinking.
+
+Included files now inherit the project's resolved `markdown.gfm` configuration and render the same as the equivalent content written inline.
+
+**This changes rendered output for existing sites.** If a project transcludes GFM-flavoured content and was (knowingly or not) relying on it staying literal, that content now renders as GFM. Set the relevant `markdown.gfm.*` flags to `false` to keep the old output. A project that never enabled GFM is unaffected.
+
+The same hardcoded construct set was fixed at a second parse site — the body of a directive written **without** blank lines, and the page prose sitting between two such runs (`DirectiveRegistry::reparse_block`). In practice that one is **not** expected to change rendered output: the re-parse is only reached for content the main parse left as a single plain text run, and the main parse now shares the same constructs. It is fixed to keep the two parse sites in lockstep rather than to change behaviour.
+
+**Known remaining divergence:** math constructs stay off on both paths, unchanged by this fix. On the HTML path `$$…$$` in an included file renders differently from the same content written inline. On the MDX/JSX path the consequence is worse and worth stating plainly: LaTeX leaks out as bare `{…}` expression containers that esbuild rejects, falling the whole page back to `<pre data-zfb-content-fallback>`. Enabling math here would change HTML-path output (that path renders math into real `<pre><code class="language-math …">` elements), and one plugin instance serves both pipelines, so this needs its own fix rather than a flag flip.
+
 ### Build compatibility
 
 **Explicit workspace-root alias claims** (#1883):

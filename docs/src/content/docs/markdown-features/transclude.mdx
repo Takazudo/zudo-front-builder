@@ -85,3 +85,34 @@ emits an Error diagnostic and skips the offending directive rather than looping 
 
 The `:::include` fence line must be separated from surrounding content by blank lines so the
 Markdown parser treats it as a block directive, not inline content.
+
+## GFM constructs in included files
+
+An included file is parsed with the **host project's** `markdown.gfm`
+configuration — the same construct set the including page itself uses. Tables,
+strikethrough, task lists, footnotes, and autolink literals therefore behave
+identically whether the markup is written inline or lives in an included file.
+
+```md
+<!-- snippet.md -->
+| a | b |
+| - | - |
+| 1 | 2 |
+```
+
+With `markdown.gfm.table` on, this renders as a table when transcluded, exactly
+as it would if the same three lines were pasted into the page.
+
+Before zfb #2390 included files were always parsed with **every** GFM construct
+off, regardless of configuration, so the snippet above rendered as literal text
+while the identical markup in the page rendered as a table. If you have content
+that relied on that, turn the relevant `markdown.gfm.*` flag off.
+
+One divergence remains: math (`$$…$$`) is **not** enabled on the transclusion
+path. On the HTML path this means math in an included file renders differently
+from math written inline. On the MDX/JSX path it is more serious — the LaTeX
+leaks out as bare `{…}` expression containers, which the bundler rejects and
+falls the whole page back to its raw-content placeholder. Keep math out of
+included files until this is fixed.
+
+See [GFM](./gfm.mdx) for the full construct list and its defaults.
