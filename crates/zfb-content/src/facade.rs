@@ -558,6 +558,13 @@ pub type InteropMdastNode = crate::directive_parser::DirectiveMdastNode;
 /// crate's `Utf16Positions` for the conversion. Positions returned directly
 /// from this function stay markdown-rs-native (UTF-8 bytes).
 ///
+/// The nested-link normalisation the rendering paths apply
+/// ([`crate::plugins::nested_link`], zfb#2388) is deliberately NOT applied
+/// here: RAW means raw, and `zfb-md-wasm`'s `parseToAst` tests assert this
+/// function's output byte-for-byte. A caller that wants the spec-shaped
+/// tree — no autolink literal inside a link label — wants `renderHtml`,
+/// which is the surface the invalid nested `<a>` actually reaches.
+///
 /// # Errors
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects `input`.
 pub fn parse_mdast(

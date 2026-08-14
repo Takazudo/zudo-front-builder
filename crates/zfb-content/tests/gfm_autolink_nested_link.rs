@@ -268,6 +268,62 @@ fn jsx_emit_label_that_is_a_bare_url_emits_exactly_one_anchor() {
     );
 }
 
+fn emit_jsx(src: &str) -> String {
+    let mut pipeline = Pipeline::with_defaults_and_theme_and_gfm(None, AUTOLINK_ONLY);
+    render_mdx_jsx_module(&mut pipeline, src, "test.mdx").expect("jsx emit must succeed")
+}
+
+/// A markdown link inside an author-written JSX element nests too: a JSX
+/// element's mdast children are ordinary markdown-parsed nodes, so the
+/// autolink pass fires in them. This is the case the CJK passes'
+/// `is_no_recurse` set would have hidden had it been inherited wholesale —
+/// link validation hit the identical JSX blind spot in zfb#2184 / zfb#2223.
+#[test]
+fn jsx_emit_link_inside_a_jsx_element_is_unwrapped() {
+    let inline = emit_jsx("<Note>[see https://example.com now](https://example.com)</Note>\n");
+    assert!(
+        !has_nested_anchor(&inline),
+        "a link inside an inline JSX element must not nest; got:\n{inline}"
+    );
+
+    let block = emit_jsx("<Note>\n\n[http://localhost:4321](http://localhost:4321)\n\n</Note>\n");
+    assert!(
+        !has_nested_anchor(&block),
+        "a link inside a block JSX element must not nest; got:\n{block}"
+    );
+}
+
+/// An MDX element literally named `a` IS an anchor, so a bare URL
+/// autolinked inside it produces a nested anchor and must be unwrapped.
+#[test]
+fn jsx_emit_bare_url_inside_an_mdx_anchor_element_is_unwrapped() {
+    let module = emit_jsx("<a href=\"/x\">bare https://example.com</a>\n");
+    assert!(
+        !has_nested_anchor(&module),
+        "an MDX `<a>` wrapping a bare URL must not nest; got:\n{module}"
+    );
+    assert!(
+        module.contains("https://example.com"),
+        "the URL text must survive the unwrap; got:\n{module}"
+    );
+}
+
+/// The `<a>` handling keys on the lowercase intrinsic name only — a
+/// capitalised component's rendered output is unknowable, so a link
+/// directly inside one must be left alone.
+#[test]
+fn jsx_emit_link_inside_a_component_still_renders_its_anchor() {
+    let module = emit_jsx("<Anchor>[label](https://example.com)</Anchor>\n");
+    assert!(
+        module.contains("href=\"https://example.com\""),
+        "a link inside a component must still render as an anchor; got:\n{module}"
+    );
+    assert!(
+        !has_nested_anchor(&module),
+        "nested anchor emitted:\n{module}"
+    );
+}
+
 // ───────────────────────────────────────────────────────────────────
 // Gating contract.
 // ───────────────────────────────────────────────────────────────────

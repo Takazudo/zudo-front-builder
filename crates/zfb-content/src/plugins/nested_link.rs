@@ -53,11 +53,15 @@
 //! already degraded (`[a [b https://e.com c](d) e](f)`), and inside link
 //! labels in table cells and list items — all reached by the same recursion.
 //!
+//! It fires inside author-written MDX JSX too — a JSX element's mdast
+//! children are ordinary markdown-parsed nodes — so `<Note>[x](url)</Note>`
+//! nests an anchor just like a bare paragraph, and an MDX `<a>` element
+//! wrapping a bare URL nests one inside itself. Both are covered; see
+//! [`is_no_recurse`] and [`is_link`] for why this pass descends into JSX
+//! where the CJK passes stop.
+//!
 //! Constructs the autolink pass does not enter (inline code, raw HTML,
-//! image alt text) never produce the nesting, and MDX JSX / expression
-//! bodies are author-owned; both are skipped via [`is_no_recurse`], the
-//! same boundary set [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink) and
-//! [`CjkFriendlyPlugin`](super::cjk_friendly) use.
+//! image alt text) never produce the nesting and are skipped.
 //!
 //! # Why this is applied at the parse sites, not registered as a visitor
 //!
@@ -108,27 +112,60 @@ fn rewrite(node: &mut MdastNode, inside_link: bool) {
     }
 }
 
-/// True for the two mdast nodes that render as an `<a>` element.
+/// True for a node that renders as an `<a>` element, and so makes anything
+/// beneath it "inside a link".
+///
+/// Covers the two mdast link nodes plus an MDX JSX element literally named
+/// `a` — an author writing `<a href="/x">bare https://example.com</a>` in
+/// MDX gets the autolink fired inside it exactly like a markdown label,
+/// and the result is the same invalid nested anchor. cmark-gfm tracks raw
+/// `<a>`/`</a>` for this reason. Only the lowercase intrinsic name counts:
+/// a capitalised `<Note>` is a component whose rendered output zfb cannot
+/// know, so it is not treated as an anchor.
 ///
 /// `Definition` is deliberately absent — it carries no children and emits
 /// nothing. `FootnoteReference` also renders an anchor, but it is a leaf
 /// the autolink pass cannot nest a link inside, so it is out of scope here.
 fn is_link(node: &MdastNode) -> bool {
-    matches!(node, MdastNode::Link(_) | MdastNode::LinkReference(_))
+    match node {
+        MdastNode::Link(_) | MdastNode::LinkReference(_) => true,
+        MdastNode::MdxJsxFlowElement(e) => e.name.as_deref() == Some("a"),
+        MdastNode::MdxJsxTextElement(e) => e.name.as_deref() == Some("a"),
+        _ => false,
+    }
 }
 
-/// Nodes whose subtree must NOT be touched: verbatim code, raw HTML, and
-/// MDX JSX / expression bodies (author-controlled). Same set as
+/// Nodes whose subtree must NOT be touched: verbatim code and raw HTML
+/// (whose `value` is an opaque string), and MDX expression bodies
+/// (author-written JavaScript).
+///
+/// Deliberately NARROWER than the set
 /// [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink) and
-/// [`CjkFriendlyPlugin`](super::cjk_friendly).
+/// [`CjkFriendlyPlugin`](super::cjk_friendly) use: those also stop at
+/// `MdxJsxFlowElement` / `MdxJsxTextElement`, and inheriting that here
+/// would leave the bug live inside author-written JSX. A JSX element's
+/// mdast *children* are ordinary markdown-parsed nodes — which is exactly
+/// why the autolink pass fires in them — so `<Note>[x](url)</Note>` nests
+/// an anchor just like a bare paragraph does. Only a JSX element's
+/// *attributes* are author-owned, and those are not children, so
+/// descending cannot disturb them. Link validation hit the identical JSX
+/// blind spot and had to descend as well (zfb#2184 / zfb#2223).
+///
+/// Container directives are unaffected either way: `DirectiveRegistry`
+/// expands `:::note` into an `MdxJsxFlowElement` during the visitor chain,
+/// which runs after this pass, over already-normalised content.
+///
+/// Raw inline HTML is not a hole despite being skipped here: markdown-rs
+/// does not autolink text adjacent to inline HTML, so
+/// `<a href="/x">bare https://example.com</a>` in plain markdown already
+/// renders exactly one anchor (verified). The MDX spelling of that same
+/// markup does nest, and is handled by [`is_link`] above.
 fn is_no_recurse(node: &MdastNode) -> bool {
     matches!(
         node,
         MdastNode::Code(_)
             | MdastNode::InlineCode(_)
             | MdastNode::Html(_)
-            | MdastNode::MdxJsxFlowElement(_)
-            | MdastNode::MdxJsxTextElement(_)
             | MdastNode::MdxFlowExpression(_)
             | MdastNode::MdxTextExpression(_)
     )
@@ -192,6 +229,15 @@ mod tests {
 
     fn root(children: Vec<MdastNode>) -> MdastNode {
         MdastNode::Root(Root {
+            children,
+            position: None,
+        })
+    }
+
+    fn jsx_text(name: &str, children: Vec<MdastNode>) -> MdastNode {
+        MdastNode::MdxJsxTextElement(markdown::mdast::MdxJsxTextElement {
+            name: Some(name.to_string()),
+            attributes: vec![],
             children,
             position: None,
         })
@@ -343,24 +389,104 @@ mod tests {
         assert_eq!(tree, expected);
     }
 
-    /// Author-owned / verbatim subtrees are boundaries: a `Link` parked
-    /// inside one is left exactly as written.
+    /// Verbatim subtrees are boundaries: markdown-rs keeps their content in
+    /// an opaque `value` string, so a URL parked in one is left untouched.
     #[test]
-    fn does_not_descend_into_no_recurse_subtrees() {
+    fn does_not_descend_into_verbatim_subtrees() {
         let mut tree = root(vec![para(vec![link(
             "https://x.com",
+            vec![MdastNode::InlineCode(InlineCode {
+                value: "https://code.com".to_string(),
+                position: None,
+            })],
+        )])]);
+        let expected = tree.clone();
+
+        unwrap_nested_links(&mut tree);
+
+        assert_eq!(tree, expected);
+    }
+
+    /// A JSX element's children ARE markdown-parsed, so the autolink fires
+    /// in them and the walk must descend — unlike the CJK passes, which
+    /// stop at JSX. `<Note>` here stands for any component.
+    #[test]
+    fn descends_into_jsx_element_children() {
+        let mut tree = root(vec![para(vec![jsx_text(
+            "Note",
+            vec![link(
+                "https://example.com",
+                vec![
+                    text("see "),
+                    link("https://example.com", vec![text("https://example.com")]),
+                    text(" now"),
+                ],
+            )],
+        )])]);
+
+        unwrap_nested_links(&mut tree);
+
+        let expected = root(vec![para(vec![jsx_text(
+            "Note",
+            vec![link(
+                "https://example.com",
+                vec![text("see "), text("https://example.com"), text(" now")],
+            )],
+        )])]);
+        assert_eq!(tree, expected);
+    }
+
+    /// An MDX element literally named `a` IS an anchor, so a bare URL
+    /// autolinked inside it nests and must be unwrapped.
+    #[test]
+    fn treats_a_lowercase_jsx_a_element_as_a_link_ancestor() {
+        let mut tree = root(vec![para(vec![jsx_text(
+            "a",
             vec![
-                MdastNode::InlineCode(InlineCode {
-                    value: "https://code.com".to_string(),
-                    position: None,
-                }),
-                MdastNode::MdxJsxTextElement(markdown::mdast::MdxJsxTextElement {
-                    name: Some("Foo".to_string()),
-                    attributes: vec![],
-                    children: vec![link("https://inner.com", vec![text("inner")])],
-                    position: None,
-                }),
+                text("bare "),
+                link("https://example.com", vec![text("https://example.com")]),
             ],
+        )])]);
+
+        unwrap_nested_links(&mut tree);
+
+        let expected = root(vec![para(vec![jsx_text(
+            "a",
+            vec![text("bare "), text("https://example.com")],
+        )])]);
+        assert_eq!(tree, expected);
+    }
+
+    /// A capitalised component is NOT an anchor — zfb cannot know what it
+    /// renders — so a link directly inside it stays a link.
+    #[test]
+    fn does_not_treat_a_component_as_a_link_ancestor() {
+        let mut tree = root(vec![para(vec![jsx_text(
+            "Anchor",
+            vec![link(
+                "https://example.com",
+                vec![text("https://example.com")],
+            )],
+        )])]);
+        let expected = tree.clone();
+
+        unwrap_nested_links(&mut tree);
+
+        assert_eq!(tree, expected);
+    }
+
+    /// Author-written JavaScript in an MDX expression is never touched.
+    #[test]
+    fn does_not_descend_into_mdx_expressions() {
+        let mut tree = root(vec![para(vec![link(
+            "https://x.com",
+            vec![MdastNode::MdxTextExpression(
+                markdown::mdast::MdxTextExpression {
+                    value: "\"https://expr.com\"".to_string(),
+                    position: None,
+                    stops: vec![],
+                },
+            )],
         )])]);
         let expected = tree.clone();
 
