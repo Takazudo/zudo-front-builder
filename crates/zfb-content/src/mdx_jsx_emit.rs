@@ -241,6 +241,15 @@ fn mdx_to_jsx_module_inner(
         // markdown-rs's Display already emits "line:col-line:col: reason".
         PipelineError::Parse(format!("{}: {m}", opts.filename))
     })?;
+    // Strip autolink literals markdown-rs created inside a link label
+    // (zfb#2388) before anything else sees them — they would emit a nested
+    // `<a>`, which is invalid HTML. Gated on the construct that produces the
+    // nesting so an autolink-off compile stays byte-identical; the twin call
+    // sites are `Pipeline::run` / `run_with_context`, and the rationale for
+    // treating this at the parse site lives in `plugins::nested_link`.
+    if parse_options.constructs.gfm_autolink_literal {
+        crate::plugins::unwrap_nested_links(&mut root);
+    }
 
     // When a pipeline is supplied, run the mdast visitors and detour
     // through hast (#121). Otherwise stay on the original mdast→JSX
