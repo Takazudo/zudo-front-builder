@@ -50,7 +50,7 @@ use crate::syntect_highlight::Highlighter;
 // and `zfb::config`'s `pub use zfb_content::ResolvedGfmConstructs` are
 // unaffected.
 pub use zfb_md_ast::gfm_constructs::{
-    constructs_for_jsx_emit, constructs_for_pipeline, ResolvedGfmConstructs,
+    constructs_for_jsx_emit, constructs_for_pipeline, constructs_for_target, ResolvedGfmConstructs,
 };
 
 /// Version prefix for the [`Pipeline::config_fingerprint`] descriptor.
@@ -290,7 +290,7 @@ fn sort_value_keys(value: &mut serde_json::Value) {
 // Re-exported here under their historical paths so existing consumers of
 // `zfb_content::pipeline::{HastNode, HastVisitor, ...}` continue to
 // resolve.
-pub use zfb_md_ast::{BuildContext, HastNode, HastVisitor, MdastVisitor};
+pub use zfb_md_ast::{BuildContext, HastNode, HastVisitor, MdastVisitor, SecondaryParseTarget};
 
 /// Pipeline error type.
 #[derive(Debug, thiserror::Error)]
@@ -556,7 +556,7 @@ impl Pipeline {
     /// agrees on the same parser constructs — which is what keeps the
     /// snapshot ↔ bundler JSX `content_hash` byte-identical. The
     /// land-mine comment at
-    /// `crates/zfb-content/src/content_bridge.rs:118-153` calls this
+    /// `zfb_content::content_bridge::build_snapshot_with_config` calls this
     /// out explicitly.
     ///
     /// `gfm_label_start_footnote` is mirrored to the resolved
@@ -1488,7 +1488,7 @@ impl Pipeline {
     /// this entry point so every site that materialises MDX content
     /// agrees on the same parser constructs — the snapshot ↔ bundler
     /// hash parity requirement called out in
-    /// `crates/zfb-content/src/content_bridge.rs:118-153`.
+    /// `zfb_content::content_bridge::build_snapshot_with_config`.
     #[must_use]
     pub fn with_defaults_and_theme_and_gfm(
         theme: Option<&str>,
@@ -2065,6 +2065,7 @@ impl Pipeline {
     /// map lookup sees the final mdast link nodes.
     pub fn apply_mdast_visitors(&mut self, node: &mut MdastNode) {
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Jsx);
             v.visit(node);
         }
         // Apply ResolveLinksPlugin last in the mdast phase (after the
@@ -2168,6 +2169,7 @@ impl Pipeline {
         self.normalize_nested_links(&mut mdast);
 
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Html);
             v.visit(&mut mdast);
         }
 
@@ -2210,6 +2212,7 @@ impl Pipeline {
         self.normalize_nested_links(&mut mdast);
 
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Html);
             v.visit_with_context(&mut mdast, ctx);
         }
         if let Some(p) = self.resolve_links.as_mut() {
@@ -2244,6 +2247,7 @@ impl Pipeline {
         ctx: &mut BuildContext<'_>,
     ) {
         for v in &mut self.mdast_visitors {
+            v.set_secondary_parse_target(SecondaryParseTarget::Jsx);
             v.visit_with_context(node, ctx);
         }
         if let Some(p) = self.resolve_links.as_mut() {

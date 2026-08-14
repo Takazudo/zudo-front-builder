@@ -78,8 +78,8 @@ use std::sync::Arc;
 
 use markdown::mdast::Node as MdastNode;
 use zfb_md_ast::{
-    constructs_for_pipeline, unwrap_nested_links, BuildContext, CjkAutolinkBoundaryPlugin,
-    MdastVisitor, ReadOutcome, ReadRecorder, ResolvedGfmConstructs,
+    constructs_for_target, unwrap_nested_links, BuildContext, CjkAutolinkBoundaryPlugin,
+    MdastVisitor, ReadOutcome, ReadRecorder, ResolvedGfmConstructs, SecondaryParseTarget,
 };
 
 use crate::TranscludeConfig;
@@ -114,18 +114,22 @@ pub struct TranscludePlugin {
     /// `markdown.gfm` config instead of silently parsing with every GFM
     /// construct off.
     ///
-    /// This is the HTML/collection-walker construct set
-    /// ([`constructs_for_pipeline`]) — math stays off, as it was before
-    /// #2390. The same plugin instance serves both `Pipeline::run` and
-    /// the JSX-emit path, so it cannot be path-aware, and enabling math
-    /// here would change HTML-path output (that path renders `Math` into
-    /// a real `<pre><code class="language-math …">` element, it does not
-    /// pass it through). Consequence, unchanged by #2390 and NOT
-    /// cosmetic: on the JSX-emit path LaTeX in an included file leaks
-    /// out as bare `{…}` expression containers that esbuild rejects,
-    /// falling the whole page back to `<pre data-zfb-content-fallback>`.
-    /// Tracked separately; see the #2390 changelog entry.
+    /// The math constructs on top of this set are chosen per-run from
+    /// [`TranscludePlugin::target`], not stored here — see that field.
     gfm: ResolvedGfmConstructs,
+    /// Which emit path the current pipeline run is feeding (zfb#2397).
+    ///
+    /// Set by [`MdastVisitor::set_secondary_parse_target`] at the top of
+    /// every `Pipeline` mdast dispatch loop, and handed to
+    /// [`constructs_for_target`] at the parse call: `Html` keeps math off
+    /// (byte-identical to before), `Jsx` turns it on. The same plugin
+    /// instance serves both paths, so this cannot be a construction-time
+    /// knob; `with_gfm`'s signature is deliberately unchanged.
+    ///
+    /// Defaults to `Html`, the conservative choice: a plugin driven
+    /// outside a `Pipeline` loop (tests, direct `visit_with_context`
+    /// callers) keeps exactly the pre-#2397 construct set.
+    target: SecondaryParseTarget,
     /// The project's `markdown.cjkFriendly` setting (zfb#1105).
     ///
     /// Stored raw rather than pre-ANDed with `gfm.autolink_literal`:
@@ -155,6 +159,7 @@ impl TranscludePlugin {
             recorder: None,
             gfm: ResolvedGfmConstructs::ALL_OFF,
             cjk_friendly: false,
+            target: SecondaryParseTarget::Html,
         }
     }
 
@@ -186,6 +191,10 @@ impl TranscludePlugin {
 impl MdastVisitor for TranscludePlugin {
     /// No-op when called without context — cannot resolve file paths.
     fn visit(&mut self, _node: &mut MdastNode) {}
+
+    fn set_secondary_parse_target(&mut self, target: SecondaryParseTarget) {
+        self.target = target;
+    }
 
     /// Context-aware path: resolves include directives using `ctx.source_path`
     /// and `ctx.project_root`.
@@ -219,6 +228,7 @@ impl MdastVisitor for TranscludePlugin {
             recorder: self.recorder.as_deref(),
             gfm: self.gfm,
             cjk_friendly: self.cjk_friendly,
+            target: self.target,
         };
         expand_includes_in_node(node, &source_dir, &env, &mut visited, 0, ctx);
     }
@@ -240,6 +250,10 @@ struct ExpandEnv<'a> {
     /// fields on [`TranscludePlugin`].
     gfm: ResolvedGfmConstructs,
     cjk_friendly: bool,
+    /// Which emit path this run feeds — decides whether the included
+    /// file parses with math constructs on. See the matching field on
+    /// [`TranscludePlugin`].
+    target: SecondaryParseTarget,
 }
 
 /// Apply the post-parse normalisations that [`ExpandEnv::gfm`] makes
@@ -528,8 +542,12 @@ fn resolve_and_expand(
     // (zfb#2390) — a bare `ParseOptions::mdx()` here inherits
     // `Constructs::default()`, where every `gfm_*` flag is false, so the
     // same markdown used to render differently inline vs transcluded.
+    //
+    // The math constructs on top of that follow the emit path (zfb#2397),
+    // matching what the top-level parse of each path uses: math off for
+    // HTML, on for JSX. See [`ExpandEnv::target`].
     let opts = markdown::ParseOptions {
-        constructs: constructs_for_pipeline(env.gfm),
+        constructs: constructs_for_target(env.gfm, env.target),
         ..markdown::ParseOptions::mdx()
     };
     let mut included_mdast = match markdown::to_mdast(&content, &opts) {
