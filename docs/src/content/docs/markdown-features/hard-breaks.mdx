@@ -57,6 +57,10 @@ The option only rewrites soft line breaks in prose-like Markdown nodes. It
 does not split fenced code, inline code, raw HTML, or MDX JSX/expression
 content.
 
+Content reached through a secondary parse site — transcluded files
+(`:::include`) and directive bodies re-parsed by the directive registry —
+now follows this setting too (#2398).
+
 ## Ordering note
 
 `HardBreaksPlugin` runs in the mdast phase after

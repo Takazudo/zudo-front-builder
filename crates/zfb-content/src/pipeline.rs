@@ -332,6 +332,21 @@ pub struct Pipeline {
     /// Not a fingerprint input of its own: `cjk_friendly` is already
     /// covered by the descriptor.
     cjk_friendly: bool,
+    /// The project's `markdown.hardBreaks` setting, as supplied to the
+    /// constructor (zfb#2398).
+    ///
+    /// Mirrors [`Pipeline::cjk_friendly`] exactly: set unconditionally by
+    /// every full-config constructor, before any visitor wiring, so
+    /// `register_features_config_derived` can forward the project's raw
+    /// setting to the same two secondary parse sites (transclude and
+    /// `DirectiveRegistry::reparse_block`), which re-enter
+    /// `markdown::to_mdast` from inside the visitor chain and so are
+    /// never reached by the chain-index-N `HardBreaksPlugin` copy
+    /// `Pipeline` wires into its own chain (zfb#2398).
+    ///
+    /// Not a fingerprint input of its own: `hard_breaks` is already
+    /// covered by the descriptor.
+    hard_breaks: bool,
     /// When the `StripMdExtensionPlugin` is wired into the pipeline,
     /// this flag controls whether the plugin appends `/` to internal
     /// hrefs after stripping `.md`/`.mdx` (and to any extensionless
@@ -576,6 +591,7 @@ impl Pipeline {
             },
             gfm_constructs: resolved,
             cjk_friendly: false,
+            hard_breaks: false,
             add_trailing_slash: true,
             resolve_links: None,
             jsx_nested_link_collector: None,
@@ -1866,6 +1882,9 @@ impl Pipeline {
         // sites see the project's setting rather than a branch outcome
         // (zfb#2390 — see the field doc).
         p.cjk_friendly = cjk_friendly;
+        // Same rationale as `p.cjk_friendly` above, for `markdown.hardBreaks`
+        // (zfb#2398 — see the field doc).
+        p.hard_breaks = hard_breaks;
         // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
         // Config-derived wiring throughout this constructor is pushed via
         // the non-invalidating helpers (invalidation rule — see
@@ -2443,10 +2462,17 @@ fn register_features_config_derived(
     // parsed later cannot rely on them).
     let secondary_parse_gfm = p.gfm_constructs;
     let secondary_parse_cjk_friendly = p.cjk_friendly;
+    // `markdown.hardBreaks` (zfb#2398), threaded to the same two secondary
+    // parse sites for the same reason as `secondary_parse_cjk_friendly`
+    // above: `HardBreaksPlugin` is a visitor at a fixed chain index and
+    // never sees a subtree parsed later, from inside the chain, by
+    // transclude or the directive registry.
+    let secondary_parse_hard_breaks = p.hard_breaks;
 
     if let Some(cfg) = &features.transclude {
         let mut plugin = zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone())
-            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
+            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly)
+            .with_hard_breaks(secondary_parse_hard_breaks);
         if let Some(recorder) = read_recorder {
             plugin = plugin.with_recorder(Arc::clone(recorder));
         }
@@ -2499,8 +2525,9 @@ fn register_features_config_derived(
         use crate::plugins::directives::DirectiveRegistry;
         use zfb_md_ast::into_directive_def;
 
-        let mut registry =
-            DirectiveRegistry::new().with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
+        let mut registry = DirectiveRegistry::new()
+            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly)
+            .with_hard_breaks(secondary_parse_hard_breaks);
         if let Some(dir_map) = &features.directives {
             for (name, spec) in dir_map {
                 registry.register(into_directive_def(name, spec));
