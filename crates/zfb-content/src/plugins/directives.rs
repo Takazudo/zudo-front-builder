@@ -55,7 +55,8 @@ use markdown::mdast::{
     Node as MdastNode, Text,
 };
 
-use crate::pipeline::{BuildContext, MdastVisitor};
+use crate::pipeline::{constructs_for_pipeline, BuildContext, MdastVisitor, ResolvedGfmConstructs};
+use crate::plugins::{unwrap_nested_links, CjkAutolinkBoundaryPlugin};
 use zfb_md_ast::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
 
 // Directive definition types moved to `zfb-md-ast` so `zfb-md-extras`
@@ -74,13 +75,52 @@ pub use zfb_md_ast::{
 /// (or [`MdxJsxTextElement`] for inline text directives) nodes, and
 /// records [`DirectiveDiagnostic`]s for unknown directive names it
 /// encounters.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DirectiveRegistry {
     defs: HashMap<String, DirectiveDef>,
     diagnostics: Vec<DirectiveDiagnostic>,
     /// True if any registered directive has `kind == Text`. Cached so
     /// the inline scanner can be skipped in the common case.
     has_text_dirs: bool,
+    /// GFM constructs [`reparse_block`] parses with (zfb#2390).
+    ///
+    /// Defaults to [`ResolvedGfmConstructs::ALL_OFF`], reproducing the
+    /// bare `ParseOptions::mdx()` that site used before #2390 — so a
+    /// registry built by [`DirectiveRegistry::new`] alone stays
+    /// byte-identical. `zfb-content`'s feature wiring calls
+    /// [`DirectiveRegistry::with_gfm`] with the pipeline's own resolved
+    /// set.
+    ///
+    /// This governs the two `reparse_block` callers: a collapsed
+    /// (blank-line-less) directive body, and — via `flush_prose` —
+    /// ordinary page prose that merely sits between two collapsed
+    /// directive runs. Both now match how the same markdown renders at
+    /// top level. Math stays off here, exactly as for
+    /// [`crate::plugins::nested_link`]'s sibling site in transclude; see
+    /// the #2390 changelog entry.
+    gfm: ResolvedGfmConstructs,
+    /// Whether a re-parsed block gets the CJK autolink boundary fix
+    /// (zfb#1105). Mirrors the pipeline's own
+    /// `cjk_friendly && gfm.autolink_literal` gate — see the matching
+    /// field on `zfb_md_extras::transclude::TranscludePlugin`.
+    cjk_autolink_boundary: bool,
+}
+
+impl Default for DirectiveRegistry {
+    /// Empty registry that re-parses with every GFM construct OFF.
+    ///
+    /// Hand-written rather than derived: a derived `Default` would give
+    /// `ResolvedGfmConstructs::default()`, which is `CONSERVATIVE` (three
+    /// constructs ON) — silently changing what a bare registry does.
+    fn default() -> Self {
+        Self {
+            defs: HashMap::new(),
+            diagnostics: Vec::new(),
+            has_text_dirs: false,
+            gfm: ResolvedGfmConstructs::ALL_OFF,
+            cjk_autolink_boundary: false,
+        }
+    }
 }
 
 impl DirectiveRegistry {
@@ -88,6 +128,19 @@ impl DirectiveRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Re-parse collapsed directive bodies and inter-run prose with
+    /// `gfm`, applying the post-parse normalisations those constructs
+    /// make mandatory (zfb#2390).
+    ///
+    /// `cjk_autolink_boundary` must carry the caller's own
+    /// `cjk_friendly && gfm.autolink_literal` decision.
+    #[must_use]
+    pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_autolink_boundary: bool) -> Self {
+        self.gfm = gfm;
+        self.cjk_autolink_boundary = cjk_autolink_boundary;
+        self
     }
 
     /// Register a directive. Later registrations under the same name
@@ -571,7 +624,7 @@ impl DirectiveRegistry {
         if text.trim().is_empty() {
             return;
         }
-        out.extend(reparse_block(&text));
+        out.extend(reparse_block(&text, self.gfm, self.cjk_autolink_boundary));
     }
 
     /// Build the JSX children of a collapsed container from its raw body
@@ -598,7 +651,7 @@ impl DirectiveRegistry {
         // body as plain markdown blocks.
         match self.transform_collapsed_run(&body_text, None) {
             Some(nodes) => nodes,
-            None => reparse_block(&body_text),
+            None => reparse_block(&body_text, self.gfm, self.cjk_autolink_boundary),
         }
     }
 
@@ -1537,16 +1590,49 @@ fn find_collapsed_closer(lines: &[&str], from: usize, open_colons: usize) -> Opt
 /// return its top-level block nodes. Used to materialise collapsed-directive
 /// bodies and inter-run prose as proper mdast (Paragraph/list/etc.), matching
 /// the shape the blank-line-separated form produces.
-fn reparse_block(text: &str) -> Vec<MdastNode> {
-    match markdown::to_mdast(text, &markdown::ParseOptions::mdx()) {
-        Ok(MdastNode::Root(root)) => root.children,
-        _ => vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
+///
+/// Constructs come from the host project's resolved `markdown.gfm`
+/// (zfb#2390) — a bare `ParseOptions::mdx()` inherits
+/// `Constructs::default()`, where every `gfm_*` flag is false, so a table
+/// or task list written inside a collapsed directive body used to render
+/// as literal text while the identical markup at top level rendered
+/// normally.
+///
+/// The pipeline normalises its own top-level parse ahead of the visitor
+/// chain; this site parses from *within* that chain, so it owns the same
+/// normalisation for what it produces. See
+/// `zfb_md_extras::transclude::normalize_included_subtree` for the twin
+/// at the other secondary parse site.
+fn reparse_block(
+    text: &str,
+    gfm: ResolvedGfmConstructs,
+    cjk_autolink_boundary: bool,
+) -> Vec<MdastNode> {
+    let opts = markdown::ParseOptions {
+        constructs: constructs_for_pipeline(gfm),
+        ..markdown::ParseOptions::mdx()
+    };
+    let fallback = || {
+        vec![MdastNode::Paragraph(markdown::mdast::Paragraph {
             children: vec![MdastNode::Text(Text {
                 value: text.to_string(),
                 position: None,
             })],
             position: None,
-        })],
+        })]
+    };
+    let Ok(mut root) = markdown::to_mdast(text, &opts) else {
+        return fallback();
+    };
+    if gfm.autolink_literal {
+        unwrap_nested_links(&mut root);
+        if cjk_autolink_boundary {
+            CjkAutolinkBoundaryPlugin::new().visit(&mut root);
+        }
+    }
+    match root {
+        MdastNode::Root(root) => root.children,
+        _ => fallback(),
     }
 }
 
