@@ -34,7 +34,7 @@ local development builds fall back to the Rust manifest version placeholder.
     "gfm": {
       "strikethrough": true,
       "table": true,
-      "autolinkLiteral": false,
+      "autolinkLiteral": true,
       "taskListItem": false,
       "footnoteDefinition": false
     },

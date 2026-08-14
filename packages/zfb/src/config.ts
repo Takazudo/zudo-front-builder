@@ -848,10 +848,12 @@ export type MarkdownConfig = {
    *   below.
    *
    * When `markdown` itself is omitted entirely, the conservative
-   * default applies: `strikethrough: true`, `table: true`, every other
-   * GFM construct off. This is the smallest behavioural delta from
-   * zfb's historical effective state (table-only). Projects that want
-   * the full GFM surface should opt in with `gfm: true`.
+   * default applies: `strikethrough: true`, `table: true`,
+   * `autolinkLiteral: true`, task lists and footnotes off. Those three
+   * are the constructs GFM-accustomed authors expect without config;
+   * task lists and footnotes change document structure, so they stay
+   * opt-in. Projects that want the full GFM surface should opt in with
+   * `gfm: true`.
    */
   gfm?: GfmFlag;
 
@@ -1256,7 +1258,8 @@ export type GfmFlag = boolean | GfmConstructs;
 /**
  * Per-construct opt-in / opt-out for GFM. Every field is optional;
  * omitted fields fall back to the conservative default
- * (`strikethrough: true`, `table: true`, others `false`).
+ * (`strikethrough: true`, `table: true`, `autolinkLiteral: true`,
+ * others `false`).
  *
  * Mirrors `GfmConstructs` in crates/zfb/src/config.rs.
  */

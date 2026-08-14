@@ -219,7 +219,7 @@ constructs the MDX parser recognises. The field accepts three shapes:
 
 2. **Partial object** — toggle individual constructs. Fields you omit
    fall back to the conservative default (`strikethrough: true`,
-   `table: true`, everything else off).
+   `table: true`, `autolinkLiteral: true`, everything else off).
 
    ```ts
    // zfb.config.ts
@@ -239,12 +239,14 @@ constructs the MDX parser recognises. The field accepts three shapes:
    ```
 
 3. **Omitted entirely** — the parser uses the conservative default.
-   `~~text~~` parses as `<del>text</del>` and pipe tables render as
-   `<table>`; every other GFM construct stays off.
+   `~~text~~` parses as `<del>text</del>`, pipe tables render as
+   `<table>`, and bare URLs like `https://example.com` become links;
+   task lists and footnote definitions stay off.
 
    ```ts
    export default defineConfig({
-     // no `markdown` field — strikethrough + table on, everything else off
+     // no `markdown` field — strikethrough + table + autolink literals on,
+     // task lists + footnotes off
    });
    ```
 

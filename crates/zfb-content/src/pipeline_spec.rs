@@ -492,10 +492,10 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            default_fp, "0d4dd447ba9696acd7dcb4c12593fe4be396c84102ca0b4d56afc0ecc65a4f21",
-            "default-spec fingerprint drifted from pre-#977 HEAD (re-captured for the \
-             zfb#2250 githubAutolinks removal — the canonical features JSON shape lost a \
-             key, see that PR)"
+            default_fp, "f1ccd59bb3526f4665ac11b6a69639cc381c5dc807bda4f83157fc3b5d455c92",
+            "default-spec fingerprint drifted from pre-#977 HEAD (re-captured when the \
+             conservative GFM default flipped autolink_literal on — the default \
+             constructs descriptor changed, see that commit)"
         );
 
         let feats: zfb_md_extras::MarkdownFeaturesConfig =
@@ -514,10 +514,10 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            armed_fp, "91b1274c82b95a09a2b6235956a1d78266a5ee38883e191e10e9a972b6bbe2e6",
-            "linkValidation-armed fingerprint drifted from pre-#977 HEAD (re-captured for the \
-             zfb#2250 githubAutolinks removal — the canonical features JSON shape lost a \
-             key, see that PR)"
+            armed_fp, "3b5a20049802f8d87baadc8c88238fcf2264f153e5767fdae548afbcfafd672f",
+            "linkValidation-armed fingerprint drifted from pre-#977 HEAD (re-captured when \
+             the conservative GFM default flipped autolink_literal on — the default \
+             constructs descriptor changed, see that commit)"
         );
 
         // Draining the channels is part of the observational contract

@@ -61,7 +61,7 @@ Boolean shorthand は**普遍ではありません**。値の形に `boolean` �
 
 | Feature | Tier | Config key | Value shape | Default / gating |
 |---|---|---|---|---|
-| [GFM 構文](./gfm.mdx) | Core | `markdown.gfm` | `boolean \| { strikethrough?: boolean; table?: boolean; autolinkLiteral?: boolean; taskListItem?: boolean; footnoteDefinition?: boolean }` | 省略時は保守的なデフォルト（`strikethrough` / `table` が on、残り 3 つは off）。`true` / `false` のショートハンドは 5 つすべてを切り替える。 |
+| [GFM 構文](./gfm.mdx) | Core | `markdown.gfm` | `boolean \| { strikethrough?: boolean; table?: boolean; autolinkLiteral?: boolean; taskListItem?: boolean; footnoteDefinition?: boolean }` | 省略時は保守的なデフォルト（`strikethrough` / `table` / `autolinkLiteral` が on、残り 2 つは off）。`true` / `false` のショートハンドは 5 つすべてを切り替える。 |
 | [CJK フレンドリーな強調](./cjk-friendly.mdx) | Core | `markdown.cjkFriendly` | `boolean` | `true`; opt out するには `false`。 |
 | [見出しリンク](./heading-links.mdx) | Core | `markdown.features.headingIds` | `{ strategy?: "flat" \| "hierarchical" }` | Plugin は常に有効。デフォルト strategy は `"flat"`。 |
 | [コードブロックのタイトル](./code-title.mdx) | Core | none | n/a | 常に有効。 |

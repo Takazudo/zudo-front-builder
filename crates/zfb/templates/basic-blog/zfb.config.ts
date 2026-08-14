@@ -33,9 +33,9 @@ export default defineConfig({
   ],
 
   markdown: {
-    // A partial object only overrides the keys it names, so strikethrough
-    // and tables keep their on-by-default values; task lists and footnotes
-    // are the additional opt-ins.
+    // A partial object only overrides the keys it names, so strikethrough,
+    // tables, and autolink literals keep their on-by-default values; task
+    // lists and footnotes are the additional opt-ins.
     gfm: {
       taskListItem: true,
       footnoteDefinition: true,

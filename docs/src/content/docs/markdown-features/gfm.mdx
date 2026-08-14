@@ -13,18 +13,19 @@ which of the five are active.
 ## Conservative default
 
 When `markdown.gfm` is absent — including when the whole `markdown` block
-is omitted — zfb applies a **conservative default**: strikethrough and
-tables are on; autolink literals, task list items, and footnote
-definitions are off. This is the smallest behavioral delta from zfb's
-historical effective state (table-only), rather than turning on the full
-GFM surface unconditionally.
+is omitted — zfb applies a **conservative default**: strikethrough,
+tables, and autolink literals are on; task list items and footnote
+definitions are off. Those three are the constructs GFM-accustomed
+authors expect without config; task lists and footnotes change document
+structure, so they stay opt-in rather than turning on the full GFM
+surface unconditionally.
 
 ```ts title="zfb.config.ts"
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   // markdown.gfm omitted — conservative default applies:
-  // strikethrough + table on, everything else off
+  // strikethrough + table + autolink literals on, task lists + footnotes off
 });
 ```
 
@@ -57,8 +58,8 @@ off — including strikethrough and tables.
 export default defineConfig({
   markdown: {
     gfm: {
-      autolinkLiteral: true,
       taskListItem: true,
+      autolinkLiteral: false,
       // strikethrough, table, footnoteDefinition omitted here fall back
       // to the conservative default, not to `false`
     },
@@ -67,8 +68,10 @@ export default defineConfig({
 ```
 
 Fields you omit from the object keep the conservative-default value for
-that construct (`strikethrough: true`, `table: true`, the other three
-`false`). Fields you set explicitly are honored verbatim.
+that construct (`strikethrough: true`, `table: true`,
+`autolinkLiteral: true`, the other two `false`). Fields you set
+explicitly are honored verbatim — the example above opts *in* to task
+lists and *out* of autolink literals.
 
 ## Constructs
 
@@ -76,7 +79,7 @@ that construct (`strikethrough: true`, `table: true`, the other three
 |---|---|---|---|
 | Strikethrough (`~~text~~`) | `strikethrough` | On | `<del>text</del>` |
 | Pipe tables | `table` | On | `<table>` |
-| Autolink literal (bare `https://example.com`) | `autolinkLiteral` | Off | `<a href="...">` |
+| Autolink literal (bare `https://example.com`) | `autolinkLiteral` | On | `<a href="...">` |
 | Task list items (`- [x]` / `- [ ]`) | `taskListItem` | Off | Checkbox — see below |
 | Footnote definitions (`[^ref]: ...`) | `footnoteDefinition` | Off | Footnote section — see below |
 

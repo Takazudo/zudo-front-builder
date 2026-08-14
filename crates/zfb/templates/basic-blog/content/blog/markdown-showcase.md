@@ -22,6 +22,7 @@ GFM tables are on by default — no config needed. See the
 | ---------------- | --------------------------------------- | ------------ |
 | Tables           | `markdown.gfm.table`                    | default on   |
 | Strikethrough    | `markdown.gfm.strikethrough`            | default on   |
+| Autolink literals | `markdown.gfm.autolinkLiteral`         | default on   |
 | Task lists       | `markdown.gfm.taskListItem`             | opted in     |
 | Footnotes        | `markdown.gfm.footnoteDefinition`       | opted in     |
 | Alerts           | `markdown.features.githubAlerts`        | opted in     |
@@ -32,6 +33,11 @@ GFM tables are on by default — no config needed. See the
 
 Wrapping text in double tildes marks it as removed: ~~this sentence was cut~~.
 Like tables, it is on unless you disable it.
+
+## Autolink literals
+
+A bare URL becomes a link on its own, no angle brackets needed:
+https://zfb.takazudomodular.com. Also on unless you disable it.
 
 ## Task lists
 

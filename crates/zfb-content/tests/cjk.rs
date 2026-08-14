@@ -444,13 +444,20 @@ fn autolink_split_runs_before_cjk_emphasis_retokenisation() {
     assert_lacks(&html, "example.com**", input);
 }
 
-/// Gating: with autolink-literal OFF (the default), bare URLs are not
+/// Gating: with autolink-literal explicitly opted OFF, bare URLs are not
 /// autolinked at all, so the plugin has nothing to do and the URL stays
 /// literal text — no `<a>` tag, no behavior change.
 #[test]
 fn autolink_off_leaves_bare_url_as_text() {
+    use zfb_content::pipeline::ResolvedGfmConstructs;
+    let resolved = ResolvedGfmConstructs {
+        autolink_literal: false,
+        ..ResolvedGfmConstructs::CONSERVATIVE
+    };
     let input = "詳細はhttps://example.com参照してください。\n";
-    let html = render(input);
+    let mut p = Pipeline::with_defaults_and_gfm(resolved);
+    let hast = p.run(input).expect("pipeline runs");
+    let html = serialize(&hast);
     assert_lacks(&html, "<a href", input);
     assert_contains(&html, "https://example.com参照してください。", input);
 }

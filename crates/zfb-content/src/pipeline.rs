@@ -71,14 +71,14 @@ pub struct ResolvedGfmConstructs {
 }
 
 impl ResolvedGfmConstructs {
-    /// Conservative default — strikethrough + table on, every other
-    /// GFM construct off. See
+    /// Conservative default — strikethrough, table, and autolink
+    /// literal on; task-list-item and footnote-definition off. See
     /// `zfb::config::ResolvedGfmConstructs::CONSERVATIVE` for the full
     /// rationale; both constants must stay in sync.
     pub const CONSERVATIVE: Self = Self {
         strikethrough: true,
         table: true,
-        autolink_literal: false,
+        autolink_literal: true,
         task_list_item: false,
         footnote_definition: false,
     };

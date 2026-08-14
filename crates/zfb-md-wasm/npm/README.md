@@ -222,7 +222,7 @@ interface ParseToAstOptions {
     gfm?: {
       strikethrough?: boolean; // default true
       table?: boolean; // default true
-      autolinkLiteral?: boolean; // default false
+      autolinkLiteral?: boolean; // default true
       taskListItem?: boolean; // default false
       footnoteDefinition?: boolean; // default false; controls definitions + references
     };

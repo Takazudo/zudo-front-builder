@@ -1210,8 +1210,8 @@ pub struct PluginConfig {
 pub struct MarkdownConfig {
     /// Enable GFM constructs. Accepts three shapes — see [`GfmFlag`].
     /// Absent / `None` defers to the conservative resolved default in
-    /// [`MarkdownConfig::resolve_constructs`] (strikethrough + table on,
-    /// other GFM constructs off).
+    /// [`MarkdownConfig::resolve_constructs`] (strikethrough, table, and
+    /// autolink-literal on; task-list-item and footnote-definition off).
     #[serde(default)]
     pub gfm: Option<GfmFlag>,
 
@@ -1356,8 +1356,8 @@ pub enum GfmFlag {
 
 /// Per-construct opt-in / opt-out for GFM. Every field is optional;
 /// omitted fields fall back to the conservative default
-/// (`strikethrough: Some(true)`, `table: Some(true)`, others
-/// `Some(false)` at resolve time — see
+/// (`strikethrough`, `table`, and `autolink_literal` resolve `true`,
+/// the others `false` — see
 /// [`MarkdownConfig::resolve_constructs`]).
 ///
 /// Wrapping each field in `Option<bool>` (rather than plain `bool`)
@@ -4538,10 +4538,11 @@ mod tests {
         let resolved = resolve_gfm_constructs(None);
         assert_eq!(resolved, ResolvedGfmConstructs::CONSERVATIVE);
         // Spell it out so future readers can audit the intent at a
-        // glance — strikethrough + table on, everything else off.
+        // glance — strikethrough, table, and autolink literal on;
+        // task lists and footnotes off.
         assert!(resolved.strikethrough);
         assert!(resolved.table);
-        assert!(!resolved.autolink_literal);
+        assert!(resolved.autolink_literal);
         assert!(!resolved.task_list_item);
         assert!(!resolved.footnote_definition);
     }

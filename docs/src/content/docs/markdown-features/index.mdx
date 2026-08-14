@@ -70,7 +70,7 @@ time.
 
 | Feature | Tier | Config key | Value shape | Default / gating |
 |---|---|---|---|---|
-| [GFM constructs](./gfm.mdx) | Core | `markdown.gfm` | `boolean \| { strikethrough?: boolean; table?: boolean; autolinkLiteral?: boolean; taskListItem?: boolean; footnoteDefinition?: boolean }` | Absent → conservative default (`strikethrough`/`table` on, other three off). `true`/`false` shorthand toggles all five. |
+| [GFM constructs](./gfm.mdx) | Core | `markdown.gfm` | `boolean \| { strikethrough?: boolean; table?: boolean; autolinkLiteral?: boolean; taskListItem?: boolean; footnoteDefinition?: boolean }` | Absent → conservative default (`strikethrough`/`table`/`autolinkLiteral` on, other two off). `true`/`false` shorthand toggles all five. |
 | [CJK-friendly emphasis](./cjk-friendly.mdx) | Core | `markdown.cjkFriendly` | `boolean` | `true`; set `false` to opt out. |
 | [Heading links](./heading-links.mdx) | Core | `markdown.features.headingIds` | `{ strategy?: "flat" \| "hierarchical" }` | Plugin always on; default strategy is `"flat"`. |
 | [Code block title](./code-title.mdx) | Core | none | n/a | Always on. |

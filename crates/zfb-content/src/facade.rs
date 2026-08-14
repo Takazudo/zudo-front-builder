@@ -75,7 +75,7 @@ pub struct GfmOptions {
     pub strikethrough: bool,
     /// GFM pipe-style tables. Default: `true`.
     pub table: bool,
-    /// GFM autolink literal (bare URLs). Default: `false`.
+    /// GFM autolink literal (bare URLs). Default: `true`.
     pub autolink_literal: bool,
     /// GFM task list items (`- [x]` / `- [ ]`). Default: `false`.
     pub task_list_item: bool,
@@ -84,13 +84,14 @@ pub struct GfmOptions {
 }
 
 impl Default for GfmOptions {
-    /// Mirrors [`ResolvedGfmConstructs::CONSERVATIVE`]: strikethrough +
-    /// table on, every other GFM construct off.
+    /// Mirrors [`ResolvedGfmConstructs::CONSERVATIVE`]: strikethrough,
+    /// table, and autolink literal on; task-list-item and
+    /// footnote-definition off.
     fn default() -> Self {
         Self {
             strikethrough: true,
             table: true,
-            autolink_literal: false,
+            autolink_literal: true,
             task_list_item: false,
             footnote_definition: false,
         }
@@ -214,7 +215,7 @@ fn default_class_highlight_prefix() -> String {
 ///   "gfm": {
 ///     "strikethrough": true,
 ///     "table": true,
-///     "autolinkLiteral": false,
+///     "autolinkLiteral": true,
 ///     "taskListItem": false,
 ///     "footnoteDefinition": false
 ///   },

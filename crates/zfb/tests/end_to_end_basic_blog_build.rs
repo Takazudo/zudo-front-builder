@@ -73,11 +73,19 @@ const POST_SLUGS: [&str; 3] = ["hello-zfb", "markdown-showcase", "styling-with-t
 /// `zfb.config.ts` `markdown` key (or "core behaviour" for features that
 /// need no config) each substring proves, so a failure names the feature
 /// rather than just the missing bytes.
-const SHOWCASE_FEATURE_MARKUP: [(&str, &str); 12] = [
+const SHOWCASE_FEATURE_MARKUP: [(&str, &str); 13] = [
     ("<table>", "GFM tables (markdown.gfm.table, default on)"),
     (
         "<del>",
         "GFM strikethrough (markdown.gfm.strikethrough, default on)",
+    ),
+    (
+        // The URL-as-link-text form only an autolink produces — the post's
+        // explicit `[GFM constructs docs](https://zfb...)` link shares the
+        // href but not the text, so a plain-href needle would not prove
+        // autolinking happened.
+        "<a href=\"https://zfb.takazudomodular.com\">https://zfb.takazudomodular.com</a>",
+        "GFM autolink literal (markdown.gfm.autolinkLiteral, default on)",
     ),
     (
         "type=\"checkbox\" disabled",

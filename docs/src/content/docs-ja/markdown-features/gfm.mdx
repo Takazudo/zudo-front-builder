@@ -12,17 +12,18 @@ Markdown (GFM)](https://github.github.com/gfm/) の 5 つの構文 — 打ち消
 ## 保守的なデフォルト
 
 `markdown.gfm` が指定されていない場合 — `markdown` ブロック全体を省略した場合も
-含めて — zfb は **保守的なデフォルト** を適用します。打ち消し線とテーブルは有効、
-autolink literal・タスクリスト項目・脚注定義は無効です。これは GFM の全機能を
-無条件に有効化するのではなく、zfb のこれまでの実質的な状態（テーブルのみ）からの
-挙動の差分を最小限に抑えたものです。
+含めて — zfb は **保守的なデフォルト** を適用します。打ち消し線・テーブル・
+autolink literal は有効、タスクリスト項目と脚注定義は無効です。この 3 つは GFM に
+慣れた書き手が設定なしで期待する構文です。一方、タスクリストと脚注はドキュメント
+の構造を変えるため、GFM の全機能を無条件に有効化するのではなく、オプトインのまま
+にしています。
 
 ```ts title="zfb.config.ts"
 import { defineConfig } from "zfb/config";
 
 export default defineConfig({
   // markdown.gfm を省略 — 保守的なデフォルトが適用される:
-  // 打ち消し線 + テーブルは有効、それ以外はすべて無効
+  // 打ち消し線 + テーブル + autolink literal は有効、タスクリスト + 脚注は無効
 });
 ```
 
@@ -55,8 +56,8 @@ export default defineConfig({
 export default defineConfig({
   markdown: {
     gfm: {
-      autolinkLiteral: true,
       taskListItem: true,
+      autolinkLiteral: false,
       // ここで省略した strikethrough・table・footnoteDefinition は
       // `false` ではなく保守的なデフォルトにフォールバックする
     },
@@ -65,8 +66,9 @@ export default defineConfig({
 ```
 
 オブジェクトから省略したフィールドは、その構文の保守的なデフォルト値
-（`strikethrough: true`、`table: true`、残りの 3 つは `false`）を保ちます。明示的に
-設定したフィールドはそのまま尊重されます。
+（`strikethrough: true`、`table: true`、`autolinkLiteral: true`、残りの 2 つは
+`false`）を保ちます。明示的に設定したフィールドはそのまま尊重されます — 上の例は
+タスクリストをオプトイン、autolink literal をオプトアウトしています。
 
 ## 構文一覧
 
@@ -74,7 +76,7 @@ export default defineConfig({
 |---|---|---|---|
 | 打ち消し線 (`~~text~~`) | `strikethrough` | 有効 | `<del>text</del>` |
 | パイプテーブル | `table` | 有効 | `<table>` |
-| autolink literal（素の `https://example.com`） | `autolinkLiteral` | 無効 | `<a href="...">` |
+| autolink literal（素の `https://example.com`） | `autolinkLiteral` | 有効 | `<a href="...">` |
 | タスクリスト項目 (`- [x]` / `- [ ]`) | `taskListItem` | 無効 | チェックボックス — 後述 |
 | 脚注定義 (`[^ref]: ...`) | `footnoteDefinition` | 無効 | 脚注セクション — 後述 |
 
