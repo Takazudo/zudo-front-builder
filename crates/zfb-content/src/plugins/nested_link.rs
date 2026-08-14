@@ -30,13 +30,16 @@
 //! reproduces exactly that: the visible text survives, and the enclosing
 //! link keeps the destination the author actually wrote.
 //!
-//! # Why any nested link is safe to unwrap
+//! # Why unwrapping never discards author-written markup
 //!
-//! CommonMark forbids links inside links, and `markdown-rs` enforces it for
-//! *explicit* syntax — `[a [b](c) d](e)` degrades the outer link to literal
-//! text rather than nesting. So a `Link` that is a descendant of another
-//! link can only be an autolink-literal artifact, and unwrapping it never
-//! discards author-written link syntax.
+//! Only a node with the exact shape of an autolink literal is removed — see
+//! [`is_autolink_literal`]. Under a markdown `Link` ancestor that guard is
+//! belt-and-braces: CommonMark forbids links inside links and `markdown-rs`
+//! enforces it for explicit syntax (`[a [b](c) d](e)` degrades the *outer*
+//! link to literal text), so the inner node could only ever be an autolink.
+//! Under an MDX `<a>` ancestor no such enforcement exists — markdown-rs
+//! happily nests a real `[inner](/y)` there — and the guard is load-bearing:
+//! without it that author's `/y` destination would vanish silently.
 //!
 //! # Shapes this has to cover
 //!
@@ -80,34 +83,48 @@
 
 use markdown::mdast::Node as MdastNode;
 
-/// Unwrap every `Link` / `LinkReference` that is nested inside another link,
-/// replacing it with its own children.
+/// Unwrap every autolink-literal `Link` nested inside something that
+/// renders as an `<a>`, replacing it with its own children.
 ///
 /// Call directly after `markdown::to_mdast` and only when
-/// `constructs.gfm_autolink_literal` is on — with the construct off,
-/// `markdown-rs` produces no nested links at all, so gating keeps that
-/// configuration's output provably byte-identical.
+/// `constructs.gfm_autolink_literal` is on: the construct is the sole
+/// producer of the nesting this pass removes, so gating keeps every other
+/// configuration's output byte-identical.
+///
+/// Note the gate is about *this* defect, not about nested anchors in
+/// general. An MDX `<a>` element with a real markdown link inside it nests
+/// with the construct off too — but that markup is entirely author-written,
+/// nothing here created it, and the right response (drop the outer? warn?)
+/// is a product decision rather than a regression fix. [`is_autolink_literal`]
+/// would decline to touch it in any case.
 pub fn unwrap_nested_links(node: &mut MdastNode) {
     rewrite(node, false);
 }
 
-/// Walk `node`, flattening link children once `inside_link` holds, then
-/// recurse. Stops at no-recurse boundaries (verbatim / author-owned
-/// content) — mirrors [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink).
+/// Walk `node`, then flatten its link children once `inside_link` holds.
+/// Stops at no-recurse boundaries (verbatim / author-owned content).
+///
+/// Recursion runs **bottom-up** — children are normalised before this
+/// node's own children are flattened — because unwrapping an inner link can
+/// be what makes its parent recognisable as an autolink literal. In a
+/// stacked `Link > Link > Link`, the middle node holds a `Link` child
+/// rather than a `Text` one, so [`is_autolink_literal`] rejects it until
+/// the innermost unwrap has collapsed it to a single `Text`. Top-down
+/// would leave the middle anchor standing.
 fn rewrite(node: &mut MdastNode, inside_link: bool) {
     if is_no_recurse(node) {
         return;
     }
     let inside_link = inside_link || is_link(node);
+    if let Some(children) = node.children_mut() {
+        for child in children {
+            rewrite(child, inside_link);
+        }
+    }
     if inside_link {
         if let Some(children) = node.children_mut() {
             let flattened = flatten_links(std::mem::take(children));
             *children = flattened;
-        }
-    }
-    if let Some(children) = node.children_mut() {
-        for child in children {
-            rewrite(child, inside_link);
         }
     }
 }
@@ -155,11 +172,18 @@ fn is_link(node: &MdastNode) -> bool {
 /// expands `:::note` into an `MdxJsxFlowElement` during the visitor chain,
 /// which runs after this pass, over already-normalised content.
 ///
-/// Raw inline HTML is not a hole despite being skipped here: markdown-rs
-/// does not autolink text adjacent to inline HTML, so
-/// `<a href="/x">bare https://example.com</a>` in plain markdown already
-/// renders exactly one anchor (verified). The MDX spelling of that same
-/// markup does nest, and is handled by [`is_link`] above.
+/// The `Html` arm is dead on every zfb render path and kept only as a
+/// guard: `Pipeline` always parses with `markdown::ParseOptions::mdx()`,
+/// where `html_text` / `html_flow` are off, so a literal
+/// `<a href="/x">bare https://example.com</a>` in a page is an
+/// `MdxJsxTextElement` — the shape [`is_link`] handles — and inline
+/// `MdastNode::Html` never materialises. The arm matters only if this pass
+/// is ever reused on a CommonMark-dialect parse (`facade::parse_mdast` with
+/// [`ParseDialect::Markdown`]), where such a tag DOES become raw `Html` and
+/// the autolink inside it becomes a *sibling* `Link`, not a descendant —
+/// structurally invisible here, though it still renders as a nested anchor.
+///
+/// [`ParseDialect::Markdown`]: crate::facade::ParseDialect::Markdown
 fn is_no_recurse(node: &MdastNode) -> bool {
     matches!(
         node,
@@ -171,20 +195,56 @@ fn is_no_recurse(node: &MdastNode) -> bool {
     )
 }
 
-/// Replace each `Link` / `LinkReference` in `children` with its own
+/// Replace each autolink-literal `Link` in `children` with its own
 /// children. Recurses into the spliced-in run so a directly-stacked
-/// `Link > Link > Link` collapses in one pass; every other child (notably
-/// `Image`, which is legal inside a link) passes through untouched.
+/// `Link > Link > Link` collapses in one pass; every other child — notably
+/// `Image` (legal inside a link), `LinkReference` (never an autolink), and
+/// any author-written `[label](dest)` — passes through untouched.
 fn flatten_links(children: Vec<MdastNode>) -> Vec<MdastNode> {
     let mut out = Vec::with_capacity(children.len());
     for child in children {
         match child {
-            MdastNode::Link(l) => out.extend(flatten_links(l.children)),
-            MdastNode::LinkReference(l) => out.extend(flatten_links(l.children)),
+            MdastNode::Link(l) if is_autolink_literal(&l) => out.extend(flatten_links(l.children)),
             other => out.push(other),
         }
     }
     out
+}
+
+/// True when `link` has the exact shape `markdown-rs` gives a GFM autolink
+/// literal: no title, a single `Text` child, and a `url` that reconstructs
+/// from that visible text.
+///
+/// This is what keeps the pass from destroying author-written markup. For a
+/// markdown `Link` ancestor the check is belt-and-braces — CommonMark
+/// guarantees the inner node can only be an autolink — but for an MDX `<a>`
+/// ancestor there is no such guarantee, and without this guard
+/// `<a href="/x">[inner](/y)</a>` would silently lose the author's `/y`
+/// destination.
+///
+/// Three url spellings exist, all verified against real parses: the
+/// `http(s)://` form carries its scheme in the visible text (`url ==
+/// visible`); the `www.` form gets `http://` prepended; the email form gets
+/// `mailto:` prepended. `ftp://` is NOT autolinked by `markdown-rs` at all,
+/// so it needs no arm.
+///
+/// The one case this cannot separate is an author hand-writing
+/// `[https://x.com](https://x.com)` — byte-identical to what the autolink
+/// pass produces. Unresolvable in mdast, and the same ambiguity
+/// [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink) documents; it is only
+/// reachable once bare-URL autolinking is on, the surface that creates the
+/// bug.
+fn is_autolink_literal(link: &markdown::mdast::Link) -> bool {
+    if link.title.is_some() {
+        return false;
+    }
+    let [MdastNode::Text(t)] = link.children.as_slice() else {
+        return false;
+    };
+    let visible = t.value.as_str();
+    link.url == visible
+        || link.url.strip_prefix("http://") == Some(visible)
+        || link.url.strip_prefix("mailto:") == Some(visible)
 }
 
 #[cfg(test)]
@@ -332,26 +392,97 @@ mod tests {
         assert_eq!(tree, expected);
     }
 
-    /// `LinkReference` is an `<a>` too — nested either way round.
+    /// A `LinkReference` renders an `<a>`, so it counts as a link ancestor
+    /// and an autolink nested in its label is unwrapped. This is a real
+    /// shape: `[see https://example.com now][ref]` parses exactly this way.
     #[test]
-    fn unwraps_link_references_in_both_positions() {
-        let mut tree = root(vec![
-            para(vec![link(
-                "https://x.com",
-                vec![link_ref("ref", vec![text("label")])],
-            )]),
-            para(vec![link_ref(
-                "ref",
-                vec![link("https://y.com", vec![text("https://y.com")])],
-            )]),
-        ]);
+    fn unwraps_an_autolink_inside_a_link_reference_label() {
+        let mut tree = root(vec![para(vec![link_ref(
+            "ref",
+            vec![link("https://y.com", vec![text("https://y.com")])],
+        )])]);
 
         unwrap_nested_links(&mut tree);
 
-        let expected = root(vec![
-            para(vec![link("https://x.com", vec![text("label")])]),
-            para(vec![link_ref("ref", vec![text("https://y.com")])]),
-        ]);
+        let expected = root(vec![para(vec![link_ref(
+            "ref",
+            vec![text("https://y.com")],
+        )])]);
+        assert_eq!(tree, expected);
+    }
+
+    /// A `LinkReference` is never something the autolink pass produced, so
+    /// one sitting inside a link is author-written and must be preserved —
+    /// dropping it would discard the reference and its destination.
+    #[test]
+    fn preserves_a_link_reference_nested_inside_a_link() {
+        let mut tree = root(vec![para(vec![link(
+            "https://x.com",
+            vec![link_ref("ref", vec![text("label")])],
+        )])]);
+        let expected = tree.clone();
+
+        unwrap_nested_links(&mut tree);
+
+        assert_eq!(tree, expected);
+    }
+
+    /// The regression guard for the MDX `<a>` ancestor: markdown-rs does
+    /// NOT enforce no-links-in-links across a JSX boundary, so a real
+    /// author-written `[inner](/y)` can sit inside `<a href="/x">`. It must
+    /// survive — unwrapping it would silently discard `/y`.
+    #[test]
+    fn preserves_an_author_written_link_inside_an_mdx_anchor() {
+        let mut tree = root(vec![para(vec![jsx_text(
+            "a",
+            vec![link("/y", vec![text("inner")])],
+        )])]);
+        let expected = tree.clone();
+
+        unwrap_nested_links(&mut tree);
+
+        assert_eq!(tree, expected);
+    }
+
+    /// A titled link is never an autolink literal, so it is preserved even
+    /// when its url happens to equal its visible text.
+    #[test]
+    fn preserves_a_titled_link_inside_a_link() {
+        let mut tree = root(vec![para(vec![jsx_text(
+            "a",
+            vec![MdastNode::Link(Link {
+                url: "https://y.com".to_string(),
+                title: Some("t".to_string()),
+                children: vec![text("https://y.com")],
+                position: None,
+            })],
+        )])]);
+        let expected = tree.clone();
+
+        unwrap_nested_links(&mut tree);
+
+        assert_eq!(tree, expected);
+    }
+
+    /// The `www.` and email autolink spellings put a scheme in `url` that is
+    /// absent from the visible text; both must still be recognised.
+    #[test]
+    fn recognises_the_www_and_email_autolink_spellings() {
+        let mut tree = root(vec![para(vec![link(
+            "https://x.com",
+            vec![
+                link("http://www.example.com", vec![text("www.example.com")]),
+                text(" and "),
+                link("mailto:a@b.com", vec![text("a@b.com")]),
+            ],
+        )])]);
+
+        unwrap_nested_links(&mut tree);
+
+        let expected = root(vec![para(vec![link(
+            "https://x.com",
+            vec![text("www.example.com"), text(" and "), text("a@b.com")],
+        )])]);
         assert_eq!(tree, expected);
     }
 

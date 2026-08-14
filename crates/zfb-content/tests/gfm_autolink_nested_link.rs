@@ -308,6 +308,25 @@ fn jsx_emit_bare_url_inside_an_mdx_anchor_element_is_unwrapped() {
     );
 }
 
+/// Treating an MDX `<a>` as a link ancestor must not cost the author their
+/// markup. markdown-rs does NOT enforce no-links-in-links across a JSX
+/// boundary, so a real `[inner](/y)` can sit inside `<a href="/x">` — and
+/// an unguarded unwrap would silently discard `/y`. The nested anchor is
+/// left standing here on purpose: nothing zfb did created it, and dropping
+/// an author's destination is the worse failure.
+#[test]
+fn jsx_emit_author_written_link_inside_an_mdx_anchor_keeps_its_destination() {
+    let module = emit_jsx("<a href=\"/x\">[inner](/y)</a>\n");
+    assert!(
+        module.contains("href=\"/y\""),
+        "the author's inner destination must survive; got:\n{module}"
+    );
+    assert!(
+        module.contains("href=\"/x\""),
+        "the outer destination must survive too; got:\n{module}"
+    );
+}
+
 /// The `<a>` handling keys on the lowercase intrinsic name only — a
 /// capitalised component's rendered output is unknowable, so a link
 /// directly inside one must be left alone.

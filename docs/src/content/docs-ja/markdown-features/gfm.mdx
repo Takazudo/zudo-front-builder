@@ -180,6 +180,27 @@ Footnotes[^note] keep reading order.
 </section>
 ```
 
+## リンク内では autolink が作られない
+
+既存のリンクのラベル内に現れた素の URL は、プレーンテキストのまま残ります。これは
+GFM 仕様に沿った挙動です（cmark-gfm の autolink 拡張はリンクノードの内部に降りて
+いきません）。そのため、ラベルがたまたま URL であるリンクは、アンカーをちょうど 1 つ
+だけ出力します。
+
+```md
+[http://localhost:4321](http://localhost:4321)
+```
+
+```html
+<p><a href="http://localhost:4321">http://localhost:4321</a></p>
+```
+
+この規則がないと、ラベル内の URL も autolink 化されてしまい、`<a>` の中に `<a>` が
+入れ子になった不正な HTML — バリデータが `element-permitted-content` で弾く形 —
+が生成されます。ラベルの中に URL が埋め込まれているだけの場合
+（`[see https://example.com now](https://example.com)`）や、`www.` 形式、
+MDX の `<a>` 要素の内部でも同様です。
+
 ## CJK フレンドリー処理との関係
 
 `autolinkLiteral` は `markdown.cjkFriendly`（デフォルトで有効）と相互作用します。
