@@ -63,8 +63,7 @@ fn has_nested_anchor(markup: &str) -> bool {
             i += 4;
             continue;
         }
-        if rest.starts_with("<a") {
-            let after = &rest[2..];
+        if let Some(after) = rest.strip_prefix("<a") {
             if after.starts_with(' ') || after.starts_with('>') {
                 depth += 1;
                 if depth > 1 {
