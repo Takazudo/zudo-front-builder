@@ -181,6 +181,27 @@ Footnotes[^note] keep reading order.
 </section>
 ```
 
+## Autolinks are never created inside a link
+
+A bare URL that appears inside an existing link's label is left as plain
+text, matching the GFM spec — cmark-gfm's autolink extension never
+descends into a link node. So a link whose label happens to be a URL
+renders exactly one anchor:
+
+```md
+[http://localhost:4321](http://localhost:4321)
+```
+
+```html
+<p><a href="http://localhost:4321">http://localhost:4321</a></p>
+```
+
+Without this rule the label's URL would autolink too, producing an `<a>`
+nested inside an `<a>` — invalid HTML that fails validators with
+`element-permitted-content`. The same applies to a URL merely embedded in
+a label (`[see https://example.com now](https://example.com)`), to the
+`www.` form, and inside an MDX `<a>` element.
+
 ## Interaction with CJK-friendly handling
 
 `autolinkLiteral` interacts with `markdown.cjkFriendly` (on by default):

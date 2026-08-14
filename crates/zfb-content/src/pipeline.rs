@@ -2184,6 +2184,25 @@ impl Pipeline {
         }
     }
 
+    /// Strip autolink literals that markdown-rs created inside a link label
+    /// (zfb#2388), which would otherwise render as nested `<a>` — invalid
+    /// HTML.
+    ///
+    /// Applied here rather than as a registered mdast visitor so it covers
+    /// every pipeline regardless of constructor (the visitor chain is only
+    /// wired by the `with_defaults*` family) and is guaranteed to run before
+    /// any visitor observes the malformed tree. Gated on the construct that
+    /// produces the nesting, so a pipeline with autolink literals off keeps
+    /// byte-identical output. See [`plugins::nested_link`] for the full
+    /// rationale.
+    ///
+    /// [`plugins::nested_link`]: crate::plugins::nested_link
+    fn normalize_nested_links(&self, mdast: &mut MdastNode) {
+        if self.parse_options.constructs.gfm_autolink_literal {
+            crate::plugins::unwrap_nested_links(mdast);
+        }
+    }
+
     /// Parse `input` to mdast, run mdast visitors, transform to hast, run
     /// hast visitors. Returns the resulting hast root.
     ///
@@ -2204,6 +2223,7 @@ impl Pipeline {
     pub fn run(&mut self, input: &str) -> Result<HastNode, PipelineError> {
         let mut mdast = markdown::to_mdast(input, &self.parse_options)
             .map_err(|m| PipelineError::Parse(m.to_string()))?;
+        self.normalize_nested_links(&mut mdast);
 
         for v in &mut self.mdast_visitors {
             v.visit(&mut mdast);
@@ -2245,6 +2265,7 @@ impl Pipeline {
     ) -> Result<HastNode, PipelineError> {
         let mut mdast = markdown::to_mdast(input, &self.parse_options)
             .map_err(|m| PipelineError::Parse(m.to_string()))?;
+        self.normalize_nested_links(&mut mdast);
 
         for v in &mut self.mdast_visitors {
             v.visit_with_context(&mut mdast, ctx);
