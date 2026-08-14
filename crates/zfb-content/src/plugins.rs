@@ -26,7 +26,7 @@ pub mod util;
 // secondary parse sites in `zfb-md-extras` (transclude) and this crate's
 // own `DirectiveRegistry::reparse_block`, which need to apply these
 // passes to a subtree parsed from *inside* the mdast visitor chain —
-// invisible to the chain-index-0 copies `Pipeline` wires into its own
+// invisible to the fixed-chain-index copies `Pipeline` wires into its own
 // chain (zfb#2390 / zfb#1105 / zfb#2398). Sites that deliberately opt out
 // document why (see `facade.rs`'s raw-dialect entry point).
 pub use code_title::CodeTitlePlugin;

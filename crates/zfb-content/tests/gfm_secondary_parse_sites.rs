@@ -474,14 +474,15 @@ fn jsx_emit_collapsed_directive_body_still_emits_structured_children() {
 // `CjkFriendlyPlugin` and `HardBreaksPlugin` are visitors in the pipeline's
 // own mdast chain, so — exactly like the GFM constructs (#2390) and math
 // constructs (#2397) before them — they never see a subtree parsed later
-// by `TranscludePlugin` or `DirectiveRegistry::reparse_block`. `reparse_block`
-// itself is covered at Level 1 in `plugins::directives`'s own `mod tests`
-// (see its "CJK-friendly emphasis + hard breaks at this parse site" section);
-// this file covers the transclude site end-to-end, plus the two HTML-level
-// assertions that need a real rendered page rather than raw mdast: the
-// directive-body Jsx-only gate's byte-identity proof, and `flush_prose`'s
-// `<br>` rendering (inter-run prose splices as top-level siblings, so — unlike
-// the directive body — it renders correctly on the HTML path too).
+// by `TranscludePlugin` or `DirectiveRegistry::reparse_block`. This file
+// covers the transclude site end-to-end (HTML + JSX-emit, including a
+// two-level nested `:::include` chain). `reparse_block`'s two call sites
+// (the directive body and `flush_prose`) are covered at Level 1 instead, in
+// `plugins::directives`'s own `mod tests` (see its "CJK-friendly emphasis +
+// hard breaks at this parse site" section) — an HTML-level end-to-end test
+// for either call site here would not be revert-sensitive to this
+// sub-issue's change; see the explanatory comments below, where those tests
+// would otherwise have gone.
 
 /// A CJK-flanked strong marker `CjkFriendlyPlugin` corrects — see
 /// `zfb_md_ast::cjk_friendly`'s module docs for why plain CommonMark leaves
