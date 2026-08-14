@@ -79,7 +79,8 @@ use std::sync::Arc;
 use markdown::mdast::Node as MdastNode;
 use zfb_md_ast::{
     constructs_for_target, unwrap_nested_links, BuildContext, CjkAutolinkBoundaryPlugin,
-    MdastVisitor, ReadOutcome, ReadRecorder, ResolvedGfmConstructs, SecondaryParseTarget,
+    CjkFriendlyPlugin, HardBreaksPlugin, MdastVisitor, ReadOutcome, ReadRecorder,
+    ResolvedGfmConstructs, SecondaryParseTarget,
 };
 
 use crate::TranscludeConfig;
@@ -144,6 +145,16 @@ pub struct TranscludePlugin {
     /// spliced in later, so the included subtree is never reached by
     /// the pipeline's own copy of the pass.
     cjk_friendly: bool,
+    /// The project's `markdown.hardBreaks` setting (zfb#2398).
+    ///
+    /// Stored raw, un-ANDed with anything — unlike `cjk_friendly` it does
+    /// not depend on `gfm.autolink_literal`, so [`HardBreaksPlugin`] is
+    /// applied whenever this is `true`, independent of the GFM gate.
+    /// Travels here for the same structural reason as `cjk_friendly`:
+    /// `HardBreaksPlugin` sits at a fixed mdast-chain index in the
+    /// pipeline's own chain and never sees a transcluded subtree spliced
+    /// in later.
+    hard_breaks: bool,
 }
 
 impl TranscludePlugin {
@@ -159,6 +170,7 @@ impl TranscludePlugin {
             recorder: None,
             gfm: ResolvedGfmConstructs::ALL_OFF,
             cjk_friendly: false,
+            hard_breaks: false,
             target: SecondaryParseTarget::Html,
         }
     }
@@ -174,6 +186,17 @@ impl TranscludePlugin {
     pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Self {
         self.gfm = gfm;
         self.cjk_friendly = cjk_friendly;
+        self
+    }
+
+    /// Apply [`HardBreaksPlugin`] to an included file's parsed subtree
+    /// when `hard_breaks` is `true` (zfb#2398), matching the project's
+    /// `markdown.hardBreaks` setting. Unlike `cjk_friendly`, this is
+    /// never gated on `gfm.autolink_literal` — the two features are
+    /// unrelated.
+    #[must_use]
+    pub fn with_hard_breaks(mut self, hard_breaks: bool) -> Self {
+        self.hard_breaks = hard_breaks;
         self
     }
 
@@ -228,6 +251,7 @@ impl MdastVisitor for TranscludePlugin {
             recorder: self.recorder.as_deref(),
             gfm: self.gfm,
             cjk_friendly: self.cjk_friendly,
+            hard_breaks: self.hard_breaks,
             target: self.target,
         };
         expand_includes_in_node(node, &source_dir, &env, &mut visited, 0, ctx);
@@ -250,6 +274,9 @@ struct ExpandEnv<'a> {
     /// fields on [`TranscludePlugin`].
     gfm: ResolvedGfmConstructs,
     cjk_friendly: bool,
+    /// The project's `hardBreaks` setting (zfb#2398) — see the matching
+    /// field on [`TranscludePlugin`].
+    hard_breaks: bool,
     /// Which emit path this run feeds — decides whether the included
     /// file parses with math constructs on. See the matching field on
     /// [`TranscludePlugin`].
@@ -275,13 +302,29 @@ struct ExpandEnv<'a> {
 /// Both are gated on `autolink_literal`, the construct that produces the
 /// defects they remove, so an included file parsed without it keeps
 /// byte-identical output.
+///
+/// [`CjkFriendlyPlugin`] and [`HardBreaksPlugin`] (zfb#2398) are NOT part
+/// of that autolink-literal gate — they are independent normalisations,
+/// gated only on their own project settings (`env.cjk_friendly` /
+/// `env.hard_breaks`). Both are safe to apply unconditionally to the full
+/// transcluded subtree: it splices in as ordinary top-level siblings at
+/// the include site, so a top-level `Break` renders correctly on both the
+/// HTML and JSX paths. (Contrast `zfb_content`'s
+/// `DirectiveRegistry::reparse_block`, the other secondary parse site,
+/// whose output can land inside an `MdxJsxFlowElement` on the HTML path —
+/// that site gates `HardBreaksPlugin` to the JSX target only.)
 fn normalize_included_subtree(node: &mut MdastNode, env: &ExpandEnv<'_>) {
-    if !env.gfm.autolink_literal {
-        return;
+    if env.gfm.autolink_literal {
+        unwrap_nested_links(node);
+        if env.cjk_friendly {
+            CjkAutolinkBoundaryPlugin::new().visit(node);
+        }
     }
-    unwrap_nested_links(node);
     if env.cjk_friendly {
-        CjkAutolinkBoundaryPlugin::new().visit(node);
+        CjkFriendlyPlugin::new().visit(node);
+    }
+    if env.hard_breaks {
+        HardBreaksPlugin::new().visit(node);
     }
 }
 

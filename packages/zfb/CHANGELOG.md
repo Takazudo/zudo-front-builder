@@ -32,6 +32,14 @@ For MDX/JSX pages that was not a rendering nuance. A single `$$…$$` in an incl
 
 The directive re-parse site was brought into lockstep the same way. As with #2390's GFM change, it is **not** expected to alter rendered output: that re-parse is only reached for content the main parse left as a single plain text run, and math rich enough to render differently is tokenised by the main parse first.
 
+**CJK-friendly emphasis and hard breaks now apply inside transcluded files and directive bodies** (#2398):
+
+`CjkFriendlyPlugin` and `HardBreaksPlugin` are visitors in the pipeline's own mdast chain, so they never saw a subtree parsed later by `TranscludePlugin` or `DirectiveRegistry::reparse_block` — the same class of gap #2390 and #2397 fixed for GFM and math constructs. On a CJK site with `markdown.cjkFriendly` on (the default), CJK emphasis flanking was corrected in the page body but not inside `:::include`d snippets or collapsed directive bodies; with `markdown.hardBreaks` on, soft line breaks became `<br>` in the page but not in that same content.
+
+Both passes now run at both secondary parse sites, gated on the project's own `cjkFriendly` / `hardBreaks` settings rather than on any GFM construct. **This changes rendered output for existing sites** that transclude CJK-flanked emphasis markup, or newline-sensitive prose, and were relying on the secondary-parse gap to leave it untouched — set `cjkFriendly: false` / `hardBreaks: false` to keep the old output; a project that never enabled either is unaffected.
+
+**One deliberate asymmetry:** at the directive-body re-parse site, `HardBreaksPlugin` runs only on the JSX-emit path, not the HTML path. A collapsed directive body re-parses into the JSX children of an `MdxJsxFlowElement`; on the HTML path that element renders through a lossy catch-all that stringifies `Break` nodes to an **empty string**, so applying the plugin there would silently delete newlines instead of turning them into `<br>` — a regression, not parity. HTML-path directive-body output is unchanged. `CjkFriendlyPlugin` has no such asymmetry and applies on both paths at both sites.
+
 ### Build compatibility
 
 **Explicit workspace-root alias claims** (#1883):

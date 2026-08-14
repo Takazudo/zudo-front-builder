@@ -59,8 +59,8 @@ use zfb_md_ast::{BuildContext, DirectiveSpec, MarkdownFeaturesConfig, Transclude
 /// `cjk_friendly` is a parameter because the CJK autolink boundary tests
 /// need it on while the parity tests deliberately keep it off (so a
 /// boundary rewrite can never be mistaken for the construct threading
-/// under test).
-fn pipeline(gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Pipeline {
+/// under test). `hard_breaks` was added by zfb#2398 for the same reason.
+fn pipeline_full(gfm: ResolvedGfmConstructs, cjk_friendly: bool, hard_breaks: bool) -> Pipeline {
     let mut directives = HashMap::new();
     directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
     let features = MarkdownFeaturesConfig {
@@ -68,8 +68,15 @@ fn pipeline(gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Pipeline {
         directives: Some(directives),
         ..Default::default()
     };
-    Pipeline::with_defaults_and_full_config(None, gfm, None, cjk_friendly, false, Some(&features))
-        .expect("pipeline builds")
+    Pipeline::with_defaults_and_full_config(
+        None,
+        gfm,
+        None,
+        cjk_friendly,
+        hard_breaks,
+        Some(&features),
+    )
+    .expect("pipeline builds")
 }
 
 /// Render `input` as HTML with `source_path` armed, so `TranscludePlugin`
@@ -85,7 +92,18 @@ fn render_in_cjk(
     cjk_friendly: bool,
     input: &str,
 ) -> String {
-    let mut p = pipeline(gfm, cjk_friendly);
+    render_in_full(dir, gfm, cjk_friendly, false, input)
+}
+
+/// Like [`render_in_cjk`] but also threads `hardBreaks` (zfb#2398).
+fn render_in_full(
+    dir: &std::path::Path,
+    gfm: ResolvedGfmConstructs,
+    cjk_friendly: bool,
+    hard_breaks: bool,
+    input: &str,
+) -> String {
+    let mut p = pipeline_full(gfm, cjk_friendly, hard_breaks);
     let source_path = dir.join("page.md");
     let mut ctx = BuildContext {
         source_path: Some(source_path),
@@ -109,8 +127,15 @@ fn tmpdir() -> tempfile::TempDir {
 /// Write `body` to `<dir>/snippet.md` and return the include directive that
 /// pulls it in.
 fn snippet(dir: &std::path::Path, body: &str) -> String {
-    std::fs::write(dir.join("snippet.md"), body).expect("write snippet");
-    r#":::include{file="./snippet.md"}"#.to_string()
+    snippet_named(dir, "snippet.md", body)
+}
+
+/// Like [`snippet`] but under a caller-chosen filename, so a test can
+/// write more than one distinct include target in the same `dir` (e.g. a
+/// two-level nested `:::include` chain — zfb#2398).
+fn snippet_named(dir: &std::path::Path, name: &str, body: &str) -> String {
+    std::fs::write(dir.join(name), body).expect("write snippet");
+    format!(r#":::include{{file="./{name}"}}"#)
 }
 
 /// True when one anchor opens before the previous one closed.
@@ -287,7 +312,18 @@ fn compile_jsx_in(
     cjk_friendly: bool,
     input: &str,
 ) -> String {
-    let mut p = pipeline(gfm, cjk_friendly);
+    compile_jsx_in_full(dir, gfm, cjk_friendly, false, input)
+}
+
+/// Like [`compile_jsx_in`] but also threads `hardBreaks` (zfb#2398).
+fn compile_jsx_in_full(
+    dir: &std::path::Path,
+    gfm: ResolvedGfmConstructs,
+    cjk_friendly: bool,
+    hard_breaks: bool,
+    input: &str,
+) -> String {
+    let mut p = pipeline_full(gfm, cjk_friendly, hard_breaks);
     p.set_build_context_roots(dir.to_path_buf(), dir.join("public"));
     let opts = zfb_content::MdxJsxOptions::default()
         .with_filename("page.mdx".to_string())
@@ -432,3 +468,235 @@ fn jsx_emit_collapsed_directive_body_still_emits_structured_children() {
          not flattened to text: {jsx}"
     );
 }
+
+// ── CJK-friendly emphasis + hard breaks at both secondary parse sites (zfb#2398) ──
+//
+// `CjkFriendlyPlugin` and `HardBreaksPlugin` are visitors in the pipeline's
+// own mdast chain, so — exactly like the GFM constructs (#2390) and math
+// constructs (#2397) before them — they never see a subtree parsed later
+// by `TranscludePlugin` or `DirectiveRegistry::reparse_block`. `reparse_block`
+// itself is covered at Level 1 in `plugins::directives`'s own `mod tests`
+// (see its "CJK-friendly emphasis + hard breaks at this parse site" section);
+// this file covers the transclude site end-to-end, plus the two HTML-level
+// assertions that need a real rendered page rather than raw mdast: the
+// directive-body Jsx-only gate's byte-identity proof, and `flush_prose`'s
+// `<br>` rendering (inter-run prose splices as top-level siblings, so — unlike
+// the directive body — it renders correctly on the HTML path too).
+
+/// A CJK-flanked strong marker `CjkFriendlyPlugin` corrects — see
+/// `zfb_md_ast::cjk_friendly`'s module docs for why plain CommonMark leaves
+/// this as literal `*` text (the run is never tokenised into `Strong` at
+/// all without the fix, so "off" and "on" are trivially distinguishable).
+const CJK_EMPHASIS_BODY: &str = "これは**重要。**テスト";
+
+#[test]
+fn transcluded_cjk_emphasis_flanking_is_corrected() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), CJK_EMPHASIS_BODY);
+
+    let inline = render_in_cjk(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        true,
+        CJK_EMPHASIS_BODY,
+    );
+    let transcluded = render_in_cjk(dir.path(), ResolvedGfmConstructs::ALL_ON, true, &include);
+
+    assert!(
+        inline.contains("<strong>重要。</strong>"),
+        "inline control did not correct CJK emphasis flanking: {inline}"
+    );
+    assert!(
+        transcluded.contains("<strong>重要。</strong>"),
+        "CJK emphasis flanking was not corrected inside transcluded content: {transcluded}"
+    );
+}
+
+#[test]
+fn transcluded_cjk_emphasis_stays_literal_when_cjk_friendly_is_off() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), CJK_EMPHASIS_BODY);
+
+    let transcluded = render_in_cjk(dir.path(), ResolvedGfmConstructs::ALL_ON, false, &include);
+
+    assert!(
+        !transcluded.contains("<strong>"),
+        "CJK emphasis must stay literal text when cjkFriendly is off: {transcluded}"
+    );
+    // Positive control: the file WAS included — otherwise "no <strong>"
+    // would pass trivially on an empty splice.
+    assert!(
+        transcluded.contains("テスト"),
+        "the include must still be spliced in: {transcluded}"
+    );
+}
+
+/// The decoupling assertion PR 2391's own test suite could not make:
+/// `CjkFriendlyPlugin` is threaded raw, un-ANDed with `gfm.autolink_literal`
+/// (unlike `CjkAutolinkBoundaryPlugin`, which stays gated on it), so it
+/// must still correct CJK emphasis flanking in transcluded content with
+/// autolinking off.
+#[test]
+fn transcluded_cjk_emphasis_corrects_even_when_autolink_literal_is_off() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), CJK_EMPHASIS_BODY);
+    let gfm = ResolvedGfmConstructs {
+        autolink_literal: false,
+        ..ResolvedGfmConstructs::ALL_ON
+    };
+
+    let transcluded = render_in_cjk(dir.path(), gfm, true, &include);
+
+    assert!(
+        transcluded.contains("<strong>重要。</strong>"),
+        "CJK emphasis must correct in transcluded content even with \
+         autolink_literal off: {transcluded}"
+    );
+}
+
+const HARD_BREAK_BODY: &str = "first line\nsecond line";
+
+#[test]
+fn transcluded_hard_break_becomes_br_on_the_html_path() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), HARD_BREAK_BODY);
+
+    let with_hard_breaks = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        &include,
+    );
+    let without_hard_breaks = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        false,
+        &include,
+    );
+
+    assert!(
+        with_hard_breaks.contains("<br"),
+        "soft break in transcluded content must become <br> when hardBreaks \
+         is on: {with_hard_breaks}"
+    );
+    assert!(
+        !without_hard_breaks.contains("<br"),
+        "hardBreaks off must leave transcluded content unchanged: {without_hard_breaks}"
+    );
+    // Positive control: the file WAS included.
+    assert!(
+        without_hard_breaks.contains("second"),
+        "the include must still be spliced in: {without_hard_breaks}"
+    );
+}
+
+#[test]
+fn jsx_emit_transcluded_hard_break_becomes_br() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), HARD_BREAK_BODY);
+
+    let with_hard_breaks = compile_jsx_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        &include,
+    );
+    let without_hard_breaks = compile_jsx_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        false,
+        &include,
+    );
+
+    assert!(
+        with_hard_breaks.contains("_components.br"),
+        "soft break in transcluded content must become <br> on the JSX \
+         path: {with_hard_breaks}"
+    );
+    assert!(
+        !without_hard_breaks.contains("_components.br"),
+        "hardBreaks off must leave transcluded content unchanged on the \
+         JSX path: {without_hard_breaks}"
+    );
+}
+
+/// zfb#2398: because `normalize_included_subtree` runs before
+/// `expand_includes_in_node` recurses into a freshly-included subtree
+/// (`transclude.rs`), a two-level `:::include` chain gets CJK/hard-breaks
+/// normalisation applied at BOTH levels automatically — proved here rather
+/// than assumed.
+#[test]
+fn nested_transclude_applies_cjk_and_hard_breaks_at_both_levels() {
+    let dir = tmpdir();
+    let inner_body = format!("{CJK_EMPHASIS_BODY}\n{HARD_BREAK_BODY}");
+    let inner_include = snippet_named(dir.path(), "inner.md", &inner_body);
+    let outer_include = snippet_named(dir.path(), "outer.md", &inner_include);
+
+    let rendered = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        true,
+        true,
+        &outer_include,
+    );
+
+    assert!(
+        rendered.contains("<strong>重要。</strong>"),
+        "CJK emphasis must be corrected two include levels deep: {rendered}"
+    );
+    assert!(
+        rendered.contains("<br"),
+        "a soft break must become <br> two include levels deep: {rendered}"
+    );
+}
+
+// The directive-body `reparse_block` call site's Jsx-only gate is NOT
+// covered by an end-to-end HTML-render test here, deliberately: a
+// collapsed (blank-line-less) directive is, by construction, ALWAYS a
+// multi-line paragraph with an embedded `\n` in its single `Text` child —
+// and when `markdown.hardBreaks` is on, the pipeline's OWN top-level
+// `HardBreaksPlugin` (wired earlier in the mdast chain than
+// `DirectiveRegistry`, unrelated to and pre-dating zfb#2398) ALREADY
+// splits that `Text` child into `Text`/`Break`/`Text` before
+// `DirectiveRegistry` ever runs — destroying `single_text_collapsed`'s
+// one-Text-child precondition and routing every such directive through
+// `transform_block_container` instead. `reparse_block` is consequently
+// UNREACHABLE for this shape via the full `Pipeline`, and any HTML-level
+// assertion here would (a) not exercise the code this sub-issue touches
+// and (b) not be revert-sensitive to it. The Jsx-only gate is instead
+// proven, correctly and revert-sensitively, by driving `DirectiveRegistry`
+// directly (bypassing the top-level chain) — see
+// `plugins::directives`'s `collapsed_directive_body_inserts_break_on_the_jsx_target`
+// / `..._does_not_insert_break_on_the_html_target`, the same isolation
+// technique this file's own module docs describe for the GFM-parity
+// tests at this site.
+
+// `flush_prose` (reached, like the directive-body site above, only through
+// `single_text_collapsed`) is likewise NOT covered by an end-to-end
+// HTML-render test here — same reason, same pre-existing pre-emption. A
+// realistic "inter-run prose between two collapsed directive runs" fixture
+// is, by construction, itself one multi-line paragraph with embedded `\n`s
+// in a single `Text` child, so it is destroyed by the pipeline's own
+// top-level `HardBreaksPlugin` / `CjkFriendlyPlugin` (both wired earlier in
+// the mdast chain than `DirectiveRegistry`, both pre-dating zfb#2398)
+// before `flush_prose`'s OWN call ever runs — confirmed empirically:
+// disabling `flush_prose`'s new plugin applications entirely does not turn
+// an HTML-level `<br>` / `<strong>` assertion for this fixture red, because
+// the pre-emptive top-level pass already produces the same observable
+// output. An HTML-level assertion here would not be revert-sensitive to
+// this sub-issue's change. The revert-sensitive proof — driving
+// `DirectiveRegistry` directly, bypassing the top-level chain — is
+// `plugins::directives`'s `inter_run_prose_inserts_break_on_both_targets`.
+//
+// This is a genuine, pre-existing interaction between `markdown.hardBreaks`
+// / `markdown.cjkFriendly` (post-parse VISITORS in the top-level mdast
+// chain) and the collapsed-directive machinery, structurally different
+// from GFM/math (PARSER-level constructs resolved once during the initial
+// parse, before any visitor runs) — the reason #2390/#2397 never hit this.
+// It is unrelated to and out of scope for #2398 (which only threads the two
+// plugins through `reparse_block`'s own re-parse); flagged separately as an
+// agent-found issue rather than fixed here.
