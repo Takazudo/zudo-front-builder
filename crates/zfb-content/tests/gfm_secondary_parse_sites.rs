@@ -268,3 +268,167 @@ fn transcluded_bare_url_does_not_swallow_trailing_cjk() {
         "trailing CJK was swallowed into the href: {transcluded}"
     );
 }
+
+// ── JSX-emit path ──────────────────────────────────────────────────────
+//
+// The HTML assertions above are not sufficient on their own. The JSX-emit
+// path has its OWN `markdown::to_mdast` call (in `mdx_jsx_emit.rs`, not
+// shared with `Pipeline::run`) and its own construct set, so it can
+// regress independently — the same reason `gfm_autolink_nested_link.rs`
+// covers both entry points for the sibling defect. It is also the path
+// that matters in production for directives, whose bodies stay structured
+// here instead of being flattened by `reconstruct_jsx`.
+
+/// Compile through the JSX-emit path with `source_path` armed, so
+/// `TranscludePlugin` can resolve a relative include.
+fn compile_jsx_in(
+    dir: &std::path::Path,
+    gfm: ResolvedGfmConstructs,
+    cjk_friendly: bool,
+    input: &str,
+) -> String {
+    let mut p = pipeline(gfm, cjk_friendly);
+    p.set_build_context_roots(dir.to_path_buf(), dir.join("public"));
+    let opts = zfb_content::MdxJsxOptions::default()
+        .with_filename("page.mdx".to_string())
+        .with_source_path(dir.join("page.mdx"));
+    zfb_content::mdx_to_jsx_module_with_pipeline(input, opts, &mut p).expect("compile ok")
+}
+
+#[test]
+fn jsx_emit_transcluded_file_parses_with_the_projects_gfm_config() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), GFM_BODY);
+
+    let jsx = compile_jsx_in(dir.path(), ResolvedGfmConstructs::ALL_ON, false, &include);
+
+    // JSX spellings differ from the HTML ones (`_components.table` etc.),
+    // so these markers are deliberately not the `GFM_MARKERS` set.
+    for (construct, marker) in [
+        ("table", "_components.table"),
+        ("strikethrough", "_components.del"),
+        ("task_list_item", "type=\"checkbox\""),
+        ("autolink_literal", "href=\"https://example.com/x\""),
+        ("footnote_definition", "data-footnote-backref"),
+    ] {
+        assert!(
+            jsx.contains(marker),
+            "JSX emit, transcluded: GFM `{construct}` did not parse — \
+             expected `{marker}` in:\n{jsx}"
+        );
+    }
+}
+
+#[test]
+fn jsx_emit_transcluded_file_keeps_every_construct_off_when_gfm_is_off() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), GFM_BODY);
+
+    let jsx = compile_jsx_in(dir.path(), ResolvedGfmConstructs::ALL_OFF, false, &include);
+
+    for (construct, marker) in [
+        ("table", "_components.table"),
+        ("strikethrough", "_components.del"),
+        ("task_list_item", "type=\"checkbox\""),
+        ("autolink_literal", "href=\"https://example.com/x\""),
+        ("footnote_definition", "data-footnote-backref"),
+    ] {
+        assert!(
+            !jsx.contains(marker),
+            "JSX emit, transcluded, ALL_OFF: GFM `{construct}` parsed — \
+             unexpected `{marker}` in:\n{jsx}"
+        );
+    }
+    assert!(
+        jsx.contains("struck"),
+        "the include must still be spliced in: {jsx}"
+    );
+}
+
+/// zfb#2388 on the JSX-emit path. `mdx_jsx_emit.rs` has its own
+/// `unwrap_nested_links` call after its own parse, but — exactly as on the
+/// HTML path — that runs before the visitor chain and so cannot reach what
+/// transclude parses later.
+#[test]
+fn jsx_emit_transcluded_autolink_in_a_link_label_yields_no_nested_anchor() {
+    let dir = tmpdir();
+    let include = snippet(
+        dir.path(),
+        "[http://localhost:4321](http://localhost:4321)\n",
+    );
+
+    let jsx = compile_jsx_in(dir.path(), ResolvedGfmConstructs::ALL_ON, false, &include);
+
+    assert!(
+        jsx.contains("http://localhost:4321"),
+        "the author's link must survive: {jsx}"
+    );
+    let normalized = jsx
+        .replace("<_components.a", "<a")
+        .replace("</_components.a>", "</a>");
+    assert!(
+        !has_nested_anchor(&normalized),
+        "nested <a> inside <a> in transcluded content on the JSX path: {jsx}"
+    );
+}
+
+/// zfb#1105 on the JSX-emit path.
+#[test]
+fn jsx_emit_transcluded_bare_url_does_not_swallow_trailing_cjk() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), "詳しくは https://example.com/xを参照。\n");
+
+    let jsx = compile_jsx_in(dir.path(), ResolvedGfmConstructs::ALL_ON, true, &include);
+
+    assert!(
+        jsx.contains("href=\"https://example.com/x\""),
+        "the bare URL must autolink at exactly the ASCII boundary: {jsx}"
+    );
+    assert!(
+        !jsx.contains("https://example.com/xを"),
+        "trailing CJK was swallowed into the href: {jsx}"
+    );
+}
+
+/// No-regression pin for the directive site on the JSX path — NOT a test
+/// of the `reparse_block` threading, and deliberately named so.
+///
+/// Reverting either half of the fix leaves this green, because the body
+/// below never reaches `reparse_block` at all: with the constructs
+/// threaded, the MAIN parse already tokenises `~~struck~~` into a
+/// `Delete` node, so the paragraph has multiple inline children and
+/// `single_text_collapsed` declines, routing to
+/// `transform_block_container` instead.
+///
+/// That is the general case, not a quirk of this input. An independent
+/// review of this change diffed real JSX-emit output across 12 collapsed
+/// directive shapes × 4 GFM configurations and found it byte-identical:
+/// `reparse_block` is reachable only through `single_text_collapsed`, and
+/// now that the main parse shares the same constructs, content rich
+/// enough to render differently is generally consumed by that main parse
+/// first. So the threading there removes a latent inconsistency between
+/// two parse sites rather than changing rendered output — which is why
+/// the changelog scopes the user-visible behaviour change to transclude,
+/// and why `reparse_block`'s own contract is pinned at Level 1 in
+/// `plugins::directives`'s `mod tests` instead of here.
+///
+/// What this test is for: proving the directive path still emits
+/// structured JSX children after the change, i.e. that threading the
+/// constructs did not break the collapsed-directive machinery.
+#[test]
+fn jsx_emit_collapsed_directive_body_still_emits_structured_children() {
+    let dir = tmpdir();
+    let input = ":::note\nplain lead-in\n~~struck~~\n:::\n";
+
+    let jsx = compile_jsx_in(dir.path(), ResolvedGfmConstructs::ALL_ON, false, input);
+
+    assert!(
+        jsx.contains("<Note>"),
+        "the directive must transform: {jsx}"
+    );
+    assert!(
+        jsx.contains("_components.del"),
+        "the body's strikethrough must reach the emitted JSX structured, \
+         not flattened to text: {jsx}"
+    );
+}

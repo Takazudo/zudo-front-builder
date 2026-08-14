@@ -36,7 +36,7 @@
 //! punctuation plus the unmatched-`)` paren-balance rule), so a cut that
 //! exposes a stray `)` (`(https://example.com)参照`) drops it from the href.
 //!
-//! This pass runs in the mdast phase **before** [`CjkFriendlyPlugin`]: that
+//! This pass runs in the mdast phase **before** `CjkFriendlyPlugin`: that
 //! plugin re-tokenises emphasis markers inside `Text` nodes (including a
 //! `Link`'s text child), which would split an over-consumed autolink's single
 //! `Text` child apart and hide it from the boundary check. It is only

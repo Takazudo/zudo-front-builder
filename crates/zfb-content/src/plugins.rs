@@ -21,9 +21,12 @@ pub mod toc;
 pub mod util;
 
 // The GFM autolink boundary fix (#1105) and the nested-autolink unwrap
-// (#2388) live in `zfb-md-ast`: both are post-parse normalisations that
-// EVERY `markdown::to_mdast` call site must apply, including the ones in
-// `zfb-md-extras` (transclude), which cannot depend on this crate.
+// (#2388) live in `zfb-md-ast`: both are post-parse normalisations that a
+// `markdown::to_mdast` call site owns for the tree it produces, since
+// nothing downstream re-runs them. That includes the site in
+// `zfb-md-extras` (transclude), which cannot depend on this crate — the
+// reason they live a crate down. Sites that deliberately opt out
+// document why (see `facade.rs`'s raw-dialect entry point).
 pub use cjk_friendly::CjkFriendlyPlugin;
 pub use code_title::CodeTitlePlugin;
 pub use directives::{

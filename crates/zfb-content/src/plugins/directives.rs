@@ -94,16 +94,25 @@ pub struct DirectiveRegistry {
     /// This governs the two `reparse_block` callers: a collapsed
     /// (blank-line-less) directive body, and — via `flush_prose` —
     /// ordinary page prose that merely sits between two collapsed
-    /// directive runs. Both now match how the same markdown renders at
-    /// top level. Math stays off here, exactly as for
-    /// [`crate::plugins::nested_link`]'s sibling site in transclude; see
-    /// the #2390 changelog entry.
+    /// directive runs.
+    ///
+    /// Note this rarely changes end-to-end pipeline output, and that is
+    /// by design rather than by accident: `reparse_block` is reachable
+    /// only through `single_text_collapsed`, and now that the main parse
+    /// shares these same constructs, content rich enough to render
+    /// differently is generally already tokenised into multiple inline
+    /// children by that main parse and routed to
+    /// `transform_block_container` instead. Threading the constructs
+    /// here removes a latent inconsistency and keeps the parse sites in
+    /// lockstep; it is not the surface #2390's changelog entry warns
+    /// about (that is transclude). Math stays off, same as the
+    /// transclude site.
     gfm: ResolvedGfmConstructs,
-    /// Whether a re-parsed block gets the CJK autolink boundary fix
-    /// (zfb#1105). Mirrors the pipeline's own
-    /// `cjk_friendly && gfm.autolink_literal` gate — see the matching
-    /// field on `zfb_md_extras::transclude::TranscludePlugin`.
-    cjk_autolink_boundary: bool,
+    /// The project's `markdown.cjkFriendly` setting (zfb#1105), ANDed
+    /// with `gfm.autolink_literal` at the single point that consumes it
+    /// so the inconsistent combination is unrepresentable — see the
+    /// matching field on `zfb_md_extras::transclude::TranscludePlugin`.
+    cjk_friendly: bool,
 }
 
 impl Default for DirectiveRegistry {
@@ -118,7 +127,7 @@ impl Default for DirectiveRegistry {
             diagnostics: Vec::new(),
             has_text_dirs: false,
             gfm: ResolvedGfmConstructs::ALL_OFF,
-            cjk_autolink_boundary: false,
+            cjk_friendly: false,
         }
     }
 }
@@ -134,12 +143,13 @@ impl DirectiveRegistry {
     /// `gfm`, applying the post-parse normalisations those constructs
     /// make mandatory (zfb#2390).
     ///
-    /// `cjk_autolink_boundary` must carry the caller's own
-    /// `cjk_friendly && gfm.autolink_literal` decision.
+    /// `cjk_friendly` is the project's `markdown.cjkFriendly` setting,
+    /// passed raw — it is ANDed with `gfm.autolink_literal` here rather
+    /// than by the caller.
     #[must_use]
-    pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_autolink_boundary: bool) -> Self {
+    pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Self {
         self.gfm = gfm;
-        self.cjk_autolink_boundary = cjk_autolink_boundary;
+        self.cjk_friendly = cjk_friendly;
         self
     }
 
@@ -624,7 +634,7 @@ impl DirectiveRegistry {
         if text.trim().is_empty() {
             return;
         }
-        out.extend(reparse_block(&text, self.gfm, self.cjk_autolink_boundary));
+        out.extend(reparse_block(&text, self.gfm, self.cjk_friendly));
     }
 
     /// Build the JSX children of a collapsed container from its raw body
@@ -651,7 +661,7 @@ impl DirectiveRegistry {
         // body as plain markdown blocks.
         match self.transform_collapsed_run(&body_text, None) {
             Some(nodes) => nodes,
-            None => reparse_block(&body_text, self.gfm, self.cjk_autolink_boundary),
+            None => reparse_block(&body_text, self.gfm, self.cjk_friendly),
         }
     }
 
@@ -1603,11 +1613,7 @@ fn find_collapsed_closer(lines: &[&str], from: usize, open_colons: usize) -> Opt
 /// normalisation for what it produces. See
 /// `zfb_md_extras::transclude::normalize_included_subtree` for the twin
 /// at the other secondary parse site.
-fn reparse_block(
-    text: &str,
-    gfm: ResolvedGfmConstructs,
-    cjk_autolink_boundary: bool,
-) -> Vec<MdastNode> {
+fn reparse_block(text: &str, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Vec<MdastNode> {
     let opts = markdown::ParseOptions {
         constructs: constructs_for_pipeline(gfm),
         ..markdown::ParseOptions::mdx()
@@ -1626,7 +1632,7 @@ fn reparse_block(
     };
     if gfm.autolink_literal {
         unwrap_nested_links(&mut root);
-        if cjk_autolink_boundary {
+        if cjk_friendly {
             CjkAutolinkBoundaryPlugin::new().visit(&mut root);
         }
     }

@@ -84,10 +84,14 @@ impl Default for ResolvedGfmConstructs {
 /// walker pipeline (`Pipeline::run`) from a resolved GFM flag set.
 ///
 /// Math constructs are deliberately left at their `Constructs::mdx()`
-/// default values here. The HTML serializer path treats math nodes as
-/// passthrough; enabling them here would not change the serializer
-/// output. The JSX-emit path enables `math_flow` / `math_text`
-/// separately, where the JSX emitter has dedicated arms for them.
+/// default values here — i.e. OFF. This is not a no-op: with them on,
+/// the HTML path renders `Math` / `InlineMath` into real
+/// `<pre><code class="language-math …">` elements (see `mdast_to_hast`),
+/// so enabling them here WOULD change serializer output. The JSX-emit
+/// path turns `math_flow` / `math_text` on separately via
+/// [`constructs_for_jsx_emit`], where the emitter has dedicated arms for
+/// those nodes and the alternative — LaTeX leaking out as bare `{…}`
+/// expression containers that esbuild rejects — is worse.
 #[must_use]
 pub fn constructs_for_pipeline(resolved: ResolvedGfmConstructs) -> markdown::Constructs {
     markdown::Constructs {

@@ -115,22 +115,31 @@ pub struct TranscludePlugin {
     /// construct off.
     ///
     /// This is the HTML/collection-walker construct set
-    /// ([`constructs_for_pipeline`]) — math stays off. The same plugin
-    /// instance serves both `Pipeline::run` and the JSX-emit path, so it
-    /// cannot be path-aware; `$$…$$` in an included file therefore still
-    /// renders differently from the same content written inline. See the
-    /// #2390 changelog entry.
+    /// ([`constructs_for_pipeline`]) — math stays off, as it was before
+    /// #2390. The same plugin instance serves both `Pipeline::run` and
+    /// the JSX-emit path, so it cannot be path-aware, and enabling math
+    /// here would change HTML-path output (that path renders `Math` into
+    /// a real `<pre><code class="language-math …">` element, it does not
+    /// pass it through). Consequence, unchanged by #2390 and NOT
+    /// cosmetic: on the JSX-emit path LaTeX in an included file leaks
+    /// out as bare `{…}` expression containers that esbuild rejects,
+    /// falling the whole page back to `<pre data-zfb-content-fallback>`.
+    /// Tracked separately; see the #2390 changelog entry.
     gfm: ResolvedGfmConstructs,
-    /// Whether an included file's freshly parsed subtree gets the CJK
-    /// autolink boundary fix (zfb#1105).
+    /// The project's `markdown.cjkFriendly` setting (zfb#1105).
     ///
-    /// Mirrors the `cjk_friendly && gfm.autolink_literal` gate the
-    /// pipeline applies when it wires [`CjkAutolinkBoundaryPlugin`] into
-    /// the top-level visitor chain. That plugin is a visitor at chain
-    /// index 0, and transcluded nodes are spliced in later, so the
-    /// included subtree is never reached by it — this flag is how the
-    /// fix follows the content.
-    cjk_autolink_boundary: bool,
+    /// Stored raw rather than pre-ANDed with `gfm.autolink_literal`:
+    /// the two travel together into [`TranscludePlugin::with_gfm`], and
+    /// combining them here — at the single point that consumes them —
+    /// makes the inconsistent state (boundary fix demanded while
+    /// autolinking is off) unrepresentable rather than merely
+    /// documented.
+    ///
+    /// It has to travel at all because `CjkAutolinkBoundaryPlugin` is a
+    /// visitor at mdast-chain index 0 while transcluded nodes are
+    /// spliced in later, so the included subtree is never reached by
+    /// the pipeline's own copy of the pass.
+    cjk_friendly: bool,
 }
 
 impl TranscludePlugin {
@@ -145,20 +154,21 @@ impl TranscludePlugin {
             config,
             recorder: None,
             gfm: ResolvedGfmConstructs::ALL_OFF,
-            cjk_autolink_boundary: false,
+            cjk_friendly: false,
         }
     }
 
     /// Parse included files with `gfm`, applying the post-parse
     /// normalisations those constructs make mandatory (zfb#2390).
     ///
-    /// `cjk_autolink_boundary` must carry the caller's own
-    /// `cjk_friendly && gfm.autolink_literal` decision — see the field
-    /// doc on [`TranscludePlugin::cjk_autolink_boundary`].
+    /// `cjk_friendly` is the project's `markdown.cjkFriendly` setting,
+    /// passed raw — this is the one place it is ANDed with
+    /// `gfm.autolink_literal`, mirroring the gate the pipeline uses when
+    /// it wires `CjkAutolinkBoundaryPlugin` into its own chain.
     #[must_use]
-    pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_autolink_boundary: bool) -> Self {
+    pub fn with_gfm(mut self, gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Self {
         self.gfm = gfm;
-        self.cjk_autolink_boundary = cjk_autolink_boundary;
+        self.cjk_friendly = cjk_friendly;
         self
     }
 
@@ -208,7 +218,7 @@ impl MdastVisitor for TranscludePlugin {
             max_depth: self.config.max_depth,
             recorder: self.recorder.as_deref(),
             gfm: self.gfm,
-            cjk_autolink_boundary: self.cjk_autolink_boundary,
+            cjk_friendly: self.cjk_friendly,
         };
         expand_includes_in_node(node, &source_dir, &env, &mut visited, 0, ctx);
     }
@@ -225,11 +235,11 @@ struct ExpandEnv<'a> {
     /// Read-recorder for the compile-cache dependency manifest
     /// (zfb#944); `None` when the plugin was built without one.
     recorder: Option<&'a ReadRecorder>,
-    /// GFM constructs each included file is parsed with, and whether its
-    /// parsed subtree gets the CJK autolink boundary fix (zfb#2390) —
-    /// see the matching fields on [`TranscludePlugin`].
+    /// GFM constructs each included file is parsed with, and the
+    /// project's `cjkFriendly` setting (zfb#2390) — see the matching
+    /// fields on [`TranscludePlugin`].
     gfm: ResolvedGfmConstructs,
-    cjk_autolink_boundary: bool,
+    cjk_friendly: bool,
 }
 
 /// Apply the post-parse normalisations that [`ExpandEnv::gfm`] makes
@@ -256,7 +266,7 @@ fn normalize_included_subtree(node: &mut MdastNode, env: &ExpandEnv<'_>) {
         return;
     }
     unwrap_nested_links(node);
-    if env.cjk_autolink_boundary {
+    if env.cjk_friendly {
         CjkAutolinkBoundaryPlugin::new().visit(node);
     }
 }

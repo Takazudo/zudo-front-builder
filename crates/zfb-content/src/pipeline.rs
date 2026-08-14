@@ -315,21 +315,23 @@ pub struct Pipeline {
     /// constructors enforce this by building both from one
     /// `ResolvedGfmConstructs` input.
     gfm_constructs: ResolvedGfmConstructs,
-    /// True when this pipeline wired [`CjkAutolinkBoundaryPlugin`] into
-    /// its mdast chain — i.e. when `cjk_friendly && autolink_literal`
-    /// held at construction (zfb#1105).
+    /// The project's `markdown.cjkFriendly` setting, as supplied to the
+    /// constructor (zfb#1105).
     ///
-    /// That plugin is a visitor at chain index 0, so it only ever sees
-    /// the top-level parse. `register_features_config_derived` reads
-    /// this flag to give the two secondary parse sites — transclude and
-    /// `DirectiveRegistry::reparse_block`, both of which call
-    /// `markdown::to_mdast` from *within* the visitor chain — the same
-    /// boundary fix for the subtrees they produce (zfb#2390).
+    /// Set unconditionally by every constructor, BEFORE any visitor
+    /// wiring runs — deliberately not inside the `if cjk_friendly` block
+    /// that pushes [`CjkAutolinkBoundaryPlugin`], so it records the
+    /// project's setting rather than "did we happen to take that
+    /// branch". `register_features_config_derived` forwards it to the
+    /// two secondary parse sites (transclude and
+    /// `DirectiveRegistry::reparse_block`), which call
+    /// `markdown::to_mdast` from *within* the visitor chain and so are
+    /// never reached by the chain-index-0 plugin (zfb#2390). Each site
+    /// ANDs it with `autolink_literal` itself.
     ///
-    /// Not a fingerprint input of its own: it is a pure function of
-    /// `cjk_friendly` and `gfm_constructs.autolink_literal`, both
-    /// already covered by the descriptor.
-    cjk_autolink_boundary: bool,
+    /// Not a fingerprint input of its own: `cjk_friendly` is already
+    /// covered by the descriptor.
+    cjk_friendly: bool,
     /// When the `StripMdExtensionPlugin` is wired into the pipeline,
     /// this flag controls whether the plugin appends `/` to internal
     /// hrefs after stripping `.md`/`.mdx` (and to any extensionless
@@ -573,7 +575,7 @@ impl Pipeline {
                 ..markdown::ParseOptions::mdx()
             },
             gfm_constructs: resolved,
-            cjk_autolink_boundary: false,
+            cjk_friendly: false,
             add_trailing_slash: true,
             resolve_links: None,
             jsx_nested_link_collector: None,
@@ -1553,6 +1555,10 @@ impl Pipeline {
         }
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
+        // Recorded BEFORE any visitor wiring, so the two secondary parse
+        // sites see the project's setting rather than a branch outcome
+        // (zfb#2390 — see the field doc).
+        p.cjk_friendly = cjk_friendly;
         // mdast phase. Config-derived wiring — pushed through the
         // non-invalidating helpers (invalidation rule — see
         // `push_config_derived_mdast_visitor`).
@@ -1568,13 +1574,12 @@ impl Pipeline {
             // already in the config fingerprint, so this stays
             // non-invalidating.
             if resolved.autolink_literal {
-                p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
-                // The plugin above is a visitor at chain index 0, so it never
+                // Note this plugin is a visitor at chain index 0, so it never
                 // sees a subtree parsed LATER in the chain by transclude or
-                // the directive registry. Record the decision so those two
-                // secondary parse sites can apply the same fix to their own
-                // output (zfb#2390).
-                p.cjk_autolink_boundary = true;
+                // the directive registry; `p.cjk_friendly` (set above, before
+                // any wiring) is how those two secondary parse sites apply the
+                // same fix to their own output (zfb#2390).
+                p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
             }
             p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         }
@@ -1857,6 +1862,10 @@ impl Pipeline {
         }
         let highlighter = Arc::new(highlighter);
         let mut p = Self::with_resolved_gfm_constructs(resolved);
+        // Recorded BEFORE any visitor wiring, so the two secondary parse
+        // sites see the project's setting rather than a branch outcome
+        // (zfb#2390 — see the field doc).
+        p.cjk_friendly = cjk_friendly;
         // mdast phase — CjkFriendlyPlugin honours the cjk_friendly toggle.
         // Config-derived wiring throughout this constructor is pushed via
         // the non-invalidating helpers (invalidation rule — see
@@ -1866,13 +1875,12 @@ impl Pipeline {
             // CjkFriendlyPlugin; see the twin wiring in `build_defaults` for
             // the ordering / gating / fingerprint rationale.
             if resolved.autolink_literal {
-                p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
-                // The plugin above is a visitor at chain index 0, so it never
+                // Note this plugin is a visitor at chain index 0, so it never
                 // sees a subtree parsed LATER in the chain by transclude or
-                // the directive registry. Record the decision so those two
-                // secondary parse sites can apply the same fix to their own
-                // output (zfb#2390).
-                p.cjk_autolink_boundary = true;
+                // the directive registry; `p.cjk_friendly` (set above, before
+                // any wiring) is how those two secondary parse sites apply the
+                // same fix to their own output (zfb#2390).
+                p.push_config_derived_mdast_visitor(Box::new(CjkAutolinkBoundaryPlugin::new()));
             }
             p.push_config_derived_mdast_visitor(Box::new(CjkFriendlyPlugin::new()));
         }
@@ -2430,11 +2438,11 @@ fn register_features_config_derived(
     // parse before the chain starts, which is exactly why a subtree
     // parsed later cannot rely on them).
     let secondary_parse_gfm = p.gfm_constructs;
-    let secondary_parse_cjk_boundary = p.cjk_autolink_boundary;
+    let secondary_parse_cjk_friendly = p.cjk_friendly;
 
     if let Some(cfg) = &features.transclude {
         let mut plugin = zfb_md_extras::transclude::TranscludePlugin::new(cfg.clone())
-            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_boundary);
+            .with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
         if let Some(recorder) = read_recorder {
             plugin = plugin.with_recorder(Arc::clone(recorder));
         }
@@ -2488,7 +2496,7 @@ fn register_features_config_derived(
         use zfb_md_ast::into_directive_def;
 
         let mut registry =
-            DirectiveRegistry::new().with_gfm(secondary_parse_gfm, secondary_parse_cjk_boundary);
+            DirectiveRegistry::new().with_gfm(secondary_parse_gfm, secondary_parse_cjk_friendly);
         if let Some(dir_map) = &features.directives {
             for (name, spec) in dir_map {
                 registry.register(into_directive_def(name, spec));
