@@ -659,11 +659,12 @@ fn single_and_default_fingerprints_unchanged_by_dual_wiring() {
         .config_fingerprint()
         .expect("fingerprintable");
     // This literal mirrors the `side_channels_keep_fingerprint_byte_identical_to_pre_977`
-    // test in pipeline_spec.rs — re-captured there (and here) for the
-    // zfb#2250 githubAutolinks removal (the canonical features JSON shape
-    // lost a key); unchanged by THIS test's dual-mode wiring.
+    // test in pipeline_spec.rs — re-captured there (and here) when the
+    // conservative GFM default flipped autolink_literal on (the default
+    // constructs descriptor changed, see that commit); unchanged by THIS
+    // test's dual-mode wiring.
     assert_eq!(
-        default_fp, "0d4dd447ba9696acd7dcb4c12593fe4be396c84102ca0b4d56afc0ecc65a4f21",
+        default_fp, "f1ccd59bb3526f4665ac11b6a69639cc381c5dc807bda4f83157fc3b5d455c92",
         "default-spec fingerprint must be unchanged by dual-mode wiring"
     );
 
