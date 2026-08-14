@@ -50,28 +50,32 @@ const AUTOLINK_AND_TABLE: ResolvedGfmConstructs = ResolvedGfmConstructs {
 /// one first, so a single helper serves both entry points. Scans for the
 /// exact tag boundaries (`<a ` / `<a>` / `</a>`) so an unrelated element
 /// like `<abbr>` cannot be miscounted as an anchor.
+///
+/// Scans **bytes**, not `&str` slices: every pattern here is ASCII, but the
+/// markup between them is not (CJK, IDN hosts), and advancing a byte index
+/// by 1 and then re-slicing a `&str` panics the moment the cursor lands
+/// mid-codepoint.
 fn has_nested_anchor(markup: &str) -> bool {
     let normalized = markup
         .replace("<_components.a", "<a")
         .replace("</_components.a>", "</a>");
+    let bytes = normalized.as_bytes();
     let mut depth = 0usize;
     let mut i = 0usize;
-    while i < normalized.len() {
-        let rest = &normalized[i..];
-        if rest.starts_with("</a>") {
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        if rest.starts_with(b"</a>") {
             depth = depth.saturating_sub(1);
             i += 4;
             continue;
         }
-        if let Some(after) = rest.strip_prefix("<a") {
-            if after.starts_with(' ') || after.starts_with('>') {
-                depth += 1;
-                if depth > 1 {
-                    return true;
-                }
-                i += 2;
-                continue;
+        if rest.starts_with(b"<a") && matches!(rest.get(2), Some(b' ') | Some(b'>')) {
+            depth += 1;
+            if depth > 1 {
+                return true;
             }
+            i += 2;
+            continue;
         }
         i += 1;
     }
@@ -113,6 +117,41 @@ fn nested_anchor_detector_is_not_vacuous() {
         !has_nested_anchor("<a href=\"https://a.com\"><abbr title=\"x\">a</abbr></a>"),
         "an `<abbr>` inside an anchor must not be counted as a second anchor"
     );
+
+    // Non-ASCII markup must not panic the scan. Slicing a `&str` by a
+    // byte index that lands mid-codepoint is exactly how this helper used
+    // to blow up ("byte index N is not a char boundary").
+    assert!(has_nested_anchor(
+        "<p>詳細は<a href=\"https://例え.テスト/道\"><a href=\"https://例え.テスト/道\">https://例え.テスト/道</a></a>を参照</p>"
+    ));
+    assert!(!has_nested_anchor(
+        "<p>詳細は<a href=\"https://例え.テスト/道\">https://例え.テスト/道</a>を参照</p>"
+    ));
+}
+
+/// GFM matches the scheme and the `www.` host prefix case-insensitively,
+/// and markdown-rs keeps the author's casing. A case-sensitive shape check
+/// leaves every uppercase spelling nested — i.e. reopens the bug.
+#[test]
+fn html_uppercase_autolink_spellings_are_unwrapped() {
+    for (src, label) in [
+        (
+            "[x HTTPS://Example.COM/a y](https://q.com)",
+            "uppercase https",
+        ),
+        ("[x HTTP://example.com y](https://q.com)", "uppercase http"),
+        ("[x WWW.Example.com y](https://q.com)", "uppercase www"),
+    ] {
+        let html = render(src);
+        assert!(
+            !has_nested_anchor(&html),
+            "{label} must not nest; got:\n{html}"
+        );
+        assert!(
+            html.contains("<a href=\"https://q.com\">"),
+            "{label}: the author's own link must survive; got:\n{html}"
+        );
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -324,6 +363,32 @@ fn jsx_emit_author_written_link_inside_an_mdx_anchor_keeps_its_destination() {
     assert!(
         module.contains("href=\"/x\""),
         "the outer destination must survive too; got:\n{module}"
+    );
+}
+
+/// A footnote definition's body is relocated at render into the
+/// document-level `<section class="footnotes">`, outside whatever link it
+/// was written under — so there is no nesting to fix there, and unwrapping
+/// would silently destroy a perfectly good autolink.
+#[test]
+fn jsx_emit_autolink_in_a_footnote_body_under_an_anchor_survives() {
+    let mut pipeline = Pipeline::with_defaults_and_theme_and_gfm(
+        None,
+        ResolvedGfmConstructs {
+            footnote_definition: true,
+            ..AUTOLINK_ONLY
+        },
+    );
+    let module = render_mdx_jsx_module(
+        &mut pipeline,
+        "ref[^1]\n\n<a href=\"/x\">\n\n[^1]: see https://e.com here\n\n</a>\n",
+        "test.mdx",
+    )
+    .expect("jsx emit must succeed");
+
+    assert!(
+        module.contains("href=\"https://e.com\""),
+        "the footnote body's autolink must survive; got:\n{module}"
     );
 }
 

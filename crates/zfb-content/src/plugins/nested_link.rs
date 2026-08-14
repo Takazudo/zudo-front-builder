@@ -115,7 +115,19 @@ fn rewrite(node: &mut MdastNode, inside_link: bool) {
     if is_no_recurse(node) {
         return;
     }
-    let inside_link = inside_link || is_link(node);
+    // A footnote definition's body is RELOCATED at render into the
+    // document-level `<section class="footnotes">`, so it never ends up
+    // inside whatever link it was written under — there is no nesting to
+    // fix, and unwrapping there is pure loss (the autolink in the body
+    // simply disappears). Reset the flag rather than carrying it in;
+    // a link *within* the body re-arms it normally on the way down.
+    // `zfb_md_ast::mdx_jsx::rewrite_jsx_nested` resets its own ancestry flag
+    // at this same node for this same reason.
+    let inside_link = if matches!(node, MdastNode::FootnoteDefinition(_)) {
+        false
+    } else {
+        inside_link || is_link(node)
+    };
     if let Some(children) = node.children_mut() {
         for child in children {
             rewrite(child, inside_link);
@@ -139,6 +151,14 @@ fn rewrite(node: &mut MdastNode, inside_link: bool) {
 /// `<a>`/`</a>` for this reason. Only the lowercase intrinsic name counts:
 /// a capitalised `<Note>` is a component whose rendered output zfb cannot
 /// know, so it is not treated as an anchor.
+///
+/// This makes an MDX `<a>` a link *ancestor*; it does not make it something
+/// the pass will remove. An MDX `<a>` written INSIDE a markdown link —
+/// `[x <a href="y">z</a> w](https://q.com)` — stays nested, because only
+/// autolink literals are ever unwrapped (see [`is_autolink_literal`]) and
+/// that anchor is author-written. So the awareness here is narrower than
+/// cmark-gfm's raw-`<a>` tracking: it prevents zfb from *creating* a nested
+/// anchor, not from *emitting* one the author wrote by hand.
 ///
 /// `Definition` is deliberately absent — it carries no children and emits
 /// nothing. `FootnoteReference` also renders an anchor, but it is a leaf
@@ -200,6 +220,12 @@ fn is_no_recurse(node: &MdastNode) -> bool {
 /// `Link > Link > Link` collapses in one pass; every other child — notably
 /// `Image` (legal inside a link), `LinkReference` (never an autolink), and
 /// any author-written `[label](dest)` — passes through untouched.
+///
+/// Adjacent `Text` nodes are left unmerged: an unwrap can leave
+/// `Text("see ") Text("https://e.com") Text(" now")` where one node would
+/// do. The HTML serializer concatenates them, so only the JSX emitter shows
+/// it, as three expressions instead of one — cosmetic, and merging would
+/// mean inventing `position` spans for the merged node.
 fn flatten_links(children: Vec<MdastNode>) -> Vec<MdastNode> {
     let mut out = Vec::with_capacity(children.len());
     for child in children {
@@ -253,15 +279,27 @@ fn is_autolink_literal(link: &markdown::mdast::Link) -> bool {
     };
     let visible = t.value.as_str();
 
+    // GFM matches the scheme and the `www.` host prefix case-INSENSITIVELY,
+    // and markdown-rs preserves the author's casing in both the url and the
+    // visible text — `WWW.Example.com` autolinks with url
+    // `http://WWW.Example.com`. Folding case here is load-bearing: comparing
+    // the prefixes case-sensitively leaves every uppercase spelling nested,
+    // i.e. reopens the bug for `HTTPS://Example.COM`.
+    let lower = visible.to_ascii_lowercase();
+
     // `http(s)://…` — the scheme is part of the visible text.
-    if link.url == visible && (visible.starts_with("http://") || visible.starts_with("https://")) {
+    if link.url == visible && (lower.starts_with("http://") || lower.starts_with("https://")) {
         return true;
     }
     // `www.…` — `http://` prepended to a visible host that must start `www.`.
-    if visible.starts_with("www.") && link.url.strip_prefix("http://") == Some(visible) {
+    // markdown-rs always prepends that scheme lowercase whatever the visible
+    // casing, so only the visible side needs folding.
+    if lower.starts_with("www.") && link.url.strip_prefix("http://") == Some(visible) {
         return true;
     }
-    // `user@host` — `mailto:` prepended to a visible address.
+    // `user@host` — `mailto:` prepended to a visible address. Reachable only
+    // under an MDX `<a>` ancestor: markdown-rs does not fire the email form
+    // inside a markdown link label.
     visible.contains('@') && link.url.strip_prefix("mailto:") == Some(visible)
 }
 
