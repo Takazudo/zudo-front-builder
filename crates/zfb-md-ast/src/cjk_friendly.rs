@@ -50,6 +50,16 @@ use markdown::{
 
 use crate::MdastVisitor;
 
+/// The canonical repro this module's doc comment walks through:
+/// `これは**重要。**テスト`, whose closing `**` plain CommonMark refuses to
+/// treat as a closing flanker.
+///
+/// Public because it is a fixture several crates' tests must agree on —
+/// it had four independent copies before zfb#2402, at which point a
+/// "typo fix" to any one of them would have silently left it testing
+/// something else.
+pub const FLANKED_EMPHASIS_REPRO: &str = "これは**重要。**テスト";
+
 /// Visitor that rewrites Text nodes containing CJK-flanked `*` / `**`
 /// runs into proper Emphasis/Strong mdast nodes.
 #[derive(Debug, Default, Clone, Copy)]

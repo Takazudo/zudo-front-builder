@@ -488,7 +488,9 @@ fn jsx_emit_collapsed_directive_body_still_emits_structured_children() {
 /// `zfb_md_ast::cjk_friendly`'s module docs for why plain CommonMark leaves
 /// this as literal `*` text (the run is never tokenised into `Strong` at
 /// all without the fix, so "off" and "on" are trivially distinguishable).
-const CJK_EMPHASIS_BODY: &str = "これは**重要。**テスト";
+/// Shared with that module's other test sites rather than re-spelled here
+/// (zfb#2402).
+const CJK_EMPHASIS_BODY: &str = zfb_md_ast::cjk_friendly::FLANKED_EMPHASIS_REPRO;
 
 #[test]
 fn transcluded_cjk_emphasis_flanking_is_corrected() {
@@ -622,6 +624,76 @@ fn jsx_emit_transcluded_hard_break_becomes_br() {
         !without_hard_breaks.contains("_components.br"),
         "hardBreaks off must leave transcluded content unchanged on the \
          JSX path: {without_hard_breaks}"
+    );
+}
+
+/// An `:::include` written inside a literal, author-written
+/// `<Note>…</Note>`. `expand_includes_in_node` descends into
+/// `MdxJsxFlowElement`, so the included subtree does NOT splice in as a
+/// top-level sibling here — it becomes a JSX body child.
+fn jsx_wrapped_include(include: &str) -> String {
+    format!("<Note>\n\n{include}\n\n</Note>\n")
+}
+
+/// zfb#2402: the include site's placement decides whether
+/// `HardBreaksPlugin` may run, and this shape is the one where it may
+/// not. On the HTML path an `MdxJsxFlowElement` is rendered by
+/// `reconstruct_jsx`'s lossy catch-all, which stringifies a `Break` to
+/// the EMPTY string — so normalising hard breaks into a JSX-nested
+/// include DELETED the author's newline instead of rendering `<br>`.
+///
+/// Unlike the collapsed-directive-body site (whose end-to-end reach is
+/// masked by the zfb#2401 chain-ordering interaction documented below),
+/// nothing masks this one: `TranscludePlugin` is registered AFTER the
+/// pipeline's own top-level `HardBreaksPlugin`, so the spliced subtree is
+/// never touched by the chain's copy, and the include paragraph itself is
+/// single-line.
+#[test]
+fn transcluded_hard_break_inside_a_literal_jsx_element_keeps_the_newline_on_the_html_path() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), HARD_BREAK_BODY);
+
+    let rendered = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        &jsx_wrapped_include(&include),
+    );
+
+    // Positive control: the include really was expanded inside the JSX
+    // element, so the assertions below are not passing on an empty body.
+    assert!(
+        rendered.contains("first line") && rendered.contains("second line"),
+        "the include must still be spliced into the JSX body: {rendered}"
+    );
+    assert!(
+        rendered.contains("first line\nsecond line"),
+        "the author's newline must survive inside a JSX body — a Break there \
+         is deleted, not rendered (zfb#2402): {rendered}"
+    );
+}
+
+/// The Jsx-target counterpart of the test above, so the fix cannot be
+/// "stop applying `HardBreaksPlugin` to JSX-nested includes at all": the
+/// JSX emitter has a real arm for `Break`, so the same fixture must still
+/// produce one there.
+#[test]
+fn transcluded_hard_break_inside_a_literal_jsx_element_still_breaks_on_the_jsx_path() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), HARD_BREAK_BODY);
+
+    let jsx = compile_jsx_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        &jsx_wrapped_include(&include),
+    );
+
+    assert!(
+        jsx.contains("_components.br"),
+        "a JSX-nested include must still get its <br> on the JSX path: {jsx}"
     );
 }
 

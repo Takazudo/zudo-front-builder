@@ -78,9 +78,9 @@ use std::sync::Arc;
 
 use markdown::mdast::Node as MdastNode;
 use zfb_md_ast::{
-    constructs_for_target, unwrap_nested_links, BuildContext, CjkAutolinkBoundaryPlugin,
-    CjkFriendlyPlugin, HardBreaksPlugin, MdastVisitor, ReadOutcome, ReadRecorder,
-    ResolvedGfmConstructs, SecondaryParseTarget,
+    constructs_for_target, BuildContext, MdastVisitor, ReadOutcome, ReadRecorder,
+    ResolvedGfmConstructs, SecondaryParseNormalization, SecondaryParsePlacement,
+    SecondaryParseTarget,
 };
 
 use crate::TranscludeConfig;
@@ -148,12 +148,12 @@ pub struct TranscludePlugin {
     /// The project's `markdown.hardBreaks` setting (zfb#2398).
     ///
     /// Stored raw, un-ANDed with anything — unlike `cjk_friendly` it does
-    /// not depend on `gfm.autolink_literal`, so [`HardBreaksPlugin`] is
-    /// applied whenever this is `true`, independent of the GFM gate.
-    /// Travels here for the same structural reason as `cjk_friendly`:
-    /// `HardBreaksPlugin` sits at a fixed mdast-chain index in the
-    /// pipeline's own chain and never sees a transcluded subtree spliced
-    /// in later.
+    /// not depend on `gfm.autolink_literal`. The one gate it does carry is
+    /// the include site's PLACEMENT, applied per expansion rather than
+    /// here (zfb#2402): see [`SecondaryParsePlacement`]. Travels here for
+    /// the same structural reason as `cjk_friendly`: `HardBreaksPlugin`
+    /// sits at a fixed mdast-chain index in the pipeline's own chain and
+    /// never sees a transcluded subtree spliced in later.
     hard_breaks: bool,
 }
 
@@ -189,11 +189,14 @@ impl TranscludePlugin {
         self
     }
 
-    /// Apply [`HardBreaksPlugin`] to an included file's parsed subtree
+    /// Apply `HardBreaksPlugin` to an included file's parsed subtree
     /// when `hard_breaks` is `true` (zfb#2398), matching the project's
     /// `markdown.hardBreaks` setting. Unlike `cjk_friendly`, this is
     /// never gated on `gfm.autolink_literal` — the two features are
-    /// unrelated.
+    /// unrelated. It IS gated on the include site's placement: an
+    /// `:::include` nested inside a literal `<Note>…</Note>` skips the
+    /// pass on the HTML target, where a `Break` inside JSX is deleted
+    /// rather than rendered (zfb#2402, [`SecondaryParsePlacement`]).
     #[must_use]
     pub fn with_hard_breaks(mut self, hard_breaks: bool) -> Self {
         self.hard_breaks = hard_breaks;
@@ -254,7 +257,15 @@ impl MdastVisitor for TranscludePlugin {
             hard_breaks: self.hard_breaks,
             target: self.target,
         };
-        expand_includes_in_node(node, &source_dir, &env, &mut visited, 0, ctx);
+        expand_includes_in_node(
+            node,
+            &source_dir,
+            &env,
+            &mut visited,
+            0,
+            SecondaryParsePlacement::TopLevelSibling,
+            ctx,
+        );
     }
 }
 
@@ -283,49 +294,34 @@ struct ExpandEnv<'a> {
     target: SecondaryParseTarget,
 }
 
-/// Apply the post-parse normalisations that [`ExpandEnv::gfm`] makes
-/// mandatory to a freshly parsed included subtree (zfb#2390).
+/// Apply the shared secondary-parse normalisation (zfb#2390, zfb#2402) to
+/// a freshly parsed included subtree.
 ///
-/// The pipeline runs both of these immediately after its own top-level
-/// `markdown::to_mdast`, ahead of the visitor chain. This site parses
-/// AFTER that point, so nothing else will ever normalise what it
-/// produces — every `to_mdast` call site owns its own output.
+/// The passes themselves, their order, and their gating live in
+/// [`SecondaryParseNormalization`] — shared with `zfb_content`'s
+/// `DirectiveRegistry::reparse_block`, the twin secondary parse site,
+/// which ran a verbatim copy of this sequence until zfb#2402.
 ///
-/// - `unwrap_nested_links` (zfb#2388) removes autolink literals that
-///   markdown-rs fires inside a link label, which would otherwise emit an
-///   `<a>` nested in an `<a>` — invalid HTML that fails `html-validate`'s
-///   `element-permitted-content`.
-/// - [`CjkAutolinkBoundaryPlugin`] (zfb#1105) stops a bare URL flush
-///   against CJK text from swallowing the trailing CJK run into the
-///   `href`.
-///
-/// Both are gated on `autolink_literal`, the construct that produces the
-/// defects they remove, so an included file parsed without it keeps
-/// byte-identical output.
-///
-/// [`CjkFriendlyPlugin`] and [`HardBreaksPlugin`] (zfb#2398) are NOT part
-/// of that autolink-literal gate — they are independent normalisations,
-/// gated only on their own project settings (`env.cjk_friendly` /
-/// `env.hard_breaks`). Both are safe to apply unconditionally to the full
-/// transcluded subtree: it splices in as ordinary top-level siblings at
-/// the include site, so a top-level `Break` renders correctly on both the
-/// HTML and JSX paths. (Contrast `zfb_content`'s
-/// `DirectiveRegistry::reparse_block`, the other secondary parse site,
-/// whose output can land inside an `MdxJsxFlowElement` on the HTML path —
-/// that site gates `HardBreaksPlugin` to the JSX target only.)
-fn normalize_included_subtree(node: &mut MdastNode, env: &ExpandEnv<'_>) {
-    if env.gfm.autolink_literal {
-        unwrap_nested_links(node);
-        if env.cjk_friendly {
-            CjkAutolinkBoundaryPlugin::new().visit(node);
-        }
-    }
-    if env.cjk_friendly {
-        CjkFriendlyPlugin::new().visit(node);
-    }
-    if env.hard_breaks {
-        HardBreaksPlugin::new().visit(node);
-    }
+/// `placement` is where this subtree will land in the host tree, which
+/// this function cannot see for itself: an include site is usually a
+/// top-level sibling, but [`expand_includes_in_node`] descends into
+/// `MdxJsxFlowElement` too, so an `:::include` written inside a literal
+/// `<Note>…</Note>` splices into a JSX body — where a `Break` is deleted
+/// rather than rendered on the HTML path. The expansion walk knows which
+/// container it descended through and threads the answer here.
+fn normalize_included_subtree(
+    node: &mut MdastNode,
+    env: &ExpandEnv<'_>,
+    placement: SecondaryParsePlacement,
+) {
+    SecondaryParseNormalization::new(
+        env.gfm,
+        env.cjk_friendly,
+        env.hard_breaks,
+        placement,
+        env.target,
+    )
+    .apply(node);
 }
 
 /// Recursively scan `node`'s children for `:::include` paragraphs and
@@ -333,22 +329,33 @@ fn normalize_included_subtree(node: &mut MdastNode, env: &ExpandEnv<'_>) {
 ///
 /// Dispatches to [`expand_includes_in_children`] on the appropriate child
 /// vec for each container node type. Non-container nodes are skipped.
+///
+/// `placement` is where the CURRENT child vec sits. Descending through
+/// the `MdxJsxFlowElement` arm switches it to
+/// [`SecondaryParsePlacement::InsideJsxElement`] for everything below,
+/// which is what stops [`HardBreaksPlugin`] from deleting an included
+/// file's newlines on the HTML path (zfb#2402). The `ListItem` /
+/// `Blockquote` arms inherit unchanged — both render `Break` correctly on
+/// both paths, so the gate is JSX-specific, not "anything nested".
 fn expand_includes_in_node(
     node: &mut MdastNode,
     source_dir: &Path,
     env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
+    placement: SecondaryParsePlacement,
     ctx: &mut BuildContext<'_>,
 ) {
-    let children = match node {
-        MdastNode::Root(r) => &mut r.children,
-        MdastNode::ListItem(li) => &mut li.children,
-        MdastNode::Blockquote(bq) => &mut bq.children,
-        MdastNode::MdxJsxFlowElement(j) => &mut j.children,
+    let (children, placement) = match node {
+        MdastNode::Root(r) => (&mut r.children, placement),
+        MdastNode::ListItem(li) => (&mut li.children, placement),
+        MdastNode::Blockquote(bq) => (&mut bq.children, placement),
+        MdastNode::MdxJsxFlowElement(j) => {
+            (&mut j.children, SecondaryParsePlacement::InsideJsxElement)
+        }
         _ => return,
     };
-    expand_includes_in_children(children, source_dir, env, visited, depth, ctx);
+    expand_includes_in_children(children, source_dir, env, visited, depth, placement, ctx);
 }
 
 /// Scan a `Vec<MdastNode>` (the children of a container) for `:::include`
@@ -358,21 +365,26 @@ fn expand_includes_in_node(
 /// blockquotes, list items, etc. are found.
 ///
 /// `depth` is the current nesting level; `env.max_depth` is the configured
-/// bound.
+/// bound. `placement` is where this child vec sits in the host tree — see
+/// [`expand_includes_in_node`].
 fn expand_includes_in_children(
     children: &mut Vec<MdastNode>,
     source_dir: &Path,
     env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
+    placement: SecondaryParsePlacement,
     ctx: &mut BuildContext<'_>,
 ) {
     let mut i = 0;
     while i < children.len() {
         match extract_include_attrs(&children[i]) {
             IncludeMatch::Ok(attrs) => {
-                // Found an `:::include` paragraph at `i`.
-                let replacement = resolve_and_expand(&attrs, source_dir, env, visited, depth, ctx);
+                // Found an `:::include` paragraph at `i`. Its replacement
+                // nodes take this vec's placement — they are spliced into
+                // exactly the slot the directive paragraph occupied.
+                let replacement =
+                    resolve_and_expand(&attrs, source_dir, env, visited, depth, placement, ctx);
 
                 // Remove the directive paragraph.
                 children.remove(i);
@@ -402,7 +414,15 @@ fn expand_includes_in_children(
             }
             IncludeMatch::NotInclude => {
                 // Not an include directive — recurse into container children.
-                expand_includes_in_node(&mut children[i], source_dir, env, visited, depth, ctx);
+                expand_includes_in_node(
+                    &mut children[i],
+                    source_dir,
+                    env,
+                    visited,
+                    depth,
+                    placement,
+                    ctx,
+                );
                 i += 1;
             }
         }
@@ -429,6 +449,7 @@ fn resolve_and_expand(
     env: &ExpandEnv<'_>,
     visited: &mut HashSet<PathBuf>,
     depth: u8,
+    placement: SecondaryParsePlacement,
     ctx: &mut BuildContext<'_>,
 ) -> Vec<MdastNode> {
     let max_depth = env.max_depth;
@@ -607,7 +628,7 @@ fn resolve_and_expand(
         }
     };
 
-    normalize_included_subtree(&mut included_mdast, env);
+    normalize_included_subtree(&mut included_mdast, env, placement);
 
     let MdastNode::Root(root) = included_mdast else {
         return Vec::new();
@@ -633,6 +654,7 @@ fn resolve_and_expand(
         env,
         visited,
         depth + 1,
+        placement,
         ctx,
     );
 
