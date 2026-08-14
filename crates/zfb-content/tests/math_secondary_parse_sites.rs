@@ -32,6 +32,8 @@
 //!    create the mirror image of the asymmetry this fix removes.
 //! 4. **Directive re-parse** — the other secondary site, pinned on both
 //!    paths.
+//! 5. **Cross-fix interaction: math × CJK** (zfb#2399) — the CJK/hard-breaks
+//!    plugins walk past the `Math` / `InlineMath` nodes this fix creates.
 //!
 //! [`constructs_for_pipeline`]: zfb_content::pipeline::constructs_for_pipeline
 
@@ -41,15 +43,24 @@ use std::sync::{Arc, Mutex};
 use markdown::mdast::Node as MdastNode;
 use zfb_content::pipeline::{Pipeline, ResolvedGfmConstructs, SecondaryParseTarget};
 use zfb_md_ast::{
-    BuildContext, DirectiveSpec, MarkdownFeaturesConfig, MdastVisitor, TranscludeConfig,
+    cjk_friendly::FLANKED_EMPHASIS_REPRO, BuildContext, DirectiveSpec, MarkdownFeaturesConfig,
+    MdastVisitor, TranscludeConfig,
 };
 
 // ── harness ────────────────────────────────────────────────────────────
 
 /// A pipeline with both secondary parse sites wired: transclude, plus a
 /// `:::note` container directive. Mirrors the harness in
-/// `gfm_secondary_parse_sites.rs`.
-fn pipeline(gfm: ResolvedGfmConstructs) -> Pipeline {
+/// `gfm_secondary_parse_sites.rs`, including its `*_full`-plus-delegating-
+/// wrapper shape for the one knob only some sections need.
+///
+/// `cjk_friendly` is off for §§1–4, which are about math constructs alone
+/// — a CJK rewrite there could be mistaken for the threading under test.
+/// §5 turns it on: the math fix (#2397) enables `Math`/`InlineMath` in
+/// exactly the subtrees the CJK/hard-breaks plugins (#2398) now visit at
+/// these two sites, so it proves those plugins skip math nodes safely
+/// rather than merely not crashing on them.
+fn pipeline_full(gfm: ResolvedGfmConstructs, cjk_friendly: bool) -> Pipeline {
     let mut directives = HashMap::new();
     directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
     let features = MarkdownFeaturesConfig {
@@ -57,8 +68,12 @@ fn pipeline(gfm: ResolvedGfmConstructs) -> Pipeline {
         directives: Some(directives),
         ..Default::default()
     };
-    Pipeline::with_defaults_and_full_config(None, gfm, None, false, false, Some(&features))
+    Pipeline::with_defaults_and_full_config(None, gfm, None, cjk_friendly, false, Some(&features))
         .expect("pipeline builds")
+}
+
+fn pipeline(gfm: ResolvedGfmConstructs) -> Pipeline {
+    pipeline_full(gfm, false)
 }
 
 fn tmpdir() -> tempfile::TempDir {
@@ -79,13 +94,22 @@ fn snippet(dir: &std::path::Path, body: &str) -> String {
 /// `TranscludePlugin` can resolve a relative include. Arming the context
 /// roots also routes the compile through
 /// `Pipeline::apply_mdast_visitors_with_context`.
-fn compile_jsx_in(dir: &std::path::Path, gfm: ResolvedGfmConstructs, input: &str) -> String {
-    let mut p = pipeline(gfm);
+fn compile_jsx_in_full(
+    dir: &std::path::Path,
+    gfm: ResolvedGfmConstructs,
+    cjk_friendly: bool,
+    input: &str,
+) -> String {
+    let mut p = pipeline_full(gfm, cjk_friendly);
     p.set_build_context_roots(dir.to_path_buf(), dir.join("public"));
     let opts = zfb_content::MdxJsxOptions::default()
         .with_filename("page.mdx".to_string())
         .with_source_path(dir.join("page.mdx"));
     zfb_content::mdx_to_jsx_module_with_pipeline(input, opts, &mut p).expect("compile ok")
+}
+
+fn compile_jsx_in(dir: &std::path::Path, gfm: ResolvedGfmConstructs, input: &str) -> String {
+    compile_jsx_in_full(dir, gfm, false, input)
 }
 
 /// Compile through the JSX-emit path with the context roots UNARMED, the
@@ -373,49 +397,16 @@ fn html_collapsed_directive_body_with_math_stays_literal_text() {
 
 // ── 5. cross-fix interaction: math × CJK (zfb#2399) ────────────────────
 
-/// A pipeline like [`pipeline`] but with `cjkFriendly` on — the math fix
-/// (#2397) turns `Math`/`InlineMath` on in subtrees the CJK/hard-breaks
-/// plugins (#2398) now visit at the same two secondary parse sites, so
-/// this proves those plugins skip math nodes safely rather than merely
-/// not crashing on them.
-fn pipeline_cjk(gfm: ResolvedGfmConstructs) -> Pipeline {
-    let mut directives = HashMap::new();
-    directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
-    let features = MarkdownFeaturesConfig {
-        transclude: Some(TranscludeConfig::default()),
-        directives: Some(directives),
-        ..Default::default()
-    };
-    Pipeline::with_defaults_and_full_config(None, gfm, None, true, false, Some(&features))
-        .expect("pipeline builds")
-}
-
-/// Like [`compile_jsx_in`] but built on [`pipeline_cjk`].
-fn compile_jsx_in_cjk(dir: &std::path::Path, gfm: ResolvedGfmConstructs, input: &str) -> String {
-    let mut p = pipeline_cjk(gfm);
-    p.set_build_context_roots(dir.to_path_buf(), dir.join("public"));
-    let opts = zfb_content::MdxJsxOptions::default()
-        .with_filename("page.mdx".to_string())
-        .with_source_path(dir.join("page.mdx"));
-    zfb_content::mdx_to_jsx_module_with_pipeline(input, opts, &mut p).expect("compile ok")
-}
-
 /// CJK-flanked emphasis (the shape plain CommonMark leaves unparsed —
 /// see `zfb_md_ast::cjk_friendly`'s module docs) plus the same block +
 /// inline math payload as [`MATH_BODY`], so a regression in either
 /// plugin's math-skipping shows up rather than being masked by the other
-/// construct.
-const CJK_AND_MATH_BODY: &str = "\
-これは**重要。**テスト
-
-Lead in.
-
-$$
-\\int_{-\\infty}^{\\infty} f(x)\\,dx
-$$
-
-When $x \\to \\infty$ the limit holds.
-";
+/// construct. Composed from both fixtures rather than re-spelling either
+/// (zfb#2402) — "the same payload as `MATH_BODY`" is now true by
+/// construction instead of by inspection.
+fn cjk_and_math_body() -> String {
+    format!("{FLANKED_EMPHASIS_REPRO}\n\n{MATH_BODY}")
+}
 
 /// Math × CJK, JSX path (zfb#2399 acceptance criterion 1): a transcluded
 /// file carrying BOTH CJK emphasis and `$$math$$` — CJK correction
@@ -427,9 +418,9 @@ When $x \\to \\infty$ the limit holds.
 #[test]
 fn jsx_emit_transcluded_math_and_cjk_emphasis_compose() {
     let dir = tmpdir();
-    let include = snippet(dir.path(), CJK_AND_MATH_BODY);
+    let include = snippet(dir.path(), &cjk_and_math_body());
 
-    let jsx = compile_jsx_in_cjk(dir.path(), ResolvedGfmConstructs::ALL_ON, &include);
+    let jsx = compile_jsx_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, true, &include);
 
     assert!(
         jsx.contains("<_components.strong>{\"重要。\"}</_components.strong>"),

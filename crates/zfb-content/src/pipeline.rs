@@ -2841,6 +2841,13 @@ pub fn mdast_to_hast_with_model(
             // `a_reference_in_a_dropped_subtree_trips_the_walk_parity_
             // guard`, has to hand-build that exact shape because
             // markdown-rs cannot produce it).
+            //
+            // The image-reference spelling `![text[^n]][ref]` is safe for
+            // a DIFFERENT reason worth stating, since a reader checking
+            // this invariant will reach for it next: markdown-rs folds
+            // the whole image label into the `ImageReference`'s `alt`
+            // string and emits no `FootnoteReference` node at all, so
+            // both walks agree at zero rather than agreeing on one.
             {
                 debug_assert_eq!(
                     fc.consumed_total(),
@@ -4215,6 +4222,54 @@ mod tests {
             .expect("parse ok")
     }
 
+    /// The `<Note>` JsxRaw string an HTML-path render collapses a
+    /// `<Note>` element into. Every footnote-nested-in-JSX test starts
+    /// from this, whether the element came from literal JSX syntax or
+    /// from a `:::note` directive.
+    fn note_jsx(h: &HastNode) -> String {
+        let mut raws = Vec::new();
+        collect_raw(h, &mut raws);
+        raws.into_iter()
+            .find(|r| r.starts_with("<Note>"))
+            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"))
+    }
+
+    /// The association triple every footnote-nested-in-JSX test asserts:
+    /// the reference marker renders inside the JSX body, the definition
+    /// body is NOT inlined there, and it renders exactly once in the
+    /// appended footnote section. Returns the definition element so a
+    /// caller can go on to assert about its subtree (e.g. the backref).
+    fn assert_footnote_renders_once<'a>(
+        h: &'a HastNode,
+        jsx: &str,
+        label: &str,
+        body: &str,
+    ) -> &'a HastNode {
+        assert!(
+            jsx.contains(&format!("<sup><a href=\"#user-content-fn-{label}\"")),
+            "expected the footnote reference marker for [^{label}] inside the \
+             JSX body: {jsx:?}"
+        );
+        assert!(
+            !jsx.contains(body),
+            "definition body must not be inlined inside the JSX body: {jsx:?}"
+        );
+
+        let mut elements = Vec::new();
+        collect_elements(h, &mut elements);
+        let definition_target = elements
+            .iter()
+            .find(|e| attr(e, "id") == Some(format!("user-content-fn-{label}").as_str()))
+            .copied()
+            .unwrap_or_else(|| panic!("expected the rendered definition element: {h:#?}"));
+        assert!(
+            flatten_text(definition_target).contains(body),
+            "definition body must render exactly once, in the footnote \
+             section: {definition_target:#?}"
+        );
+        definition_target
+    }
+
     // 1. A single reference and its definition are ASSOCIATED: the
     // reference renders a visible marker element that links (by some
     // id) to the definition's rendered location, and the definition's
@@ -4818,19 +4873,13 @@ mod tests {
         let src = ":::note\nSome text.[^n]\n[^n]: the note body.\n:::\n";
         let h = p.run(src).expect("parse ok");
 
-        let mut raws = Vec::new();
-        collect_raw(&h, &mut raws);
-        let jsx = raws
-            .iter()
-            .find(|r| r.starts_with("<Note>"))
-            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"));
+        let jsx = note_jsx(&h);
 
-        // The reference marker exists inside the JSX body, with an href
-        // pointing at a real `#`-anchor — not dropped by the catch-all.
-        assert!(
-            jsx.contains("<sup><a href=\"#user-content-fn-n\""),
-            "expected the footnote reference marker inside the JSX body: {jsx:?}"
-        );
+        // The reference marker exists inside the JSX body with an href
+        // pointing at a real `#`-anchor (not dropped by the catch-all),
+        // and the definition renders exactly once in the appended
+        // section rather than inline.
+        let definition_target = assert_footnote_renders_once(&h, &jsx, "n", "the note body.");
         assert!(
             jsx.contains("data-footnote-ref"),
             "reference marker must carry data-footnote-ref: {jsx:?}"
@@ -4839,25 +4888,6 @@ mod tests {
         assert!(
             jsx.contains(&format!("id=\"{marker_id}\"")),
             "reference marker must carry its own occurrence id: {jsx:?}"
-        );
-
-        // The definition body renders EXACTLY ONCE, in the appended
-        // section — never inlined at the definition point (the JSX body
-        // must not contain the definition text).
-        assert!(
-            !jsx.contains("the note body."),
-            "definition body must not be inlined inside the JSX body: {jsx:?}"
-        );
-        let mut elements = Vec::new();
-        collect_elements(&h, &mut elements);
-        let definition_target = elements
-            .iter()
-            .find(|e| attr(e, "id") == Some("user-content-fn-n"))
-            .copied()
-            .unwrap_or_else(|| panic!("expected the rendered definition element: {h:#?}"));
-        assert!(
-            flatten_text(definition_target).contains("the note body."),
-            "definition body must render exactly once, in the footnote section: {definition_target:#?}"
         );
 
         // The backref round-trips: the definition's own subtree carries
@@ -4881,32 +4911,8 @@ mod tests {
     fn literal_jsx_footnote_reference_and_definition_are_associated_on_html_path() {
         let h = run_with_footnotes("<Note>\n\nSome text.[^n]\n\n[^n]: the note body.\n\n</Note>\n");
 
-        let mut raws = Vec::new();
-        collect_raw(&h, &mut raws);
-        let jsx = raws
-            .iter()
-            .find(|r| r.starts_with("<Note>"))
-            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"));
-        assert!(
-            jsx.contains("<sup><a href=\"#user-content-fn-n\""),
-            "expected the footnote reference marker inside the JSX body: {jsx:?}"
-        );
-        assert!(
-            !jsx.contains("the note body."),
-            "definition body must not be inlined inside the JSX body: {jsx:?}"
-        );
-
-        let mut elements = Vec::new();
-        collect_elements(&h, &mut elements);
-        let definition_target = elements
-            .iter()
-            .find(|e| attr(e, "id") == Some("user-content-fn-n"))
-            .copied()
-            .unwrap_or_else(|| panic!("expected the rendered definition element: {h:#?}"));
-        assert!(
-            flatten_text(definition_target).contains("the note body."),
-            "definition body must render exactly once, in the footnote section: {definition_target:#?}"
-        );
+        let jsx = note_jsx(&h);
+        assert_footnote_renders_once(&h, &jsx, "n", "the note body.");
     }
 
     /// Container sweep: a footnote reference nested one level deeper
@@ -4931,12 +4937,7 @@ mod tests {
                    [^l]: L body.\n\n[^e]: E body.\n\n[^j]: J body.\n";
         let h = run_with_footnotes(src);
 
-        let mut raws = Vec::new();
-        collect_raw(&h, &mut raws);
-        let jsx = raws
-            .iter()
-            .find(|r| r.starts_with("<Note>"))
-            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"));
+        let jsx = note_jsx(&h);
 
         for label in ["p", "t", "b", "l", "e", "j"] {
             assert!(
@@ -4969,12 +4970,7 @@ mod tests {
     fn catch_all_still_swallows_reference_style_link_definitions_nested_in_jsx() {
         let h = run("<Note>\n\nPara text.\n\n[label]: /elsewhere \"Title\"\n\n</Note>\n");
 
-        let mut raws = Vec::new();
-        collect_raw(&h, &mut raws);
-        let jsx = raws
-            .iter()
-            .find(|r| r.starts_with("<Note>"))
-            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"));
+        let jsx = note_jsx(&h);
         assert!(
             jsx.contains("Para text."),
             "the surrounding paragraph must still render: {jsx:?}"
@@ -4986,7 +4982,7 @@ mod tests {
         );
     }
 
-    fn directive_body_footnote_and_cjk_pipeline() -> (Pipeline, &'static str) {
+    fn directive_body_footnote_and_cjk_pipeline() -> (Pipeline, String) {
         let mut directives = std::collections::HashMap::new();
         directives.insert(
             "note".to_string(),
@@ -5005,7 +5001,10 @@ mod tests {
             Some(&features),
         )
         .expect("pipeline builds");
-        let src = ":::note\n\nこれは**重要。**テスト[^n]\n\n[^n]: the note body.\n\n:::\n";
+        // The CJK fixture is `zfb_md_ast::cjk_friendly`'s own canonical
+        // repro rather than a fourth hand-copy of it (zfb#2402).
+        let repro = zfb_md_ast::cjk_friendly::FLANKED_EMPHASIS_REPRO;
+        let src = format!(":::note\n\n{repro}[^n]\n\n[^n]: the note body.\n\n:::\n");
         (p, src)
     }
 
@@ -5041,7 +5040,7 @@ mod tests {
     fn directive_body_footnote_and_cjk_emphasis_compose_at_the_mdast_level() {
         let (p, src) = directive_body_footnote_and_cjk_pipeline();
         let mut p = p;
-        let mut mdast = markdown::to_mdast(src, &p.parse_options).expect("parse ok");
+        let mut mdast = markdown::to_mdast(&src, &p.parse_options).expect("parse ok");
         for v in &mut p.mdast_visitors {
             v.set_secondary_parse_target(SecondaryParseTarget::Html);
             v.visit(&mut mdast);
@@ -5102,37 +5101,13 @@ mod tests {
     #[test]
     fn directive_body_footnote_and_cjk_emphasis_render_on_the_html_path() {
         let (mut p, src) = directive_body_footnote_and_cjk_pipeline();
-        let h = p.run(src).expect("parse ok");
+        let h = p.run(&src).expect("parse ok");
 
-        let mut raws = Vec::new();
-        collect_raw(&h, &mut raws);
-        let jsx = raws
-            .iter()
-            .find(|r| r.starts_with("<Note>"))
-            .unwrap_or_else(|| panic!("expected a <Note> JsxRaw node: {h:#?}"));
-
-        assert!(
-            jsx.contains("<sup><a href=\"#user-content-fn-n\""),
-            "expected the footnote reference marker inside the JSX body \
-             alongside corrected CJK emphasis: {jsx:?}"
-        );
-        assert!(
-            !jsx.contains("the note body."),
-            "definition body must not be inlined inside the JSX body: {jsx:?}"
-        );
-
-        let mut elements = Vec::new();
-        collect_elements(&h, &mut elements);
-        let definition_target = elements
-            .iter()
-            .find(|e| attr(e, "id") == Some("user-content-fn-n"))
-            .copied()
-            .unwrap_or_else(|| panic!("expected the rendered definition element: {h:#?}"));
-        assert!(
-            flatten_text(definition_target).contains("the note body."),
-            "definition body must render exactly once, in the footnote \
-             section: {definition_target:#?}"
-        );
+        // The whole point of THIS test is that the association triple
+        // still holds for a JSX body that also carries CJK-corrected
+        // emphasis — same assertions, different subject.
+        let jsx = note_jsx(&h);
+        assert_footnote_renders_once(&h, &jsx, "n", "the note body.");
     }
 
     // ── zfb#2247: shared mdast-phase wiring for the JSX-nested mutation
