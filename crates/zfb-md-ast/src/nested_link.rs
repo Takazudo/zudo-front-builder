@@ -20,7 +20,7 @@
 //!
 //! `markdown-rs` is a plain crates.io dependency whose tokeniser is not
 //! configurable from outside, so — exactly like
-//! [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink) does for the CJK
+//! [`CjkAutolinkBoundaryPlugin`](crate::cjk_autolink::CjkAutolinkBoundaryPlugin) does for the CJK
 //! boundary defect — the fix is a post-parse mdast pass.
 //!
 //! # Why unwrapping the *inner* link is the correct normalisation
@@ -71,16 +71,15 @@
 //! It runs immediately after `markdown::to_mdast`, ahead of the visitor
 //! chain, for two reasons. It covers every pipeline regardless of how it
 //! was constructed — the mdast visitors are only wired by the
-//! `with_defaults*` constructors, so a bare [`Pipeline::new`] would
+//! `with_defaults*` constructors, so a bare `Pipeline::new` would
 //! otherwise keep emitting nested anchors. And it guarantees that no
 //! visitor ever observes the malformed tree:
-//! [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink) and
-//! [`CjkFriendlyPlugin`](super::cjk_friendly) both walk `Link` nodes, and
+//! [`CjkAutolinkBoundaryPlugin`](crate::cjk_autolink::CjkAutolinkBoundaryPlugin) and
+//! `CjkFriendlyPlugin` both walk `Link` nodes, and
 //! reasoning about them against a shape the GFM spec says cannot exist is
 //! a trap worth removing outright.
 //!
-//! [`Pipeline::new`]: crate::pipeline::Pipeline::new
-
+//!
 use markdown::mdast::Node as MdastNode;
 
 /// Unwrap every autolink-literal `Link` nested inside something that
@@ -177,8 +176,8 @@ fn is_link(node: &MdastNode) -> bool {
 /// (author-written JavaScript).
 ///
 /// Deliberately NARROWER than the set
-/// [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink) and
-/// [`CjkFriendlyPlugin`](super::cjk_friendly) use: those also stop at
+/// [`CjkAutolinkBoundaryPlugin`](crate::cjk_autolink::CjkAutolinkBoundaryPlugin) and
+/// `CjkFriendlyPlugin` use: those also stop at
 /// `MdxJsxFlowElement` / `MdxJsxTextElement`, and inheriting that here
 /// would leave the bug live inside author-written JSX. A JSX element's
 /// mdast *children* are ordinary markdown-parsed nodes — which is exactly
@@ -199,11 +198,10 @@ fn is_link(node: &MdastNode) -> bool {
 /// `MdxJsxTextElement` — the shape [`is_link`] handles — and inline
 /// `MdastNode::Html` never materialises. The arm matters only if this pass
 /// is ever reused on a CommonMark-dialect parse (`facade::parse_mdast` with
-/// [`ParseDialect::Markdown`]), where such a tag DOES become raw `Html` and
+/// `ParseDialect::Markdown`), where such a tag DOES become raw `Html` and
 /// the autolink inside it becomes a *sibling* `Link`, not a descendant —
 /// structurally invisible here, though it still renders as a nested anchor.
 ///
-/// [`ParseDialect::Markdown`]: crate::facade::ParseDialect::Markdown
 fn is_no_recurse(node: &MdastNode) -> bool {
     matches!(
         node,
@@ -256,7 +254,7 @@ fn flatten_links(children: Vec<MdastNode>) -> Vec<MdastNode> {
 ///
 /// The visible text is checked against what the autolink tokeniser would
 /// actually have accepted, not just against the url — mirroring Guard A in
-/// [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink). Matching on the url
+/// [`CjkAutolinkBoundaryPlugin`](crate::cjk_autolink::CjkAutolinkBoundaryPlugin). Matching on the url
 /// alone would misread ordinary author links whose destination happens to
 /// echo their label: `[/foo](/foo)` satisfies `url == visible`, and
 /// `[example.com](http://example.com)` satisfies the `http://` arm, yet
@@ -267,7 +265,7 @@ fn flatten_links(children: Vec<MdastNode>) -> Vec<MdastNode> {
 /// The one case this cannot separate is an author hand-writing
 /// `[https://x.com](https://x.com)` — byte-identical to what the autolink
 /// pass produces. Unresolvable in mdast, and the same ambiguity
-/// [`CjkAutolinkBoundaryPlugin`](super::cjk_autolink) documents; it is only
+/// [`CjkAutolinkBoundaryPlugin`](crate::cjk_autolink::CjkAutolinkBoundaryPlugin) documents; it is only
 /// reachable once bare-URL autolinking is on, the surface that creates the
 /// bug.
 fn is_autolink_literal(link: &markdown::mdast::Link) -> bool {

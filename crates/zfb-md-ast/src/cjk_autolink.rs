@@ -10,7 +10,7 @@
 //!
 //! `markdown-rs` (the `markdown` crate) is a plain crates.io dependency —
 //! its tokeniser is not configurable from outside — so, exactly like
-//! [`CjkFriendlyPlugin`](super::cjk_friendly::CjkFriendlyPlugin) does for
+//! `CjkFriendlyPlugin` does for
 //! emphasis flanking, the cleanest fix is a post-parse mdast pass: find the
 //! `Link` node markdown-rs already produced for an over-consuming autolink
 //! literal and split it at the first CJK character, moving the CJK run out
@@ -47,12 +47,11 @@
 //! autolink — is only reachable once bare-URL autolinking is enabled, the
 //! same surface that produces the bug.
 //!
-//! [`CjkFriendlyPlugin`]: super::cjk_friendly::CjkFriendlyPlugin
 
 use markdown::mdast::{Link, Node as MdastNode, Text};
 
-use super::cjk_friendly::is_cjk;
-use crate::pipeline::MdastVisitor;
+use crate::cjk::is_cjk;
+use crate::MdastVisitor;
 
 /// Horizontal ellipsis. Not a CJK codepoint (so it stays out of the global
 /// [`is_cjk`] table, which also governs emphasis flanking), but in CJK prose
@@ -127,7 +126,7 @@ impl MdastVisitor for CjkAutolinkBoundaryPlugin {
 
 /// Walk `node`: split over-consuming autolink `Link`s in its children list,
 /// then recurse. Stops at no-recurse boundaries (verbatim / author-owned
-/// content) — mirrors [`CjkFriendlyPlugin`](super::cjk_friendly).
+/// content) — mirrors `CjkFriendlyPlugin`.
 fn rewrite(node: &mut MdastNode) {
     if is_no_recurse(node) {
         return;
@@ -145,7 +144,7 @@ fn rewrite(node: &mut MdastNode) {
 
 /// Nodes whose subtree must NOT be touched: verbatim code, raw HTML, and
 /// MDX JSX / expression bodies (author-controlled). Same set as
-/// [`CjkFriendlyPlugin`](super::cjk_friendly).
+/// `CjkFriendlyPlugin`.
 fn is_no_recurse(node: &MdastNode) -> bool {
     matches!(
         node,
