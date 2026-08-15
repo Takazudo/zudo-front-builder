@@ -305,13 +305,54 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
     response
 }
 
-async fn drain_ticks_until_quiescent(base: &str) {
+/// Wait until the dev server's tick pipeline is genuinely idle before the
+/// caller subscribes for its assertion window. Two conditions must hold in
+/// the same iteration, bounded by a 20s overall deadline (on timeout the
+/// caller proceeds and the scenario's own assertions fail with full logs
+/// rather than hanging):
+///
+/// 1. **Tick balance (stderr):** every `[zfb-timing] tick(): kinds=[...]`
+///    start line has a matching `[zfb-timing] tick=<ms>` completion line.
+///    An SSE quiet window alone cannot see an IN-FLIGHT tick: on a loaded
+///    machine a tick runs longer than any reasonable quiet threshold
+///    (2.1s observed vs the 1.5s window), so the handshake's trailing
+///    warmup tick could complete AFTER quiescence was declared and leak
+///    its `page` event into the caller's assertion subscription — the
+///    exact `["page", "page"]` duplicate this guard closes (observed on
+///    macOS, 2026-08; the product emits one `page` per tick by
+///    construction, see `zfb-server/src/livereload.rs`).
+/// 2. **SSE quiet (broadcast):** one subscription observes no event for
+///    the quiet threshold — covers an event broadcast in the gap right
+///    after a completion line was read, and drains any event already in
+///    the channel. Afterwards the tick counts are re-read: if a new tick
+///    started (or completed) during the quiet window, quiescence is NOT
+///    declared and the loop re-evaluates from the top.
+///
+/// The tick markers rely on `ZFB_DEV_TIMING=1`, which `spawn_dev` always
+/// sets. The start marker `tick(): kinds=[` and completion marker
+/// `] tick=` are disjoint (the start line ends in `eager_hint=...`;
+/// `lazy-render tick:` uses a colon, not `=`).
+async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
+    const TICK_START_MARKER: &str = "tick(): kinds=[";
+    const TICK_DONE_MARKER: &str = "] tick=";
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(20) {
+        let stderr = read_log(&session.stderr_path);
+        let started = stderr.matches(TICK_START_MARKER).count();
+        let completed = stderr.matches(TICK_DONE_MARKER).count();
+        if started != completed {
+            tokio::time::sleep(POLL_INTERVAL).await;
+            continue;
+        }
         let sse = subscribe_sse(base).await;
-        match next_sse_event_name(sse, Duration::from_millis(1500)).await {
-            Ok(Some(_)) => continue,
-            _ => break,
+        if let Ok(Some(_)) = next_sse_event_name(sse, Duration::from_millis(1500)).await {
+            continue;
+        }
+        let stderr = read_log(&session.stderr_path);
+        if stderr.matches(TICK_START_MARKER).count() == started
+            && stderr.matches(TICK_DONE_MARKER).count() == completed
+        {
+            break;
         }
     }
 }
@@ -686,7 +727,7 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         // in-flight tick. Settle before subscribing for the assertion
         // below — otherwise a late handshake `page` event could be
         // misattributed as the edit's own SSE traffic.
-        drain_ticks_until_quiescent(&base).await;
+        drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
         fs::write(
@@ -929,7 +970,7 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
 
         // Settle any trailing boot/handshake tick before subscribing —
         // see `run_scenario`'s identical step for why.
-        drain_ticks_until_quiescent(&base).await;
+        drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
         fs::write(&entry_path, fixture.edit_contents).expect("edit the matrix fixture entry");
