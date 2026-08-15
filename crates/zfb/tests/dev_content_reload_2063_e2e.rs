@@ -141,6 +141,18 @@ const SSE_FIRST_EVENT_DEADLINE: Duration = Duration::from_secs(30);
 /// would show up, short enough to keep both boot-mode runs fast.
 const SSE_QUIET_WINDOW: Duration = Duration::from_secs(3);
 
+/// Per-iteration SSE quiet window inside `drain_ticks_until_quiescent`.
+const DRAIN_QUIET_WINDOW: Duration = Duration::from_millis(1500);
+
+/// Consecutive quiet+stable iterations `drain_ticks_until_quiescent`
+/// requires before declaring the pipeline idle — see its doc comment for
+/// why one window is not enough (silent gaps inside a running tick).
+const DRAIN_STABLE_ROUNDS: u32 = 2;
+
+/// Overall bound on `drain_ticks_until_quiescent` (it falls through with
+/// a loud diagnostic rather than hanging).
+const DRAIN_DEADLINE: Duration = Duration::from_secs(20);
+
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -305,15 +317,74 @@ async fn subscribe_sse(base: &str) -> reqwest::Response {
     response
 }
 
-async fn drain_ticks_until_quiescent(base: &str) {
+/// Wait until the dev server's tick pipeline is genuinely idle before the
+/// caller subscribes for its assertion window.
+///
+/// An SSE quiet window alone cannot see an IN-FLIGHT tick: on a loaded
+/// machine a tick runs longer than any reasonable quiet threshold (2.1s
+/// observed vs a 1.5s window), so the handshake's trailing warmup tick
+/// could complete AFTER quiescence was declared and leak its `page` event
+/// into the caller's assertion subscription — the exact `["page", "page"]`
+/// duplicate this guard closes (observed on macOS, 2026-08; the product
+/// emits one `page` per tick by construction, see
+/// `zfb-server/src/livereload.rs`).
+///
+/// Quiescence therefore requires [`DRAIN_STABLE_ROUNDS`] CONSECUTIVE
+/// iterations in which BOTH hold:
+///
+/// 1. **SSE quiet:** a subscription observes no event for
+///    [`DRAIN_QUIET_WINDOW`] (an observed event drains it and resets the
+///    streak — the pre-existing behavior).
+/// 2. **stderr stable:** the dev server's stderr did not grow during that
+///    window. An in-flight tick keeps writing `[zfb-timing]` lines
+///    (`tick(): kinds=`, `bundle():`, `tick=<ms>`, `lazy-render …`), so
+///    growth is read as pipeline activity and extends draining. This is a
+///    LENGTH DELTA per iteration, deliberately not a start/completion
+///    line-count balance: the timing lines are not a matched pair (a
+///    no-op tick prints a start with no completion, the deferred boot
+///    publish prints a completion with no start), so any cumulative
+///    balance check wedges permanently on the first mismatch. A delta
+///    heuristic's worst failure mode is only a longer drain, and the SSE
+///    drain itself runs on every iteration regardless.
+///
+/// Requiring [`DRAIN_STABLE_ROUNDS`] consecutive quiet+stable windows puts
+/// the effective quiet horizon (>= 3s) above the longest observed silent
+/// gap inside a running tick (~1.1s, the bundle `asm` phase).
+///
+/// Bounded by [`DRAIN_DEADLINE`]; on timeout a loud diagnostic is printed
+/// and the caller proceeds — the scenario's own assertions then fail with
+/// full logs rather than hanging, and the diagnostic distinguishes a
+/// degraded drain from a healthy one.
+async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(20) {
+    let mut stable_rounds = 0u32;
+    let mut last_len = read_log(&session.stderr_path).len();
+    while start.elapsed() < DRAIN_DEADLINE {
         let sse = subscribe_sse(base).await;
-        match next_sse_event_name(sse, Duration::from_millis(1500)).await {
-            Ok(Some(_)) => continue,
-            _ => break,
+        let observed_event = matches!(
+            next_sse_event_name(sse, DRAIN_QUIET_WINDOW).await,
+            Ok(Some(_))
+        );
+        let cur_len = read_log(&session.stderr_path).len();
+        let stderr_grew = cur_len != last_len;
+        last_len = cur_len;
+        if observed_event || stderr_grew {
+            stable_rounds = 0;
+            continue;
+        }
+        stable_rounds += 1;
+        if stable_rounds >= DRAIN_STABLE_ROUNDS {
+            return;
         }
     }
+    eprintln!(
+        "[dev_content_reload_2063_e2e] drain_ticks_until_quiescent: pipeline never went \
+         quiet+stable for {DRAIN_STABLE_ROUNDS} consecutive {}ms windows within {}s \
+         (stable_rounds={stable_rounds} at deadline) — proceeding anyway; a duplicate-`page` \
+         assertion failure after this line may be a drain shortfall rather than a product bug.",
+        DRAIN_QUIET_WINDOW.as_millis(),
+        DRAIN_DEADLINE.as_secs(),
+    );
 }
 
 /// Read the SSE stream `resp` through the edit's completed tick, then hold
@@ -686,7 +757,7 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         // in-flight tick. Settle before subscribing for the assertion
         // below — otherwise a late handshake `page` event could be
         // misattributed as the edit's own SSE traffic.
-        drain_ticks_until_quiescent(&base).await;
+        drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
         fs::write(
@@ -929,7 +1000,7 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
 
         // Settle any trailing boot/handshake tick before subscribing —
         // see `run_scenario`'s identical step for why.
-        drain_ticks_until_quiescent(&base).await;
+        drain_ticks_until_quiescent(&session, &base).await;
 
         let sse = subscribe_sse(&base).await;
         fs::write(&entry_path, fixture.edit_contents).expect("edit the matrix fixture entry");
