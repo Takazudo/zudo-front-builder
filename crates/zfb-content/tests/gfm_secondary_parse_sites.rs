@@ -53,16 +53,20 @@ use zfb_md_ast::{BuildContext, DirectiveSpec, MarkdownFeaturesConfig, Transclude
 
 // ── harness ────────────────────────────────────────────────────────────
 
-/// A pipeline with both secondary parse sites wired: transclude, plus a
-/// `:::note` container directive.
+/// A pipeline with both secondary parse sites wired: transclude, plus
+/// `:::note` and `:::tip` container directives.
 ///
 /// `cjk_friendly` is a parameter because the CJK autolink boundary tests
 /// need it on while the parity tests deliberately keep it off (so a
 /// boundary rewrite can never be mistaken for the construct threading
 /// under test). `hard_breaks` was added by zfb#2398 for the same reason.
+///
+/// `tip` exists so a NESTED collapsed run has a second registered name to
+/// nest (zfb#2413); no test predating it writes `:::tip`.
 fn pipeline_full(gfm: ResolvedGfmConstructs, cjk_friendly: bool, hard_breaks: bool) -> Pipeline {
     let mut directives = HashMap::new();
     directives.insert("note".to_string(), DirectiveSpec::Short("Note".to_string()));
+    directives.insert("tip".to_string(), DirectiveSpec::Short("Tip".to_string()));
     let features = MarkdownFeaturesConfig {
         transclude: Some(TranscludeConfig::default()),
         directives: Some(directives),
@@ -1042,6 +1046,269 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
     );
 }
 
+// ── zfb#2413: collapsed-run recognition is tolerant of the SPLIT shape ──
+//
+// The two sections above measured the pre-emption's consequences for a
+// SIMPLE collapsed body. Its real cost was elsewhere: with the split shape
+// routed to `transform_block_container`, which has no colon stack and no
+// >3-colon opener rule, a NESTED collapsed directive leaked a literal
+// `:::tip` plus a stray `<p>:::</p>` into the rendered output — on BOTH
+// emit paths, `zfb build` included — and a `:::::note` outer fence went
+// fully literal. The collapsed form is the only form in which directive
+// nesting works at all, so `markdown.hardBreaks: true` (or `cjkFriendly`
+// splitting a CJK-flanked `**…**` in the body) silently deleted a
+// documented feature.
+//
+// zfb#2413 makes the line-level re-segmenter read the paragraph through
+// the `InlineLine` view instead of a raw `Text` value, so BOTH shapes take
+// the same path and the fixtures below render identically with hardBreaks
+// on and off. The chain order, `transclude.rs`, `reparse_block`'s
+// normalisation, and the `SecondaryParsePlacement` gate are all unchanged
+// — see the trailing block at the end of this file.
+
+const NESTED_COLLAPSED_SRC: &str = ":::note\nprose above\n:::tip\ninner body\n:::\n:::\n";
+
+/// The outer fence written with FIVE colons, the CommonMark-Directives
+/// spelling for "this container wraps another". `transform_block_container`
+/// requires exactly three (`parse_block_open(node, 3)`), so under the split
+/// shape this whole paragraph used to render as one literal `<p>`.
+const DEEP_NESTED_COLLAPSED_SRC: &str = ":::::note\nprose above\n:::tip\ninner body\n:::\n:::::\n";
+
+/// A nested collapsed run renders identically whether or not
+/// `markdown.hardBreaks` split the paragraph first — pinned to the literal
+/// output on the HTML path. Before zfb#2413 the `hardBreaks: true` half was
+/// `<Note>prose above<br />:::tip<br />inner body</Note><p>:::</p>`.
+#[test]
+fn nested_collapsed_directive_renders_the_same_with_and_without_hard_breaks() {
+    let dir = tmpdir();
+    let render = |hard_breaks: bool| {
+        render_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            hard_breaks,
+            NESTED_COLLAPSED_SRC,
+        )
+    };
+
+    assert_eq!(
+        render(false),
+        "<Note>prose above<Tip>inner body</Tip></Note>"
+    );
+    assert_eq!(
+        render(true),
+        "<Note>prose above<Tip>inner body</Tip></Note>"
+    );
+}
+
+/// The same fixture on the JSX path — what `zfb build` actually emits. The
+/// HTML assertion above cannot stand in for this one: the two paths run
+/// different emitters, and before zfb#2413 the compiled module carried the
+/// literal `:::tip` text instead of a `Tip` element.
+#[test]
+fn nested_collapsed_directive_compiles_to_a_tip_element_with_hard_breaks_on() {
+    let dir = tmpdir();
+    let compile = |hard_breaks: bool| {
+        compile_jsx_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            hard_breaks,
+            NESTED_COLLAPSED_SRC,
+        )
+    };
+
+    for hard_breaks in [false, true] {
+        let jsx = compile(hard_breaks);
+        assert!(
+            jsx.contains("Tip"),
+            "the nested directive must compile to a Tip element with \
+             hardBreaks={hard_breaks}: {jsx}"
+        );
+        assert!(
+            !jsx.contains(":::tip"),
+            "no literal fence may survive into the compiled module with \
+             hardBreaks={hard_breaks}: {jsx}"
+        );
+    }
+}
+
+/// A >3-colon outer fence needs the colon-STACK rule, which
+/// `transform_block_container` does not have: it matched the innermost
+/// closer first and mis-nested, or (for a 5-colon opener) declined
+/// outright. Pinned on both emit paths.
+#[test]
+fn deep_outer_fence_nests_innermost_first_under_hard_breaks() {
+    let dir = tmpdir();
+
+    for hard_breaks in [false, true] {
+        let rendered = render_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            hard_breaks,
+            DEEP_NESTED_COLLAPSED_SRC,
+        );
+        assert_eq!(
+            rendered, "<Note>prose above<Tip>inner body</Tip></Note>",
+            "5-colon outer fence with hardBreaks={hard_breaks}"
+        );
+
+        let jsx = compile_jsx_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            hard_breaks,
+            DEEP_NESTED_COLLAPSED_SRC,
+        );
+        assert!(
+            jsx.contains("Tip") && !jsx.contains(":::tip"),
+            "5-colon outer fence on the JSX path with \
+             hardBreaks={hard_breaks}: {jsx}"
+        );
+    }
+}
+
+/// The `cjkFriendly` half of the same defect: no hard break anywhere, but
+/// the CJK-flanked `**…**` in the body retokenises into `Text`/`Strong`/
+/// `Text`, which loses `single_text_collapsed`'s precondition just as a
+/// `Break` does. The nested run must still be recognised, every character
+/// must survive, and the `<strong>` must still flatten on the HTML path —
+/// that flattening is `reconstruct_jsx`'s documented lossiness (zfb#2408),
+/// deliberately NOT this issue's scope, so it is pinned here rather than
+/// quietly fixed.
+#[test]
+fn nested_collapsed_directive_is_recognised_when_cjk_friendly_splits_the_body() {
+    let dir = tmpdir();
+    let src = ":::note\nこれは**重要。**テスト\n:::tip\ninner body\n:::\n:::\n";
+
+    let rendered = render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, true, false, src);
+    assert_eq!(
+        rendered,
+        "<Note>これは重要。テスト<Tip>inner body</Tip></Note>"
+    );
+
+    let jsx = compile_jsx_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, true, false, src);
+    assert!(
+        jsx.contains("<_components.strong>重要。</_components.strong>"),
+        "the JSX path must keep the emphasis the HTML path flattens: {jsx}"
+    );
+    assert!(
+        jsx.contains("Tip") && !jsx.contains(":::tip"),
+        "the nested directive must compile to a Tip element: {jsx}"
+    );
+}
+
+/// Transcluded content is split by `normalize_included_subtree` at splice
+/// time (`zfb_md_extras::transclude`), so it reaches `DirectiveRegistry`
+/// pre-split no matter where the top-level visitors sit — which is why the
+/// fix had to live in recognition rather than in the chain order
+/// (zfb#2412, axis 2). Same fixture, same output, through the include path.
+#[test]
+fn transcluded_nested_collapsed_directive_renders_the_same_with_hard_breaks_on() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), NESTED_COLLAPSED_SRC);
+
+    for hard_breaks in [false, true] {
+        let rendered = render_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            hard_breaks,
+            &include,
+        );
+        assert_eq!(
+            rendered, "<Note>prose above<Tip>inner body</Tip></Note>",
+            "transcluded nested run with hardBreaks={hard_breaks}"
+        );
+    }
+}
+
+/// The simple transcluded collapsed body, pinned to its literal output on
+/// both `hardBreaks` settings — the control proving the tolerance change
+/// did not disturb the shape that already worked through the include path.
+#[test]
+fn transcluded_simple_collapsed_directive_keeps_its_literal_output() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), COLLAPSED_DIRECTIVE_HARD_BREAK_SRC);
+
+    assert_eq!(
+        render_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            false,
+            &include
+        ),
+        "<Note>first line\nsecond line</Note>"
+    );
+    assert_eq!(
+        render_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            true,
+            &include
+        ),
+        "<Note>first line<br />second line</Note>"
+    );
+}
+
+/// Sibling collapsed runs in one paragraph already worked under the split
+/// shape (`transform_block_container` handled them), and must keep working:
+/// the entry point in `transform_children` now takes them over.
+#[test]
+fn sibling_collapsed_runs_still_transform_under_hard_breaks() {
+    let dir = tmpdir();
+    let src = ":::note\nfirst.\n:::\n:::tip\nsecond.\n:::\n";
+
+    for hard_breaks in [false, true] {
+        let rendered = render_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            hard_breaks,
+            src,
+        );
+        assert_eq!(
+            rendered, "<Note>first.</Note><Tip>second.</Tip>",
+            "sibling collapsed runs with hardBreaks={hard_breaks}"
+        );
+    }
+}
+
+/// An unknown name and a genuinely unclosed fence keep their literal
+/// fallback under the split shape — the tolerance change must not turn a
+/// malformed run into a transform.
+#[test]
+fn unknown_and_unclosed_collapsed_fences_stay_literal_under_hard_breaks() {
+    let dir = tmpdir();
+
+    let unknown = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        ":::nosuchname\nbody line\n:::\n",
+    );
+    assert_eq!(
+        unknown, "<p>:::nosuchname<br/>body line<br/>:::</p>",
+        "an unknown name stays literal"
+    );
+
+    let unclosed = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        ":::note\nbody line\n",
+    );
+    assert_eq!(
+        unclosed, "<p>:::note<br/>body line</p>",
+        "an unclosed fence stays literal"
+    );
+}
+
 // The directive-body `reparse_block` call site's Jsx-only gate is NOT
 // covered by an end-to-end HTML-render test here, deliberately: a
 // collapsed (blank-line-less) directive is, by construction, ALWAYS a
@@ -1051,9 +1318,14 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 // `DirectiveRegistry`, unrelated to and pre-dating zfb#2398) ALREADY
 // splits that `Text` child into `Text`/`Break`/`Text` before
 // `DirectiveRegistry` ever runs — destroying `single_text_collapsed`'s
-// one-Text-child precondition and routing every such directive through
-// `transform_block_container` instead. `reparse_block` is consequently
-// UNREACHABLE for this shape via the full `Pipeline`, and any HTML-level
+// one-Text-child precondition. Since zfb#2413 that no longer routes the
+// directive through `transform_block_container`: `recognise_collapsed_run`
+// recovers the run from the split shape. But a body split this way carries
+// `Break` provenance, and the assembly policy assembles any preserved-node
+// range with `paragraph_from_lines` rather than re-parsing it
+// (`plain_lines_text` returns `None`, so the `reparse_block` arm is never
+// taken). `reparse_block` is consequently STILL UNREACHABLE for this shape
+// via the full `Pipeline`, and any HTML-level
 // assertion here would (a) not exercise the code this sub-issue touches
 // and (b) not be revert-sensitive to it. The Jsx-only gate is instead
 // proven, correctly and revert-sensitively, by driving `DirectiveRegistry`
@@ -1063,8 +1335,10 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 // technique this file's own module docs describe for the GFM-parity
 // tests at this site.
 
-// `flush_prose` (reached, like the directive-body site above, only through
-// `single_text_collapsed`) is likewise NOT covered by an end-to-end
+// `flush_prose` (reached, like the directive-body site above, only from
+// inside a recognized collapsed run — via `single_text_collapsed` for the
+// pristine shape, via `recognise_collapsed_run` since zfb#2413 for the
+// split one) is likewise NOT covered by an end-to-end
 // HTML-render test here — same reason, same pre-existing pre-emption. A
 // realistic "inter-run prose between two collapsed directive runs" fixture
 // is, by construction, itself one multi-line paragraph with embedded `\n`s
@@ -1086,8 +1360,9 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 // from GFM/math (PARSER-level constructs resolved once during the initial
 // parse, before any visitor runs) — the reason #2390/#2397 never hit this.
 // It is unrelated to and out of scope for #2398 (which only threads the two
-// plugins through `reparse_block`'s own re-parse), and it is STILL PRESENT:
-// #2401 fixed the RENDERER, not the chain order. `reparse_block` /
+// plugins through `reparse_block`'s own re-parse). The SPLIT ITSELF is still
+// present — the chain order is deliberately unchanged (see below) — but as
+// of zfb#2413 it no longer degrades recognition. `reparse_block` /
 // `flush_prose` remain unreachable for these shapes through the full
 // `Pipeline`, so everything above about revert-sensitivity stands.
 //
@@ -1099,8 +1374,17 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 // no separator at all (`first linesecond line`). They now render as
 // `<br />`, pinned end-to-end by
 // `collapsed_directive_body_hard_break_renders_br_on_the_html_path` above.
-// Reordering the top-level mdast chain so `DirectiveRegistry` precedes the
-// two visitors stays a separate architectural question — deliberately open.
+//
+// The chain-ordering question this comment used to leave open is CLOSED.
+// zfb#2412 characterized all five candidate directions against the tree and
+// chose recognition tolerance over a reorder: `DirectiveRegistry` keeps its
+// position, and `recognise_collapsed_run` (zfb#2413) recovers a collapsed
+// run from the split shape instead. Moving the two visitors was rejected —
+// both no-recurse at `MdxJsxFlowElement`, so running them after directives
+// would blind them to every directive body, and compensating through
+// `reparse_block` would re-fire the `SecondaryParsePlacement` gate and flip
+// the `<br />` pin named above. Do not re-open it as a reorder; the
+// reasoning is recorded on zfb#2412.
 //
 // The `markdown.cjkFriendly` half of the same pre-emption was MEASURED in
 // #2408 and needed no renderer fix: `CjkFriendlyPlugin` injects `Strong`,

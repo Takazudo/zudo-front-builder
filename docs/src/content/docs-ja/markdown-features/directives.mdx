@@ -122,6 +122,19 @@ Another block.
 
 兄弟の collapsed directives と、ネストした collapsed directives の両方が、名前が登録されている場合に書き換えられます。未知のディレクティブ名は引き続き警告診断を出し、元のソーステキストを変更せずに残します。
 
+collapsed directive を別の collapsed directive の中にネストする場合は、CommonMark-Directives の慣習に従い、外側のフェンスに内側より**多い**コロンを使います。
+
+```md
+:::::note
+Prose above.
+:::tip
+Inner body.
+:::
+:::::
+```
+
+これは [`hardBreaks`](./hard-breaks.mdx) や [`cjkFriendly`](./cjk-friendly.mdx) を有効にしている場合でも、[`:::include`](./transclude.mdx) 経由で取り込んだ collapsed directive でも成り立ちます。これらのオプションはディレクティブレジストリが見る前に段落を再トークン化しますが、認識側がその形に寛容になっています（#2413）。ネストを正しく解決するのにコロン数のルールが必要な `:::::` の外側フェンスも同様です。
+
 ## ディレクティブの登録はコンポーネントを提供しない
 
 `directives` はフレームワーク非依存で、JSX コンポーネントは一切同梱しません。ディレクティブを登録しても、コンパイル済み MDX に `<ComponentName>` を出力するようパイプラインに指示するだけです。次の作業が必要です:
