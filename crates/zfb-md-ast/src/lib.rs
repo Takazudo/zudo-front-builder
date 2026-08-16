@@ -289,6 +289,17 @@ pub trait MdastVisitor {
     /// on each call — a pipeline instance is reused across documents and
     /// across both paths, so a stale value from a previous run is the
     /// failure mode to avoid.
+    ///
+    /// The default no-op keeps [`SecondaryParseTarget::Html`] in effect
+    /// for any implementor that forgets to override this — a deliberate,
+    /// documented backward-compat choice (zfb#2403) that existing direct
+    /// `visit_with_context` callers and tests rely on, not an oversight.
+    /// The risk that choice implies — a future FIFTH `Pipeline` mdast
+    /// dispatch loop silently reusing the `Html` default instead of
+    /// announcing its own target — is covered by a source-level
+    /// inventory guard rather than a trait change: see
+    /// `pipeline_source_declares_exactly_four_mdast_dispatch_loops` in
+    /// `zfb-content`'s `tests/math_secondary_parse_sites.rs` (zfb#2407).
     fn set_secondary_parse_target(&mut self, _target: SecondaryParseTarget) {}
 
     /// Visit with optional build context (wave-6 seam).
