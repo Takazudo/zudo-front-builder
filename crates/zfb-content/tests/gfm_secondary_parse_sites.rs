@@ -674,8 +674,9 @@ fn transcluded_hard_break_inside_a_literal_jsx_element_keeps_the_newline_on_the_
     );
     assert!(
         rendered.contains("first line\nsecond line"),
-        "the author's newline must survive inside a JSX body — a Break there \
-         is deleted, not rendered (zfb#2402): {rendered}"
+        "the author's newline must survive inside a JSX body — the placement \
+         gate injects no Break here, so there is nothing for zfb#2401's \
+         `<br />` rendering to act on (zfb#2402): {rendered}"
     );
 }
 
