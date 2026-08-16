@@ -2818,7 +2818,7 @@ pub fn mdast_to_hast_with_model(
             // unclaimed there, which would have fired this very assert
             // on valid input. `reconstruct_jsx` now gets DEDICATED
             // recursive handling for footnotes specifically
-            // (`subtree_contains_footnote` + `footnote_aware_stringify`),
+            // (`subtree_contains_footnote` + `jsx_body_stringify`),
             // so the invariant holds on both paths — verified by this
             // crate's full test suite (including a same-document,
             // six-container-variant sweep nested inside JSX) with the
@@ -3447,13 +3447,23 @@ fn task_list_checkbox_hast(checked: bool) -> HastNode {
 /// would gain `<p>` wrappers), which the issue brief explicitly
 /// forbids ("Pipeline::run behaviour unchanged").
 ///
-/// Footnotes are the one exception (issue #2396): `fc` is threaded
+/// Footnotes are the first exception (issue #2396): `fc` is threaded
 /// through so a `FootnoteReference`/`FootnoteDefinition` anywhere in the
 /// children (including nested inside another JSX element) is caught by
 /// the `subtree_contains_footnote` gate in the fallback arm below and
-/// rendered through `footnote_aware_stringify` instead of the plain
+/// rendered through `jsx_body_stringify` instead of the plain
 /// `other.to_string()`, which silently drops the reference marker and
 /// inlines the definition body at the wrong spot.
+///
+/// `Break` is the second exception (issue #2401), gated for the same
+/// structural reason: it is one of `to_string()`'s "voids", so a hard
+/// break inside a JSX body vanishes ENTIRELY and fuses the words on
+/// either side of it (`:::note\nfirst line\nsecond line\n:::` under
+/// `markdown.hardBreaks` rendered `first linesecond line`). That is
+/// deletion of author content, categorically different from
+/// `Strong`/`Emphasis`, which merely drop their formatting while
+/// retaining every character — which is why those stay on the
+/// deliberately lossy catch-all and `Break` does not.
 fn reconstruct_jsx(
     name: Option<&str>,
     attrs: &[AttributeContent],
@@ -3486,12 +3496,16 @@ fn reconstruct_jsx(
             // formatting but keeps content visible; downstream plugins
             // generally avoid putting markdown inside JSX bodies anyway.
             // Gated on whether the subtree contains a footnote node
-            // (issue #2396) so every OTHER subtree keeps taking the
-            // exact `other.to_string()` path — byte-identity for
-            // non-footnote input is structural, not dependent on a
-            // hand-copied mirror of markdown-rs's own dispatch staying
-            // in sync across crate bumps.
-            other if subtree_contains_footnote(other) => footnote_aware_stringify(other, fc),
+            // (issue #2396) or a `Break` (issue #2401) so every OTHER
+            // subtree keeps taking the exact `other.to_string()` path —
+            // byte-identity for input carrying neither is structural,
+            // not dependent on a hand-copied mirror of markdown-rs's own
+            // dispatch staying in sync across crate bumps. Both
+            // exceptions share ONE mirror, so a subtree carrying both
+            // renders both correctly by construction.
+            other if subtree_contains_footnote(other) || subtree_contains_break(other) => {
+                jsx_body_stringify(other, fc)
+            }
             other => other.to_string(),
         })
         .collect();
@@ -3514,17 +3528,40 @@ fn subtree_contains_footnote(node: &MdastNode) -> bool {
         .is_some_and(|children| children.iter().any(subtree_contains_footnote))
 }
 
+/// True if `node` or anything reachable through its `Node::children()`
+/// subtree is a `Break` (a hard line break). Used only to decide, per
+/// child, whether `reconstruct_jsx`'s fallback arm needs the recursive
+/// stringifier — see that arm's doc comment.
+///
+/// The gate has to be subtree-wide, not a direct-child match: the real
+/// repro (issue #2401) reaches `reconstruct_jsx` as an
+/// `MdxJsxFlowElement` whose children are `Paragraph`s built by
+/// `directives::paragraph_from_lines`, with the `Break` nested INSIDE
+/// one of them. A direct `MdastNode::Break(_)` arm on `reconstruct_jsx`
+/// would never fire for it.
+fn subtree_contains_break(node: &MdastNode) -> bool {
+    if matches!(node, MdastNode::Break(_)) {
+        return true;
+    }
+    node.children()
+        .is_some_and(|children| children.iter().any(subtree_contains_break))
+}
+
 /// Recursive stringifier for a JSX-body subtree that
-/// `subtree_contains_footnote` flagged as containing a footnote node.
+/// `subtree_contains_footnote` or `subtree_contains_break` flagged as
+/// containing a node the plain `to_string()` renders destructively.
 ///
 /// Mirrors markdown-rs's own `Node::to_string()` dispatch (recurse
 /// containers via `Node::children()`, literals return their `value`,
-/// voids return an empty string) so every non-footnote node in the
-/// subtree renders exactly as `to_string()` would — `Node::children()`
+/// voids return an empty string) so every other node in the subtree
+/// renders exactly as `to_string()` would — `Node::children()`
 /// returns `Some` for precisely the set of variants `to_string()` treats
 /// as containers, so generic recursion through it reproduces that
-/// dispatch without hand-copying its ~30 arms. The two footnote variants
-/// are special-cased instead of falling through to that mirror:
+/// dispatch without hand-copying its ~30 arms. Keeping ONE mirror for
+/// both exceptions (rather than a second parallel stringifier per
+/// exception) is what makes a subtree carrying a footnote AND a `Break`
+/// correct by construction. Three variants are special-cased instead of
+/// falling through to that mirror:
 ///
 /// - `FootnoteReference` is one of `to_string()`'s "voids" (renders as
 ///   `""`), which is exactly the "reference vanishes" bug this issue
@@ -3539,7 +3576,17 @@ fn subtree_contains_footnote(node: &MdastNode) -> bool {
 ///   `MdastNode::FootnoteDefinition` arm in `mdast_to_hast_inner` — a
 ///   definition's body renders exactly once, in the footnote section
 ///   `mdast_to_hast_with` appends at document end.
-fn footnote_aware_stringify(node: &MdastNode, fc: &FootnoteRenderCtx<'_>) -> String {
+/// - `Break` is another of `to_string()`'s "voids", so a hard break in a
+///   JSX body used to be deleted outright, fusing the words on either
+///   side of it (issue #2401). It renders as literal `<br />`: this
+///   string becomes a raw JSX payload the serializer passes through
+///   verbatim, and it cannot land inside an attribute value (attributes
+///   are reconstructed separately by `render_attrs`). The sibling
+///   transclusion assertion in `tests/gfm_secondary_parse_sites.rs`
+///   already pins `<br` as a hard break's rendering under
+///   `markdown.hardBreaks`, so this keeps JSX bodies consistent with
+///   every other surface.
+fn jsx_body_stringify(node: &MdastNode, fc: &FootnoteRenderCtx<'_>) -> String {
     match node {
         MdastNode::FootnoteReference(r) => fc
             .next_reference(&r.identifier)
@@ -3548,11 +3595,9 @@ fn footnote_aware_stringify(node: &MdastNode, fc: &FootnoteRenderCtx<'_>) -> Str
             })
             .unwrap_or_default(),
         MdastNode::FootnoteDefinition(_) => String::new(),
+        MdastNode::Break(_) => "<br />".to_string(),
         other => match other.children() {
-            Some(children) => children
-                .iter()
-                .map(|c| footnote_aware_stringify(c, fc))
-                .collect(),
+            Some(children) => children.iter().map(|c| jsx_body_stringify(c, fc)).collect(),
             None => other.to_string(),
         },
     }
@@ -4835,7 +4880,7 @@ mod tests {
     // `data-footnote-backref` pointing at an anchor that was never
     // emitted, and inlined a nested `FootnoteDefinition`'s body as plain
     // text at the definition point AND rendered it again in the
-    // section. `subtree_contains_footnote` + `footnote_aware_stringify`
+    // section. `subtree_contains_footnote` + `jsx_body_stringify`
     // fix both defects for exactly the subtrees that contain a footnote,
     // leaving every other subtree on the byte-identical `to_string()`
     // path.

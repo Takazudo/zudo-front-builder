@@ -232,6 +232,50 @@ fn all_four_mdast_dispatch_loops_announce_their_own_hardcoded_target() {
     );
 }
 
+/// Source-scanning inventory guard (#2407): the recorder test above pins
+/// the four dispatch loops that exist TODAY, but is structurally incapable
+/// of noticing a future FIFTH loop — that loop simply never calls
+/// `set_secondary_parse_target`, so `TargetRecorder` never learns it
+/// exists. This test closes that gap independently, by counting the
+/// dispatch-loop pattern in `pipeline.rs`'s own source rather than
+/// exercising the pipeline.
+///
+/// Deliberately keyed on the dispatch-loop pattern itself
+/// (`for v in &mut self.mdast_visitors`), NOT on
+/// `set_secondary_parse_target` call sites: `pipeline.rs` has 5 of those
+/// (a test at ~L5045 calls it directly, outside any dispatch loop), so a
+/// loop-vs-setter comparison is already unbalanced today and would be
+/// brittle. The exact-four count is the whole point — it forces
+/// `all_four_mdast_dispatch_loops_announce_their_own_hardcoded_target`
+/// to be extended (never widened with `>=` or a parity check) whenever a
+/// new dispatch loop appears.
+///
+/// Known brittleness (accepted, not a defect — see #2407): this is a
+/// literal source-text count, so a loop written with different
+/// whitespace or a different binding name evades it, and a future
+/// COMMENT that happens to contain the exact pattern text would also
+/// trip it (a false positive, cheap to resolve — just adjust the count
+/// or reword the comment).
+#[test]
+fn pipeline_source_declares_exactly_four_mdast_dispatch_loops() {
+    let src = include_str!("../src/pipeline.rs");
+    const DISPATCH_LOOP_PATTERN: &str = "for v in &mut self.mdast_visitors";
+
+    let count = src.matches(DISPATCH_LOOP_PATTERN).count();
+
+    assert_eq!(
+        count, 4,
+        "pipeline.rs's count of `{DISPATCH_LOOP_PATTERN}` changed from the \
+         expected 4 — if a new mdast dispatch loop was added, it must \
+         announce its own `SecondaryParseTarget` (see \
+         `MdastVisitor::set_secondary_parse_target`'s doc comment) and the \
+         sibling test \
+         `all_four_mdast_dispatch_loops_announce_their_own_hardcoded_target` \
+         above must be extended to expect that additional entry before \
+         this count is updated"
+    );
+}
+
 // ── 2. JSX path ────────────────────────────────────────────────────────
 
 /// The headline fix. A transcluded `$$…$$` / `$…$` must reach the emitter

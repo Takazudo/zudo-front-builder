@@ -4395,9 +4395,13 @@ padded body
     /// original #2398 wiring hardcoded "top-level sibling" at that call
     /// site, which is true only for the outermost
     /// `transform_collapsed_run` — the recursive one hands its output to
-    /// `build_flow_jsx` as `MdxJsxFlowElement` children, where the HTML
-    /// path's `reconstruct_jsx` stringifies a `Break` to the empty string
-    /// and DELETES the author's newline.
+    /// `build_flow_jsx` as `MdxJsxFlowElement` children — which, when the
+    /// gate was written, meant the HTML path's `reconstruct_jsx`
+    /// stringified the `Break` to the empty string and DELETED the
+    /// author's newline. zfb#2401 has since fixed that renderer (such a
+    /// `Break` now renders `<br />`), so what this test pins today is the
+    /// gate's *behaviour-preserving* half, not deletion avoidance — see
+    /// `SecondaryParsePlacement`'s doc comment in `zfb-md-ast`.
     ///
     /// Driven at the mdast level (`DirectiveRegistry` directly) rather
     /// than through the full `Pipeline` for the reason zfb#2401
@@ -4427,8 +4431,9 @@ padded body
         assert!(
             !has_break(&out),
             "HardBreaksPlugin must NOT apply to prose flushed INSIDE a \
-             collapsed directive body on the Html target — a Break there is \
-             deleted, not rendered (zfb#2402): {out:#?}"
+             collapsed directive body on the Html target — the placement \
+             gate keeps the author's literal newline there (zfb#2402): \
+             {out:#?}"
         );
     }
 

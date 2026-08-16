@@ -27,13 +27,28 @@ use crate::{
 /// tree — the fact [`SecondaryParseNormalization`] needs that the parse
 /// site itself cannot see.
 ///
-/// Only [`HardBreaksPlugin`] cares: on the HTML path an
-/// `MdxJsxFlowElement` is rendered by `mdast_to_hast`'s lossy
-/// `reconstruct_jsx` catch-all, which stringifies a `Break` to the EMPTY
-/// STRING — so inserting one inside a JSX body DELETES the author's
-/// newline instead of turning it into `<br>`. Blockquote and list-item
-/// containers render `Break` correctly on both paths, so the gate is
-/// JSX-specific, not "anything nested".
+/// Only [`HardBreaksPlugin`] cares. The gate's ORIGINAL justification
+/// (zfb#2402) was that on the HTML path an `MdxJsxFlowElement` is
+/// rendered by `mdast_to_hast`'s lossy `reconstruct_jsx` catch-all,
+/// which stringified a `Break` to the EMPTY STRING — so inserting one
+/// inside a JSX body DELETED the author's newline instead of turning it
+/// into `<br>`. **That renderer defect is fixed** (zfb#2401:
+/// `reconstruct_jsx` now routes a `Break`-carrying subtree through
+/// `jsx_body_stringify`, which renders `<br />`), so the gate no longer
+/// prevents content deletion.
+///
+/// It is kept deliberately, as a behaviour-preserving choice rather than
+/// a correctness one: lifting it would start emitting `<br>` where a
+/// JSX-nested include previously rendered the author's literal newline,
+/// which is an intentional-output change out of scope for zfb#2401. The
+/// resulting asymmetry is real and pinned by tests — a JSX-nested
+/// include renders no `<br>` on the HTML path while an equivalent
+/// top-level include does. Revisit alongside the open chain-ordering
+/// question documented at the foot of `zfb-content`'s
+/// `tests/gfm_secondary_parse_sites.rs`.
+///
+/// Blockquote and list-item containers render `Break` correctly on both
+/// paths, so the gate is JSX-specific, not "anything nested".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecondaryParsePlacement {
     /// The nodes splice in as ordinary top-level siblings (or inside a
@@ -51,8 +66,9 @@ impl SecondaryParsePlacement {
     /// Whether [`HardBreaksPlugin`] may run for output at this placement
     /// on `target` (zfb#2398, zfb#2402).
     ///
-    /// The JSX emitter has a real arm for `Break`, so a JSX-nested
-    /// placement is safe there and only there.
+    /// The JSX emitter has a real arm for `Break`. The HTML path now
+    /// renders one too (zfb#2401), so this is a behaviour-preserving
+    /// gate rather than a deletion guard — see the enum's doc comment.
     #[must_use]
     pub fn allows_hard_breaks(self, target: SecondaryParseTarget) -> bool {
         match self {
