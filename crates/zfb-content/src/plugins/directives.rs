@@ -135,11 +135,11 @@ pub struct DirectiveRegistry {
     /// As with the `gfm` field above, this rarely changes end-to-end
     /// output, and for the same reason: on the JSX path the main parse
     /// already has math on, so it tokenises the math into `InlineMath` /
-    /// `Math` nodes, the paragraph gains multiple inline children, and
-    /// `single_text_collapsed` declines — routing to
-    /// `transform_block_container` and never reaching [`reparse_block`].
-    /// Threading it keeps the two parse sites in lockstep; the surface
-    /// #2397 actually fixes is transclude.
+    /// `Math` nodes, and the collapsed run's line view carries them as
+    /// PRESERVED nodes — those ranges are assembled losslessly rather than
+    /// re-parsed, so [`reparse_block`] is never reached for them
+    /// (zfb#2413). Threading it keeps the two parse sites in lockstep; the
+    /// surface #2397 actually fixes is transclude.
     ///
     /// Defaults to `Html`, so a registry driven outside a `Pipeline`
     /// loop keeps exactly the pre-#2397 construct set. Also combined with
@@ -329,90 +329,15 @@ impl DirectiveRegistry {
         // First pass: container + leaf at block level.
         let mut i = 0;
         while i < children.len() {
-            // Collapsed-run entry (issues #1090 + #1094). When the fences are
-            // written with NO blank lines, `markdown::to_mdast` merges the
-            // opener, body, inner fences, and closers into ONE multi-line
-            // Paragraph with a single Text child. The block-level scan below
-            // (which inspects whole paragraph nodes and exactly-3-colon
-            // openers) cannot see sibling/nested directives buried as mid-text
-            // LINES, nor a >3-colon outer opener. Route any single-text
-            // collapsed paragraph whose first line is a `:::+name` opener
-            // (>=3 colons) through the line-level re-segmenter, which emits one
-            // JSX flow element per top-level directive run and recurses for
-            // nested ones. This must run BEFORE the 3-colon `parse_block_open`
-            // check so a `:::::note` (5-colon) outer opener is handled too.
-            if let Some((text_value, line_no, base_col)) = single_text_collapsed(&children[i]) {
-                if container_opener_colons(first_line(&text_value).trim_end()).is_some() {
-                    if let Some(replacement) = self.transform_collapsed_run(
-                        &text_value,
-                        Some((line_no, base_col)),
-                        // This paragraph IS a top-level sibling in
-                        // `children`, and the replacement is spliced into
-                        // its slot — so is any prose flushed from it.
-                        SecondaryParsePlacement::TopLevelSibling,
-                    ) {
-                        // `transform_collapsed_run` owns the paragraph: it has
-                        // transformed every recognised run and warned every
-                        // unknown exactly once. Splice in its result and skip
-                        // the block-level checks below (no double-warn).
-                        let n = replacement.len();
-                        children.splice(i..=i, replacement);
-                        // One exception (zfb#2206): when the run's TRAILING
-                        // prose starts with a REGISTERED container opener (an
-                        // unclosed tail from the collapsed run's in-paragraph
-                        // view), give the block-level handler one direct shot
-                        // at it — it may close across the FOLLOWING sibling
-                        // paragraphs, and otherwise records the unclosed
-                        // diagnostic. Unknown names are never re-warned here
-                        // (the registered-name gate excludes them), and the
-                        // handler never re-enters the collapsed path, so no
-                        // double-warn and no re-entry loop is possible.
-                        if n > 0 {
-                            let tail = i + n - 1;
-                            // NON-tail segments can leak a literal opener too
-                            // (zfb#2212): an unclosed opener glued ABOVE a
-                            // valid run precedes its transformed JSX in the
-                            // replacement, where the tail check never looks.
-                            // Record the unclosed diagnostic for those —
-                            // diagnostic only, never a transform.
-                            self.warn_unclosed_leaked_segments(children, i, tail);
-                            // The zfb#2211 buried shape can arrive as a
-                            // spliced literal segment too (e.g. trailing
-                            // prose gluing an unclosed opener behind a
-                            // non-opener first line) — the loop skips the
-                            // replacement range, so scan it here.
-                            // Opener-HEADED segments are skipped by the
-                            // scan's head gate: the leaked-segment pass
-                            // above and the tail handler below own those,
-                            // so no segment can warn twice.
-                            for seg in i..=tail {
-                                self.warn_unclosed_buried_opener(children, seg);
-                            }
-                            if let Some(tail_parsed) = self.parse_block_open(&children[tail], 3) {
-                                if let Some(tail_def) = self.defs.get(&tail_parsed.name).cloned() {
-                                    if tail_def.kind == DirectiveKind::Container {
-                                        if let Some(next_i) = self.transform_block_container(
-                                            children,
-                                            tail,
-                                            &tail_def,
-                                            &tail_parsed,
-                                        ) {
-                                            i = next_i;
-                                            continue;
-                                        }
-                                        // Genuinely unclosed: diagnostic
-                                        // recorded; the tail stays literal.
-                                    }
-                                }
-                            }
-                        }
-                        i += n;
-                        continue;
-                    }
-                    // First line looked like an opener but no fence run was
-                    // recognised (e.g. no closer) — fall through to the
-                    // block-level handlers below.
-                }
+            // Collapsed-run entry (issues #1090 + #1094 + #2413). See
+            // `recognise_collapsed_run`. It must run BEFORE the 3-colon
+            // `parse_block_open` check so a `:::::note` (5-colon) outer
+            // opener is handled too. A `None` means no fence run was
+            // recognised (e.g. the first line looked like an opener but had
+            // no closer) — fall through to the block-level handlers below.
+            if let Some(replacement) = self.recognise_collapsed_run(&children[i]) {
+                i = self.splice_collapsed_replacement(children, i, replacement);
+                continue;
             }
 
             // Try container open.
@@ -468,6 +393,116 @@ impl DirectiveRegistry {
 
             i += 1;
         }
+    }
+
+    /// Try the line-level re-segmenter on the paragraph at `node`.
+    ///
+    /// When the fences are written with NO blank lines, `markdown::to_mdast`
+    /// merges the opener, body, inner fences, and closers into ONE
+    /// multi-line Paragraph. The block-level scan in `transform_children`
+    /// (which inspects whole paragraph nodes and exactly-3-colon openers)
+    /// cannot see sibling/nested directives buried as mid-paragraph LINES,
+    /// nor a >3-colon outer opener, so any collapsed paragraph whose first
+    /// line is a `:::+name` opener (>=3 colons) is routed through the
+    /// re-segmenter, which emits one JSX flow element per top-level
+    /// directive run and recurses for nested ones.
+    ///
+    /// Two source shapes reach it, and they differ only in how the LINES
+    /// are recovered (zfb#2413):
+    ///
+    /// - the pristine collapsed paragraph — ONE multi-line `Text` child
+    ///   ([`single_text_collapsed`]), split on `\n`;
+    /// - the SPLIT shape — the same authored source after the pipeline's
+    ///   own top-level `HardBreaksPlugin` / `CjkFriendlyPlugin` (both
+    ///   wired before `DirectiveRegistry`) retokenised that `Text` child
+    ///   into `Text`/`Break`/`Strong`/… , recovered with
+    ///   [`split_inline_lines`]. Before zfb#2413 this shape declined here
+    ///   and fell through to [`DirectiveRegistry::transform_block_container`],
+    ///   which has no colon stack and no >3-colon opener rule — so under
+    ///   `markdown.hardBreaks` a NESTED collapsed directive leaked a
+    ///   literal `:::tip` plus a stray `:::` paragraph into the rendered
+    ///   output on both emit paths, and a `:::::note` outer fence went
+    ///   fully literal.
+    fn recognise_collapsed_run(&mut self, node: &MdastNode) -> Option<Vec<MdastNode>> {
+        // `single_text_collapsed` defaults a position-less paragraph to
+        // (1, 1) while the block-level `warn_unknown` reports `None` for
+        // one; each shape keeps the diagnostic position rule it had.
+        let (lines, first_pos) = match single_text_collapsed(node) {
+            Some((text_value, line_no, base_col)) => {
+                (lift_plain_lines(&text_value), Some((line_no, base_col)))
+            }
+            None => (
+                paragraph_inline_lines(node)?,
+                paragraph_position(node).map(|p| (p.start.line, p.start.column)),
+            ),
+        };
+        inline_line_opener_colons(lines.first()?)?;
+        self.transform_collapsed_run(
+            &lines,
+            first_pos,
+            // This paragraph IS a top-level sibling in `children`, and the
+            // replacement is spliced into its slot — so is any prose
+            // flushed from it.
+            SecondaryParsePlacement::TopLevelSibling,
+        )
+    }
+
+    /// Splice a recognised collapsed run's `replacement` into `children[i]`
+    /// and return the scan position to continue from.
+    ///
+    /// [`DirectiveRegistry::transform_collapsed_run`] owns the paragraph: it
+    /// has transformed every recognised run and warned every unknown exactly
+    /// once, so the caller must NOT fall through to the block-level warn
+    /// paths (no double-warn).
+    fn splice_collapsed_replacement(
+        &mut self,
+        children: &mut Vec<MdastNode>,
+        i: usize,
+        replacement: Vec<MdastNode>,
+    ) -> usize {
+        let n = replacement.len();
+        children.splice(i..=i, replacement);
+        // One exception (zfb#2206): when the run's TRAILING prose starts
+        // with a REGISTERED container opener (an unclosed tail from the
+        // collapsed run's in-paragraph view), give the block-level handler
+        // one direct shot at it — it may close across the FOLLOWING sibling
+        // paragraphs, and otherwise records the unclosed diagnostic.
+        // Unknown names are never re-warned here (the registered-name gate
+        // excludes them), and the handler never re-enters the collapsed
+        // path, so no double-warn and no re-entry loop is possible.
+        if n == 0 {
+            return i;
+        }
+        let tail = i + n - 1;
+        // NON-tail segments can leak a literal opener too (zfb#2212): an
+        // unclosed opener glued ABOVE a valid run precedes its transformed
+        // JSX in the replacement, where the tail check never looks. Record
+        // the unclosed diagnostic for those — diagnostic only, never a
+        // transform.
+        self.warn_unclosed_leaked_segments(children, i, tail);
+        // The zfb#2211 buried shape can arrive as a spliced literal segment
+        // too (e.g. trailing prose gluing an unclosed opener behind a
+        // non-opener first line) — the loop skips the replacement range, so
+        // scan it here. Opener-HEADED segments are skipped by the scan's
+        // head gate: the leaked-segment pass above and the tail handler
+        // below own those, so no segment can warn twice.
+        for seg in i..=tail {
+            self.warn_unclosed_buried_opener(children, seg);
+        }
+        if let Some(tail_parsed) = self.parse_block_open(&children[tail], 3) {
+            if let Some(tail_def) = self.defs.get(&tail_parsed.name).cloned() {
+                if tail_def.kind == DirectiveKind::Container {
+                    if let Some(next_i) =
+                        self.transform_block_container(children, tail, &tail_def, &tail_parsed)
+                    {
+                        return next_i;
+                    }
+                    // Genuinely unclosed: diagnostic recorded; the tail
+                    // stays literal.
+                }
+            }
+        }
+        i + n
     }
 
     /// Transform the container directive whose opener paragraph sits at
@@ -568,20 +603,26 @@ impl DirectiveRegistry {
         Some(i + 1)
     }
 
-    /// Transform a fully-collapsed directive paragraph by RE-SEGMENTING its
-    /// raw multi-line `Text` value at the line level.
+    /// Transform a fully-collapsed directive paragraph by RE-SEGMENTING it at
+    /// the line level, over the [`InlineLine`] view of its inline children.
     ///
     /// ## Why a separate line-level pass exists
     ///
     /// When `:::` fences are written with NO blank lines between them (the
     /// common real-world shape), `markdown::to_mdast` collapses the opener,
-    /// body, inner fences, and closers into ONE multi-line `Paragraph` with a
-    /// single `Text` child. The inner / sibling `:::` markers are mid-text
-    /// LINES inside that one `Text` value — NOT separate block paragraphs —
-    /// so the block-level `transform_children` scan (which inspects whole
-    /// paragraph nodes) never sees them. The #1090 fix only rewrote the OUTER
-    /// container and left any sibling/nested directive as literal text. This
-    /// method splits the value into lines and re-discovers the directive runs.
+    /// body, inner fences, and closers into ONE multi-line `Paragraph`. The
+    /// inner / sibling `:::` markers are mid-paragraph LINES — NOT separate
+    /// block paragraphs — so the block-level `transform_children` scan (which
+    /// inspects whole paragraph nodes) never sees them. The #1090 fix only
+    /// rewrote the OUTER container and left any sibling/nested directive as
+    /// literal text. This method re-discovers the directive runs line by line.
+    ///
+    /// The line view is the single shape both callers speak (zfb#2413): a
+    /// pristine collapsed paragraph's one multi-line `Text` child lifts
+    /// through [`lift_plain_lines`], while a paragraph already retokenised by
+    /// the top-level `HardBreaksPlugin` / `CjkFriendlyPlugin` arrives through
+    /// [`split_inline_lines`] with its `Break`/`Strong`/… nodes intact. See
+    /// [`DirectiveRegistry::recognise_collapsed_run`].
     ///
     /// ## Fence-matching rule
     ///
@@ -632,11 +673,10 @@ impl DirectiveRegistry {
     /// slots its caller occupies (zfb#2402).
     fn transform_collapsed_run(
         &mut self,
-        value: &str,
+        lines: &[InlineLine],
         first_pos: Option<(usize, usize)>,
         placement: SecondaryParsePlacement,
     ) -> Option<Vec<MdastNode>> {
-        let lines: Vec<&str> = value.split('\n').collect();
         let mut out: Vec<MdastNode> = Vec::new();
         let mut recognised_any = false;
         let mut i = 0usize;
@@ -645,19 +685,18 @@ impl DirectiveRegistry {
         let mut prose_start = 0usize;
 
         while i < lines.len() {
-            let line = strip_trailing_cr(lines[i]);
-            if let Some(open_colons) = container_opener_colons(line) {
+            if let Some(open_colons) = inline_line_opener_colons(&lines[i]) {
                 // Find the matching closer line by colon count.
-                if let Some(close_idx) = find_collapsed_closer(&lines, i + 1, open_colons) {
-                    // `container_opener_colons` already counted the leading
+                if let Some(close_idx) = inline_lines_matching_closer(lines, i + 1, open_colons) {
+                    // `inline_line_opener_colons` already counted the leading
                     // colons, so slice them off and parse the rest directly
                     // rather than re-scanning the same colons through
                     // `parse_directive_line` (zfb#1099: one colon-count site).
-                    if let Some(parsed) = parse_directive_body(&line[open_colons..]) {
+                    if let Some(parsed) = parse_inline_line_body(&lines[i], open_colons) {
                         if let Some(def) = self.defs.get(&parsed.name).cloned() {
                             if def.kind == DirectiveKind::Container {
                                 // Flush any pending prose before this run.
-                                self.flush_prose(&lines, prose_start, i, placement, &mut out);
+                                self.flush_prose(lines, prose_start, i, placement, &mut out);
                                 let (line_no, col_no) = pos_for(i, first_pos);
                                 let validated_opt =
                                     self.run_validation(&def, &parsed, line_no, col_no);
@@ -713,15 +752,30 @@ impl DirectiveRegistry {
             return None;
         }
         // Flush trailing prose after the last recognised run.
-        self.flush_prose(&lines, prose_start, lines.len(), placement, &mut out);
+        self.flush_prose(lines, prose_start, lines.len(), placement, &mut out);
         Some(out)
     }
 
-    /// Re-parse the lines `lines[start..end]` as markdown and append the
-    /// resulting block nodes to `out`. Empty / whitespace-only ranges produce
-    /// nothing. Used to emit prose that sits between collapsed directive runs
-    /// (or unmatched/unknown fence lines) verbatim, including literal `:::`
-    /// markers that did not form a recognised directive.
+    /// Emit the lines `lines[start..end]` as body/prose block nodes and
+    /// append them to `out`. Empty / whitespace-only ranges produce nothing.
+    /// Used for prose that sits between collapsed directive runs (or
+    /// unmatched/unknown fence lines), including literal `:::` markers that
+    /// did not form a recognised directive.
+    ///
+    /// The assembly policy is what keeps every pinned rendering
+    /// byte-identical across both source shapes (zfb#2413) — see
+    /// [`plain_lines_text`]:
+    ///
+    /// - a range of PLAIN `Text` lines with no hard-break provenance
+    ///   re-parses through [`reparse_block`], as the collapsed path has
+    ///   always done, so the GFM-materialisation and diagnostics behaviour
+    ///   is unchanged;
+    /// - a range carrying any PRESERVED node (a `Break`, `Strong`,
+    ///   `InlineCode`, math, …) is assembled losslessly with
+    ///   [`paragraph_from_lines`] instead. Re-parsing it would flatten the
+    ///   preserved nodes AND re-fire the [`SecondaryParsePlacement`] gate on
+    ///   `Break`s the top-level `HardBreaksPlugin` already created; carrying
+    ///   them through untouched is what leaves that gate's policy alone.
     ///
     /// `placement` comes from the caller
     /// ([`DirectiveRegistry::transform_collapsed_run`]) because this
@@ -730,12 +784,12 @@ impl DirectiveRegistry {
     /// runs splices in as an ordinary sibling, where a `Break` renders as
     /// a real `<br>` on both paths; prose between two runs NESTED in a
     /// collapsed container's body becomes a child of the outer
-    /// `MdxJsxFlowElement`, where the HTML path deletes it. The gate is
-    /// the same one [`DirectiveRegistry::build_collapsed_body`] applies —
-    /// see [`SecondaryParsePlacement`].
+    /// `MdxJsxFlowElement`. The gate is the same one
+    /// [`DirectiveRegistry::build_collapsed_body`] applies — see
+    /// [`SecondaryParsePlacement`].
     fn flush_prose(
         &self,
-        lines: &[&str],
+        lines: &[InlineLine],
         start: usize,
         end: usize,
         placement: SecondaryParsePlacement,
@@ -744,30 +798,24 @@ impl DirectiveRegistry {
         if start >= end {
             return;
         }
-        let text = lines[start..end].join("\n");
-        if text.trim().is_empty() {
-            return;
+        let range = &lines[start..end];
+        match plain_lines_text(range) {
+            Some(text) => {
+                if text.trim().is_empty() {
+                    return;
+                }
+                out.extend(reparse_block(&text, self.secondary_parse_ctx(), placement));
+            }
+            None => out.extend(paragraph_from_lines(range)),
         }
-        out.extend(reparse_block(&text, self.secondary_parse_ctx(), placement));
     }
 
-    /// Build the JSX children of a collapsed container from its raw body
-    /// lines. Recursively re-segments the body so nested collapsed directives
-    /// transform too, then emits any remaining prose as markdown blocks.
-    ///
-    /// This is the line-level body builder, reached via the
-    /// [`single_text_collapsed`] entry (one multi-line `Text` child). Its
-    /// sibling is [`DirectiveRegistry::transform_block_container`]'s
-    /// inline-line assembly, which preserves phrasing nodes for
-    /// multi-inline-child paragraphs (zfb#2206). The two are discriminated
-    /// by [`single_text_collapsed`] at the call site in
-    /// `transform_children`.
-    fn build_collapsed_body(&mut self, body_lines: &[&str]) -> Vec<MdastNode> {
+    /// Build the JSX children of a collapsed container from its body lines.
+    /// Recursively re-segments the body so nested collapsed directives
+    /// transform too, then emits any remaining prose under
+    /// [`DirectiveRegistry::flush_prose`]'s assembly policy.
+    fn build_collapsed_body(&mut self, body_lines: &[InlineLine]) -> Vec<MdastNode> {
         if body_lines.is_empty() {
-            return Vec::new();
-        }
-        let body_text = body_lines.join("\n");
-        if body_text.trim().is_empty() {
             return Vec::new();
         }
         // Everything this method produces — whether the recursion's JSX
@@ -784,11 +832,13 @@ impl DirectiveRegistry {
         let placement = SecondaryParsePlacement::InsideJsxElement;
         // Recurse: a nested `:::tip … :::` inside the body is itself a
         // collapsed run. `None` means "no directive in the body" — emit the
-        // body as plain markdown blocks.
-        match self.transform_collapsed_run(&body_text, None, placement) {
-            Some(nodes) => nodes,
-            None => reparse_block(&body_text, self.secondary_parse_ctx(), placement),
+        // body as plain blocks.
+        if let Some(nodes) = self.transform_collapsed_run(body_lines, None, placement) {
+            return nodes;
         }
+        let mut out = Vec::new();
+        self.flush_prose(body_lines, 0, body_lines.len(), placement, &mut out);
+        out
     }
 
     /// Walk inline children of `node` (if any) and rewrite recognised
@@ -983,8 +1033,7 @@ impl DirectiveRegistry {
     /// "Genuinely unclosed" mirrors the head-opener paths on both levels:
     ///
     /// - in-paragraph: no matching closer line under the collapsed scan's
-    ///   colon-stack rule ([`inline_lines_matching_closer`], the
-    ///   InlineLine mirror of [`find_collapsed_closer`]); a CLOSED buried
+    ///   colon-stack rule ([`inline_lines_matching_closer`]); a CLOSED buried
     ///   run is skipped past — it still leaks, but it is not unclosed;
     /// - siblings: no bare closer line in a FOLLOWING sibling paragraph
     ///   before the next opener-shaped one
@@ -1392,6 +1441,57 @@ fn split_inline_lines(children: &[MdastNode]) -> Vec<InlineLine> {
     lines
 }
 
+/// Lift a raw multi-line `Text` value into the [`InlineLine`] view: one
+/// single-`Text` line per `\n`-separated source line, with no hard-break
+/// provenance. This is the pristine collapsed paragraph's entry into the
+/// shared re-segmenter (zfb#2413) — a blank line lifts to a line with no
+/// nodes at all, exactly as [`split_inline_lines`] produces for one.
+fn lift_plain_lines(value: &str) -> Vec<InlineLine> {
+    value
+        .split('\n')
+        .map(|line| InlineLine {
+            nodes: if line.is_empty() {
+                Vec::new()
+            } else {
+                vec![MdastNode::Text(Text {
+                    value: line.to_string(),
+                    position: None,
+                })]
+            },
+            hard_break: None,
+        })
+        .collect()
+}
+
+/// The plain source text of `lines`, or `None` when the range carries any
+/// PRESERVED node — a phrasing node (`Strong`, `InlineCode`, math, …) or a
+/// hard break the top-level `HardBreaksPlugin` already created. This is the
+/// discriminator for [`DirectiveRegistry::flush_prose`]'s assembly policy:
+/// `Some` means the range is losslessly re-parseable, `None` means it must
+/// be assembled node-for-node instead.
+///
+/// A hard break on the range's LAST line is a separator to whatever follows
+/// the range, not content inside it — [`join_inline_lines`] drops it too, so
+/// it does not make the range unparseable.
+fn plain_lines_text(lines: &[InlineLine]) -> Option<String> {
+    let mut out = String::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx > 0 {
+            out.push('\n');
+        }
+        if idx + 1 < lines.len() && line.hard_break.is_some() {
+            return None;
+        }
+        for node in &line.nodes {
+            match node {
+                MdastNode::Text(t) => out.push_str(&t.value),
+                _ => return None,
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Does any text content anywhere inside `node` contain a newline?
 fn node_text_contains_newline(node: &MdastNode) -> bool {
     match node {
@@ -1529,8 +1629,8 @@ fn is_block_opener_shaped(node: &MdastNode) -> bool {
 }
 
 /// The leading colon count of `line` when it is SHAPED like a container
-/// opener fence — the InlineLine mirror of the per-line
-/// [`container_opener_colons`] check in [`find_collapsed_closer`]. The
+/// opener fence — the InlineLine spelling of the per-line
+/// [`container_opener_colons`] check. The
 /// fence must start in a leading `Text` node: a code span rendering as
 /// `:::name` is an `InlineCode` child and never counts (phrasing, not a
 /// fence), exactly like [`is_block_opener_shaped`] at the paragraph head.
@@ -1555,29 +1655,42 @@ fn inline_line_closer_colons(line: &InlineLine) -> Option<usize> {
     }
 }
 
-/// InlineLine mirror of [`find_collapsed_closer`]: the index of the line
-/// that closes an opener of `open_colons` colons under the same
-/// colon-count stack rule (a closer of `k` colons closes the innermost
-/// open fence whose opener count is `<= k`; a too-small closer means the
-/// run is malformed — `None`). Used ONLY by the buried-opener diagnostic
-/// scan (zfb#2211); it never drives a transform.
+/// The ONE fence-matching stack (zfb#1099's rule, one implementation):
+/// find the index in `lines` (searching from `from`) of the closer that
+/// matches an opener with `open_colons` colons, honouring NESTED openers of
+/// the same family. A close fence of `k` colons closes the innermost
+/// still-open fence whose opener colon-count is `<= k`. We start one fence
+/// deep (the opener the caller already consumed) and return the index of
+/// the closer that brings the depth back to zero. Returns `None` for an
+/// unbalanced run (no matching closer) — the caller leaves it as literal
+/// text.
+///
+/// Both source shapes reach it through the same [`InlineLine`] view (a raw
+/// `&str` line lifts via [`lift_plain_lines`]), so the rule is written once.
+/// Drives both the collapsed-run transform and the buried-opener diagnostic
+/// scan (zfb#2211).
 fn inline_lines_matching_closer(
     lines: &[InlineLine],
     from: usize,
     open_colons: usize,
 ) -> Option<usize> {
+    // Stack of open fence colon-counts; seed with the opener we're matching.
     let mut stack: Vec<usize> = vec![open_colons];
     for (j, line) in lines.iter().enumerate().skip(from) {
         if let Some(close_k) = inline_line_closer_colons(line) {
             let &top = stack.last().expect("stack seeded with the opener");
             if top > close_k {
+                // Closer too small for the innermost opener: it cannot close
+                // it — unbalanced, stop scanning (malformed).
                 return None;
             }
             stack.pop();
             if stack.is_empty() {
+                // Closed back down to our opener — this is the match.
                 return Some(j);
             }
         } else if let Some(inner_colons) = inline_line_opener_colons(line) {
+            // A nested opener pushes onto the stack.
             stack.push(inner_colons);
         }
     }
@@ -1595,12 +1708,25 @@ fn parse_inline_line_opener(line: &InlineLine, colons: usize) -> Option<ParsedDi
     let MdastNode::Text(t) = line.nodes.first()? else {
         return None;
     };
-    let lead = t.value.trim_end();
-    if count_leading_colons(lead) != colons {
+    if count_leading_colons(t.value.trim_end()) != colons {
         return None;
     }
+    parse_inline_line_body(line, colons)
+}
+
+/// Parse the directive body of `line` past a leading colon run of `colons`
+/// that the caller has ALREADY counted (via [`inline_line_opener_colons`]),
+/// so the same colons are never re-scanned (zfb#1099: one colon-count site).
+/// A single-`Text` line parses its remainder directly; a multi-node line
+/// (e.g. a bracketed title carrying inline markup) is flattened via
+/// [`flatten_line_plain`] with the colon count re-checked on the flat text.
+fn parse_inline_line_body(line: &InlineLine, colons: usize) -> Option<ParsedDirective> {
+    let MdastNode::Text(t) = line.nodes.first()? else {
+        return None;
+    };
     if line.nodes.len() == 1 {
-        return parse_directive_body(&lead[colons..]);
+        let lead = strip_trailing_cr(&t.value);
+        return parse_directive_body(lead.get(colons..)?);
     }
     let flat = flatten_line_plain(line)?;
     let flat = flat.trim_end();
@@ -1684,42 +1810,6 @@ fn container_close_colons(line: &str) -> Option<usize> {
     } else {
         None
     }
-}
-
-/// Find the index in `lines` (searching from `from`) of the closer that
-/// matches an opener with `open_colons` colons, honouring NESTED openers of
-/// the same family. The matching rule: a close fence of `k` colons closes the
-/// innermost still-open fence whose opener colon-count is `<= k`. We start one
-/// fence deep (the opener the caller already consumed) and return the index of
-/// the closer that brings the depth back to zero. Returns `None` for an
-/// unbalanced run (no matching closer) — the caller leaves it as literal text.
-fn find_collapsed_closer(lines: &[&str], from: usize, open_colons: usize) -> Option<usize> {
-    // Stack of open fence colon-counts; seed with the opener we're matching.
-    let mut stack: Vec<usize> = vec![open_colons];
-    let mut j = from;
-    while j < lines.len() {
-        let line = strip_trailing_cr(lines[j]);
-        if let Some(close_k) = container_close_colons(line) {
-            // A close fence of `close_k` colons closes the innermost open
-            // fence whose colon-count is <= close_k.
-            let &top = stack.last().expect("stack seeded with the opener");
-            if top > close_k {
-                // Closer too small for the innermost opener: it cannot close
-                // it — unbalanced, stop scanning (malformed).
-                return None;
-            }
-            stack.pop();
-            if stack.is_empty() {
-                // Closed back down to our opener — this is the match.
-                return Some(j);
-            }
-        } else if let Some(inner_colons) = container_opener_colons(line) {
-            // A nested opener pushes onto the stack.
-            stack.push(inner_colons);
-        }
-        j += 1;
-    }
-    None
 }
 
 /// Re-parse a body/prose text fragment with the real markdown parser and
@@ -4404,12 +4494,15 @@ padded body
     /// `SecondaryParsePlacement`'s doc comment in `zfb-md-ast`.
     ///
     /// Driven at the mdast level (`DirectiveRegistry` directly) rather
-    /// than through the full `Pipeline` for the reason zfb#2401
-    /// documents: with `markdown.hardBreaks` on, the pipeline's own
-    /// top-level `HardBreaksPlugin` splits the collapsed paragraph's
-    /// single multi-line `Text` child before `DirectiveRegistry` runs, so
-    /// `single_text_collapsed` declines and this call site is unreachable
-    /// end-to-end.
+    /// than through the full `Pipeline`, and still necessarily so after
+    /// zfb#2413: with `markdown.hardBreaks` on, the pipeline's own
+    /// top-level `HardBreaksPlugin` splits the collapsed paragraph before
+    /// `DirectiveRegistry` runs, and the line-level re-segmenter now
+    /// carries those `Break` nodes through UNPARSED (they are preserved
+    /// provenance), so an inter-run prose range with a newline in it never
+    /// reaches `flush_prose`'s own `HardBreaksPlugin` application
+    /// end-to-end. Feeding a single-`Text` paragraph here is what puts the
+    /// gate under test.
     #[test]
     fn nested_inter_run_prose_does_not_insert_break_on_the_html_target() {
         let mut r = registry_with_admonitions()
@@ -4458,17 +4551,21 @@ padded body
 
     // ── cross-fix interaction: footnote × hard-breaks (zfb#2399) ────────
     //
-    // Per zfb#2401 (pre-existing, unrelated to this epic): a collapsed
-    // directive body is, by construction, a multi-line paragraph with an
-    // embedded `\n` in its single `Text` child — and when
-    // `markdown.hardBreaks` is on, the pipeline's OWN top-level
+    // A collapsed directive body is, by construction, a multi-line
+    // paragraph with an embedded `\n` in its single `Text` child — and
+    // when `markdown.hardBreaks` is on, the pipeline's OWN top-level
     // `HardBreaksPlugin` (wired earlier in the mdast chain than
     // `DirectiveRegistry`) already splits that shape before
-    // `DirectiveRegistry` ever runs, making `reparse_block` UNREACHABLE
-    // for this shape through the full `Pipeline`. The meaningful,
+    // `DirectiveRegistry` ever runs. zfb#2413 made the re-segmenter
+    // TOLERANT of that split rather than reordering the chain, so the
+    // split shape is now recognised — but a body range carrying `Break`
+    // provenance is assembled losslessly instead of re-parsed, which is
+    // precisely what leaves the `SecondaryParsePlacement` gate untouched.
+    // `reparse_block`'s hard-breaks half therefore stays unreachable for
+    // this shape through the full `Pipeline`, and the meaningful,
     // revert-sensitive proof that the footnote-aware stringifier
     // (zfb#2396) and the Jsx-only hard-breaks gate (zfb#2398) compose is
-    // therefore here, driving `DirectiveRegistry` directly — the same
+    // still here, driving `DirectiveRegistry` directly — the same
     // isolation technique `collapsed_directive_body_inserts_break_on_
     // the_jsx_target` / `..._does_not_insert_break_on_the_html_target`
     // use above.
@@ -4526,6 +4623,166 @@ padded body
             has_break(&out),
             "HardBreaksPlugin must insert Break on the Jsx target alongside \
              a footnote reparsed in the same body: {out:#?}"
+        );
+    }
+
+    // ── zfb#2413: the SPLIT shape reaches the same re-segmenter ─────────
+    //
+    // These drive `DirectiveRegistry` directly with a paragraph already in
+    // the shape the pipeline's top-level `HardBreaksPlugin` /
+    // `CjkFriendlyPlugin` produce — `Text`/`Break`/`Text` rather than one
+    // multi-line `Text` — so they pin the recognition tolerance itself,
+    // independently of which plugin chain happens to produce that shape.
+    // The end-to-end rendering pins live in
+    // `tests/gfm_secondary_parse_sites.rs`.
+
+    /// A paragraph whose `lines` are separated by real `Break` nodes: the
+    /// shape `HardBreaksPlugin` leaves behind.
+    fn hard_broken_para(lines: &[&str]) -> MdastNode {
+        let mut children: Vec<MdastNode> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                children.push(MdastNode::Break(markdown::mdast::Break { position: None }));
+            }
+            children.push(MdastNode::Text(Text {
+                value: (*line).to_string(),
+                position: None,
+            }));
+        }
+        MdastNode::Paragraph(Paragraph {
+            children,
+            position: None,
+        })
+    }
+
+    #[test]
+    fn split_shape_nested_collapsed_run_transforms_both_levels() {
+        let mut r = registry_with_admonitions().with_hard_breaks(true);
+        let out = run_with_registry(
+            &mut r,
+            vec![hard_broken_para(&[
+                ":::note",
+                "prose above",
+                ":::tip",
+                "inner body",
+                ":::",
+                ":::",
+            ])],
+        );
+
+        assert_eq!(out.len(), 1, "one outer <Note> element: {out:#?}");
+        assert!(
+            any_node(&out, &|n| {
+                matches!(n, MdastNode::MdxJsxFlowElement(j) if j.name.as_deref() == Some("Tip"))
+            }),
+            "the nested :::tip must transform in the split shape: {out:#?}"
+        );
+        assert!(
+            !any_node(
+                &out,
+                &|n| matches!(n, MdastNode::Text(t) if t.value.contains(":::"))
+            ),
+            "no literal fence may survive: {out:#?}"
+        );
+    }
+
+    /// The colon-stack rule reaches the split shape too — `parse_block_open`
+    /// requires EXACTLY three colons, so this fixture went fully literal
+    /// before zfb#2413.
+    #[test]
+    fn split_shape_deep_outer_fence_nests_innermost_first() {
+        let mut r = registry_with_admonitions().with_hard_breaks(true);
+        let out = run_with_registry(
+            &mut r,
+            vec![hard_broken_para(&[
+                ":::::note",
+                "prose above",
+                ":::tip",
+                "inner body",
+                ":::",
+                ":::::",
+            ])],
+        );
+
+        assert_eq!(out.len(), 1, "one outer <Note> element: {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        assert!(
+            note.children.iter().any(|c| {
+                matches!(c, MdastNode::MdxJsxFlowElement(j) if j.name.as_deref() == Some("Tip"))
+            }),
+            "the <Tip> must be a CHILD of the <Note>, not a sibling: {out:#?}"
+        );
+    }
+
+    /// The assembly policy, pinned at the node level: a body range carrying
+    /// `Break` provenance is rebuilt from the existing nodes, never
+    /// re-parsed — which is what keeps `reparse_block`'s
+    /// `SecondaryParsePlacement` gate out of this path entirely (zfb#2413,
+    /// axis 4 unchanged).
+    #[test]
+    fn split_shape_body_keeps_its_break_nodes_on_the_html_target() {
+        let mut r = registry_with_admonitions().with_hard_breaks(true);
+        // Default target is Html, where the placement gate would STRIP a
+        // Break had the body been re-parsed.
+        let out = run_with_registry(
+            &mut r,
+            vec![hard_broken_para(&[
+                ":::note",
+                "first line",
+                "second line",
+                ":::",
+            ])],
+        );
+
+        assert_eq!(out.len(), 1, "one <Note> element: {out:#?}");
+        assert!(
+            has_break(&out),
+            "the author's Break must survive into the directive body: {out:#?}"
+        );
+    }
+
+    /// An unknown name in the split shape warns exactly once. Before
+    /// zfb#2413 the block-level `warn_unknown` owned this shape; now the
+    /// line-level site does, and the two must not both fire.
+    #[test]
+    fn split_shape_unknown_name_warns_exactly_once_and_stays_literal() {
+        let mut r = registry_with_admonitions().with_hard_breaks(true);
+        let out = run_with_registry(
+            &mut r,
+            vec![hard_broken_para(&[":::nosuchname", "body line", ":::"])],
+        );
+
+        let diags = r.take_diagnostics();
+        assert_eq!(
+            diags.len(),
+            1,
+            "exactly one unknown-directive warning: {diags:#?}"
+        );
+        assert_eq!(diags[0].message, "unknown directive `nosuchname`");
+        assert!(
+            !any_node(&out, &|n| matches!(n, MdastNode::MdxJsxFlowElement(_))),
+            "an unknown name must stay literal: {out:#?}"
+        );
+    }
+
+    /// A genuinely unclosed opener in the split shape keeps the block-level
+    /// unclosed diagnostic and the literal fallback: the re-segmenter
+    /// declines (no closer) and hands the paragraph back untouched.
+    #[test]
+    fn split_shape_unclosed_opener_still_records_the_unclosed_diagnostic() {
+        let mut r = registry_with_admonitions().with_hard_breaks(true);
+        let out = run_with_registry(&mut r, vec![hard_broken_para(&[":::note", "body line"])]);
+
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "exactly one warning: {diags:#?}");
+        assert!(
+            diags[0].message.starts_with("unclosed container directive"),
+            "unexpected diagnostic: {diags:#?}"
+        );
+        assert!(
+            !any_node(&out, &|n| matches!(n, MdastNode::MdxJsxFlowElement(_))),
+            "an unclosed opener must stay literal: {out:#?}"
         );
     }
 }
