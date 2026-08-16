@@ -122,11 +122,12 @@ Another block.
 :::
 ```
 
-Both sibling collapsed directives and nested collapsed directives are
-rewritten when their names are registered. Unknown directive names still emit
-a warning diagnostic and leave their source text unchanged.
+Both sibling directives and nested directives are rewritten when their names
+are registered — in the collapsed form and in the blank-line-separated form
+alike. Unknown directive names still emit a warning diagnostic and leave
+their source text unchanged.
 
-Nesting a collapsed directive inside another follows the
+Nesting a container directive inside another follows the
 CommonMark-Directives convention: the outer fence uses **more** colons than
 the inner one.
 
@@ -139,12 +140,27 @@ Inner body.
 :::::
 ```
 
+The same convention applies when the fences are separated by blank lines.
+
+```md
+:::::note
+
+Prose above.
+
+:::tip
+Inner body.
+:::
+
+:::::
+```
+
 This holds with [`hardBreaks`](./hard-breaks.mdx) or
 [`cjkFriendly`](./cjk-friendly.mdx) enabled, and for a collapsed directive
 reached through [`:::include`](./transclude.mdx). Those options re-tokenise
 the paragraph before the directive registry sees it, and recognition is
 tolerant of that shape (#2413) — up to and including a `:::::` outer fence,
-which needs the colon-count rule to nest correctly.
+which needs the colon-count rule to nest correctly. This holds for the
+blank-line-separated form as well.
 
 ## Registering a directive does not provide a component
 
