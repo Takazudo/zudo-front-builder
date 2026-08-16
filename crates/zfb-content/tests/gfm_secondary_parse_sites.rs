@@ -915,6 +915,132 @@ fn collapsed_directive_body_renders_a_footnote_and_a_hard_break_together() {
     );
 }
 
+// ── zfb#2408: the `cjkFriendly` sibling of the `Break` case, MEASURED ──
+//
+// zfb#2401 speculated that `markdown.cjkFriendly` interacts with a
+// collapsed directive body the same way `hardBreaks` did. It reaches
+// `reconstruct_jsx`'s fallback by the same route — `CjkFriendlyPlugin` is
+// wired into the top-level mdast chain before `DirectiveRegistry`, so it
+// retokenises the body's single multi-line `Text` child into
+// `Text`/`Strong`/`Text`, and `single_text_collapsed` (`directives.rs`)
+// bails on `children.len() != 1` exactly as it did for the `Break` nodes
+// `HardBreaksPlugin` injected. But the OUTCOME is a different defect
+// class, which is why zfb#2408 changed no rendering code.
+//
+// `Break` is one of `to_string()`'s voids: it rendered as `""`, DELETING
+// the author's newline and fusing `first linesecond line`. `Strong` is a
+// container, and `to_string()` returns a container's children's text — so
+// every character of the body survives and only the `<strong>` wrapper is
+// dropped. That is the catch-all's deliberate, documented lossiness (see
+// `reconstruct_jsx`'s doc comment in `pipeline.rs`), not content deletion,
+// so it stays on the catch-all and is documented instead — in both locales
+// of `docs/src/content/docs*/markdown-features/cjk-friendly.mdx`.
+//
+// These tests exist so the next reader does not have to re-measure.
+
+/// Wrap `body` in a collapsed (blank-line-less) `:::note` container.
+fn collapsed_note(body: &str) -> String {
+    format!(":::note\n{body}\n:::\n")
+}
+
+/// A collapsed body carrying the shared CJK-flanked repro plus a second
+/// line, so the embedded `\n` `single_text_collapsed` also requires is
+/// present and the precondition it loses is genuinely the child count.
+fn collapsed_cjk_emphasis_src() -> String {
+    collapsed_note(&format!("{CJK_EMPHASIS_BODY}\n二行目"))
+}
+
+/// The zfb#2408 measurement, pinned to its LITERAL output.
+///
+/// The `<strong>` is gone, but `これは`, `重要。` and `テスト` are all still
+/// there — no character of the body text is lost, and the second line's
+/// newline survives verbatim (`hardBreaks` is off, so no `Break` is
+/// injected). The prose control proves `cjkFriendly` really did tokenise
+/// the marker, so the flattening is attributable to the HTML path's
+/// stringifier rather than to the emphasis never being recognised at all.
+#[test]
+fn collapsed_directive_body_cjk_emphasis_loses_formatting_but_not_content() {
+    let dir = tmpdir();
+    let render =
+        |src: &str| render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, true, false, src);
+
+    assert_eq!(
+        render(&collapsed_cjk_emphasis_src()),
+        "<Note>これは重要。テスト\n二行目</Note>"
+    );
+    // A single-line body loses the emphasis identically — the flattening
+    // is the stringifier's, not a consequence of the multi-line shape.
+    assert_eq!(
+        render(&collapsed_note(CJK_EMPHASIS_BODY)),
+        "<Note>これは重要。テスト</Note>"
+    );
+    // Control: the same markers as ordinary prose keep their <strong>.
+    assert_eq!(
+        render(CJK_EMPHASIS_BODY),
+        "<p>これは<strong>重要。</strong>テスト</p>"
+    );
+}
+
+/// The formatting loss above belongs to `reconstruct_jsx`'s catch-all, not
+/// to `cjkFriendly` and not to the collapsed shape. Plain ASCII emphasis
+/// with `cjkFriendly` OFF flattens identically — markdown-rs tokenises
+/// `**bold**` into a `Strong` during the initial parse, so
+/// `single_text_collapsed`'s one-`Text`-child precondition is already gone
+/// before any visitor runs — and so does a blank-line-separated body,
+/// which that function never inspects. `cjkFriendly` only decides whether
+/// the CJK-flanked `**` becomes a `Strong` at all; with it off the marker
+/// stays literal text instead of being flattened away.
+#[test]
+fn directive_body_emphasis_loss_is_not_specific_to_cjk_friendly_or_to_collapsed_bodies() {
+    let dir = tmpdir();
+    let render =
+        |src: &str| render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, false, false, src);
+
+    assert_eq!(
+        render(&collapsed_note("plain **bold** text\nsecond line")),
+        "<Note>plain bold text\nsecond line</Note>"
+    );
+    assert_eq!(
+        render(":::note\n\nplain **bold** text\n\n:::\n"),
+        "<Note>plain bold text</Note>"
+    );
+    // Control: the same markers as ordinary prose keep their <strong>.
+    assert_eq!(
+        render("plain **bold** text"),
+        "<p>plain <strong>bold</strong> text</p>"
+    );
+    // And with cjkFriendly off the CJK-flanked marker is never tokenised,
+    // so `**` survives as literal text rather than being flattened away.
+    assert_eq!(
+        render(&collapsed_cjk_emphasis_src()),
+        "<Note>これは**重要。**テスト\n二行目</Note>"
+    );
+}
+
+/// The scope boundary the docs note leans on: `zfb build` compiles content
+/// through the MDX/JSX emit path (`zfb_render`'s loader calls
+/// `mdx_to_jsx_module_with_pipeline`), which renders a JSX body
+/// recursively, so the flattening above is confined to the HTML render
+/// path — `zfb_content::facade::render_html`, exposed to JS as
+/// `zfb-md-wasm`'s `renderHtml`. Same source, emphasis intact.
+#[test]
+fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
+    let dir = tmpdir();
+
+    let jsx = compile_jsx_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        true,
+        false,
+        &collapsed_cjk_emphasis_src(),
+    );
+
+    assert!(
+        jsx.contains("<_components.strong>重要。</_components.strong>"),
+        "the JSX path must keep the emphasis the HTML path flattens: {jsx}"
+    );
+}
+
 // The directive-body `reparse_block` call site's Jsx-only gate is NOT
 // covered by an end-to-end HTML-render test here, deliberately: a
 // collapsed (blank-line-less) directive is, by construction, ALWAYS a
@@ -974,3 +1100,11 @@ fn collapsed_directive_body_renders_a_footnote_and_a_hard_break_together() {
 // `collapsed_directive_body_hard_break_renders_br_on_the_html_path` above.
 // Reordering the top-level mdast chain so `DirectiveRegistry` precedes the
 // two visitors stays a separate architectural question — deliberately open.
+//
+// The `markdown.cjkFriendly` half of the same pre-emption was MEASURED in
+// #2408 and needed no renderer fix: `CjkFriendlyPlugin` injects `Strong`,
+// a CONTAINER whose `to_string()` returns its children's text, so the body
+// keeps every character and loses only the `<strong>` — the catch-all's
+// deliberate lossiness, not deletion. Pinned by the zfb#2408 section
+// above; documented in both locales of
+// `docs/src/content/docs*/markdown-features/cjk-friendly.mdx`.

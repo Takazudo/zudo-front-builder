@@ -71,6 +71,49 @@ GFM strikethrough (`~~foo~~`) does not need the toggle — markdown-rs's GFM
 tokeniser handles `~~` delimiter runs independently, so strikethrough works
 correctly at CJK boundaries in both modes.
 
+## Emphasis inside a directive body on the HTML render path
+
+`cjkFriendly` re-tokenises the marker correctly, but a container directive
+body rendered through the **HTML render path** — `renderHtml` from
+[`@takazudo/zfb-md-wasm`](../api/md-wasm.mdx) — reconstructs the directive's
+JSX body through a deliberately lossy stringifier that drops inline
+formatting. So this source:
+
+```md
+:::note
+これは**重要。**テスト
+:::
+```
+
+renders as:
+
+```html
+<Note>これは重要。テスト</Note>
+```
+
+**No content is lost** — every character of the body text survives, and only
+the `<strong>` wrapper is dropped. The same markers in ordinary prose render
+`<p>これは<strong>重要。</strong>テスト</p>`.
+
+This is not specific to `cjkFriendly`, and not specific to collapsed
+(blank-line-less) directive bodies. Plain ASCII behaves identically with
+`cjkFriendly` off — `:::note` wrapping `plain **bold** text` renders
+`<Note>plain bold text</Note>` — and adding blank lines around the body does
+not change it. `cjkFriendly` only decides whether the `**` is tokenised as
+emphasis at all; the HTML path's stringifier is what flattens it afterwards.
+With `cjkFriendly: false` the marker is never tokenised, so it stays literal
+`**` instead.
+
+**Page builds are unaffected.** `zfb build` compiles content through the
+MDX/JSX emit path, which renders the body recursively — the same source emits
+a nested `<_components.strong>重要。</_components.strong>`.
+
+Formatting-only loss is deliberate here. Content *deletion* on this path is
+treated as a bug instead: with [`hardBreaks`](./hard-breaks.mdx) enabled, a
+hard break inside a directive body used to vanish entirely and fuse the words
+on either side of it. That was fixed (zfb#2401) — such a break now renders as
+`<br />`.
+
 ## See also
 
 - [Customizing Markdown](../guides/customizing-markdown.mdx) — full pipeline overview.
