@@ -1318,9 +1318,14 @@ fn unknown_and_unclosed_collapsed_fences_stay_literal_under_hard_breaks() {
 // `DirectiveRegistry`, unrelated to and pre-dating zfb#2398) ALREADY
 // splits that `Text` child into `Text`/`Break`/`Text` before
 // `DirectiveRegistry` ever runs — destroying `single_text_collapsed`'s
-// one-Text-child precondition and routing every such directive through
-// `transform_block_container` instead. `reparse_block` is consequently
-// UNREACHABLE for this shape via the full `Pipeline`, and any HTML-level
+// one-Text-child precondition. Since zfb#2413 that no longer routes the
+// directive through `transform_block_container`: `recognise_collapsed_run`
+// recovers the run from the split shape. But a body split this way carries
+// `Break` provenance, and the assembly policy assembles any preserved-node
+// range with `paragraph_from_lines` rather than re-parsing it
+// (`plain_lines_text` returns `None`, so the `reparse_block` arm is never
+// taken). `reparse_block` is consequently STILL UNREACHABLE for this shape
+// via the full `Pipeline`, and any HTML-level
 // assertion here would (a) not exercise the code this sub-issue touches
 // and (b) not be revert-sensitive to it. The Jsx-only gate is instead
 // proven, correctly and revert-sensitively, by driving `DirectiveRegistry`
@@ -1330,8 +1335,10 @@ fn unknown_and_unclosed_collapsed_fences_stay_literal_under_hard_breaks() {
 // technique this file's own module docs describe for the GFM-parity
 // tests at this site.
 
-// `flush_prose` (reached, like the directive-body site above, only through
-// `single_text_collapsed`) is likewise NOT covered by an end-to-end
+// `flush_prose` (reached, like the directive-body site above, only from
+// inside a recognized collapsed run — via `single_text_collapsed` for the
+// pristine shape, via `recognise_collapsed_run` since zfb#2413 for the
+// split one) is likewise NOT covered by an end-to-end
 // HTML-render test here — same reason, same pre-existing pre-emption. A
 // realistic "inter-run prose between two collapsed directive runs" fixture
 // is, by construction, itself one multi-line paragraph with embedded `\n`s
@@ -1353,8 +1360,9 @@ fn unknown_and_unclosed_collapsed_fences_stay_literal_under_hard_breaks() {
 // from GFM/math (PARSER-level constructs resolved once during the initial
 // parse, before any visitor runs) — the reason #2390/#2397 never hit this.
 // It is unrelated to and out of scope for #2398 (which only threads the two
-// plugins through `reparse_block`'s own re-parse), and it is STILL PRESENT:
-// #2401 fixed the RENDERER, not the chain order. `reparse_block` /
+// plugins through `reparse_block`'s own re-parse). The SPLIT ITSELF is still
+// present — the chain order is deliberately unchanged (see below) — but as
+// of zfb#2413 it no longer degrades recognition. `reparse_block` /
 // `flush_prose` remain unreachable for these shapes through the full
 // `Pipeline`, so everything above about revert-sensitivity stands.
 //
@@ -1366,8 +1374,17 @@ fn unknown_and_unclosed_collapsed_fences_stay_literal_under_hard_breaks() {
 // no separator at all (`first linesecond line`). They now render as
 // `<br />`, pinned end-to-end by
 // `collapsed_directive_body_hard_break_renders_br_on_the_html_path` above.
-// Reordering the top-level mdast chain so `DirectiveRegistry` precedes the
-// two visitors stays a separate architectural question — deliberately open.
+//
+// The chain-ordering question this comment used to leave open is CLOSED.
+// zfb#2412 characterized all five candidate directions against the tree and
+// chose recognition tolerance over a reorder: `DirectiveRegistry` keeps its
+// position, and `recognise_collapsed_run` (zfb#2413) recovers a collapsed
+// run from the split shape instead. Moving the two visitors was rejected —
+// both no-recurse at `MdxJsxFlowElement`, so running them after directives
+// would blind them to every directive body, and compensating through
+// `reparse_block` would re-fire the `SecondaryParsePlacement` gate and flip
+// the `<br />` pin named above. Do not re-open it as a reorder; the
+// reasoning is recorded on zfb#2412.
 //
 // The `markdown.cjkFriendly` half of the same pre-emption was MEASURED in
 // #2408 and needed no renderer fix: `CjkFriendlyPlugin` injects `Strong`,
