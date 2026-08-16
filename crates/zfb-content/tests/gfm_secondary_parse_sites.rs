@@ -637,10 +637,15 @@ fn jsx_wrapped_include(include: &str) -> String {
 
 /// zfb#2402: the include site's placement decides whether
 /// `HardBreaksPlugin` may run, and this shape is the one where it may
-/// not. On the HTML path an `MdxJsxFlowElement` is rendered by
-/// `reconstruct_jsx`'s lossy catch-all, which stringifies a `Break` to
-/// the EMPTY string — so normalising hard breaks into a JSX-nested
-/// include DELETED the author's newline instead of rendering `<br>`.
+/// not. The original motivation was that an `MdxJsxFlowElement` on the
+/// HTML path went through `reconstruct_jsx`'s lossy catch-all, which
+/// stringified a `Break` to the EMPTY string — so normalising hard
+/// breaks into a JSX-nested include DELETED the author's newline
+/// instead of rendering `<br>`. zfb#2401 has since fixed that renderer
+/// (a `Break` in a JSX body now renders `<br />`), but the placement
+/// rule this test pins is unchanged and independent of it: no `Break`
+/// is ever injected here, so the author's literal newline is what must
+/// survive.
 ///
 /// Unlike the collapsed-directive-body site (whose end-to-end reach is
 /// masked by the zfb#2401 chain-ordering interaction documented below),
@@ -727,6 +732,189 @@ fn nested_transclude_applies_cjk_and_hard_breaks_at_both_levels() {
     );
 }
 
+// ── zfb#2401: a `Break` nested in a JSX body is no longer swallowed ─────
+//
+// `reconstruct_jsx`'s catch-all (`other => other.to_string()`) treats
+// `Break` as one of markdown-rs's "voids" and renders it as `""`, so a
+// hard break inside an `MdxJsxFlowElement` body was DELETED — fusing the
+// words on either side of it with not even a space between them. The fix
+// gates the fallback arm on `subtree_contains_break` in addition to
+// `subtree_contains_footnote`, routing such a subtree through the one
+// shared `jsx_body_stringify` mirror, which renders `Break` as `<br />`.
+
+const COLLAPSED_DIRECTIVE_HARD_BREAK_SRC: &str = ":::note\nfirst line\nsecond line\n:::\n";
+
+fn text_node(value: &str) -> markdown::mdast::Node {
+    markdown::mdast::Node::Text(markdown::mdast::Text {
+        value: value.to_string(),
+        position: None,
+    })
+}
+
+/// The real repro from zfb#2401, end-to-end through the FULL pipeline —
+/// deliberately not a hand-built tree.
+///
+/// The chain ordering documented in the trailing comment block below is
+/// exactly what makes this shape reach `reconstruct_jsx`: the top-level
+/// `HardBreaksPlugin` splits the collapsed directive's single `Text`
+/// child into `Text`/`Break`/`Text` before `DirectiveRegistry` runs,
+/// destroying `single_text_collapsed`'s precondition, so recognition
+/// falls through to `transform_block_container` — which wraps the body
+/// in a `Paragraph` (`paragraph_from_lines`) and hands the whole
+/// `MdxJsxFlowElement` to the HTML path's lossy stringifier with the
+/// `Break` nested one level down. That nesting is why a direct
+/// `MdastNode::Break(_)` arm on `reconstruct_jsx` would never fire here.
+#[test]
+fn collapsed_directive_body_hard_break_renders_br_on_the_html_path() {
+    let dir = tmpdir();
+
+    let rendered = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        COLLAPSED_DIRECTIVE_HARD_BREAK_SRC,
+    );
+
+    assert!(
+        rendered.contains("<br"),
+        "the collapsed directive body's hard break must render as <br>: {rendered}"
+    );
+    assert!(
+        !rendered.contains("first linesecond line"),
+        "the two lines must never be fused into one word run (zfb#2401): {rendered}"
+    );
+    assert_eq!(
+        rendered, "<Note>first line<br />second line</Note>",
+        "unexpected rendering of the zfb#2401 repro"
+    );
+}
+
+/// `hardBreaks: false` for the same input, pinned to its LITERAL
+/// serialized output rather than a vague "unchanged": with no
+/// `HardBreaksPlugin` in the chain the body stays a single `Text` child
+/// carrying the newline, `subtree_contains_break` is `false`, and the
+/// subtree takes the byte-identical `other.to_string()` catch-all.
+#[test]
+fn collapsed_directive_body_without_hard_breaks_keeps_the_literal_newline() {
+    let dir = tmpdir();
+
+    let rendered = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        false,
+        COLLAPSED_DIRECTIVE_HARD_BREAK_SRC,
+    );
+
+    assert_eq!(rendered, "<Note>first line\nsecond line</Note>");
+}
+
+/// Focused counterpart to the end-to-end test above: the exact nested
+/// shape — an `MdxJsxFlowElement` whose only child is a
+/// `Paragraph(Text, Break, Text)` — driven straight through
+/// `mdast_to_hast` (the `JsxEmitStrategy::HtmlPath` entry point). Pins
+/// the structure a direct-child `Break` arm would miss, independently of
+/// which plugin chain happens to produce it.
+#[test]
+fn jsx_body_break_nested_in_a_paragraph_reconstructs_as_br() {
+    use markdown::mdast;
+
+    let jsx = mdast::Node::MdxJsxFlowElement(mdast::MdxJsxFlowElement {
+        name: Some("Note".to_string()),
+        attributes: vec![],
+        children: vec![mdast::Node::Paragraph(mdast::Paragraph {
+            children: vec![
+                text_node("first line"),
+                mdast::Node::Break(mdast::Break { position: None }),
+                text_node("second line"),
+            ],
+            position: None,
+        })],
+        position: None,
+    });
+
+    let rendered = zfb_content::serializer::serialize(&zfb_content::pipeline::mdast_to_hast(&jsx));
+
+    assert_eq!(rendered, "<Note>first line<br />second line</Note>");
+}
+
+/// Byte-identity control: a JSX body whose subtree contains NEITHER a
+/// footnote NOR a `Break` still takes the untouched `other.to_string()`
+/// catch-all, which drops `Strong`'s formatting while retaining every
+/// character. Guards the widened gate from becoming "recurse generally",
+/// which the issue puts explicitly out of scope.
+#[test]
+fn jsx_body_without_a_break_or_footnote_still_takes_the_lossy_catch_all() {
+    use markdown::mdast;
+
+    let jsx = mdast::Node::MdxJsxFlowElement(mdast::MdxJsxFlowElement {
+        name: Some("Note".to_string()),
+        attributes: vec![],
+        children: vec![mdast::Node::Paragraph(mdast::Paragraph {
+            children: vec![
+                text_node("plain "),
+                mdast::Node::Strong(mdast::Strong {
+                    children: vec![text_node("bold")],
+                    position: None,
+                }),
+            ],
+            position: None,
+        })],
+        position: None,
+    });
+
+    let rendered = zfb_content::serializer::serialize(&zfb_content::pipeline::mdast_to_hast(&jsx));
+
+    assert_eq!(rendered, "<Note>plain bold</Note>");
+}
+
+/// Both features present in ONE fallback subtree — the interaction the
+/// single shared stringifier exists to protect. A second, parallel
+/// `Break`-only mirror would render the break but lose the footnote
+/// marker (or vice versa) depending on which gate won.
+#[test]
+fn collapsed_directive_body_renders_a_footnote_and_a_hard_break_together() {
+    let dir = tmpdir();
+
+    let rendered = render_in_full(
+        dir.path(),
+        ResolvedGfmConstructs::ALL_ON,
+        false,
+        true,
+        ":::note\nfirst line[^n]\nsecond line\n:::\n\n[^n]: the note body.\n",
+    );
+
+    assert!(
+        rendered.contains("data-footnote-ref"),
+        "the footnote reference marker must survive beside a Break: {rendered}"
+    );
+    assert!(
+        rendered.contains("<br"),
+        "the hard break must survive beside a footnote reference: {rendered}"
+    );
+    assert!(
+        !rendered.contains("first linesecond line"),
+        "the two lines must not be fused: {rendered}"
+    );
+    // The marker and the break render in source order, inside the body.
+    let body_end = rendered.find("</Note>").expect("Note body renders");
+    let marker = rendered
+        .find("data-footnote-ref")
+        .expect("marker inside the body");
+    let br = rendered.find("<br").expect("break inside the body");
+    assert!(
+        marker < br && br < body_end,
+        "marker then break, both inside the JSX body: {rendered}"
+    );
+    // And the definition still renders exactly once, in the section.
+    assert_eq!(
+        rendered.matches("the note body.").count(),
+        1,
+        "the definition body must render once, in the footnote section: {rendered}"
+    );
+}
+
 // The directive-body `reparse_block` call site's Jsx-only gate is NOT
 // covered by an end-to-end HTML-render test here, deliberately: a
 // collapsed (blank-line-less) directive is, by construction, ALWAYS a
@@ -771,5 +959,18 @@ fn nested_transclude_applies_cjk_and_hard_breaks_at_both_levels() {
 // from GFM/math (PARSER-level constructs resolved once during the initial
 // parse, before any visitor runs) — the reason #2390/#2397 never hit this.
 // It is unrelated to and out of scope for #2398 (which only threads the two
-// plugins through `reparse_block`'s own re-parse); flagged separately as an
-// agent-found issue rather than fixed here.
+// plugins through `reparse_block`'s own re-parse), and it is STILL PRESENT:
+// #2401 fixed the RENDERER, not the chain order. `reparse_block` /
+// `flush_prose` remain unreachable for these shapes through the full
+// `Pipeline`, so everything above about revert-sensitivity stands.
+//
+// What #2401 DID fix is the downstream consequence of that pre-emption on
+// the HTML render path: the `Break` nodes `HardBreaksPlugin` injects before
+// `DirectiveRegistry` runs travel into the `MdxJsxFlowElement`
+// `transform_block_container` builds, and `reconstruct_jsx` used to
+// stringify them to the EMPTY string — deleting the author's newline with
+// no separator at all (`first linesecond line`). They now render as
+// `<br />`, pinned end-to-end by
+// `collapsed_directive_body_hard_break_renders_br_on_the_html_path` above.
+// Reordering the top-level mdast chain so `DirectiveRegistry` precedes the
+// two visitors stays a separate architectural question — deliberately open.
