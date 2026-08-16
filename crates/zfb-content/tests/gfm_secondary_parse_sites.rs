@@ -1050,9 +1050,9 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 //
 // The two sections above measured the pre-emption's consequences for a
 // SIMPLE collapsed body. Its real cost was elsewhere: with the split shape
-// routed to `transform_block_container`, which has no colon stack and no
-// >3-colon opener rule, a NESTED collapsed directive leaked a literal
-// `:::tip` plus a stray `<p>:::</p>` into the rendered output — on BOTH
+// routed to `transform_block_container`, which at the time had no colon
+// stack and no >3-colon opener rule, a NESTED collapsed directive leaked a
+// literal `:::tip` plus a stray `<p>:::</p>` into the rendered output — on BOTH
 // emit paths, `zfb build` included — and a `:::::note` outer fence went
 // fully literal. The collapsed form is the only form in which directive
 // nesting works at all, so `markdown.hardBreaks: true` (or `cjkFriendly`
@@ -1069,8 +1069,8 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 const NESTED_COLLAPSED_SRC: &str = ":::note\nprose above\n:::tip\ninner body\n:::\n:::\n";
 
 /// The outer fence written with FIVE colons, the CommonMark-Directives
-/// spelling for "this container wraps another". `transform_block_container`
-/// requires exactly three (`parse_block_open(node, 3)`), so under the split
+/// spelling for "this container wraps another". The block-level opener
+/// parse required exactly three colons at the time, so under the split
 /// shape this whole paragraph used to render as one literal `<p>`.
 const DEEP_NESTED_COLLAPSED_SRC: &str = ":::::note\nprose above\n:::tip\ninner body\n:::\n:::::\n";
 
@@ -1134,9 +1134,9 @@ fn nested_collapsed_directive_compiles_to_a_tip_element_with_hard_breaks_on() {
 }
 
 /// A >3-colon outer fence needs the colon-STACK rule, which
-/// `transform_block_container` does not have: it matched the innermost
-/// closer first and mis-nested, or (for a 5-colon opener) declined
-/// outright. Pinned on both emit paths.
+/// `transform_block_container` did not have at the time: it matched the
+/// innermost closer first and mis-nested, or (for a 5-colon opener)
+/// declined outright. Pinned on both emit paths.
 #[test]
 fn deep_outer_fence_nests_innermost_first_under_hard_breaks() {
     let dir = tmpdir();
@@ -1222,6 +1222,158 @@ fn transcluded_nested_collapsed_directive_renders_the_same_with_hard_breaks_on()
             "transcluded nested run with hardBreaks={hard_breaks}"
         );
     }
+}
+
+// ── zfb#2416: the blank-line-separated ("spaced") nesting form ──
+//
+// Everything above measures the COLLAPSED form. Its blank-line-separated
+// twin never transformed its OUTER fence: `transform_block_container`'s
+// sibling scan stopped at the first opener-shaped sibling — for a spaced
+// nested run, that IS the inner directive — so the outer opener was
+// recorded unclosed and leaked as `<p>:::note</p>` … `<p>:::</p>` around a
+// lone `<Tip>`. The block-level scan now feeds a flattened fence-line view
+// to the same colon stack the collapsed path uses, so both forms nest.
+//
+// `hardBreaks` parity is an acceptance criterion here, not a nicety: #2415
+// measured the defect as identical with the setting on and off, so every
+// fixture below is asserted on both.
+
+/// The reporter's fixture (zfb#2415) — spaced outer, glued inner run.
+const SPACED_NESTED_SRC: &str = ":::note\n\nprose above\n\n:::tip\ninner body\n:::\n\n:::\n";
+
+/// The same nesting with a `:::::` outer fence, the CommonMark-Directives
+/// spelling for "this container wraps another". At block level the opener
+/// colon count used to be hardcoded to 3, so this went fully literal —
+/// without even an unclosed diagnostic.
+const SPACED_DEEP_NESTED_SRC: &str =
+    ":::::note\n\nprose above\n\n:::tip\ninner body\n:::\n\n:::::\n";
+
+/// The spaced form of the nested fixture renders identically to its
+/// collapsed twin (`NESTED_COLLAPSED_SRC`, asserted above) and identically
+/// with `markdown.hardBreaks` on and off. Before zfb#2416 both halves were
+/// `<p>:::note</p><p>prose above</p><Tip>inner body</Tip><p>:::</p>`.
+#[test]
+fn spaced_nested_directive_renders_the_same_with_and_without_hard_breaks() {
+    let dir = tmpdir();
+
+    for hard_breaks in [false, true] {
+        assert_eq!(
+            render_in_full(
+                dir.path(),
+                ResolvedGfmConstructs::ALL_ON,
+                false,
+                hard_breaks,
+                SPACED_NESTED_SRC,
+            ),
+            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "spaced nested run with hardBreaks={hard_breaks}"
+        );
+    }
+}
+
+/// The COLLAPSED twin of the fixture above, re-asserted here as the
+/// control: the block-level change must leave the line-level path's output
+/// byte-identical. (`nested_collapsed_directive_renders_the_same_with_and_without_hard_breaks`
+/// pins the same string from the other side of the change.)
+#[test]
+fn collapsed_nested_directive_output_is_unchanged_beside_the_spaced_form() {
+    let dir = tmpdir();
+
+    for hard_breaks in [false, true] {
+        assert_eq!(
+            render_in_full(
+                dir.path(),
+                ResolvedGfmConstructs::ALL_ON,
+                false,
+                hard_breaks,
+                NESTED_COLLAPSED_SRC,
+            ),
+            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "collapsed nested run with hardBreaks={hard_breaks}"
+        );
+    }
+}
+
+/// A `:::::` spaced outer fence, on both emit paths — the HTML assertion
+/// cannot stand in for the JSX one (different emitters), and `zfb build`
+/// takes the JSX path.
+#[test]
+fn spaced_deep_outer_fence_nests_innermost_first_on_both_emit_paths() {
+    let dir = tmpdir();
+
+    for hard_breaks in [false, true] {
+        assert_eq!(
+            render_in_full(
+                dir.path(),
+                ResolvedGfmConstructs::ALL_ON,
+                false,
+                hard_breaks,
+                SPACED_DEEP_NESTED_SRC,
+            ),
+            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "5-colon spaced outer fence with hardBreaks={hard_breaks}"
+        );
+
+        let jsx = compile_jsx_in_full(
+            dir.path(),
+            ResolvedGfmConstructs::ALL_ON,
+            false,
+            hard_breaks,
+            SPACED_DEEP_NESTED_SRC,
+        );
+        assert!(
+            jsx.contains("Tip") && !jsx.contains(":::"),
+            "no literal fence may survive into the compiled module with \
+             hardBreaks={hard_breaks}: {jsx}"
+        );
+    }
+}
+
+/// The spaced fixture through the INCLUDE path, beside its collapsed
+/// counterpart (`transcluded_nested_collapsed_directive_renders_the_same_with_hard_breaks_on`).
+/// Transcluded content is split by `normalize_included_subtree` at splice
+/// time, so it reaches `DirectiveRegistry` pre-split — the shape most
+/// likely to diverge if the fix depended on a pristine single-`Text`
+/// paragraph.
+#[test]
+fn transcluded_nested_spaced_directive_renders_the_same_with_hard_breaks_on() {
+    let dir = tmpdir();
+    let include = snippet(dir.path(), SPACED_NESTED_SRC);
+
+    for hard_breaks in [false, true] {
+        assert_eq!(
+            render_in_full(
+                dir.path(),
+                ResolvedGfmConstructs::ALL_ON,
+                false,
+                hard_breaks,
+                &include,
+            ),
+            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "transcluded spaced nested run with hardBreaks={hard_breaks}"
+        );
+    }
+}
+
+/// The anti-cascade control at the pipeline level: a genuinely unclosed
+/// outer opener followed by a well-formed padded directive. The later
+/// directive must transform on its own and the unclosed opener must stay
+/// literal — the cross-sibling stack never claims a closer for an
+/// unbalanced range. (`real_parser_unclosed_opener_leaves_later_padded_directive_intact`
+/// pins the same shape at the registry level, diagnostic included.)
+#[test]
+fn spaced_unclosed_opener_leaves_the_later_padded_directive_intact() {
+    let dir = tmpdir();
+    let src = ":::warning\nnever closed\n\n:::note\n\npadded body\n\n:::\n";
+
+    assert_eq!(
+        render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, false, false, src),
+        "<p>:::warning\nnever closed</p><Note>padded body</Note>"
+    );
+    assert_eq!(
+        render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, false, true, src),
+        "<p>:::warning<br/>never closed</p><Note>padded body</Note>"
+    );
 }
 
 /// The simple transcluded collapsed body, pinned to its literal output on
