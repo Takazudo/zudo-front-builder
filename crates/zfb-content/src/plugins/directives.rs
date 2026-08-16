@@ -424,6 +424,18 @@ impl DirectiveRegistry {
     ///   output on both emit paths, and a `:::::note` outer fence went
     ///   fully literal.
     fn recognise_collapsed_run(&mut self, node: &MdastNode) -> Option<Vec<MdastNode>> {
+        // Cheap pre-filter before any line lifting or node cloning — the
+        // same discipline `warn_unclosed_buried_opener` applies. This runs
+        // for EVERY child of EVERY `transform_children` call, and only a
+        // paragraph whose FIRST line is an opener fence can be a collapsed
+        // run; `is_block_opener_shaped` answers that off the leading `Text`
+        // child alone. It is exactly the gate the line view re-applies
+        // below (a leading non-`Text` node, or a first line that is not
+        // `:::+name`, fails both), so no paragraph changes hands — plain
+        // prose paragraphs just stop being split and deep-cloned first.
+        if !is_block_opener_shaped(node) {
+            return None;
+        }
         // `single_text_collapsed` defaults a position-less paragraph to
         // (1, 1) while the block-level `warn_unknown` reports `None` for
         // one; each shape keeps the diagnostic position rule it had.
@@ -821,14 +833,17 @@ impl DirectiveRegistry {
         // Everything this method produces — whether the recursion's JSX
         // runs and inter-run prose, or the plain-markdown fallback below —
         // becomes the CHILDREN of the `MdxJsxFlowElement` the caller
-        // builds with `build_flow_jsx`. On the HTML path that element is
-        // rendered by a lossy `reconstruct_jsx` catch-all that stringifies
-        // `Break` to an EMPTY STRING, so `HardBreaksPlugin` must stay off
-        // there or it DELETES newlines from directive bodies rather than
-        // turning them into `<br>`; the JSX path has a real emit arm for
-        // `Break`, and is the only target where this is a genuine parity
-        // fix (zfb#2398, extended to the recursion's own prose by
-        // zfb#2402).
+        // builds with `build_flow_jsx`. When the gate was written that
+        // meant the HTML path's lossy `reconstruct_jsx` catch-all
+        // stringified a `Break` to the EMPTY STRING, so keeping
+        // `HardBreaksPlugin` off here avoided DELETING newlines from
+        // directive bodies; zfb#2401 has since given that renderer a real
+        // `Break` arm (`<br />`), so what the gate does today is
+        // behaviour-preserving, not deletion avoidance — see
+        // `SecondaryParsePlacement`'s doc comment in `zfb-md-ast`. The JSX
+        // path has always had a real emit arm for `Break`, and is the
+        // target where this is a genuine parity fix (zfb#2398, extended to
+        // the recursion's own prose by zfb#2402).
         let placement = SecondaryParsePlacement::InsideJsxElement;
         // Recurse: a nested `:::tip … :::` inside the body is itself a
         // collapsed run. `None` means "no directive in the body" — emit the
@@ -1646,8 +1661,9 @@ fn inline_line_opener_colons(line: &InlineLine) -> Option<usize> {
 
 /// The colon count of `line` when it is a bare container CLOSE fence —
 /// the single-`Text` rule [`closer_line_index`] applies, exposed with the
-/// count so the buried-opener scan (zfb#2211) can drive the colon-stack
-/// matching rule with it.
+/// count so [`inline_lines_matching_closer`] can drive the colon-stack
+/// matching rule with it — for the collapsed-run transform itself
+/// (zfb#2413) as well as the buried-opener diagnostic scan (zfb#2211).
 fn inline_line_closer_colons(line: &InlineLine) -> Option<usize> {
     match &line.nodes[..] {
         [MdastNode::Text(t)] => container_close_colons(&t.value),
@@ -1881,8 +1897,12 @@ fn reparse_block(
 /// collapsed shape `markdown::to_mdast` produces for blank-line-less fences),
 /// return `(text_value, start_line, start_column)` — the Text's value plus the
 /// paragraph's start position (defaulting to 1:1 when absent) for diagnostics.
-/// Returns `None` for the multi-inline-child case (which
-/// [`DirectiveRegistry::transform_block_container`] handles instead).
+/// Returns `None` for the multi-inline-child (SPLIT) case, which since
+/// zfb#2413 reaches the same re-segmenter through [`split_inline_lines`] —
+/// see [`DirectiveRegistry::recognise_collapsed_run`]. This function now
+/// only picks which line-recovery route that entry takes, and which
+/// diagnostic position rule applies; it no longer decides whether the
+/// collapsed path runs at all.
 fn single_text_collapsed(node: &MdastNode) -> Option<(String, usize, usize)> {
     let MdastNode::Paragraph(p) = node else {
         return None;
