@@ -1052,8 +1052,7 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 // SIMPLE collapsed body. Its real cost was elsewhere: with the split shape
 // routed to `transform_block_container`, which at the time had no colon
 // stack and no >3-colon opener rule, a NESTED collapsed directive leaked a
-// literal
-// `:::tip` plus a stray `<p>:::</p>` into the rendered output — on BOTH
+// literal `:::tip` plus a stray `<p>:::</p>` into the rendered output — on BOTH
 // emit paths, `zfb build` included — and a `:::::note` outer fence went
 // fully literal. The collapsed form is the only form in which directive
 // nesting works at all, so `markdown.hardBreaks: true` (or `cjkFriendly`

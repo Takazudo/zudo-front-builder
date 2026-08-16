@@ -597,9 +597,10 @@ impl DirectiveRegistry {
         // — no second stack implementation. Which lines become fence events is
         // load-bearing:
         //
-        //   * ALL lines of a paragraph whose HEAD is opener-shaped: that
-        //     paragraph is a real fence run (possibly a collapsed one), so its
-        //     inner opener/closer lines are genuine nesting events.
+        //   * ALL lines of a paragraph whose HEAD is opener-shaped — the
+        //     OPENER paragraph itself included: that paragraph is a real
+        //     fence run (possibly a collapsed one), so its inner
+        //     opener/closer lines are genuine nesting events.
         //   * Only CLOSER lines of any other paragraph: a `:::` glued to the
         //     end of a body paragraph really does close something.
         //
@@ -609,20 +610,46 @@ impl DirectiveRegistry {
         // unclosed buried opener (`prose` / `:::tip` / `never closed`) from
         // transforming today to unclosed — a regression, not a fix.
         let mut fence_lines: Vec<InlineLine> = Vec::new();
-        let mut fence_origins: Vec<(usize, usize)> = Vec::new();
+        // `None` marks a line lifted from the OPENER paragraph itself; a
+        // `Some((sibling, line))` origin is a following sibling's line.
+        let mut fence_origins: Vec<Option<(usize, usize)>> = Vec::new();
+        // The opener paragraph's OWN glued remainder lines open the scan.
+        // Its head is an opener by definition, so — exactly like an
+        // opener-headed sibling — every one of its lines is a fence event:
+        // a `:::tip` glued directly under the opener nests just as it would
+        // from a separate paragraph. Shape (a) has already proved no closer
+        // matches inside this paragraph, so a match can never land in this
+        // prefix; it only carries the nesting state into the sibling scan.
+        // Without it, `:::note` / `:::tip` glued together and closed by two
+        // later `:::` siblings closed the OUTER fence on the FIRST closer
+        // and leaked a literal `:::tip` plus a stray `:::`.
+        if opener_lines.as_ref().is_some_and(|lines| lines.len() > 1) {
+            let mut own =
+                paragraph_inline_lines(&children[i]).expect("children[i] is the opener paragraph");
+            for own_line in own.drain(1..) {
+                fence_lines.push(own_line);
+                fence_origins.push(None);
+            }
+        }
         for (j, sibling) in children.iter().enumerate().skip(i + 1) {
+            let head_opener = is_block_opener_shaped(sibling);
+            if !head_opener && !paragraph_may_carry_fence_line(sibling) {
+                // Cheap pre-filter: a closer line is a single `Text` of
+                // colons, so a paragraph with no `:::` anywhere in its text
+                // contributes nothing — skip the split + node cloning.
+                continue;
+            }
             let Some(lines) = paragraph_inline_lines(sibling) else {
                 continue;
             };
-            let head_opener = is_block_opener_shaped(sibling);
             for (k, sibling_line) in lines.into_iter().enumerate() {
                 if head_opener || inline_line_closer_colons(&sibling_line).is_some() {
                     fence_lines.push(sibling_line);
-                    fence_origins.push((j, k));
+                    fence_origins.push(Some((j, k)));
                 }
             }
         }
-        let Some((j, k)) = inline_lines_matching_closer(&fence_lines, 0, open_colons)
+        let Some(Some((j, k))) = inline_lines_matching_closer(&fence_lines, 0, open_colons)
             .map(|hit| fence_origins[hit])
         else {
             self.record_unclosed(&parsed.name, line, column);
@@ -1680,10 +1707,13 @@ fn paragraph_from_lines(lines: &[InlineLine]) -> Option<MdastNode> {
 
 /// Is this paragraph SHAPED like a container-directive opener (first line
 /// of the leading `Text` child: >= 3 colons immediately followed by a
-/// name)? Used to BOUND the sibling closer scan: a broken opener must
-/// never steal the closer of a later directive (the pre-zfb#2206
-/// cascade), so the scan stops at the next opener-shaped paragraph
-/// whether or not that later name is registered.
+/// name)? Answered off the leading `Text` child alone, so it is the cheap
+/// pre-filter every fence path opens with, whether or not the name is
+/// registered. Two callers depend on it: the collapsed-run entry gate, and
+/// `transform_block_container`'s shape-(b) scan, where an opener-shaped
+/// HEAD promotes ALL of that paragraph's lines to fence events (a
+/// non-opener-headed paragraph contributes only its bare closer lines —
+/// zfb#2211's buried openers stay non-events).
 fn is_block_opener_shaped(node: &MdastNode) -> bool {
     let MdastNode::Paragraph(p) = node else {
         return false;
@@ -1692,6 +1722,21 @@ fn is_block_opener_shaped(node: &MdastNode) -> bool {
         return false;
     };
     container_opener_colons(first_line(&t.value).trim_end()).is_some()
+}
+
+/// Could this node contribute a bare CLOSE fence line to the shape-(b)
+/// scan? A closer line is a single `Text` node of colons only, so a
+/// paragraph carrying no `:::` in any of its text at all cannot hold one.
+/// A cheap textual pre-filter — the same discipline
+/// [`DirectiveRegistry::warn_unclosed_buried_opener`] applies — so the
+/// scan does not split and clone every prose paragraph after an opener.
+fn paragraph_may_carry_fence_line(node: &MdastNode) -> bool {
+    let MdastNode::Paragraph(p) = node else {
+        return false;
+    };
+    p.children
+        .iter()
+        .any(|c| matches!(c, MdastNode::Text(t) if t.value.contains(":::")))
 }
 
 /// The leading colon count of `line` when it is SHAPED like a container
@@ -5187,6 +5232,89 @@ padded body
                 .any(|c| matches!(c, MdastNode::Code(_))),
             "the fenced code block must reach the body as a Code node: {out:#?}"
         );
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    /// The MIXED form: the inner opener is GLUED to the outer opener (one
+    /// paragraph), while both closers are spaced siblings. The shape-(b)
+    /// scan has to carry the opener paragraph's OWN nesting state into the
+    /// sibling scan — otherwise the outer closes on the FIRST sibling
+    /// `:::` and the output leaks a literal `:::tip` plus a stray `:::`.
+    #[test]
+    fn real_parser_inner_opener_glued_to_the_outer_opener_still_nests() {
+        let mut r = registry_with_admonitions();
+        let input = ":::note\n:::tip\ninner\n\n:::\n\n:::\n";
+        let out = run_real_parser(&mut r, input);
+
+        assert_eq!(out.len(), 1, "one outer <Note>, got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        let tip = flow(
+            note.children
+                .iter()
+                .find(|c| matches!(c, MdastNode::MdxJsxFlowElement(_)))
+                .unwrap_or_else(|| panic!("the <Tip> must be a CHILD of the <Note>: {out:#?}")),
+        );
+        assert_eq!(tip.name.as_deref(), Some("Tip"));
+        assert_eq!(body_paragraph_texts(tip), vec!["inner".to_string()]);
+        assert_no_literal_fence(&out);
+        assert!(r.take_diagnostics().is_empty());
+    }
+
+    /// The UNBALANCED mixed form: an unclosed `:::tip` buried in the outer
+    /// opener's own paragraph, with a single sibling closer. Carrying the
+    /// opener paragraph's nesting state into the sibling scan means that
+    /// lone `:::` is consumed by the INNER fence, so the outer never
+    /// balances and the whole run stays literal under one `note` unclosed
+    /// diagnostic.
+    ///
+    /// Pinned because it is a deliberate flip: before the opener
+    /// paragraph's own fence lines fed the scan, the outer transformed and
+    /// the buried run leaked literal inside its body. Note this does NOT
+    /// converge with the collapsed twin `:::note\nprose\n:::tip\nnever
+    /// closed\n:::`, which leaves the outer literal but still emits a
+    /// `<Tip>` for the inner — measured, not assumed. The spaced form is
+    /// the more conservative of the two: an unbalanced run transforms
+    /// nothing, which is what keeps it away from the anti-cascade shapes.
+    #[test]
+    fn real_parser_unclosed_inner_glued_to_the_outer_opener_leaves_all_literal() {
+        let mut r = registry_with_admonitions();
+        let input = ":::note\nprose\n:::tip\nnever closed\n\n:::\n";
+        let out = run_real_parser(&mut r, input);
+
+        assert!(
+            !out.iter()
+                .any(|n| matches!(n, MdastNode::MdxJsxFlowElement(_))),
+            "nothing transforms — the outer never balances: {out:#?}"
+        );
+        let diags = r.take_diagnostics();
+        assert_eq!(diags.len(), 1, "one unclosed diagnostic, got {diags:#?}");
+        assert!(
+            diags[0].message.contains("unclosed") && diags[0].message.contains("note"),
+            "the diagnostic names the OUTER opener, got {:?}",
+            diags[0].message
+        );
+    }
+
+    /// The same mixed form with the inner BODY spaced away from its opener,
+    /// so the outer opener paragraph is exactly `:::note` + `:::tip` — two
+    /// fence lines and nothing else.
+    #[test]
+    fn real_parser_two_glued_openers_close_across_spaced_siblings() {
+        let mut r = registry_with_admonitions();
+        let input = ":::note\n:::tip\n\ninner\n\n:::\n\n:::\n";
+        let out = run_real_parser(&mut r, input);
+
+        assert_eq!(out.len(), 1, "one outer <Note>, got {out:#?}");
+        let note = flow(&out[0]);
+        assert_eq!(note.name.as_deref(), Some("Note"));
+        assert!(
+            note.children.iter().any(|c| {
+                matches!(c, MdastNode::MdxJsxFlowElement(j) if j.name.as_deref() == Some("Tip"))
+            }),
+            "the <Tip> must be a CHILD of the <Note>: {out:#?}"
+        );
+        assert_no_literal_fence(&out);
         assert!(r.take_diagnostics().is_empty());
     }
 }
