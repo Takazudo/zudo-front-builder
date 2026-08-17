@@ -14076,9 +14076,10 @@ mod tests {
             "emit_render_artifacts=false → no setter; got:\n{}",
             String::from_utf8_lossy(&off_body)
         );
-        // The on/off pair differs by exactly the two setter lines, so the
-        // off body is a strict prefix-preserving subset: removing the two
-        // emitted lines from `on` recovers `off` byte-for-byte.
+        // Stronger than "the setter is absent": deleting the emitted block
+        // from the flag-on body must recover the flag-off body exactly, so
+        // any other difference the branch introduced — a moved line, an
+        // extra newline — fails here.
         let on_without_setter = String::from_utf8(on_body)
             .unwrap()
             .replace(
