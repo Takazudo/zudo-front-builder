@@ -78,12 +78,14 @@
 #     byte-identical for supported contract rows, and exactly the
 #     documented D7/D8 divergences (legacy MD5 digest; key-bearing
 #     SubtleCrypto) where they are expected to differ.
-#   • 13 build-command binaries (build_cleans_outdir, build_package_routes,
+#   • 16 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
 #     end_to_end_basic_blog_build, gfm_footnotes_tasklists_confirm_build,
 #     html_minify_build,
 #     page_extension_route_table_build, wasm_ssr_adapter_e2e,
+#     plugin_diagnostics_confirm_2375_e2e, render_artifact_confirm_build,
+#     render_artifact_determinism_build,
 #     sibling_css_module_command_layer_build, strict_broken_links_e2e) —
 #     each runs `zfb build`,
 #     which likewise boots the embedded V8 host and shells out to esbuild.
@@ -127,7 +129,7 @@
 [test-groups.e2e-heavy]
 max-threads = 1
 
-# The override that assigns the 37 heavy binaries to the e2e-heavy group AND
+# The override that assigns the 40 heavy binaries to the e2e-heavy group AND
 # grants them a long per-test timeout lives in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
@@ -246,6 +248,33 @@ max-threads = 1
 # `locate_esbuild()` plus a `node`-on-PATH check, like its build-only
 # siblings.
 #
+# Issue #2427 (2026-08, Render Artifact Export epic #2421, Wave 3 —
+# CONFIRM, the central real-`zfb build` integration pass over Waves 1-2)
+# added TWO binaries to the BUILD-ONLY bucket: `render_artifact_confirm_build`
+# and `render_artifact_determinism_build`, bringing the total to **40** (24
+# flock-adopting, 16 build-only) — this recount also folded in
+# `plugin_diagnostics_confirm_2375_e2e`, which #2375 added to the filter and
+# the flock-adopting/build-only split above but never back-filled into the
+# "N build-command binaries" list at the top of this comment block (drifted
+# stale by one; corrected in the same commit as this paragraph, per the
+# recurring "re-measure rather than trust the running total" pattern this
+# file's provenance already documents). `render_artifact_confirm_build` runs
+# two tests, no flock: one drives a single real `zfb build` over a fixture
+# exercising GitHub alerts, headings, an in-content asset reference, a
+# multi-region listing page, a direct `pages/*.md` route, and a direct
+# `pages/*.mdx` route (the epic's documented exclusion), pinning the
+# artifact contract's exact field order, the region rule (one/zero/many),
+# sentinel stripping everywhere in `dist/`, and the deterministic
+# multi-region warning; the other drives four real builds (flag × minify)
+# proving page HTML is byte-identical flag-on vs flag-off at each minify
+# state and artifact bytes are identical across minify states.
+# `render_artifact_determinism_build` runs one test: two independent real
+# builds over a sibling-document collection fixture (the WalkDir
+# traversal-order slug-allocation trap, zfb#187) must emit a byte-identical
+# `dist/` tree, `dist/__zfb/render/**` artifacts included. Neither binary is
+# `#[ignore]`d — both self-skip via `locate_esbuild()`, like their
+# build-only siblings.
+#
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
 # esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
@@ -288,7 +317,7 @@ max-threads = 1
 # (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
 # is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
-filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=preview_cross_mode_e2e) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
+filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=preview_cross_mode_e2e) | binary(=render_artifact_confirm_build) | binary(=render_artifact_determinism_build) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
 test-group = 'e2e-heavy'
 # The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
 # and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy
