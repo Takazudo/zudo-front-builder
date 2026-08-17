@@ -6739,14 +6739,20 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // shipped page does, while minification and every later pass below
     // see marker-free HTML. Off by default and a single boolean test when
     // off — nothing is read or written.
+    let render_artifact_routes: std::collections::BTreeMap<std::path::PathBuf, String> =
+        if config.emit_render_artifacts {
+            route_universe_for_rewrite
+                .iter()
+                .map(|(url, rel)| (outdir.join(rel), url.clone()))
+                .collect()
+        } else {
+            std::collections::BTreeMap::new()
+        };
     crate::commands::render_artifact::export_render_artifacts(
         config.emit_render_artifacts,
         outdir,
         &post_processable_pages,
-        &route_universe_for_rewrite
-            .iter()
-            .map(|(url, rel)| (outdir.join(rel), url.clone()))
-            .collect(),
+        &render_artifact_routes,
         &render_metadata,
     )
     .context("render artifact export failed")?;

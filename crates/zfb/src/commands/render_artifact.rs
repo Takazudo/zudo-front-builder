@@ -217,12 +217,16 @@ fn parse_marker(bytes: &[u8]) -> Option<Marker> {
     if !tail.starts_with(MARKER_TAIL) {
         return None;
     }
-    // A region id is a module specifier (`mdx://<collection>/<slug>`),
-    // so it is plain UTF-8 with no markup and nothing the HTML attribute
-    // serializer would have escaped. Rejecting `<`, `>` and `&` keeps a
-    // hand-authored `<template>` carrying escaped content from being
-    // mistaken for a marker we emitted.
-    if id_bytes.is_empty() || id_bytes.iter().any(|b| matches!(b, b'<' | b'>' | b'&')) {
+    // The id is taken verbatim, whatever it contains. A specifier whose
+    // slug carried an `&` would reach the page HTML-escaped
+    // (`a&amp;b`), and the writer's join against the raw specifier would
+    // then miss — but the marker is still RECOGNISED, so it is still
+    // stripped. Rejecting escaped ids would invert that: an unjoinable
+    // region would leak a live `<template data-zfb-render-region…>` into
+    // shipped HTML, which is far worse than a missing artifact. An empty
+    // id addresses nothing and is the one plausible authored placeholder,
+    // so it stays rejected.
+    if id_bytes.is_empty() {
         return None;
     }
     let region_id = std::str::from_utf8(id_bytes).ok()?.to_string();
@@ -482,7 +486,7 @@ pub(crate) fn export_render_artifacts(
             ));
             continue;
         };
-        let Some(page_rel) = page
+        let Some(dest) = page
             .strip_prefix(outdir)
             .ok()
             .and_then(|rel| artifact_dest(outdir, rel))
@@ -509,8 +513,8 @@ pub(crate) fn export_render_artifacts(
         };
 
         let json = serialize_artifact(route, fragment, meta)?;
-        zfb_build::atomic_write_string(&page_rel, &json)
-            .with_context(|| format!("failed to write {}", page_rel.display()))?;
+        zfb_build::atomic_write_string(&dest, &json)
+            .with_context(|| format!("failed to write {}", dest.display()))?;
         written += 1;
     }
 
@@ -605,8 +609,8 @@ mod tests {
             "<template data-zfb-render-region=\"middle\" data-zfb-region-id=\"mdx://a/b\"></template>",
             // empty region id
             "<template data-zfb-render-region=\"start\" data-zfb-region-id=\"\"></template>",
-            // escaped markup in the id
-            "<template data-zfb-render-region=\"start\" data-zfb-region-id=\"a&amp;b\"></template>",
+            // missing the id attribute entirely
+            "<template data-zfb-render-region=\"start\"></template>",
             // extra whitespace
             "<template  data-zfb-render-region=\"start\" data-zfb-region-id=\"mdx://a/b\"></template>",
         ];
@@ -1090,6 +1094,81 @@ mod tests {
         assert_eq!(
             parsed["fragmentHtml"], "<p>outer</p><em>inner</em>",
             "inner sentinels must not survive in the fragment"
+        );
+    }
+
+    /// The acceptance criterion in its literal form: run the pass over a
+    /// markered page and over the page the same build would have written
+    /// with the markers never emitted, then compare the two files byte
+    /// for byte. It also pins that the never-markered page is untouched.
+    #[test]
+    fn stripped_page_bytes_equal_never_markered_page_bytes() {
+        let never_markered = "<!doctype html><html lang=\"en\"><head><title>T</title></head>\
+                              <body><main><h1 id=\"hi\">Hi</h1><p>a &amp; b</p></main>\
+                              <script type=\"module\" src=\"/assets/x-9f8e7d.js\"></script>\
+                              </body></html>";
+        let markered = never_markered.replace(
+            "<main>",
+            &format!("<main>{}", start("mdx://blog/hello#a1b2c3d4")),
+        );
+        let markered = markered.replace(
+            "</main>",
+            &format!("{}</main>", end("mdx://blog/hello#a1b2c3d4")),
+        );
+        assert_ne!(markered, never_markered, "the fixture must differ up front");
+
+        let tmp = tempdir().unwrap();
+        let with = tmp.path().join("with/index.html");
+        let without = tmp.path().join("without/index.html");
+        fs::create_dir_all(with.parent().unwrap()).unwrap();
+        fs::create_dir_all(without.parent().unwrap()).unwrap();
+        fs::write(&with, &markered).unwrap();
+        fs::write(&without, never_markered).unwrap();
+
+        let mut routes = BTreeMap::new();
+        routes.insert(with.clone(), "/with/".to_string());
+        routes.insert(without.clone(), "/without/".to_string());
+
+        export_render_artifacts(
+            true,
+            tmp.path(),
+            &[with.clone(), without.clone()],
+            &routes,
+            &index_with("mdx://blog/hello#a1b2c3d4"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(&with).unwrap(),
+            fs::read(&without).unwrap(),
+            "a stripped page must be byte-identical to the never-markered build"
+        );
+        assert_eq!(fs::read_to_string(&without).unwrap(), never_markered);
+    }
+
+    /// A marker whose id cannot be joined (here: HTML-escaped by the
+    /// attribute serializer, so it does not match any indexed specifier)
+    /// must STILL be stripped. Leaking a live sentinel into shipped HTML
+    /// is a worse failure than a missing artifact, so recognition is
+    /// deliberately wider than the join.
+    #[test]
+    fn an_unjoinable_region_id_is_still_stripped_from_the_page() {
+        let escaped = "mdx://pages/a&amp;b";
+        let markered = format!("<main>{}<h1>Hi</h1>{}</main>", start(escaped), end(escaped));
+        let (tmp, page, routes) = fixture(&markered);
+        let written = export_render_artifacts(
+            true,
+            tmp.path(),
+            std::slice::from_ref(&page),
+            &routes,
+            &index_with("mdx://pages/a&b"),
+        )
+        .unwrap();
+        assert_eq!(written, 0, "the join misses, so no artifact is written");
+        assert_eq!(
+            fs::read_to_string(&page).unwrap(),
+            "<main><h1>Hi</h1></main>",
+            "the sentinel must not survive into shipped HTML"
         );
     }
 
