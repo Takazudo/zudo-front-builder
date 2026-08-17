@@ -350,8 +350,10 @@ pub struct Config {
     /// exactly one top-level content region — the content-region HTML as
     /// shipped, compiler-allocated headings with slugs, a contract
     /// version, and a raw-source digest (Render Artifact Export epic
-    /// #2421). No consumer reads the resolved value yet; a sibling
-    /// sub-issue adds the extraction pass and artifact writer.
+    /// #2421). The extraction pass and artifact writer live in
+    /// `crate::commands::render_artifact` (`export_render_artifacts`),
+    /// which runs between the link-base rewrite and HTML minification and
+    /// resolves this flag as the caller-supplied `enabled` argument.
     ///
     /// Default: `false` (explicit opt-in), unlike `emit_routes_manifest`'s
     /// default-on posture — the writer instruments every rendered region

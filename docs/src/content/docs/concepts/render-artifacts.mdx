@@ -1,0 +1,116 @@
+---
+title: Render Artifacts
+description: The JSON build artifact zfb writes for each single-region markdown/MDX route — shape, field semantics, and the region rule that decides which routes get one.
+sidebar_position: 6.5
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+The `emitRenderArtifacts` build output: what gets written, the exact JSON
+shape, what each field means (and what it doesn't guarantee), which
+routes participate, and the region rule that decides whether a route
+gets an artifact at all.
+
+</Info>
+
+`zfb build` can optionally write, for certain routes, a JSON file that captures the page's markdown/MDX content region exactly as it shipped — the rendered HTML fragment, its headings with slugs, and a digest of the source that produced it. The artifact exists so a downstream consumer (a preview shell, a search indexer, anything that wants a page's rendered content without re-parsing the shipped HTML) can read one small, versioned file instead of scraping `dist/`.
+
+It is off by default. See [`emitRenderArtifacts`](../api/define-config.mdx) in the config reference and `--emit-render-artifacts` / `--no-emit-render-artifacts` in the [CLI reference](../api/cli.mdx) for how to turn it on. It only affects `zfb build` — `zfb dev` never writes render artifacts.
+
+<Note title="Enabling the flag never changes the shipped page">
+
+The content region is captured from the page's own rendered HTML, after the same asset-URL and link-base rewrites the shipped page went through. Turning `emitRenderArtifacts` on or off does not change a single byte of the HTML zfb writes to `dist/` for any page — the artifact is a side channel, not an alternate render.
+
+</Note>
+
+## The JSON shape
+
+For a route that qualifies (see [Region rule](#region-rule) below), zfb writes a file shaped like this:
+
+```json
+{
+  "contractVersion": 1,
+  "route": "/blog/hello-world/",
+  "fragmentHtml": "<h1 id=\"hello\">Hello, zfb</h1>…",
+  "headings": [
+    { "depth": 2, "text": "Basic usage", "slug": "basic-usage" }
+  ],
+  "sourceDigest": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a1"
+}
+```
+
+Field order is fixed — `contractVersion`, `route`, `fragmentHtml`, `headings`, `sourceDigest` — and each `headings` entry is likewise fixed as `depth`, `text`, `slug`. The file is pretty-printed with a trailing newline and, for identical inputs, byte-identical across repeated builds — see [Determinism](#determinism-and-versioning).
+
+- **`contractVersion`** — an integer, currently `1`. Bumped whenever the shape below changes — a field added, removed, renamed, or given different semantics. Consumers should branch on this value rather than assuming the shape is stable.
+- **`route`** — the URL path of the route (e.g. `/blog/hello-world/`), not zfb's internal output path.
+- **`fragmentHtml`** — the content region's HTML, as shipped. See [fragmentHtml](#fragmenthtml) below.
+- **`headings`** — the compiler-allocated heading list for the region. See [headings](#headings) below.
+- **`sourceDigest`** — a digest of the markdown/MDX source that produced the region. See [sourceDigest](#sourcedigest) below.
+
+## fragmentHtml
+
+`fragmentHtml` is the content region's HTML captured **after** the same asset-URL rewriting and link-base rewriting the shipped page goes through, and **before** HTML minification — so the fragment's asset URLs and base-prefixed links always match the shipped page, regardless of whether [`minifyHtml`](../api/define-config.mdx) is on.
+
+With `minifyHtml` off, `fragmentHtml` is an exact byte substring of the page zfb writes to `dist/` — copy the bytes out of the artifact and they are indistinguishable from copying the same span out of the shipped HTML file. With `minifyHtml` on, the fragment still reflects the pre-minification markup (capture happens before the minifier runs), so it will not itself be minified even though the shipped page around it is.
+
+## headings
+
+`headings` is the same compiler-allocated list the page's compiled module exports as `headings`, using the same slug allocator that assigns the rendered `<hN id="…">` attributes — so under normal authoring, a heading's `slug` here matches the `id` on the corresponding element in `fragmentHtml`.
+
+<Caution title="Author component overrides can make this list diverge from the DOM">
+
+If a page overrides how headings render — passing a custom `h2` (or similar) via [MDX Components](./mdx-components.mdx) — the *rendered* DOM can end up different from what the compiler allocated. `headings` always reflects the compiler's allocation, not a re-scan of the rendered fragment, so a sufficiently unusual heading override can make the two disagree.
+
+</Caution>
+
+## sourceDigest
+
+`sourceDigest` is `"sha256:"` followed by 64 lowercase hex characters, computed over the entry's raw on-disk source bytes **exactly as read** — frontmatter included, with no BOM stripping and no CRLF normalization.
+
+<Warning title="Not an ETag for the rendered fragment">
+
+`sourceDigest` identifies the *source file*, not the rendered output. A page that transcludes another file (a partial, a shared snippet) can have its `fragmentHtml` change on a rebuild — because the transcluded dependency changed — while `sourceDigest` stays exactly the same, since the entry's own source bytes didn't move. Don't use `sourceDigest` as a cache key for `fragmentHtml`; compare `fragmentHtml` itself, or the whole artifact, if staleness matters.
+
+</Warning>
+
+## Region rule
+
+A route's content is organized around **content regions** — the areas of a page's markup that come from a single rendered markdown/MDX entry. Whether a route gets an artifact depends entirely on how many top-level regions its rendered page contains:
+
+| Top-level regions on the page | Result |
+|---|---|
+| Exactly one | An artifact is written for the route. |
+| Zero | No artifact — most pages (layouts, listing shells with no markdown content of their own) simply aren't markdown-backed. |
+| Two or more siblings | No artifact, plus one build warning naming the route. A listing page that renders several entries inline (e.g. an index page embedding each post's `Content`) is the typical case. |
+| Nested (one region inside another) | The **outer** region is the route's region — its metadata becomes the artifact. Sentinels belonging to the inner region are stripped from both the page and the extracted fragment, same as any other region boundary. |
+
+## Which routes participate
+
+An artifact requires a *content region* — something rendered through the markdown/MDX content-bridge (`entry.Content`, see [Content Collections](./content-collections.mdx)) or through the equivalent shell zfb generates for a direct markdown page. Concretely:
+
+- **Content-collection entries** rendered via `entry.Content` — the normal `getCollection()` / `getEntry()` path described in [Content Collections](./content-collections.mdx) — participate, whatever page renders them.
+- **Direct `pages/*.md` files** (see [Markdown and HTML Pages](./md-html-pages.mdx)) participate: zfb wraps their compiled body in a generated HTML shell, and that shell is where the region markers are emitted.
+- **Direct `pages/*.mdx` files do not participate.** Unlike `.md`, a `pages/*.mdx` file's compiled module *is* the route's page module directly — there is no generated shell around it to instrument, so it never produces a content region and never gets an artifact, no matter how simple its content.
+- **Non-HTML routes** (JSON, XML, feeds, and anything else `zfb build` doesn't emit as an HTML page) never participate — there is no HTML page to extract a fragment from.
+- **`.html` passthrough pages** (verbatim `pages/*.html` sources) never participate, for the same reason `minifyHtml` skips them: they are not rendered through zfb's pipeline at all.
+
+## Artifact path
+
+An artifact's file path is derived from its route's HTML output path, swapping the `.html` extension for `.json` and rooting the result under `<outDir>/__zfb/render/`:
+
+```
+dist/blog/hello-world/index.html  →  dist/__zfb/render/blog/hello-world/index.json
+```
+
+## Reserved attribute namespace
+
+The extraction mechanism relies on a pair of `<template>` sentinels — `data-zfb-render-region="start"` / `data-zfb-render-region="end"`, both carrying a matching `data-zfb-region-id` — that zfb emits around a content region only when `emitRenderArtifacts` is on, and always strips back out of the page before it ships (whether or not that particular region produced an artifact).
+
+The `data-zfb-render-region` / `data-zfb-region-id` attribute pair is a **reserved namespace**: don't author HTML using these exact attributes together on a `<template>` element, since zfb's extraction pass would attempt to treat it as one of its own sentinels.
+
+## Determinism and versioning
+
+Given identical source input, the render artifact for a route is byte-identical across separate builds — the same guarantee `<outDir>/__zfb/routes.json` makes for the route manifest. A consumer diffing artifacts across builds should see changes only when the underlying content genuinely changed.
+
+Consumers should check `contractVersion` before relying on the shape. A future change to the fields above will bump it rather than changing the shape silently under version `1`.
