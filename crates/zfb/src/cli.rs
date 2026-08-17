@@ -191,6 +191,26 @@ pub struct BuildArgs {
         conflicts_with = "strict_content_bridge"
     )]
     no_strict_content_bridge: bool,
+
+    /// Write a JSON render artifact for every markdown/MDX-backed HTML
+    /// route whose page renders exactly one top-level content region. See
+    /// the config `emitRenderArtifacts` field for the full contract
+    /// (Render Artifact Export epic #2421).
+    #[arg(
+        long = "emit-render-artifacts",
+        action = ArgAction::SetTrue,
+        conflicts_with = "no_emit_render_artifacts"
+    )]
+    emit_render_artifacts: bool,
+
+    /// Do not write render artifacts for this build, even if
+    /// `emitRenderArtifacts` is enabled in `zfb.config.*`.
+    #[arg(
+        long = "no-emit-render-artifacts",
+        action = ArgAction::SetTrue,
+        conflicts_with = "emit_render_artifacts"
+    )]
+    no_emit_render_artifacts: bool,
 }
 
 impl BuildArgs {
@@ -241,6 +261,22 @@ impl BuildArgs {
             (true, true) => BuildStrictContentBridge::Disabled,
         }
     }
+
+    /// The user-facing emit-render-artifacts CLI state.
+    ///
+    /// Kept as a tri-state so command orchestration can layer
+    /// "explicit CLI > config `emitRenderArtifacts` > default false"
+    /// without treating an omitted flag as an explicit `false`.
+    pub fn emit_render_artifacts(&self) -> BuildEmitRenderArtifacts {
+        match (self.emit_render_artifacts, self.no_emit_render_artifacts) {
+            (true, false) => BuildEmitRenderArtifacts::Enabled,
+            (false, true) => BuildEmitRenderArtifacts::Disabled,
+            (false, false) => BuildEmitRenderArtifacts::Unspecified,
+            // clap rejects this via `conflicts_with`; keep the branch
+            // deterministic for direct struct construction in tests.
+            (true, true) => BuildEmitRenderArtifacts::Disabled,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,6 +321,23 @@ pub enum BuildStrictContentBridge {
 }
 
 impl BuildStrictContentBridge {
+    pub fn as_option(self) -> Option<bool> {
+        match self {
+            Self::Unspecified => None,
+            Self::Enabled => Some(true),
+            Self::Disabled => Some(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildEmitRenderArtifacts {
+    Unspecified,
+    Enabled,
+    Disabled,
+}
+
+impl BuildEmitRenderArtifacts {
     pub fn as_option(self) -> Option<bool> {
         match self {
             Self::Unspecified => None,
@@ -395,6 +448,13 @@ mod tests {
     fn build_strict_content_bridge(argv: &[&str]) -> BuildStrictContentBridge {
         match Cli::try_parse_from(argv).expect("parse").command {
             Command::Build(args) => args.strict_content_bridge(),
+            other => panic!("expected build subcommand, got {other:?}"),
+        }
+    }
+
+    fn build_emit_render_artifacts(argv: &[&str]) -> BuildEmitRenderArtifacts {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Build(args) => args.emit_render_artifacts(),
             other => panic!("expected build subcommand, got {other:?}"),
         }
     }
@@ -616,6 +676,60 @@ mod tests {
         assert!(
             help.contains("--no-strict-content-bridge"),
             "build help must document --no-strict-content-bridge:\n{help}"
+        );
+    }
+
+    #[test]
+    fn build_emit_render_artifacts_absent_is_unspecified() {
+        assert_eq!(
+            build_emit_render_artifacts(&["zfb", "build"]),
+            BuildEmitRenderArtifacts::Unspecified
+        );
+    }
+
+    #[test]
+    fn build_emit_render_artifacts_flag_enables() {
+        assert_eq!(
+            build_emit_render_artifacts(&["zfb", "build", "--emit-render-artifacts"]),
+            BuildEmitRenderArtifacts::Enabled
+        );
+    }
+
+    #[test]
+    fn build_no_emit_render_artifacts_flag_disables() {
+        assert_eq!(
+            build_emit_render_artifacts(&["zfb", "build", "--no-emit-render-artifacts"]),
+            BuildEmitRenderArtifacts::Disabled
+        );
+    }
+
+    #[test]
+    fn build_emit_render_artifacts_flags_conflict() {
+        let err = Cli::try_parse_from([
+            "zfb",
+            "build",
+            "--emit-render-artifacts",
+            "--no-emit-render-artifacts",
+        ])
+        .expect_err("conflicting emit-render-artifacts flags must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn build_help_documents_emit_render_artifacts_flags() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let build = cmd
+            .find_subcommand_mut("build")
+            .expect("build subcommand exists");
+        let help = build.render_long_help().to_string();
+        assert!(
+            help.contains("--emit-render-artifacts"),
+            "build help must document --emit-render-artifacts:\n{help}"
+        );
+        assert!(
+            help.contains("--no-emit-render-artifacts"),
+            "build help must document --no-emit-render-artifacts:\n{help}"
         );
     }
 

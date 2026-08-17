@@ -78,7 +78,10 @@ use zfb_router::Router;
 
 use zfb_render::paths::PathsCache;
 
-use crate::cli::{BuildArgs, BuildMinifyHtml, BuildStrictBrokenLinks, BuildStrictContentBridge};
+use crate::cli::{
+    BuildArgs, BuildEmitRenderArtifacts, BuildMinifyHtml, BuildStrictBrokenLinks,
+    BuildStrictContentBridge,
+};
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
@@ -151,6 +154,17 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     let strict_content_bridge =
         resolve_strict_content_bridge(args.strict_content_bridge(), &config);
     config.strict_content_bridge = strict_content_bridge;
+
+    // Epic #2421 — emit-render-artifacts override. Same write-back
+    // discipline as `strict_broken_links`/`strict_content_bridge` above:
+    // the same `config` binding is serialised verbatim into the
+    // preBuild/postBuild plugin JSON below, so a plugin reading the
+    // top-level field should see the CLI-resolved effective value. No
+    // consumer reads `config.emit_render_artifacts` yet — a sibling
+    // sub-issue adds the extraction pass and artifact writer.
+    let emit_render_artifacts =
+        resolve_emit_render_artifacts(args.emit_render_artifacts(), &config);
+    config.emit_render_artifacts = emit_render_artifacts;
 
     let selected_outdir = resolve_outdir_arg(args.outdir.clone(), &config.out_dir);
     let outdir = resolve_outdir(&project_root, &selected_outdir);
@@ -520,6 +534,27 @@ pub(crate) fn resolve_strict_content_bridge(
     config: &Config,
 ) -> bool {
     cli.as_option().unwrap_or(config.strict_content_bridge)
+}
+
+/// Resolve the effective emit-render-artifacts override (Render Artifact
+/// Export epic #2421).
+///
+/// Same tri-state precedence as [`resolve_minify_html`] /
+/// [`resolve_strict_broken_links`] / [`resolve_strict_content_bridge`]:
+/// explicit CLI (`--emit-render-artifacts` / `--no-emit-render-artifacts`)
+/// beats the config `emitRenderArtifacts` field, which beats the default
+/// (`false`). `Config::emit_render_artifacts` is already defaulted to
+/// `false` by serde, so this function returns the single boolean the
+/// caller writes back into the owned config for downstream stages to read.
+///
+/// Unlike [`resolve_strict_broken_links`], there is no paired
+/// `apply_*_override` function — no other config field needs force-enabling
+/// alongside this one.
+pub(crate) fn resolve_emit_render_artifacts(
+    cli: BuildEmitRenderArtifacts,
+    config: &Config,
+) -> bool {
+    cli.as_option().unwrap_or(config.emit_render_artifacts)
 }
 
 // ---------------------------------------------------------------------------
@@ -8100,6 +8135,62 @@ mod tests {
         };
         assert!(!resolve_strict_content_bridge(
             BuildStrictContentBridge::Disabled,
+            &cfg
+        ));
+    }
+
+    // --- resolve_emit_render_artifacts tri-state cases (epic #2421) ---
+
+    #[test]
+    fn resolve_emit_render_artifacts_defaults_false_when_cli_and_config_omit() {
+        let cfg = Config::default();
+        assert!(!resolve_emit_render_artifacts(
+            BuildEmitRenderArtifacts::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_emit_render_artifacts_uses_config_when_cli_omits_true() {
+        let cfg = Config {
+            emit_render_artifacts: true,
+            ..Config::default()
+        };
+        assert!(resolve_emit_render_artifacts(
+            BuildEmitRenderArtifacts::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_emit_render_artifacts_uses_config_when_cli_omits_false() {
+        let cfg = Config {
+            emit_render_artifacts: false,
+            ..Config::default()
+        };
+        assert!(!resolve_emit_render_artifacts(
+            BuildEmitRenderArtifacts::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_emit_render_artifacts_cli_enable_beats_config_false() {
+        let cfg = Config::default();
+        assert!(resolve_emit_render_artifacts(
+            BuildEmitRenderArtifacts::Enabled,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_emit_render_artifacts_cli_disable_beats_config_true() {
+        let cfg = Config {
+            emit_render_artifacts: true,
+            ..Config::default()
+        };
+        assert!(!resolve_emit_render_artifacts(
+            BuildEmitRenderArtifacts::Disabled,
             &cfg
         ));
     }
