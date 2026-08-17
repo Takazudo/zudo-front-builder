@@ -527,6 +527,26 @@ pub struct BundlerInput {
     /// Mirrors `zfb::config::Config::prefetch.disabled`. Default: `false`.
     pub prefetch_disabled: bool,
 
+    /// When `true`, the bundler arms the render-region sentinel markers
+    /// the render-artifact export slices on (epic #2421):
+    ///
+    /// - the synthetic `entry.mjs` gets
+    ///   `globalThis.__zfb.renderArtifacts = true`, which switches
+    ///   `buildContentComponent` in `@takazudo/zfb`'s `content.ts` into
+    ///   wrapping every bridge-resolved `<entry.Content>` render in the
+    ///   `<template data-zfb-render-region>` pair;
+    /// - the generated `.md`-page shell wraps its `<MdBody />` in the same
+    ///   pair, since a direct `pages/*.md` page never goes through the
+    ///   `Content` bridge (see [`render_md_page_shell`]).
+    ///
+    /// **This is a build-only switch, and the command layer — not this
+    /// crate — is what makes it one.** `crates/zfb/src/commands/bundler_input.rs`
+    /// sets it to `config.emit_render_artifacts && bundle_mode == Production`,
+    /// so `zfb dev` (which shares this same bundler call) can never arm it
+    /// however the project is configured. When `false` not a single byte
+    /// changes anywhere in the shadow tree. Default: `false`.
+    pub emit_render_artifacts: bool,
+
     /// Plugin-registered import aliases. Each `(from, to)` pair maps a
     /// bare specifier (e.g. `@/foo`) to an absolute path string (e.g.
     /// `/abs/src/foo.tsx`). Forwarded to esbuild as `--alias:<from>=<to>`
@@ -772,6 +792,7 @@ impl BundlerInput {
             resolve_markdown_links: None,
             site: None,
             prefetch_disabled: false,
+            emit_render_artifacts: false,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -2668,6 +2689,7 @@ pub fn bundle_with_session(
     let mat_ctx = MaterialiseCtx {
         pipeline_spec: effective_spec,
         copy_mode,
+        emit_render_artifacts: input.emit_render_artifacts,
         bundle_exclude: &bundle_exclude,
         project_root: &input.project_root,
         writer: &writer,
@@ -4385,6 +4407,7 @@ pub fn bundle_with_session(
             content_imports: entry_content_imports_for_write,
             site: input.site.as_deref(),
             prefetch_disabled: input.prefetch_disabled,
+            emit_render_artifacts: input.emit_render_artifacts,
             // Emitted independently of `content_imports` / `worker_only_routes`:
             // a project may define overrides with zero content entries (#616).
             mdx_components_import_spec: mdx_components_import_spec.as_deref(),
@@ -7170,6 +7193,12 @@ struct MaterialiseCtx<'a, 's> {
     /// than symlinks (required when esbuild runs without
     /// `--preserve-symlinks`).
     copy_mode: bool,
+    /// [`BundlerInput::emit_render_artifacts`], carried into the walk so
+    /// the `.md`-page branch can wrap its shell's `<MdBody />` in the
+    /// render-region sentinel pair (epic #2421). No other materialise
+    /// branch reads it — collection `.md`/`.mdx` entries reach the
+    /// markers through the `<entry.Content>` bridge instead.
+    emit_render_artifacts: bool,
     /// Shared across every `materialise_shadow` call; `materialise_collection`
     /// does not use it (collections have no `bundle.exclude` filter).
     bundle_exclude: &'a BundleExcludeMatcher,
@@ -7585,7 +7614,20 @@ fn materialise_shadow(
             // Prefix the body import with "./" so esbuild resolves it as a
             // relative path (bare names are interpreted as package specifiers).
             let body_import = format!("./{body_filename}");
-            let shell = render_md_page_shell(&frontmatter_value, &slug_fallback, &body_import);
+            // Epic #2421: a direct `.md` page bypasses the `<entry.Content>`
+            // bridge, so its sentinels are emitted into the shell instead.
+            // The region id is this compile's own specifier — the same key
+            // `zfb_content::render_region_metadata` resolves the artifact's
+            // `{ headings, sourceDigest }` under for this file.
+            let render_region_id = ctx
+                .emit_render_artifacts
+                .then_some(compiled.specifier.as_str());
+            let shell = render_md_page_shell(
+                &frontmatter_value,
+                &slug_fallback,
+                &body_import,
+                render_region_id,
+            );
             ctx.writer
                 .write_if_changed(&to, shell.as_bytes())
                 .with_context(|| format!("write md page shell to {}", to.display()))?;
@@ -10747,6 +10789,10 @@ struct EntryModuleInputs<'a> {
     content_imports: &'a [ContentImport],
     site: Option<&'a str>,
     prefetch_disabled: bool,
+    /// Arms the render-region sentinel pair (epic #2421). See
+    /// [`BundlerInput::emit_render_artifacts`] for why this can only be
+    /// `true` under `zfb build`.
+    emit_render_artifacts: bool,
     /// Shadow-relative specifier of the materialised `mdx-components.tsx`
     /// (sub-issue #616). When `Some`, emit a default `import` of the file
     /// plus the `globalThis.__zfb.mdxComponents` installer. `None` => omit.
@@ -10810,6 +10856,7 @@ fn write_entry_module(
     let content_imports = inputs.content_imports;
     let site = inputs.site;
     let prefetch_disabled = inputs.prefetch_disabled;
+    let emit_render_artifacts = inputs.emit_render_artifacts;
     let mdx_components_import_spec = inputs.mdx_components_import_spec;
     let base_prefix = inputs.base_prefix;
     use std::fmt::Write as _;
@@ -11022,6 +11069,28 @@ fn write_entry_module(
     }
 
     // ---------------------------------------------------------------
+    // Render-region marker switch (epic #2421).
+    //
+    // Flips `buildContentComponent` in `@takazudo/zfb`'s `content.ts`
+    // into wrapping every bridge-resolved `<entry.Content>` render in the
+    // inert `<template data-zfb-render-region>` sentinel pair the build's
+    // extraction pass slices on. The reader is a lazy per-render lookup,
+    // so this only has to run before the first dispatch — we emit it
+    // beside the other setters, ahead of `createPageRouter`.
+    //
+    // Reaching this branch already means `zfb build` with
+    // `emitRenderArtifacts` resolved on: the command layer ANDs the
+    // config flag with `BundleMode::Production` before it ever gets here
+    // (see `BundlerInput::emit_render_artifacts`), so a dev bundle never
+    // carries these bytes. When off, zero bytes are emitted and the
+    // entry module is byte-for-byte the pre-#2421 one.
+    // ---------------------------------------------------------------
+    if emit_render_artifacts {
+        src.push_str("globalThis.__zfb = globalThis.__zfb ?? {};\n");
+        src.push_str("globalThis.__zfb.renderArtifacts = true;\n\n");
+    }
+
+    // ---------------------------------------------------------------
     // Client-script base prefix (#978).
     //
     // Emitted IFF at least one `*.client.*` entry was discovered
@@ -11184,10 +11253,27 @@ fn route_path_under_pages(source_path: &Path) -> String {
 /// The title and lang values are assigned to `const` variables and
 /// referenced via JSX expressions so any reserved characters (`&`, `"`,
 /// `<`) in frontmatter values cannot break the generated JSX syntax.
+///
+/// `render_region_id` is the render-artifact instrumentation seam (epic
+/// #2421). A direct `pages/*.md` page renders its compiled body module
+/// straight, never through the `<entry.Content>` bridge, so the
+/// `content.ts`-side marker wrap can never see it — the sentinels have to
+/// be emitted here instead. `Some(id)` (only under `zfb build` with
+/// `emitRenderArtifacts` on) wraps `<MdBody />` in the same
+/// `<template data-zfb-render-region>` pair, carrying the module
+/// specifier `compile_mdx_to_jsx_module_cached` allocated for this file —
+/// which is exactly the region id `zfb_content::render_region_metadata`
+/// resolves `{ headings, sourceDigest }` under. `None` emits the
+/// pre-#2421 shell byte-for-byte.
+///
+/// The markers sit on their own JSX lines: JSX drops whitespace-only text
+/// containing a newline, so the three children reach the renderer with no
+/// text node between them — which the exact-byte extraction pass requires.
 pub(crate) fn render_md_page_shell(
     frontmatter: &serde_json::Value,
     slug_fallback: &str,
     body_import: &str,
+    render_region_id: Option<&str>,
 ) -> String {
     // Extract title: string from frontmatter, else slug fallback.
     let title = frontmatter
@@ -11200,12 +11286,32 @@ pub(crate) fn render_md_page_shell(
         .and_then(|v| v.as_str())
         .unwrap_or("en");
 
+    // Region id goes through a `const` + JSX expression for the same
+    // reason title/lang do: a specifier carrying `"` or `&` must not be
+    // able to break out of the generated attribute.
+    let region_const = match render_region_id {
+        Some(id) => format!("const __zfbRegionId = {};\n", json_str(id)),
+        None => String::new(),
+    };
+    let (region_start, region_end) = match render_region_id {
+        Some(_) => (
+            "\u{0020}       <template data-zfb-render-region=\"start\" \
+             data-zfb-region-id={__zfbRegionId} />\n"
+                .to_string(),
+            "\u{0020}       <template data-zfb-render-region=\"end\" \
+             data-zfb-region-id={__zfbRegionId} />\n"
+                .to_string(),
+        ),
+        None => (String::new(), String::new()),
+    };
+
     format!(
         "// AUTO-GENERATED by zfb_build::bundler (md page shell). Do not edit.\n\
          import MdBody from {import_spec};\n\
          \n\
          const __title = {title_json};\n\
          const __lang = {lang_json};\n\
+         {region_const}\
          \n\
          export default function MdPage() {{\n\
          \u{0020} return (\n\
@@ -11215,7 +11321,9 @@ pub(crate) fn render_md_page_shell(
          \u{0020}       <title>{{__title}}</title>\n\
          \u{0020}     </head>\n\
          \u{0020}     <body>\n\
+         {region_start}\
          \u{0020}       <MdBody />\n\
+         {region_end}\
          \u{0020}     </body>\n\
          \u{0020}   </html>\n\
          \u{0020} );\n\
@@ -13414,6 +13522,7 @@ mod tests {
             resolve_markdown_links: None,
             site: None,
             prefetch_disabled: false,
+            emit_render_artifacts: false,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -13539,6 +13648,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -13626,6 +13736,7 @@ mod tests {
                 content_imports: &imports,
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -13703,6 +13814,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -13739,6 +13851,7 @@ mod tests {
                 content_imports: &[],
                 site: Some("https://example.com"),
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -13787,6 +13900,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -13818,6 +13932,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: true,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -13866,6 +13981,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -13876,6 +13992,103 @@ mod tests {
         assert!(
             !body.contains("globalThis.__zfb.prefetchDisabled"),
             "prefetch_disabled=false → no prefetch setter; got:\n{body}"
+        );
+    }
+
+    // --- emit_render_artifacts flag tests (epic #2421) ------------------------
+
+    #[test]
+    fn entry_module_emits_render_artifacts_switch_when_true() {
+        // The switch `buildContentComponent` (packages/zfb/src/content.ts)
+        // reads to decide whether to wrap a rendered content region in the
+        // `<template data-zfb-render-region>` sentinel pair.
+        let tmp = tempfile::tempdir().unwrap();
+        let shadow = tmp.path();
+        write_entry_module(
+            shadow,
+            &[],
+            &EntryModuleInputs {
+                render_to_string_module: "preact-render-to-string",
+                content_snapshot_json: None,
+                content_imports: &[],
+                site: None,
+                prefetch_disabled: false,
+                emit_render_artifacts: true,
+                mdx_components_import_spec: None,
+                base_prefix: None,
+            },
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(shadow.join(SHADOW_ENTRY_FILENAME)).unwrap();
+
+        assert!(
+            body.contains("globalThis.__zfb = globalThis.__zfb ?? {};"),
+            "render-artifacts branch must emit the namespacing guard; got:\n{body}"
+        );
+        assert!(
+            body.contains("globalThis.__zfb.renderArtifacts = true;"),
+            "render-artifacts setter must be present; got:\n{body}"
+        );
+
+        // Same ordering discipline as the other setters: install before
+        // `createPageRouter` so the very first SSR dispatch already sees it.
+        let flag_idx = body
+            .find("globalThis.__zfb.renderArtifacts = ")
+            .expect("render-artifacts setter present");
+        let router_idx = body
+            .find("createPageRouter({")
+            .expect("createPageRouter present");
+        assert!(
+            flag_idx < router_idx,
+            "render-artifacts setter must precede createPageRouter; flag at {flag_idx}, router at {router_idx}"
+        );
+    }
+
+    #[test]
+    fn entry_module_is_byte_identical_when_render_artifacts_is_false() {
+        // The hard invariant the epic pins: flag-off output is
+        // byte-for-byte the pre-#2421 entry module. Asserted as a real
+        // byte comparison against an otherwise-identical emission rather
+        // than a substring absence, so a stray blank line would fail too.
+        let tmp = tempfile::tempdir().unwrap();
+        let off = tmp.path().join("off");
+        let on = tmp.path().join("on");
+        fs::create_dir_all(&off).unwrap();
+        fs::create_dir_all(&on).unwrap();
+        let inputs = |emit_render_artifacts: bool| EntryModuleInputs {
+            render_to_string_module: "preact-render-to-string",
+            content_snapshot_json: None,
+            content_imports: &[],
+            site: Some("https://example.com"),
+            prefetch_disabled: true,
+            emit_render_artifacts,
+            mdx_components_import_spec: None,
+            base_prefix: Some(""),
+        };
+        write_entry_module(&off, &[], &inputs(false)).unwrap();
+        write_entry_module(&on, &[], &inputs(true)).unwrap();
+
+        let off_body = fs::read(off.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        let on_body = fs::read(on.join(SHADOW_ENTRY_FILENAME)).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&off_body).contains("renderArtifacts"),
+            "emit_render_artifacts=false → no setter; got:\n{}",
+            String::from_utf8_lossy(&off_body)
+        );
+        // The on/off pair differs by exactly the two setter lines, so the
+        // off body is a strict prefix-preserving subset: removing the two
+        // emitted lines from `on` recovers `off` byte-for-byte.
+        let on_without_setter = String::from_utf8(on_body)
+            .unwrap()
+            .replace(
+                "globalThis.__zfb = globalThis.__zfb ?? {};\nglobalThis.__zfb.renderArtifacts = true;\n\n",
+                "",
+            );
+        assert_eq!(
+            on_without_setter,
+            String::from_utf8(off_body).unwrap(),
+            "the only difference between flag-on and flag-off must be the setter lines"
         );
     }
 
@@ -13897,6 +14110,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: Some("/foo"),
             },
@@ -13944,6 +14158,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: Some(""),
             },
@@ -13974,6 +14189,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -14087,6 +14303,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
             },
@@ -14142,6 +14359,7 @@ mod tests {
                 content_imports: &[], // zero content imports
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
             },
@@ -14177,6 +14395,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -14219,6 +14438,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: Some("./mdx-components.tsx"),
                 base_prefix: None,
             },
@@ -14482,6 +14702,7 @@ mod tests {
                 content_imports: &imports,
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -14691,6 +14912,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: spec,
             copy_mode: false,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
@@ -14760,6 +14982,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: spec,
             copy_mode: false,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: &project_root,
             writer: &writer,
@@ -16480,6 +16703,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
@@ -16531,6 +16755,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
@@ -16589,6 +16814,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
@@ -16645,6 +16871,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
@@ -16788,6 +17015,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
@@ -16842,6 +17070,7 @@ mod tests {
         let ctx = MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: true,
+            emit_render_artifacts: false,
             bundle_exclude: &exclude,
             project_root: root,
             writer: &writer,
@@ -16991,6 +17220,7 @@ mod tests {
             let ctx = MaterialiseCtx {
                 pipeline_spec: zfb_content::PipelineSpec::default(),
                 copy_mode: true,
+                emit_render_artifacts: false,
                 bundle_exclude: &exclude,
                 project_root: root,
                 writer: &writer,
@@ -17955,6 +18185,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -17983,6 +18214,7 @@ mod tests {
                 content_imports: &[],
                 site: None,
                 prefetch_disabled: false,
+                emit_render_artifacts: false,
                 mdx_components_import_spec: None,
                 base_prefix: None,
             },
@@ -18957,6 +19189,7 @@ mod tests {
             resolve_markdown_links: None,
             site: None,
             prefetch_disabled: false,
+            emit_render_artifacts: false,
             plugin_alias_entries: Vec::new(),
             plugin_virtual_modules: Vec::new(),
             worker_only_routes: None,
@@ -19837,7 +20070,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_uses_title_from_frontmatter() {
         let fm = serde_json::json!({"title": "About Us"});
-        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx");
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx", None);
         // Title const must be the frontmatter value, not the slug.
         assert!(
             shell.contains("const __title = \"About Us\";"),
@@ -19870,7 +20103,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_falls_back_to_slug_when_no_title() {
         let fm = serde_json::json!({});
-        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx");
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx", None);
         assert!(
             shell.contains("const __title = \"about\";"),
             "expected slug fallback; got:\n{shell}"
@@ -19881,7 +20114,7 @@ mod tests {
     fn render_md_page_shell_falls_back_to_index_for_root() {
         // pages/index.md → slug_fallback is "index"
         let fm = serde_json::json!({});
-        let shell = render_md_page_shell(&fm, "index", "./_zfb_md_body_index.jsx");
+        let shell = render_md_page_shell(&fm, "index", "./_zfb_md_body_index.jsx", None);
         assert!(
             shell.contains("const __title = \"index\";"),
             "root page slug fallback should be \"index\"; got:\n{shell}"
@@ -19891,7 +20124,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_uses_lang_from_frontmatter() {
         let fm = serde_json::json!({"title": "Page", "lang": "ja"});
-        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx");
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx", None);
         assert!(
             shell.contains("const __lang = \"ja\";"),
             "expected lang from frontmatter; got:\n{shell}"
@@ -19901,7 +20134,7 @@ mod tests {
     #[test]
     fn render_md_page_shell_defaults_lang_to_en() {
         let fm = serde_json::json!({"title": "Page"});
-        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx");
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx", None);
         assert!(
             shell.contains("const __lang = \"en\";"),
             "expected default lang \"en\"; got:\n{shell}"
@@ -19912,7 +20145,7 @@ mod tests {
     fn render_md_page_shell_ignores_non_string_title() {
         // Non-string title falls back to slug, not to garbage.
         let fm = serde_json::json!({"title": 42});
-        let shell = render_md_page_shell(&fm, "slug-fallback", "./_zfb_md_body_x.jsx");
+        let shell = render_md_page_shell(&fm, "slug-fallback", "./_zfb_md_body_x.jsx", None);
         assert!(
             shell.contains("const __title = \"slug-fallback\";"),
             "non-string title must fall back to slug; got:\n{shell}"
@@ -19927,7 +20160,7 @@ mod tests {
         // escaping at render time. The test verifies the const assignment
         // shape (not raw HTML injection).
         let fm = serde_json::json!({"title": "A & <B>"});
-        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx");
+        let shell = render_md_page_shell(&fm, "page", "./_zfb_md_body_page.jsx", None);
         // The title must be assigned to a const (JSON string literal form).
         // json_str produces a valid JSON string; the const is referenced
         // via {__title} in JSX so the renderer handles escaping at render time.
@@ -19941,6 +20174,74 @@ mod tests {
         assert!(
             shell.contains("<title>{__title}</title>"),
             "title must be referenced via JSX expression; got:\n{shell}"
+        );
+    }
+
+    // --- md page shell render-region markers (epic #2421) --------------------
+
+    #[test]
+    fn render_md_page_shell_wraps_body_in_the_sentinel_pair_when_a_region_id_is_given() {
+        // A direct `pages/*.md` page never reaches the `<entry.Content>`
+        // bridge, so its sentinels come from this shell.
+        let fm = serde_json::json!({"title": "About"});
+        let shell = render_md_page_shell(
+            &fm,
+            "about",
+            "./_zfb_md_body_about.jsx",
+            Some("mdx://pages/about#deadbeef"),
+        );
+        assert!(
+            shell.contains("const __zfbRegionId = \"mdx://pages/about#deadbeef\";"),
+            "region id must be a JSON string const; got:\n{shell}"
+        );
+        // The three children must be adjacent lines with nothing but
+        // JSX-stripped indentation between them: JSX drops whitespace-only
+        // text containing a newline, so the rendered region carries no text
+        // node the extraction pass would capture.
+        let body = shell
+            .split_once("<body>\n")
+            .and_then(|(_, rest)| rest.split_once("      </body>"))
+            .map(|(inner, _)| inner.to_string())
+            .expect("shell has a <body> block");
+        assert_eq!(
+            body,
+            "        <template data-zfb-render-region=\"start\" \
+             data-zfb-region-id={__zfbRegionId} />\n\
+             \u{0020}       <MdBody />\n\
+             \u{0020}       <template data-zfb-render-region=\"end\" \
+             data-zfb-region-id={__zfbRegionId} />\n",
+            "unexpected <body> contents:\n{shell}"
+        );
+    }
+
+    #[test]
+    fn render_md_page_shell_is_byte_identical_to_the_pre_marker_shell_without_a_region_id() {
+        // Flag-off parity: the emitted shell must be exactly what the
+        // pre-#2421 generator produced, so a build with the feature off
+        // cannot differ by a byte.
+        let fm = serde_json::json!({"title": "About Us", "lang": "ja"});
+        let shell = render_md_page_shell(&fm, "about", "./_zfb_md_body_about.jsx", None);
+        assert_eq!(
+            shell,
+            "// AUTO-GENERATED by zfb_build::bundler (md page shell). Do not edit.\n\
+             import MdBody from \"./_zfb_md_body_about.jsx\";\n\
+             \n\
+             const __title = \"About Us\";\n\
+             const __lang = \"ja\";\n\
+             \n\
+             export default function MdPage() {\n\
+             \u{0020} return (\n\
+             \u{0020}   <html lang={__lang}>\n\
+             \u{0020}     <head>\n\
+             \u{0020}       <meta charSet=\"utf-8\" />\n\
+             \u{0020}       <title>{__title}</title>\n\
+             \u{0020}     </head>\n\
+             \u{0020}     <body>\n\
+             \u{0020}       <MdBody />\n\
+             \u{0020}     </body>\n\
+             \u{0020}   </html>\n\
+             \u{0020} );\n\
+             }\n",
         );
     }
 
@@ -21521,6 +21822,7 @@ mod tests {
             let ctx = MaterialiseCtx {
                 pipeline_spec: zfb_content::PipelineSpec::default(),
                 copy_mode: false,
+                emit_render_artifacts: false,
                 bundle_exclude: &exclude,
                 project_root: &project,
                 writer: &writer,
@@ -21553,6 +21855,7 @@ mod tests {
             let ctx = MaterialiseCtx {
                 pipeline_spec: zfb_content::PipelineSpec::default(),
                 copy_mode: false,
+                emit_render_artifacts: false,
                 bundle_exclude: &exclude,
                 project_root: &project,
                 writer: &writer,
@@ -22084,6 +22387,7 @@ mod tests {
         MaterialiseCtx {
             pipeline_spec: zfb_content::PipelineSpec::default(),
             copy_mode: false,
+            emit_render_artifacts: false,
             bundle_exclude: exclude,
             project_root,
             writer: leaked_passthrough_writer(),
