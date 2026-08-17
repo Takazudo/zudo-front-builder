@@ -37,9 +37,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::collection::{
-    walk_collection_with_cache_and_filter, CollectionError, CollectionFilter, Entry,
+    walk_collection_with_cache_and_filter, CollectionError, CollectionFilter, Entry, EntryKind,
 };
 use crate::pipeline_spec::PipelineSpec;
+use crate::render_metadata::{region_id_addresses, RenderRegionMetadata};
 
 /// A single content entry, in the shape the JS bridge sees.
 ///
@@ -63,6 +64,20 @@ pub struct EntrySnapshot {
     /// Path relative to the collection root, normalized to use `/`
     /// separators so JSON output is stable across OSes.
     pub rel_path: String,
+    /// Render-artifact metadata for this entry's content region — the
+    /// `{ headings, source_digest }` payload the artifact writer joins
+    /// against, keyed by [`Self::module_specifier`] (issue #2423).
+    ///
+    /// **Opt-in and off by default.** Populated only when the caller
+    /// passes [`SnapshotOptions::render_metadata`], and only for markdown
+    /// entries (a `.tsx` entry is not a compiled markdown module and
+    /// never gets a render artifact). `skip_serializing_if` keeps the
+    /// serialized snapshot BYTE-IDENTICAL to the pre-#2423 shape while
+    /// the feature is off — the snapshot is embedded in the worker bundle
+    /// and hashed by the build cache, so no existing consumer may see new
+    /// bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_metadata: Option<RenderRegionMetadata>,
 }
 
 /// A point-in-time snapshot of every configured collection.
@@ -104,6 +119,39 @@ impl ContentSnapshot {
                 name: name.to_string(),
                 available: self.collections.keys().cloned().collect(),
             })
+    }
+
+    /// Resolve [`RenderRegionMetadata`] by region id — the metadata
+    /// channel the render-artifact writer joins against (issue #2423).
+    ///
+    /// `region_id` may carry the `#<hash8>` fragment or omit it; both
+    /// spellings are live in-tree (see
+    /// [`crate::render_metadata::region_id_addresses`]).
+    ///
+    /// Returns `None` when nothing matches, when the snapshot was built
+    /// without [`SnapshotOptions::render_metadata`], and — deliberately —
+    /// when a HASH-LESS `region_id` matches more than one entry. The
+    /// specifier's `<collection>` segment is the file's parent directory
+    /// name, not the configured collection name, so a nested entry and a
+    /// direct page can in principle collide once the hash is dropped;
+    /// resolving that arbitrarily would write one region's headings into
+    /// another region's artifact, so this fails closed instead.
+    #[must_use]
+    pub fn render_metadata_for(&self, region_id: &str) -> Option<&RenderRegionMetadata> {
+        let mut matched: Option<&EntrySnapshot> = None;
+        for entry in self.collections.values().flatten() {
+            if !region_id_addresses(&entry.module_specifier, region_id) {
+                continue;
+            }
+            // Ambiguity is counted over MATCHING ENTRIES, not over
+            // entries that happen to carry metadata: a second match means
+            // the id does not identify one region, whatever it resolved to.
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(entry);
+        }
+        matched.and_then(|e| e.render_metadata.as_ref())
     }
 }
 
@@ -170,6 +218,21 @@ impl CollectionConfig {
         self.id_strip_suffix = suffix;
         self
     }
+}
+
+/// Opt-in switches that change what a built [`ContentSnapshot`] carries.
+///
+/// [`Default`] is every switch OFF, which reproduces the pre-#2423
+/// snapshot BYTE-FOR-BYTE — that is the contract the whole struct exists
+/// to make explicit rather than implicit in global state. Every field
+/// here is expected to be resolved from one config flag by the command
+/// layer; nothing in this crate reads configuration on its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SnapshotOptions {
+    /// Populate [`EntrySnapshot::render_metadata`] for markdown entries
+    /// (`emitRenderArtifacts` in `zfb.config.ts`). Off means the field is
+    /// `None` everywhere and is skipped during serialization.
+    pub render_metadata: bool,
 }
 
 /// Errors produced by [`build_snapshot`].
@@ -305,6 +368,29 @@ pub fn build_snapshot_with_config(
     collections: &[CollectionConfig],
     pipeline_config: &PipelineSpec,
 ) -> Result<ContentSnapshot, BridgeError> {
+    build_snapshot_with_options(collections, pipeline_config, SnapshotOptions::default())
+}
+
+/// Build a snapshot like [`build_snapshot_with_config`], with the opt-in
+/// switches in `options` applied.
+///
+/// The only switch today is [`SnapshotOptions::render_metadata`], which
+/// attaches `{ headings, source_digest }` to every MARKDOWN entry (issue
+/// #2423). `.tsx` entries are skipped: they are not compiled markdown
+/// modules, have no headings, and never produce a render artifact.
+///
+/// With `options == SnapshotOptions::default()` this is byte-for-byte
+/// [`build_snapshot_with_config`] — the walk, the sort, the duplicate
+/// check, and the serialized bytes are all unchanged.
+///
+/// # Errors
+///
+/// Same as [`build_snapshot_with_config`].
+pub fn build_snapshot_with_options(
+    collections: &[CollectionConfig],
+    pipeline_config: &PipelineSpec,
+    options: SnapshotOptions,
+) -> Result<ContentSnapshot, BridgeError> {
     let mut out: BTreeMap<String, Vec<EntrySnapshot>> = BTreeMap::new();
 
     for cfg in collections {
@@ -372,6 +458,8 @@ pub fn build_snapshot_with_config(
                 body: e.body,
                 module_specifier: e.module_specifier,
                 rel_path: rel_path_to_string(&e.rel_path),
+                render_metadata: (options.render_metadata && e.kind == EntryKind::Markdown)
+                    .then(|| RenderRegionMetadata::new(e.headings, e.source_digest)),
             })
             .collect();
 
@@ -1138,6 +1226,225 @@ mod tests {
              snapshot={snap}, bundler={bridge}",
             snap = snap_spec.content_hash,
             bridge = bridge_spec.content_hash,
+        );
+    }
+
+    // ── render-artifact metadata channel (#2423) ────────────────────────
+
+    /// The CRITICAL flag-off invariant: with the feature off, the
+    /// serialized snapshot is byte-identical to the pre-#2423 shape.
+    ///
+    /// Asserted against the entry's exact serialized bytes rather than
+    /// just "the new key is absent": key set AND order both have to hold,
+    /// which is what `skip_serializing_if` buys and what a later `Option`
+    /// field added without it would break.
+    #[test]
+    fn flag_off_snapshot_serialization_carries_no_new_bytes() {
+        let tmp = TmpDir::new("render-meta-off");
+        tmp.write("docs/intro.md", "---\ntitle: \"Intro\"\n---\n\n## Alpha\n");
+        let cfgs = [CollectionConfig::new("docs", tmp.path.join("docs"))];
+
+        let default_call = build_snapshot(&cfgs).expect("default snapshot");
+        let explicit_off = build_snapshot_with_options(
+            &cfgs,
+            &PipelineSpec::default(),
+            SnapshotOptions::default(),
+        )
+        .expect("explicit-off snapshot");
+
+        let json = serde_json::to_string(&default_call).expect("serialize");
+        assert!(
+            !json.contains("render_metadata"),
+            "flag-off serialization must not mention the opt-in field: {json}"
+        );
+        // Exact bytes for one entry — key set AND order, not just
+        // "render_metadata is absent". Only the JSX hash varies, so it is
+        // interpolated from the entry itself.
+        let entry = &default_call.collections["docs"][0];
+        let expected = format!(
+            concat!(
+                r#"{{"slug":"intro","frontmatter":{{"title":"Intro"}},"#,
+                r#""body":"\n## Alpha\n","module_specifier":{spec},"rel_path":"intro.md"}}"#
+            ),
+            spec = serde_json::to_string(&entry.module_specifier).expect("specifier serializes"),
+        );
+        assert_eq!(
+            serde_json::to_string(entry).expect("entry serializes"),
+            expected,
+            "flag-off entry bytes drifted from the pre-#2423 contract",
+        );
+
+        assert_eq!(
+            hash_canonical(&default_call),
+            hash_canonical(&explicit_off),
+            "the zero-arg entry point and an explicitly-off options struct \
+             must produce identical bytes",
+        );
+        assert!(
+            default_call.collections["docs"][0]
+                .render_metadata
+                .is_none(),
+            "flag off must leave the field unpopulated, not merely unserialized",
+        );
+    }
+
+    /// Flag on: every markdown entry carries `{ headings, source_digest }`,
+    /// resolvable by region id in both specifier spellings.
+    #[test]
+    fn flag_on_attaches_headings_and_raw_source_digest_per_markdown_entry() {
+        let tmp = TmpDir::new("render-meta-on");
+        // CRLF terminators + frontmatter: the digest must cover both.
+        let raw = "---\r\ntitle: \"Intro\"\r\n---\r\n\r\n## Alpha\r\n\r\n### Beta\r\n";
+        tmp.write("docs/intro.md", raw);
+        tmp.write("docs/page.tsx", &tsx("Page"));
+
+        let snap = build_snapshot_with_options(
+            &[CollectionConfig::new("docs", tmp.path.join("docs"))],
+            &PipelineSpec::default(),
+            SnapshotOptions {
+                render_metadata: true,
+            },
+        )
+        .expect("snapshot");
+
+        let docs = &snap.collections["docs"];
+        let intro = docs.iter().find(|e| e.slug == "intro").expect("intro");
+        let page = docs.iter().find(|e| e.slug == "page").expect("page");
+
+        let meta = intro.render_metadata.as_ref().expect("markdown metadata");
+        assert_eq!(
+            meta.source_digest,
+            crate::render_metadata::source_digest(raw.as_bytes()),
+            "digest must cover the raw bytes, frontmatter and CRLF included",
+        );
+        assert_ne!(
+            meta.source_digest,
+            crate::render_metadata::source_digest(intro.body.as_bytes()),
+            "digesting the stripped body would be a different value — proof \
+             the digest is not taken at the compile seam",
+        );
+        assert_eq!(
+            meta.headings
+                .iter()
+                .map(|h| (h.depth, h.slug.as_str(), h.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "alpha", "Alpha"), (3, "beta", "Beta")],
+        );
+        assert!(
+            page.render_metadata.is_none(),
+            "a .tsx entry is not a compiled markdown module — no region, no metadata",
+        );
+
+        // Resolvable by region id, hash-bearing and hash-less alike.
+        assert_eq!(
+            snap.render_metadata_for(&intro.module_specifier),
+            Some(meta)
+        );
+        let no_hash = intro
+            .module_specifier
+            .split_once('#')
+            .expect("specifier carries a hash")
+            .0;
+        assert_eq!(snap.render_metadata_for(no_hash), Some(meta));
+        assert!(snap.render_metadata_for("mdx://docs/missing").is_none());
+    }
+
+    /// A hash-less region id that addresses two different entries must
+    /// resolve to NEITHER — writing one region's headings into another
+    /// region's artifact is worse than emitting no artifact.
+    ///
+    /// The collision is reachable because a specifier's `<collection>`
+    /// segment is the file's PARENT DIRECTORY name, not the configured
+    /// collection name: `guides/intro.md` under collection `docs` and
+    /// `guides/intro.md` under collection `notes` both mint
+    /// `mdx://guides/intro`.
+    #[test]
+    fn ambiguous_hashless_region_id_fails_closed() {
+        let tmp = TmpDir::new("render-meta-ambiguous");
+        // Different bodies → different hashes, so the FULL specifiers stay
+        // distinct and only the hash-less form collides.
+        tmp.write("docs/guides/intro.md", &md("One"));
+        tmp.write("notes/guides/intro.md", &md("Two"));
+
+        let snap = build_snapshot_with_options(
+            &[
+                CollectionConfig::new("docs", tmp.path.join("docs")),
+                CollectionConfig::new("notes", tmp.path.join("notes")),
+            ],
+            &PipelineSpec::default(),
+            SnapshotOptions {
+                render_metadata: true,
+            },
+        )
+        .expect("snapshot");
+
+        let docs_spec = snap.collections["docs"][0].module_specifier.clone();
+        let notes_spec = snap.collections["notes"][0].module_specifier.clone();
+        assert_ne!(docs_spec, notes_spec, "full specifiers must stay distinct");
+        assert_eq!(
+            docs_spec.split_once('#').unwrap().0,
+            notes_spec.split_once('#').unwrap().0,
+            "the fixture must actually collide once the hash is dropped",
+        );
+
+        assert!(
+            snap.render_metadata_for("mdx://guides/intro").is_none(),
+            "an ambiguous hash-less id must fail closed",
+        );
+        // The hash-bearing spellings still resolve, each to its own entry.
+        assert!(snap.render_metadata_for(&docs_spec).is_some());
+        assert!(snap.render_metadata_for(&notes_spec).is_some());
+        assert_ne!(
+            snap.render_metadata_for(&docs_spec),
+            snap.render_metadata_for(&notes_spec),
+        );
+    }
+
+    /// The channel must survive an MDX compile-cache hit. Both walks here
+    /// share `MdxModuleCache::process_global()` (what `build_snapshot`
+    /// uses), so the second one is served from cache for every unchanged
+    /// entry — and must still produce identical metadata.
+    #[test]
+    fn render_metadata_survives_a_cache_hit_rewalk() {
+        let tmp = TmpDir::new("render-meta-cache-hit");
+        tmp.write(
+            "docs/intro.md",
+            "---\ntitle: \"Intro\"\n---\n\n## Alpha\n\n## Alpha\n",
+        );
+        let cfgs = [CollectionConfig::new("docs", tmp.path.join("docs"))];
+        let options = SnapshotOptions {
+            render_metadata: true,
+        };
+
+        let first = build_snapshot_with_options(&cfgs, &PipelineSpec::default(), options)
+            .expect("first walk");
+        let second = build_snapshot_with_options(&cfgs, &PipelineSpec::default(), options)
+            .expect("second walk (compile cache warm)");
+
+        let first_meta = first.collections["docs"][0]
+            .render_metadata
+            .as_ref()
+            .expect("first metadata");
+        let second_meta = second.collections["docs"][0]
+            .render_metadata
+            .as_ref()
+            .expect("second metadata — the cache-hit walk must still resolve");
+        assert_eq!(first_meta, second_meta);
+        // Duplicate heading text: the `-1` dedup suffix proves the slugs
+        // come from the compiler's SlugAllocator rather than a naive
+        // re-slugify of the text on the consuming side.
+        assert_eq!(
+            second_meta
+                .headings
+                .iter()
+                .map(|h| h.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "alpha-1"],
+        );
+        assert_eq!(
+            hash_canonical(&first),
+            hash_canonical(&second),
+            "flag-on snapshots must stay deterministic across walks too",
         );
     }
 

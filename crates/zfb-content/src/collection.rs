@@ -17,7 +17,9 @@ use sha2::{Digest, Sha256};
 use zfb_types::path_to_posix_string;
 
 use crate::frontmatter::{self, FrontmatterError, UnifiedFrontmatter};
-use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
+use crate::mdx_jsx_emit::{
+    compile_mdx_to_jsx_module_cached, CompiledMdx, HeadingEntry, MdxModuleCache,
+};
 use crate::pipeline::{Pipeline, PipelineError};
 use crate::schema::{json_schema_to_ts, ts_safe_key};
 
@@ -87,6 +89,18 @@ pub struct Entry<T> {
     /// `None` for `Markdown` entries; populated from the TSX export
     /// when present for `Tsx` entries.
     pub content_type: Option<String>,
+    /// `"sha256:<64-hex>"` over this file's raw source bytes exactly as
+    /// read — frontmatter INCLUDED, no BOM strip, no CRLF normalisation.
+    ///
+    /// Computed here, at read time, because it cannot be recovered later:
+    /// the MDX compile seam only ever sees the frontmatter-stripped body.
+    /// See [`crate::render_metadata`] for the full contract.
+    pub source_digest: String,
+    /// Compiler-allocated headings in document order (empty for `Tsx`
+    /// entries, which have no markdown body). Carried from
+    /// [`crate::mdx_jsx_emit::CompiledMdx::headings`], so a compile-cache
+    /// hit populates this exactly as a fresh compile would.
+    pub headings: Vec<HeadingEntry>,
 }
 
 impl<T> Entry<T> {
@@ -872,8 +886,14 @@ where
     let slug = maybe_strip_slug_suffix(&slug, strip).to_string();
     let slug_seg = maybe_strip_slug_suffix(&slug_seg, strip).to_string();
 
+    // Digest the bytes we just read, before any stripping. `read_to_string`
+    // only validates UTF-8 — it strips no BOM and rewrites no line endings —
+    // so `raw.as_bytes()` IS the on-disk byte sequence, which is what the
+    // render-artifact contract pins.
+    let source_digest = crate::render_metadata::source_digest(raw.as_bytes());
+
     let kind = entry_kind_from_path(path);
-    let (body, compiled_jsx_source, module_specifier) = match kind {
+    let (body, compiled_jsx_source, module_specifier, headings) = match kind {
         EntryKind::Markdown => {
             let md_body = body.unwrap_or_default();
             // Compile body to JSX (same path for `.md` and `.mdx` —
@@ -899,7 +919,7 @@ where
                 "mdx://{collection_seg}/{slug_seg}#{hash}",
                 hash = compiled.content_hash,
             );
-            (md_body, compiled.jsx_source, specifier)
+            (md_body, compiled.jsx_source, specifier, compiled.headings)
         }
         EntryKind::Tsx => {
             // TSX is already JSX-shaped — SWC accepts it as-is. The
@@ -908,7 +928,7 @@ where
             // on prefix without re-reading the source.
             let hash = hash_8(&raw);
             let specifier = format!("tsx://{collection_seg}/{slug_seg}#{hash}");
-            (String::new(), raw.clone(), specifier)
+            (String::new(), raw.clone(), specifier, Vec::new())
         }
     };
 
@@ -923,6 +943,8 @@ where
         kind,
         extension,
         content_type,
+        source_digest,
+        headings,
     })
 }
 

@@ -95,6 +95,28 @@ export interface SnapshotEntry {
   readonly body: string;
   readonly module_specifier: string;
   readonly rel_path: string;
+  /**
+   * Render-artifact metadata, present only when the build ran with
+   * `emitRenderArtifacts` on and only for markdown entries. Mirrors
+   * `crates/zfb-content/src/render_metadata.rs::RenderRegionMetadata`.
+   */
+  readonly render_metadata?: SnapshotRenderMetadata;
+}
+
+/**
+ * `{ headings, source_digest }` for one content region. `source_digest`
+ * is `"sha256:" + 64 hex` over the entry's RAW on-disk source bytes
+ * (frontmatter included, no BOM strip, no CRLF normalization) — it
+ * identifies the source, not the rendered output. See
+ * `@takazudo/zfb-runtime/snapshot` for the full field documentation.
+ */
+export interface SnapshotRenderMetadata {
+  readonly headings: readonly {
+    readonly depth: number;
+    readonly text: string;
+    readonly slug: string;
+  }[];
+  readonly source_digest: string;
 }
 
 /**

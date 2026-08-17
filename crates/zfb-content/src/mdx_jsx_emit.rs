@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use markdown::mdast::{AlignKind, AttributeContent, AttributeValue, Node as MdastNode};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zfb_md_ast::diagnostics::{CollectingSink, MarkdownDiagnostic};
 use zfb_md_ast::heading_registry::{HeadingEntry as RegistryHeadingEntry, HeadingRegistry};
@@ -130,7 +131,7 @@ impl MdxJsxOptions {
 /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
 /// The error message includes the line/column reported by markdown-rs.
 pub fn mdx_to_jsx_module(input: &str, opts: MdxJsxOptions) -> Result<String, PipelineError> {
-    mdx_to_jsx_module_inner(input, opts, None)
+    mdx_to_jsx_module_inner(input, opts, None).map(|(source, _)| source)
 }
 
 /// Compile an MDX source string into a JSX module string, running the
@@ -162,7 +163,7 @@ pub fn mdx_to_jsx_module_with_pipeline(
     opts: MdxJsxOptions,
     pipeline: &mut Pipeline,
 ) -> Result<String, PipelineError> {
-    mdx_to_jsx_module_inner(input, opts, Some(pipeline))
+    mdx_to_jsx_module_inner(input, opts, Some(pipeline)).map(|(source, _)| source)
 }
 
 /// Internal core for [`mdx_to_jsx_module`] that optionally runs the
@@ -182,11 +183,18 @@ pub fn mdx_to_jsx_module_with_pipeline(
 /// mermaid, syntect) plus opt-in strip-md-ext fire on
 /// MDX content. The HTML serializer path ([`Pipeline::run`]) is
 /// unchanged.
+///
+/// Returns the module source together with the canonical heading list
+/// [`collect_headings`] allocated for it — the same records the emitted
+/// `export const headings` array carries. Surfacing them here (rather
+/// than re-deriving from the emitted text) is what lets
+/// [`CompiledMdx::headings`] stay in lockstep with the rendered `id`s
+/// without a second slug allocation.
 fn mdx_to_jsx_module_inner(
     input: &str,
     opts: MdxJsxOptions,
     pipeline: Option<&mut Pipeline>,
-) -> Result<String, PipelineError> {
+) -> Result<(String, Vec<HeadingEntry>), PipelineError> {
     // `ParseOptions::mdx()` enables the `mdx_esm` construct but does NOT
     // activate it: the construct's start state checks `mdx_esm_parse.is_some()`
     // before firing (see markdown-rs `crates/zfb-content/construct/mdx_esm.rs`).
@@ -665,7 +673,7 @@ fn mdx_to_jsx_module_inner(
     out.push_str("  return _createMdxContent(props);\n");
     out.push_str("}\n");
 
-    Ok(out)
+    Ok((out, headings))
 }
 
 /// One entry of the emitted `headings` array.
@@ -673,22 +681,28 @@ fn mdx_to_jsx_module_inner(
 /// Mirrors the per-heading record a TOC component consumes:
 /// `{ depth, slug, text }`. Construction order matches document order
 /// so callers can iterate without re-sorting.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HeadingEntry {
+///
+/// Field DECLARATION order is `depth, text, slug` because serde emits
+/// fields in that order and the render-artifact contract
+/// (`docs`/issue #2421) pins `{ "depth", "text", "slug" }` for each
+/// heading in the emitted JSON. The `export const headings` JSX array is
+/// unaffected — [`render_headings_export`] writes its own key order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadingEntry {
     /// `1`–`6`, matching the `<hN>` level the heading would render as.
-    depth: u8,
+    pub depth: u8,
+    /// Plain-text projection of the heading's inline children — the
+    /// same projection [`crate::plugins::heading_links`] feeds into the
+    /// slugger, so `slugify(text)` round-trips for the `<h1>` case and
+    /// `slugify(text)` is the *base* slug (pre-dedup) for `<h2>`–`<h6>`.
+    pub text: String,
     /// URL-safe identifier. For `<h2>`–`<h6>` this matches the `id`
     /// attribute that [`crate::plugins::heading_links`] emits on the
     /// rendered tag, including the per-document `-1`, `-2`, … numbering
     /// applied to repeated slugs. `<h1>` slugs are computed with the
     /// same algorithm but never participate in the dedup counter
     /// (heading_links does not touch `<h1>`).
-    slug: String,
-    /// Plain-text projection of the heading's inline children — the
-    /// same projection [`crate::plugins::heading_links`] feeds into the
-    /// slugger, so `slugify(text)` round-trips for the `<h1>` case and
-    /// `slugify(text)` is the *base* slug (pre-dedup) for `<h2>`–`<h6>`.
-    text: String,
+    pub slug: String,
 }
 
 /// Result of the single canonical heading walk.
@@ -3153,6 +3167,17 @@ pub struct CompiledMdx {
     pub content_hash: String,
     /// Stable `mdx://<collection>/<slug>#<hash8>` URL for routing.
     pub specifier: String,
+    /// The compiler-allocated heading list, in document order — the same
+    /// records the module's `export const headings` array carries, from
+    /// the one [`collect_headings`] walk that also stamps the rendered
+    /// `id`s (so slugs are never re-derived downstream).
+    ///
+    /// Stored in the compile cache alongside `jsx_source`, so a cache HIT
+    /// carries the same list a fresh compile would have produced. That is
+    /// what makes the render-artifact metadata channel
+    /// ([`crate::render_metadata`]) resolvable on cache hits, where the
+    /// mdast visitors never run.
+    pub headings: Vec<HeadingEntry>,
 }
 
 /// Parsed view of an `mdx://<collection>/<slug>#<hash8>` URL.
@@ -3685,6 +3710,12 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
                             "mdx://{collection}/{slug}#{}",
                             hit.compiled.content_hash
                         ),
+                        // Body-derived like `jsx_source` (one walk produced
+                        // both), so the cached list is exactly what this
+                        // compile would have allocated — replayed rather than
+                        // recomputed, which is what keeps the render-artifact
+                        // metadata channel resolvable on a cache hit.
+                        headings: hit.compiled.headings,
                     },
                     recorded_deps,
                 ));
@@ -3718,7 +3749,7 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         // Per-file BuildContext basis (zfb#944): consumed only by
         // pipelines that armed context roots; inert otherwise.
         .with_source_path(file_path);
-    let jsx_source = mdx_to_jsx_module_inner(input, opts, pipeline.as_deref_mut())?;
+    let (jsx_source, headings) = mdx_to_jsx_module_inner(input, opts, pipeline.as_deref_mut())?;
     let content_hash = hash_8(&jsx_source);
     let specifier = format!("mdx://{collection}/{slug}#{content_hash}");
 
@@ -3726,6 +3757,7 @@ pub fn compile_mdx_to_jsx_module_cached_with_deps(
         jsx_source,
         content_hash,
         specifier,
+        headings,
     };
 
     // Drain the reads this compile's plugins reported into a
@@ -4074,6 +4106,59 @@ mod tests {
             "a different pipeline config must not alias the cached entry"
         );
         assert_eq!(cache.len(), 2, "different config must add its own entry");
+    }
+
+    /// #2423: the render-artifact metadata channel must resolve on a
+    /// compile-cache HIT, where the mdast walk that allocates heading
+    /// slugs never runs. `CompiledMdx::headings` is therefore stored with
+    /// the entry and replayed, exactly like `jsx_source`.
+    ///
+    /// Same sentinel poke as the test above, applied to `headings`: a hit
+    /// returns the poked list, while a silent recompile would return the
+    /// document's real headings. Without the store/replay the second call
+    /// would hand back an EMPTY list — which the final assertion pins, so
+    /// this cannot pass vacuously on a document that has no headings.
+    #[test]
+    fn cache_hit_replays_stored_headings_for_the_render_metadata_channel() {
+        let cache = MdxModuleCache::new();
+        let src = "## Alpha\n\ntext\n\n### Beta\n";
+        let path = Path::new("/virtual/blog/post.mdx");
+
+        let mut p1 = full_config_pipeline(None);
+        let first = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p1))
+            .expect("compile 1");
+        assert_eq!(
+            first
+                .headings
+                .iter()
+                .map(|h| (h.depth, h.slug.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(2, "alpha"), (3, "beta")],
+            "a fresh compile surfaces collect_headings' canonical list",
+        );
+
+        let sentinel = HeadingEntry {
+            depth: 6,
+            text: "__SENTINEL__".to_string(),
+            slug: "__sentinel__".to_string(),
+        };
+        for entry in cache.lock().values_mut() {
+            entry.compiled.headings = vec![sentinel.clone()];
+        }
+
+        let mut p2 = full_config_pipeline(None);
+        let second = compile_mdx_to_jsx_module_cached(src, path, Some(&cache), Some(&mut p2))
+            .expect("compile 2");
+        assert_eq!(
+            second.headings,
+            vec![sentinel],
+            "a cache hit must REPLAY the stored headings, not recompute them",
+        );
+        assert!(
+            !second.headings.is_empty(),
+            "the replayed list must be non-empty — an unstored channel would \
+             hand the writer an empty headings array on every cache hit",
+        );
     }
 
     // zfb#939: a resolve-links pipeline must also actually USE the
