@@ -270,4 +270,15 @@ describe("updateScrollPosition", () => {
     expect(() => updateScrollPosition({ scrollX: 1, scrollY: 1 })).not.toThrow();
     expect(history.state).toBeNull();
   });
+
+  // #2424: Chromium refuses history.replaceState inside an about:srcdoc
+  // document — updateScrollPosition routes through the safeReplaceState
+  // guard, so a throwing replaceState must not propagate.
+  it("does not throw when history.replaceState throws (srcdoc tolerance)", () => {
+    history.replaceState({ index: 5, scrollX: 0, scrollY: 0 }, "");
+    vi.spyOn(history, "replaceState").mockImplementation(() => {
+      throw new DOMException("replaceState is not allowed", "SecurityError");
+    });
+    expect(() => updateScrollPosition({ scrollX: 100, scrollY: 200 })).not.toThrow();
+  });
 });
