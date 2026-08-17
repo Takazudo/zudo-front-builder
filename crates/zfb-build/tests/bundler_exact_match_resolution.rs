@@ -139,6 +139,7 @@ fn make_input(
         resolve_markdown_links: None,
         site: None,
         prefetch_disabled: false,
+        emit_render_artifacts: false,
         plugin_alias_entries,
         plugin_virtual_modules,
         worker_only_routes: None,

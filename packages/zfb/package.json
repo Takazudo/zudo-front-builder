@@ -142,9 +142,12 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.2.4",
     "happy-dom": "^15.7.4",
     "preact": "^10.29.0",
+    "preact-render-to-string": "^6.6.7",
     "react": "^19.2.3",
+    "react-dom": "19.2.6",
     "typescript": "^5.9.0",
     "vitest": "^2.1.9"
   }
