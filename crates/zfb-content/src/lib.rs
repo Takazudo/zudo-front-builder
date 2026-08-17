@@ -15,16 +15,28 @@ pub(crate) mod path_norm;
 pub mod pipeline;
 pub mod pipeline_spec;
 pub mod plugins;
+pub mod render_metadata;
 pub mod schema;
 pub mod serializer;
 pub mod syntect_highlight;
 pub mod tsx_frontmatter;
 
 pub use content_bridge::{
-    build_snapshot, build_snapshot_with_config, debug_snapshot_enabled, BridgeError,
-    CollectionConfig, ContentSnapshot, EntrySnapshot,
+    build_snapshot, build_snapshot_with_config, build_snapshot_with_options,
+    debug_snapshot_enabled, BridgeError, CollectionConfig, ContentSnapshot, EntrySnapshot,
+    SnapshotOptions,
 };
+
 pub use pipeline_spec::{CodeHighlightMode, PipelineSpec, PipelineSpecError};
+
+// Render-artifact metadata channel (issue #2423, epic #2421): region
+// identity, the raw-source digest, and the compiler-allocated headings.
+// Re-exported at the crate root so the build's artifact writer can name
+// the whole contract without reaching into module paths.
+pub use render_metadata::{
+    region_id_addresses, region_id_without_hash, render_region_metadata, source_digest,
+    RenderRegionMetadata, SOURCE_DIGEST_PREFIX,
+};
 
 // Document-level GFM footnote model (#2025, epic #2021). Shared by BOTH emit
 // paths (`pipeline`'s hast bridge and `mdx_jsx_emit`'s JSX emitter) so the
@@ -91,8 +103,8 @@ pub use frontmatter::{extract_from_filename, FrontmatterError, UnifiedFrontmatte
 pub use mdx_jsx_emit::{
     compile_mdx_to_jsx_module, compile_mdx_to_jsx_module_cached,
     compile_mdx_to_jsx_module_cached_with_deps, mdx_to_jsx_module, mdx_to_jsx_module_with_pipeline,
-    parse_mdx_specifier, CompiledMdx, MdxJsxOptions, MdxModuleCache, MdxModuleSpecifier,
-    SpecifierError,
+    parse_mdx_specifier, CompiledMdx, HeadingEntry, MdxJsxOptions, MdxModuleCache,
+    MdxModuleSpecifier, SpecifierError,
 };
 // `DefaultExportFirstParam` / `PlainFirstParam` / `RequestParamTier` and
 // `ssr_request_param_tier` are the SSR handler-shape detector (#2352):

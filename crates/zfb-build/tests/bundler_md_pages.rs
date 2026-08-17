@@ -53,6 +53,7 @@ fn make_input(root: &std::path::Path, esbuild: PathBuf) -> BundlerInput {
         resolve_markdown_links: None,
         site: None,
         prefetch_disabled: false,
+        emit_render_artifacts: false,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,
@@ -265,4 +266,109 @@ fn mdx_pages_still_work_after_md_change() {
     );
 
     assert_bundle_parses(&out.bundle_path, &esbuild);
+}
+
+// --- render-region markers on the .md page shell (epic #2421) --------------
+
+#[test]
+fn md_page_markers_reach_the_bundle_with_no_text_node_around_the_region() {
+    // Level-3 build-output proof for the claim the Rust unit tests can only
+    // assert about generated JSX SOURCE: that the JSX transform really does
+    // drop the shell's indentation, leaving `<body>` with exactly the three
+    // element children and no whitespace text node. A surviving text node
+    // would be captured inside the extracted fragment by the artifact
+    // writer's exact-byte slice, and no source-level assertion can see it.
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[bundler_md_pages] no esbuild binary; skipping");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    fs::create_dir_all(root.join("pages")).unwrap();
+    fs::create_dir_all(root.join("content")).unwrap();
+    fs::create_dir_all(root.join("components")).unwrap();
+    fs::create_dir_all(root.join("layouts")).unwrap();
+
+    fs::write(
+        root.join("pages/about.md"),
+        "---\ntitle: About\n---\n\n# Hello\n",
+    )
+    .unwrap();
+
+    let mut input = make_input(root, esbuild.clone());
+    input.emit_render_artifacts = true;
+    let out = bundle(input).expect("bundle with .md page + render artifacts should succeed");
+
+    let body = fs::read_to_string(&out.bundle_path).expect("read bundle");
+
+    // The region id const is the compile's own module specifier, so we
+    // assert the shape rather than a hash we would have to recompute.
+    assert!(
+        body.contains("mdx://pages/about#"),
+        "bundle must carry the md page's region id; body snippet:\n{}",
+        &body[..body.len().min(800)]
+    );
+
+    let start = body
+        .find("\"start\"")
+        .expect("start sentinel edge value present in bundle");
+    let end = body
+        .find("\"end\"")
+        .expect("end sentinel edge value present in bundle");
+    assert!(
+        start < end,
+        "start sentinel must be emitted before the end sentinel"
+    );
+    let region = &body[start..end];
+    // The shell's `MdBody` import is the compiled body module's default
+    // export; esbuild inlines the module and the call site keeps that
+    // module's own name (`MDXContent`).
+    assert!(
+        region.contains("MDXContent") || region.contains("MdBody"),
+        "the slice between the sentinels must be the page body; got:\n{region}"
+    );
+    assert_eq!(
+        whitespace_only_string_literals(region),
+        Vec::<String>::new(),
+        "the JSX transform left a whitespace text node between the \
+         sentinels and the region; slice:\n{region}"
+    );
+
+    assert_bundle_parses(&out.bundle_path, &esbuild);
+}
+
+/// Every double-quoted string literal in `js` whose contents are non-empty
+/// and entirely ASCII whitespace — i.e. the shape an un-dropped JSX
+/// indentation text node compiles to.
+///
+/// A deliberately small scanner (no escape handling beyond `\`): the input
+/// is esbuild's own output for a slice we already know contains no user
+/// text, so the only literals it can encounter are the generated ones.
+fn whitespace_only_string_literals(js: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut chars = js.char_indices();
+    while let Some((_, c)) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        let mut literal = String::new();
+        let mut escaped = false;
+        for (_, c) in chars.by_ref() {
+            if escaped {
+                literal.push(c);
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                break;
+            } else {
+                literal.push(c);
+            }
+        }
+        if !literal.is_empty() && literal.chars().all(|c| c.is_ascii_whitespace()) {
+            found.push(literal);
+        }
+    }
+    found
 }

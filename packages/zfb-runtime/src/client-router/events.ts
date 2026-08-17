@@ -1,4 +1,5 @@
 /// <reference lib="dom" />
+import { safeReplaceState } from "./history-safe.js";
 import { swap } from "./swap-functions.js";
 import type { Direction, NavigationTypeString } from "./types.js";
 
@@ -185,7 +186,7 @@ export async function doPreparation(
 export const updateScrollPosition = (positions: { scrollX: number; scrollY: number }) => {
   if (history.state) {
     history.scrollRestoration = "manual";
-    history.replaceState({ ...history.state, ...positions }, "");
+    safeReplaceState({ ...history.state, ...positions }, "");
   }
 };
 

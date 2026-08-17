@@ -289,6 +289,33 @@ export type ZfbConfig = {
    */
   strictContentBridge?: boolean;
   /**
+   * Whether `zfb build` writes a JSON render artifact for every
+   * markdown/MDX-backed HTML route whose rendered page contains exactly
+   * one top-level content region — the content-region HTML as shipped,
+   * compiler-allocated headings with slugs, a contract version, and a
+   * raw-source digest (Render Artifact Export epic #2421). The extraction
+   * pass and artifact writer are Rust-side
+   * (`crate::commands::render_artifact::export_render_artifacts`),
+   * running between the link-base rewrite and HTML minification. See the
+   * [Render Artifacts docs](https://github.com/Takazudo/zudo-front-builder/blob/main/docs/src/content/docs/concepts/render-artifacts.mdx)
+   * for the full JSON contract.
+   *
+   * This is the effective boolean the CLI's `--emit-render-artifacts` /
+   * `--no-emit-render-artifacts` tri-state resolves against. Precedence:
+   * explicit CLI flag > this config field > default `false`.
+   *
+   * Default: `false` (explicit opt-in), unlike `emitRoutesManifest`'s
+   * default-on posture — the writer instruments every rendered region
+   * with sentinel markers before stripping them back out, and the epic
+   * keeps that opt-in until the confirm sub-issue proves flag-off output
+   * stays byte-identical.
+   *
+   * Build-only: it does not affect `zfb dev`.
+   *
+   * Mirrors `Config::emit_render_artifacts` in `crates/zfb/src/config.rs`.
+   */
+  emitRenderArtifacts?: boolean;
+  /**
    * Bundler options. `bundle.exclude` lists project-relative globs of
    * source files to keep out of the esbuild graph (e.g.
    * `["components/*.stories.tsx"]`) — see {@link BundleConfig.exclude} for

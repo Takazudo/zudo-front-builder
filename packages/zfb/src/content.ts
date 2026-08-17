@@ -44,7 +44,7 @@
 // loaded synchronously on first fs-path use. Type-only imports below stay
 // at the top because TypeScript erases them at compile time — they leave
 // no runtime traces for esbuild to chase.
-import { jsx } from "react/jsx-runtime";
+import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 
 import type * as NodeFs from "node:fs";
 import type * as NodePath from "node:path";
@@ -95,6 +95,28 @@ export interface SnapshotEntry {
   readonly body: string;
   readonly module_specifier: string;
   readonly rel_path: string;
+  /**
+   * Render-artifact metadata, present only when the build ran with
+   * `emitRenderArtifacts` on and only for markdown entries. Mirrors
+   * `crates/zfb-content/src/render_metadata.rs::RenderRegionMetadata`.
+   */
+  readonly render_metadata?: SnapshotRenderMetadata;
+}
+
+/**
+ * `{ headings, source_digest }` for one content region. `source_digest`
+ * is `"sha256:" + 64 hex` over the entry's RAW on-disk source bytes
+ * (frontmatter included, no BOM strip, no CRLF normalization) — it
+ * identifies the source, not the rendered output. See
+ * `@takazudo/zfb-runtime/snapshot` for the full field documentation.
+ */
+export interface SnapshotRenderMetadata {
+  readonly headings: readonly {
+    readonly depth: number;
+    readonly text: string;
+    readonly slug: string;
+  }[];
+  readonly source_digest: string;
 }
 
 /**
@@ -245,6 +267,20 @@ type ZfbBridgeNamespace = {
    * installer); A1 only reads it. Absent ⇒ no-op in the merge.
    */
   mdxComponents?: MdxComponents;
+  /**
+   * Render-region marker switch (epic #2421). When `true`, every
+   * bridge-resolved `Content` render is wrapped in the inert
+   * `<template data-zfb-render-region>` sentinel pair that the build's
+   * extraction pass slices on — see [`wrapInRenderRegion`].
+   *
+   * **Build-only by construction.** The bundler emits the setter into
+   * the synthetic `entry.mjs` only when the run is `zfb build`
+   * (`BundleMode::Production`) AND `emitRenderArtifacts` resolved on;
+   * `zfb dev` passes `BundleMode::Development`, so the setter's bytes
+   * are never written into a dev bundle. It is never emitted into a
+   * client/island bundle either — `entry.mjs` is the SSR entry.
+   */
+  renderArtifacts?: boolean;
 };
 
 type BridgeGlobal = typeof globalThis & {
@@ -429,10 +465,75 @@ function buildContentComponent(
       // try to validate; both Preact and React JSX runtimes accept any
       // structural `{ type, props, key }` object on either side of the
       // boundary, and the renderer is the source of truth here.
-      return renderer(mergedProps) as ContentElement;
+      const rendered = renderer(mergedProps) as ContentElement;
+      // Render-artifact instrumentation (epic #2421). Off by default and
+      // never set outside `zfb build`, so the common path returns the
+      // bridge's value verbatim and the emitted HTML is byte-identical
+      // to a build without the feature.
+      return zfb?.renderArtifacts === true
+        ? wrapInRenderRegion(module_specifier, rendered)
+        : rendered;
     }
     return renderFallback(body);
   };
+}
+
+/**
+ * Attribute names of the render-region sentinel pair. The
+ * `data-zfb-render-region` / `data-zfb-region-id` namespace is reserved
+ * by the render-artifact contract (epic #2421): the build's extraction
+ * pass is an exact-byte state machine over these two attributes, so
+ * nothing else may emit them.
+ */
+const RENDER_REGION_ATTR = "data-zfb-render-region";
+const REGION_ID_ATTR = "data-zfb-region-id";
+
+/**
+ * Wrap a bridge-rendered content region in its sentinel pair:
+ *
+ * ```html
+ * <template data-zfb-render-region="start" data-zfb-region-id="<id>"></template>
+ * …region…
+ * <template data-zfb-render-region="end" data-zfb-region-id="<id>"></template>
+ * ```
+ *
+ * `<template>` is inert in every HTML context (its contents are not
+ * rendered and it carries no layout), and the pair is emitted as three
+ * Fragment children with **no text nodes between them** — the extraction
+ * pass slices on exact bytes, so an introduced space or newline would
+ * land inside the captured fragment.
+ *
+ * `id` is the entry's `module_specifier`, the region id the artifact
+ * writer joins its `{ headings, sourceDigest }` metadata on. Repeated
+ * `Content` calls therefore emit sibling pairs sharing one id, and a
+ * `Content` rendered inside another emits properly nested pairs; the
+ * extraction state machine matches identical-id pairs by nesting order.
+ *
+ * **Runtime-agnostic by construction.** `Fragment` / `jsxs` come from
+ * the same `react/jsx-runtime` specifier `mintElement` already uses,
+ * which the engine alias-rewrites to `preact/jsx-runtime` in Preact mode
+ * (bundler.rs `--alias:react/jsx-runtime=preact/jsx-runtime`) — so both
+ * modes get their own real Fragment, and neither imports the other's.
+ * `jsxs` (not `jsx`) is the static-children form: it tells React the
+ * child array is compiler-generated, which is what keeps the runtime
+ * from demanding `key` props on the three children.
+ */
+function wrapInRenderRegion(regionId: string, rendered: ContentElement): ContentElement {
+  return jsxs(Fragment, {
+    children: [
+      renderRegionMarker("start", regionId),
+      rendered,
+      renderRegionMarker("end", regionId),
+    ],
+  }) as unknown as ContentElement;
+}
+
+/** One `<template>` sentinel. See [`wrapInRenderRegion`]. */
+function renderRegionMarker(edge: "start" | "end", regionId: string): ContentElement {
+  return mintElement("template", {
+    [RENDER_REGION_ATTR]: edge,
+    [REGION_ID_ATTR]: regionId,
+  });
 }
 
 /**

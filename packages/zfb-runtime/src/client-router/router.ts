@@ -58,6 +58,7 @@ import {
   updateScrollPosition,
   type TransitionBeforePreparationEvent,
 } from "./events.js";
+import { safePushState, safeReplaceState } from "./history-safe.js";
 import { detectScriptExecuted } from "./swap-functions.js";
 import type { Direction, Fallback, Options, SyncHistoryEntryOptions } from "./types.js";
 // Island re-bootstrap and deferred-cancel after body swap (W1B §12.2, §12.5).
@@ -205,7 +206,7 @@ if (inBrowser) {
   } else if (transitionEnabledOnThisPage()) {
     // This page is loaded from the browser address bar or via a link from extern,
     // it needs a state in the history
-    history.replaceState({ index: currentHistoryIndex, scrollX, scrollY }, "");
+    safeReplaceState({ index: currentHistoryIndex, scrollX, scrollY }, "");
     history.scrollRestoration = "manual";
   }
 }
@@ -341,7 +342,7 @@ const moveToLocation = (
         scrollX,
         scrollY,
       };
-      history.replaceState(
+      safeReplaceState(
         {
           ...options.state,
           index: current.index,
@@ -352,7 +353,7 @@ const moveToLocation = (
         to.href,
       );
     } else {
-      history.pushState(
+      safePushState(
         { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
         "",
         to.href,
@@ -386,7 +387,7 @@ const moveToLocation = (
       const savedState = history.state;
       location.href = to.href; // this kills the history state on Firefox
       if (!history.state) {
-        history.replaceState(savedState, ""); // this restores the history state
+        safeReplaceState(savedState, ""); // this restores the history state
         if (intraPage) {
           window.dispatchEvent(new PopStateEvent("popstate"));
         }
@@ -466,7 +467,7 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     const current = history.state;
     const index =
       current != null && Number.isFinite(current.index) ? current.index : currentHistoryIndex;
-    history.replaceState(
+    safeReplaceState(
       {
         ...options.state,
         index,
@@ -488,7 +489,7 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     // historyState branch below) scrollTo(0,0) when this entry is later
     // Forward-reopened, snapping the page to the top under the reopened
     // dialog. #1398.
-    history.pushState(
+    safePushState(
       { ...options.state, index: ++currentHistoryIndex, scrollX, scrollY },
       "",
       to.href,
@@ -844,7 +845,7 @@ async function transition(
         scrollX,
         scrollY,
       };
-      history.replaceState(
+      safeReplaceState(
         {
           ...options.state,
           index: current.index,
@@ -855,7 +856,7 @@ async function transition(
         prepEvent.to.href,
       );
     } else {
-      history.pushState(
+      safePushState(
         { ...options.state, index: ++currentHistoryIndex, scrollX: 0, scrollY: 0 },
         "",
         prepEvent.to.href,

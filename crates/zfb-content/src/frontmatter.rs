@@ -154,6 +154,46 @@ pub fn extract_from_filename(
     extract(Path::new(filename), source)
 }
 
+/// Lenient frontmatter stripper: return the body slice of `input` with a
+/// leading `---\n…\n---` block removed, or `input` verbatim when there is
+/// no recognisable block.
+///
+/// This is deliberately NOT [`extract`]: it never parses the YAML (so it
+/// cannot fail on a malformed block) and it greedily trims every `\r` /
+/// `\n` following the close marker, where [`extract`] consumes exactly one
+/// line terminator. The two therefore disagree on a document whose body
+/// starts with a blank line — which changes the compiled body, and with it
+/// the MDX compile-cache key and `content_hash`.
+///
+/// That divergence is why this lives here rather than being reimplemented
+/// per call site: `crates/zfb-build/src/bundler.rs` strips `.mdx` bodies
+/// with this dialect on the pages/components mirror pass, and anything that
+/// wants to address the SAME compile-cache entry (see
+/// [`crate::render_metadata`]) must strip identically or it silently
+/// misses the cache and compiles a different body.
+#[must_use]
+pub fn strip_yaml_frontmatter(input: &str) -> &str {
+    let trimmed = input.trim_start_matches('\u{feff}');
+    if !trimmed.starts_with("---") {
+        return input;
+    }
+    let after_open = &trimmed[3..];
+    // Frontmatter open must be followed by a newline.
+    let rest_start = after_open
+        .find('\n')
+        .map(|i| i + 1)
+        .unwrap_or(after_open.len());
+    let body = &after_open[rest_start..];
+    // Look for a `\n---` close marker that itself ends a line.
+    if let Some(close_idx) = body.find("\n---") {
+        let after_close = &body[close_idx + 4..];
+        // Skip optional `\r`/`\n` after the close marker.
+        let after_close = after_close.trim_start_matches(['\r', '\n']);
+        return after_close;
+    }
+    input
+}
+
 /// YAML-only frontmatter parser. Internal helper — external code
 /// should call [`extract`] instead.
 ///

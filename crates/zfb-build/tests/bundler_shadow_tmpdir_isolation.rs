@@ -461,6 +461,7 @@ fn make_input(root: &Path, esbuild: &Path, outdir_name: &str) -> BundlerInput {
         resolve_markdown_links: None,
         site: None,
         prefetch_disabled: false,
+        emit_render_artifacts: false,
         plugin_alias_entries: Vec::new(),
         plugin_virtual_modules: Vec::new(),
         worker_only_routes: None,

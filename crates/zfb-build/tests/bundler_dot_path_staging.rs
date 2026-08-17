@@ -113,6 +113,7 @@ fn make_bundle_input(project: &Path, outdir_name: &str) -> BundlerInput {
         resolve_markdown_links: None,
         site: None,
         prefetch_disabled: false,
+        emit_render_artifacts: false,
         plugin_alias_entries: vec![],
         plugin_virtual_modules: vec![],
         worker_only_routes: None,

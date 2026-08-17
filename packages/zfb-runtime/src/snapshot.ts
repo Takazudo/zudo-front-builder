@@ -15,6 +15,34 @@
 // match the JSON serialization (`module_specifier`, `rel_path`).
 
 /**
+ * One heading the MDX compiler allocated for an entry, in document order.
+ *
+ * Mirrors `crates/zfb-content/src/mdx_jsx_emit.rs::HeadingEntry`, and is
+ * the same record the compiled module's `export const headings` array
+ * carries — `slug` matches the rendered `<hN id="…">` because both come
+ * from one slug allocation.
+ */
+export interface RenderHeading {
+  readonly depth: number;
+  readonly text: string;
+  readonly slug: string;
+}
+
+/**
+ * Render-artifact metadata for one content region. Mirrors
+ * `crates/zfb-content/src/render_metadata.rs::RenderRegionMetadata`.
+ *
+ * `source_digest` is `"sha256:" + 64 hex` over the entry's RAW on-disk
+ * source bytes — frontmatter included, no BOM strip, no CRLF
+ * normalization. It identifies the source, not the rendered output: a
+ * transcluded dependency can change what renders without changing this.
+ */
+export interface RenderRegionMetadata {
+  readonly headings: readonly RenderHeading[];
+  readonly source_digest: string;
+}
+
+/**
  * One entry in a content collection, in the shape the JS bridge sees.
  *
  * Mirrors `crates/zfb-content/src/content_bridge.rs::EntrySnapshot`.
@@ -31,6 +59,10 @@
  *   no-hash form `mdx://collection/slug`.
  * - `rel_path`: path relative to the collection root, normalized to
  *   forward slashes so JSON is platform-stable.
+ * - `render_metadata`: present only when the build ran with
+ *   `emitRenderArtifacts` on, and only for markdown entries. The Rust
+ *   side skips the field entirely when the feature is off, so an
+ *   unflagged build's snapshot bytes are unchanged.
  */
 export interface EntrySnapshot {
   readonly slug: string;
@@ -38,6 +70,7 @@ export interface EntrySnapshot {
   readonly body: string;
   readonly module_specifier: string;
   readonly rel_path: string;
+  readonly render_metadata?: RenderRegionMetadata;
 }
 
 /**

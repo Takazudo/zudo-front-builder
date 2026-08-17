@@ -437,6 +437,9 @@ pub(crate) fn assemble_bundler_input(
         .and_then(|p| p.disabled)
         .unwrap_or(false);
 
+    // Epic #2421 — arm the render-region sentinel markers.
+    bundler_input.emit_render_artifacts = emit_render_artifacts_for_bundle(bundle_mode, config);
+
     // #978 — thread `base_prefix` so the bundler emits
     // `globalThis.__zfb.base = "<prefix>"` in `entry.mjs` when the project
     // has at least one `*.client.*` entry. The emission is gated on
@@ -552,4 +555,60 @@ pub(crate) fn assemble_bundler_input(
         _node_modules_handle,
         _esbuild_handle,
     })
+}
+
+/// Decide whether this bundle arms the render-region sentinel markers
+/// (epic #2421).
+///
+/// `zfb_build::bundle()` is shared by `zfb build` and `zfb dev`, so the
+/// contract's "never dev" half is enforced here — the one place that knows
+/// which command is running. The `Production` gate makes a dev tick
+/// incapable of emitting markers however the project is configured, which
+/// is what keeps the dev-served HTML free of sentinels nothing ever strips.
+///
+/// `config.emit_render_artifacts` carries the CLI-resolved effective value:
+/// `commands::build` writes `resolve_emit_render_artifacts`'s result back
+/// into the config before assembling this input.
+fn emit_render_artifacts_for_bundle(bundle_mode: BundleMode, config: &Config) -> bool {
+    matches!(bundle_mode, BundleMode::Production) && config.emit_render_artifacts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(emit_render_artifacts: bool) -> Config {
+        Config {
+            emit_render_artifacts,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn build_arms_render_artifacts_only_when_the_config_flag_is_on() {
+        assert!(emit_render_artifacts_for_bundle(
+            BundleMode::Production,
+            &config_with(true)
+        ));
+        assert!(!emit_render_artifacts_for_bundle(
+            BundleMode::Production,
+            &config_with(false)
+        ));
+    }
+
+    #[test]
+    fn dev_never_arms_render_artifacts_even_with_the_config_flag_on() {
+        // The dev-leak guard: `zfb dev` shares `bundle()` with `zfb build`,
+        // and a project may legitimately carry `emitRenderArtifacts: true`
+        // in `zfb.config.ts` while running the dev server. No marker may
+        // reach a dev-served page — nothing strips them there.
+        assert!(!emit_render_artifacts_for_bundle(
+            BundleMode::Development,
+            &config_with(true)
+        ));
+        assert!(!emit_render_artifacts_for_bundle(
+            BundleMode::Development,
+            &config_with(false)
+        ));
+    }
 }
