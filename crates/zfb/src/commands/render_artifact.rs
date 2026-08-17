@@ -129,15 +129,23 @@ impl RenderMetadataIndex {
     }
 
     fn register(&mut self, key: String, idx: usize) {
-        match self.by_id.entry(key) {
-            std::collections::btree_map::Entry::Vacant(v) => {
-                v.insert(Some(idx));
+        match self.by_id.get(&key) {
+            None => {
+                self.by_id.insert(key, Some(idx));
             }
-            std::collections::btree_map::Entry::Occupied(mut o) => {
-                if *o.get() != Some(idx) {
-                    o.insert(None);
-                }
+            // Ambiguity is decided on PAYLOAD equality, not entry
+            // identity: overlapping collection roots (a documented-legal
+            // layout) walk the same file twice, inserting byte-identical
+            // metadata under both spellings. Two entries answering to one
+            // key with the SAME `{ headings, source_digest }` still
+            // identify one region, so the key stays resolvable; only
+            // genuinely divergent payloads fail closed.
+            Some(Some(existing))
+                if *existing == idx || self.entries[*existing] == self.entries[idx] => {}
+            Some(Some(_)) => {
+                self.by_id.insert(key, None);
             }
+            Some(None) => {}
         }
     }
 
@@ -391,11 +399,17 @@ fn serialize_artifact(
 /// Run the render-artifact export over the post-processable pages.
 ///
 /// `pages` is the same set the link-base rewrite and the minifier see —
-/// renderer-written SSG files minus `.html`-passthrough pages — filtered
-/// here to HTML-ish extensions. `routes_by_page` maps each page's
-/// absolute path to its URL path; a page missing from it can still be
-/// stripped but cannot get an artifact (the `route` field would have
-/// nothing to carry).
+/// renderer-written SSG files minus `.html`-passthrough pages. EVERY
+/// page in the set is scanned and sentinel-stripped: marker emission
+/// (`content.ts`'s `Content` wrap) is not extension-gated, so a non-HTML
+/// SSG output (`sitemap.xml.tsx`, a feed route) that renders
+/// `<entry.Content />` carries sentinels too, and leaving them in would
+/// ship live `<template>` markup inside XML/JSON output. Artifacts (and
+/// the region-rule warnings) are still HTML-only — there is no HTML page
+/// to extract a fragment from otherwise. `routes_by_page` maps each
+/// page's absolute path to its URL path; a page missing from it can
+/// still be stripped but cannot get an artifact (the `route` field would
+/// have nothing to carry).
 ///
 /// Returns the number of artifacts written.
 ///
@@ -417,11 +431,11 @@ pub(crate) fn export_render_artifacts(
     }
 
     // Sorted so warnings and writes are emitted in one order regardless
-    // of how the renderer happened to report its files.
-    let mut targets: Vec<&PathBuf> = pages
-        .iter()
-        .filter(|p| crate::commands::build::is_html_output_path(p))
-        .collect();
+    // of how the renderer happened to report its files. No extension
+    // filter here — stripping must cover every renderer-written output
+    // (see the doc comment above); the HTML-only gate applies to
+    // artifact writing below.
+    let mut targets: Vec<&PathBuf> = pages.iter().collect();
     targets.sort();
     targets.dedup();
 
@@ -444,6 +458,13 @@ pub(crate) fn export_render_artifacts(
                     page.display()
                 )
             })?;
+        }
+
+        // Non-HTML outputs are stripped (above) but never produce an
+        // artifact or a region-rule warning — there is no HTML page to
+        // extract a fragment from.
+        if !crate::commands::build::is_html_output_path(page) {
+            continue;
         }
 
         let route = routes_by_page.get(page.as_path());
@@ -816,6 +837,22 @@ mod tests {
         assert!(index.get("mdx://docs/other").is_none());
         // A stale hash must never resolve against current metadata.
         assert!(index.get("mdx://docs/intro#99999999").is_none());
+    }
+
+    /// Overlapping collection roots walk the same file twice, inserting
+    /// byte-identical metadata under identical specifiers. Identical
+    /// payloads still identify ONE region, so the key must stay
+    /// resolvable — only genuinely divergent payloads fail closed.
+    #[test]
+    fn identical_duplicate_inserts_do_not_poison_the_key() {
+        let mut index = RenderMetadataIndex::default();
+        index.insert("mdx://docs/intro#a1b2c3d4", meta("intro"));
+        index.insert("mdx://docs/intro#a1b2c3d4", meta("intro"));
+        assert!(
+            index.get("mdx://docs/intro#a1b2c3d4").is_some(),
+            "byte-identical duplicate metadata must not mark the key ambiguous"
+        );
+        assert!(index.get("mdx://docs/intro").is_some());
     }
 
     #[test]
@@ -1196,15 +1233,21 @@ mod tests {
         );
     }
 
-    /// Non-HTML SSG outputs (XML feeds, JSON) are never scanned — the
-    /// same filter the minifier applies.
+    /// Non-HTML SSG outputs (XML feeds, JSON) are stripped — marker
+    /// emission is not extension-gated, so a feed route rendering
+    /// `<entry.Content />` carries sentinels too — but they never get an
+    /// artifact and never trigger a region-rule warning.
     #[test]
-    fn non_html_outputs_are_not_scanned() {
+    fn non_html_outputs_are_stripped_but_never_get_artifacts() {
         let tmp = tempdir().unwrap();
         let feed = tmp.path().join("feed.xml");
-        let body = format!("<feed>{}</feed>", start("mdx://blog/hello"));
+        let body = format!(
+            "<feed>{}<item>hi</item>{}</feed>",
+            start("mdx://blog/hello"),
+            end("mdx://blog/hello")
+        );
         fs::write(&feed, &body).unwrap();
-        export_render_artifacts(
+        let written = export_render_artifacts(
             true,
             tmp.path(),
             std::slice::from_ref(&feed),
@@ -1212,7 +1255,13 @@ mod tests {
             &index_with("mdx://blog/hello"),
         )
         .unwrap();
-        assert_eq!(fs::read_to_string(&feed).unwrap(), body);
+        assert_eq!(written, 0, "a non-HTML output must never get an artifact");
+        assert_eq!(
+            fs::read_to_string(&feed).unwrap(),
+            "<feed><item>hi</item></feed>",
+            "sentinels must not survive in a shipped non-HTML output"
+        );
+        assert!(!tmp.path().join("__zfb/render").exists());
     }
 
     /// Byte-stability across runs, mirroring

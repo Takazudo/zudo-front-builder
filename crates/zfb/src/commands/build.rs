@@ -6739,15 +6739,21 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // shipped page does, while minification and every later pass below
     // see marker-free HTML. Off by default and a single boolean test when
     // off — nothing is read or written.
-    let render_artifact_routes: std::collections::BTreeMap<std::path::PathBuf, String> =
+    let render_artifact_routes: std::collections::BTreeMap<std::path::PathBuf, String> = {
+        let mut routes = std::collections::BTreeMap::new();
         if config.emit_render_artifacts {
-            route_universe_for_rewrite
-                .iter()
-                .map(|(url, rel)| (outdir.join(rel), url.clone()))
-                .collect()
-        } else {
-            std::collections::BTreeMap::new()
-        };
+            for (url, rel) in &route_universe_for_rewrite {
+                // First-wins on a shared output path, matching
+                // `build_prod_rendered_files`' dedup — a plain
+                // `collect()` would silently let the LAST route claim
+                // the artifact's `route` field.
+                routes
+                    .entry(outdir.join(rel))
+                    .or_insert_with(|| url.clone());
+            }
+        }
+        routes
+    };
     crate::commands::render_artifact::export_render_artifacts(
         config.emit_render_artifacts,
         outdir,
@@ -6811,6 +6817,13 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // the runtime-narrowed one reaches the adapter (and therefore `dist/`).
     let adapter_input = if !adapter.is_none() {
         let mut runtime_bundler_input = bundler_input_for_runtime;
+        // Epic #2421: never arm the render-region markers in the
+        // runtime/worker bundle. The sentinel strip pass (step 3.6b)
+        // only rewrites SSG files on disk — a marker emitted by the
+        // deployed worker at request time would ship to browsers with
+        // nothing to strip it, breaking the "enabling the flag never
+        // changes the shipped page" contract for SSR responses.
+        runtime_bundler_input.emit_render_artifacts = false;
         runtime_bundler_input.worker_only_routes = Some(ssr_route_keys_for_runtime_bundle);
         runtime_bundler_input.bundle_basename = Some("bundle-runtime.mjs".to_string());
         let runtime_bundler_out = runner
@@ -7366,8 +7379,11 @@ pub(crate) fn build_content_snapshot(
     }
 }
 
-/// Cover direct `pages/*.md` / `pages/*.mdx` routes in the render-metadata
-/// index (epic #2421).
+/// Cover direct `pages/*.md` routes in the render-metadata index (epic
+/// #2421). Direct `pages/*.mdx` routes are deliberately excluded — the
+/// epic's documented exclusion: their compiled module IS the route
+/// module, so no shell ever instruments them and their metadata could
+/// never be joined.
 ///
 /// These are markdown-backed routes that are NOT collection members, so
 /// they never appear in a `ContentSnapshot` and the snapshot channel
@@ -7399,9 +7415,15 @@ fn extend_render_metadata_with_direct_pages(
         .filter(|r| !r.static_html)
         .map(|r| r.source_path.as_path())
         .filter(|p| {
+            // `.md` only: a direct `pages/*.mdx` page's compiled module
+            // IS the route module (no `render_md_page_shell` seam), so
+            // it is never instrumented and its metadata could never be
+            // joined — compiling it here would be a wasted full MDX
+            // compile per page, and its hash-less specifier could
+            // spuriously mark a colliding collection key ambiguous.
             p.extension()
                 .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("mdx"))
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
         })
         .collect();
     sources.sort_unstable();
