@@ -123,6 +123,10 @@ use walkdir::WalkDir;
 
 use zfb_content::diagnostics::{DiagnosticSeverity, MarkdownDiagnostic, SourceLocation};
 use zfb_content::frontmatter as zfb_frontmatter;
+// Shared with `zfb_content::render_metadata`, which must strip a direct
+// page's body byte-identically to this crate or it addresses a different
+// MDX compile-cache entry (#2423). One definition, both callers.
+use zfb_content::frontmatter::strip_yaml_frontmatter;
 use zfb_content::plugins::util::source_map::{
     build_docs_source_map, CollectionRoute, DocsSourceMapOptions,
 };
@@ -7714,33 +7718,6 @@ fn materialise_shadow(
     Ok(())
 }
 
-/// MDX files in this codebase commonly carry YAML frontmatter (the
-/// `---\n…\n---` block). `compile_mdx_to_jsx_module_cached` does not
-/// strip it — that's the caller's job per `mdx_jsx_emit` docs. Mirror
-/// the behaviour `zfb-content::collection` uses so the bundler speaks
-/// the same dialect.
-fn strip_yaml_frontmatter(input: &str) -> &str {
-    let trimmed = input.trim_start_matches('\u{feff}');
-    if !trimmed.starts_with("---") {
-        return input;
-    }
-    let after_open = &trimmed[3..];
-    // Frontmatter open must be followed by a newline.
-    let rest_start = after_open
-        .find('\n')
-        .map(|i| i + 1)
-        .unwrap_or(after_open.len());
-    let body = &after_open[rest_start..];
-    // Look for a `\n---` close marker that itself ends a line.
-    if let Some(close_idx) = body.find("\n---") {
-        let after_close = &body[close_idx + 4..];
-        // Skip optional `\r`/`\n` after the close marker.
-        let after_close = after_close.trim_start_matches(['\r', '\n']);
-        return after_close;
-    }
-    input
-}
-
 /// Walk the shadow tree and rewrite every `*.module.css` file into a JS
 /// module exporting its scoped class-name map as the default export.
 ///
@@ -14576,6 +14553,7 @@ mod tests {
             jsx_source: "<a>{\\bad}</a>".to_string(),
             content_hash: "deadbeef".to_string(),
             specifier: "mdx://docs/broken#deadbeef".to_string(),
+            headings: Vec::new(),
         };
         let from = Path::new("/project/content/docs/broken.mdx");
         let tmp = tempfile::tempdir().unwrap();
@@ -14617,6 +14595,7 @@ mod tests {
             jsx_source: "<a>hi</a>".to_string(),
             content_hash: "cafef00d".to_string(),
             specifier: "mdx://docs/broken.data#cafef00d".to_string(),
+            headings: Vec::new(),
         };
         let from = Path::new("/project/content/docs/broken.data.mdx");
         let tmp = tempfile::tempdir().unwrap();
