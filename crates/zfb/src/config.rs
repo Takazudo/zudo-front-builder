@@ -345,6 +345,31 @@ pub struct Config {
     #[serde(default)]
     pub strict_content_bridge: bool,
 
+    /// Whether `zfb build` writes a JSON render artifact for every
+    /// markdown/MDX-backed HTML route whose rendered page contains
+    /// exactly one top-level content region — the content-region HTML as
+    /// shipped, compiler-allocated headings with slugs, a contract
+    /// version, and a raw-source digest (Render Artifact Export epic
+    /// #2421). No consumer reads the resolved value yet; a sibling
+    /// sub-issue adds the extraction pass and artifact writer.
+    ///
+    /// Default: `false` (explicit opt-in), unlike `emit_routes_manifest`'s
+    /// default-on posture — the writer instruments every rendered region
+    /// with sentinel markers before stripping them back out, and the epic
+    /// keeps that opt-in until the confirm sub-issue proves flag-off
+    /// output stays byte-identical. `zfb build --emit-render-artifacts` /
+    /// `--no-emit-render-artifacts` can override this value for a single
+    /// build; the build command resolves that CLI tri-state before
+    /// handing the config to orchestration, so downstream code only ever
+    /// sees the effective boolean.
+    ///
+    /// Build-only: it does not affect `zfb dev`.
+    ///
+    /// Mirrors `ZfbConfig::emitRenderArtifacts` in
+    /// `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub emit_render_artifacts: bool,
+
     /// Bundler options. `bundle.exclude` lists project-relative globs of
     /// source files the bundler must keep out of the esbuild graph (see
     /// [`BundleConfig::exclude`]). Absent / `None` → no files are skipped
@@ -697,6 +722,7 @@ impl Default for Config {
             minify_html: false,
             strict_broken_links: false,
             strict_content_bridge: false,
+            emit_render_artifacts: false,
             bundle: None,
             plugins: Vec::new(),
             adapter: None,
@@ -3550,6 +3576,10 @@ mod tests {
             !cfg.strict_content_bridge,
             "omitted strictContentBridge must default to compatibility-off"
         );
+        assert!(
+            !cfg.emit_render_artifacts,
+            "omitted emitRenderArtifacts must default to false (explicit opt-in)"
+        );
     }
 
     #[tokio::test]
@@ -3628,6 +3658,32 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert!(!cfg.strict_content_bridge);
+    }
+
+    #[tokio::test]
+    async fn loads_emit_render_artifacts_true_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "emitRenderArtifacts": true }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.emit_render_artifacts);
+    }
+
+    #[tokio::test]
+    async fn loads_emit_render_artifacts_false_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "emitRenderArtifacts": false }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(!cfg.emit_render_artifacts);
     }
 
     #[tokio::test]
