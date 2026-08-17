@@ -17,10 +17,9 @@ use sha2::{Digest, Sha256};
 use zfb_types::path_to_posix_string;
 
 use crate::frontmatter::{self, FrontmatterError, UnifiedFrontmatter};
-use crate::mdx_jsx_emit::{
-    compile_mdx_to_jsx_module_cached, CompiledMdx, HeadingEntry, MdxModuleCache,
-};
+use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, CompiledMdx, MdxModuleCache};
 use crate::pipeline::{Pipeline, PipelineError};
+use crate::render_metadata::RenderRegionMetadata;
 use crate::schema::{json_schema_to_ts, ts_safe_key};
 
 /// Source kind for an [`Entry`]. Discriminator on the union of file
@@ -89,18 +88,23 @@ pub struct Entry<T> {
     /// `None` for `Markdown` entries; populated from the TSX export
     /// when present for `Tsx` entries.
     pub content_type: Option<String>,
-    /// `"sha256:<64-hex>"` over this file's raw source bytes exactly as
-    /// read — frontmatter INCLUDED, no BOM strip, no CRLF normalisation.
+    /// `{ headings, source_digest }` for the render-artifact channel —
+    /// `Some` only for `Markdown` entries walked with
+    /// [`WalkOptions::render_metadata`] on.
     ///
-    /// Computed here, at read time, because it cannot be recovered later:
-    /// the MDX compile seam only ever sees the frontmatter-stripped body.
-    /// See [`crate::render_metadata`] for the full contract.
-    pub source_digest: String,
-    /// Compiler-allocated headings in document order (empty for `Tsx`
-    /// entries, which have no markdown body). Carried from
+    /// The digest covers this file's raw source bytes exactly as read
+    /// (frontmatter INCLUDED, no BOM strip, no CRLF normalisation) and is
+    /// taken at read time because it cannot be recovered later: the MDX
+    /// compile seam only ever sees the frontmatter-stripped body. The
+    /// headings ride on
     /// [`crate::mdx_jsx_emit::CompiledMdx::headings`], so a compile-cache
-    /// hit populates this exactly as a fresh compile would.
-    pub headings: Vec<HeadingEntry>,
+    /// hit populates them exactly as a fresh compile would. See
+    /// [`crate::render_metadata`] for the full contract.
+    ///
+    /// `None` with the option off — which is what keeps the SHA-256 off
+    /// the `zfb dev` reload hot path (zfb#2431), where the snapshot
+    /// builder discards this field wholesale.
+    pub render_metadata: Option<RenderRegionMetadata>,
 }
 
 impl<T> Entry<T> {
@@ -380,6 +384,25 @@ pub fn derive_slug_for_file(root: &Path, file: &Path, filter: &CollectionFilter)
     Some(maybe_strip_slug_suffix(&stripped, filter.id_strip_suffix()).to_string())
 }
 
+/// Opt-in switches that change what each walked [`Entry`] carries.
+///
+/// [`Default`] is every switch OFF, which is the shape every caller but
+/// the render-artifact build wants. A switch being off does not merely
+/// blank the field — the walk skips the work that would have filled it,
+/// which is the whole reason this is a walk-time parameter rather than a
+/// post-walk projection (zfb#2431).
+///
+/// Deliberately its own type rather than
+/// [`crate::content_bridge::SnapshotOptions`]: the walker sits BELOW the
+/// snapshot builder and must not know about snapshot-shaped concerns.
+/// The builder maps one onto the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WalkOptions {
+    /// Populate [`Entry::render_metadata`] for markdown entries. Off
+    /// means no SHA-256 over the raw bytes is computed at all.
+    pub render_metadata: bool,
+}
+
 /// Walk a collection directory, parsing + validating each `.md`, `.mdx`,
 /// or `.tsx` file.
 ///
@@ -460,11 +483,44 @@ where
 /// Pass `CollectionFilter::none()` (or use the legacy
 /// [`walk_collection_with_cache`] helper) to get the pre-filter walker
 /// behaviour byte-for-byte.
+///
+/// Equivalent to [`walk_collection_with_cache_filter_and_options`] with
+/// [`WalkOptions::default`] — every opt-in switch off.
 pub fn walk_collection_with_cache_and_filter<T>(
+    dir: &Path,
+    cache: Option<&MdxModuleCache>,
+    pipeline: Option<&mut Pipeline>,
+    filter: &CollectionFilter,
+) -> Result<Vec<Entry<T>>, CollectionError>
+where
+    T: DeserializeOwned + garde::Validate<Context = ()>,
+{
+    walk_collection_with_cache_filter_and_options(
+        dir,
+        cache,
+        pipeline,
+        filter,
+        WalkOptions::default(),
+    )
+}
+
+/// Walk a collection like [`walk_collection_with_cache_and_filter`], with
+/// the opt-in switches in `options` applied.
+///
+/// The only switch today is [`WalkOptions::render_metadata`]. With it
+/// OFF — every caller but the render-artifact build — the walk computes
+/// no source digest and retains no headings, because nothing downstream
+/// reads them: [`crate::content_bridge::build_snapshot_with_options`]
+/// discards [`Entry::render_metadata`] wholesale in that mode, and it is
+/// the field's only in-tree consumer. Skipping the work rather than
+/// discarding it is what keeps a `zfb dev` collection re-walk off a
+/// per-file SHA-256 (zfb#2431). The entries are otherwise identical.
+pub fn walk_collection_with_cache_filter_and_options<T>(
     dir: &Path,
     cache: Option<&MdxModuleCache>,
     mut pipeline: Option<&mut Pipeline>,
     filter: &CollectionFilter,
+    options: WalkOptions,
 ) -> Result<Vec<Entry<T>>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
@@ -531,7 +587,7 @@ where
             // snapshot's content_hash from the bundler's.
             p.set_resolve_links_source_file(path.clone());
         }
-        match parse_entry::<T>(dir, &path, cache, pipeline.as_deref_mut(), filter) {
+        match parse_entry::<T>(dir, &path, cache, pipeline.as_deref_mut(), filter, options) {
             Ok(entry) => entries.push(entry),
             Err(e) => errors.push(e),
         }
@@ -808,6 +864,7 @@ fn parse_entry<T>(
     cache: Option<&MdxModuleCache>,
     pipeline: Option<&mut Pipeline>,
     filter: &CollectionFilter,
+    options: WalkOptions,
 ) -> Result<Entry<T>, CollectionError>
 where
     T: DeserializeOwned + garde::Validate<Context = ()>,
@@ -886,14 +943,8 @@ where
     let slug = maybe_strip_slug_suffix(&slug, strip).to_string();
     let slug_seg = maybe_strip_slug_suffix(&slug_seg, strip).to_string();
 
-    // Digest the bytes we just read, before any stripping. `read_to_string`
-    // only validates UTF-8 — it strips no BOM and rewrites no line endings —
-    // so `raw.as_bytes()` IS the on-disk byte sequence, which is what the
-    // render-artifact contract pins.
-    let source_digest = crate::render_metadata::source_digest(raw.as_bytes());
-
     let kind = entry_kind_from_path(path);
-    let (body, compiled_jsx_source, module_specifier, headings) = match kind {
+    let (body, compiled_jsx_source, module_specifier, render_metadata) = match kind {
         EntryKind::Markdown => {
             let md_body = body.unwrap_or_default();
             // Compile body to JSX (same path for `.md` and `.mdx` —
@@ -919,16 +970,32 @@ where
                 "mdx://{collection_seg}/{slug_seg}#{hash}",
                 hash = compiled.content_hash,
             );
-            (md_body, compiled.jsx_source, specifier, compiled.headings)
+            // Digest the bytes we read, before any stripping.
+            // `read_to_string` only validates UTF-8 — it strips no BOM
+            // and rewrites no line endings — so `raw.as_bytes()` IS the
+            // on-disk byte sequence, which is what the render-artifact
+            // contract pins. Gated on the option because a flag-off walk
+            // throws the result away (zfb#2431).
+            let metadata = options.render_metadata.then(|| {
+                RenderRegionMetadata::new(
+                    compiled.headings,
+                    crate::render_metadata::source_digest(raw.as_bytes()),
+                )
+            });
+            (md_body, compiled.jsx_source, specifier, metadata)
         }
         EntryKind::Tsx => {
             // TSX is already JSX-shaped — SWC accepts it as-is. The
             // body field is empty by convention (no markdown body).
             // Specifier scheme is `tsx://` so the renderer can dispatch
             // on prefix without re-reading the source.
+            //
+            // No metadata regardless of the option: a `.tsx` entry is not
+            // a compiled markdown module, has no headings, and never
+            // produces a render artifact.
             let hash = hash_8(&raw);
             let specifier = format!("tsx://{collection_seg}/{slug_seg}#{hash}");
-            (String::new(), raw.clone(), specifier, Vec::new())
+            (String::new(), raw.clone(), specifier, None)
         }
     };
 
@@ -943,8 +1010,7 @@ where
         kind,
         extension,
         content_type,
-        source_digest,
-        headings,
+        render_metadata,
     })
 }
 
@@ -1157,6 +1223,69 @@ mod tests {
         assert_eq!(e.kind, EntryKind::Tsx);
         assert_eq!(e.extension.as_deref(), Some("xml"));
         assert_eq!(e.content_type.as_deref(), Some("application/rss+xml"));
+    }
+
+    /// The render-metadata work happens only when the walk asks for it
+    /// (zfb#2431), and gates nothing else about the entry.
+    ///
+    /// The skip is proven structurally rather than by counting SHA-256
+    /// calls: [`Entry::render_metadata`] is the digest's only
+    /// destination, so `None` means `source_digest` was never called for
+    /// that file.
+    #[test]
+    fn render_metadata_is_computed_only_when_the_walk_asks_for_it() {
+        let tmp = TmpDir::new("walk-render-metadata");
+        // CRLF terminators + frontmatter: the digest must cover both.
+        let raw = "---\r\ntitle: \"Doc\"\r\n---\r\n\r\n## Alpha\r\n";
+        tmp.write("doc.md", raw);
+        tmp.write("page.tsx", &valid_tsx("Tsx Page"));
+
+        let off: Vec<Entry<TestSchema>> = walk_collection(tmp.path(), None).unwrap();
+        assert!(
+            off.iter().all(|e| e.render_metadata.is_none()),
+            "the default walk must not pay for metadata nobody reads",
+        );
+
+        let on: Vec<Entry<TestSchema>> = walk_collection_with_cache_filter_and_options(
+            tmp.path(),
+            None,
+            None,
+            &CollectionFilter::none(),
+            WalkOptions {
+                render_metadata: true,
+            },
+        )
+        .unwrap();
+
+        let doc = on.iter().find(|e| e.slug == "doc").expect("doc entry");
+        let meta = doc.render_metadata.as_ref().expect("markdown metadata");
+        assert_eq!(
+            meta.source_digest,
+            crate::render_metadata::source_digest(raw.as_bytes()),
+            "the digest must cover the raw bytes, frontmatter and CRLF included",
+        );
+        assert_eq!(
+            meta.headings
+                .iter()
+                .map(|h| h.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"],
+        );
+        let page = on.iter().find(|e| e.slug == "page").expect("page entry");
+        assert!(
+            page.render_metadata.is_none(),
+            "a .tsx entry produces no render artifact — no metadata either way",
+        );
+
+        // Everything else about an entry is identical across the two
+        // settings: the option gates the metadata field and nothing more.
+        assert_eq!(off.len(), on.len());
+        for (a, b) in off.iter().zip(&on) {
+            assert_eq!(a.slug, b.slug);
+            assert_eq!(a.body, b.body);
+            assert_eq!(a.module_specifier, b.module_specifier);
+            assert_eq!(a.compiled_jsx_source, b.compiled_jsx_source);
+        }
     }
 
     #[test]

@@ -37,7 +37,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 use crate::collection::{
-    walk_collection_with_cache_and_filter, CollectionError, CollectionFilter, Entry, EntryKind,
+    walk_collection_with_cache_filter_and_options, CollectionError, CollectionFilter, Entry,
+    WalkOptions,
 };
 use crate::pipeline_spec::PipelineSpec;
 use crate::render_metadata::{region_id_addresses, RenderRegionMetadata};
@@ -436,16 +437,23 @@ pub fn build_snapshot_with_options(
         // specifier per path, so cross-config or cross-file aliasing is
         // impossible; uncacheable pipelines (filesystem-reading
         // features) transparently bypass it.
-        let entries: Vec<Entry<UntypedFrontmatter>> = walk_collection_with_cache_and_filter(
-            &cfg.root,
-            Some(crate::mdx_jsx_emit::MdxModuleCache::process_global()),
-            Some(&mut pipeline),
-            &filter,
-        )
-        .map_err(|source| BridgeError::Walk {
-            collection: cfg.name.clone(),
-            source,
-        })?;
+        let entries: Vec<Entry<UntypedFrontmatter>> =
+            walk_collection_with_cache_filter_and_options(
+                &cfg.root,
+                Some(crate::mdx_jsx_emit::MdxModuleCache::process_global()),
+                Some(&mut pipeline),
+                &filter,
+                // The walker owns the markdown-only rule and the skip: with
+                // this off it computes no digest and retains no headings,
+                // rather than computing both for this loop to drop (#2431).
+                WalkOptions {
+                    render_metadata: options.render_metadata,
+                },
+            )
+            .map_err(|source| BridgeError::Walk {
+                collection: cfg.name.clone(),
+                source,
+            })?;
         // `pipeline` is intentionally NOT drained here — the snapshot walk
         // runs first and its per-collection pipelines are dropped undrained.
         // Compile-cache replay (`mdx_jsx_emit.rs` — `replay_markdown_diagnostics`)
@@ -462,8 +470,7 @@ pub fn build_snapshot_with_options(
                 body: e.body,
                 module_specifier: e.module_specifier,
                 rel_path: rel_path_to_string(&e.rel_path),
-                render_metadata: (options.render_metadata && e.kind == EntryKind::Markdown)
-                    .then(|| RenderRegionMetadata::new(e.headings, e.source_digest)),
+                render_metadata: e.render_metadata,
             })
             .collect();
 

@@ -22,7 +22,10 @@
 //!    therefore computed wherever the file is read — the collection
 //!    walker (`crate::collection::parse_entry`) for collection entries,
 //!    and [`render_region_metadata`] for direct `pages/*.md` /
-//!    `pages/*.mdx` sources, which are never collection members.
+//!    `pages/*.mdx` sources, which are never collection members. The
+//!    walker computes it only when asked
+//!    ([`crate::collection::WalkOptions::render_metadata`]); a flag-off
+//!    walk has no consumer for it and skips the hash (zfb#2431).
 //!
 //! # Digest semantics (pinned by the epic)
 //!
