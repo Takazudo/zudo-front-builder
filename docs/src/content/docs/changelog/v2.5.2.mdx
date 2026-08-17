@@ -1,0 +1,28 @@
+---
+title: v2.5.2
+sidebar_position: 20502999
+---
+
+# v2.5.2
+
+Released: 2026-08-17
+
+## Bug Fixes
+
+- carry the opener paragraph's fence state into the sibling scan (64edd2dc)
+- nest blank-line-separated container directives (1820e3a8)
+- gate collapsed-run recognition before line lifting (ed040688)
+- make collapsed-run recognition tolerant of the split shape (b13d6215)
+- stop reconstruct_jsx swallowing nested Break nodes (#2401) (f48df51f)
+
+## Other Changes
+
+- drop the collapsed-only scoping from the nesting claims (2ce606d8)
+- pin the spaced nesting flips and their controls (2ccbf5c1)
+- close the chain-ordering question in the trailing comment (b6ae115e)
+- directive nesting holds with hardBreaks/cjkFriendly (40d474a1)
+- pin the tolerant collapsed-run flips on both emit paths (0ee19af4)
+- correct stale Break-deletion rationale falsified by #2401 (ab48086e)
+- measure the cjkFriendly collapsed-directive-body case (#2401) (c969f443)
+- guard the mdast dispatch-loop inventory against a silent fifth loop (76450f95)
+- bump @takazudo/* deps in docs to latest (011f45ce)
