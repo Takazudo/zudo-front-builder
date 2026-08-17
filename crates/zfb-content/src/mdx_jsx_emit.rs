@@ -686,7 +686,7 @@ fn mdx_to_jsx_module_inner(
 /// fields in that order and the render-artifact contract
 /// (`docs`/issue #2421) pins `{ "depth", "text", "slug" }` for each
 /// heading in the emitted JSON. The `export const headings` JSX array is
-/// unaffected — [`render_headings_export`] writes its own key order.
+/// unaffected — `render_headings_export` writes its own key order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeadingEntry {
     /// `1`–`6`, matching the `<hN>` level the heading would render as.
@@ -3169,7 +3169,7 @@ pub struct CompiledMdx {
     pub specifier: String,
     /// The compiler-allocated heading list, in document order — the same
     /// records the module's `export const headings` array carries, from
-    /// the one [`collect_headings`] walk that also stamps the rendered
+    /// the one `collect_headings` walk that also stamps the rendered
     /// `id`s (so slugs are never re-derived downstream).
     ///
     /// Stored in the compile cache alongside `jsx_source`, so a cache HIT

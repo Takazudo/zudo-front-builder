@@ -12,7 +12,8 @@
 //! 1. **Cache hits.** The MDX compile cache
 //!    ([`crate::mdx_jsx_emit::MdxModuleCache`]) short-circuits the whole
 //!    emitter, so nothing derived from the mdast walk is recomputed. The
-//!    headings therefore ride on [`CompiledMdx::headings`], which the
+//!    headings therefore ride on
+//!    [`CompiledMdx::headings`](crate::mdx_jsx_emit::CompiledMdx::headings), which the
 //!    cache stores and replays — a hit carries exactly what a fresh
 //!    compile would have produced.
 //! 2. **The digest is not a compile-seam quantity.** The compiler only
@@ -40,9 +41,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::frontmatter::{self, strip_yaml_frontmatter};
-use crate::mdx_jsx_emit::{
-    compile_mdx_to_jsx_module_cached, CompiledMdx, HeadingEntry, MdxModuleCache,
-};
+use crate::mdx_jsx_emit::{compile_mdx_to_jsx_module_cached, HeadingEntry, MdxModuleCache};
 use crate::pipeline::{Pipeline, PipelineError};
 
 /// Algorithm prefix on every [`RenderRegionMetadata::source_digest`].
@@ -122,21 +121,26 @@ pub fn region_id_addresses(specifier: &str, region_id: &str) -> bool {
         || (!region_id.contains('#') && region_id_without_hash(specifier) == region_id)
 }
 
-/// Read a markdown source and return `(module_specifier, metadata)` for
-/// it — the direct-page counterpart to the collection walker's
-/// per-entry metadata.
+/// Return `(module_specifier, metadata)` for a markdown source the caller
+/// has already read — the direct-page counterpart to the collection
+/// walker's per-entry metadata.
 ///
 /// Direct `pages/*.md` / `pages/*.mdx` routes are markdown-backed but are
 /// not collection members, so they never appear in a
 /// [`crate::content_bridge::ContentSnapshot`]. This is how the writer
 /// covers them.
 ///
+/// `raw` must be the file's bytes exactly as read — it is what gets
+/// digested, so any normalisation the caller applies first silently
+/// changes the contract. Reading (and any IO failure) stays the caller's,
+/// which is also what keeps this function pure.
+///
 /// # Cost
 ///
 /// The compile is served from `cache` in a real build: the bundler has
 /// already compiled the same body through an identically-configured
 /// pipeline, and `MdxModuleCache::process_global()` is shared across both.
-/// The extra work is therefore one file read plus one map lookup.
+/// The extra work is therefore one map lookup.
 ///
 /// **The caller must supply the same `pipeline` shape the bundler used**
 /// (build it from the same [`crate::PipelineSpec`]) — the compile-cache
@@ -150,7 +154,6 @@ pub fn region_id_addresses(specifier: &str, region_id: &str) -> bool {
 /// # Errors
 ///
 /// Returns [`PipelineError::Parse`] when the emitter rejects the body.
-/// Read failures are the caller's to handle — pass the bytes you read.
 pub fn render_region_metadata(
     path: &Path,
     raw: &str,
@@ -159,20 +162,10 @@ pub fn render_region_metadata(
 ) -> Result<(String, RenderRegionMetadata), PipelineError> {
     let body = markdown_page_body(path, raw);
     let compiled = compile_mdx_to_jsx_module_cached(&body, path, cache, pipeline)?;
-    Ok(from_compiled(&compiled, raw.as_bytes()))
-}
-
-/// Pair an already-performed compile with the raw bytes that produced it.
-///
-/// Split out from [`render_region_metadata`] so call sites that already
-/// hold both halves (the collection walker, a bundler pass) join them
-/// through one definition instead of re-deriving the shape.
-#[must_use]
-pub fn from_compiled(compiled: &CompiledMdx, raw: &[u8]) -> (String, RenderRegionMetadata) {
-    (
-        compiled.specifier.clone(),
-        RenderRegionMetadata::new(compiled.headings.clone(), source_digest(raw)),
-    )
+    Ok((
+        compiled.specifier,
+        RenderRegionMetadata::new(compiled.headings, source_digest(raw.as_bytes())),
+    ))
 }
 
 /// Frontmatter-strip a direct page source the way the bundler's page
@@ -200,12 +193,13 @@ fn markdown_page_body(path: &Path, raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::Pipeline;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Self-cleaning temp dir helper (mirrors the ones in `collection.rs`
+    /// and `content_bridge.rs`).
     struct TmpDir {
         path: PathBuf,
     }
@@ -297,6 +291,55 @@ mod tests {
         assert_eq!(slugs, vec!["alpha", "beta"]);
         assert_eq!(meta.headings[0].depth, 2);
         assert_eq!(meta.headings[1].depth, 3);
+    }
+
+    /// The cheapness claim in [`render_region_metadata`]'s docs is load
+    /// bearing: it holds only while this function strips the body exactly
+    /// as the bundler's page pass does, so the compile it asks for is the
+    /// entry the bundler already stored.
+    ///
+    /// Simulate the bundler's `.mdx` pass (compile
+    /// `strip_yaml_frontmatter(raw)` into a cache), then resolve the same
+    /// file's metadata against that cache and assert NO second entry
+    /// appeared — a divergent strip would add one. The fixture's body
+    /// starts with a blank line, which is exactly where the two dialects
+    /// disagree, so a wrong dialect cannot pass here by luck.
+    #[test]
+    fn direct_page_metadata_reuses_the_bundlers_compile_cache_entry() {
+        let tmp = TmpDir::new("direct-page-cache");
+        let raw = "---\ntitle: \"Notes\"\n---\n\n## Alpha\n";
+        let path = tmp.write("pages/notes.mdx", raw.as_bytes());
+        let cache = MdxModuleCache::new();
+
+        // The bundler's pages/`.mdx` mirror pass, reproduced.
+        let mut bundler_pipeline = Pipeline::with_defaults();
+        let bundler_compiled = compile_mdx_to_jsx_module_cached(
+            strip_yaml_frontmatter(raw),
+            &path,
+            Some(&cache),
+            Some(&mut bundler_pipeline),
+        )
+        .expect("bundler-shaped compile");
+        assert_eq!(
+            cache.len(),
+            1,
+            "the simulated bundler pass must populate the cache"
+        );
+
+        let mut writer_pipeline = Pipeline::with_defaults();
+        let (specifier, meta) =
+            render_region_metadata(&path, raw, Some(&mut writer_pipeline), Some(&cache))
+                .expect("writer-side metadata");
+
+        assert_eq!(
+            cache.len(),
+            1,
+            "resolving metadata must HIT the bundler's entry, not add a second one \
+             (a divergent frontmatter strip is what would add one)",
+        );
+        assert_eq!(specifier, bundler_compiled.specifier);
+        assert_eq!(meta.headings, bundler_compiled.headings);
+        assert_eq!(meta.source_digest, source_digest(raw.as_bytes()));
     }
 
     /// The `.md` / `.mdx` strip dialects differ on a body that starts

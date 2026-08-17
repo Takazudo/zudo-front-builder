@@ -130,12 +130,16 @@ impl ContentSnapshot {
     ///
     /// Returns `None` when nothing matches, when the snapshot was built
     /// without [`SnapshotOptions::render_metadata`], and — deliberately —
-    /// when a HASH-LESS `region_id` matches more than one entry. The
-    /// specifier's `<collection>` segment is the file's parent directory
-    /// name, not the configured collection name, so a nested entry and a
-    /// direct page can in principle collide once the hash is dropped;
-    /// resolving that arbitrarily would write one region's headings into
-    /// another region's artifact, so this fails closed instead.
+    /// when a HASH-LESS `region_id` matches more than one entry. That
+    /// collision is reachable because a specifier's `<collection>` segment
+    /// is the file's PARENT DIRECTORY name, not the configured collection
+    /// name: `guides/intro.md` in two different collections both mint
+    /// `mdx://guides/intro`. Picking one arbitrarily would write that
+    /// region's headings into the other's artifact, so this fails closed.
+    ///
+    /// Linear in the number of entries. Callers resolving many region ids
+    /// over one snapshot should hoist an index keyed by
+    /// [`EntrySnapshot::module_specifier`] rather than call this per route.
     #[must_use]
     pub fn render_metadata_for(&self, region_id: &str) -> Option<&RenderRegionMetadata> {
         let mut matched: Option<&EntrySnapshot> = None;
