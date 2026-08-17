@@ -6360,7 +6360,37 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // Snapshot construction is shared with `zfb dev` via
     // `build_content_snapshot_json` so both commands produce byte-identical
     // snapshots.
-    let content_snapshot_json = build_content_snapshot_json(project_root, config);
+    //
+    // Epic #2421 — this is the ONE place `emitRenderArtifacts` arms the
+    // render-metadata channel (#2423). The snapshot is built with the
+    // switch on, its per-entry `{ headings, sourceDigest }` is DRAINED
+    // into the writer's index, and only then serialized: draining leaves
+    // every entry's `render_metadata` back at `None`, which
+    // `skip_serializing_if` elides, so the JSON embedded in the worker
+    // bundle is byte-identical to the flag-off build. One collection
+    // walk, no bundle-byte drift.
+    let mut render_metadata = crate::commands::render_artifact::RenderMetadataIndex::default();
+    let content_snapshot_json = {
+        let mut snapshot = build_content_snapshot(
+            project_root,
+            config,
+            zfb_content::SnapshotOptions {
+                render_metadata: config.emit_render_artifacts,
+            },
+        );
+        if config.emit_render_artifacts {
+            if let Some(snap) = snapshot.as_mut() {
+                render_metadata.drain_snapshot(snap);
+            }
+            extend_render_metadata_with_direct_pages(
+                &mut render_metadata,
+                project_root,
+                config,
+                routes,
+            );
+        }
+        snapshot.as_ref().and_then(serialize_content_snapshot)
+    };
 
     if static_routes.is_empty() && still_deferred.is_empty() && ssr_deferred.is_empty() {
         // Stay user-friendly: an all-dynamic project where every page
@@ -6699,6 +6729,27 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         config.trailing_slash,
     )
     .context("link base rewrite failed")?;
+
+    // 3.6b. Optional render-artifact export (epic #2421).
+    //
+    // Slice each page's content region out, strip ALL sentinels in place,
+    // and write `dist/__zfb/render/<derived>.json`. The position is the
+    // contract: both URL rewrites above have already run, so the captured
+    // fragment carries the SAME asset URLs and base-prefixed links the
+    // shipped page does, while minification and every later pass below
+    // see marker-free HTML. Off by default and a single boolean test when
+    // off — nothing is read or written.
+    crate::commands::render_artifact::export_render_artifacts(
+        config.emit_render_artifacts,
+        outdir,
+        &post_processable_pages,
+        &route_universe_for_rewrite
+            .iter()
+            .map(|(url, rel)| (outdir.join(rel), url.clone()))
+            .collect(),
+        &render_metadata,
+    )
+    .context("render artifact export failed")?;
 
     // 3.7. Optional production HTML minification.
     //
@@ -7133,7 +7184,7 @@ fn minify_rendered_html_files(paths: &[std::path::PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn is_html_output_path(path: &Path) -> bool {
+pub(crate) fn is_html_output_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
@@ -7235,6 +7286,40 @@ pub(crate) fn read_tsconfig_paths(
 /// `getCollection(...)` resolves against the placeholder empty snapshot
 /// and every collection query returns `[]`).
 pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) -> Option<String> {
+    let snapshot = build_content_snapshot(
+        project_root,
+        config,
+        zfb_content::SnapshotOptions::default(),
+    )?;
+    serialize_content_snapshot(&snapshot)
+}
+
+/// Serialize a built snapshot for embedding in the worker bundle.
+///
+/// Split out of [`build_content_snapshot_json`] so `zfb build` can hold
+/// on to the `ContentSnapshot` itself (it drains the render-metadata
+/// channel out of it, epic #2421) and still produce the same JSON.
+pub(crate) fn serialize_content_snapshot(
+    snapshot: &zfb_content::ContentSnapshot,
+) -> Option<String> {
+    match serde_json::to_string(snapshot) {
+        Ok(json) => Some(json),
+        Err(e) => {
+            output::warn(format!(
+                "content snapshot serialization failed ({e}); getCollection(...) will see empty collections"
+            ));
+            None
+        }
+    }
+}
+
+/// Build the content snapshot itself, with the caller's opt-in switches
+/// applied. See [`build_content_snapshot_json`] for the shared contract.
+pub(crate) fn build_content_snapshot(
+    project_root: &Path,
+    config: &Config,
+    options: zfb_content::SnapshotOptions,
+) -> Option<zfb_content::ContentSnapshot> {
     if config.collections.is_empty() {
         return None;
     }
@@ -7264,21 +7349,101 @@ pub(crate) fn build_content_snapshot_json(project_root: &Path, config: &Config) 
         spec.resolve_source_map = build_resolve_source_map_for_snapshot(project_root, config);
         spec
     };
-    match zfb_content::build_snapshot_with_config(&collections, &snapshot_config) {
-        Ok(snap) => match serde_json::to_string(&snap) {
-            Ok(json) => Some(json),
-            Err(e) => {
-                output::warn(format!(
-                    "content snapshot serialization failed ({e}); getCollection(...) will see empty collections"
-                ));
-                None
-            }
-        },
+    match zfb_content::build_snapshot_with_options(&collections, &snapshot_config, options) {
+        Ok(snap) => Some(snap),
         Err(e) => {
             output::warn(format!(
                 "content snapshot build failed ({e}); getCollection(...) will see empty collections"
             ));
             None
+        }
+    }
+}
+
+/// Cover direct `pages/*.md` / `pages/*.mdx` routes in the render-metadata
+/// index (epic #2421).
+///
+/// These are markdown-backed routes that are NOT collection members, so
+/// they never appear in a `ContentSnapshot` and the snapshot channel
+/// cannot reach them; `zfb_content::render_region_metadata` is the
+/// direct-page half of the same channel (#2423).
+///
+/// The per-entry pipeline setup mirrors the bundler's `.md` page pass
+/// (`materialise_pages` in `crates/zfb-build/src/bundler.rs`) exactly:
+/// same `PipelineSpec`, `reset_per_entry()` before each file, and the
+/// resolve-links source file set when a source map is configured. That is
+/// load-bearing, not hygiene — `resolveMarkdownLinks` rewrites link URLs
+/// inside the compiled JSX, and the specifier's `#<hash8>` is a hash OF
+/// that JSX. A pipeline shaped differently from the bundler's would mint
+/// a different specifier and the writer's join would miss on every page.
+/// Matching it also makes the compile a hit on the shared process-global
+/// MDX cache rather than a second full compile.
+///
+/// Failures are per-page warnings: a page with no metadata simply gets no
+/// artifact, which is strictly better than failing a build over an
+/// opt-in emission.
+fn extend_render_metadata_with_direct_pages(
+    index: &mut crate::commands::render_artifact::RenderMetadataIndex,
+    project_root: &Path,
+    config: &Config,
+    routes: &[zfb_router::Route],
+) {
+    let mut sources: Vec<&Path> = routes
+        .iter()
+        .filter(|r| !r.static_html)
+        .map(|r| r.source_path.as_path())
+        .filter(|p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("mdx"))
+        })
+        .collect();
+    sources.sort_unstable();
+    sources.dedup();
+    if sources.is_empty() {
+        return;
+    }
+
+    let spec = {
+        let mut spec =
+            crate::commands::bundler_input::pipeline_spec_from_config(project_root, config);
+        spec.resolve_source_map = build_resolve_source_map_for_snapshot(project_root, config);
+        spec
+    };
+    let mut pipeline = match spec.build_pipeline() {
+        Ok(p) => p,
+        Err(e) => {
+            output::warn(format!(
+                "render artifacts: could not build the markdown pipeline for direct pages ({e}); \
+                 those routes will get no artifact"
+            ));
+            return;
+        }
+    };
+    let cache = zfb_content::mdx_jsx_emit::MdxModuleCache::process_global();
+
+    for source in sources {
+        let raw = match std::fs::read_to_string(source) {
+            Ok(raw) => raw,
+            Err(e) => {
+                output::warn(format!(
+                    "render artifacts: could not read {} ({e}); it will get no artifact",
+                    source.display()
+                ));
+                continue;
+            }
+        };
+        pipeline.reset_per_entry();
+        if spec.resolve_source_map.is_some() {
+            pipeline.set_resolve_links_source_file(source.to_path_buf());
+        }
+        match zfb_content::render_region_metadata(source, &raw, Some(&mut pipeline), Some(cache)) {
+            Ok((specifier, metadata)) => index.insert(&specifier, metadata),
+            Err(e) => output::warn(format!(
+                "render artifacts: could not derive region metadata for {} ({e}); \
+                 it will get no artifact",
+                source.display()
+            )),
         }
     }
 }
