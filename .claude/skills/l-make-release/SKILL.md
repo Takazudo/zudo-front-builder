@@ -351,23 +351,30 @@ Rules:
 - Only include sections that have entries.
 - Use today's date for `Released`.
 - Each entry: commit subject followed by the short hash in parentheses.
-- `sidebar_position` formula: `MAJOR*10000000 + MINOR*100000 + PATCH*1000 + (prereleaseN || 999)`
-  - Every slot is 3 digits wide: minor and patch up to 99, prerelease N up to 998. Stable versions
-    use `999` in the prerelease slot so they sort **above** every prerelease on the same release
-    triple, under the changelog category's `category_sort_order: desc`.
-  - Examples: `1.0.1-next.1` = **10001001**; `1.0.1-next.10` = **10001010**; `1.0.1-next.99` = **10001099**; `1.0.1` (stable) = **10001999**; `1.1.0` = **10100999**; `2.0.0` = **20000999**.
-  - Desc-sorted: 20000999 > 10100999 > 10001999 > 10001099 > 10001010 > 10001001 → stable above its own prereleases, newer prereleases above older ones, at any N.
-  - **Why this is wider than it looks like it needs to be** (do NOT "simplify" it back): the previous
-    formula gave each slot only one digit — `MAJOR*10000 + MINOR*1000 + PATCH*10 + (N || 10)` — so it
-    broke as soon as a prerelease counter reached 10. Real collisions in this repo's own history:
-    `0.1.0-next.10` computed **1010**, identical to what stable `0.1.0` would have taken, and
-    `0.1.0-next.11` = **1011** sorted *above* it. A minor of `0.10.0` collided with `1.0.0` the same
-    way. The `0.1.0-next.*` line ran to **next.99**, so this was not a theoretical bound.
-  - **Legacy values are intentionally NOT migrated.** Every changelog page written before v1.0.0
-    keeps its old-formula number (the largest is `v1.0.0.mdx` at **10010**). No migration is needed:
-    the smallest value this formula can emit for any version after 1.0.0 is `1.0.1-next.1` =
-    10001001, which already exceeds 10010, so new entries always sort above every legacy entry and
-    relative order is preserved across the two schemes. Do not renumber the existing pages.
+- `sidebar_position` = **max existing position among the changelog version pages + 1**. Compute it
+  mechanically — never guess:
+
+  ```bash
+  ls docs/src/content/docs/changelog/v*.mdx \
+    | xargs grep -h '^sidebar_position:' | awk '{print $2}' | sort -n | tail -1
+  ```
+
+  Add 1 to that. Every release — stable or prerelease — appends the next integer, because releases
+  are cut in chronological order and the version sequence only moves forward. The changelog
+  category's `category_sort_order: desc` (set in `changelog/index.mdx`) flips the sidebar to
+  newest-first. `index.mdx` itself is EXCLUDED — its `sidebar_position` places the whole category
+  among the top-level docs sections, not a page within it; never touch it here and never include it
+  in the max scan (the `v*.mdx` glob above already excludes it).
+
+  - This replaces the retired encoded-semver mega-number formula
+    (`MAJOR*10000000 + MINOR*100000 + PATCH*1000 + …`, values like `20700999`). All 110 pre-existing
+    pages were renumbered to plain 1..N in semver order on 2026-08-18 (zudo-doc's own changelog uses
+    the same plain-increment style). Do NOT resurrect the mega-number formula: a mega-number page
+    sorts above every incremental page and would pin itself to the top of the sidebar forever.
+  - Edge case — releasing on an older line (e.g. a `2.6.x` patch after `2.7.0` exists): plain
+    max+1 would place it above `2.7.0` in the sidebar. This has never happened in this repo
+    (releases are strictly forward); if it ever does, renumber the affected tail by hand so
+    position order matches semver order, and say so in the release report.
 
 ## Step 5: Build + Test (focused)
 
