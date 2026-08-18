@@ -135,7 +135,10 @@ use zfb_content::{
     CrossFileLinkCandidate, FileHeadings, MdxModuleCache,
 };
 use zfb_render::adapters::{make_adapter, Framework};
-use zfb_types::{json_string as json_str, normalize_path_lexical, path_to_posix_string};
+use zfb_types::{
+    json_string as json_str, normalize_path_lexical, path_to_posix_string, REGION_ID_ATTR,
+    RENDER_REGION_ATTR,
+};
 
 use crate::adapter::run_capturing;
 // The `import.meta.glob` expansion helpers moved to their own `pub` module
@@ -11293,14 +11296,20 @@ pub(crate) fn render_md_page_shell(
         Some(id) => format!("const __zfbRegionId = {};\n", json_str(id)),
         None => String::new(),
     };
+    // Built from the shared `zfb-types` attribute-name constants so the
+    // attribute names cannot drift from the canonical marker contract —
+    // the full canonical string can't be reused here, since this form is
+    // self-closing with an expression-valued id (see
+    // `zfb_types::render_region`'s module doc for the "not covered here"
+    // rationale). Byte-pinned by the shell tests below (~L20184, ~L20219).
     let (region_start, region_end) = match render_region_id {
         Some(_) => (
-            "\u{0020}       <template data-zfb-render-region=\"start\" \
-             data-zfb-region-id={__zfbRegionId} />\n"
-                .to_string(),
-            "\u{0020}       <template data-zfb-render-region=\"end\" \
-             data-zfb-region-id={__zfbRegionId} />\n"
-                .to_string(),
+            format!(
+                "\u{0020}       <template {RENDER_REGION_ATTR}=\"start\" {REGION_ID_ATTR}={{__zfbRegionId}} />\n"
+            ),
+            format!(
+                "\u{0020}       <template {RENDER_REGION_ATTR}=\"end\" {REGION_ID_ATTR}={{__zfbRegionId}} />\n"
+            ),
         ),
         None => (String::new(), String::new()),
     };
