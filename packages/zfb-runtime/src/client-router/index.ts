@@ -2,7 +2,11 @@
 // This file is the barrel for @takazudo/zfb-runtime's client-router export.
 // W3D adds the <ClientRouter /> component and ClientRouterProps re-exports.
 
-// Component (W3D).
+// Component (W3D). Re-exported via the activation shim `../client-router.js`
+// (not `../client-router-component.js` directly) so importing this subpath
+// barrel — the target of the islands bundler's auto-injected
+// `import "@takazudo/zfb-runtime/client-router"` — keeps activating the
+// router at module eval, byte-compatible with pre-split behavior (#2437).
 export { ClientRouter, type ClientRouterProps } from "../client-router.js";
 
 export {

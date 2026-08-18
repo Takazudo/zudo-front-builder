@@ -30,9 +30,11 @@
 // W3C2 additions (this file):
 //   - `navigate()` public entry.
 //   - `onPopState`, `onScrollEnd`.
-//   - Top-level `if (inBrowser)` initialization block (seeds `currentHistoryIndex`
-//     from `history.state`, registers popstate / load / scrollend listeners, and
-//     marks already-executed scripts with `dataset["zfbExec"] = ""`).
+//   - Seeding `currentHistoryIndex` from `history.state`, registering popstate /
+//     load / scrollend listeners, and marking already-executed scripts with
+//     `dataset["zfbExec"] = ""`. W3C2 did all of this in two bare top-level
+//     `if (inBrowser)` blocks; #2436 folded both into `init()` (see the two
+//     once-guards there) so evaluating this module has no side effect at all.
 //
 // W3C1 items deferred to — and since implemented in — W3C3:
 //   - `announce()` route-announcer implementation (see the route-announcer block below;
@@ -197,18 +199,30 @@ let parser: DOMParser;
 // can use that to determine popstate if going forward or back.
 let currentHistoryIndex = 0;
 
-if (inBrowser) {
-  if (history.state) {
-    // Here we reloaded a page with history state
-    // (e.g. history navigation from non-transition page or browser reload)
-    currentHistoryIndex = history.state.index;
-    scrollTo({ left: history.state.scrollX, top: history.state.scrollY });
-  } else if (transitionEnabledOnThisPage()) {
-    // This page is loaded from the browser address bar or via a link from extern,
-    // it needs a state in the history
-    safeReplaceState({ index: currentHistoryIndex, scrollX, scrollY }, "");
-    history.scrollRestoration = "manual";
-  }
+// Once-guard for the navigation bookkeeping below. `init()` sets it too, so a
+// later ensureNavigationState() can never clobber the activation-time seed.
+let navigationStateSeeded = false;
+
+/**
+ * Seed the module's navigation bookkeeping — `originalLocation` (declared
+ * without an initializer) and the tracked history index — from the live
+ * document, once.
+ *
+ * Deliberately side-effect free beyond those two variables: it registers no
+ * listener, writes no history entry, never scrolls, and never marks scripts.
+ * All of that belongs to {@link init}. Its only job is to keep an init-less
+ * `navigate()` / `syncHistoryEntry()` from reading `undefined` or stamping a
+ * fresh entry with the module default index — using the router without
+ * activating it is documented as unsupported, but it must not throw and must
+ * not mis-stamp. An existing finite `history.state.index` is ADOPTED, never
+ * reset: on a page whose entry is already index 7, the next push must be 8. (#2436)
+ */
+function ensureNavigationState(): void {
+  if (navigationStateSeeded || !inBrowser) return;
+  navigationStateSeeded = true;
+  originalLocation = new URL(location.href);
+  const index = history.state?.index;
+  if (Number.isFinite(index)) currentHistoryIndex = index;
 }
 
 // returns the contents of the page or null if the router can't deal with it.
@@ -447,6 +461,10 @@ export function syncHistoryEntry(url: string | URL, options: SyncHistoryEntryOpt
     }
     return;
   }
+
+  // Adopt this page's existing history index before stamping an entry — an
+  // init-less caller must not reset a live entry's index to the module default.
+  ensureNavigationState();
 
   const to = new URL(url, location.href);
 
@@ -987,6 +1005,9 @@ export async function navigate(href: string, options?: Options) {
     }
     return;
   }
+  // `originalLocation` is seeded by init(); seed it here too so an init-less
+  // caller never hands transition() an undefined "from" URL.
+  ensureNavigationState();
   await transition("forward", originalLocation, new URL(href, location.href), options ?? {});
 }
 
@@ -1052,21 +1073,21 @@ const onScrollEnd = () => {
 
 // zfb-only addition (no Astro upstream — see file header "zfb-only additions").
 // WebKit serves Back navigations after an SPA route change from the bfcache:
-// the page is restored without re-evaluating this module, so the init-block
-// seed below (which sets `currentHistoryIndex` from `history.state.index`)
-// never re-runs and the tracked index can desync from the live history stack.
-// A desynced index makes onPopState's direction calc misfire, so Back skips an
-// entry. On a persisted (bfcache) restore we re-seed the tracked index and the
-// `originalLocation` "from" URL from the live state, and restore scroll —
-// mirroring the init-block seed. This is a no-op on a normal load (`persisted`
-// falsy/absent) and idempotent (re-seeding from the same state twice changes
-// nothing and fires no transition).
+// the page is restored without re-evaluating this module or re-running init(),
+// so `seedPageState()` below (which sets `currentHistoryIndex` from
+// `history.state.index`) never re-runs and the tracked index can desync from
+// the live history stack. A desynced index makes onPopState's direction calc
+// misfire, so Back skips an entry. On a persisted (bfcache) restore we re-seed
+// the tracked index and the `originalLocation` "from" URL from the live state,
+// and restore scroll — mirroring that seed. This is a no-op on a normal load
+// (`persisted` falsy/absent) and idempotent (re-seeding from the same state
+// twice changes nothing and fires no transition).
 const onPageShow = (ev: PageTransitionEvent) => {
-  // Normal (non-bfcache) loads already ran the init-block seed; leave them be.
+  // Normal (non-bfcache) loads already ran init()'s seed; leave them be.
   if (!ev.persisted) return;
-  // The init block sets `originalLocation` and `currentHistoryIndex` together;
-  // re-sync both here so the next transition() gets the correct `from` URL
-  // (a stale `originalLocation` would feed onPopState the wrong origin).
+  // init() seeds `originalLocation` and `currentHistoryIndex` together; re-sync
+  // both here so the next transition() gets the correct `from` URL (a stale
+  // `originalLocation` would feed onPopState the wrong origin).
   originalLocation = new URL(location.href);
   const index = history.state?.index;
   if (Number.isFinite(index)) {
@@ -1077,65 +1098,116 @@ const onPageShow = (ev: PageTransitionEvent) => {
   }
 };
 
-// initialization
-if (inBrowser) {
-  if (supportsViewTransitions || getFallback() !== "none") {
-    originalLocation = new URL(location.href);
-    addEventListener("popstate", onPopState);
-    addEventListener("load", onPageLoad);
-    // Re-sync the tracked history index + scroll on a WebKit bfcache restore;
-    // a no-op on normal loads. See onPageShow above.
-    addEventListener("pageshow", onPageShow);
-    // There's not a good way to record scroll position before a history back
-    // navigation, so we will record it when the user has stopped scrolling.
-    if ("onscrollend" in window) addEventListener("scrollend", onScrollEnd);
-    else {
-      // Keep track of state between intervals
-      let intervalId: number | undefined, lastY: number, lastX: number, lastIndex: State["index"];
-      const scrollInterval = () => {
-        // The interval can outlive its document context — a test-env teardown or a
-        // real page unload removes window/history before the 50ms tick. `typeof`
-        // never throws even when the global is gone: stop the interval and bail
-        // rather than dereferencing a torn-down global (the #1061 bug class; #1063).
-        // In a real browser these globals always exist, so this path is test-env
-        // only. clearInterval may itself be mid-teardown, so guard the call too.
-        if (typeof window === "undefined" || typeof history === "undefined") {
-          if (typeof clearInterval === "function") clearInterval(intervalId);
-          intervalId = undefined;
-          return;
-        }
-        // Check the index to see if a popstate event was fired
-        if (lastIndex !== history.state?.index) {
-          clearInterval(intervalId);
-          intervalId = undefined;
-          return;
-        }
-        // Check if the user stopped scrolling
-        if (lastY === scrollY && lastX === scrollX) {
-          // Cancel the interval and update scroll positions
-          clearInterval(intervalId);
-          intervalId = undefined;
-          onScrollEnd();
-          return;
-        } else {
-          ((lastY = scrollY), (lastX = scrollX));
-        }
-      };
-      // We can't know when or how often scroll events fire, so we'll just use them to start intervals
-      addEventListener(
-        "scroll",
-        () => {
-          if (intervalId !== undefined) return;
-          ((lastIndex = history.state?.index), (lastY = scrollY), (lastX = scrollX));
-          intervalId = window.setInterval(scrollInterval, 50);
-        },
-        { passive: true },
-      );
+// ---- initialization (folded out of module scope by #2436) ----
+
+// Once-guard for the page-state phase of init(). Deliberately SEPARATE from the
+// `initialized` latch below, because the two phases have different eligibility:
+// this one runs on EVERY browser page — including one where view transitions
+// are ineligible (no native support and fallback "none") — while the activation
+// listeners are VT-gated. A single shared latch would either skip this phase
+// forever after an ineligible early call, or latch activation on a page that
+// never qualified for it. (#2436)
+let pageStateSeeded = false;
+
+/**
+ * Everything module evaluation used to do for EVERY browser page, regardless
+ * of view-transition eligibility: restore (or seed) this page's history entry
+ * and its scroll position, and mark the scripts the initial page load already
+ * executed so runScripts() does not re-run them after a swap.
+ *
+ * Called from init() BEFORE its eligibility early-return — that gating
+ * asymmetry is load-bearing and predates the fold: a page with fallback "none"
+ * still needs its history entry restored and its scripts marked. (#2436)
+ */
+function seedPageState(): void {
+  if (pageStateSeeded) return;
+  pageStateSeeded = true;
+
+  if (history.state) {
+    // Here we reloaded a page with history state
+    // (e.g. history navigation from non-transition page or browser reload)
+    // Adopt only a finite index — a foreign pre-init history.state (e.g. a
+    // consumer's own replaceState({modal: true})) has no router index, and
+    // adopting undefined would stamp the next push with NaN. Same guard as
+    // ensureNavigationState() and onPageShow(). (#2436)
+    const index = history.state.index;
+    if (Number.isFinite(index)) currentHistoryIndex = index;
+    // Skip the scroll restore when an init-less navigate()/syncHistoryEntry()
+    // already ran on this page (navigationStateSeeded latched before init):
+    // the entry it pushed is stamped scrollX/scrollY 0, and a late-activating
+    // init() must not yank the already-scrolled viewport to the top. (#2436)
+    if (!navigationStateSeeded) {
+      scrollTo({ left: history.state.scrollX, top: history.state.scrollY });
     }
+  } else if (transitionEnabledOnThisPage()) {
+    // This page is loaded from the browser address bar or via a link from extern,
+    // it needs a state in the history
+    safeReplaceState({ index: currentHistoryIndex, scrollX, scrollY }, "");
+    history.scrollRestoration = "manual";
   }
+
   for (const script of document.getElementsByTagName("script")) {
     detectScriptExecuted(script);
     script.dataset["zfbExec"] = "";
+  }
+}
+
+/**
+ * Register the window-level navigation listeners. Called from init() only
+ * after the view-transition eligibility check, and only once — the
+ * `initialized` latch owns this phase.
+ */
+function registerNavigationListeners(): void {
+  addEventListener("popstate", onPopState);
+  addEventListener("load", onPageLoad);
+  // Re-sync the tracked history index + scroll on a WebKit bfcache restore;
+  // a no-op on normal loads. See onPageShow above.
+  addEventListener("pageshow", onPageShow);
+  // There's not a good way to record scroll position before a history back
+  // navigation, so we will record it when the user has stopped scrolling.
+  if ("onscrollend" in window) addEventListener("scrollend", onScrollEnd);
+  else {
+    // Keep track of state between intervals
+    let intervalId: number | undefined, lastY: number, lastX: number, lastIndex: State["index"];
+    const scrollInterval = () => {
+      // The interval can outlive its document context — a test-env teardown or a
+      // real page unload removes window/history before the 50ms tick. `typeof`
+      // never throws even when the global is gone: stop the interval and bail
+      // rather than dereferencing a torn-down global (the #1061 bug class; #1063).
+      // In a real browser these globals always exist, so this path is test-env
+      // only. clearInterval may itself be mid-teardown, so guard the call too.
+      if (typeof window === "undefined" || typeof history === "undefined") {
+        if (typeof clearInterval === "function") clearInterval(intervalId);
+        intervalId = undefined;
+        return;
+      }
+      // Check the index to see if a popstate event was fired
+      if (lastIndex !== history.state?.index) {
+        clearInterval(intervalId);
+        intervalId = undefined;
+        return;
+      }
+      // Check if the user stopped scrolling
+      if (lastY === scrollY && lastX === scrollX) {
+        // Cancel the interval and update scroll positions
+        clearInterval(intervalId);
+        intervalId = undefined;
+        onScrollEnd();
+        return;
+      } else {
+        ((lastY = scrollY), (lastX = scrollX));
+      }
+    };
+    // We can't know when or how often scroll events fire, so we'll just use them to start intervals
+    addEventListener(
+      "scroll",
+      () => {
+        if (intervalId !== undefined) return;
+        ((lastIndex = history.state?.index), (lastY = scrollY), (lastX = scrollX));
+        intervalId = window.setInterval(scrollInterval, 50);
+      },
+      { passive: true },
+    );
   }
 }
 
@@ -1267,26 +1339,48 @@ export interface InitOptions {
   prefetchAll?: boolean;
 }
 
-// Guard flag — ensures click + submit listeners are registered only once even if
-// init() is called multiple times (e.g. two <ClientRouter> mounts on the same page).
+// Guard flag — ensures the activation listeners (popstate/load/pageshow/scroll
+// plus click + submit) are registered only once even if init() is called
+// multiple times (e.g. two <ClientRouter> mounts on the same page).
 let initialized = false;
 
 /**
- * Wire up the client-router's click and form-submit intercepts.
- * Safe to call multiple times — subsequent calls are no-ops (idempotent).
+ * Bootstrap the client router on this page: restore its history entry, mark
+ * the already-executed scripts, and wire up the navigation, click and
+ * form-submit listeners. Safe to call multiple times — each of the two phases
+ * runs at most once (idempotent).
+ *
+ * Evaluating this module does nothing; every side effect the router performs
+ * at startup happens here (#2436). Two once-guards rather than one, because
+ * the phases have different eligibility — see `pageStateSeeded`.
  *
  * @param _options - Forward-compat hook matching Astro's init() signature. Ignored in v1.
  */
 export function init(_options?: InitOptions): void {
+  if (!inBrowser) return;
+
+  // Phase 1 — runs on every browser page, even a view-transition-ineligible
+  // one, and therefore BEFORE the eligibility early-return below.
+  seedPageState();
+
   if (initialized) return;
 
-  // Latch the guard only AFTER the early-return guards below: an ineligible
-  // early call (no browser, or fallback "none") must not permanently latch
-  // `initialized`, or a later legitimately-eligible init() would no-op forever.
-  if (!inBrowser) return;
+  // Phase 2 — activation. Latch the guard only AFTER this eligibility check:
+  // an ineligible early call (fallback "none" and no native view transitions)
+  // must not permanently latch `initialized`, or a later legitimately-eligible
+  // init() would no-op forever.
   if (!supportsViewTransitions && getFallback() === "none") return;
 
   initialized = true;
+
+  // Where we came from, for the first transition() of this page. Re-seeded
+  // unconditionally at activation (as module evaluation used to do), so it
+  // reflects the URL at activation time even if an init-less navigate() or
+  // syncHistoryEntry() already primed it via ensureNavigationState().
+  navigationStateSeeded = true;
+  originalLocation = new URL(location.href);
+
+  registerNavigationListeners();
 
   document.addEventListener("click", handleClick);
   document.addEventListener("submit", handleSubmit as EventListener);

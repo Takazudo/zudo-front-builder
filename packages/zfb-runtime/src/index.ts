@@ -38,7 +38,15 @@ export { ViewTransitions, type ViewTransitionsElement } from "./view-transitions
 
 // Client-router public surface (W3D — mirrors @takazudo/zfb-runtime/client-router barrel).
 // See W1B §2 for the full public API spec.
-export { ClientRouter, type ClientRouterProps } from "./client-router.js";
+//
+// ClientRouter is imported from the pure component module, NOT the
+// `./client-router.js` activation shim (#2437): the shim runs `init()` as a
+// module-scope side effect, which would make `import { ClientRouter } from
+// "@takazudo/zfb-runtime"` silently activate the router. The pure module
+// performs zero side effects, so the root barrel stays side-effect-free.
+// `import "@takazudo/zfb-runtime/client-router"` (the shim's subpath) remains
+// the byte-compatible activation entry point — see client-router.ts.
+export { ClientRouter, type ClientRouterProps } from "./client-router-component.js";
 export {
   navigate,
   supportsViewTransitions,

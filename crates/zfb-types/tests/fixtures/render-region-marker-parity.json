@@ -1,0 +1,17 @@
+{
+  "_comment": "Shared parity fixture for the render-region sentinel marker (epic #2421 / #2432). Consumed by crates/zfb-types/tests/render_region_marker_parity.rs (the canonical serializer in crates/zfb-types/src/render_region.rs), crates/zfb/src/commands/render_artifact.rs's parse_marker round-trip test, and the TS renderer-driven oracle in packages/zfb/src/__tests__/render-region-marker-cases.ts. Any drift between producers/consumers is caught by whichever side reads this file.",
+  "cases": [
+    {
+      "id": "mdx://blog/hello",
+      "start": "<template data-zfb-render-region=\"start\" data-zfb-region-id=\"mdx://blog/hello\"></template>",
+      "end": "<template data-zfb-render-region=\"end\" data-zfb-region-id=\"mdx://blog/hello\"></template>",
+      "_note": "plain id, no special characters"
+    },
+    {
+      "id": "mdx://blog/tom &amp; jerry",
+      "start": "<template data-zfb-render-region=\"start\" data-zfb-region-id=\"mdx://blog/tom &amp; jerry\"></template>",
+      "end": "<template data-zfb-render-region=\"end\" data-zfb-region-id=\"mdx://blog/tom &amp; jerry\"></template>",
+      "_note": "HTML-escaped id (& -> &amp;): renderers escape attribute values before this pass ever runs; parse_marker takes the id verbatim and does NOT un-escape it back to the original specifier — see render_artifact.rs's parse_marker doc comment for the full asymmetry rationale"
+    }
+  ]
+}
