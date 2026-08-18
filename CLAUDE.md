@@ -44,6 +44,41 @@ Use only when you genuinely need to push from a worktree (rare). Never set this 
 - **`/x-wt-teams` manager session:** the hook does not affect you. Your `git push` runs from the main repo (the cwd is the repo root, not `worktrees/...`). After every wave's local merges, push as usual. Do not pass `ALLOW_WORKTREE_PUSH` to children.
 - **Remove each topic worktree right after its wave merges** (`git worktree remove worktrees/<topic>` once the merge is pushed and reviews are settled — re-verify the worktree is clean first). Every worktree accumulates its own `target/` (6–30G on this Rust workspace); leaving three merged worktrees around filled the disk mid-epic during #1670 (2026-07). Do not delete a worktree with uncommitted changes — surface it instead.
 
+## npm dist-tags: `latest` always, `next` only while it is ahead
+
+zfb publishes 10 packages in lockstep (5 platform + `@takazudo/zfb`, `zfb-runtime`,
+`zfb-adapter-cloudflare`, `create-zfb`, `zfb-md-wasm`). The rule for their dist-tags:
+
+**A dist-tag is a promise to keep moving it. Only two states are safe — a tag that
+always advances, or no tag at all.** A *frozen* tag is worse than a missing one:
+it still resolves, so tooling reads it as a live channel and silently installs old
+code, where a missing tag fails loudly.
+
+- **`latest`** — maintained by npm on publish, plus `scripts/advance-latest-dist-tag.sh`
+  during the prerelease phase (the `ALSO_LATEST` gate in `release.yml`, #481).
+- **`next`** — NOT a standing channel. It exists only while a prerelease is
+  *strictly ahead* of `latest`. `scripts/retire-next-dist-tag.mjs` runs from
+  `release.yml` on every publish and removes `next` wherever it is no longer
+  ahead. A genuine soak (`next=3.0.0-next.1` vs `latest=2.7.2`) survives a stable
+  patch release; a graduated one is deleted. The script always exits 0 — a
+  leftover dist-tag must never redden an otherwise good release, and the
+  invariant self-heals on the next one.
+
+This exists because it already went wrong once: zfb graduated at `1.0.0`, shipped
+`1.1.0-next.1` on 2026-07-31, and never touched `next` again — so `@takazudo/zfb@next`
+served a version a full major behind while `latest` walked to 2.7.1, confusing
+consumers and dependency-bumping tooling. `release.yml` had only the forward half
+of the invariant (advance `latest` during prerelease); the retirement script is the
+missing reverse half.
+
+**When adding a publishable package**, add it to BOTH `advance-latest-dist-tag.sh`
+and `PUBLISHED_PACKAGES` in `retire-next-dist-tag.mjs`. The drift guard in
+`scripts/__tests__/retire-next-dist-tag.test.mjs` fails the T1 gate if the two
+lists disagree with each other or with the workspace's set of non-private packages.
+
+`drift-net.yml` deliberately smokes **`latest` only**. A scheduled leg on `next`
+would go red every week whenever the tag is correctly absent.
+
 ## Testing
 
 zfb follows the **zudo-test-wisdom** strategy (the full guide: <https://takazudomodular.com/pj/zudo-test>). This section is the zfb-adapted, agent-facing summary — read it before writing or fixing tests. Every test sits on **two axes**:
