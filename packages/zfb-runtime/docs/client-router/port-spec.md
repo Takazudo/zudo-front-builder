@@ -75,6 +75,22 @@ Astro's source lives under `src/transitions/` because Astro uses "transitions" a
 > `init()` lives in `client-router/router.ts` and is called as a side effect
 > on first import of `client-router.ts` (guarded by the `initialized` flag in
 > `router.ts`). There is no `client-router/init.ts` file.
+>
+> **Amendment (2026-08, #2436 + #2437):** the component and the activation are
+> now two files. `client-router-component.ts` is the pure component — JSX,
+> props, VNode minting, the prefetch bootstrap — importing only
+> `react/jsx-runtime` and `client-router/prefetch.js`, with no module-scope
+> `document`/`window` access. `client-router.ts` is the activation shim: it
+> re-exports that surface and additionally runs `init()` on module eval. The
+> root barrel (`src/index.ts`) takes `ClientRouter` from the pure module, so
+> `import { ClientRouter } from "@takazudo/zfb-runtime"` performs zero side
+> effects; `client-router/index.ts` takes it from the shim, so
+> `import "@takazudo/zfb-runtime/client-router"` still activates the router
+> byte-compatibly with pre-split behavior. `router.ts` itself is now
+> side-effect-free too (#2436) — its two former top-level `if (inBrowser)`
+> blocks moved into `init()` behind separate once-guards, so `init()` owns
+> every startup effect: history seeding, scroll restore, `zfbExec` script
+> marking, and every listener registration.
 
 ---
 
@@ -114,7 +130,11 @@ export type { Direction, Fallback, NavigationTypeString, Options } from "./clien
 > "zfb:navigation-aborted"` (see `client-router/events.ts:10` and
 > `index.ts:64`). The constant is exported alongside the five constants above.
 > Additionally, the spec code block above references `"./client-router.tsx"`;
-> the shipped file is `"./client-router.js"` (compiled from `client-router.ts`).
+> the shipped root barrel re-exports `ClientRouter` from
+> `"./client-router-component.js"` (the pure component, #2437) — deliberately
+> not from `"./client-router.js"`, whose module eval would activate the router
+> and make the root barrel side-effecting. The `./client-router` subpath barrel
+> is the one that goes through the shim.
 
 The existing `ViewTransitions` typed no-op stays exported as a deprecated alias. Note: it is NOT replaced by `ClientRouter`; the names are separate and the deprecation comment on `ViewTransitions` already explains the migration path (CSS `@view-transition` at-rule), so consumers can keep it mounted while they switch.
 
@@ -238,7 +258,8 @@ If user wants prefetch in v1: raise during W2A confirm gate, W3C absorbs.
 > `packages/zfb-runtime/src/client-router/prefetch.ts` was added, exporting
 > `prefetch` and `init` (re-exported as `prefetchInit` from `index.ts`).
 > `<ClientRouter prefetchAll>` triggers `prefetchInit({ prefetchAll: true })`
-> via a module-level guard in `client-router.ts`. The `./client-router` subpath
+> via a module-level guard alongside the component — since #2437 that lives in
+> `client-router-component.ts`, not `client-router.ts`. The `./client-router` subpath
 > also exposes the prefetch surface. The `__PREFETCH_DISABLED__` Vite gate
 > was not needed — the guard is a runtime boolean check.
 
@@ -653,6 +674,17 @@ The inline script's body is a mechanical port of `ClientRouter.astro`'s `<script
 > `client-router/router.ts` and are activated by calling `init()` there.
 > `client-router.ts` calls `init()` as a side effect on first import (guarded by
 > the `initialized` flag in `router.ts`). No inline `<script>` tag is emitted.
+>
+> **Amendment (2026-08, #2437):** the split the spec anticipated under
+> "component MAY also render a `<script>` … OR rely on the consumer to import"
+> landed as a file split instead. `client-router-component.ts` holds the pure
+> component and `client-router.ts` is the activation shim around it — see §1's
+> amendment for the full contract. The consumer-facing default is neither an
+> inline script nor an explicit layout import: zfb's islands scanner detects a
+> page reaching `<ClientRouter />` and injects
+> `import "@takazudo/zfb-runtime/client-router"` into the islands asset
+> (`crates/zfb-islands/src/esbuild.rs`), which evaluates the shim and calls
+> `init()`.
 
 ### 13.7 `vite-plugin-transitions.ts` — SKIP
 

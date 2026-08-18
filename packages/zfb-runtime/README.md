@@ -79,7 +79,7 @@ import type {
 
 ```ts
 import {
-  ClientRouter,               // framework-agnostic <head> helper — enables view-transition intercepts
+  ClientRouter,               // framework-agnostic <head> helper — mount it to opt a page into SPA navigation
   navigate,                   // imperative navigation
   supportsViewTransitions,    // browser capability check
   transitionEnabledOnThisPage, // reads zfb-view-transitions-enabled meta
@@ -103,6 +103,13 @@ consumers that only need part of the surface:
 import type { ContentSnapshot } from "@takazudo/zfb-runtime/snapshot";
 import { ClientRouter } from "@takazudo/zfb-runtime/client-router";
 ```
+
+The two differ in one way that matters: the root barrel is **side-effect-free**
+— importing anything from it, `ClientRouter` included, registers no listeners
+and touches no history — while evaluating the `./client-router` subpath calls
+`init()` and activates the router on the current page. See [Enabling SPA
+soft-navigation](#enabling-spa-soft-navigation-the-runtime-ships-automatically)
+below for how a normal zfb build gets that activation for you.
 
 #### Enabling SPA soft-navigation (the runtime ships automatically)
 
@@ -146,9 +153,15 @@ export default function Layout({ children }) {
   SPA navigation set so traversal behavior is deterministic.
 
 **How the runtime reaches the browser.** `<ClientRouter />` itself only renders
-SSR `<head>` tags. The click/form interception is registered by an `init()` call
-that runs as a side effect when `@takazudo/zfb-runtime/client-router` is imported
-in the browser, guarded so it never runs during SSR:
+SSR `<head>` tags, and the module it lives in is pure: importing `ClientRouter`
+from the `@takazudo/zfb-runtime` barrel registers nothing and runs no code on
+the page. Everything the router does at startup — seeding this page's history
+entry and scroll position, marking the scripts the initial load already ran, and
+registering the `popstate` / `load` / `pageshow` / scroll listeners plus the
+click and form-submit intercepts — happens inside a single `init()` call.
+
+`init()` is invoked as a side effect when `@takazudo/zfb-runtime/client-router`
+is evaluated in the browser, guarded so it never runs during SSR:
 
 ```ts
 // inside @takazudo/zfb-runtime — client-router.ts
@@ -156,6 +169,9 @@ if (typeof document !== "undefined") {
   init();
 }
 ```
+
+`init()` is idempotent: calling it again (a second `<ClientRouter />` mount, an
+HMR re-run, a manual call) is a no-op for the parts already done.
 
 To get that side-effect import into the client bundle, zfb's island scanner
 detects when a page transitively reaches `<ClientRouter />` and injects
@@ -188,7 +204,10 @@ trigger — firing on them would ship the runtime to projects that only referenc
   `rt.ClientRouter`, and
 - a type-only import — `import type { ClientRouter }` (or `{ type ClientRouter }`).
 
-If soft-navigation is not working because your reference takes one of these forms
+When detection misses, nothing else picks up the slack: the barrel import is
+side-effect-free, so an undetected `<ClientRouter />` renders its meta tags into
+`<head>` and no runtime is ever shipped to activate against them. If
+soft-navigation is not working because your reference takes one of these forms
 (or the mounting module is otherwise not reachable from a page), force the
 runtime in with an explicit side-effect import from a page-reachable
 `"use client"` island. The island renders nothing; running its bundle in the
@@ -228,17 +247,29 @@ for the full API.
 
 #### `navigate()` needs `<ClientRouter />` mounted on the current page
 
-The root barrel exports `navigate` and `syncHistoryEntry`, but **not** `init`
-— importing either of those two on their own is not enough to get soft
-navigation. `navigate()` checks for the `<meta
-name="zfb-view-transitions-enabled">` tag that `<ClientRouter />` renders into
-`<head>` before it will do a soft swap; with that tag absent it silently falls
-back to a full `location.href` load. Mount `<ClientRouter />` in the layout
-`<head>` of every page that should be soft-navigable — it both renders that
-meta tag and calls `init()` (click/form interception) as a side effect. `init`
-itself is exported from the `@takazudo/zfb-runtime/client-router` subpath, not
-the root barrel, for the rare case where you want to call it directly instead
-of mounting the component.
+The root barrel exports `navigate` and `syncHistoryEntry`, but **not** `init`,
+and importing from that barrel installs no interception listeners. Each helper
+still does exactly what its own docs say when you call it — a direct
+`navigate()` call navigates, `syncHistoryEntry()` writes its history entry —
+but nothing starts intercepting the user's link clicks and form submits on
+your behalf.
+
+Soft navigation needs two separate things on the current page:
+
+1. **The opt-in meta tag.** `navigate()` reaches `<meta
+   name="zfb-view-transitions-enabled">`, which `<ClientRouter />` renders into
+   `<head>`, before it will do a soft swap; with that tag absent it falls back
+   to a full `location.href` load.
+2. **An activated router.** That comes from `init()` — in a normal zfb build,
+   from the `import "@takazudo/zfb-runtime/client-router"` the island scanner
+   injects once it sees a page reach `<ClientRouter />` (see above).
+
+So the answer for both is the same: mount `<ClientRouter />` in the layout
+`<head>` of every page that should be soft-navigable, and let the build ship
+the runtime. `init` itself is exported from the
+`@takazudo/zfb-runtime/client-router` subpath, not the root barrel, for the
+rare case where you want to call it directly instead of relying on the
+subpath's own import-time activation.
 
 #### Persisting elements and island state across navigations (`data-zfb-transition-persist`)
 

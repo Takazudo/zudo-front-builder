@@ -27,7 +27,12 @@ export default function Layout({ children }) {
 }
 ```
 
-Importing `<ClientRouter />` registers the click and form-submit intercepts as a module-level side effect. The registration is idempotent — multiple mounts on the same page (or HMR re-runs) are safe.
+Mounting the component is all a zfb project needs. The import itself is inert — importing `ClientRouter` from `@takazudo/zfb-runtime` registers no listeners and touches no history — but the build notices the import, ships the client router to the browser, and the router activates there. Activation is idempotent, so multiple mounts on the same page (or HMR re-runs) are safe.
+
+The two halves are worth keeping straight when something doesn't work:
+
+- **The component** renders into `<head>`: the opt-in `<meta>` tags the router reads, plus the global stylesheet for the offscreen ARIA route announcer. It registers nothing and navigates nothing.
+- **`init()`** does everything else at runtime — restores this page's history entry and scroll position, marks the scripts the initial load already ran, and registers the `popstate` / `load` / `pageshow` / scroll listeners plus the click and form-submit intercepts. It runs as a side effect when the browser evaluates `@takazudo/zfb-runtime/client-router`, which zfb's island scanner injects into the page's client bundle as soon as it sees a page reach `<ClientRouter />` — no `"use client"` boilerplate needed. See the ["Enabling SPA soft-navigation" section of the runtime README](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb-runtime/README.md) for the detection rules and the manual escape hatch.
 
 ### Props
 
@@ -81,7 +86,9 @@ await navigate("/search?q=zfb", { history: "replace" });
 
 `navigate()` only soft-navigates when the page it is called from has `<ClientRouter />` mounted. Internally it checks for the `<meta name="zfb-view-transitions-enabled">` tag that `<ClientRouter />` renders into `<head>`; when that tag is absent it falls back to a plain `location.href` assignment — a full page load, not a soft navigation, with no error or warning.
 
-Importing `navigate` (or `syncHistoryEntry`) from the root `@takazudo/zfb-runtime` barrel is **not** enough by itself — that barrel deliberately does not export `init()` (the function that wires up click/form interception; see the "Enabling SPA soft-navigation" section of the [runtime README](https://github.com/Takazudo/zudo-front-builder/blob/main/packages/zfb-runtime/README.md)). Mount `<ClientRouter />` in the layout `<head>` of every page you want soft-navigable — it renders the required meta tag AND calls `init()` as a side effect. If you have a reason to call `init()` yourself instead of mounting the component, import it from the `@takazudo/zfb-runtime/client-router` subpath.
+Importing `navigate` (or `syncHistoryEntry`) from the root `@takazudo/zfb-runtime` barrel is **not** enough by itself. That barrel is side-effect-free and deliberately does not export `init()`, so importing from it installs no interception listeners — the router never starts watching link clicks or form submits. Each helper keeps its own documented behaviour when you call it directly (`navigate()` still navigates, `syncHistoryEntry()` still writes its history entry); what you don't get is the automatic interception.
+
+Mount `<ClientRouter />` in the layout `<head>` of every page you want soft-navigable. That renders the required meta tag, and it is also what makes zfb's island scanner ship the router to the browser, where `import "@takazudo/zfb-runtime/client-router"` runs `init()` for you. If you have a reason to call `init()` yourself instead, import it from that same subpath — note that importing the subpath at all already activates the router.
 
 </Warning>
 
