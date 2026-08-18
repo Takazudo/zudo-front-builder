@@ -4397,9 +4397,20 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     // paths so the author can disambiguate (rename one component, or give
     // it a distinct `displayName`) instead of debugging a silent
     // dead-island. This does not change selection behaviour — it only
-    // warns.
+    // warns, and only for the collisions the author can act on (see the
+    // #2441 filter below).
     let island_manifest = zfb_islands::Manifest::from_islands(&islands_set);
     for collision in island_manifest.collisions() {
+        // #2441: a package that ships both its compiled `dist/` output and
+        // its sources can have the same component reach the scanner twice,
+        // through two entry graphs. Those two participants are the same
+        // component — hydration is correct whichever the manifest keeps —
+        // and the remediation below is not actionable, because both live
+        // inside a dependency. Drop them silently; every collision the
+        // author CAN act on still warns.
+        if zfb_islands::is_same_package_duplicate(collision) {
+            continue;
+        }
         output::warn(format!(
             "island marker name collision: \"{}\" is produced by two different source files — \
              keeping {} and dropping {}. Only the kept island will hydrate; rename one component \

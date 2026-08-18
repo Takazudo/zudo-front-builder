@@ -61,7 +61,7 @@ pub use hydration::{
     rewrite_islands, rewrite_islands_in_attr_skeleton, HeadInjection, IslandDescriptor,
     IslandRewriteError, IslandSkeletonRewriteError, WhenHint,
 };
-pub use manifest::{manifest_json, write_manifest, Collision, Manifest};
+pub use manifest::{is_same_package_duplicate, manifest_json, write_manifest, Collision, Manifest};
 pub use scanner::{
     is_bare_specifier, scan_islands, scan_islands_with_meta,
     scan_islands_with_meta_and_first_party_root, scan_reachable_modules,
