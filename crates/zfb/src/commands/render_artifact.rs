@@ -551,15 +551,14 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+    use zfb_types::{render_region_marker, RenderRegionEdge};
 
     fn start(id: &str) -> String {
-        format!(
-            "<template data-zfb-render-region=\"start\" data-zfb-region-id=\"{id}\"></template>"
-        )
+        render_region_marker(RenderRegionEdge::Start, id)
     }
 
     fn end(id: &str) -> String {
-        format!("<template data-zfb-render-region=\"end\" data-zfb-region-id=\"{id}\"></template>")
+        render_region_marker(RenderRegionEdge::End, id)
     }
 
     fn meta(slug: &str) -> RenderRegionMetadata {
@@ -644,7 +643,9 @@ mod tests {
     }
 
     /// `parse_marker` round-trips every case in the shared cross-language
-    /// parity fixture (crates/zfb-types/tests/fixtures/render-region-marker-parity.json)
+    /// parity fixture (crates/zfb-types/tests/fixtures/render-region-marker-parity.json,
+    /// consumed here via the compile-time-embedded
+    /// `zfb_types::RENDER_REGION_MARKER_PARITY_FIXTURE`)
     /// — the same fixture `zfb_types::render_region_marker`'s own parity
     /// test and the TS renderer-driven oracle
     /// (packages/zfb/src/__tests__/render-region-marker-cases.ts) consume.
@@ -662,16 +663,8 @@ mod tests {
             end: String,
         }
 
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("zfb-types")
-            .join("tests")
-            .join("fixtures")
-            .join("render-region-marker-parity.json");
-        let data = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read fixture {path:?}: {e}"));
-        let fixture: Fixture = serde_json::from_str(&data)
-            .unwrap_or_else(|e| panic!("cannot parse fixture {path:?}: {e}"));
+        let fixture: Fixture = serde_json::from_str(zfb_types::RENDER_REGION_MARKER_PARITY_FIXTURE)
+            .unwrap_or_else(|e| panic!("cannot parse embedded parity fixture: {e}"));
 
         for case in &fixture.cases {
             let m = parse_marker(case.start.as_bytes())

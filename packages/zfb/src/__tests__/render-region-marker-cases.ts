@@ -111,7 +111,9 @@ type BridgeGlobal = typeof globalThis & {
  */
 function marker(edge: "start" | "end", regionId: string): string {
   const template = edge === "start" ? FIXTURE_TEMPLATE_CASE.start : FIXTURE_TEMPLATE_CASE.end;
-  return template.replace(FIXTURE_TEMPLATE_CASE.id, regionId);
+  // Replacer function so `$`-sequences in a region id ($&, $', $`, $n) are
+  // inserted literally instead of being interpreted as substitution patterns.
+  return template.replace(FIXTURE_TEMPLATE_CASE.id, () => regionId);
 }
 
 export function describeRenderRegionMarkers(renderToString: (element: unknown) => string): void {

@@ -1126,8 +1126,19 @@ function seedPageState(): void {
   if (history.state) {
     // Here we reloaded a page with history state
     // (e.g. history navigation from non-transition page or browser reload)
-    currentHistoryIndex = history.state.index;
-    scrollTo({ left: history.state.scrollX, top: history.state.scrollY });
+    // Adopt only a finite index — a foreign pre-init history.state (e.g. a
+    // consumer's own replaceState({modal: true})) has no router index, and
+    // adopting undefined would stamp the next push with NaN. Same guard as
+    // ensureNavigationState() and onPageShow(). (#2436)
+    const index = history.state.index;
+    if (Number.isFinite(index)) currentHistoryIndex = index;
+    // Skip the scroll restore when an init-less navigate()/syncHistoryEntry()
+    // already ran on this page (navigationStateSeeded latched before init):
+    // the entry it pushed is stamped scrollX/scrollY 0, and a late-activating
+    // init() must not yank the already-scrolled viewport to the top. (#2436)
+    if (!navigationStateSeeded) {
+      scrollTo({ left: history.state.scrollX, top: history.state.scrollY });
+    }
   } else if (transitionEnabledOnThisPage()) {
     // This page is loaded from the browser address bar or via a link from extern,
     // it needs a state in the history

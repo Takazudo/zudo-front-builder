@@ -1,18 +1,20 @@
 //! Cross-language parity test: asserts that
 //! `zfb_types::render_region::render_region_marker` produces the exact
 //! output recorded in the shared fixture at
-//! `tests/fixtures/render-region-marker-parity.json`.
+//! `tests/fixtures/render-region-marker-parity.json` (embedded at compile
+//! time as `RENDER_REGION_MARKER_PARITY_FIXTURE`).
 //!
 //! The SAME fixture is consumed by `crates/zfb/src/commands/render_artifact.rs`'s
-//! `parse_marker` round-trip test and by the TS vitest suite in
+//! `parse_marker` round-trip test (via the same embedded const) and by the
+//! TS vitest suite in
 //! `packages/zfb/src/__tests__/render-region-marker-cases.ts` — any drift
 //! between a producer and the matcher is caught by one side or the other
 //! failing.
 
-use std::path::PathBuf;
-
 use serde::Deserialize;
-use zfb_types::render_region::{render_region_marker, RenderRegionEdge};
+use zfb_types::render_region::{
+    render_region_marker, RenderRegionEdge, RENDER_REGION_MARKER_PARITY_FIXTURE,
+};
 
 // ---------------------------------------------------------------------------
 // Fixture schema
@@ -30,18 +32,9 @@ struct Case {
     end: String,
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn load_fixture() -> Fixture {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("render-region-marker-parity.json");
-    let data = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read fixture {path:?}: {e}"));
-    serde_json::from_str(&data).unwrap_or_else(|e| panic!("cannot parse fixture {path:?}: {e}"))
+    serde_json::from_str(RENDER_REGION_MARKER_PARITY_FIXTURE)
+        .unwrap_or_else(|e| panic!("cannot parse embedded parity fixture: {e}"))
 }
 
 // ---------------------------------------------------------------------------

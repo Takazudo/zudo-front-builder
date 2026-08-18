@@ -41,5 +41,6 @@ pub use page_privacy::path_has_private_prefix_component;
 pub use render_region::{
     render_region_marker, RenderRegionEdge, MARKER_HEAD, MARKER_ID_ATTR, MARKER_KIND_END,
     MARKER_KIND_START, MARKER_TAIL, REGION_ID_ATTR, RENDER_REGION_ATTR,
+    RENDER_REGION_MARKER_PARITY_FIXTURE,
 };
 pub use segment::Segment;

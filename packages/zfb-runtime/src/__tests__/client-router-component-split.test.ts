@@ -10,7 +10,7 @@
 // environment) and fails loudly the moment either invariant regresses.
 // Cloned from the `root-barrel-no-server-router.test.ts` pattern (#1298).
 // The runtime behavioral proof (no listeners registered, no history writes)
-// lives in `client-router-split-behavior.test.ts` (happy-dom).
+// lives in `client-router-split.test.ts` (happy-dom).
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";

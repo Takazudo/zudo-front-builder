@@ -41,8 +41,9 @@
 //! reuse [`render_region_marker`] — the canonical string is a paired,
 //! literal-id HTML fragment, not JSX source. That producer instead builds
 //! its two sentinel lines from [`RENDER_REGION_ATTR`] /
-//! [`REGION_ID_ATTR`] directly via `format!`, so at least the attribute
-//! names cannot drift; its JSX->HTML rendering is covered only
+//! [`REGION_ID_ATTR`] / [`RenderRegionEdge::as_str`] directly via
+//! `format!`, so neither the attribute names nor the edge tokens can
+//! drift; its JSX->HTML rendering is covered only
 //! transitively, by the same renderers the TS suites exercise plus its
 //! own byte-pinned source tests (see the epic's "Coverage honesty" note).
 
@@ -60,6 +61,28 @@ pub enum RenderRegionEdge {
     End,
 }
 
+impl RenderRegionEdge {
+    /// The edge's attribute value (`"start"` / `"end"`) — the single home of
+    /// those two tokens, shared by [`render_region_marker`]'s byte-parts (see
+    /// the composition test below) and `render_md_page_shell`'s JSX-form
+    /// sentinel in `zfb-build`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RenderRegionEdge::Start => "start",
+            RenderRegionEdge::End => "end",
+        }
+    }
+}
+
+/// The shared parity fixture, embedded at compile time so Rust consumers
+/// (this crate's parity test and `zfb`'s `parse_marker` round-trip test)
+/// read one compile-time-checked copy instead of hand-building relative
+/// paths across crates. The TS suites read the same file from disk —
+/// `include_str!` embeds those exact bytes, so the copies cannot drift.
+#[doc(hidden)]
+pub const RENDER_REGION_MARKER_PARITY_FIXTURE: &str =
+    include_str!("../tests/fixtures/render-region-marker-parity.json");
+
 // ---------------------------------------------------------------------------
 // Matcher byte-parts
 // ---------------------------------------------------------------------------
@@ -69,9 +92,11 @@ pub enum RenderRegionEdge {
 // `RENDER_REGION_ATTR`/`REGION_ID_ATTR` via `format!`, which is not
 // available in `const` position) so `parse_marker` can `strip_prefix`
 // against them directly with no runtime allocation — the same reason the
-// pre-#2435 local constants in `render_artifact.rs` were literals. Kept in
-// sync with the two attribute-name constants above by hand; the fixture
-// parity test below is what actually proves they agree byte-for-byte with
+// pre-#2435 local constants in `render_artifact.rs` were literals. The
+// `byte_parts_compose_from_the_attr_constants` test below pins them to the
+// attribute-name constants and `RenderRegionEdge::as_str`, so a rename of
+// either representation fails a test in THIS module instead of drifting;
+// the fixture parity test is what proves they agree byte-for-byte with
 // [`render_region_marker`]'s output.
 
 /// Everything up to and including the render-region attribute's opening
@@ -115,6 +140,23 @@ pub fn render_region_marker(edge: RenderRegionEdge, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_parts_compose_from_the_attr_constants() {
+        assert_eq!(
+            MARKER_HEAD,
+            format!("<template {RENDER_REGION_ATTR}=\"").as_bytes()
+        );
+        assert_eq!(
+            MARKER_KIND_START,
+            format!("{}\"", RenderRegionEdge::Start.as_str()).as_bytes()
+        );
+        assert_eq!(
+            MARKER_KIND_END,
+            format!("{}\"", RenderRegionEdge::End.as_str()).as_bytes()
+        );
+        assert_eq!(MARKER_ID_ATTR, format!(" {REGION_ID_ATTR}=\"").as_bytes());
+    }
 
     #[test]
     fn render_region_marker_matches_the_pinned_shape() {

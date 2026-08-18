@@ -136,8 +136,8 @@ use zfb_content::{
 };
 use zfb_render::adapters::{make_adapter, Framework};
 use zfb_types::{
-    json_string as json_str, normalize_path_lexical, path_to_posix_string, REGION_ID_ATTR,
-    RENDER_REGION_ATTR,
+    json_string as json_str, normalize_path_lexical, path_to_posix_string, RenderRegionEdge,
+    REGION_ID_ATTR, RENDER_REGION_ATTR,
 };
 
 use crate::adapter::run_capturing;
@@ -11296,19 +11296,22 @@ pub(crate) fn render_md_page_shell(
         Some(id) => format!("const __zfbRegionId = {};\n", json_str(id)),
         None => String::new(),
     };
-    // Built from the shared `zfb-types` attribute-name constants so the
-    // attribute names cannot drift from the canonical marker contract —
-    // the full canonical string can't be reused here, since this form is
+    // Built from the shared `zfb-types` attribute-name constants and
+    // `RenderRegionEdge::as_str()` so neither the attribute names nor the
+    // edge tokens can drift from the canonical marker contract — the full
+    // canonical string can't be reused here, since this form is
     // self-closing with an expression-valued id (see
     // `zfb_types::render_region`'s module doc for the "not covered here"
     // rationale). Byte-pinned by the shell tests below (~L20184, ~L20219).
     let (region_start, region_end) = match render_region_id {
         Some(_) => (
             format!(
-                "\u{0020}       <template {RENDER_REGION_ATTR}=\"start\" {REGION_ID_ATTR}={{__zfbRegionId}} />\n"
+                "\u{0020}       <template {RENDER_REGION_ATTR}=\"{}\" {REGION_ID_ATTR}={{__zfbRegionId}} />\n",
+                RenderRegionEdge::Start.as_str()
             ),
             format!(
-                "\u{0020}       <template {RENDER_REGION_ATTR}=\"end\" {REGION_ID_ATTR}={{__zfbRegionId}} />\n"
+                "\u{0020}       <template {RENDER_REGION_ATTR}=\"{}\" {REGION_ID_ATTR}={{__zfbRegionId}} />\n",
+                RenderRegionEdge::End.as_str()
             ),
         ),
         None => (String::new(), String::new()),
