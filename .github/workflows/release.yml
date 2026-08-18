@@ -869,6 +869,30 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # ── Prerelease graduation cleanup (the reverse of the dual-tag gate) ───
+      # The ALSO_LATEST block above is the FORWARD half of the prerelease
+      # invariant: while the line is unreleased, a `--tag next` publish also
+      # advances `latest`. This is the REVERSE half — once a stable ships,
+      # the old `next` tag is dead and must be removed.
+      #
+      # Without it, `next` freezes at whatever prerelease shipped last and keeps
+      # resolving forever: after 1.0.0 graduated, `next` sat at 1.1.0-next.1
+      # while `latest` walked to 2.7.x, so `@takazudo/zfb@next` quietly served a
+      # version a full major behind. A frozen dist-tag is worse than a missing
+      # one — it still installs.
+      #
+      # Safe to run on EVERY publish, prerelease included: the script removes
+      # `next` only where it is no longer strictly ahead of `latest`, so a
+      # genuine soak (next=3.0.0-next.1 against latest=2.7.2) is left alone.
+      # It always exits 0 — a leftover dist-tag must never redden a good
+      # release; failures surface as ::warning:: and retry on the next one.
+      - name: Retire stale 'next' dist-tag
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        run: node scripts/retire-next-dist-tag.mjs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
   smoke-clean-room:
     # Post-publish clean-room smoke: installs create-zfb@<dist-tag> from the
     # real registry in a temp dir (no workspace context), scaffolds a project,

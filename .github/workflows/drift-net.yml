@@ -9,12 +9,12 @@
 # reusable-smoke-clean-room.yml) against the LIVE dist-tags on a schedule,
 # independent of any release.
 #
-# Channel coverage — `latest` is the priority, `next` is the cheap extra.
+# Channel coverage — `latest` only; see the `next` note below.
 # Until v1.0.0 (2026-07-31) this workflow smoked ONLY `next`, which was correct
 # then: `latest` was empty, so release.yml's dual-tag gate pushed every
 # prerelease to BOTH tags and smoking `next` incidentally covered the stable
 # channel too. Cutting v1.0.0 self-disabled that gate and the two channels
-# diverged permanently, leaving `latest` — the tag a bare `npm i zfb`,
+# diverged permanently, leaving `latest` — the tag a bare `npm i @takazudo/zfb`,
 # `brew install`, and `curl | sh` all resolve — completely unwatched between
 # releases, which is precisely the gap this workflow exists to close.
 #
@@ -23,16 +23,21 @@
 # and while one is active release.yml smokes `next` on every publish anyway.
 # Stable releases are rarer, so `latest` sits untouched for the longest stretches.
 #
-# Three legs:
+# The `next` leg was REMOVED, following the same logic to its conclusion.
+# `next` is no longer a standing channel: it exists only while a prerelease is
+# genuinely ahead of `latest`, and scripts/retire-next-dist-tag.mjs (run from
+# release.yml on every publish) deletes it at graduation. So between prerelease
+# lines `next` does not resolve at all, and a scheduled leg smoking it would go
+# red every week over a channel that is *correctly* absent — manufacturing a
+# tracking issue and an IFTTT alert out of a non-event. While a soak IS active,
+# release.yml smokes `next` on every publish, which is the tighter loop anyway.
+#
+# Two legs:
 #   - latest / ubuntu-latest — matches what release.yml runs every release.
 #   - latest / macos-15 (PINNED, not macos-latest — that label drifts
 #     unpredictably across major OS versions without notice) — darwin-arm64 is
 #     what users actually install on and nothing else exercises it between
 #     releases.
-#   - next / ubuntu-latest — keeps prerelease-channel coverage for when the
-#     `next` line resumes. Deliberately ubuntu-only: one cheap leg is enough to
-#     catch gross breakage on a channel that is opt-in and, when active, already
-#     smoked per-publish by release.yml.
 #
 # On failure, files/comments on a single deduped tracking issue per workflow
 # (scripts/file-exam-issue.sh) and sends an IFTTT notification, reusing the
@@ -78,20 +83,13 @@ jobs:
       dist_tag: latest
       runner: macos-15
 
-  smoke-next-ubuntu:
-    name: Smoke next (ubuntu-latest)
-    uses: ./.github/workflows/reusable-smoke-clean-room.yml
-    with:
-      dist_tag: next
-      runner: ubuntu-latest
-
   file-or-close-issue:
     # Single deduped tracking issue per workflow (not per run): stays open
     # while the workflow is red, gets a comment on each subsequent red run,
     # and is closed automatically on the next green run. See
     # scripts/file-exam-issue.sh and the zudo-test-wisdom T3 exam pattern.
     name: File/close exam tracking issue
-    needs: [smoke-latest-ubuntu, smoke-latest-macos, smoke-next-ubuntu]
+    needs: [smoke-latest-ubuntu, smoke-latest-macos]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -104,15 +102,14 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: File or comment on tracking issue (failure)
-        if: ${{ needs.smoke-latest-ubuntu.result == 'failure' || needs.smoke-latest-macos.result == 'failure' || needs.smoke-next-ubuntu.result == 'failure' }}
+        if: ${{ needs.smoke-latest-ubuntu.result == 'failure' || needs.smoke-latest-macos.result == 'failure' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LATEST_UBUNTU_RESULT: ${{ needs.smoke-latest-ubuntu.result }}
           LATEST_MACOS_RESULT: ${{ needs.smoke-latest-macos.result }}
-          NEXT_UBUNTU_RESULT: ${{ needs.smoke-next-ubuntu.result }}
-        # LEG is computed in shell rather than by a nested GHA ternary: at three
-        # legs the ternary chain stops being reviewable, and the previous one
-        # already had to special-case "both failed" to avoid mislabelling.
+        # LEG is computed in shell rather than by a nested GHA ternary: even at
+        # two legs the ternary form had to special-case "both failed" to avoid
+        # mislabelling, and it stops being reviewable the moment a leg is added.
         run: |
           LEG=""
           append_leg() {
@@ -123,12 +120,11 @@ jobs:
           # own exit status and would fail the step.
           if [ "$LATEST_UBUNTU_RESULT" = "failure" ]; then append_leg "latest/ubuntu-latest"; fi
           if [ "$LATEST_MACOS_RESULT" = "failure" ]; then append_leg "latest/macos-15"; fi
-          if [ "$NEXT_UBUNTU_RESULT" = "failure" ]; then append_leg "next/ubuntu-latest"; fi
           export LEG
           bash scripts/file-exam-issue.sh "Drift net"
 
       - name: Close tracking issue (green)
-        if: ${{ needs.smoke-latest-ubuntu.result == 'success' && needs.smoke-latest-macos.result == 'success' && needs.smoke-next-ubuntu.result == 'success' }}
+        if: ${{ needs.smoke-latest-ubuntu.result == 'success' && needs.smoke-latest-macos.result == 'success' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/file-exam-issue.sh "Drift net" --green
@@ -140,7 +136,7 @@ jobs:
     # job (status-computed via needs.*.result, reuses IFTTT_PROD_NOTIFY) —
     # established in issue #1335.
     name: Notify via IFTTT on failure
-    needs: [smoke-latest-ubuntu, smoke-latest-macos, smoke-next-ubuntu]
+    needs: [smoke-latest-ubuntu, smoke-latest-macos]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -152,7 +148,6 @@ jobs:
         env:
           LATEST_UBUNTU_RESULT: ${{ needs.smoke-latest-ubuntu.result }}
           LATEST_MACOS_RESULT: ${{ needs.smoke-latest-macos.result }}
-          NEXT_UBUNTU_RESULT: ${{ needs.smoke-next-ubuntu.result }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
@@ -163,7 +158,6 @@ jobs:
           }
           if [ "$LATEST_UBUNTU_RESULT" = "failure" ]; then append_job "smoke-latest-ubuntu"; fi
           if [ "$LATEST_MACOS_RESULT" = "failure" ]; then append_job "smoke-latest-macos"; fi
-          if [ "$NEXT_UBUNTU_RESULT" = "failure" ]; then append_job "smoke-next-ubuntu"; fi
 
           if [ -z "$FAILED_JOB" ]; then
             echo "No failed smoke leg — skipping notification."
@@ -176,6 +170,6 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "{
               \"value1\": \"Drift net failed (${FAILED_JOB})\",
-              \"value2\": \"channels: latest (ubuntu+macos), next (ubuntu)\",
+              \"value2\": \"channels: latest (ubuntu+macos)\",
               \"value3\": \"${RUN_URL}\"
             }" || echo "::warning::IFTTT notification failed"
