@@ -3,18 +3,19 @@
  */
 // Regression tests for #2424 — the client router must not throw when loaded
 // inside an about:srcdoc document (e.g. an SPA-preview iframe shell), where
-// Chromium refuses history.replaceState/pushState. router.ts's top-level
-// init block calls history.replaceState synchronously at module-eval time
-// once view transitions are enabled on the page and there is no existing
-// history.state (L199-211) — a throwing native implementation must not
-// propagate out of the module import itself.
+// Chromium refuses history.replaceState/pushState.
 //
-// CRITICAL SEAM: the init block runs once, at module-eval time. The throwing
-// history stub below must be installed BEFORE the router import that follows
-// it in this file — vite-node (which powers Vitest) executes top-level
-// statements and `import` declarations in textual order (see the "late
-// import" comment in router-vt-history.test.ts), so positioning the stub
-// ahead of the import is what makes it observe the throw.
+// CRITICAL SEAM (rewritten for #2436): the history seed used to run at
+// module-eval time, so the original version of this file installed the
+// throwing history stub before a deliberately late router import and treated
+// "the import did not throw" as the proof. Since #2436 the seed runs inside
+// init() instead, so the stub only has to be in place before the init() call
+// — and the assertion can be a direct `expect(init).not.toThrow()` rather than
+// an implicit whole-file-loads check.
+//
+// The seed reaches history.replaceState only on the branch where the page is
+// opted into view transitions AND has no existing history.state, so both
+// preconditions are set up explicitly before each exercise.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,39 +29,32 @@ vi.mock("@takazudo/zfb/runtime", () => ({
 
 installHappyDomShim();
 
-// Opt this page into view transitions BEFORE the router module evaluates —
-// router.ts's init block reads the live document at module-eval time
-// (transitionEnabledOnThisPage()) to decide whether to seed history.
+import { init, syncHistoryEntry } from "../../client-router/router.js";
+
+// Simulate the about:srcdoc restriction: Chromium throws when
+// history.replaceState/pushState is called inside a srcdoc document.
+function installThrowingHistory(): void {
+  history.replaceState = () => {
+    throw new DOMException("Failed to execute 'replaceState' on 'History'", "SecurityError");
+  };
+  history.pushState = () => {
+    throw new DOMException("Failed to execute 'pushState' on 'History'", "SecurityError");
+  };
+}
+
+// Opt the page into view transitions — the seed only calls replaceState on the
+// `transitionEnabledOnThisPage()` branch.
 function enableTransitions(): void {
   const meta = document.createElement("meta");
   meta.setAttribute("name", "zfb-view-transitions-enabled");
   meta.setAttribute("content", "true");
   document.head.appendChild(meta);
 }
-enableTransitions();
-
-// Simulate the about:srcdoc restriction: Chromium throws when
-// history.replaceState/pushState is called inside a srcdoc document. Stub
-// both methods to throw before the late router import below, so the
-// module's top-level init block — which calls history.replaceState
-// unconditionally once transitions are enabled and history.state is empty —
-// exercises the guard at the exact point Chromium would throw.
-history.replaceState = () => {
-  throw new DOMException("Failed to execute 'replaceState' on 'History'", "SecurityError");
-};
-history.pushState = () => {
-  throw new DOMException("Failed to execute 'pushState' on 'History'", "SecurityError");
-};
-
-// Late import — router.ts's top-level init block runs here, against the
-// throwing history stubs installed above. If safeReplaceState did not
-// swallow the throw, importing this module would itself throw and this
-// whole test file would fail to load (no test below would ever run).
-import { syncHistoryEntry } from "../../client-router/router.js";
 
 beforeEach(() => {
   resetDocument();
   enableTransitions();
+  installThrowingHistory();
 });
 
 afterEach(async () => {
@@ -69,12 +63,12 @@ afterEach(async () => {
 });
 
 describe("about:srcdoc tolerance (#2424)", () => {
-  it("module init does not throw when history.replaceState throws", () => {
-    // The late import above already exercised the throwing path at
-    // module-eval time. Reaching this assertion at all is the proof — a
-    // propagated throw would have failed this whole file to load, not just
-    // this one test.
-    expect(true).toBe(true);
+  it("init() does not throw when history.replaceState throws", () => {
+    // history.state is null in a fresh happy-dom document and the throwing
+    // stub keeps it that way, so init()'s seed takes the replaceState branch —
+    // the exact point Chromium throws inside a srcdoc document.
+    expect(history.state).toBeNull();
+    expect(() => init()).not.toThrow();
   });
 
   it("syncHistoryEntry() (push) degrades silently when history.pushState throws", () => {
