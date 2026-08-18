@@ -35,9 +35,11 @@ vi.mock("@takazudo/zfb/runtime", () => ({
 
 installHappyDomShim();
 
-// Inject the opt-in meta tag BEFORE importing the router module, so the
-// module's top-level `if (transitionEnabledOnThisPage())` branch sees the
-// page as opted-in. router.ts reads the live document at module-eval time.
+// Inject the opt-in meta tag before the explicit `init()` below, so the
+// history-seeding phase's `transitionEnabledOnThisPage()` branch sees the page
+// as opted-in. Since #2436 the router reads the live document at init() time,
+// not at module-eval time — but priming it up front keeps the document in the
+// same shape the rest of this file assumes.
 function enableTransitions(): void {
   const meta = document.createElement("meta");
   meta.setAttribute("name", "zfb-view-transitions-enabled");
@@ -82,6 +84,23 @@ import {
 // at runtime, so it does not drag the barrel's <ClientRouter> module into the
 // test environment.
 import type { SyncHistoryEntryOptions } from "../../client-router/index.js";
+
+// Activate the router. Before #2436 the popstate / load / pageshow / scroll
+// listeners and the history seed ran as a side effect of evaluating router.ts;
+// they now run from init(), so this file has to call it explicitly — every
+// describe below that dispatches a popstate/pageshow event, or that relies on
+// the click/submit intercepts, depends on this one call.
+//
+// The registrations are captured here (rather than inside the idempotency test)
+// because this is the file's ONE first init() call: the spy has to be in place
+// before it to see the initial pair at all.
+const firstInitListenerTypes: string[] = (() => {
+  const spy = vi.spyOn(document, "addEventListener");
+  init();
+  const types = spy.mock.calls.map((c) => String(c[0]));
+  spy.mockRestore();
+  return types;
+})();
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
 
@@ -380,20 +399,21 @@ describe("non-opt-in target page degrade", () => {
 });
 
 describe("init() — idempotent listener registration", () => {
-  it("calling init() multiple times only registers click/submit listeners once", () => {
+  it("the first init() registers click + submit exactly once", () => {
+    expect(firstInitListenerTypes.filter((t) => t === "click")).toHaveLength(1);
+    expect(firstInitListenerTypes.filter((t) => t === "submit")).toHaveLength(1);
+  });
+
+  it("calling init() again registers nothing new", () => {
     const addListenerSpy = vi.spyOn(document, "addEventListener");
 
     init();
     init();
     init();
 
-    // Filter to only the click + submit registrations the router contributes.
-    const clickCalls = addListenerSpy.mock.calls.filter((c) => c[0] === "click");
-    const submitCalls = addListenerSpy.mock.calls.filter((c) => c[0] === "submit");
-
     // First call wins; subsequent init() calls must be no-ops.
-    expect(clickCalls).toHaveLength(1);
-    expect(submitCalls).toHaveLength(1);
+    expect(addListenerSpy.mock.calls.filter((c) => c[0] === "click")).toHaveLength(0);
+    expect(addListenerSpy.mock.calls.filter((c) => c[0] === "submit")).toHaveLength(0);
 
     addListenerSpy.mockRestore();
   });
