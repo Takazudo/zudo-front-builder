@@ -28,7 +28,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use zfb_islands::{scan_islands, scan_islands_with_meta, FsResolver, Manifest};
+use zfb_islands::{
+    is_same_package_duplicate, scan_islands, scan_islands_with_meta, FsResolver, Manifest,
+};
 
 /// Write `body` to `path`, creating parent directories first.
 fn write(path: &Path, body: &str) {
@@ -506,4 +508,103 @@ fn duplicate_marker_name_across_sources_is_recorded_as_a_collision() {
     );
     assert_eq!(collisions[0].name, "ThemeToggle");
     assert_ne!(collisions[0].kept_path, collisions[0].dropped_path);
+    // #2441 must not swallow this one: the two components are genuinely
+    // different, and "rename one" is advice the author can act on.
+    assert!(
+        !is_same_package_duplicate(&collisions[0]),
+        "a local component colliding with a package component is actionable: {:?}",
+        collisions[0]
+    );
+}
+
+/// Issue #2441 — a package that ships BOTH its compiled `dist/` output and
+/// its sources can have one component reach the scanner twice, through two
+/// entry graphs, and the two hits are the same component.
+///
+/// This is zudo-doc's `packageOwnedRoutes` shape, reproduced end to end
+/// through the real scanner: a page re-exports the package's compiled route
+/// barrel (pulling in `dist/routes/_widget.js`) while a second entry is a
+/// verbatim copy of the package's own `routes-src/_widget.tsx`, staged
+/// outside `node_modules` so the package's virtual-module imports resolve.
+/// The manifest records a collision because the two source paths differ —
+/// but nothing in it is actionable, so the build must not warn.
+#[test]
+fn package_source_and_compiled_duplicate_is_classified_as_a_same_package_duplicate() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    let pkg = root.join("node_modules/@takazudo/zudo-doc");
+    write(
+        &pkg.join("package.json"),
+        r#"{ "name": "@takazudo/zudo-doc", "type": "module",
+            "exports": { "./routes/index": { "default": "./dist/routes/index.js" } } }"#,
+    );
+    // The package's SHIPPED SOURCE — what the routes plugin stages verbatim.
+    let shipped_source = r#""use client";
+export function Widget() { return null; }
+Widget.displayName = "Widget";
+"#;
+    write(&pkg.join("routes-src/_widget.tsx"), shipped_source);
+    // The COMPILED counterpart of the same module, reached from the barrel.
+    write(
+        &pkg.join("dist/routes/_widget.js"),
+        r#""use client";
+export function Widget() {
+  return null;
+}
+Widget.displayName = "Widget";
+"#,
+    );
+    write(
+        &pkg.join("dist/routes/index.js"),
+        r#"export { Widget } from "./_widget.js";
+export default function Index() { return null; }
+"#,
+    );
+
+    // Entry 1 — a page re-exporting the package's compiled route barrel.
+    let page = root.join("pages/index.tsx");
+    write(
+        &page,
+        r#"export { default } from "@takazudo/zudo-doc/routes/index";
+"#,
+    );
+    // Entry 2 — the injected route, pointing at the STAGED copy of the
+    // package's own source (a verbatim `cpSync`, byte-for-byte identical).
+    let staged = root.join(".zudo-doc/routes-src/_widget.tsx");
+    write(&staged, shipped_source);
+    let injected = root.join(".zudo-doc/routes-src/route.tsx");
+    write(
+        &injected,
+        r#"import { Widget } from "./_widget";
+export default function Route() { return null; }
+"#,
+    );
+
+    let resolver = FsResolver::new();
+    let islands = scan_islands(&[page.clone(), injected.clone()], &resolver).expect("scan");
+    let widget_paths: Vec<&PathBuf> = islands
+        .iter()
+        .filter(|i| i.marker_name == "Widget")
+        .map(|i| &i.source_path)
+        .collect();
+    assert_eq!(
+        widget_paths.len(),
+        2,
+        "expected the same component from both graphs: {islands:?}"
+    );
+
+    let manifest = Manifest::from_islands(&islands);
+    let collisions = manifest.collisions();
+    assert_eq!(
+        collisions.len(),
+        1,
+        "expected exactly one marker-name collision: {collisions:?}"
+    );
+    assert_eq!(collisions[0].name, "Widget");
+    assert!(
+        is_same_package_duplicate(&collisions[0]),
+        "the staged copy and the package's compiled module are the same component: {:?}",
+        collisions[0]
+    );
 }

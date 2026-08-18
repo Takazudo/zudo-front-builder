@@ -43,7 +43,9 @@
 //!   matches the scanner's pre-existing `(source_path, name)` tie-break and
 //!   keeps the manifest a flat `marker_name → path` map. A diagnostic
 //!   helper, [`Manifest::collisions`], surfaces dropped entries so callers
-//!   that want to fail loudly can do so.
+//!   that want to fail loudly can do so; [`is_same_package_duplicate`]
+//!   classifies each one so a package's own source/compiled duplicate can be
+//!   dropped without a warning the author cannot act on.
 //!
 //! ## Downstream contract
 //!
@@ -93,6 +95,172 @@ pub struct Collision {
     pub dropped_path: PathBuf,
     /// The source path that **did** make it into the manifest.
     pub kept_path: PathBuf,
+}
+
+/// Module extensions an island can be authored or shipped in. Used when
+/// probing a package for the counterpart of a staged copy — see
+/// [`is_same_package_duplicate`].
+const ISLAND_MODULE_EXTS: &[&str] = &["tsx", "ts", "jsx", "js", "mjs", "cjs", "mts", "cts"];
+
+/// Upper bound on directory entries visited while probing one package for a
+/// byte-identical copy. Every bail-out in the probe fails toward "actionable"
+/// (the collision keeps warning), so exceeding the budget costs a warning that
+/// could have been suppressed — never a suppressed warning that mattered.
+const PACKAGE_PROBE_ENTRY_BUDGET: usize = 20_000;
+
+/// Upper bound on the size of a file read for byte comparison during the
+/// probe. An island module larger than this is pathological.
+const PACKAGE_PROBE_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// True when the two participants of `collision` are two spellings of the
+/// **same npm package's** module rather than two genuinely different
+/// components that happen to share a marker name (issue #2441).
+///
+/// A package that ships both its compiled `dist/` output and its sources can
+/// have the same component reach the scanner twice, through two entry graphs
+/// — zudo-doc's `packageOwnedRoutes` does exactly this: a page re-exporting
+/// `@takazudo/zudo-doc/routes/index` pulls in the compiled
+/// `dist/routes/_design-token-panel-bootstrap.js` while the routes plugin
+/// separately injects a staged copy of the package's own
+/// `routes-src/_design-token-panel-bootstrap.tsx`. Both are the same
+/// component, so hydration is correct whichever the manifest keeps, and the
+/// warning's remediation ("rename one component") is not actionable: both
+/// participants live inside a dependency.
+///
+/// Membership is established without guessing from names or path shapes:
+///
+/// - both participants resolve inside the same `node_modules/<pkg>` root, or
+/// - one resolves inside package root `P` and the other is **byte-identical**
+///   to a file `P` ships under the same file stem — the branch that catches a
+///   staged or mirrored copy made outside `node_modules`.
+///
+/// The byte comparison is what keeps this sound. The issue #999 motivating
+/// case — a user-authored `components/theme-toggle.tsx` colliding with a
+/// package's `dist/theme-toggle.js` — is not byte-identical to anything the
+/// package ships, so it stays loud, which is right: there the advice to rename
+/// is real advice.
+///
+/// Accepted trade-off: a package that genuinely ships two DIFFERENT components
+/// under one marker name is suppressed too. That is deliberate — it is an
+/// upstream bug, and the consumer whose build log this is cannot rename either
+/// one. Suppression is about who can act, not about how confident we are that
+/// the two components match.
+///
+/// This is deliberately **not** part of [`Manifest::from_islands`], which
+/// stays a pure data transform with no filesystem access.
+pub fn is_same_package_duplicate(collision: &Collision) -> bool {
+    match (
+        package_root_of(&collision.kept_path),
+        package_root_of(&collision.dropped_path),
+    ) {
+        // Two modules of the same installed package.
+        (Some(kept), Some(dropped)) => canonical_or_self(&kept) == canonical_or_self(&dropped),
+        // One module of a package, and a copy of that package's own source
+        // staged outside `node_modules`.
+        (Some(pkg), None) => is_copy_of_package_file(&collision.dropped_path, &pkg),
+        (None, Some(pkg)) => is_copy_of_package_file(&collision.kept_path, &pkg),
+        // Two first-party modules — always actionable.
+        (None, None) => false,
+    }
+}
+
+/// The `node_modules/<pkg>` (or `node_modules/@scope/<pkg>`) root `path` lives
+/// under, or `None` when it is not inside an installed package.
+///
+/// The lexical spelling is tried first so a pnpm `node_modules/<pkg>` symlink
+/// is attributed to the name the project imports; canonicalising is the
+/// fallback for a path the scanner already resolved through the link.
+fn package_root_of(path: &Path) -> Option<PathBuf> {
+    lexical_package_root(path).or_else(|| {
+        let canonical = std::fs::canonicalize(path).ok()?;
+        lexical_package_root(&canonical)
+    })
+}
+
+fn lexical_package_root(path: &Path) -> Option<PathBuf> {
+    let components: Vec<Component> = path.components().collect();
+    // The DEEPEST `node_modules` owns the package: a nested install
+    // (`node_modules/a/node_modules/b`) attributes `b`, not `a`.
+    let nm = components
+        .iter()
+        .rposition(|c| c.as_os_str() == "node_modules")?;
+    let first = components.get(nm + 1)?;
+    let mut root = PathBuf::new();
+    for component in &components[..=nm] {
+        root.push(component);
+    }
+    root.push(first);
+    if first.as_os_str().to_string_lossy().starts_with('@') {
+        root.push(components.get(nm + 2)?);
+    }
+    Some(root)
+}
+
+/// Canonicalise, falling back to the path itself when the filesystem call
+/// fails (a synthetic path in an in-memory harness has no entry on disk).
+fn canonical_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// True when `candidate` is a byte-for-byte copy of a module `package_root`
+/// ships under the same file stem.
+///
+/// Only stem-matched files are read, so the walk normally reads nothing; the
+/// whole probe runs at most once per collision, and a collision-free build
+/// never reaches it. A project that DOES carry a standing collision pays one
+/// bounded walk of one package per rebuild in `zfb dev` — small next to the
+/// esbuild pass it sits beside, and the entry budget caps the worst case.
+fn is_copy_of_package_file(candidate: &Path, package_root: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(candidate) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() > PACKAGE_PROBE_MAX_FILE_BYTES {
+        return false;
+    }
+    let Some(stem) = candidate.file_stem() else {
+        return false;
+    };
+    let Ok(candidate_bytes) = std::fs::read(candidate) else {
+        return false;
+    };
+
+    let mut budget = PACKAGE_PROBE_ENTRY_BUDGET;
+    let walk = walkdir::WalkDir::new(canonical_or_self(package_root))
+        .follow_links(false)
+        .into_iter()
+        // A package's own nested installs belong to a different package.
+        .filter_entry(|entry| {
+            entry.depth() == 0 || !entry.file_type().is_dir() || entry.file_name() != "node_modules"
+        });
+    for entry in walk {
+        if budget == 0 {
+            return false;
+        }
+        budget -= 1;
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.file_stem() != Some(stem) {
+            continue;
+        }
+        let is_module = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ISLAND_MODULE_EXTS.contains(&ext));
+        if !is_module {
+            continue;
+        }
+        match entry.metadata() {
+            Ok(entry_meta) if entry_meta.len() == meta.len() => {}
+            _ => continue,
+        }
+        if std::fs::read(path).is_ok_and(|bytes| bytes == candidate_bytes) {
+            return true;
+        }
+    }
+    false
 }
 
 impl Manifest {
@@ -160,6 +328,9 @@ impl Manifest {
     }
 
     /// Read-only access to the collision diagnostic list.
+    ///
+    /// Not every entry is actionable — run each through
+    /// [`is_same_package_duplicate`] before warning on it.
     pub fn collisions(&self) -> &[Collision] {
         &self.collisions
     }
@@ -350,6 +521,205 @@ mod tests {
 
     fn island_marker(component: &str, path: &str, marker: &str) -> Island {
         Island::with_marker_name(component, PathBuf::from(path), marker)
+    }
+
+    // -- is_same_package_duplicate (#2441) ---------------------------------
+
+    fn write_file(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, contents).expect("write");
+    }
+
+    fn collision_between(kept: &Path, dropped: &Path) -> Collision {
+        Collision {
+            name: "Widget".to_string(),
+            kept_path: kept.to_path_buf(),
+            dropped_path: dropped.to_path_buf(),
+        }
+    }
+
+    /// The zudo-doc shape (#2441): the package's compiled `dist/` module and a
+    /// verbatim copy of the package's own shipped source, staged OUTSIDE
+    /// `node_modules` so a virtual-module import resolves. Same component,
+    /// nothing for the author to rename.
+    #[test]
+    fn staged_verbatim_copy_of_a_package_source_is_a_same_package_duplicate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let source = r#""use client";
+export function Widget() { return null; }
+Widget.displayName = "Widget";
+"#;
+        let pkg = root.join("node_modules/@takazudo/zudo-doc");
+        write_file(&pkg.join("routes-src/_widget.tsx"), source);
+        write_file(
+            &pkg.join("dist/routes/_widget.js"),
+            "export function Widget() { return null; }\n",
+        );
+        let staged = root.join(".zudo-doc/routes-src/_widget.tsx");
+        write_file(&staged, source);
+
+        assert!(is_same_package_duplicate(&collision_between(
+            &staged,
+            &pkg.join("dist/routes/_widget.js"),
+        )));
+        // Orientation must not matter — the manifest keeps whichever path
+        // sorts first, which is not under our control.
+        assert!(is_same_package_duplicate(&collision_between(
+            &pkg.join("dist/routes/_widget.js"),
+            &staged,
+        )));
+    }
+
+    /// A staged copy that DRIFTED from what the package ships is no longer
+    /// provably the same component, so it must stay loud.
+    #[test]
+    fn staged_copy_that_differs_from_the_package_source_still_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let pkg = root.join("node_modules/@takazudo/zudo-doc");
+        write_file(
+            &pkg.join("routes-src/_widget.tsx"),
+            "export function Widget() { return null; }\n",
+        );
+        write_file(
+            &pkg.join("dist/routes/_widget.js"),
+            "export function Widget() { return null; }\n",
+        );
+        let staged = root.join(".zudo-doc/routes-src/_widget.tsx");
+        write_file(&staged, "export function Widget() { return <div />; }\n");
+
+        assert!(!is_same_package_duplicate(&collision_between(
+            &staged,
+            &pkg.join("dist/routes/_widget.js"),
+        )));
+    }
+
+    /// Issue #999's motivating case: a user-authored component colliding with
+    /// a package-provided one. Different components, and "rename one" is real
+    /// advice — this must never be suppressed.
+    #[test]
+    fn local_component_colliding_with_a_package_component_still_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let pkg = root.join("node_modules/@takazudo/zudo-doc");
+        write_file(
+            &pkg.join("dist/theme-toggle/index.js"),
+            "export function ThemeToggle() { return null; }\n",
+        );
+        let local = root.join("src/components/theme-toggle.tsx");
+        write_file(&local, "export function ThemeToggle() { return null; }\n");
+
+        assert!(!is_same_package_duplicate(&collision_between(
+            &local,
+            &pkg.join("dist/theme-toggle/index.js"),
+        )));
+    }
+
+    /// Even a first-party file that happens to share the package file's stem
+    /// stays loud unless the bytes match — the stem alone proves nothing.
+    #[test]
+    fn stem_match_without_byte_identity_still_warns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let pkg = root.join("node_modules/acme");
+        write_file(
+            &pkg.join("dist/widget.js"),
+            "export function Widget() { return null; }\n",
+        );
+        let local = root.join("src/components/widget.tsx");
+        write_file(&local, "export function Widget() { return <span />; }\n");
+
+        assert!(!is_same_package_duplicate(&collision_between(
+            &local,
+            &pkg.join("dist/widget.js"),
+        )));
+    }
+
+    /// Two modules of the SAME installed package need no byte comparison.
+    #[test]
+    fn two_modules_of_one_installed_package_are_a_same_package_duplicate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkg = dir.path().join("node_modules/@takazudo/zudo-doc");
+        write_file(&pkg.join("dist/routes/_widget.js"), "// compiled\n");
+        write_file(&pkg.join("routes-src/_widget.tsx"), "// source\n");
+
+        assert!(is_same_package_duplicate(&collision_between(
+            &pkg.join("dist/routes/_widget.js"),
+            &pkg.join("routes-src/_widget.tsx"),
+        )));
+    }
+
+    /// Two DIFFERENT packages colliding is actionable upstream, so it warns.
+    #[test]
+    fn two_different_packages_still_warn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(&root.join("node_modules/acme/dist/widget.js"), "// acme\n");
+        write_file(
+            &root.join("node_modules/other/dist/widget.js"),
+            "// other\n",
+        );
+
+        assert!(!is_same_package_duplicate(&collision_between(
+            &root.join("node_modules/acme/dist/widget.js"),
+            &root.join("node_modules/other/dist/widget.js"),
+        )));
+    }
+
+    /// Two first-party modules never reach a package probe.
+    #[test]
+    fn two_first_party_modules_still_warn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(&root.join("src/a/widget.tsx"), "// same\n");
+        write_file(&root.join("src/b/widget.tsx"), "// same\n");
+
+        assert!(!is_same_package_duplicate(&collision_between(
+            &root.join("src/a/widget.tsx"),
+            &root.join("src/b/widget.tsx"),
+        )));
+    }
+
+    /// A nested install belongs to the DEEPEST `node_modules` — the inner
+    /// package, not its host.
+    #[test]
+    fn nested_install_is_attributed_to_the_inner_package() {
+        let outer = Path::new("/proj/node_modules/host/dist/widget.js");
+        let inner = Path::new("/proj/node_modules/host/node_modules/@scope/dep/dist/widget.js");
+        assert_eq!(
+            package_root_of(outer).unwrap(),
+            PathBuf::from("/proj/node_modules/host")
+        );
+        assert_eq!(
+            package_root_of(inner).unwrap(),
+            PathBuf::from("/proj/node_modules/host/node_modules/@scope/dep")
+        );
+        assert!(package_root_of(Path::new("/proj/src/widget.tsx")).is_none());
+    }
+
+    /// A package's own nested `node_modules` is not part of that package, so a
+    /// copy of a transitive dependency's file is not a same-package duplicate.
+    #[test]
+    fn a_copy_of_a_nested_dependency_file_is_not_a_same_package_duplicate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let source = "export function Widget() { return null; }\n";
+        write_file(
+            &root.join("node_modules/host/node_modules/dep/widget.tsx"),
+            source,
+        );
+        write_file(
+            &root.join("node_modules/host/dist/widget.js"),
+            "// compiled\n",
+        );
+        let staged = root.join(".staged/widget.tsx");
+        write_file(&staged, source);
+
+        assert!(!is_same_package_duplicate(&collision_between(
+            &staged,
+            &root.join("node_modules/host/dist/widget.js"),
+        )));
     }
 
     #[test]
