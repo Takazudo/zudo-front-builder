@@ -23,11 +23,45 @@
  * its own.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { jsx, jsxs } from "react/jsx-runtime";
 
 import { getCollection, setContentSnapshot } from "../content.js";
 import type { CollectionEntry, ContentProps, Snapshot } from "../content.js";
+
+// Cross-package path: from packages/zfb/src/__tests__/ up to the repo root,
+// then into the Rust crate that owns the shared fixture — the same
+// relative-path pattern as `slugify.test.ts`.
+const here = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_PATH = resolve(
+  here,
+  "../../../../crates/zfb-types/tests/fixtures/render-region-marker-parity.json",
+);
+
+interface MarkerFixtureCase {
+  id: string;
+  start: string;
+  end: string;
+}
+
+interface MarkerFixture {
+  cases: MarkerFixtureCase[];
+}
+
+const markerFixture: MarkerFixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf-8"));
+
+// The fixture's plain-id case (no special characters — picked by content,
+// not position, so the fixture's case order is free to change) supplies
+// the exact byte scaffolding around a region id: everything but the id
+// itself is read from the fixture, not hardcoded here.
+const FIXTURE_TEMPLATE_CASE = markerFixture.cases.find((c) => !c.id.includes("&"));
+if (!FIXTURE_TEMPLATE_CASE) {
+  throw new Error(`fixture at ${FIXTURE_PATH} has no plain-id case`);
+}
 
 /** Region ids are the entries' `module_specifier`s. */
 const OUTER_ID = "mdx://blog/outer#0a1b2c3d";
@@ -66,9 +100,18 @@ type BridgeGlobal = typeof globalThis & {
   };
 };
 
-/** Start/end sentinel bytes for one region id. */
+/**
+ * Start/end sentinel bytes for one region id. The static scaffolding
+ * (attribute names, quoting, element shape) comes verbatim from the
+ * shared fixture's plain-id case — only the id substring is substituted
+ * for the caller's `regionId`, so this oracle can never drift from the
+ * bytes `zfb_types::render_region_marker` and `parse_marker` are pinned
+ * against, even for ids (like `OUTER_ID`/`INNER_ID`) the fixture itself
+ * does not enumerate.
+ */
 function marker(edge: "start" | "end", regionId: string): string {
-  return `<template data-zfb-render-region="${edge}" data-zfb-region-id="${regionId}"></template>`;
+  const template = edge === "start" ? FIXTURE_TEMPLATE_CASE.start : FIXTURE_TEMPLATE_CASE.end;
+  return template.replace(FIXTURE_TEMPLATE_CASE.id, regionId);
 }
 
 export function describeRenderRegionMarkers(renderToString: (element: unknown) => string): void {

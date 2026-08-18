@@ -53,6 +53,7 @@ use serde::Serialize;
 
 use zfb_content::mdx_jsx_emit::HeadingEntry;
 use zfb_content::{region_id_without_hash, ContentSnapshot, RenderRegionMetadata};
+use zfb_types::{MARKER_HEAD, MARKER_ID_ATTR, MARKER_KIND_END, MARKER_KIND_START, MARKER_TAIL};
 
 use crate::output;
 
@@ -185,14 +186,13 @@ impl RenderMetadataIndex {
 // Sentinel scanning
 // ---------------------------------------------------------------------------
 
-const MARKER_HEAD: &[u8] = b"<template data-zfb-render-region=\"";
-const MARKER_KIND_START: &[u8] = b"start\"";
-const MARKER_KIND_END: &[u8] = b"end\"";
-const MARKER_ID_ATTR: &[u8] = b" data-zfb-region-id=\"";
-/// Everything from the region id's closing quote to the end of the
-/// element — an EMPTY `<template>`, which is what makes the marker inert
-/// in the DOM and its removal byte-exact.
-const MARKER_TAIL: &[u8] = b"\"></template>";
+// The 5 byte-parts consumed below (`MARKER_HEAD`, `MARKER_KIND_START`,
+// `MARKER_KIND_END`, `MARKER_ID_ATTR`, `MARKER_TAIL`) are the canonical
+// `zfb-types` definitions (crates/zfb-types/src/render_region.rs) —
+// pinned byte-exact against `render_region_marker` by the shared fixture
+// at `crates/zfb-types/tests/fixtures/render-region-marker-parity.json`,
+// and round-tripped through `parse_marker` below by
+// `parse_marker_round_trips_the_parity_fixture`.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MarkerKind {
@@ -640,6 +640,51 @@ mod tests {
                 parse_marker(html.as_bytes()).is_none(),
                 "must not be treated as a sentinel: {html}"
             );
+        }
+    }
+
+    /// `parse_marker` round-trips every case in the shared cross-language
+    /// parity fixture (crates/zfb-types/tests/fixtures/render-region-marker-parity.json)
+    /// — the same fixture `zfb_types::render_region_marker`'s own parity
+    /// test and the TS renderer-driven oracle
+    /// (packages/zfb/src/__tests__/render-region-marker-cases.ts) consume.
+    /// Covers both the plain-id and the HTML-escaped-id case.
+    #[test]
+    fn parse_marker_round_trips_the_parity_fixture() {
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            cases: Vec<Case>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Case {
+            id: String,
+            start: String,
+            end: String,
+        }
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("zfb-types")
+            .join("tests")
+            .join("fixtures")
+            .join("render-region-marker-parity.json");
+        let data = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read fixture {path:?}: {e}"));
+        let fixture: Fixture = serde_json::from_str(&data)
+            .unwrap_or_else(|e| panic!("cannot parse fixture {path:?}: {e}"));
+
+        for case in &fixture.cases {
+            let m = parse_marker(case.start.as_bytes())
+                .unwrap_or_else(|| panic!("fixture start marker must parse: {}", case.start));
+            assert_eq!(m.kind, MarkerKind::Start);
+            assert_eq!(m.region_id, case.id);
+            assert_eq!(m.len, case.start.len());
+
+            let m = parse_marker(case.end.as_bytes())
+                .unwrap_or_else(|| panic!("fixture end marker must parse: {}", case.end));
+            assert_eq!(m.kind, MarkerKind::End);
+            assert_eq!(m.region_id, case.id);
+            assert_eq!(m.len, case.end.len());
         }
     }
 
