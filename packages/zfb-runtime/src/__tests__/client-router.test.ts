@@ -9,13 +9,11 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// vi.mock is hoisted to module top by Vitest, which lets us prevent the
-// client-router module's side effect (`init()`) from running during
-// the module-level `if (typeof document !== "undefined")` guard.
-// We mock `./client-router/router.js` so `init` is a no-op spy.
-vi.mock("../client-router/router.js", () => ({ init: vi.fn() }));
-
-import { ClientRouter } from "../client-router.js";
+// Imports the pure component module directly (#2437) — it has no
+// module-scope side effects, so no vi.mock is needed to suppress `init()`
+// (unlike the activation shim `../client-router.js`, which runs `init()` on
+// import).
+import { ClientRouter } from "../client-router-component.js";
 
 afterEach(() => {
   // Clean up any globalThis.__zfb mutations between tests.
