@@ -267,6 +267,12 @@ pub struct ScanMeta {
     /// `assets/islands.js` with no `"use client"` boilerplate on the
     /// consumer's side.
     ///
+    /// For the barrel-import shapes above, this detection is the ONLY thing
+    /// that activates the router: the `@takazudo/zfb-runtime` root barrel is
+    /// side-effect-free (zfb#2437 — it re-exports `ClientRouter` from the pure
+    /// component module, not the activation shim), so a missed detection means
+    /// the component's `<meta>` tags render with no runtime behind them.
+    ///
     /// Detection keys off the *import* of `ClientRouter`, not its actual
     /// JSX/call use: distinguishing an unused import would require
     /// whole-module identifier-usage analysis the scanner does not do.
