@@ -2807,6 +2807,7 @@ fn emit_mdx_expression_braced(value: &str) -> String {
 /// genuinely-broken `{\d}`-style leak (invalid → recover as a string) from
 /// a valid expression the byte scanner falsely flagged (e.g. a regex
 /// literal containing `{\d}` bytes → leave verbatim).
+#[cfg(feature = "compiler")]
 fn mdx_expression_is_valid_js(value: &str) -> bool {
     use swc_core::common::sync::Lrc;
     use swc_core::common::{FileName, SourceMap};
@@ -2840,6 +2841,18 @@ fn mdx_expression_is_valid_js(value: &str) -> bool {
         module.body.as_slice(),
         [ModuleItem::Stmt(Stmt::Expr(stmt))] if matches!(*stmt.expr, Expr::Paren(_))
     )
+}
+
+/// Compiler-off validation for the recovery seam above.
+///
+/// This deliberately accepts only expressions whose delimiters, strings,
+/// comments, and regular-expression literals close cleanly and which contain
+/// no bare backslash in ordinary code. It is conservative: uncertainty keeps
+/// the existing recovery behavior instead of allowing known-broken bytes to
+/// reach a downstream compiler.
+#[cfg(not(feature = "compiler"))]
+fn mdx_expression_is_valid_js(value: &str) -> bool {
+    conservative_js_scan(value).is_ok()
 }
 
 /// Validate an MDX spread-attribute value (e.g. `"...rest"` for
@@ -2878,6 +2891,7 @@ fn mdx_expression_is_valid_js(value: &str) -> bool {
 /// carries the underlying SWC parse message and, where available, its
 /// byte offset into `value` itself (translated back from the synthetic
 /// `[value];` wrapper, not left relative to it).
+#[cfg(feature = "compiler")]
 fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
     use swc_core::common::sync::Lrc;
     use swc_core::common::{FileName, SourceMap, Spanned};
@@ -2971,6 +2985,214 @@ fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(not(feature = "compiler"))]
+fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
+    let trimmed = trim_js_trivia(value);
+    let Some(operand) = trimmed.strip_prefix("...") else {
+        return Err(
+            "expected a single spread expression (`...expr`), got a different shape".to_string(),
+        );
+    };
+    let operand = trim_js_trivia(operand);
+    if operand.is_empty() {
+        return Err("byte 3: expected a spread operand".to_string());
+    }
+    if operand.ends_with(',') {
+        return Err(
+            "expected the spread operand to be immediately followed by `}` — no trailing comma or extra tokens"
+                .to_string(),
+        );
+    }
+    if has_top_level_comma(operand) {
+        return Err(
+            "expected a single spread expression (`...expr`), got a different shape".to_string(),
+        );
+    }
+    conservative_js_scan(operand)
+        .map_err(|offset| format!("byte {}: invalid spread expression", offset + 3))?;
+    if has_separated_bare_identifiers(operand) {
+        return Err("byte 3: invalid spread expression".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "compiler"))]
+fn trim_js_trivia(mut value: &str) -> &str {
+    loop {
+        value = value.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}');
+        if let Some(rest) = value.strip_prefix("/*") {
+            let Some(end) = rest.find("*/") else {
+                return value;
+            };
+            value = &rest[end + 2..];
+            continue;
+        }
+        if let Some(start) = value.rfind("/*") {
+            if value[start + 2..].ends_with("*/") {
+                value = &value[..start];
+                continue;
+            }
+        }
+        if let Some(start) = value.rfind("//") {
+            let suffix = &value[start + 2..];
+            if !suffix.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
+                value = &value[..start];
+                continue;
+            }
+        }
+        return value;
+    }
+}
+
+#[cfg(not(feature = "compiler"))]
+fn has_top_level_comma(value: &str) -> bool {
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in value.chars() {
+        if let Some(end) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == end {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' | '`' => quote = Some(ch),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+#[cfg(not(feature = "compiler"))]
+fn has_separated_bare_identifiers(value: &str) -> bool {
+    let mut parts = value.split_whitespace();
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    let Some(second) = parts.next() else {
+        return false;
+    };
+    first
+        .chars()
+        .all(|c| c == '_' || c == '$' || c.is_alphanumeric())
+        && second
+            .chars()
+            .all(|c| c == '_' || c == '$' || c.is_alphanumeric())
+        && !matches!(second, "as" | "satisfies" | "instanceof" | "in")
+}
+
+#[cfg(not(feature = "compiler"))]
+fn conservative_js_scan(value: &str) -> Result<(), usize> {
+    #[derive(Clone, Copy)]
+    enum State {
+        Code,
+        Quote(char),
+        Regex,
+        LineComment,
+        BlockComment,
+    }
+
+    let chars: Vec<(usize, char)> = value.char_indices().collect();
+    let mut state = State::Code;
+    let mut escaped = false;
+    let mut stack = Vec::new();
+    let mut previous_code = None;
+    let mut index = 0usize;
+    while index < chars.len() {
+        let (offset, ch) = chars[index];
+        let next = chars.get(index + 1).map(|(_, ch)| *ch);
+        match state {
+            State::Code => match (ch, next) {
+                ('/', Some('/')) => {
+                    state = State::LineComment;
+                    index += 1;
+                }
+                ('/', Some('*')) => {
+                    state = State::BlockComment;
+                    index += 1;
+                }
+                ('/', _)
+                    if previous_code
+                        .is_none_or(|prev: char| "([{=,:;!?&|+-*%^~<>".contains(prev)) =>
+                {
+                    state = State::Regex;
+                    escaped = false;
+                }
+                ('\'' | '"' | '`', _) => {
+                    state = State::Quote(ch);
+                    escaped = false;
+                }
+                ('(' | '[' | '{', _) => stack.push(ch),
+                (')' | ']' | '}', _) => {
+                    let expected = match ch {
+                        ')' => '(',
+                        ']' => '[',
+                        _ => '{',
+                    };
+                    if stack.pop() != Some(expected) {
+                        return Err(offset);
+                    }
+                }
+                ('\\', _) => return Err(offset),
+                _ => {}
+            },
+            State::Quote(end) => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if end == '`' && (ch, next) == ('$', Some('{')) {
+                    // A lightweight scanner cannot validate nested template
+                    // substitutions without becoming a second JS parser.
+                    // Reject the uncertain shape conservatively; plain
+                    // template literals remain supported.
+                    return Err(offset);
+                } else if ch == end {
+                    state = State::Code;
+                }
+            }
+            State::Regex => {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == '/' {
+                    state = State::Code;
+                } else if matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}') {
+                    return Err(offset);
+                }
+            }
+            State::LineComment => {
+                if matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}') {
+                    state = State::Code;
+                }
+            }
+            State::BlockComment => {
+                if (ch, next) == ('*', Some('/')) {
+                    state = State::Code;
+                    index += 1;
+                }
+            }
+        }
+        if matches!(state, State::Code) && !ch.is_whitespace() {
+            previous_code = Some(ch);
+        }
+        index += 1;
+    }
+    if !stack.is_empty() || !matches!(state, State::Code | State::LineComment) {
+        return Err(value.len());
+    }
+    Ok(())
+}
+
 /// True iff `s` consists solely of whitespace and/or JS comments
 /// (`/* … */` block comments, `// …` line comments) — the shape a
 /// legitimate trailing comment produces between a spread operand and
@@ -2980,6 +3202,7 @@ fn mdx_spread_attribute_validity(value: &str) -> Result<(), String> {
 /// `s`) to be recognized — matching how the JS lexer actually
 /// delimits it, and safe here because `s` is a genuine substring of
 /// the synthetic source, never truncated mid-comment.
+#[cfg(feature = "compiler")]
 fn trailing_region_is_only_trivia(mut s: &str) -> bool {
     loop {
         // ECMAScript `WhiteSpace` is Unicode `White_Space` PLUS U+FEFF

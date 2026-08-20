@@ -6100,7 +6100,6 @@ dependencies = [
  "unicode_categories",
  "zfb-md-ast",
  "zfb-md-extras",
- "zfb-render",
  "zfb-types",
 ]
 
