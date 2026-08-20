@@ -1,5 +1,3 @@
-#![cfg(feature = "compiler")]
-
 //! Tests for `zfb_content::mdx_to_jsx_module`.
 //!
 //! Coverage:
@@ -8,7 +6,7 @@
 //! 2. Error path: malformed MDX returns `PipelineError::Parse` with
 //!    line/column info and never panics.
 //! 3. Smoke test: emitter output is a valid TSX module accepted by
-//!    `zfb_render::SwcPipeline`.
+//!    SWC's TSX parser when the compiler capability is enabled.
 //! 4. Real-world fixtures from zudo-doc round-trip through both stages.
 
 use std::fs;
@@ -18,8 +16,10 @@ use zfb_content::frontmatter;
 use zfb_content::pipeline::PipelineError;
 use zfb_content::{mdx_to_jsx_module, MdxJsxOptions};
 
+#[cfg(feature = "compiler")]
 #[path = "support/swc_parse.rs"]
 mod swc_parse;
+#[cfg(feature = "compiler")]
 use swc_parse::{CompileOptions, SwcPipeline};
 
 fn emit(src: &str) -> String {
@@ -265,11 +265,14 @@ fn mdx_invalid_spread_attribute_is_dropped_and_module_stays_parseable() {
         out.contains("link"),
         "surrounding content must survive: {out}"
     );
-    let pipeline = SwcPipeline::new();
-    let opts = CompileOptions::default().with_filename("t.tsx");
-    pipeline.compile(&out, &opts).unwrap_or_else(|e| {
-        panic!("dropping the invalid spread must leave a parseable module: {e}\n{out}")
-    });
+    #[cfg(feature = "compiler")]
+    {
+        let pipeline = SwcPipeline::new();
+        let opts = CompileOptions::default().with_filename("t.tsx");
+        pipeline.compile(&out, &opts).unwrap_or_else(|e| {
+            panic!("dropping the invalid spread must leave a parseable module: {e}\n{out}")
+        });
+    }
 }
 
 #[test]
@@ -289,12 +292,15 @@ fn mdx_invalid_spread_attribute_warns_through_the_pipeline_path() {
         !out.contains(r"\bad"),
         "the invalid spread's bytes must not reach the compiled module: {out}"
     );
-    let compiled = SwcPipeline::new()
-        .compile(&out, &CompileOptions::default().with_filename("t.tsx"))
-        .unwrap_or_else(|e| {
-            panic!("dropping the invalid spread must leave a parseable module: {e}\n{out}")
-        });
-    assert!(!compiled.code.is_empty());
+    #[cfg(feature = "compiler")]
+    {
+        let compiled = SwcPipeline::new()
+            .compile(&out, &CompileOptions::default().with_filename("t.tsx"))
+            .unwrap_or_else(|e| {
+                panic!("dropping the invalid spread must leave a parseable module: {e}\n{out}")
+            });
+        assert!(!compiled.code.is_empty());
+    }
 
     let diags = pipeline.take_markdown_diagnostics();
     assert_eq!(
@@ -500,6 +506,7 @@ fn unbalanced_brace_expression_returns_parse_error() {
 
 /// Parse `jsx_module` through SWC's TSX parser and assert the accepted
 /// source contains the canonical `MDXContent` export.
+#[cfg(feature = "compiler")]
 fn assert_swc_accepts(jsx_module: &str, label: &str) {
     let pipeline = SwcPipeline::new();
     let opts = CompileOptions::default().with_filename(format!("{label}.tsx"));
@@ -519,18 +526,21 @@ fn assert_swc_accepts(jsx_module: &str, label: &str) {
 }
 
 #[test]
+#[cfg(feature = "compiler")]
 fn smoke_simple_markdown_compiles_via_swc() {
     let jsx = emit("# Hello\n\nFoo *bar* baz.\n");
     assert_swc_accepts(&jsx, "simple");
 }
 
 #[test]
+#[cfg(feature = "compiler")]
 fn smoke_with_jsx_components_compiles_via_swc() {
     let jsx = emit("# Hello\n\n<Note title=\"hi\">body</Note>\n");
     assert_swc_accepts(&jsx, "with-jsx");
 }
 
 #[test]
+#[cfg(feature = "compiler")]
 fn smoke_self_closing_jsx_compiles_via_swc() {
     let jsx = emit("<Hr />\n\nafter\n");
     assert_swc_accepts(&jsx, "self-closing");
@@ -543,6 +553,7 @@ fn smoke_self_closing_jsx_compiles_via_swc() {
 /// piping a real-world-flavoured math fixture through the full
 /// emitter → SWC pipeline.
 #[test]
+#[cfg(feature = "compiler")]
 fn smoke_math_block_and_inline_compile_via_swc() {
     let src = "## Limit\n\nWhen $x \\to \\infty$ the integral converges:\n\n$$\n\\int_{-\\infty}^{\\infty} f(x)\\,dx\n$$\n";
     let jsx = emit(src);
@@ -589,6 +600,7 @@ fn real_world_fixtures_round_trip_through_emitter() {
             "{label}: missing default export"
         );
         // Each fixture should also pass the SWC smoke test.
+        #[cfg(feature = "compiler")]
         assert_swc_accepts(&jsx, &label);
     }
 }

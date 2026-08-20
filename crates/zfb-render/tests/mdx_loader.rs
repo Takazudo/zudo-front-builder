@@ -35,6 +35,15 @@ fn mdx_specifier_compiles_with_components_referenced() {
     // settings. We assert both shapes so the test stays robust if SWC
     // changes its default-export codegen.
     let js = &compiled.code;
+    assert!(!js.is_empty(), "SWC must produce nonempty JavaScript");
+    assert!(
+        js.contains("MDXContent"),
+        "the emitted MDXContent function must survive SWC codegen:\n{js}"
+    );
+    assert!(
+        !js.contains("<_Fragment>"),
+        "SWC must lower all emitted JSX; residual fragment syntax found:\n{js}"
+    );
     assert!(
         js.contains("export default") || js.contains("export { ") && js.contains(" as default"),
         "expected a default export in compiled MDX, got:\n{js}"
