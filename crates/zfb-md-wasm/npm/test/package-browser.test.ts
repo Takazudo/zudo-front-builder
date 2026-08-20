@@ -62,6 +62,13 @@ function installTarballConsumer(archivePath: string): string {
   return fixtureRoot;
 }
 
+function copyPackedConsumerFixtures(fixtureRoot: string): void {
+  const sourceRoot = join(packageRoot, "test", "fixtures", "packed-consumer");
+  for (const name of ["consumer.mjs", "consumer.ts", "consumer-negative.ts", "tsconfig.json"]) {
+    cpSync(join(sourceRoot, name), join(fixtureRoot, name));
+  }
+}
+
 function esbuildBin(): string {
   return resolve(packageRoot, "node_modules", ".bin", "esbuild");
 }
@@ -114,40 +121,128 @@ describe("packed browser conditional entry", () => {
 
   it("resolves every public declaration from a tarball-only isolated consumer", () => {
     const fixtureRoot = installTarballConsumer(packedPackage());
-    writeFileSync(
-      join(fixtureRoot, "consumer.ts"),
-      [
-        'import { MdastAdapterError, toMdastRoot, type MdastRoot } from "@takazudo/zfb-md-wasm";',
-        'import { highlightCode, type HighlightCodeResult } from "@takazudo/zfb-md-wasm/highlight";',
-        'import { renderHtml, type RenderHtmlResult } from "@takazudo/zfb-md-wasm/render";',
-        'import { parseToAst, type ParseToAstResult } from "@takazudo/zfb-md-wasm/parse";',
-        "declare const raw: MdastRoot;",
-        "const root: ReturnType<typeof toMdastRoot> = toMdastRoot(raw);",
-        "const error: MdastAdapterError | undefined = undefined;",
-        'const highlighted: Promise<HighlightCodeResult> = highlightCode("x", { language: "text" });',
-        'const rendered: Promise<RenderHtmlResult> = renderHtml("# x");',
-        'const parsed: Promise<ParseToAstResult> = parseToAst("# x");',
-        "void root; void error; void highlighted; void rendered; void parsed;",
-      ].join("\n"),
-    );
-    writeFileSync(
-      join(fixtureRoot, "tsconfig.json"),
-      JSON.stringify({
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          module: "NodeNext",
-          moduleResolution: "NodeNext",
-          target: "ES2022",
-          skipLibCheck: false,
-        },
-        include: ["consumer.ts"],
-      }),
-    );
+    copyPackedConsumerFixtures(fixtureRoot);
     execFileSync(resolve(packageRoot, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.json"], {
       cwd: fixtureRoot,
       stdio: "pipe",
     });
+  });
+
+  it("runs all four direct Node ESM calls from the unpacked tarball", () => {
+    const fixtureRoot = unpackForConsumer(packedPackage());
+    copyPackedConsumerFixtures(fixtureRoot);
+    const output = execFileSync(process.execPath, [join(fixtureRoot, "consumer.mjs")], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    const summary = JSON.parse(output) as {
+      compiled: number;
+      highlighted: number;
+      rendered: string;
+      parsed: string;
+      versions: string[];
+    };
+    expect(summary.compiled).toBeGreaterThan(0);
+    expect(summary.highlighted).toBeGreaterThan(0);
+    expect(summary.rendered).toBe("<h1>Render</h1>");
+    expect(summary.parsed).toBe("root");
+    expect(summary.versions).toHaveLength(4);
+  });
+
+  it.each([
+    {
+      entry: ".",
+      browserFile: "browser.js",
+      resourceDir: "wasm",
+      resourceStem: "zfb_md_wasm",
+      exportSource:
+        "export { compile, highlightCode, init, parseToAst, renderHtml, version } from '@takazudo/zfb-md-wasm';",
+    },
+    {
+      entry: "./highlight",
+      browserFile: "highlight-browser.js",
+      resourceDir: "wasm-highlight",
+      resourceStem: "zfb_md_wasm_highlight",
+      exportSource:
+        "export { highlightCode, init, version } from '@takazudo/zfb-md-wasm/highlight';",
+    },
+    {
+      entry: "./render",
+      browserFile: "render-browser.js",
+      resourceDir: "wasm-render",
+      resourceStem: "zfb_md_wasm_render",
+      exportSource: "export { init, renderHtml, version } from '@takazudo/zfb-md-wasm/render';",
+    },
+    {
+      entry: "./parse",
+      browserFile: "parse-browser.js",
+      resourceDir: "wasm-parse",
+      resourceStem: "zfb_md_wasm_parse",
+      exportSource:
+        "export { init, parseToAst, toMdastRoot, version } from '@takazudo/zfb-md-wasm/parse';",
+    },
+  ])("selects only the $entry browser entry and its own resource pair in esbuild", (fixture) => {
+    const fixtureRoot = unpackForConsumer(packedPackage());
+    const entryPath = join(fixtureRoot, `${fixture.resourceDir}-entry.mjs`);
+    const outDir = join(fixtureRoot, `${fixture.resourceDir}-out`);
+    const metafilePath = join(outDir, "meta.json");
+    writeFileSync(entryPath, fixture.exportSource);
+
+    execFileSync(
+      esbuildBin(),
+      [
+        entryPath,
+        "--bundle",
+        "--format=esm",
+        "--platform=browser",
+        "--outdir=" + outDir,
+        "--metafile=" + metafilePath,
+        "--loader:.zfb-resource.mjs=file",
+        "--loader:.wasm=file",
+        "--asset-names=islands-resource-[name]-[hash]",
+      ],
+      { cwd: fixtureRoot, stdio: "pipe" },
+    );
+
+    const metafile = JSON.parse(readFileSync(metafilePath, "utf8")) as {
+      inputs: Record<string, unknown>;
+    };
+    const inputNames = Object.keys(metafile.inputs);
+    expect(inputNames.some((path) => path.endsWith(`/dist/${fixture.browserFile}`))).toBe(true);
+    expect(
+      inputNames.some((path) =>
+        path.endsWith(
+          `/dist/${fixture.entry === "." ? "index.js" : fixture.entry.slice(2) + ".js"}`,
+        ),
+      ),
+    ).toBe(false);
+
+    const resourceInputs = inputNames.filter(
+      (path) =>
+        path.includes(`/dist/${fixture.resourceDir}/`) &&
+        path.endsWith(fixture.resourceStem + "_bg.wasm"),
+    );
+    const glueInputs = inputNames.filter(
+      (path) =>
+        path.includes(`/dist/${fixture.resourceDir}/`) &&
+        path.endsWith(fixture.resourceStem + "_glue.zfb-resource.mjs"),
+    );
+    expect(resourceInputs).toHaveLength(1);
+    expect(glueInputs).toHaveLength(1);
+    expect(
+      inputNames.filter(
+        (path) =>
+          /dist\/wasm(?:-[^/]+)?\/zfb_md_wasm.*\.(?:mjs|wasm)$/.test(path) &&
+          !path.includes(`/dist/${fixture.resourceDir}/`),
+      ),
+    ).toHaveLength(0);
+
+    const outputFiles = readdirSync(outDir);
+    const resources = outputFiles.filter((name) => name.startsWith("islands-resource-"));
+    expect(resources).toHaveLength(2);
+    expect(resources.filter((name) => name.endsWith(".mjs"))).toHaveLength(1);
+    expect(resources.filter((name) => name.endsWith(".wasm"))).toHaveLength(1);
+    expect(resources.every((name) => name.includes(fixture.resourceStem))).toBe(true);
   });
 
   it("selects browser.js and keeps relative glue/wasm resources through generic esbuild", async () => {
