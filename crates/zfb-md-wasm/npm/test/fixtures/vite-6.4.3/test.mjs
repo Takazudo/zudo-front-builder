@@ -1,6 +1,6 @@
 import { chromium } from "@playwright/test";
 import { build, createServer, preview, version as viteVersion } from "vite";
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,14 @@ function resourceKind(rawUrl) {
   if (pathname.includes("zfb_md_wasm_highlight_bg") && pathname.endsWith(".wasm")) {
     return "highlight-wasm";
   }
+  if (pathname.includes("zfb_md_wasm_render_glue.zfb-resource")) return "render-glue";
+  if (pathname.includes("zfb_md_wasm_render_bg") && pathname.endsWith(".wasm")) {
+    return "render-wasm";
+  }
+  if (pathname.includes("zfb_md_wasm_parse_glue.zfb-resource")) return "parse-glue";
+  if (pathname.includes("zfb_md_wasm_parse_bg") && pathname.endsWith(".wasm")) {
+    return "parse-wasm";
+  }
   if (pathname.includes("zfb_md_wasm_glue.zfb-resource")) return "glue";
   if (pathname.includes("zfb_md_wasm_bg") && pathname.endsWith(".wasm")) return "wasm";
   return undefined;
@@ -56,6 +64,29 @@ function resourceKind(rawUrl) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function assertOwnPair(records, glueKind, wasmKind, label) {
+  assert(records.length === 2, `${label}: expected exactly two own resource requests`);
+  assert(
+    records.filter(({ kind }) => kind === glueKind).length === 1 &&
+      records.filter(({ kind }) => kind === wasmKind).length === 1,
+    `${label}: action fetched ${records.map(({ kind }) => kind).join(", ")}`,
+  );
+  assert(
+    records.every(({ status }) => status === 200),
+    `${label}: action did not receive HTTP 200 for both resources`,
+  );
+  const glue = records.find(({ kind }) => kind === glueKind);
+  const wasm = records.find(({ kind }) => kind === wasmKind);
+  assert(
+    glue !== undefined && /^(?:application|text)\/javascript(?:;|$)/.test(glue.contentType),
+    `${label}: glue MIME was not JavaScript`,
+  );
+  assert(
+    wasm !== undefined && /^application\/wasm(?:;|$)/.test(wasm.contentType),
+    `${label}: wasm MIME was not application/wasm`,
+  );
 }
 
 async function exercise(origin, selectedIds, label) {
@@ -216,6 +247,61 @@ async function exercise(origin, selectedIds, label) {
       `${label}: failed + successful Wasm fetch count changed`,
     );
 
+    // Each slim action starts with a fresh, lazy state in the same browser
+    // realm. Clearing the capture between actions makes the exact own-pair
+    // contract mechanical and catches accidental root/sibling URL imports.
+    requests.length = 0;
+    responses.length = 0;
+    const highlightOnlyResult = await page.evaluate(() => window.runFixture("highlight"));
+    assert(
+      highlightOnlyResult.result.diagnostics.length === 0,
+      `${label}: highlight subpath action failed`,
+    );
+    assert(requests.length === 2, `${label} highlight: expected two own requests`);
+    assertOwnPair(responses, "highlight-glue", "highlight-wasm", `${label} highlight`);
+
+    requests.length = 0;
+    responses.length = 0;
+    const renderOnlyResult = await page.evaluate(() => window.runFixture("render"));
+    assert(
+      renderOnlyResult.result.diagnostics.length === 0 &&
+        renderOnlyResult.result.html === "<h1>Render subpath</h1>",
+      `${label}: render subpath action failed`,
+    );
+    assert(requests.length === 2, `${label} render: expected two own requests`);
+    assertOwnPair(responses, "render-glue", "render-wasm", `${label} render`);
+
+    requests.length = 0;
+    responses.length = 0;
+    const parseOnlyResult = await page.evaluate(() => window.runFixture("parse"));
+    assert(
+      parseOnlyResult.result.diagnostics.length === 0 && parseOnlyResult.result.ast.type === "root",
+      `${label}: parse subpath action failed`,
+    );
+    assert(requests.length === 2, `${label} parse: expected two own requests`);
+    assertOwnPair(responses, "parse-glue", "parse-wasm", `${label} parse`);
+
+    requests.length = 0;
+    responses.length = 0;
+    const coexistence = await page.evaluate(() => window.runFixture("coexist"));
+    assert(
+      coexistence.rendered.diagnostics.length === 0 &&
+        coexistence.parsed.ast.type === "root" &&
+        coexistence.parsedAfterRenderTrap.ast.type === "root",
+      `${label}: render/parse same-realm coexistence failed`,
+    );
+    assert(coexistence.trapName === "ZfbMdWasmTrapError", `${label}: render trap was not wrapped`);
+    assert(
+      coexistence.afterRender.currentGeneration ===
+        coexistence.beforeRender.currentGeneration + 1 &&
+        coexistence.afterParse.currentGeneration === coexistence.beforeParse.currentGeneration,
+      `${label}: render and parse recovery state was shared`,
+    );
+    assert(
+      responses.every(({ kind }) => kind === "render-glue"),
+      `${label}: coexistence fetched parse/root resources`,
+    );
+
     assert(
       [...selectedIds].some((id) => id.endsWith("/dist/browser.js")),
       `${label}: Vite did not select dist/browser.js`,
@@ -225,11 +311,105 @@ async function exercise(origin, selectedIds, label) {
       `${label}: Vite did not select dist/highlight-browser.js`,
     );
     assert(
+      [...selectedIds].some((id) => id.endsWith("/dist/render-browser.js")),
+      `${label}: Vite did not select dist/render-browser.js`,
+    );
+    assert(
+      [...selectedIds].some((id) => id.endsWith("/dist/parse-browser.js")),
+      `${label}: Vite did not select dist/parse-browser.js`,
+    );
+    assert(
       ![...selectedIds].some(
-        (id) => id.endsWith("/dist/index.js") || id.endsWith("/dist/highlight.js"),
+        (id) =>
+          id.endsWith("/dist/index.js") ||
+          id.endsWith("/dist/highlight.js") ||
+          id.endsWith("/dist/render.js") ||
+          id.endsWith("/dist/parse.js"),
       ),
       `${label}: Vite selected a Node/default entry`,
     );
+    assert(browserErrors.length === 0, `${label}: browser errors: ${browserErrors.join("\n")}`);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function exerciseRetry(origin, label, action, wasmKind, glueKind, invalidBytes) {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const requests = [];
+  const responses = [];
+  let failed = false;
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.stack ?? error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("request", (request) => {
+    const kind = resourceKind(request.url());
+    if (kind) requests.push({ kind, url: request.url() });
+  });
+  page.on("response", (response) => {
+    const kind = resourceKind(response.url());
+    if (kind) {
+      responses.push({
+        kind,
+        url: response.url(),
+        status: response.status(),
+        contentType: response.headers()["content-type"] ?? "",
+      });
+    }
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    if (resourceKind(request.url()) === wasmKind && request.resourceType() === "fetch" && !failed) {
+      failed = true;
+      if (invalidBytes) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/wasm",
+          body: "not a WebAssembly module",
+        });
+      } else {
+        await route.fulfill({
+          status: 503,
+          contentType: "text/plain",
+          body: "transient Vite fixture failure",
+        });
+      }
+      return;
+    }
+    await route.continue();
+  });
+
+  try {
+    await page.goto(new URL("/fixture/", origin).href, { waitUntil: "networkidle" });
+    const result = await page.evaluate((selectedAction) => window.runRetry(selectedAction), action);
+    assert(
+      typeof result.firstError === "string" &&
+        /503|WebAssembly|compile|magic|module/i.test(result.firstError),
+      `${label}: failure was not actionable: ${result.firstError}`,
+    );
+    assert(result.result.diagnostics.length === 0, `${label}: retry did not return a clean result`);
+    const successfulPair = [
+      responses.filter(({ kind }) => kind === glueKind).at(-1),
+      responses.filter(({ kind }) => kind === wasmKind).at(-1),
+    ].filter((record) => record !== undefined);
+    assertOwnPair(successfulPair, glueKind, wasmKind, label);
+    assert(
+      requests.length === 4 && requests.every(({ kind }) => kind === glueKind || kind === wasmKind),
+      `${label}: retry fetched a sibling or unexpected resource`,
+    );
+    assert(
+      responses.filter(({ kind }) => kind === glueKind).length === 2 &&
+        responses.filter(({ kind }) => kind === wasmKind).length === 2,
+      `${label}: retry did not request exactly two own resources per attempt`,
+    );
+    assert(
+      new Set(responses.filter(({ kind }) => kind === glueKind).map(({ url }) => url)).size === 2,
+      `${label}: retry glue imports did not receive fresh module URLs`,
+    );
+    assert(browserErrors.length === 0, `${label}: browser errors: ${browserErrors.join("\n")}`);
   } finally {
     await browser.close();
   }
@@ -254,6 +434,22 @@ try {
     const address = devServer.httpServer.address();
     const origin = `http://127.0.0.1:${address.port}`;
     await exercise(origin, devSelectedIds, "vite dev");
+    await exerciseRetry(
+      origin,
+      "vite dev render retry",
+      "render",
+      "render-wasm",
+      "render-glue",
+      false,
+    );
+    await exerciseRetry(
+      origin,
+      "vite dev parse invalid-byte retry",
+      "parse",
+      "parse-wasm",
+      "parse-glue",
+      true,
+    );
   } finally {
     await devServer.close();
   }
@@ -267,6 +463,34 @@ try {
   });
   const builtFiles = readFileSync(join(outDir, "index.html"), "utf8");
   assert(builtFiles.includes("/fixture/assets/"), "vite build did not apply the non-root base");
+  const emittedResources = readdirSync(outDir, { recursive: true }).filter(
+    (name) => typeof name === "string" && /zfb_md_wasm.*\.(?:mjs|wasm)$/.test(name),
+  );
+  const expectedResourceNames = [
+    "zfb_md_wasm_glue.zfb-resource.mjs",
+    "zfb_md_wasm_bg.wasm",
+    "zfb_md_wasm_highlight_glue.zfb-resource.mjs",
+    "zfb_md_wasm_highlight_bg.wasm",
+    "zfb_md_wasm_render_glue.zfb-resource.mjs",
+    "zfb_md_wasm_render_bg.wasm",
+    "zfb_md_wasm_parse_glue.zfb-resource.mjs",
+    "zfb_md_wasm_parse_bg.wasm",
+  ];
+  assert(
+    emittedResources.length === expectedResourceNames.length,
+    `vite production output emitted ${emittedResources.length} runtime resources, expected ${expectedResourceNames.length}`,
+  );
+  for (const expected of expectedResourceNames) {
+    const extension = expected.endsWith(".wasm") ? ".wasm" : ".mjs";
+    const assetStem = expected.slice(0, -extension.length);
+    assert(
+      emittedResources.filter(
+        (name) =>
+          name.endsWith(expected) || (name.includes(`${assetStem}-`) && name.endsWith(extension)),
+      ).length === 1,
+      `vite production output did not emit exactly one ${expected}`,
+    );
+  }
 
   const previewServer = await preview({
     ...common,
