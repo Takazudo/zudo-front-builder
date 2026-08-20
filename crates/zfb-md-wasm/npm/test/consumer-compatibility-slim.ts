@@ -84,6 +84,22 @@ import {
   type MdxJsxExpressionAttribute,
 } from "../dist/parse.js";
 
+// These imports are intentionally invalid. The locked declarations must keep
+// compile/highlight and each sibling capability out of the focused entries;
+// if a future export leaks in, TypeScript reports an unused expect-error.
+// @ts-expect-error ./render is compile-free and has no compile export.
+import { compile as compileFromRender } from "../dist/render.js";
+// @ts-expect-error ./render owns HTML only and has no parse export.
+import { parseToAst as parseFromRender } from "../dist/render.js";
+// @ts-expect-error ./render owns HTML only and has no highlight export.
+import { highlightCode as highlightFromRender } from "../dist/render.js";
+// @ts-expect-error ./parse owns AST parsing only and has no render export.
+import { renderHtml as renderFromParse } from "../dist/parse.js";
+// @ts-expect-error ./parse owns AST parsing only and has no highlight export.
+import { highlightCode as highlightFromParse } from "../dist/parse.js";
+// @ts-expect-error ./parse is compile-free and has no compile export.
+import { compile as compileFromParse } from "../dist/parse.js";
+
 void [
   initRender,
   renderHtml,
@@ -101,6 +117,12 @@ void [
   ParseTrapLimitError,
   forceParseTrap,
   getParseTrapState,
+  compileFromRender,
+  parseFromRender,
+  highlightFromRender,
+  renderFromParse,
+  highlightFromParse,
+  compileFromParse,
 ];
 
 type RenderTypes = [
