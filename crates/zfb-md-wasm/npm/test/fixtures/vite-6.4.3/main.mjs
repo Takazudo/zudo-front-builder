@@ -99,11 +99,6 @@ window.runFixture = async (action = "root") => {
   });
   const afterTrap = __getTrapRecoveryStateForTests();
 
-  const highlightOnlyResult = await highlightOnly("const subpath = true;", {
-    language: "javascript",
-  });
-  const highlightState = getHighlightRecoveryState();
-
   return {
     transientError,
     trapName,
@@ -115,8 +110,6 @@ window.runFixture = async (action = "root") => {
     recovered,
     beforeTrap,
     afterTrap,
-    highlightOnlyResult,
-    highlightState,
   };
 };
 

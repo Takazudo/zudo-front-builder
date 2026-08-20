@@ -175,7 +175,6 @@ async function exercise(origin, selectedIds, label) {
     for (const [name, value] of [
       ["root highlight", result.highlighted],
       ["recovery highlight", result.recovered],
-      ["highlight subpath", result.highlightOnlyResult],
     ]) {
       assert(
         value.diagnostics.length === 0 && value.html.includes("hi-"),
@@ -190,23 +189,15 @@ async function exercise(origin, selectedIds, label) {
       result.afterTrap.compiledModuleLoads === result.beforeTrap.compiledModuleLoads,
       `${label}: Wasm recompiled during trap recovery`,
     );
-    assert(
-      result.highlightState.compiledModuleLoads === 1,
-      `${label}: highlight subpath did not run`,
-    );
-
     const rootGlue = responses.filter(({ kind, status }) => kind === "glue" && status === 200);
     const rootWasm = responses.filter(({ kind, status }) => kind === "wasm" && status === 200);
-    const highlightGlue = responses.filter(
-      ({ kind, status }) => kind === "highlight-glue" && status === 200,
-    );
-    const highlightWasm = responses.filter(
-      ({ kind, status }) => kind === "highlight-wasm" && status === 200,
-    );
     assert(rootGlue.length === 3, `${label}: expected retry + recovery glue module requests`);
     assert(rootWasm.length === 1, `${label}: expected one successful root Wasm request`);
-    assert(highlightGlue.length === 1, `${label}: expected one highlight glue request`);
-    assert(highlightWasm.length === 1, `${label}: expected one highlight Wasm request`);
+    assert(
+      requests.every(({ kind }) => kind === "glue" || kind === "wasm") &&
+        responses.every(({ kind }) => kind === "glue" || kind === "wasm"),
+      `${label}: root action fetched a sibling or unexpected resource`,
+    );
     assert(
       rootGlue.every(({ contentType }) =>
         /^(?:application|text)\/javascript(?:;|$)/.test(contentType),
@@ -214,9 +205,7 @@ async function exercise(origin, selectedIds, label) {
       `${label}: glue MIME was not JavaScript`,
     );
     assert(
-      [...rootWasm, ...highlightWasm].every(({ contentType }) =>
-        /^application\/wasm(?:;|$)/.test(contentType),
-      ),
+      rootWasm.every(({ contentType }) => /^application\/wasm(?:;|$)/.test(contentType)),
       `${label}: Wasm MIME was not application/wasm`,
     );
 
@@ -247,61 +236,6 @@ async function exercise(origin, selectedIds, label) {
       `${label}: failed + successful Wasm fetch count changed`,
     );
 
-    // Each slim action starts with a fresh, lazy state in the same browser
-    // realm. Clearing the capture between actions makes the exact own-pair
-    // contract mechanical and catches accidental root/sibling URL imports.
-    requests.length = 0;
-    responses.length = 0;
-    const highlightOnlyResult = await page.evaluate(() => window.runFixture("highlight"));
-    assert(
-      highlightOnlyResult.result.diagnostics.length === 0,
-      `${label}: highlight subpath action failed`,
-    );
-    assert(requests.length === 2, `${label} highlight: expected two own requests`);
-    assertOwnPair(responses, "highlight-glue", "highlight-wasm", `${label} highlight`);
-
-    requests.length = 0;
-    responses.length = 0;
-    const renderOnlyResult = await page.evaluate(() => window.runFixture("render"));
-    assert(
-      renderOnlyResult.result.diagnostics.length === 0 &&
-        renderOnlyResult.result.html === "<h1>Render subpath</h1>",
-      `${label}: render subpath action failed`,
-    );
-    assert(requests.length === 2, `${label} render: expected two own requests`);
-    assertOwnPair(responses, "render-glue", "render-wasm", `${label} render`);
-
-    requests.length = 0;
-    responses.length = 0;
-    const parseOnlyResult = await page.evaluate(() => window.runFixture("parse"));
-    assert(
-      parseOnlyResult.result.diagnostics.length === 0 && parseOnlyResult.result.ast.type === "root",
-      `${label}: parse subpath action failed`,
-    );
-    assert(requests.length === 2, `${label} parse: expected two own requests`);
-    assertOwnPair(responses, "parse-glue", "parse-wasm", `${label} parse`);
-
-    requests.length = 0;
-    responses.length = 0;
-    const coexistence = await page.evaluate(() => window.runFixture("coexist"));
-    assert(
-      coexistence.rendered.diagnostics.length === 0 &&
-        coexistence.parsed.ast.type === "root" &&
-        coexistence.parsedAfterRenderTrap.ast.type === "root",
-      `${label}: render/parse same-realm coexistence failed`,
-    );
-    assert(coexistence.trapName === "ZfbMdWasmTrapError", `${label}: render trap was not wrapped`);
-    assert(
-      coexistence.afterRender.currentGeneration ===
-        coexistence.beforeRender.currentGeneration + 1 &&
-        coexistence.afterParse.currentGeneration === coexistence.beforeParse.currentGeneration,
-      `${label}: render and parse recovery state was shared`,
-    );
-    assert(
-      responses.every(({ kind }) => kind === "render-glue"),
-      `${label}: coexistence fetched parse/root resources`,
-    );
-
     assert(
       [...selectedIds].some((id) => id.endsWith("/dist/browser.js")),
       `${label}: Vite did not select dist/browser.js`,
@@ -327,6 +261,158 @@ async function exercise(origin, selectedIds, label) {
           id.endsWith("/dist/parse.js"),
       ),
       `${label}: Vite selected a Node/default entry`,
+    );
+    assert(browserErrors.length === 0, `${label}: browser errors: ${browserErrors.join("\n")}`);
+
+    // Every exact-pair action gets its own fresh page. The root action above
+    // intentionally exercises only the root artifact; no previous lazy
+    // initialization can satisfy these assertions.
+    await exerciseFreshAction(
+      origin,
+      `${label} highlight`,
+      "highlight",
+      "highlight-glue",
+      "highlight-wasm",
+    );
+    await exerciseFreshAction(origin, `${label} render`, "render", "render-glue", "render-wasm");
+    await exerciseFreshAction(origin, `${label} parse`, "parse", "parse-glue", "parse-wasm");
+    await exerciseCoexistence(origin, `${label} coexistence`);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function exerciseFreshAction(origin, label, action, glueKind, wasmKind) {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const requests = [];
+  const responses = [];
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.stack ?? error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("request", (request) => {
+    const kind = resourceKind(request.url());
+    if (kind) requests.push({ kind, url: request.url() });
+  });
+  page.on("response", (response) => {
+    const kind = resourceKind(response.url());
+    if (kind) {
+      responses.push({
+        kind,
+        url: response.url(),
+        status: response.status(),
+        contentType: response.headers()["content-type"] ?? "",
+      });
+    }
+  });
+
+  try {
+    await page.goto(new URL("/fixture/", origin).href, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => typeof window.runFixture === "function");
+    const result = await page.evaluate(
+      (selectedAction) => window.runFixture(selectedAction),
+      action,
+    );
+    if (action === "highlight") {
+      assert(result.result.diagnostics.length === 0, `${label}: highlight action failed`);
+    } else if (action === "render") {
+      assert(
+        result.result.diagnostics.length === 0 && result.result.html === "<h1>Render subpath</h1>",
+        `${label}: render action failed`,
+      );
+    } else {
+      assert(
+        result.result.diagnostics.length === 0 && result.result.ast.type === "root",
+        `${label}: parse action failed`,
+      );
+    }
+    assert(
+      requests.length === 2 && requests.every(({ kind }) => kind === glueKind || kind === wasmKind),
+      `${label}: fresh action fetched a sibling or unexpected resource`,
+    );
+    assertOwnPair(responses, glueKind, wasmKind, label);
+    assert(browserErrors.length === 0, `${label}: browser errors: ${browserErrors.join("\n")}`);
+  } finally {
+    await browser.close();
+  }
+}
+
+async function exerciseCoexistence(origin, label) {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  const requests = [];
+  const responses = [];
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.stack ?? error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("request", (request) => {
+    const kind = resourceKind(request.url());
+    if (kind) requests.push({ kind, url: request.url() });
+  });
+  page.on("response", (response) => {
+    const kind = resourceKind(response.url());
+    if (kind) {
+      responses.push({
+        kind,
+        url: response.url(),
+        status: response.status(),
+        contentType: response.headers()["content-type"] ?? "",
+      });
+    }
+  });
+
+  try {
+    await page.goto(new URL("/fixture/", origin).href, { waitUntil: "networkidle" });
+    await page.waitForFunction(() => typeof window.runFixture === "function");
+    const coexistence = await page.evaluate(() => window.runFixture("coexist"));
+    assert(
+      coexistence.rendered.diagnostics.length === 0 &&
+        coexistence.parsed.ast.type === "root" &&
+        coexistence.parsedAfterRenderTrap.ast.type === "root",
+      `${label}: render/parse same-realm coexistence failed`,
+    );
+    assert(coexistence.trapName === "ZfbMdWasmTrapError", `${label}: render trap was not wrapped`);
+    assert(
+      coexistence.afterRender.currentGeneration ===
+        coexistence.beforeRender.currentGeneration + 1 &&
+        coexistence.afterParse.currentGeneration === coexistence.beforeParse.currentGeneration,
+      `${label}: render and parse recovery state was shared`,
+    );
+    assert(
+      requests.length === 5 &&
+        requests.filter(({ kind }) => kind === "render-glue").length === 2 &&
+        requests.filter(({ kind }) => kind === "render-wasm").length === 1 &&
+        requests.filter(({ kind }) => kind === "parse-glue").length === 1 &&
+        requests.filter(({ kind }) => kind === "parse-wasm").length === 1,
+      `${label}: coexistence request set was not independent`,
+    );
+    assert(
+      responses.every(({ kind }) =>
+        ["render-glue", "render-wasm", "parse-glue", "parse-wasm"].includes(kind),
+      ),
+      `${label}: coexistence fetched a root/highlight resource`,
+    );
+    assertOwnPair(
+      [
+        responses.filter(({ kind }) => kind === "render-glue").at(-1),
+        responses.find(({ kind }) => kind === "render-wasm"),
+      ].filter((record) => record !== undefined),
+      "render-glue",
+      "render-wasm",
+      `${label} render`,
+    );
+    assertOwnPair(
+      [
+        responses.find(({ kind }) => kind === "parse-glue"),
+        responses.find(({ kind }) => kind === "parse-wasm"),
+      ].filter((record) => record !== undefined),
+      "parse-glue",
+      "parse-wasm",
+      `${label} parse`,
     );
     assert(browserErrors.length === 0, `${label}: browser errors: ${browserErrors.join("\n")}`);
   } finally {
