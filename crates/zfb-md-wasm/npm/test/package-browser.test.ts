@@ -78,6 +78,11 @@ function packedPackage(): string {
   return packedArchive;
 }
 
+function withoutImportQuery(path: string): string {
+  const queryStart = path.search(/[?#]/);
+  return queryStart === -1 ? path : path.slice(0, queryStart);
+}
+
 describe("packed browser conditional entry", () => {
   afterAll(() => {
     rmSync(tempRoot, { recursive: true, force: true });
@@ -208,21 +213,24 @@ describe("packed browser conditional entry", () => {
       inputs: Record<string, unknown>;
     };
     const inputNames = Object.keys(metafile.inputs);
-    expect(inputNames.some((path) => path.endsWith(`/dist/${fixture.browserFile}`))).toBe(true);
+    const normalizedInputNames = inputNames.map(withoutImportQuery);
+    expect(normalizedInputNames.some((path) => path.endsWith(`/dist/${fixture.browserFile}`))).toBe(
+      true,
+    );
     expect(
-      inputNames.some((path) =>
+      normalizedInputNames.some((path) =>
         path.endsWith(
           `/dist/${fixture.entry === "." ? "index.js" : fixture.entry.slice(2) + ".js"}`,
         ),
       ),
     ).toBe(false);
 
-    const resourceInputs = inputNames.filter(
+    const resourceInputs = normalizedInputNames.filter(
       (path) =>
         path.includes(`/dist/${fixture.resourceDir}/`) &&
         path.endsWith(fixture.resourceStem + "_bg.wasm"),
     );
-    const glueInputs = inputNames.filter(
+    const glueInputs = normalizedInputNames.filter(
       (path) =>
         path.includes(`/dist/${fixture.resourceDir}/`) &&
         path.endsWith(fixture.resourceStem + "_glue.zfb-resource.mjs"),
@@ -230,7 +238,17 @@ describe("packed browser conditional entry", () => {
     expect(resourceInputs).toHaveLength(1);
     expect(glueInputs).toHaveLength(1);
     expect(
-      inputNames.filter(
+      new Set(
+        resourceInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`))),
+      ),
+    ).toEqual(new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_bg.wasm`]));
+    expect(
+      new Set(glueInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`)))),
+    ).toEqual(
+      new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_glue.zfb-resource.mjs`]),
+    );
+    expect(
+      normalizedInputNames.filter(
         (path) =>
           /dist\/wasm(?:-[^/]+)?\/zfb_md_wasm.*\.(?:mjs|wasm)$/.test(path) &&
           !path.includes(`/dist/${fixture.resourceDir}/`),
