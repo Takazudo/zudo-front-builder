@@ -38,6 +38,27 @@ fn render_singleton_pins_result_diagnostic_and_shared_options() {
     assert_eq!(failure["diagnostics"][0]["line"], 1);
 }
 
+#[cfg(feature = "render")]
+#[test]
+fn render_html_preserves_raw_html_by_unsanitized_contract() {
+    // Trust intent: renderHtml is deliberately not a sanitizer. Raw author
+    // HTML stays in the result for parity; callers must sanitize separately
+    // when rendering untrusted content.
+    let source = r#"<script type="application/x-zfb-security">globalThis.__zfbSlimSecurityProbe = 1</script>
+"#;
+    let out = parse(zfb_md_wasm::render_html(source, r#"{"filename":"raw.md"}"#));
+    assert_eq!(out["diagnostics"], json!([]));
+    let html = out["html"].as_str().expect("raw HTML renders successfully");
+    assert!(
+        html.contains("<script"),
+        "raw HTML must not be sanitized: {html}"
+    );
+    assert!(
+        html.contains("globalThis.__zfbSlimSecurityProbe = 1"),
+        "raw script text must remain present: {html}"
+    );
+}
+
 #[cfg(feature = "parse")]
 #[test]
 fn parse_singleton_pins_result_and_structured_diagnostic() {
@@ -60,6 +81,42 @@ fn parse_singleton_pins_result_and_structured_diagnostic() {
     assert_eq!(failure["diagnostics"][0]["severity"], "error");
     assert_eq!(failure["diagnostics"][0]["source"], "options");
     assert_eq!(failure["diagnostics"][0]["line"], 1);
+}
+
+#[cfg(feature = "parse")]
+#[test]
+fn parse_mdx_author_syntax_is_inert_data() {
+    // Trust intent: parse returns MDX syntax as data. No slim parse path may
+    // compile, import, evaluate, or execute author-supplied JavaScript.
+    let source = concat!(
+        "<Widget value={globalThis.__zfbSlimSecurityProbe = 1} />\n\n",
+        "{globalThis.__zfbSlimSecurityProbe = 2}\n\n",
+        "export const dangerous = globalThis.__zfbSlimSecurityProbe = 3\n"
+    );
+    let out = parse(zfb_md_wasm::parse_to_ast(
+        source,
+        r#"{"filename":"inert.mdx"}"#,
+    ));
+    assert_eq!(out["diagnostics"], json!([]));
+    let ast = out["ast"].to_string();
+    assert!(
+        ast.contains("mdxJsxFlowElement"),
+        "JSX must remain data: {ast}"
+    );
+    assert!(
+        ast.contains("mdxFlowExpression"),
+        "expression must remain data: {ast}"
+    );
+    assert!(
+        ast.contains("globalThis.__zfbSlimSecurityProbe"),
+        "author source must remain inert text: {ast}"
+    );
+    // markdown-rs intentionally keeps top-level ESM source as inert text at
+    // this boundary; it must never become an executable compile surface.
+    assert!(
+        ast.contains("export const dangerous"),
+        "ESM text must survive: {ast}"
+    );
 }
 
 #[cfg(feature = "highlight")]
