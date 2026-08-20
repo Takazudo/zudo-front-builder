@@ -13,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { assertPackedContents, packedPaths } from "../scripts/assert-packed.mjs";
+import { assertPackedArchive } from "../scripts/assert-packed.mjs";
 import { createWasmApi } from "../src/runtime.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -78,7 +78,7 @@ describe("packed browser conditional entry", () => {
 
   it("contains exactly the required generated resources in its tarball", () => {
     const archive = packedPackage();
-    assertPackedContents(packedPaths(archive));
+    expect(assertPackedArchive(archive)).toBeGreaterThan(0);
   });
 
   it("composes recovery markers with an emitted glue URL's existing query and hash", async () => {
@@ -119,11 +119,15 @@ describe("packed browser conditional entry", () => {
       [
         'import { MdastAdapterError, toMdastRoot, type MdastRoot } from "@takazudo/zfb-md-wasm";',
         'import { highlightCode, type HighlightCodeResult } from "@takazudo/zfb-md-wasm/highlight";',
+        'import { renderHtml, type RenderHtmlResult } from "@takazudo/zfb-md-wasm/render";',
+        'import { parseToAst, type ParseToAstResult } from "@takazudo/zfb-md-wasm/parse";',
         "declare const raw: MdastRoot;",
         "const root: ReturnType<typeof toMdastRoot> = toMdastRoot(raw);",
         "const error: MdastAdapterError | undefined = undefined;",
         'const highlighted: Promise<HighlightCodeResult> = highlightCode("x", { language: "text" });',
-        "void root; void error; void highlighted;",
+        'const rendered: Promise<RenderHtmlResult> = renderHtml("# x");',
+        'const parsed: Promise<ParseToAstResult> = parseToAst("# x");',
+        "void root; void error; void highlighted; void rendered; void parsed;",
       ].join("\n"),
     );
     writeFileSync(

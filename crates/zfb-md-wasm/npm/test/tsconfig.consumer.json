@@ -11,13 +11,16 @@
   "include": [
     "consumer-compatibility.ts",
     "consumer-compatibility-highlight.ts",
-    "consumer-compatibility-parse-to-ast.ts"
+    "consumer-compatibility-parse-to-ast.ts",
+    "consumer-compatibility-slim.ts"
   ],
   "exclude": [
     "../dist",
     "../node_modules",
     "../src/wasm",
     "../src/wasm-highlight",
+    "../src/wasm-render",
+    "../src/wasm-parse",
     "../src/**/*.test.ts"
   ]
 }
