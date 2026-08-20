@@ -1,3 +1,5 @@
+#![cfg(feature = "compiler")]
+
 //! Regression-pin for zfb #1729 / #1779 — MDX expression nodes carrying
 //! a bare `{\letter}` shape silently degrade the WHOLE page to the
 //! `<pre data-zfb-content-fallback>` render.
@@ -65,7 +67,10 @@ use zfb_content::{
     build_snapshot_with_config, compile_mdx_to_jsx_module_cached, parse_mdx_specifier,
     CollectionConfig, PipelineSpec,
 };
-use zfb_render::{CompileOptions, SwcPipeline};
+
+#[path = "support/swc_parse.rs"]
+mod swc_parse;
+use swc_parse::{CompileOptions, SwcPipeline};
 
 // -----------------------------------------------------------------------------
 // Heuristic mirror of the bundler's pre-#2216 byte-scan gate

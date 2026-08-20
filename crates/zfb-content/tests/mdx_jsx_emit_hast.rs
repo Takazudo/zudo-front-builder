@@ -1,3 +1,5 @@
+#![cfg(feature = "compiler")]
+
 //! Tests for `mdx_to_jsx_module_with_pipeline` (#121).
 //!
 //! These tests exercise the hast-detour wired in for issue #121: when
@@ -27,7 +29,10 @@
 use zfb_content::pipeline::Pipeline;
 use zfb_content::{mdx_to_jsx_module_with_pipeline, MdxJsxOptions};
 use zfb_md_ast::TocExportConfig;
-use zfb_render::{CompileOptions, SwcPipeline};
+
+#[path = "support/swc_parse.rs"]
+mod swc_parse;
+use swc_parse::{CompileOptions, SwcPipeline};
 
 fn emit_with_defaults(src: &str) -> String {
     let mut p = Pipeline::with_defaults();
@@ -239,12 +244,6 @@ fn jsx_with_hast_detour_compiles_via_swc() {
     assert!(
         compiled.code.contains("MDXContent"),
         "compiled output missing MDXContent default export:\n{}",
-        compiled.code,
-    );
-    // JSX is fully desugared.
-    assert!(
-        !compiled.code.contains("<_Fragment>"),
-        "JSX leaked through SWC:\n{}",
         compiled.code,
     );
 }

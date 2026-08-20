@@ -19,6 +19,10 @@ pub mod render_metadata;
 pub mod schema;
 pub mod serializer;
 pub mod syntect_highlight;
+#[cfg(feature = "compiler")]
+pub mod tsx_frontmatter;
+#[cfg(not(feature = "compiler"))]
+#[path = "tsx_frontmatter_compiler_off.rs"]
 pub mod tsx_frontmatter;
 
 pub use content_bridge::{

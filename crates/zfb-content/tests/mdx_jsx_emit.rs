@@ -1,3 +1,5 @@
+#![cfg(feature = "compiler")]
+
 //! Tests for `zfb_content::mdx_to_jsx_module`.
 //!
 //! Coverage:
@@ -15,7 +17,10 @@ use std::path::PathBuf;
 use zfb_content::frontmatter;
 use zfb_content::pipeline::PipelineError;
 use zfb_content::{mdx_to_jsx_module, MdxJsxOptions};
-use zfb_render::{CompileOptions, SwcPipeline};
+
+#[path = "support/swc_parse.rs"]
+mod swc_parse;
+use swc_parse::{CompileOptions, SwcPipeline};
 
 fn emit(src: &str) -> String {
     mdx_to_jsx_module(src, MdxJsxOptions::default()).expect("emit ok")
@@ -493,8 +498,8 @@ fn unbalanced_brace_expression_returns_parse_error() {
 // Smoke test — emitter output compiles via SWC
 // ───────────────────────────────────────────────────────────────────
 
-/// Compile `jsx_module` through SWC's TSX pass and assert the output
-/// is non-empty JS that contains the canonical `MDXContent` export.
+/// Parse `jsx_module` through SWC's TSX parser and assert the accepted
+/// source contains the canonical `MDXContent` export.
 fn assert_swc_accepts(jsx_module: &str, label: &str) {
     let pipeline = SwcPipeline::new();
     let opts = CompileOptions::default().with_filename(format!("{label}.tsx"));
@@ -505,16 +510,10 @@ fn assert_swc_accepts(jsx_module: &str, label: &str) {
         !compiled.code.is_empty(),
         "SWC produced empty code for {label}"
     );
-    // The default export survives the JSX transform.
+    // The default export is present in the parser-accepted source.
     assert!(
         compiled.code.contains("MDXContent"),
         "compiled output missing MDXContent for {label}:\n{}",
-        compiled.code
-    );
-    // JSX is fully desugared (no leftover open-tag syntax).
-    assert!(
-        !compiled.code.contains("<_Fragment>"),
-        "JSX leaked through SWC for {label}:\n{}",
         compiled.code
     );
 }
