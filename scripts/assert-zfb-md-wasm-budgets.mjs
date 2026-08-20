@@ -46,9 +46,18 @@ function escapeRegExp(value) {
 function bytesFromLine(section, label) {
   // Summary labels are literal (not regex fragments): in particular the
   // `wasm-opt -O1 (final)` parentheses must remain literal.
-  const match = section.match(new RegExp(`^${escapeRegExp(label)}:\\s+([0-9,]+) bytes$`, "m"));
+  const match = section.match(
+    new RegExp(`^${escapeRegExp(label)}:\\s+([0-9,]+) bytes \\(([0-9]+\\.[0-9]{2}) MB\\)$`, "m"),
+  );
   if (!match) throw new Error(`build log is missing ${label} metric`);
-  return Number(match[1].replaceAll(",", ""));
+  const bytes = Number(match[1].replaceAll(",", ""));
+  const expectedMegabytes = (bytes / 1024 / 1024).toFixed(2);
+  if (match[2] !== expectedMegabytes) {
+    throw new Error(
+      `${label} metric has inconsistent MB suffix: ${match[2]} (expected ${expectedMegabytes})`,
+    );
+  }
+  return bytes;
 }
 
 function parseBuildLog(logPath) {
@@ -97,22 +106,35 @@ function selfTest() {
     "render-only": "./render",
     "parse-only": "./parse",
   };
-  const fixture = ARTIFACTS.map(
-    ({ label }) =>
-      `-- ${label} artifact (\`${entries[label]}\` entry) --\n` +
-      "raw cdylib:                            1,000 bytes\n" +
-      "wasm-bindgen binary:                   900 bytes\n" +
-      "generated glue:                        100 bytes\n" +
-      "generated glue gzip -9:                50 bytes\n" +
-      "wasm-opt -O1 (final):                  80 bytes\n" +
-      "gzip -9 (final):                       40 bytes\n",
-  ).join("");
+  const fixtureMetrics = {
+    default: [3_677_902, 3_448_820, 14_881, 4_151, 3_337_089, 1_491_998],
+    "highlight-only": [1_592_558, 1_517_880, 8_758, 2_637, 1_484_531, 766_894],
+    "render-only": [2_296_170, 2_183_410, 8_655, 2_601, 2_124_866, 1_033_089],
+    "parse-only": [720_146, 670_949, 11_159, 3_797, 653_263, 290_332],
+  };
+  const fixtureLabels = [
+    "raw cdylib",
+    "wasm-bindgen binary",
+    "generated glue",
+    "generated glue gzip -9",
+    "wasm-opt -O1 (final)",
+    "gzip -9 (final)",
+  ];
+  const fixture = ARTIFACTS.map(({ label }) => {
+    const lines = fixtureMetrics[label].map(
+      (bytes, index) =>
+        `${fixtureLabels[index]}: ${bytes.toLocaleString("en-US")} bytes (${(bytes / 1024 / 1024).toFixed(2)} MB)`,
+    );
+    return `-- ${label} artifact (\`${entries[label]}\` entry) --\n${lines.join("\n")}\n`;
+  }).join("");
   const sections = parseBuildLogText(fixture);
   for (const artifact of ARTIFACTS) {
     const section = sections.get(artifact.label);
-    if (bytesFromLine(section, "wasm-bindgen binary") !== 900)
+    if (bytesFromLine(section, "raw cdylib") !== fixtureMetrics[artifact.label][0])
+      throw new Error("cdylib fixture parse failed");
+    if (bytesFromLine(section, "wasm-bindgen binary") !== fixtureMetrics[artifact.label][1])
       throw new Error("bindgen fixture parse failed");
-    if (bytesFromLine(section, "wasm-opt -O1 (final)") !== 80)
+    if (bytesFromLine(section, "wasm-opt -O1 (final)") !== fixtureMetrics[artifact.label][4])
       throw new Error("wasm-opt fixture parse failed");
   }
   console.log("OK: build summary metric parser self-test");
