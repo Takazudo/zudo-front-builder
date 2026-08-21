@@ -5,9 +5,9 @@ zfb's md/mdx → JS/HTML conversion pipeline compiled to WebAssembly
 use case is CMS live preview with **parity** to zfb's production output
 (epic zfb#1572, crate created in zfb#1576).
 
-Two API tiers live in one cdylib (the tier split buys a smaller runtime
-working set, not a smaller download — SWC is in the bytes either way; a slim
-renderHtml-only artifact is a documented possible follow-up):
+The crate builds one full compatibility surface and three additive capability
+surfaces. The npm package publishes each surface as an entry with its own
+wasm resource pair; choose the smallest entry that covers the calls you make:
 
 | Export (JS name)                   | Pipeline                               | Returns (JSON string)                  |
 | ---------------------------------- | -------------------------------------- | -------------------------------------- |
@@ -22,7 +22,73 @@ documentation is the crate rustdoc (`src/lib.rs`) plus
 Published artifacts stamp `version()` with the package semver during release;
 local development builds fall back to the Rust manifest version placeholder.
 
-## Options JSON (shared by both entry points)
+## Entry selection and isolated resources
+
+The root entry (`.`) is the complete current API and is the only entry that
+exports `compile`. The existing `./highlight` entry remains compatible and is
+the direct-highlighting entry. The additive `./render` and `./parse` entries
+are SWC-free isolated graphs: they omit `swc_core` and `zfb-render`, while
+intentionally retaining `zfb-content` and its `syntect-fancy` backend. Parse
+is not syntect-free.
+
+| Entry | Runtime values | Type surface |
+| --- | --- | --- |
+| `.` | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
+| `./highlight` | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
+| `./render` | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
+| `./parse` | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
+
+The focused entries have private, non-interchangeable resource pairs:
+
+```text
+wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs
+wasm-render/zfb_md_wasm_render_bg.wasm
+wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs
+wasm-parse/zfb_md_wasm_parse_bg.wasm
+```
+
+Their declaration sidecars are also private to the matching directory. Each
+entry creates one independent `createWasmApi` state: compiled module, wasm
+instance, generation, retry state, and terminal state are not shared. Importing
+multiple entries intentionally loads independent resource pairs and instances;
+this is useful when both calls are required, but it costs both downloads.
+
+Root imports and `./highlight` imports need no migration. Replace a root import
+that only calls `renderHtml` or `parseToAst` with the matching focused entry:
+
+```ts
+// Node and browser-aware bundlers: direct entry selection.
+import { renderHtml } from "@takazudo/zfb-md-wasm/render";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm/parse";
+```
+
+For a browser user action, keep those imports lazy so the matching pair is
+fetched only when needed:
+
+```ts
+button.addEventListener("click", async () => {
+  const { renderHtml } = await import("@takazudo/zfb-md-wasm/render");
+  const { html } = await renderHtml(source, { filename: "preview.md" });
+  preview.innerHTML = html ?? "";
+});
+
+parseButton.addEventListener("click", async () => {
+  const { parseToAst, toMdastRoot } = await import("@takazudo/zfb-md-wasm/parse");
+  const parsed = await parseToAst(source, { filename: "preview.md" });
+  const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+  inspect(root);
+});
+```
+
+The browser-aware conditional export supplies static `?url` edges to only the
+entry's own pair; the direct Node path uses relative files (and fetch outside
+Node). `renderHtml` is not a sanitizer: raw HTML remains untrusted. Parsed
+MDX JSX, expression, and ESM-shaped nodes are inert data. A controlled
+consumer may interpret the parsed data in an AST-to-React renderer, but no slim
+entry evaluates author JavaScript. `compile` remains root-only and returns module
+source that requires host evaluation plus a JSX runtime/components boundary.
+
+## Options JSON (root and `./render`)
 
 ```json
 {
@@ -175,19 +241,46 @@ avoid unbounded browser module records.
 
 ## Browser resource delivery
 
-The published package's `browser` export statically declares exactly two
-runtime resources: `zfb_md_wasm_glue.zfb-resource.mjs` and
-`zfb_md_wasm_bg.wasm`. A zfb production build emits them as hashed sibling
-assets named `islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs` and
-`islands-resource-zfb_md_wasm_bg-<hash>.wasm`. Put the package behind a
-user-triggered `import("@takazudo/zfb-md-wasm")` when lazy loading matters:
-the glue and wasm are then fetched only on the first public API call.
+The published package's browser exports statically declare exactly two runtime
+resources per entry. Root keeps `wasm/zfb_md_wasm_glue.zfb-resource.mjs` and
+`wasm/zfb_md_wasm_bg.wasm`; highlight keeps its existing
+`wasm-highlight/zfb_md_wasm_highlight_glue.zfb-resource.mjs` and
+`wasm-highlight/zfb_md_wasm_highlight_bg.wasm`. The focused entries use the
+private pairs listed above. A zfb production build emits each as a hashed
+sibling asset. Put an entry behind a user-triggered dynamic import when lazy
+loading matters: only that entry's glue and wasm are then fetched on first use.
 
 The static server must return the emitted glue as JavaScript
 (`application/javascript`) and the wasm as `application/wasm`, with ordinary
 HTTP success responses. Do not copy those resources manually or import the
 package source path; consume the packed browser entry so the generated URLs
 stay correct under a hashed island bundle.
+
+## Decision snapshot measurements and ceilings
+
+These are the exact optimized artifact rows from the #2447 decision snapshot:
+
+| Entry/graph | final wasm | gzip-9 | glue | glue gzip-9 |
+| --- | ---: | ---: | ---: | ---: |
+| root (full) | 3,336,933 B | 1,491,970 B | 14,881 B | 4,151 B |
+| highlight (historical current SWC-retaining baseline) | 1,484,705 B | 767,009 B | 8,758 B | 2,637 B |
+| render (selected SWC-free candidate) | 2,123,309 B | 1,032,557 B | 8,637 B | 2,597 B |
+| parse (selected SWC-free candidate) | 650,458 B | 289,523 B | 11,141 B | 3,795 B |
+
+The snapshot measured the current split package at 3,638,607 B versus the
+current root-plus-highlight package at 2,314,818 B. These are decision-snapshot
+measurements, not permanent size promises. Locked gzip-9 ceilings are
+1,600,000 B (root), 820,000 B (highlight), 1,100,000 B (render), and 325,000 B
+(parse); the complete packed tarball ceiling is 3,900,000 B. The four-step
+clean production reference ceiling is 210 seconds, with the #2447 selected
+median at 155.015 s [153.496, 165.977].
+
+The highlight byte row is explicitly historical: #2447 reconstructed the
+current `highlight,compiler-surface` baseline, whose unconditional content edge
+retained `swc_core`. The shipped post-#2449 highlight graph is now proven
+SWC-free by #2450's exact parity and no-`swc_core` assertion, while its public API
+and resources remain compatible. Its post-gating size was not measured; do not
+infer or project one from the historical row.
 
 ## Wasm-target blockers and their resolutions
 
@@ -239,9 +332,6 @@ cargo test -p zfb-md-wasm                  # native rlib tests: both tiers + dia
 
 ## Follow-ups (documented, out of scope here)
 
-- Fuzzing the `compile`/`renderHtml` boundary for panic-freedom (trap rule 4).
+- Fuzzing the focused and compile boundaries for panic-freedom (trap rule 4).
 - Optional `console_error_panic_hook` (or equivalent) behind a feature for
   debuggable trap messages during development.
-- A slim renderHtml-only artifact without SWC in the bytes.
-- A slim `highlightCode`-only artifact. The current package always carries the
-  same wasm payload, even when callers use only direct highlighting.
