@@ -192,6 +192,12 @@ jobs:
 
       - run: pnpm format:check
 
+      # Keep the shipped-size documentation synchronized with the manifest
+      # (issue #2482). This pure-Node check is cheap and belongs in the health
+      # job's fast checks; it does not require the wasm-md package build.
+      - name: Assert md-wasm documentation matches shipped sizes
+        run: node scripts/assert-md-wasm-size-docs.mjs
+
       # Compiles every target (incl. benches/examples) AND triggers crates/zfb's
       # build.rs to download + SHA-verify + stage the pinned esbuild 0.25.12 into
       # crates/zfb/binaries/esbuild/esbuild — the slot that
