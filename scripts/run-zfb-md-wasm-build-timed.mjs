@@ -14,6 +14,70 @@ import { syncBuiltinESMExports } from "node:module";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const buildPath = resolve(repoRoot, "crates/zfb-md-wasm/npm/scripts/build.mjs");
+const originalExecFileSync = childProcess.execFileSync;
+const timings = [];
+
+function productionStep(command, args) {
+  if (command === "cargo" && args[0] === "rustc") return "cargo rustc";
+  // build.mjs performs a preflight `wasm-bindgen --version`; only its
+  // production `--target web --out-dir ... --out-name ...` invocations count.
+  if (
+    command === "wasm-bindgen" &&
+    args.includes("--target") &&
+    args.includes("web") &&
+    args.includes("--out-dir") &&
+    args.includes("--out-name")
+  ) {
+    return "wasm-bindgen";
+  }
+  if (command.endsWith("/wasm-opt") || command.endsWith("\\wasm-opt.exe")) return "wasm-opt";
+  return null;
+}
+
+function selfTest() {
+  if (productionStep("wasm-bindgen", ["--version"]) !== null) {
+    throw new Error("wasm-bindgen --version preflight must not be timed");
+  }
+  if (
+    productionStep("wasm-bindgen", [
+      "--target",
+      "web",
+      "--out-dir",
+      "/tmp/out",
+      "--out-name",
+      "zfb_md_wasm",
+      "/tmp/input.wasm",
+    ]) !== "wasm-bindgen"
+  ) {
+    throw new Error("production wasm-bindgen invocation was not classified");
+  }
+  if (productionStep("cargo", ["metadata"]) !== null) {
+    throw new Error("cargo metadata must not be timed");
+  }
+  if (productionStep("cargo", ["rustc"]) !== "cargo rustc") {
+    throw new Error("cargo rustc production invocation was not classified");
+  }
+  if (productionStep("/tmp/node_modules/.bin/wasm-opt", ["-O1"]) !== "wasm-opt") {
+    throw new Error("wasm-opt production invocation was not classified");
+  }
+  const triplet = [
+    ["cargo", ["rustc"]],
+    ["wasm-bindgen", ["--target", "web", "--out-dir", "/tmp/out", "--out-name", "artifact"]],
+    ["/tmp/node_modules/.bin/wasm-opt", ["-O1"]],
+  ];
+  const productionCount = Array.from({ length: 4 }, () => triplet)
+    .flatMap((steps) => steps)
+    .filter(([command, args]) => productionStep(command, args) !== null).length;
+  if (productionCount !== 12)
+    throw new Error(`expected 12 production steps, got ${productionCount}`);
+  console.log("OK: production timing classifier excludes preflight and recognizes the 4x3 shape");
+}
+
+if (process.argv.includes("--self-test")) {
+  selfTest();
+  process.exit(0);
+}
+
 const targetDir = process.env.CARGO_TARGET_DIR;
 if (!targetDir) {
   throw new Error("CARGO_TARGET_DIR must name a distinct initially nonexistent directory");
@@ -22,15 +86,6 @@ if (existsSync(targetDir)) {
   throw new Error(
     `CARGO_TARGET_DIR already exists; clean-run timing requires a nonexistent path: ${targetDir}`,
   );
-}
-const originalExecFileSync = childProcess.execFileSync;
-const timings = [];
-
-function productionStep(command, args) {
-  if (command === "cargo" && args[0] === "rustc") return "cargo rustc";
-  if (command === "wasm-bindgen") return "wasm-bindgen";
-  if (command.endsWith("/wasm-opt") || command.endsWith("\\wasm-opt.exe")) return "wasm-opt";
-  return null;
 }
 
 childProcess.execFileSync = function timedExecFileSync(command, args = [], options) {
