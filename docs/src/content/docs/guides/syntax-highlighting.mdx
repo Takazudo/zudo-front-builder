@@ -488,9 +488,11 @@ for the walkthrough.
 <Tip>
 
 Only ever calling `highlightCode`? Import from the
-`@takazudo/zfb-md-wasm/highlight` subpath instead of the package root — a
-slim, highlight-only artifact built without the full MDX/Markdown pipeline,
-roughly half the download of the default entry point.
+`@takazudo/zfb-md-wasm/highlight` subpath instead of the package root — its
+public API and resources are backward-compatible, and its shipped graph is
+now proven SWC-free by #2450's exact parity and no-`swc_core` gates. The
+#2447 highlight byte row in the package size table is the explicitly historical
+SWC-retaining baseline; its post-gating size was not measured.
 
 </Tip>
 
