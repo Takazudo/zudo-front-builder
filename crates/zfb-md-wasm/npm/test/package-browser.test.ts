@@ -149,7 +149,7 @@ describe("packed browser conditional entry", () => {
     };
     expect(summary.compiled).toBeGreaterThan(0);
     expect(summary.highlighted).toBeGreaterThan(0);
-    expect(summary.rendered).toBe("<h1>Render</h1>");
+    expect(summary.rendered).toBe("<p>Budget &lt;8 ms</p>");
     expect(summary.parsed).toBe("root");
     expect(summary.versions).toHaveLength(4);
   });
@@ -288,7 +288,7 @@ describe("packed browser conditional entry", () => {
     writeFileSync(
       entryPath,
       [
-        'export { MdastAdapterError, __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init, parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm";',
+        'export { MdastAdapterError, __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init, parseToAst, renderHtml, toMdastRoot } from "@takazudo/zfb-md-wasm";',
       ].join("\n"),
     );
 
@@ -406,6 +406,14 @@ describe("packed browser conditional entry", () => {
         children: [{ type: "containerDirective", name: "note" }],
       });
       expect(bundled.MdastAdapterError).toBeTypeOf("function");
+
+      const rendered = await bundled.renderHtml("Budget <8 ms\n", {
+        filename: "preview.md",
+      });
+      expect(rendered).toMatchObject({
+        html: "<p>Budget &lt;8 ms</p>",
+        diagnostics: [],
+      });
       expect(after.currentGeneration).toBe(before.currentGeneration + 1);
       expect(after.trapRecoveriesStarted).toBe(before.trapRecoveriesStarted + 1);
       expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 3);

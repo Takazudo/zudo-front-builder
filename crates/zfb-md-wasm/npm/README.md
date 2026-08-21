@@ -35,7 +35,7 @@ migration. `./highlight` is also backward-compatible. New `./render` and
 | --- | --- | --- |
 | `.` | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile/render/parse/raw-mdast/highlight surface |
 | `./highlight` | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
-| `./render` | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
+| `./render` | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
 | `./parse` | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
 
 The focused entries own private resource pairs:
@@ -134,14 +134,17 @@ plain-markdown preview when you don't need to evaluate a component module.
 ```ts
 import { renderHtml } from "@takazudo/zfb-md-wasm";
 
-const { html, frontmatter, diagnostics } = await renderHtml("# Heading\n\nSome **bold** text.\n", {
+const { html, frontmatter, diagnostics } = await renderHtml("Budget <8 ms\n", {
   filename: "post.md",
 });
-// html -> "<h1>Heading</h1><p>Some <strong>bold</strong> text.</p>"
+// html -> "<p>Budget &lt;8 ms</p>"
 ```
 
-`renderHtml` accepts and ignores `jsxRuntime` / `development`, so one options
-object can serve both tiers.
+`renderHtml` infers CommonMark for `.md` and MDX for `.mdx`; an explicit
+`dialect: "markdown" | "mdx"` overrides either valid extension. Omitting the
+filename uses `<anonymous>.md`, hence CommonMark. `compile` remains MDX-only
+and accepts/ignores `dialect`, while `renderHtml` accepts/ignores
+`jsxRuntime` / `development`, so one options object can serve both tiers.
 
 ### `version()` / `init()`
 
@@ -516,6 +519,7 @@ creates independent wasm state; no entry evicts or shares another's instance.
 ```ts
 interface ZfbMdWasmOptions {
   filename?: string; // must end .md/.mdx; drives frontmatter dispatch + diagnostics
+  dialect?: "markdown" | "mdx"; // renderHtml only; inferred from filename when absent
   jsxRuntime?: "preact" | "react"; // compile only; default "preact"
   development?: boolean; // compile only; default false
   pipeline?: {
@@ -689,9 +693,9 @@ suite gates exact-match). Deliberate limitations of the browser build:
   interpret an already-parsed AST; no slim entry evaluates author JavaScript.
 - **`renderHtml` is not a sanitizer.** Raw HTML remains untrusted, and JSX,
   expression, or ESM-shaped AST nodes from MDX remain inert data.
-- **CommonMark behavior is separate.** The #2445 CommonMark request is not
-  absorbed by this artifact split; changing delivery topology does not change
-  the Markdown dialect or rendering semantics.
+- **`renderHtml` selects syntax from the filename.** `.md` uses CommonMark,
+  `.mdx` uses MDX, and an explicit `dialect` overrides either valid extension.
+  `compile` remains MDX-only.
 - **Grammar subsetting is not built.** All four artifacts ship every bundled
   syntect grammar; there is no per-language allowlist knob.
 - **Syntax highlighting uses syntect's `fancy-regex` backend** (native zfb uses

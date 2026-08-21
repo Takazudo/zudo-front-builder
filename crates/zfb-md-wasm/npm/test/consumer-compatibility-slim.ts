@@ -15,6 +15,7 @@ import {
   type CodeHighlightMode,
   type CodeHighlightOptions,
   type MarkdownFeaturesConfig,
+  type ParseDialect as RenderDialect,
   type JsxRuntime,
   type HighlightRole,
 } from "../dist/render.js";
@@ -130,6 +131,7 @@ type RenderTypes = [
   Diagnostic,
   DiagnosticSource,
   ZfbMdWasmOptions,
+  RenderDialect,
   PipelineOptions,
   GfmOptions,
   CodeHighlightMode,

@@ -20,6 +20,7 @@ import {
   type HighlightRole,
   type JsxRuntime,
   type MarkdownFeaturesConfig,
+  type ParseDialect as RenderDialect,
   type PipelineOptions,
   type RenderHtmlResult,
   type ZfbMdWasmOptions,
@@ -92,6 +93,7 @@ import {
 
 const options: ZfbMdWasmOptions = {
   filename: "packed.mdx",
+  dialect: "markdown" satisfies RenderDialect,
   jsxRuntime: "preact" satisfies JsxRuntime,
   pipeline: {
     gfm: { table: true } satisfies GfmOptions,
@@ -117,6 +119,7 @@ type RenderTypes = [
   Diagnostic,
   DiagnosticSource,
   ZfbMdWasmOptions,
+  RenderDialect,
   PipelineOptions,
   GfmOptions,
   CodeHighlightMode,

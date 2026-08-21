@@ -32,6 +32,7 @@ export type {
   Diagnostic,
   DiagnosticSource,
   ZfbMdWasmOptions,
+  ParseDialect,
   PipelineOptions,
   GfmOptions,
   CodeHighlightMode,

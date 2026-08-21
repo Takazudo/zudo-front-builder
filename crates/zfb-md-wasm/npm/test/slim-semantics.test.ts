@@ -141,6 +141,21 @@ describe("./render semantic parity", () => {
     expect(slim).toStrictEqual(root);
     expect(slim.diagnostics).toEqual([]);
   });
+
+  it("keeps CommonMark inference and explicit MDX overrides identical", async () => {
+    const source = "Budget <8 ms\n";
+    for (const options of [
+      { filename: "preview.md" },
+      { filename: "preview.mdx", dialect: "markdown" as const },
+      { filename: "preview.md", dialect: "mdx" as const },
+    ]) {
+      const [root, slim] = await Promise.all([
+        rootRenderHtml(source, options),
+        slimRenderHtml(source, options),
+      ]);
+      expect(slim, JSON.stringify(options)).toStrictEqual(root);
+    }
+  });
 });
 
 describe("./parse semantic parity", () => {

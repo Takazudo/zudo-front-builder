@@ -614,6 +614,25 @@ impl Pipeline {
         }
     }
 
+    /// Replace the primary MDX parser with CommonMark while retaining the
+    /// resolved GFM switches already carried by this pipeline.
+    ///
+    /// This is crate-private because the public selection contract lives in
+    /// [`crate::facade::build_pipeline_for_dialect`]. Visitor wiring is left
+    /// untouched; only the base syntax used by [`Pipeline::run`] changes.
+    pub(crate) fn use_commonmark_dialect(&mut self) {
+        let resolved = self.gfm_constructs;
+        let mut parse_options = markdown::ParseOptions::default();
+        parse_options.constructs.gfm_strikethrough = resolved.strikethrough;
+        parse_options.constructs.gfm_table = resolved.table;
+        parse_options.constructs.gfm_autolink_literal = resolved.autolink_literal;
+        parse_options.constructs.gfm_task_list_item = resolved.task_list_item;
+        parse_options.constructs.gfm_footnote_definition = resolved.footnote_definition;
+        parse_options.constructs.gfm_label_start_footnote = resolved.footnote_definition;
+        self.parse_options = parse_options;
+        self.extend_config_fingerprint("dialect=markdown".to_string());
+    }
+
     /// Config-derived fingerprint of this pipeline, or `None` when the
     /// pipeline is **uncacheable**.
     ///
