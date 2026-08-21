@@ -285,9 +285,10 @@ Gating `swc_core` out of the highlight graph (#2449/#2450) was a
 1,476,740 B; gzip-9 767,009 B → 758,244 B, −8,765 B) — wasm-opt was already
 dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
 no-`swc_core` assertions turned that emergent property into a guaranteed one.
-The delta that matters to a highlight-only consumer is root versus highlight:
-1,797,324 B raw and 700,200 B gzip-9 smaller, about 45% of root's raw bytes
-and 52% of its gzipped bytes.
+The delta that matters to a highlight-only consumer is root versus
+highlight: the highlight artifact is 1,797,324 B smaller raw and 700,200 B
+smaller gzip-9, landing at about 45% of root's raw bytes and 52% of its
+gzipped bytes.
 
 Every shipped artifact came in under its #2447 candidate measurement: root
 −62,869 B, highlight −7,965 B, render −39,844 B, parse −25,482 B.

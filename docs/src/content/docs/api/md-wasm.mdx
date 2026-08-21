@@ -333,8 +333,9 @@ Gating `swc_core` out of the highlight graph (#2449/#2450) was a
 dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
 no-`swc_core` assertions turned that emergent property into a guaranteed
 one. The delta that matters to a highlight-only consumer is root versus
-highlight: 1,797,324 B raw and 700,200 B gzip-9 smaller, about 45% of
-root's raw bytes and 52% of its gzipped bytes.
+highlight: the highlight artifact is 1,797,324 B smaller raw and 700,200 B
+smaller gzip-9, landing at about 45% of root's raw bytes and 52% of its
+gzipped bytes.
 
 The package is **ESM-only** (`"type": "module"`, no `require` support) and requires **Node ≥ 20.0.0**. Call `version()` (above) at runtime, or check the installed package's own `package.json`, rather than trusting a version number baked into this page — it drifts release to release.
 
