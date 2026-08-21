@@ -52,12 +52,12 @@ surface and the only entry that exports `compile`. Existing root imports and
 `swc_core` and `zfb-render` while intentionally retaining `zfb-content` and
 `syntect-fancy`; parse is not syntect-free.
 
-| Import | Runtime values | Type surface | Choose it for |
-| --- | --- | --- | --- |
-| `@takazudo/zfb-md-wasm` | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, `MdastAdapterError`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | Full current compile/render/parse/raw-mdast/highlight types | Compile MDX or use several current APIs |
-| `@takazudo/zfb-md-wasm/highlight` | `init`, `highlightCode`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` | Highlight code only; existing API/resources stay compatible |
-| `@takazudo/zfb-md-wasm/render` | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` | Render Markdown to HTML without compiler bytes |
-| `@takazudo/zfb-md-wasm/parse` | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` | Parse and optionally interpret an AST in controlled consumer code |
+| Import | gzip-9 wasm (2.8.0) | Runtime values | Type surface | Choose it for |
+| --- | ---: | --- | --- | --- |
+| `@takazudo/zfb-md-wasm` | 1,458,444 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, `MdastAdapterError`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | Full current compile/render/parse/raw-mdast/highlight types | Compile MDX or use several current APIs |
+| `@takazudo/zfb-md-wasm/highlight` | 758,244 B | `init`, `highlightCode`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` | Highlight code only; existing API/resources stay compatible |
+| `@takazudo/zfb-md-wasm/render` | 1,011,160 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` | Render Markdown to HTML without compiler bytes |
+| `@takazudo/zfb-md-wasm/parse` | 276,437 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` | Parse and optionally interpret an AST in controlled consumer code |
 
 Each focused entry owns a private resource pair:
 
@@ -506,29 +506,39 @@ Serve emitted `.mjs` as `application/javascript` and `.wasm` as
 source path: use the packed browser entry so zfb can maintain the hashed URL
 graph.
 
-### Decision snapshot sizes and ceilings
+### Shipped artifact sizes and locked ceilings
 
-The exact optimized #2447 decision snapshot rows are:
+These are the shipped **2.8.0** artifact rows — optimized final wasm after
+wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
+bytes/gzip:
 
 | Entry/graph | final wasm | gzip-9 | glue | glue gzip-9 |
 | --- | ---: | ---: | ---: | ---: |
-| root (full) | 3,336,933 B | 1,491,970 B | 14,881 B | 4,151 B |
-| highlight (historical current SWC-retaining baseline) | 1,484,705 B | 767,009 B | 8,758 B | 2,637 B |
-| render (selected SWC-free candidate) | 2,123,309 B | 1,032,557 B | 8,637 B | 2,597 B |
-| parse (selected SWC-free candidate) | 650,458 B | 289,523 B | 11,141 B | 3,795 B |
+| root (full) | 3,274,064 B | 1,458,444 B | 14,998 B | 4,199 B |
+| highlight | 1,476,740 B | 758,244 B | 8,758 B | 2,637 B |
+| render | 2,083,465 B | 1,011,160 B | 8,772 B | 2,661 B |
+| parse | 624,976 B | 276,437 B | 11,159 B | 3,797 B |
 
-The split package snapshot was 3,638,607 B versus 2,314,818 B for the current
-root-plus-highlight package. Locked gzip-9 ceilings are root 1,600,000 B,
-highlight 820,000 B, render 1,100,000 B, and parse 325,000 B; the complete
-packed tarball ceiling is 3,900,000 B. The clean production reference ceiling
-is 210 seconds; the selected snapshot median was 155.015 s [153.496, 165.977].
+The #2447 decision snapshot found the split package layout at 3,638,607 B
+versus 2,314,818 B for root plus highlight, a 210-second clean production
+reference ceiling, and a selected-snapshot median of 155.015 s
+[153.496, 165.977]. Locked gzip-9 ceilings are root 1,600,000 B, highlight
+820,000 B, render 1,100,000 B, and parse 325,000 B; the complete packed
+tarball ceiling is 3,900,000 B. All four ship inside their ceilings, with
+141,556 B (root), 61,756 B (highlight), 88,840 B (render), and 48,563 B
+(parse) of headroom. These are 2.8.0 measurements, not permanent promises —
+re-measure against the version you actually install.
 
-The highlight row is explicitly historical: #2447's current
-`highlight,compiler-surface` baseline retained `swc_core` because the content
-edge was unconditional. The shipped post-#2449 highlight graph is proven
-SWC-free by #2450's exact parity and no-`swc_core` assertion, with public API and
-resources compatible, but its post-gating size was not measured. No projected
-highlight measurement is evidence.
+Gating `swc_core` out of the highlight graph (#2449/#2450) was a
+**provability win, not a size win**. The shipped highlight artifact is only
+7,965 B smaller than #2447's SWC-retaining baseline (1,484,705 B →
+1,476,740 B; gzip-9 767,009 B → 758,244 B, −8,765 B) — wasm-opt was already
+dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
+no-`swc_core` assertions turned that emergent property into a guaranteed
+one. The delta that matters to a highlight-only consumer is root versus
+highlight: the highlight artifact is 1,797,324 B smaller raw and 700,200 B
+smaller gzip-9, landing at about 45% of root's raw bytes and 52% of its
+gzipped bytes.
 
 ## Node usage (tests and tooling)
 
@@ -588,27 +598,37 @@ limitations for the browser build:
 
 ## Bundle size
 
-The #2447 decision snapshot measured optimized final wasm with Node gzip-9:
+These are the shipped **2.8.0** artifact rows — optimized final wasm after
+wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
+bytes/gzip:
 
 | Entry/graph | final wasm | gzip-9 | glue | glue gzip-9 |
 | --- | ---: | ---: | ---: | ---: |
-| root (full) | 3,336,933 B | 1,491,970 B | 14,881 B | 4,151 B |
-| highlight (historical current SWC-retaining baseline) | 1,484,705 B | 767,009 B | 8,758 B | 2,637 B |
-| render (selected SWC-free candidate) | 2,123,309 B | 1,032,557 B | 8,637 B | 2,597 B |
-| parse (selected SWC-free candidate) | 650,458 B | 289,523 B | 11,141 B | 3,795 B |
+| root (full) | 3,274,064 B | 1,458,444 B | 14,998 B | 4,199 B |
+| highlight | 1,476,740 B | 758,244 B | 8,758 B | 2,637 B |
+| render | 2,083,465 B | 1,011,160 B | 8,772 B | 2,661 B |
+| parse | 624,976 B | 276,437 B | 11,159 B | 3,797 B |
 
-The split package was 3,638,607 B versus 2,314,818 B for current root plus
-highlight. Locked gzip-9 ceilings are root 1,600,000 B, highlight 820,000 B,
-render 1,100,000 B, and parse 325,000 B; complete packed tarball ceiling is
-3,900,000 B. The clean production ceiling is 210 s; the decision median was
-155.015 s [153.496, 165.977]. These are snapshot measurements, not permanent
-promises.
+The #2447 decision snapshot found the split package at 3,638,607 B versus
+2,314,818 B for root plus highlight, a 210 s clean production ceiling, and a
+decision median of 155.015 s [153.496, 165.977]. Locked gzip-9 ceilings are
+root 1,600,000 B, highlight 820,000 B, render 1,100,000 B, and parse
+325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
+inside their ceilings, with 141,556 B (root), 61,756 B (highlight), 88,840 B
+(render), and 48,563 B (parse) of headroom. These are 2.8.0 measurements,
+not permanent promises — re-measure against the version you actually
+install.
 
-The highlight row is explicitly historical: #2447's current
-`highlight,compiler-surface` baseline retained `swc_core` because the content
-edge was unconditional. The shipped post-#2449 graph is proven SWC-free by
-exact #2450 parity and a no-`swc_core` assertion, with public API/resources
-compatible, but its post-gating byte size was not measured. Do not project one.
+Gating `swc_core` out of the highlight graph (#2449/#2450) was a
+**provability win, not a size win**. The shipped highlight artifact is only
+7,965 B smaller than #2447's SWC-retaining baseline (1,484,705 B →
+1,476,740 B; gzip-9 767,009 B → 758,244 B, −8,765 B) — wasm-opt was already
+dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
+no-`swc_core` assertions turned that emergent property into a guaranteed
+one. The delta that matters to a highlight-only consumer is root versus
+highlight: the highlight artifact is 1,797,324 B smaller raw and 700,200 B
+smaller gzip-9, landing at about 45% of root's raw bytes and 52% of its
+gzipped bytes.
 
 ## Trap recovery
 

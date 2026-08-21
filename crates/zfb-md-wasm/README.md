@@ -31,12 +31,12 @@ are SWC-free isolated graphs: they omit `swc_core` and `zfb-render`, while
 intentionally retaining `zfb-content` and its `syntect-fancy` backend. Parse
 is not syntect-free.
 
-| Entry | Runtime values | Type surface |
-| --- | --- | --- |
-| `.` | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
-| `./highlight` | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
-| `./render` | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
-| `./parse` | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
+| Entry | gzip-9 wasm (2.8.0) | Runtime values | Type surface |
+| --- | ---: | --- | --- |
+| `.` | 1,458,444 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
+| `./highlight` | 758,244 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
+| `./render` | 1,011,160 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
+| `./parse` | 276,437 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
 
 The focused entries have private, non-interchangeable resource pairs:
 
@@ -256,31 +256,44 @@ HTTP success responses. Do not copy those resources manually or import the
 package source path; consume the packed browser entry so the generated URLs
 stay correct under a hashed island bundle.
 
-## Decision snapshot measurements and ceilings
+## Shipped artifact sizes and locked ceilings
 
-These are the exact optimized artifact rows from the #2447 decision snapshot:
+These are the shipped **2.8.0** artifact rows — optimized final wasm after
+wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
+bytes/gzip:
 
 | Entry/graph | final wasm | gzip-9 | glue | glue gzip-9 |
 | --- | ---: | ---: | ---: | ---: |
-| root (full) | 3,336,933 B | 1,491,970 B | 14,881 B | 4,151 B |
-| highlight (historical current SWC-retaining baseline) | 1,484,705 B | 767,009 B | 8,758 B | 2,637 B |
-| render (selected SWC-free candidate) | 2,123,309 B | 1,032,557 B | 8,637 B | 2,597 B |
-| parse (selected SWC-free candidate) | 650,458 B | 289,523 B | 11,141 B | 3,795 B |
+| root (full) | 3,274,064 B | 1,458,444 B | 14,998 B | 4,199 B |
+| highlight | 1,476,740 B | 758,244 B | 8,758 B | 2,637 B |
+| render | 2,083,465 B | 1,011,160 B | 8,772 B | 2,661 B |
+| parse | 624,976 B | 276,437 B | 11,159 B | 3,797 B |
 
-The snapshot measured the current split package at 3,638,607 B versus the
-current root-plus-highlight package at 2,314,818 B. These are decision-snapshot
-measurements, not permanent size promises. Locked gzip-9 ceilings are
-1,600,000 B (root), 820,000 B (highlight), 1,100,000 B (render), and 325,000 B
-(parse); the complete packed tarball ceiling is 3,900,000 B. The four-step
-clean production reference ceiling is 210 seconds, with the #2447 selected
-median at 155.015 s [153.496, 165.977].
+The #2447 decision snapshot measured the split package at 3,638,607 B versus
+the root-plus-highlight package at 2,314,818 B. Locked gzip-9 ceilings are
+root 1,600,000 B, highlight 820,000 B, render 1,100,000 B, and parse
+325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
+inside their ceilings, with 141,556 B (root), 61,756 B (highlight), 88,840 B
+(render), and 48,563 B (parse) of headroom. These are 2.8.0 measurements, not
+permanent promises — re-measure against the version you actually install. The
+four-step clean production reference ceiling is 210 seconds, with the #2447
+selected median at 155.015 s [153.496, 165.977].
 
-The highlight byte row is explicitly historical: #2447 reconstructed the
-current `highlight,compiler-surface` baseline, whose unconditional content edge
-retained `swc_core`. The shipped post-#2449 highlight graph is now proven
-SWC-free by #2450's exact parity and no-`swc_core` assertion, while its public API
-and resources remain compatible. Its post-gating size was not measured; do not
-infer or project one from the historical row.
+Gating `swc_core` out of the highlight graph (#2449/#2450) was a
+**provability win, not a size win**. The shipped highlight artifact is only
+7,965 B smaller than #2447's SWC-retaining baseline (1,484,705 B →
+1,476,740 B; gzip-9 767,009 B → 758,244 B, −8,765 B) — wasm-opt was already
+dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
+no-`swc_core` assertions turned that emergent property into a guaranteed one.
+The delta that matters to a highlight-only consumer is root versus
+highlight: the highlight artifact is 1,797,324 B smaller raw and 700,200 B
+smaller gzip-9, landing at about 45% of root's raw bytes and 52% of its
+gzipped bytes.
+
+Every shipped final wasm came in under its #2447 candidate measurement: root
+−62,869 B, highlight −7,965 B, render −39,844 B, parse −25,482 B. The glue
+rows moved the other way by a negligible amount (root +117 B, render +135 B,
+parse +18 B; highlight unchanged).
 
 ## Wasm-target blockers and their resolutions
 
