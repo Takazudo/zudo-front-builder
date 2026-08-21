@@ -66,6 +66,12 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isExpectedTransient503(message) {
+  return /^Failed to load resource: the server responded with a status of 503 \(Service Unavailable\)$/.test(
+    message,
+  );
+}
+
 function assertOwnPair(records, glueKind, wasmKind, label) {
   assert(records.length === 2, `${label}: expected exactly two own resource requests`);
   assert(
@@ -96,13 +102,19 @@ async function exercise(origin, selectedIds, label) {
   const responses = [];
   const browserErrors = [];
   const browserRequests = [];
+  const expectedTransientConsoleErrors = [];
   let failedFirstWasm = false;
 
   page.on("pageerror", (error) => {
     browserErrors.push(error.stack ?? error.message);
   });
   page.on("console", (message) => {
-    if (message.type() === "error") browserErrors.push(message.text());
+    if (message.type() !== "error") return;
+    if (failedFirstWasm && isExpectedTransient503(message.text())) {
+      expectedTransientConsoleErrors.push(message.text());
+      return;
+    }
+    browserErrors.push(message.text());
   });
   page.on("request", (request) => {
     browserRequests.push(request.url());
@@ -234,6 +246,10 @@ async function exercise(origin, selectedIds, label) {
     assert(
       requests.filter(({ kind }) => kind === "wasm").length === 2,
       `${label}: failed + successful Wasm fetch count changed`,
+    );
+    assert(
+      expectedTransientConsoleErrors.length === 1,
+      `${label}: expected exactly one deliberate transient 503 console signal, received ${expectedTransientConsoleErrors.length}`,
     );
 
     assert(
@@ -427,9 +443,15 @@ async function exerciseRetry(origin, label, action, wasmKind, glueKind, invalidB
   const responses = [];
   let failed = false;
   const browserErrors = [];
+  const expectedTransientConsoleErrors = [];
   page.on("pageerror", (error) => browserErrors.push(error.stack ?? error.message));
   page.on("console", (message) => {
-    if (message.type() === "error") browserErrors.push(message.text());
+    if (message.type() !== "error") return;
+    if (!invalidBytes && failed && isExpectedTransient503(message.text())) {
+      expectedTransientConsoleErrors.push(message.text());
+      return;
+    }
+    browserErrors.push(message.text());
   });
   page.on("request", (request) => {
     const kind = resourceKind(request.url());
@@ -494,6 +516,10 @@ async function exerciseRetry(origin, label, action, wasmKind, glueKind, invalidB
     assert(
       new Set(responses.filter(({ kind }) => kind === glueKind).map(({ url }) => url)).size === 2,
       `${label}: retry glue imports did not receive fresh module URLs`,
+    );
+    assert(
+      expectedTransientConsoleErrors.length === (invalidBytes ? 0 : 1),
+      `${label}: unexpected transient 503 console signal count ${expectedTransientConsoleErrors.length}`,
     );
     assert(browserErrors.length === 0, `${label}: browser errors: ${browserErrors.join("\n")}`);
   } finally {
