@@ -1,6 +1,6 @@
 {
   "name": "@takazudo/zfb",
-  "version": "2.7.1",
+  "version": "2.8.0",
   "private": false,
   "type": "module",
   "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. SDK with islands, content collections, pagination, and config helpers.",
@@ -74,11 +74,11 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@takazudo/zfb-darwin-arm64": "workspace:2.7.1",
-    "@takazudo/zfb-darwin-x64": "workspace:2.7.1",
-    "@takazudo/zfb-linux-arm64-gnu": "workspace:2.7.1",
-    "@takazudo/zfb-linux-x64-gnu": "workspace:2.7.1",
-    "@takazudo/zfb-win32-x64-msvc": "workspace:2.7.1"
+    "@takazudo/zfb-darwin-arm64": "workspace:2.8.0",
+    "@takazudo/zfb-darwin-x64": "workspace:2.8.0",
+    "@takazudo/zfb-linux-arm64-gnu": "workspace:2.8.0",
+    "@takazudo/zfb-linux-x64-gnu": "workspace:2.8.0",
+    "@takazudo/zfb-win32-x64-msvc": "workspace:2.8.0"
   },
   "publishConfig": {
     "access": "public",
