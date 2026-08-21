@@ -48,6 +48,7 @@ import { gzipSync } from "node:zlib";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
+import { SHIPPED_SIZES } from "../../shipped-sizes.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, ".."); // crates/zfb-md-wasm/npm
@@ -79,7 +80,7 @@ export const ARTIFACTS = [
     cargoFeatureArgs: [],
     outName: "zfb_md_wasm",
     dirName: "wasm",
-    gzipCeiling: 1_600_000,
+    gzipCeiling: SHIPPED_SIZES.ceilings.root,
   },
   {
     label: "highlight-only",
@@ -87,7 +88,7 @@ export const ARTIFACTS = [
     cargoFeatureArgs: ["--no-default-features", "--features", "highlight"],
     outName: "zfb_md_wasm_highlight",
     dirName: "wasm-highlight",
-    gzipCeiling: 820_000,
+    gzipCeiling: SHIPPED_SIZES.ceilings.highlight,
   },
   {
     label: "render-only",
@@ -95,7 +96,7 @@ export const ARTIFACTS = [
     cargoFeatureArgs: ["--no-default-features", "--features", "render"],
     outName: "zfb_md_wasm_render",
     dirName: "wasm-render",
-    gzipCeiling: 1_100_000,
+    gzipCeiling: SHIPPED_SIZES.ceilings.render,
   },
   {
     label: "parse-only",
@@ -103,7 +104,7 @@ export const ARTIFACTS = [
     cargoFeatureArgs: ["--no-default-features", "--features", "parse"],
     outName: "zfb_md_wasm_parse",
     dirName: "wasm-parse",
-    gzipCeiling: 325_000,
+    gzipCeiling: SHIPPED_SIZES.ceilings.parse,
   },
 ];
 

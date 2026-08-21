@@ -8,19 +8,31 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { SHIPPED_SIZES } from "../crates/zfb-md-wasm/shipped-sizes.mjs";
 
-const ARTIFACTS = [
-  { label: "default", dir: "wasm", stem: "zfb_md_wasm", ceiling: 1_600_000 },
+export const ARTIFACTS = [
+  { label: "default", dir: "wasm", stem: "zfb_md_wasm", ceiling: SHIPPED_SIZES.ceilings.root },
   {
     label: "highlight-only",
     dir: "wasm-highlight",
     stem: "zfb_md_wasm_highlight",
-    ceiling: 820_000,
+    ceiling: SHIPPED_SIZES.ceilings.highlight,
   },
-  { label: "render-only", dir: "wasm-render", stem: "zfb_md_wasm_render", ceiling: 1_100_000 },
-  { label: "parse-only", dir: "wasm-parse", stem: "zfb_md_wasm_parse", ceiling: 325_000 },
+  {
+    label: "render-only",
+    dir: "wasm-render",
+    stem: "zfb_md_wasm_render",
+    ceiling: SHIPPED_SIZES.ceilings.render,
+  },
+  {
+    label: "parse-only",
+    dir: "wasm-parse",
+    stem: "zfb_md_wasm_parse",
+    ceiling: SHIPPED_SIZES.ceilings.parse,
+  },
 ];
-const TARBALL_CEILING = 3_900_000;
+export const TARBALL_CEILING = SHIPPED_SIZES.ceilings.tarball;
 
 function usage() {
   throw new Error(
@@ -199,5 +211,8 @@ function main() {
   }
 }
 
-if (process.argv.includes("--self-test")) selfTest();
-else main();
+const argument = process.argv[1];
+if (argument !== undefined && import.meta.url === pathToFileURL(argument).href) {
+  if (process.argv.includes("--self-test")) selfTest();
+  else main();
+}
