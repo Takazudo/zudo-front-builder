@@ -225,7 +225,7 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
       env,
     },
   );
-  // Both artifacts' cargo rustc pass writes this SAME path (see module doc
+  // Every artifact's cargo rustc pass writes this SAME path (see module doc
   // "Sequencing" note) -- read it immediately, before the next artifact's
   // cargo rustc pass (if any) overwrites it.
   const cdylibPath = resolve(
@@ -249,9 +249,9 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
   const resourceGluePath = resolve(srcOutDir, `${outName}_glue.zfb-resource.mjs`);
   const resourceGlueDeclarationPath = resolve(srcOutDir, `${outName}_glue.zfb-resource.d.mts`);
 
-  // One canonical generated runtime serves both entries. The marker turns the
-  // browser entry's static import into an esbuild file resource, while the
-  // direct entry dynamically imports this exact same module.
+  // One canonical generated runtime serves both variants of this entry. The
+  // marker turns the browser variant's static import into an esbuild file
+  // resource, while the direct variant dynamically imports this same module.
   renameSync(gluePath, resourceGluePath);
   renameSync(glueDeclarationPath, resourceGlueDeclarationPath);
   const bindgenSize = readFileSync(bgWasmPath).length;
