@@ -18,15 +18,11 @@
 //!
 //! Plus [`version`] for host-side compatibility checks.
 //!
-//! Tiers 1–2 above (`compile`/`render_html`, and everything only they use --
-//! `WasmOptions`, `Prepared`, `prepare`, `CompileResult`/`RenderHtmlResult`)
-//! live behind the `pipeline` feature (default-on). `highlight_code` and
-//! `version` are unconditional. `npm/scripts/build.mjs` builds a SECOND,
-//! `--no-default-features` artifact under the package's `./highlight`
-//! export subpath (zfb#1849, epic zfb#1845) -- the md/MDX/JSX pipeline
-//! dominates the shipped wasm bytes (Wave-1 measurement: 51.8% raw / 44.5%
-//! gzip), so dropping it is the size knob for consumers that only need
-//! syntax highlighting.
+//! The four calls are independently gated by the additive `compile`, `render`,
+//! `parse`, and `highlight` capabilities. `compile` implies `render` and is
+//! the only capability that links `zfb-render`/SWC. The default `pipeline`
+//! alias enables all four calls for root compatibility. [`version`] and the
+//! internal trap hook remain unconditional; feature-off calls are absent.
 //!
 //! ## Compile/render options JSON
 //!
@@ -102,29 +98,37 @@
 //! wrapper must re-instantiate (the API is stateless per call, so re-init
 //! loses nothing). Full contract in this crate's README.
 
+#[cfg(any(feature = "highlight", feature = "parse"))]
 use std::collections::BTreeMap;
 
+#[cfg(any(feature = "render", feature = "parse", feature = "highlight"))]
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "render", feature = "parse", feature = "highlight"))]
 use serde_json::Value as JsonValue;
 use wasm_bindgen::prelude::wasm_bindgen;
-#[cfg(feature = "pipeline")]
-use zfb_content::facade::{
-    self, GfmOptions, InteropMdastNode, ParseDialect, ParseMdastOptions, PipelineOptions,
-};
-#[cfg(feature = "pipeline")]
+#[cfg(any(feature = "render", feature = "parse"))]
+use zfb_content::facade;
+#[cfg(feature = "render")]
+use zfb_content::facade::PipelineOptions;
+#[cfg(feature = "parse")]
+use zfb_content::facade::{GfmOptions, InteropMdastNode, ParseDialect, ParseMdastOptions};
+#[cfg(any(feature = "render", feature = "parse"))]
 use zfb_content::frontmatter::{extract_from_filename, FrontmatterError};
-#[cfg(feature = "pipeline")]
-use zfb_content::pipeline::{Pipeline, PipelineError};
+#[cfg(feature = "render")]
+use zfb_content::pipeline::Pipeline;
+#[cfg(any(feature = "render", feature = "parse"))]
+use zfb_content::pipeline::PipelineError;
+#[cfg(feature = "highlight")]
 use zfb_content::syntect_highlight::{
     ClassHighlightFallbackReason, ClassHighlightRenderError, Highlighter,
     DEFAULT_CLASS_HIGHLIGHT_PREFIX,
 };
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 use zfb_render::swc_pipeline::{CompileOptions, JsxRuntime, SwcPipeline};
 
 /// `jsxRuntime` option values, mirroring
 /// [`zfb_render::swc_pipeline::JsxRuntime`].
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum JsxRuntimeOption {
@@ -133,7 +137,7 @@ enum JsxRuntimeOption {
     React,
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 impl From<JsxRuntimeOption> for JsxRuntime {
     fn from(o: JsxRuntimeOption) -> Self {
         match o {
@@ -146,7 +150,7 @@ impl From<JsxRuntimeOption> for JsxRuntime {
 /// The wasm-boundary options document — see the crate docs for the JSON
 /// shape. Wraps the facade's [`PipelineOptions`] under `pipeline` and
 /// adds the SWC-tier knobs the facade deliberately does not know about.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 struct WasmOptions {
@@ -159,7 +163,7 @@ struct WasmOptions {
 /// Raw-parser-only pipeline options. Keeping this closed and limited to GFM
 /// prevents visitor/serializer knobs from being silently accepted by
 /// `parseToAst` even though that entry point cannot apply them.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 struct ParsePipelineOptions {
@@ -175,7 +179,7 @@ struct ParsePipelineOptions {
 /// | `extract` | body | none | parsed JSON/null | frontmatter diagnostic |
 /// | `node` | full logical source | canonical `yaml` | parsed JSON/null | frontmatter diagnostic |
 /// | `none` | full logical source | none | null | parsed as Markdown/MDX |
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 struct ParseToAstOptions {
@@ -188,7 +192,7 @@ struct ParseToAstOptions {
     pipeline: ParsePipelineOptions,
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum FrontmatterPolicy {
@@ -201,7 +205,7 @@ enum FrontmatterPolicy {
 /// Deserialize an optional field while rejecting an explicitly present
 /// `null`. Serde calls this only when the key exists; omission still uses the
 /// field default (`None`).
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn deserialize_present_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -213,6 +217,7 @@ where
 /// The only direct-code output mode currently supported by the public API.
 /// Keeping this a closed enum means a future mode must be deliberately
 /// designed instead of being silently accepted and ignored.
+#[cfg(feature = "highlight")]
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum HighlightCodeMode {
@@ -223,6 +228,7 @@ enum HighlightCodeMode {
 /// Options for [`highlight_code`]. This is intentionally not the Markdown
 /// pipeline's options document: arbitrary code has no filename/frontmatter or
 /// theme configuration, and always emits semantic classes.
+#[cfg(feature = "highlight")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct HighlightCodeOptions {
@@ -237,11 +243,13 @@ struct HighlightCodeOptions {
     role_classes: BTreeMap<String, String>,
 }
 
+#[cfg(feature = "highlight")]
 fn default_class_highlight_prefix() -> String {
     DEFAULT_CLASS_HIGHLIGHT_PREFIX.to_string()
 }
 
 /// One diagnostic entry — see the crate docs for field semantics.
+#[cfg(any(feature = "render", feature = "parse", feature = "highlight"))]
 #[derive(Debug, Serialize)]
 struct Diagnostic {
     severity: &'static str,
@@ -251,6 +259,7 @@ struct Diagnostic {
     column: Option<u64>,
 }
 
+#[cfg(any(feature = "render", feature = "parse", feature = "highlight"))]
 impl Diagnostic {
     fn error(source: &'static str, message: impl Into<String>) -> Self {
         Self {
@@ -262,6 +271,7 @@ impl Diagnostic {
         }
     }
 
+    #[cfg(feature = "highlight")]
     fn warning(source: &'static str, message: impl Into<String>) -> Self {
         Self {
             severity: "warning",
@@ -280,7 +290,7 @@ impl Diagnostic {
 }
 
 /// Result document of [`compile`].
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[derive(Debug, Serialize)]
 struct CompileResult {
     code: Option<String>,
@@ -289,7 +299,7 @@ struct CompileResult {
 }
 
 /// Result document of [`render_html`].
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[derive(Debug, Serialize)]
 struct RenderHtmlResult {
     html: Option<String>,
@@ -304,7 +314,7 @@ struct RenderHtmlResult {
 /// three generic directive node kinds and PRE-zfb-visitors. Every `position`
 /// is shifted back into original-source
 /// coordinates (lines plus UTF-16 offsets/columns — see [`parse_to_ast`]).
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[derive(Debug, Serialize)]
 struct ParseToAstResult {
     ast: Option<InteropMdastNode>,
@@ -317,7 +327,7 @@ struct ParseToAstResult {
 ///
 /// Source selection also owns the markdown-rs YAML switch: it is enabled
 /// only for zfb-recognized YAML under the `node` policy.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 struct SelectedParseSource {
     frontmatter: JsonValue,
     input: String,
@@ -325,7 +335,7 @@ struct SelectedParseSource {
     markdown_frontmatter: bool,
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn select_parse_source(
     filename: &str,
     source: &str,
@@ -376,15 +386,17 @@ fn select_parse_source(
 /// Result document of [`highlight_code`]. Unlike the Markdown APIs, direct
 /// highlighting has no frontmatter and can succeed with an escaped fallback
 /// plus a warning diagnostic.
+#[cfg(feature = "highlight")]
 #[derive(Debug, Serialize)]
 struct HighlightCodeResult {
     html: Option<String>,
     diagnostics: Vec<Diagnostic>,
 }
 
-/// Everything the two tiers share once options + frontmatter + pipeline
-/// are resolved.
-#[cfg(feature = "pipeline")]
+/// Everything compile and render share once options + frontmatter + pipeline
+/// are resolved. Render keeps the compile-tier JSON knobs in [`WasmOptions`]
+/// for surface compatibility but stores them here only when compile is active.
+#[cfg(feature = "render")]
 struct Prepared {
     frontmatter: JsonValue,
     body: String,
@@ -394,7 +406,9 @@ struct Prepared {
     body_offset: usize,
     pipeline: Pipeline,
     filename: String,
-    jsx_runtime: JsxRuntime,
+    #[cfg(feature = "compile")]
+    jsx_runtime: JsxRuntimeOption,
+    #[cfg(feature = "compile")]
     development: bool,
 }
 
@@ -405,7 +419,7 @@ struct Prepared {
 /// ~160 bytes on 64-bit hosts (`clippy::result_large_err` under the native
 /// `cargo clippy --workspace`), though it stays under the threshold on the
 /// shipped wasm32 target — boxing keeps it lint-clean on every target.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 fn prepare(
     source: &str,
     options_json: &str,
@@ -467,12 +481,14 @@ fn prepare(
         body_offset,
         pipeline,
         filename,
-        jsx_runtime: opts.jsx_runtime.into(),
+        #[cfg(feature = "compile")]
+        jsx_runtime: opts.jsx_runtime,
+        #[cfg(feature = "compile")]
         development: opts.development,
     })
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(any(feature = "render", feature = "parse"))]
 fn frontmatter_diagnostic(err: &FrontmatterError, source: &str) -> Diagnostic {
     match err {
         FrontmatterError::Yaml(e) => {
@@ -515,9 +531,9 @@ fn frontmatter_diagnostic(err: &FrontmatterError, source: &str) -> Diagnostic {
 /// well-formed place prefix exists.
 ///
 /// `cfg`'d on `test` too: the unit tests below exercise this directly, and
-/// without `pipeline` (its only production caller, via `markdown_diagnostic`)
-/// it would otherwise be dead code under `--no-default-features`.
-#[cfg(any(feature = "pipeline", test))]
+/// without `render` or `parse` (its production callers) it would otherwise be
+/// dead code under `--no-default-features`.
+#[cfg(any(feature = "render", feature = "parse", test))]
 fn split_place(msg: &str) -> (Option<(u64, u64)>, &str) {
     let Some((head, rest)) = msg.split_once(": ") else {
         return (None, msg);
@@ -536,7 +552,7 @@ fn split_place(msg: &str) -> (Option<(u64, u64)>, &str) {
 /// a byte offset in `body`. Tabs follow markdown-rs's four-column tab stops.
 /// Locations in the middle of a UTF-8 scalar are rejected: they cannot be
 /// represented safely in the original Rust string or in JavaScript UTF-16.
-#[cfg(any(feature = "pipeline", test))]
+#[cfg(any(feature = "render", feature = "parse", test))]
 fn markdown_place_to_body_offset(body: &str, line: u64, column: u64) -> Option<usize> {
     let target_line = usize::try_from(line).ok()?;
     let target_column = usize::try_from(column).ok()?;
@@ -589,7 +605,7 @@ fn markdown_place_to_body_offset(body: &str, line: u64, column: u64) -> Option<u
 /// and UTF-16-code-unit column. CRLF is one line ending; lone CR and LF are
 /// also supported so malformed upstream places can never trigger subtraction
 /// or indexing panics.
-#[cfg(any(feature = "pipeline", test))]
+#[cfg(any(feature = "render", feature = "parse", test))]
 fn source_utf16_place(source: &str, offset: usize) -> Option<(u64, u64)> {
     if offset > source.len() || !source.is_char_boundary(offset) {
         return None;
@@ -625,7 +641,7 @@ fn source_utf16_place(source: &str, offset: usize) -> Option<(u64, u64)> {
 /// coordinate space: the full original source, in JavaScript UTF-16 units.
 /// Every relationship is validated so malformed/out-of-range upstream places
 /// degrade to a location-less diagnostic instead of trapping wasm.
-#[cfg(any(feature = "pipeline", test))]
+#[cfg(any(feature = "render", feature = "parse", test))]
 fn markdown_place_in_source(
     source: &str,
     body: &str,
@@ -643,7 +659,7 @@ fn markdown_place_in_source(
 
 /// Convert a [`PipelineError`] into a `"markdown"` diagnostic, mapping
 /// body-relative byte positions back into original-source UTF-16 coordinates.
-#[cfg(feature = "pipeline")]
+#[cfg(any(feature = "render", feature = "parse"))]
 fn markdown_diagnostic(
     err: &PipelineError,
     filename: &str,
@@ -666,7 +682,7 @@ fn markdown_diagnostic(
     }
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 fn compile_impl(source: &str, options_json: &str) -> CompileResult {
     let prepared = match prepare(source, options_json, "<anonymous>.mdx") {
         Ok(p) => p,
@@ -708,7 +724,7 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
 
     let swc_opts = CompileOptions {
         filename,
-        jsx_runtime,
+        jsx_runtime: jsx_runtime.into(),
         development,
     };
     match SwcPipeline::new().compile(&jsx, &swc_opts) {
@@ -725,7 +741,7 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
     }
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
     let prepared = match prepare(source, options_json, "<anonymous>.md") {
         Ok(p) => p,
@@ -781,7 +797,7 @@ fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
 /// are UTF-8 BYTES, straight from markdown-rs — this is an intermediate
 /// step. [`Utf16Positions`] converts the result to the UTF-16 code-unit
 /// contract [`parse_to_ast`] actually returns.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[derive(Clone, Copy)]
 struct PositionShift {
     line_delta: usize,
@@ -789,7 +805,7 @@ struct PositionShift {
     first_line_column_delta: usize,
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 impl PositionShift {
     /// Derive the shift from the source prefix preceding the body (the
     /// frontmatter block). Mirrors the `prefix_lines` arithmetic in
@@ -822,7 +838,7 @@ impl PositionShift {
 /// `source`'s chars, `char::len_utf16()` per character (2 code units for a
 /// scalar value outside the Basic Multilingual Plane — e.g. most emoji —
 /// which needs a surrogate pair; 1 otherwise).
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn build_utf16_prefix(source: &str) -> Vec<u32> {
     let mut prefix = vec![0u32; source.len() + 1];
     let mut utf16_units = 0u32;
@@ -849,12 +865,12 @@ fn build_utf16_prefix(source: &str) -> Vec<u32> {
 /// [`apply`](Self::apply) is a no-op and the prefix map is never built —
 /// this keeps ASCII-source call cost, and the ASCII benchmark numbers, the
 /// same as before this conversion existed.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 struct Utf16Positions {
     prefix: Option<Vec<u32>>,
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 impl Utf16Positions {
     fn for_source(source: &str) -> Self {
         Self {
@@ -888,7 +904,7 @@ impl Utf16Positions {
 /// `_markdownRsStops` is shifted but never UTF-16-converted (stays byte-based
 /// by design). Recursion depth equals mdast nesting depth — the same bound
 /// `Pipeline`'s own visitors already accept for this input.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn shift_interop_positions(
     node: &mut InteropMdastNode,
     shift: PositionShift,
@@ -910,7 +926,7 @@ fn shift_interop_positions(
 /// them (node fields or nested MDX JSX attribute records). The first tuple
 /// member indexes the expression value and stays relative; only the absolute
 /// source-byte offset moves. Stops deliberately remain UTF-8 byte based.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn shift_json_stops(fields: &mut BTreeMap<String, JsonValue>, offset_delta: usize) {
     fn visit(value: &mut JsonValue, key: Option<&str>, offset_delta: usize) {
         match value {
@@ -951,7 +967,7 @@ fn shift_json_stops(fields: &mut BTreeMap<String, JsonValue>, offset_delta: usiz
 /// partial CRLF, or subtract a fixed byte count. Consequently child-owned
 /// trailing whitespace remains part of the candidate child span, while a
 /// second newline or any marker/syntax byte rejects normalization.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn is_plain_list_separator_gap(source: &str, candidate_end: usize, current_end: usize) -> bool {
     let Some(gap) = source.get(candidate_end..current_end) else {
         // `str::get` simultaneously proves ordering, range validity, and
@@ -966,7 +982,7 @@ fn is_plain_list_separator_gap(source: &str, candidate_end: usize, current_end: 
 /// span in remark/unist, but not in the terminal list-item span. Accept that
 /// complete, source-proven shape for list items only. The enclosing list uses
 /// [`is_plain_list_separator_gap`] and therefore retains the owned marker.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn is_blockquote_list_item_separator_gap(
     source: &str,
     candidate_end: usize,
@@ -997,7 +1013,7 @@ fn is_blockquote_list_item_separator_gap(
 ///
 /// Empty items, EOF lists, child-owned whitespace/newlines, directives, and
 /// all unrecognized/partial gap shapes remain untouched.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn normalize_interop_list_ends(node: &mut InteropMdastNode, source: &str, inside_blockquote: bool) {
     let descendants_inside_blockquote = inside_blockquote || node.kind == "blockquote";
     if let Some(children) = node.children.as_mut() {
@@ -1051,7 +1067,7 @@ fn normalize_interop_list_ends(node: &mut InteropMdastNode, source: &str, inside
 /// then map the EOF point into the public original-source coordinate space.
 ///
 /// Empty input deliberately retains markdown-rs's existing `{1, 1, 0}` point.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn normalize_interop_root_end(node: &mut InteropMdastNode, source: &str) {
     if source.is_empty() || node.kind != "root" {
         return;
@@ -1090,7 +1106,7 @@ fn normalize_interop_root_end(node: &mut InteropMdastNode, source: &str) {
 /// would force `prepare` to build (and pay for) a pipeline this tier never
 /// runs, or would need a new shared abstraction; the duplication is small
 /// and keeps each function's cost model obvious at a glance.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
     let fail = |frontmatter: JsonValue, diag: Diagnostic| ParseToAstResult {
         ast: None,
@@ -1181,6 +1197,7 @@ fn parse_to_ast_impl(source: &str, options_json: &str) -> ParseToAstResult {
     }
 }
 
+#[cfg(feature = "highlight")]
 fn highlight_code_impl(code: &str, options_json: &str) -> HighlightCodeResult {
     let options: HighlightCodeOptions = match serde_json::from_str(options_json) {
         Ok(options) => options,
@@ -1239,7 +1256,7 @@ fn highlight_code_impl(code: &str, options_json: &str) -> HighlightCodeResult {
     }
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(any(feature = "render", feature = "parse"))]
 fn to_json<T: Serialize>(value: &T) -> String {
     // Serialization of these result shapes cannot fail in practice, but a
     // panic here would trap the wasm instance — degrade to a hand-built
@@ -1252,6 +1269,7 @@ fn to_json<T: Serialize>(value: &T) -> String {
     })
 }
 
+#[cfg(feature = "highlight")]
 fn highlight_to_json(value: &HighlightCodeResult) -> String {
     // Keep this fallback on the direct API's exact result shape. A serde
     // serialization failure is an internal bug, but must still be a normal
@@ -1269,7 +1287,7 @@ fn highlight_to_json(value: &HighlightCodeResult) -> String {
 /// Returns a JSON string: `{ "code": string|null, "frontmatter": json,
 /// "diagnostics": Diagnostic[] }` — see the crate docs for the options
 /// and diagnostics shapes.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[wasm_bindgen]
 #[must_use]
 pub fn compile(source: &str, options_json: &str) -> String {
@@ -1281,7 +1299,7 @@ pub fn compile(source: &str, options_json: &str) -> String {
 /// Returns a JSON string: `{ "html": string|null, "frontmatter": json,
 /// "diagnostics": Diagnostic[] }` — see the crate docs for the options
 /// and diagnostics shapes. Exported to JS as `renderHtml`.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[wasm_bindgen(js_name = renderHtml)]
 #[must_use]
 pub fn render_html(source: &str, options_json: &str) -> String {
@@ -1335,7 +1353,7 @@ pub fn render_html(source: &str, options_json: &str) -> String {
 /// - `_markdownRsStops` (on MDX expression/ESM nodes) is markdown-rs-
 ///   internal re-parse bookkeeping: internal, unstable, and BYTE-based (NOT
 ///   UTF-16 like `position`) — never slice a string with it.
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[wasm_bindgen(js_name = parseToAst)]
 #[must_use]
 pub fn parse_to_ast(source: &str, options_json: &str) -> String {
@@ -1348,6 +1366,7 @@ pub fn parse_to_ast(source: &str, options_json: &str) -> String {
 /// Returns `{ "html": string|null, "diagnostics": HighlightDiagnostic[] }`.
 /// Invalid options are structured errors; an unknown non-empty language or a
 /// tokenizer fallback returns escaped wrapper markup plus a warning.
+#[cfg(feature = "highlight")]
 #[wasm_bindgen(js_name = highlightCode)]
 #[must_use]
 pub fn highlight_code(code: &str, options_json: &str) -> String {
@@ -1382,12 +1401,12 @@ pub fn force_trap_for_tests() {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "pipeline")]
-    use super::{
-        is_blockquote_list_item_separator_gap, is_plain_list_separator_gap, markdown_diagnostic,
-    };
+    #[cfg(feature = "render")]
+    use super::markdown_diagnostic;
+    #[cfg(feature = "parse")]
+    use super::{is_blockquote_list_item_separator_gap, is_plain_list_separator_gap};
     use super::{markdown_place_in_source, markdown_place_to_body_offset, split_place};
-    #[cfg(feature = "pipeline")]
+    #[cfg(feature = "render")]
     use zfb_content::pipeline::PipelineError;
 
     #[test]
@@ -1462,7 +1481,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "pipeline")]
+    #[cfg(feature = "render")]
     fn invalid_upstream_place_becomes_a_locationless_diagnostic() {
         let error = PipelineError::Parse("99:99: malformed location".to_string());
         let diagnostic = markdown_diagnostic(&error, "bad.mdx", "あ", "あ", 0);
@@ -1472,7 +1491,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "pipeline")]
+    #[cfg(feature = "parse")]
     fn list_separator_predicates_require_complete_valid_source_slices() {
         for gap in ["\n", "\r\n", "\n  \t", "\r\n \t"] {
             let source = format!("é{gap}next");

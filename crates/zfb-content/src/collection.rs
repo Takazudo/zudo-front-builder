@@ -1128,6 +1128,7 @@ mod tests {
         format!("---\ntitle: \"{title}\"\n---\nbody for {title}\n")
     }
 
+    #[cfg(feature = "compiler")]
     fn valid_tsx(title: &str) -> String {
         format!(
             "export const frontmatter = {{ title: '{title}' }};\n\
@@ -1189,6 +1190,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn walk_one_valid_tsx_file() {
         let tmp = TmpDir::new("one-tsx");
         tmp.write("page.tsx", &valid_tsx("Tsx Page"));
@@ -1208,6 +1210,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn walk_tsx_with_extension_and_content_type_exports() {
         let tmp = TmpDir::new("tsx-ext-ct");
         tmp.write(
@@ -1233,6 +1236,7 @@ mod tests {
     /// destination, so `None` means `source_digest` was never called for
     /// that file.
     #[test]
+    #[cfg(feature = "compiler")]
     fn render_metadata_is_computed_only_when_the_walk_asks_for_it() {
         let tmp = TmpDir::new("walk-render-metadata");
         // CRLF terminators + frontmatter: the digest must cover both.
@@ -1289,6 +1293,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn walk_mixed_md_mdx_tsx_collection() {
         let tmp = TmpDir::new("mixed");
         tmp.write("a-md.md", &valid_md("Alpha"));
@@ -1308,6 +1313,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn walk_recursive_returns_sorted_entries() {
         let tmp = TmpDir::new("recursive");
         tmp.write("b.md", &valid_md("B"));
@@ -1388,6 +1394,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn schema_validation_runs_against_tsx_entry() {
         let tmp = TmpDir::new("tsx-schema");
         // Empty title (string literal) violates garde length(min=1)

@@ -17,5 +17,14 @@
     "noEmit": false
   },
   "include": ["src/**/*"],
-  "exclude": ["dist", "node_modules", "src/wasm", "src/wasm-highlight", "src/**/*.test.ts", "test"]
+  "exclude": [
+    "dist",
+    "node_modules",
+    "src/wasm",
+    "src/wasm-highlight",
+    "src/wasm-render",
+    "src/wasm-parse",
+    "src/**/*.test.ts",
+    "test"
+  ]
 }

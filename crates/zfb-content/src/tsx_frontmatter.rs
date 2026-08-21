@@ -254,6 +254,10 @@ pub fn ssr_request_param_tier(
 /// together by the surrounding pipeline.
 #[derive(Debug, Error)]
 pub enum TsxFrontmatterError {
+    /// TSX static extraction requires the optional SWC compiler capability.
+    #[error("{file}: TSX frontmatter extraction requires the `zfb-content/compiler` capability")]
+    CompilerUnavailable { file: String },
+
     /// The SWC parser refused the source. Surfaces parser diagnostics
     /// as a single string instead of letting them panic up the stack.
     #[error("{file}: parse error: {message}")]

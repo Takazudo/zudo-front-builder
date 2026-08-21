@@ -37,6 +37,16 @@
       "types": "./src/highlight.ts",
       "browser": "./src/highlight-browser.ts",
       "default": "./src/highlight.ts"
+    },
+    "./render": {
+      "types": "./src/render.ts",
+      "browser": "./src/render-browser.ts",
+      "default": "./src/render.ts"
+    },
+    "./parse": {
+      "types": "./src/parse.ts",
+      "browser": "./src/parse-browser.ts",
+      "default": "./src/parse.ts"
     }
   },
   "files": [
@@ -58,6 +68,16 @@
         "types": "./dist/highlight.d.ts",
         "browser": "./dist/highlight-browser.js",
         "default": "./dist/highlight.js"
+      },
+      "./render": {
+        "types": "./dist/render.d.ts",
+        "browser": "./dist/render-browser.js",
+        "default": "./dist/render.js"
+      },
+      "./parse": {
+        "types": "./dist/parse.d.ts",
+        "browser": "./dist/parse-browser.js",
+        "default": "./dist/parse.js"
       }
     }
   },

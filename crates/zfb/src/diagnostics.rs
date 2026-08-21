@@ -109,6 +109,13 @@ pub fn from_tsx_frontmatter_error(
     use zfb_content::TsxFrontmatterError;
     let file = project_relative(path, None);
     match err {
+        TsxFrontmatterError::CompilerUnavailable { .. } => Diagnostic::with_source(
+            file,
+            1,
+            1,
+            "TSX frontmatter extraction requires the `zfb-content/compiler` capability",
+            source,
+        ),
         TsxFrontmatterError::Parse { message, .. } => {
             Diagnostic::with_source(file, 1, 1, format!("TSX parse error: {message}"), source)
         }
@@ -436,6 +443,22 @@ mod tests {
             out.contains("missing required `export const frontmatter`"),
             "got:\n{out}"
         );
+        assert!(out.contains(" --> pages/page.tsx:1:1\n"), "got:\n{out}");
+    }
+
+    #[test]
+    fn tsx_frontmatter_compiler_unavailable_has_a_stable_capability_message() {
+        let _color_lock = crate::output::color_override_lock::lock();
+        owo_colors::set_override(false);
+        let src = "export const frontmatter = {};\n";
+        let path = PathBuf::from("pages/page.tsx");
+        let err = zfb_content::TsxFrontmatterError::CompilerUnavailable {
+            file: "page.tsx".to_string(),
+        };
+        let diag = from_tsx_frontmatter_error(&path, src, &err);
+        let out = strip_ansi(&render_framed(&diag));
+        assert!(out
+            .contains("TSX frontmatter extraction requires the `zfb-content/compiler` capability"));
         assert!(out.contains(" --> pages/page.tsx:1:1\n"), "got:\n{out}");
     }
 

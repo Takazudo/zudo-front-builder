@@ -648,6 +648,7 @@ mod tests {
         format!("---\ntitle: \"{title}\"\n---\nbody for {title}\n")
     }
 
+    #[cfg(feature = "compiler")]
     fn tsx(title: &str) -> String {
         format!(
             "export const frontmatter = {{ title: '{title}' }};\n\
@@ -667,6 +668,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn build_snapshot_is_deterministic_under_repeated_calls() {
         let tmp = TmpDir::new("determinism");
         // Two collections, each with multiple entries. Mixed kinds.
@@ -784,6 +786,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn entry_snapshot_carries_frontmatter_body_and_specifier() {
         let tmp = TmpDir::new("shape");
         tmp.write("blog/post.md", &md("Hello"));
@@ -853,6 +856,7 @@ mod tests {
     // sorted them next to each other with no signal that `getEntry`
     // would resolve to an arbitrary one of the two.
     #[test]
+    #[cfg(feature = "compiler")]
     fn duplicate_slug_across_extensions_is_rejected() {
         let tmp = TmpDir::new("duplicate-slug");
         tmp.write("blog/foo.md", &md("Foo Md"));
@@ -1302,6 +1306,7 @@ mod tests {
     /// Flag on: every markdown entry carries `{ headings, source_digest }`,
     /// resolvable by region id in both specifier spellings.
     #[test]
+    #[cfg(feature = "compiler")]
     fn flag_on_attaches_headings_and_raw_source_digest_per_markdown_entry() {
         let tmp = TmpDir::new("render-meta-on");
         // CRLF terminators + frontmatter: the digest must cover both.

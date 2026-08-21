@@ -51,7 +51,7 @@
 //!   (b) The compiled JSX does NOT trip `heuristic_says_jsx_breaks`
 //!       (mirror of the pre-#2216 byte-scan bundler gate) — no
 //!       whole-page fallback.
-//!   (c) The compiled JSX parses through `zfb_render::SwcPipeline`.
+//!   (c) With `compiler`, the compiled JSX parses through SWC directly.
 //!   (d) The recovered code bytes remain visibly present.
 //!   (e) Valid expression / attribute / spread / comment shapes survive
 //!       verbatim.
@@ -65,7 +65,12 @@ use zfb_content::{
     build_snapshot_with_config, compile_mdx_to_jsx_module_cached, parse_mdx_specifier,
     CollectionConfig, PipelineSpec,
 };
-use zfb_render::{CompileOptions, SwcPipeline};
+
+#[cfg(feature = "compiler")]
+#[path = "support/swc_parse.rs"]
+mod swc_parse;
+#[cfg(feature = "compiler")]
+use swc_parse::{CompileOptions, SwcPipeline};
 
 // -----------------------------------------------------------------------------
 // Heuristic mirror of the bundler's pre-#2216 byte-scan gate
@@ -151,6 +156,7 @@ fn heuristic_says_jsx_breaks(jsx: &str) -> bool {
     false
 }
 
+#[cfg(feature = "compiler")]
 fn assert_swc_accepts(jsx_module: &str, label: &str) {
     let pipeline = SwcPipeline::new();
     let opts = CompileOptions::default().with_filename(format!("{label}.tsx"));
@@ -180,6 +186,7 @@ fn compile_body(label: &str, body: &str) -> String {
          JSX:\n{}",
         compiled.jsx_source
     );
+    #[cfg(feature = "compiler")]
     assert_swc_accepts(&compiled.jsx_source, label);
     compiled.jsx_source
 }
@@ -267,6 +274,7 @@ fn no_pipeline_path_backslash_expression_does_not_fall_back() {
         !heuristic_says_jsx_breaks(&jsx),
         "no-pipeline path must not trip the gate; emitted:\n{jsx}"
     );
+    #[cfg(feature = "compiler")]
     assert_swc_accepts(&jsx, "no-pipeline");
     assert!(
         jsx.contains(r#"{"\\n"}"#),
@@ -323,6 +331,7 @@ fn compile_body_allowing_heuristic(label: &str, body: &str) -> String {
     let compiled =
         compile_mdx_to_jsx_module_cached(body, Path::new("t.mdx"), None, Some(&mut pipeline))
             .unwrap_or_else(|e| panic!("compile failed for {label}: {e}"));
+    #[cfg(feature = "compiler")]
     assert_swc_accepts(&compiled.jsx_source, label);
     compiled.jsx_source
 }
@@ -357,6 +366,7 @@ fn valid_regex_literal_expression_survives_verbatim_no_pipeline_path() {
     let body = format!("A regex expression that must survive: {{{REGEX_EXPR_SRC}}}\n");
     let jsx = zfb_content::mdx_to_jsx_module(&body, zfb_content::MdxJsxOptions::default())
         .expect("no-pipeline compile succeeds");
+    #[cfg(feature = "compiler")]
     assert_swc_accepts(&jsx, "regex-no-pipeline");
     assert!(
         jsx.contains(REGEX_EXPR_SRC),

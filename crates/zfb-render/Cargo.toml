@@ -118,7 +118,7 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time"], optional =
 # resulting JSX text to the SWC pipeline below.
 # `default-features = false` so the syntect backend choice flows through the
 # `syntect-onig`/`syntect-fancy` forwarding features above (zfb#1576).
-zfb-content = { path = "../zfb-content", default-features = false }
+zfb-content = { path = "../zfb-content", default-features = false, features = ["compiler"] }
 
 # SWC pipeline (TSX → JS). The umbrella version is pinned in the
 # workspace `Cargo.toml`; this crate only declares its feature opt-ins.

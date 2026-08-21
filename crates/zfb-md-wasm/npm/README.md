@@ -22,7 +22,69 @@ binary directly.
 pnpm add @takazudo/zfb-md-wasm
 ```
 
-## Two API tiers
+## Choose an entry
+
+The package has four additive entries. Keep using `.` for the complete current
+API (`compile` plus render, parse, and highlight); root imports do not need a
+migration. `./highlight` is also backward-compatible. New `./render` and
+`./parse` entries are isolated **SWC-free** graphs: they omit `swc_core` and
+`zfb-render` but intentionally retain `zfb-content` and `syntect-fancy`.
+`./parse` is not syntect-free.
+
+| Entry | Exact runtime values | Exact exported types |
+| --- | --- | --- |
+| `.` | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile/render/parse/raw-mdast/highlight surface |
+| `./highlight` | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
+| `./render` | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
+| `./parse` | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
+
+The focused entries own private resource pairs:
+
+```text
+wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs
+wasm-render/zfb_md_wasm_render_bg.wasm
+wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs
+wasm-parse/zfb_md_wasm_parse_bg.wasm
+```
+
+Each also has only its matching declaration sidecars. Every entry creates its
+own compiled-module, wasm-instance, generation, retry, and terminal state.
+Importing multiple entries intentionally loads independent pairs and instances;
+it does not deduplicate their resources.
+
+Migration is only needed when a root consumer calls one focused function:
+
+```ts
+// Direct Node import and browser-aware bundler import.
+import { renderHtml } from "@takazudo/zfb-md-wasm/render";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm/parse";
+```
+
+For browser lazy loading, import from the user action. The conditional browser
+entry uses static URL edges for only that entry's own resource pair:
+
+```ts
+button.addEventListener("click", async () => {
+  const { renderHtml } = await import("@takazudo/zfb-md-wasm/render");
+  const { html } = await renderHtml(source, { filename: "preview.md" });
+  preview.innerHTML = html ?? "";
+});
+
+parseButton.addEventListener("click", async () => {
+  const { parseToAst, toMdastRoot } = await import("@takazudo/zfb-md-wasm/parse");
+  const parsed = await parseToAst(source, { filename: "preview.md" });
+  const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+  inspect(root);
+});
+```
+
+`compile()` remains root-only. It returns module source, not an evaluated
+module; host evaluation must supply the JSX runtime and components. Controlled
+consumer code may interpret an already-parsed AST in a controlled AST-to-React
+renderer, but no slim entry evaluates author JavaScript. `renderHtml` is not a sanitizer and raw HTML remains
+untrusted; MDX JSX, expression, and ESM-shaped AST nodes are inert data.
+
+## Root API
 
 Both functions take the markdown/MDX `source` and an options object (every
 field optional; `{}` selects all defaults). Both return a result object plus a
@@ -99,7 +161,7 @@ Shiki classes.
 
 If `highlightCode` is the only thing you use, import it from
 `@takazudo/zfb-md-wasm/highlight` instead of the package root — that entry
-ships a separate, much smaller wasm artifact with no `compile`/`renderHtml`
+ships a separate highlight-only wasm artifact with no `compile`/`renderHtml`
 (and no md/MDX/JSX pipeline behind them at all). Same function, same result
 shape, same `init()`/`version()`; see "Artifact size" below for the byte
 savings.
@@ -110,7 +172,7 @@ import {
   type HighlightCodeOptions,
   type HighlightCodeResult,
 } from "@takazudo/zfb-md-wasm";
-// or, for the smaller highlight-only artifact:
+// or, for the highlight-only artifact:
 // } from "@takazudo/zfb-md-wasm/highlight";
 
 const output: HighlightCodeResult = await highlightCode("const answer = 42;", {
@@ -403,24 +465,36 @@ for your own environment.
 
 ## Browser loading and emitted resources
 
-The package root has a `browser` export condition. Its browser entry imports
-the generated glue and Wasm binary through an explicit bundler `?url` asset
+Every entry has a `browser` export condition. Its browser entry imports the
+generated glue and Wasm binary through an explicit bundler `?url` asset
 contract. Vite and zfb's pinned esbuild setup therefore keep separate resource
-edges for exactly `zfb_md_wasm_glue.zfb-resource.mjs` and
-`zfb_md_wasm_bg.wasm`; a zfb production build emits them under hashed names:
+edges for exactly its own pair. The focused pairs are:
 
 ```text
-assets/islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs
-assets/islands-resource-zfb_md_wasm_bg-<hash>.wasm
+wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs
+wasm-render/zfb_md_wasm_render_bg.wasm
+wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs
+wasm-parse/zfb_md_wasm_parse_bg.wasm
 ```
+
+Root and highlight retain their existing `wasm/` and `wasm-highlight/` pairs;
+each directory is closed with its matching glue/wasm declaration sidecars. A
+zfb production build emits each selected pair under hashed names.
 
 Keep the package import in a user action when first-load cost matters:
 
 ```ts
 button.addEventListener("click", async () => {
-  const { highlightCode } = await import("@takazudo/zfb-md-wasm");
-  const result = await highlightCode(editor.value, { language: "javascript" });
+  const { renderHtml } = await import("@takazudo/zfb-md-wasm/render");
+  const result = await renderHtml(editor.value, { filename: "preview.md" });
   preview.innerHTML = result.html ?? "";
+});
+
+parseButton.addEventListener("click", async () => {
+  const { parseToAst, toMdastRoot } = await import("@takazudo/zfb-md-wasm/parse");
+  const parsed = await parseToAst(editor.value, { filename: "preview.md" });
+  const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+  inspect(root);
 });
 ```
 
@@ -432,12 +506,10 @@ replace the static imports with source paths or manually copied resource
 files, which breaks the emitted URL graph. No Vite plugin, alias, or
 package-specific consumer configuration is required.
 
-The `./highlight` subpath (see "Artifact size" above) has the identical
-`browser` export condition and resource-loading contract, pointed at its own
-separate resources: `zfb_md_wasm_highlight_glue.zfb-resource.mjs` and
-`zfb_md_wasm_highlight_bg.wasm`. Importing `@takazudo/zfb-md-wasm` and
-`@takazudo/zfb-md-wasm/highlight` in the same bundle loads BOTH wasm
-artifacts — pick one entry per bundle.
+The `./highlight` subpath has the identical `browser` export condition and
+resource-loading contract, pointed at its own separate resources. Importing
+multiple entries in the same bundle intentionally loads each private pair and
+creates independent wasm state; no entry evicts or shares another's instance.
 
 ## Options shape
 
@@ -574,9 +646,20 @@ alias.
 ## Node usage
 
 For tests and tooling, the package loads and runs under Node ≥ 20 with no extra
-setup — the same `compile` / `renderHtml` / `parseToAst` / `version` API. This
-is exactly how this package's own vitest suite (and `parseToAst`'s Node
-benchmark against `remark-parse`) exercises the wasm.
+setup. Direct imports select the resource pair that matches the operation:
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm/render";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm/parse";
+
+const { html } = await renderHtml("# Hello from Node\n");
+const parsed = await parseToAst("# Hello from Node\n", { filename: "post.md" });
+const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+```
+
+The root import remains the compatibility choice for code that also calls
+`compile`, and the existing highlight import remains compatible. This is also
+how the package's vitest suite and parse benchmark exercise the built wasm.
 
 ## Parity guarantee & limitations
 
@@ -593,37 +676,54 @@ suite gates exact-match). Deliberate limitations of the browser build:
 - **No cross-file features.** Route-table link resolution and cross-file anchor
   resolution need the whole project graph, which a single-document browser call
   doesn't have.
-- **The default artifact carries SWC even for `renderHtml`-only use.** One
-  cdylib can't tree-shake SWC away when only `renderHtml` is called; a slim
-  `renderHtml`-only artifact is a documented possible follow-up. If you only
-  ever call `highlightCode`, use the `./highlight` entry instead (see
-  "Artifact size" below) — it drops `compile`/`renderHtml` and the whole
-  md/MDX/JSX pipeline entirely.
-- **Grammar subsetting is not built.** Both artifacts ship every bundled
+- **Choose a focused artifact for non-compile calls.** The root remains the
+  compatibility entry and carries the complete compiler graph. `./highlight`
+  keeps its public API and resources while the post-#2449/#2450 graph is
+  proven SWC-free. `./render` and `./parse` are also SWC-free and omit `zfb-render`;
+  parse intentionally retains `zfb-content`/`syntect-fancy`, so it is not
+  syntect-free. Use `./render` or `./parse` when a consumer does not need
+  `compile`; root and highlight callers otherwise require no migration.
+- **`compile` is the execution boundary.** It returns ES-module source and
+  only the root entry exposes it. Host code must explicitly evaluate that
+  source and provide the JSX runtime/components. Controlled consumer code may
+  interpret an already-parsed AST; no slim entry evaluates author JavaScript.
+- **`renderHtml` is not a sanitizer.** Raw HTML remains untrusted, and JSX,
+  expression, or ESM-shaped AST nodes from MDX remain inert data.
+- **CommonMark behavior is separate.** The #2445 CommonMark request is not
+  absorbed by this artifact split; changing delivery topology does not change
+  the Markdown dialect or rendering semantics.
+- **Grammar subsetting is not built.** All four artifacts ship every bundled
   syntect grammar; there is no per-language allowlist knob.
 - **Syntax highlighting uses syntect's `fancy-regex` backend** (native zfb uses
   `oniguruma`, which can't compile to wasm). The two are byte-identical on
   zfb's fixture corpus; any grammar-level divergences are tracked in the
   crate's informational backend-divergence test.
 
-## Artifact size
+## Artifact size and locked ceilings
 
-Shipping SWC in the bytes makes the default module large. The build applies a
-size-optimized cargo profile (`opt-level = "z"`, LTO, one codegen unit,
-`panic = "abort"`) plus `wasm-opt`, which roughly halves the raw binary either
-way. The package ships **two** wasm artifacts (zfb#1849, epic zfb#1845):
+The decision snapshot uses the optimized final wasm after wasm-bindgen and
+wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue bytes/gzip. These exact
+#2447 rows are measurements, not permanent promises:
 
-| Entry          | Import                            | What it has                                           | Raw `.wasm` | Gzipped |
-| -------------- | --------------------------------- | ----------------------------------------------------- | ----------- | ------- |
-| Default        | `@takazudo/zfb-md-wasm`           | `compile` + `renderHtml` + `highlightCode`            | ~2.9 MB     | ~1.3 MB |
-| Highlight-only | `@takazudo/zfb-md-wasm/highlight` | `highlightCode` only (no md/MDX/JSX pipeline, no SWC) | ~1.4 MB     | ~0.7 MB |
+| Entry/graph | final wasm | gzip-9 | glue | glue gzip-9 |
+| --- | ---: | ---: | ---: | ---: |
+| root (full) | 3,336,933 B | 1,491,970 B | 14,881 B | 4,151 B |
+| highlight (historical current SWC-retaining baseline) | 1,484,705 B | 767,009 B | 8,758 B | 2,637 B |
+| render (selected SWC-free candidate) | 2,123,309 B | 1,032,557 B | 8,637 B | 2,597 B |
+| parse (selected SWC-free candidate) | 650,458 B | 289,523 B | 11,141 B | 3,795 B |
 
-The highlight-only artifact drops the `pipeline` Cargo feature entirely (see
-`crates/zfb-md-wasm/Cargo.toml`) rather than subsetting syntect grammars —
-both artifacts bundle every grammar (see "Grammar subsetting is not built"
-above). The CI `wasm-md` job prints the authoritative gzipped size for BOTH
-artifacts on every run — treat that as the source of truth rather than this
-table, which can drift.
+The measured split package was 3,638,607 B versus 2,314,818 B for the current
+root-plus-highlight package. Locked gzip-9 ceilings are root 1,600,000 B,
+highlight 820,000 B, render 1,100,000 B, and parse 325,000 B; the complete
+packed tarball ceiling is 3,900,000 B. The clean four-step production ceiling
+is 210 seconds; the selected #2447 median was 155.015 s [153.496, 165.977].
+
+The highlight row is explicitly historical: #2447's current
+`highlight,compiler-surface` baseline retained `swc_core` because the content
+edge was unconditional. The shipped post-#2449 highlight graph is proven
+SWC-free by #2450's exact parity and no-`swc_core` assertion, with its public API
+and resources unchanged, but its post-gating size was not measured. Do not
+invent or project a highlight byte value.
 
 ## Error / trap / re-init contract
 

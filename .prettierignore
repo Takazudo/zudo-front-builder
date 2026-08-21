@@ -16,6 +16,8 @@ docs/.zudo-doc/
 # built the wasm package.
 crates/zfb-md-wasm/npm/src/wasm/
 crates/zfb-md-wasm/npm/src/wasm-highlight/
+crates/zfb-md-wasm/npm/src/wasm-render/
+crates/zfb-md-wasm/npm/src/wasm-parse/
 # Snapshot fixture for the .d.ts emitter — must match the emitter's
 # byte-exact output, so prettier (which would re-flow the inline
 # interfaces) is not allowed to touch it.

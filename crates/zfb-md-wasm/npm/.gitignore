@@ -1,3 +1,5 @@
 /dist/
 /src/wasm/
 /src/wasm-highlight/
+/src/wasm-render/
+/src/wasm-parse/
