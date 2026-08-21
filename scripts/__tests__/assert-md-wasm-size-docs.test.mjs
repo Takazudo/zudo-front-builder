@@ -74,14 +74,17 @@ function correctFiles() {
       const ja = file.includes("docs-ja/");
       if (index >= 6) {
         const pair = ja
-          ? "gzip-9 で 758,244 B、ルートは 1,458,444 B です。"
+          ? `${manifest.measuredOnVersion} では gzip-9 で 758,244 B、ルートは 1,458,444 B です。`
           : "the download of the root entry: 758,244 B gzip-9 versus 1,458,444 B in 2.8.0.";
         return [file, pair];
       }
       const count = index >= 4 ? 2 : 1;
+      const versionProse = ja
+        ? `出荷された **${manifest.measuredOnVersion}** のアーティファクトの行です。\nこれらは永続的な保証ではなく ${manifest.measuredOnVersion} の測定値です。`
+        : `These are the shipped **${manifest.measuredOnVersion}** artifact rows.\nThese are ${manifest.measuredOnVersion} measurements, not permanent promises.`;
       const sections = Array.from(
         { length: count },
-        () => `${shippedTable({ ja })}\n${ja ? jaProse : enProse}`,
+        () => `${versionProse}\n${shippedTable({ ja })}\n${ja ? jaProse : enProse}`,
       ).join("\n\n");
       const pair =
         index === 1 ? "payload shows it: 758,244 B gzip-9 versus 1,458,444 B for root." : "";
@@ -105,10 +108,7 @@ function staleTableFiles() {
           return `|${values.join("|")}|`;
         },
       );
-      stale = stale.replace(
-        /(gzip-9 wasm\s*[（(])2\.8\.0([）)])/g,
-        (_match, open, close) => `${open}2.7.9${close}`,
-      );
+      stale = stale.replaceAll(manifest.measuredOnVersion, "2.7.9");
       return [file, stale];
     }),
   );
@@ -195,6 +195,20 @@ describe("md-wasm documentation validator", () => {
     expect(validateClosure(DOC_FILES[6], "snapshot 3,638,607 B", manifest, ceilings)).toEqual([
       expect.objectContaining({ code: "unregistered-byte-literal" }),
     ]);
+  });
+
+  it("retains the shipped 2.8.0 highlight result as a historical allowance", () => {
+    const nextManifest = structuredClone(manifest);
+    nextManifest.measuredOnVersion = "2.9.0";
+    nextManifest.measured.highlight.gzip9 += 2;
+    expect(
+      validateClosure(
+        DOC_FILES[0],
+        "Historical optimization: 767,009 B → 758,244 B, −8,765 B.",
+        nextManifest,
+        ceilings,
+      ),
+    ).toEqual([]);
   });
 
   it.each(["root +117 B", "a 210-second reference", "median 155.015 s"])(

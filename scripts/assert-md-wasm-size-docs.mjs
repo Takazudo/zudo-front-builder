@@ -43,6 +43,11 @@ export const DOCUMENTATION_ALLOWANCES = [
     note: "#2447 pre-#2449/#2450 SWC-retaining gzip-9 baseline",
     files: [...TABLE_FILE_SET],
   },
+  {
+    value: 758_244,
+    note: "#2450 shipped 2.8.0 highlight gzip-9 result retained in the historical optimization comparison",
+    files: [...TABLE_FILE_SET],
+  },
   { value: 7_965, note: "#2447 candidate/highlight baseline delta", files: [...TABLE_FILE_SET] },
   { value: 8_765, note: "#2447 pre-#2449/#2450 gzip-9 delta", files: [...TABLE_FILE_SET] },
   { value: 62_869, note: "#2447 root candidate-vs-shipped delta", files: README_FILES },
@@ -406,6 +411,44 @@ const PROSE_FIELDS = {
   ],
 };
 
+const VERSION_FIELDS = {
+  en: [
+    {
+      name: "shipped artifact rows version",
+      pattern: /These are the shipped \*\*([^*]+)\*\* artifact rows/g,
+      expectedCount: ({ shipped }) => shipped,
+    },
+    {
+      name: "measurement disclaimer version",
+      pattern: /These are ([^\s]+) measurements/g,
+      expectedCount: ({ shipped }) => shipped,
+    },
+    {
+      name: "highlight-root comparison version",
+      pattern:
+        /download of the root entry:\s*[\d,]+ B gzip-9 versus\s*[\d,]+ B in ([0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)\./g,
+      expectedCount: ({ comparison }) => comparison,
+    },
+  ],
+  ja: [
+    {
+      name: "shipped artifact rows version",
+      pattern: /出荷された \*\*([^*]+)\*\* のアーティファクトの行/g,
+      expectedCount: ({ shipped }) => shipped,
+    },
+    {
+      name: "measurement disclaimer version",
+      pattern: /永続的な保証ではなく ([^\s]+) の測定値/g,
+      expectedCount: ({ shipped }) => shipped,
+    },
+    {
+      name: "highlight-root comparison version",
+      pattern: /([^\s]+) では gzip-9 で [\d,]+ B、ルートは [\d,]+ B/g,
+      expectedCount: ({ comparison }) => comparison,
+    },
+  ],
+};
+
 function derivedValues(manifest, ceilings) {
   return {
     ceilings,
@@ -419,6 +462,65 @@ function derivedValues(manifest, ceilings) {
     ),
     gzipRatio: Math.round((manifest.measured.highlight.gzip9 / manifest.measured.root.gzip9) * 100),
   };
+}
+
+export function validateMeasuredVersionLabels(
+  file,
+  content,
+  manifest,
+  shippedCount,
+  comparisonCount,
+) {
+  const findings = [];
+  const locale = file.includes("docs-ja/") ? "ja" : "en";
+  const counts = { shipped: shippedCount, comparison: comparisonCount };
+  for (const field of VERSION_FIELDS[locale]) {
+    const matches = [...content.matchAll(field.pattern)];
+    const expectedCount = field.expectedCount(counts);
+    if (matches.length !== expectedCount) {
+      findings.push(
+        finding(
+          "version-anchor-count",
+          file,
+          `${file}: ${field.name} anchor expected ${expectedCount} occurrence(s), found ${matches.length}`,
+          { field: field.name, expected: expectedCount, found: matches.length },
+        ),
+      );
+    }
+    matches.forEach((match, index) => {
+      if (match[1] !== manifest.measuredOnVersion) {
+        findings.push(
+          finding(
+            "stale-version-field",
+            file,
+            `${file}: ${field.name} occurrence ${index + 1} is ${match[1]}; expected ${manifest.measuredOnVersion}`,
+            { field: field.name, occurrence: index + 1 },
+          ),
+        );
+      }
+    });
+  }
+  return findings;
+}
+
+export function fixMeasuredVersionLabels(file, content, manifest, shippedCount, comparisonCount) {
+  const locale = file.includes("docs-ja/") ? "ja" : "en";
+  const counts = { shipped: shippedCount, comparison: comparisonCount };
+  for (const field of VERSION_FIELDS[locale]) {
+    const matches = [...content.matchAll(field.pattern)];
+    if (matches.length !== field.expectedCount(counts)) continue;
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      const match = matches[index];
+      const capturedOffset = match[0].indexOf(match[1]);
+      if (capturedOffset < 0) continue;
+      const start = match.index + capturedOffset;
+      content =
+        content.slice(0, start) +
+        manifest.measuredOnVersion +
+        content.slice(start + match[1].length);
+    }
+  }
+  return content;
 }
 
 export function validateTableProse(file, content, manifest, ceilings, expectedCount) {
@@ -539,16 +641,7 @@ export function validateClosure(
   ceilings,
   allowances = DOCUMENTATION_ALLOWANCES,
 ) {
-  const derived = derivedValues(manifest, ceilings);
-  const live = new Set([
-    ...ARTIFACTS.flatMap((artifact) =>
-      COLUMNS.map((column) => manifest.measured[artifact][column]),
-    ),
-    ...ARTIFACTS.map((artifact) => derived.headroom[artifact]),
-    derived.rawDelta,
-    derived.gzipDelta,
-    ...Object.values(ceilings),
-  ]);
+  const live = liveByteValues(manifest, ceilings);
   const findings = [];
   for (const match of content.matchAll(BYTE_LITERAL)) {
     const value = Number(match[0].slice(0, -2).replaceAll(",", ""));
@@ -572,9 +665,28 @@ export function validateClosure(
   return findings;
 }
 
-export function validateAllowanceScopes(file, content, allowances = DOCUMENTATION_ALLOWANCES) {
+function liveByteValues(manifest, ceilings) {
+  const derived = derivedValues(manifest, ceilings);
+  return new Set([
+    ...ARTIFACTS.flatMap((artifact) =>
+      COLUMNS.map((column) => manifest.measured[artifact][column]),
+    ),
+    ...ARTIFACTS.map((artifact) => derived.headroom[artifact]),
+    derived.rawDelta,
+    derived.gzipDelta,
+    ...Object.values(ceilings),
+  ]);
+}
+
+export function validateAllowanceScopes(
+  file,
+  content,
+  allowances = DOCUMENTATION_ALLOWANCES,
+  live = new Set(),
+) {
   const findings = [];
   for (const allowance of allowances) {
+    if (live.has(allowance.value)) continue;
     let pattern;
     if (allowance.value === 210) {
       pattern = /\b210(?:-second| s| seconds| 秒)/g;
@@ -637,8 +749,24 @@ export function validateMdWasmSizeDocs({ files, manifest, ceilings }) {
     const pairCount = file === DOC_FILES[1] || index >= 6 ? 1 : 0;
     if (pairCount > 0)
       findings.push(...validateHighlightRootPair(file, content, manifest, pairCount));
+    findings.push(
+      ...validateMeasuredVersionLabels(
+        file,
+        content,
+        manifest,
+        EXPECTED_SHIPPED_TABLES[index],
+        index >= 6 ? 1 : 0,
+      ),
+    );
     findings.push(...validateClosure(file, content, manifest, ceilings));
-    findings.push(...validateAllowanceScopes(file, content));
+    findings.push(
+      ...validateAllowanceScopes(
+        file,
+        content,
+        DOCUMENTATION_ALLOWANCES,
+        liveByteValues(manifest, ceilings),
+      ),
+    );
   });
   return findings;
 }
@@ -655,6 +783,13 @@ export function fixMdWasmSizeDocs({ files, manifest, ceilings }) {
     }
     const pairCount = file === DOC_FILES[1] || index >= 6 ? 1 : 0;
     if (pairCount > 0) fixed = fixHighlightRootPair(file, fixed, manifest, pairCount);
+    fixed = fixMeasuredVersionLabels(
+      file,
+      fixed,
+      manifest,
+      EXPECTED_SHIPPED_TABLES[index],
+      index >= 6 ? 1 : 0,
+    );
     fixedFiles[file] = fixed;
   });
   return fixedFiles;
