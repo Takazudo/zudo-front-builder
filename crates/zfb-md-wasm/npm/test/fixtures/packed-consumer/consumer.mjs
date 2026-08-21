@@ -7,7 +7,7 @@ const compiled = await root.compile("# Root\n", { filename: "root.mdx" });
 const highlighted = await highlight.highlightCode("const packed = true;", {
   language: "javascript",
 });
-const rendered = await render.renderHtml("# Render\n");
+const rendered = await render.renderHtml("Budget <8 ms\n", { filename: "preview.md" });
 const parsed = await parse.parseToAst("# Parse\n");
 
 if (typeof compiled.code !== "string" || !compiled.code.includes("MDXContent")) {
@@ -16,7 +16,7 @@ if (typeof compiled.code !== "string" || !compiled.code.includes("MDXContent")) 
 if (highlighted.diagnostics.length !== 0 || !highlighted.html.includes("packed")) {
   throw new Error("packed highlight call did not round-trip");
 }
-if (rendered.diagnostics.length !== 0 || rendered.html !== "<h1>Render</h1>") {
+if (rendered.diagnostics.length !== 0 || rendered.html !== "<p>Budget &lt;8 ms</p>") {
   throw new Error("packed render call did not round-trip");
 }
 if (parsed.diagnostics.length !== 0 || parsed.ast.type !== "root") {

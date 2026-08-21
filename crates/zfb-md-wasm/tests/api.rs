@@ -265,6 +265,77 @@ fn render_html_accepts_compile_tier_options_document() {
     assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
 }
 
+#[cfg(feature = "render")]
+#[test]
+fn render_html_infers_commonmark_for_md_and_keeps_mdx_for_mdx() {
+    for options in [r#"{}"#, r#"{"filename":"preview.md"}"#] {
+        let markdown = parse(zfb_md_wasm::render_html("Budget <8 ms\n", options));
+        assert_eq!(markdown["html"], "<p>Budget &lt;8 ms</p>", "{options}");
+        assert_eq!(
+            markdown["diagnostics"].as_array().map(Vec::len),
+            Some(0),
+            "{options}"
+        );
+    }
+
+    let mdx = parse(zfb_md_wasm::render_html(
+        "Budget <8 ms\n",
+        r#"{"filename":"preview.mdx"}"#,
+    ));
+    assert_eq!(mdx["html"], Value::Null);
+    assert_eq!(mdx["diagnostics"][0]["source"], "markdown");
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_html_explicit_dialect_overrides_extension_and_preserves_gfm() {
+    let markdown = parse(zfb_md_wasm::render_html(
+        "Budget <8 ms\n\n~~old~~\n",
+        r#"{"filename":"preview.mdx","dialect":"markdown","pipeline":{"gfm":{"strikethrough":true}}}"#,
+    ));
+    assert_eq!(
+        markdown["html"],
+        "<p>Budget &lt;8 ms</p><p><del>old</del></p>"
+    );
+    assert_eq!(markdown["diagnostics"].as_array().map(Vec::len), Some(0));
+
+    let mdx = parse(zfb_md_wasm::render_html(
+        "Budget <8 ms\n",
+        r#"{"filename":"preview.md","dialect":"mdx"}"#,
+    ));
+    assert_eq!(mdx["html"], Value::Null);
+    assert_eq!(mdx["diagnostics"][0]["source"], "markdown");
+
+    let no_strikethrough = parse(zfb_md_wasm::render_html(
+        "~~old~~\n",
+        r#"{"filename":"preview.md","pipeline":{"gfm":{"strikethrough":false}}}"#,
+    ));
+    assert_eq!(no_strikethrough["html"], "<p>~~old~~</p>");
+}
+
+#[cfg(feature = "compile")]
+#[test]
+fn compile_accepts_and_ignores_the_render_only_dialect() {
+    let out = parse(zfb_md_wasm::compile(
+        "<Widget />\n",
+        r#"{"filename":"post.md","dialect":"markdown"}"#,
+    ));
+    assert!(out["code"]
+        .as_str()
+        .is_some_and(|code| code.contains("Widget")));
+    assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_html_rejects_null_or_unknown_dialect_values() {
+    for options in [r#"{"dialect":null}"#, r#"{"dialect":"commonmark"}"#] {
+        let out = parse(zfb_md_wasm::render_html("# ok\n", options));
+        assert_eq!(out["html"], Value::Null, "{options}");
+        assert_eq!(out["diagnostics"][0]["source"], "options", "{options}");
+    }
+}
+
 // ── options / frontmatter diagnostics ───────────────────────────────────────
 
 #[cfg(feature = "render")]

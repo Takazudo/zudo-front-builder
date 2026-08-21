@@ -52,11 +52,14 @@
 //! Every field is optional (`{}` selects all defaults). `filename` drives
 //! frontmatter dispatch (`.md`/`.mdx`) and diagnostics; it defaults to
 //! `<anonymous>.mdx` for [`compile`] and `<anonymous>.md` for
-//! [`render_html`]. `jsxRuntime` (`"preact"` | `"react"`) and
-//! `development` are consumed only by [`compile`]; [`render_html`]
-//! accepts and ignores them so one options document can serve both
-//! tiers. `pipeline` is [`zfb_content::facade::PipelineOptions`]
-//! verbatim — see that type's rustdoc for the authoritative shape.
+//! [`render_html`]. `dialect` (`"markdown"` | `"mdx"`) is consumed only by
+//! [`render_html`]; when absent, `.md` selects CommonMark and `.mdx` selects
+//! MDX. [`compile`] remains MDX-only and accepts/ignores `dialect`, just as
+//! [`render_html`] accepts/ignores the compile-only `jsxRuntime`
+//! (`"preact"` | `"react"`) and `development` fields, so one options
+//! document can serve both tiers. `pipeline` is
+//! [`zfb_content::facade::PipelineOptions`] verbatim — see that type's
+//! rustdoc for the authoritative shape.
 //! Unknown fields are rejected at both levels (`deny_unknown_fields`).
 //! [`parse_to_ast`] instead accepts a distinct closed document containing
 //! `filename`, `dialect` (`"markdown"` or `"mdx"`), `directives`,
@@ -108,10 +111,12 @@ use serde_json::Value as JsonValue;
 use wasm_bindgen::prelude::wasm_bindgen;
 #[cfg(any(feature = "render", feature = "parse"))]
 use zfb_content::facade;
+#[cfg(any(feature = "render", feature = "parse"))]
+use zfb_content::facade::ParseDialect;
 #[cfg(feature = "render")]
 use zfb_content::facade::PipelineOptions;
 #[cfg(feature = "parse")]
-use zfb_content::facade::{GfmOptions, InteropMdastNode, ParseDialect, ParseMdastOptions};
+use zfb_content::facade::{GfmOptions, InteropMdastNode, ParseMdastOptions};
 #[cfg(any(feature = "render", feature = "parse"))]
 use zfb_content::frontmatter::{extract_from_filename, FrontmatterError};
 #[cfg(feature = "render")]
@@ -155,6 +160,8 @@ impl From<JsxRuntimeOption> for JsxRuntime {
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 struct WasmOptions {
     filename: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_non_null")]
+    dialect: Option<ParseDialect>,
     jsx_runtime: JsxRuntimeOption,
     development: bool,
     pipeline: PipelineOptions,
@@ -205,7 +212,7 @@ enum FrontmatterPolicy {
 /// Deserialize an optional field while rejecting an explicitly present
 /// `null`. Serde calls this only when the key exists; omission still uses the
 /// field default (`None`).
-#[cfg(feature = "parse")]
+#[cfg(any(feature = "render", feature = "parse"))]
 fn deserialize_present_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -412,6 +419,25 @@ struct Prepared {
     development: bool,
 }
 
+#[cfg(feature = "render")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrepareFor {
+    #[cfg(feature = "compile")]
+    Compile,
+    Render,
+}
+
+#[cfg(feature = "render")]
+impl PrepareFor {
+    fn default_filename(self) -> &'static str {
+        match self {
+            #[cfg(feature = "compile")]
+            Self::Compile => "<anonymous>.mdx",
+            Self::Render => "<anonymous>.md",
+        }
+    }
+}
+
 /// Shared front half: options JSON → frontmatter extraction → pipeline
 /// construction. The error branch carries the best-effort frontmatter
 /// (already-extracted values are still returned when a later stage
@@ -423,7 +449,7 @@ struct Prepared {
 fn prepare(
     source: &str,
     options_json: &str,
-    default_filename: &str,
+    entrypoint: PrepareFor,
 ) -> Result<Prepared, Box<(JsonValue, Diagnostic)>> {
     let opts: WasmOptions = match serde_json::from_str(options_json) {
         Ok(o) => o,
@@ -435,7 +461,7 @@ fn prepare(
     };
     let filename = opts
         .filename
-        .unwrap_or_else(|| default_filename.to_string());
+        .unwrap_or_else(|| entrypoint.default_filename().to_string());
     let extension = std::path::Path::new(&filename)
         .extension()
         .and_then(|e| e.to_str());
@@ -467,7 +493,23 @@ fn prepare(
         return Err(Box::new((JsonValue::Null, diag)));
     };
     let frontmatter = extracted.value;
-    let pipeline = match facade::build_pipeline(&opts.pipeline) {
+    let inferred_render_dialect = match extension {
+        Some("md") => ParseDialect::Markdown,
+        Some("mdx") => ParseDialect::Mdx,
+        _ => {
+            let diag = Diagnostic::error(
+                "options",
+                format!("filename `{filename}` must end in `.md` or `.mdx` for this entry point"),
+            );
+            return Err(Box::new((frontmatter, diag)));
+        }
+    };
+    let dialect = match entrypoint {
+        #[cfg(feature = "compile")]
+        PrepareFor::Compile => ParseDialect::Mdx,
+        PrepareFor::Render => opts.dialect.unwrap_or(inferred_render_dialect),
+    };
+    let pipeline = match facade::build_pipeline_for_dialect(&opts.pipeline, dialect) {
         Ok(p) => p,
         Err(e) => {
             let diag = Diagnostic::error("options", e.to_string());
@@ -684,7 +726,7 @@ fn markdown_diagnostic(
 
 #[cfg(feature = "compile")]
 fn compile_impl(source: &str, options_json: &str) -> CompileResult {
-    let prepared = match prepare(source, options_json, "<anonymous>.mdx") {
+    let prepared = match prepare(source, options_json, PrepareFor::Compile) {
         Ok(p) => p,
         Err(boxed) => {
             let (frontmatter, diag) = *boxed;
@@ -743,7 +785,7 @@ fn compile_impl(source: &str, options_json: &str) -> CompileResult {
 
 #[cfg(feature = "render")]
 fn render_html_impl(source: &str, options_json: &str) -> RenderHtmlResult {
-    let prepared = match prepare(source, options_json, "<anonymous>.md") {
+    let prepared = match prepare(source, options_json, PrepareFor::Render) {
         Ok(p) => p,
         Err(boxed) => {
             let (frontmatter, diag) = *boxed;
@@ -1298,7 +1340,9 @@ pub fn compile(source: &str, options_json: &str) -> String {
 ///
 /// Returns a JSON string: `{ "html": string|null, "frontmatter": json,
 /// "diagnostics": Diagnostic[] }` — see the crate docs for the options
-/// and diagnostics shapes. Exported to JS as `renderHtml`.
+/// and diagnostics shapes. A `.md` filename selects CommonMark and `.mdx`
+/// selects MDX unless the top-level `dialect` option overrides it. Exported
+/// to JS as `renderHtml`.
 #[cfg(feature = "render")]
 #[wasm_bindgen(js_name = renderHtml)]
 #[must_use]

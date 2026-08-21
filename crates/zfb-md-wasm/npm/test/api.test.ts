@@ -76,6 +76,39 @@ describe("renderHtml (md -> HTML, no SWC)", () => {
     expect(out.diagnostics).toHaveLength(0);
   });
 
+  it("infers CommonMark for .md and keeps MDX parsing for .mdx", async () => {
+    const markdown = await renderHtml("Budget <8 ms\n", { filename: "preview.md" });
+    expect(markdown).toMatchObject({
+      html: "<p>Budget &lt;8 ms</p>",
+      diagnostics: [],
+    });
+
+    const mdx = await renderHtml("Budget <8 ms\n", { filename: "preview.mdx" });
+    expect(mdx.html).toBeNull();
+    expect(mdx.diagnostics).toEqual([
+      expect.objectContaining({ source: "markdown", severity: "error" }),
+    ]);
+  });
+
+  it("allows an explicit dialect override without losing GFM switches", async () => {
+    const markdown = await renderHtml("Budget <8 ms\n\n~~old~~\n", {
+      filename: "preview.mdx",
+      dialect: "markdown",
+      pipeline: { gfm: { strikethrough: true } },
+    });
+    expect(markdown).toMatchObject({
+      html: "<p>Budget &lt;8 ms</p><p><del>old</del></p>",
+      diagnostics: [],
+    });
+
+    const mdx = await renderHtml("Budget <8 ms\n", {
+      filename: "preview.md",
+      dialect: "mdx",
+    });
+    expect(mdx.html).toBeNull();
+    expect(mdx.diagnostics[0]).toMatchObject({ source: "markdown" });
+  });
+
   it("applies a feature toggle from the resolved config JSON (github alerts)", async () => {
     const out = await renderHtml("> [!NOTE]\n> hey\n", {
       pipeline: { features: { githubAlerts: true } },
