@@ -167,18 +167,29 @@ export function validateShippedTables(file, content, manifest, expectedCount) {
     );
   }
   tables.forEach((table, index) => {
-    const rows = new Map(table.rows.map((row) => [rowArtifact(row[0] ?? ""), row]));
+    if (table.rows.length !== ARTIFACTS.length)
+      findings.push(
+        finding(
+          "shipped-table-row-count",
+          file,
+          `${file}: table ${index + 1} expected ${ARTIFACTS.length} data rows, found ${table.rows.length}`,
+          { tableIndex: index + 1, expected: ARTIFACTS.length, found: table.rows.length },
+        ),
+      );
     for (const artifact of ARTIFACTS) {
-      const row = rows.get(artifact);
-      if (!row) {
+      const rows = table.rows.filter((row) => rowArtifact(row[0] ?? "") === artifact);
+      if (rows.length !== 1) {
         findings.push(
           finding(
-            "missing-shipped-row",
+            "shipped-artifact-row-count",
             file,
-            `${file}: table ${index + 1} is missing ${artifact}`,
-            { tableIndex: index + 1, artifact, line: table.line },
+            `${file}: table ${index + 1} expected one ${artifact} row, found ${rows.length}`,
+            { tableIndex: index + 1, artifact, expected: 1, found: rows.length, line: table.line },
           ),
         );
+      }
+      const row = rows[0];
+      if (!row) {
         continue;
       }
       COLUMNS.forEach((column, columnIndex) =>
@@ -223,18 +234,29 @@ export function validateEntryTables(file, content, manifest, expectedCount) {
           { tableIndex: index + 1, version, line: table.line },
         ),
       );
-    const rows = new Map(table.rows.map((row) => [rowArtifact(row[0] ?? ""), row]));
+    if (table.rows.length !== ARTIFACTS.length)
+      findings.push(
+        finding(
+          "entry-table-row-count",
+          file,
+          `${file}: entry table ${index + 1} expected ${ARTIFACTS.length} data rows, found ${table.rows.length}`,
+          { tableIndex: index + 1, expected: ARTIFACTS.length, found: table.rows.length },
+        ),
+      );
     for (const artifact of ARTIFACTS) {
-      const row = rows.get(artifact);
-      if (!row) {
+      const rows = table.rows.filter((row) => rowArtifact(row[0] ?? "") === artifact);
+      if (rows.length !== 1) {
         findings.push(
           finding(
-            "missing-entry-row",
+            "entry-artifact-row-count",
             file,
-            `${file}: entry table ${index + 1} is missing ${artifact}`,
-            { tableIndex: index + 1, artifact, line: table.line },
+            `${file}: entry table ${index + 1} expected one ${artifact} row, found ${rows.length}`,
+            { tableIndex: index + 1, artifact, expected: 1, found: rows.length, line: table.line },
           ),
         );
+      }
+      const row = rows[0];
+      if (!row) {
         continue;
       }
       checkTableValue({

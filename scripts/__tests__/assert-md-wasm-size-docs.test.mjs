@@ -113,6 +113,16 @@ describe("md-wasm documentation validator", () => {
     );
   });
 
+  it.each([
+    ["shipped", shippedTable(), validateShippedTables, "shipped-artifact-row-count"],
+    ["entry", entryTable(), validateEntryTables, "entry-artifact-row-count"],
+  ])("rejects a duplicate artifact row in a %s table", (_label, content, validate, code) => {
+    const rootRow = content.split("\n")[2];
+    expect(validate(DOC_FILES[0], `${content}\n${rootRow}`, manifest, 1)).toContainEqual(
+      expect.objectContaining({ code, artifact: "root", found: 2 }),
+    );
+  });
+
   it.each([false, true])("reports a wrong entry version with fullwidth=%s", (ja) => {
     const findings = validateEntryTables(
       DOC_FILES[ja ? 3 : 0],
