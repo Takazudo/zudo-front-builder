@@ -707,6 +707,17 @@ suite gates exact-match). Deliberate limitations of the browser build:
 
 ## Artifact size and locked ceilings
 
+### Maintainer repair workflow
+
+These guarded size numbers use `crates/zfb-md-wasm/shipped-sizes.json` as their
+source of truth. After an intentional artifact change, use this verified
+three-step repair sequence:
+
+1. Re-run the four-artifact build and capture its summary:
+   `BUILD_LOG=/tmp/zfb-md-wasm-build.log; node crates/zfb-md-wasm/npm/scripts/build.mjs 2>&1 | tee "$BUILD_LOG"`.
+2. Run `node scripts/assert-zfb-md-wasm-budgets.mjs --build-log "$BUILD_LOG" --dist crates/zfb-md-wasm/npm/dist --update-manifest`.
+3. Run `node scripts/assert-md-wasm-size-docs.mjs --fix`, then `pnpm format:mdx`.
+
 These are the shipped **2.8.0** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
