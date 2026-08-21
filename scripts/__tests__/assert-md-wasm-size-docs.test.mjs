@@ -7,6 +7,8 @@ import {
   validateClosure,
   validateEntryTables,
   validateHighlightRootPair,
+  fixMdWasmSizeDocs,
+  fixTableProse,
   validateMdWasmSizeDocs,
   validateShippedTables,
   validateTableProse,
@@ -84,6 +86,30 @@ function correctFiles() {
       const pair =
         index === 1 ? "payload shows it: 758,244 B gzip-9 versus 1,458,444 B for root." : "";
       return [file, `${entryTable({ ja })}\n\n${sections}\n${pair}`];
+    }),
+  );
+}
+
+function staleTableFiles() {
+  let staleValue = 9_000_001;
+  return Object.fromEntries(
+    Object.entries(correctFiles()).map(([file, content]) => {
+      let stale = content.replace(
+        /^\| (?:root(?: \(full\)|（full）)|highlight|render|parse) \|.*\|$/gm,
+        (line) => {
+          const values = line.slice(1, -1).split("|");
+          for (let index = 1; index <= 4; index += 1) {
+            values[index] = ` ${bytes(staleValue)}`;
+            staleValue += 1;
+          }
+          return `|${values.join("|")}|`;
+        },
+      );
+      stale = stale.replace(
+        /(gzip-9 wasm\s*[（(])2\.8\.0([）)])/g,
+        (_match, open, close) => `${open}2.7.9${close}`,
+      );
+      return [file, stale];
     }),
   );
 }
@@ -204,5 +230,57 @@ describe("md-wasm documentation validator", () => {
     expect(validateCeilingTable(manifest, { ...ceilings, render: ceilings.render + 1 })).toEqual([
       expect.objectContaining({ code: "ceiling-table-drift", key: "render" }),
     ]);
+  });
+
+  it("--fix repairs every shipped-table column and entry-table cell", () => {
+    const stale = staleTableFiles();
+    const fixed = fixMdWasmSizeDocs({ files: stale, manifest, ceilings });
+    expect(fixed).toEqual(correctFiles());
+  });
+
+  it("--fix is idempotent", () => {
+    const stale = staleTableFiles();
+    const once = fixMdWasmSizeDocs({ files: stale, manifest, ceilings });
+    expect(fixMdWasmSizeDocs({ files: once, manifest, ceilings })).toEqual(once);
+  });
+
+  it("--fix repairs modeled EN prose without changing its surrounding text", () => {
+    const stale = `Locked gzip-9 ceilings are root 9,000,001 B, highlight 9,000,002 B, render
+9,000,003 B, and parse 9,000,004 B; the complete packed tarball ceiling is
+9,000,005 B. All four ship inside their ceilings, with 9,000,006 B (root),
+9,000,007 B (highlight), 9,000,008 B (render), and 9,000,009 B (parse) of headroom.
+The highlight artifact is 9,000,010 B smaller raw and 9,000,011 B smaller gzip-9,
+landing at about 9% of root's raw bytes and 8% of its gzipped bytes.`;
+    expect(fixTableProse(DOC_FILES[0], stale, manifest, ceilings, 1)).toBe(enProse);
+  });
+
+  it("--fix repairs modeled JA prose while preserving fullwidth punctuation", () => {
+    const stale = `固定された gzip-9 の上限は root 9,000,001 B、highlight 9,000,002 B、
+render 9,000,003 B、parse 9,000,004 B、完全な packed tarball は 9,000,005 B です。
+上限までの余裕は root 9,000,006 B、highlight 9,000,007 B、render 9,000,008 B、parse 9,000,009 B です。
+raw で 9,000,010 B、gzip-9 で 9,000,011 B 小さく、highlight は root の
+raw バイトの約 9%、gzip 後のバイトの約 8% に収まります。`;
+    expect(fixTableProse(DOC_FILES[3], stale, manifest, ceilings, 1)).toBe(jaProse);
+  });
+
+  it("--fix leaves an unmodeled closure literal for a human", () => {
+    const files = correctFiles();
+    files[DOC_FILES[0]] += "\nHuman note: 9,999,999 B.";
+    const fixed = fixMdWasmSizeDocs({ files, manifest, ceilings });
+    expect(fixed[DOC_FILES[0]]).toBe(files[DOC_FILES[0]]);
+    expect(validateMdWasmSizeDocs({ files: fixed, manifest, ceilings })).toContainEqual(
+      expect.objectContaining({
+        code: "unregistered-byte-literal",
+        literal: "9,999,999 B",
+      }),
+    );
+  });
+
+  it("--fix never rewrites a registered documentation allowance", () => {
+    const files = correctFiles();
+    files[DOC_FILES[0]] += "\nHistorical snapshot: 3,638,607 B.";
+    const fixed = fixMdWasmSizeDocs({ files, manifest, ceilings });
+    expect(fixed[DOC_FILES[0]]).toBe(files[DOC_FILES[0]]);
+    expect(validateMdWasmSizeDocs({ files: fixed, manifest, ceilings })).toEqual([]);
   });
 });

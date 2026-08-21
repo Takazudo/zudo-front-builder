@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -103,17 +103,35 @@ function markdownTables(content) {
     const separator = tableCells(lines[lineIndex + 1]);
     if (!header || !separator || separator.some((cell) => !/^:?-{3,}:?$/.test(cell))) continue;
     const rows = [];
+    const rowLines = [];
     let end = lineIndex + 2;
     while (end < lines.length) {
       const cells = tableCells(lines[end]);
       if (!cells) break;
       rows.push(cells);
+      rowLines.push(end);
       end += 1;
     }
-    tables.push({ header, rows, line: lineIndex + 1 });
+    tables.push({ header, rows, line: lineIndex + 1, headerLine: lineIndex, rowLines });
     lineIndex = end - 1;
   }
   return tables;
+}
+
+function plainTableLine(cells) {
+  return `| ${cells.join(" | ")} |`;
+}
+
+function updateTableLine(lines, lineIndex, updates) {
+  const cells = tableCells(lines[lineIndex]);
+  if (!cells) return;
+  let changed = false;
+  for (const [cellIndex, value] of updates) {
+    if (cells[cellIndex] === undefined || cells[cellIndex] === value) continue;
+    cells[cellIndex] = value;
+    changed = true;
+  }
+  if (changed) lines[lineIndex] = plainTableLine(cells);
 }
 
 function rowArtifact(cell) {
@@ -209,6 +227,36 @@ export function validateShippedTables(file, content, manifest, expectedCount) {
   return findings;
 }
 
+export function fixShippedTables(file, content, manifest, expectedCount) {
+  const lines = content.split("\n");
+  const tables = markdownTables(content).filter(({ header }) =>
+    COLUMN_LABELS.every(
+      (label, index) => header[index + 1]?.trim().toLowerCase().replace(/\s+/g, " ") === label,
+    ),
+  );
+  if (tables.length !== expectedCount) return content;
+
+  for (const table of tables) {
+    for (const artifact of ARTIFACTS) {
+      const rowIndexes = table.rows
+        .map((row, index) => (rowArtifact(row[0] ?? "") === artifact ? index : -1))
+        .filter((index) => index >= 0);
+      if (rowIndexes.length !== 1) continue;
+      const row = table.rows[rowIndexes[0]];
+      if (row.length < COLUMNS.length + 1) continue;
+      updateTableLine(
+        lines,
+        table.rowLines[rowIndexes[0]],
+        COLUMNS.map((column, columnIndex) => [
+          columnIndex + 1,
+          `${format(manifest.measured[artifact][column])} B`,
+        ]),
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
 export function validateEntryTables(file, content, manifest, expectedCount) {
   const findings = [];
   const tables = markdownTables(content).filter(({ header }) =>
@@ -272,6 +320,39 @@ export function validateEntryTables(file, content, manifest, expectedCount) {
     }
   });
   return findings;
+}
+
+export function fixEntryTables(file, content, manifest, expectedCount) {
+  const lines = content.split("\n");
+  const tables = markdownTables(content).filter(({ header }) =>
+    /^gzip-9 wasm\s*[（(].+[）)]$/.test(header[1] ?? ""),
+  );
+  if (tables.length !== expectedCount) return content;
+
+  for (const table of tables) {
+    const versionPattern = /^(gzip-9 wasm\s*[（(])(.+)([）)])$/;
+    const versionMatch = table.header[1]?.match(versionPattern);
+    if (versionMatch) {
+      const cells = tableCells(lines[table.headerLine]);
+      if (cells && cells[1] !== undefined) {
+        const replacement = `${versionMatch[1]}${manifest.measuredOnVersion}${versionMatch[3]}`;
+        updateTableLine(lines, table.headerLine, [[1, replacement]]);
+      }
+    }
+
+    for (const artifact of ARTIFACTS) {
+      const rowIndexes = table.rows
+        .map((row, index) => (rowArtifact(row[0] ?? "") === artifact ? index : -1))
+        .filter((index) => index >= 0);
+      if (rowIndexes.length !== 1) continue;
+      const row = table.rows[rowIndexes[0]];
+      if (row.length < 2) continue;
+      updateTableLine(lines, table.rowLines[rowIndexes[0]], [
+        [1, `${format(manifest.measured[artifact].gzip9)} B`],
+      ]);
+    }
+  }
+  return lines.join("\n");
 }
 
 const PROSE_FIELDS = {
@@ -373,6 +454,37 @@ export function validateTableProse(file, content, manifest, ceilings, expectedCo
   return findings;
 }
 
+function replaceCapturedValues(match, expected) {
+  let cursor = 0;
+  let replacement = "";
+  for (let index = 0; index < expected.length; index += 1) {
+    const captured = match[index + 1];
+    const capturedIndex = match[0].indexOf(captured, cursor);
+    if (capturedIndex < 0) return match[0];
+    replacement += match[0].slice(cursor, capturedIndex);
+    replacement += format(expected[index]);
+    cursor = capturedIndex + captured.length;
+  }
+  return replacement + match[0].slice(cursor);
+}
+
+export function fixTableProse(file, content, manifest, ceilings, expectedCount) {
+  const locale = file.includes("docs-ja/") ? "ja" : "en";
+  const derived = derivedValues(manifest, ceilings);
+  for (const field of PROSE_FIELDS[locale]) {
+    const matches = [...content.matchAll(field.pattern)];
+    if (matches.length !== expectedCount) continue;
+    const expected = field.expected(derived);
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      const match = matches[index];
+      const replacement = replaceCapturedValues(match, expected);
+      content =
+        content.slice(0, match.index) + replacement + content.slice(match.index + match[0].length);
+    }
+  }
+  return content;
+}
+
 export function validateHighlightRootPair(file, content, manifest, expectedCount) {
   const pattern = file.includes("docs-ja/")
     ? /gzip-9 で ([\d,]+) B、ルートは ([\d,]+) B/g
@@ -402,6 +514,22 @@ export function validateHighlightRootPair(file, content, manifest, expectedCount
       );
   });
   return findings;
+}
+
+export function fixHighlightRootPair(file, content, manifest, expectedCount) {
+  const pattern = file.includes("docs-ja/")
+    ? /gzip-9 で ([\d,]+) B、ルートは ([\d,]+) B/g
+    : /(?:payload shows it:|download of the root entry:)\s*([\d,]+) B gzip-9 versus\s*([\d,]+) B (?:for root|in)/g;
+  const matches = [...content.matchAll(pattern)];
+  if (matches.length !== expectedCount) return content;
+  const expected = [manifest.measured.highlight.gzip9, manifest.measured.root.gzip9];
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const match = matches[index];
+    const replacement = replaceCapturedValues(match, expected);
+    content =
+      content.slice(0, match.index) + replacement + content.slice(match.index + match[0].length);
+  }
+  return content;
 }
 
 export function validateClosure(
@@ -515,6 +643,23 @@ export function validateMdWasmSizeDocs({ files, manifest, ceilings }) {
   return findings;
 }
 
+export function fixMdWasmSizeDocs({ files, manifest, ceilings }) {
+  const fixedFiles = { ...files };
+  DOC_FILES.forEach((file, index) => {
+    const content = fixedFiles[file];
+    if (typeof content !== "string") return;
+    let fixed = fixShippedTables(file, content, manifest, EXPECTED_SHIPPED_TABLES[index]);
+    fixed = fixEntryTables(file, fixed, manifest, EXPECTED_ENTRY_TABLES[index]);
+    if (TABLE_FILE_SET.has(file)) {
+      fixed = fixTableProse(file, fixed, manifest, ceilings, EXPECTED_SHIPPED_TABLES[index]);
+    }
+    const pairCount = file === DOC_FILES[1] || index >= 6 ? 1 : 0;
+    if (pairCount > 0) fixed = fixHighlightRootPair(file, fixed, manifest, pairCount);
+    fixedFiles[file] = fixed;
+  });
+  return fixedFiles;
+}
+
 async function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const [{ SHIPPED_SIZES }, budgets] = await Promise.all([
@@ -534,11 +679,28 @@ async function main() {
   const files = Object.fromEntries(
     DOC_FILES.map((file) => [file, readFileSync(resolve(root, file), "utf8")]),
   );
-  const findings = validateMdWasmSizeDocs({ files, manifest: SHIPPED_SIZES, ceilings });
+  const fix = process.argv.slice(2).includes("--fix");
+  const fixedFiles = fix ? fixMdWasmSizeDocs({ files, manifest: SHIPPED_SIZES, ceilings }) : files;
+  const findings = validateMdWasmSizeDocs({
+    files: fixedFiles,
+    manifest: SHIPPED_SIZES,
+    ceilings,
+  });
   if (findings.length > 0) {
-    for (const item of findings) console.error(item.message);
+    for (const item of findings) {
+      const message =
+        fix && item.code === "unregistered-byte-literal"
+          ? `${item.message}; no model for this value; edit by hand`
+          : item.message;
+      console.error(message);
+    }
     process.exitCode = 1;
     return;
+  }
+  if (fix) {
+    DOC_FILES.forEach((file) => {
+      if (fixedFiles[file] !== files[file]) writeFileSync(resolve(root, file), fixedFiles[file]);
+    });
   }
   console.log(`OK: ${DOC_FILES.length} md-wasm documentation files match shipped-sizes.json`);
 }
