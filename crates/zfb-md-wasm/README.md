@@ -256,7 +256,7 @@ HTTP success responses. Do not copy those resources manually or import the
 package source path; consume the packed browser entry so the generated URLs
 stay correct under a hashed island bundle.
 
-## Decision snapshot measurements and ceilings
+## Shipped artifact sizes and locked ceilings
 
 These are the shipped **2.8.0** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
@@ -290,8 +290,10 @@ highlight: the highlight artifact is 1,797,324 B smaller raw and 700,200 B
 smaller gzip-9, landing at about 45% of root's raw bytes and 52% of its
 gzipped bytes.
 
-Every shipped artifact came in under its #2447 candidate measurement: root
-−62,869 B, highlight −7,965 B, render −39,844 B, parse −25,482 B.
+Every shipped final wasm came in under its #2447 candidate measurement: root
+−62,869 B, highlight −7,965 B, render −39,844 B, parse −25,482 B. The glue
+rows moved the other way by a negligible amount (root +117 B, render +135 B,
+parse +18 B; highlight unchanged).
 
 ## Wasm-target blockers and their resolutions
 
