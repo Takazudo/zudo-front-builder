@@ -5,11 +5,26 @@
 // final wasm/glue and the complete dist are measured from files instead of
 // trusting a human-readable summary.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { tmpdir } from "node:os";
 import { SHIPPED_SIZES } from "../crates/zfb-md-wasm/shipped-sizes.mjs";
+
+const MANIFEST_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../crates/zfb-md-wasm/shipped-sizes.json",
+);
+const MANIFEST_COLUMNS = ["finalWasm", "gzip9", "glue", "glueGzip9"];
+const MANIFEST_ARTIFACTS = {
+  default: "root",
+  "highlight-only": "highlight",
+  "render-only": "render",
+  "parse-only": "parse",
+};
+const REPAIR_INSTRUCTIONS =
+  "re-run with --update-manifest, then node scripts/assert-md-wasm-size-docs.mjs --fix, then pnpm format:mdx";
 
 export const ARTIFACTS = [
   { label: "default", dir: "wasm", stem: "zfb_md_wasm", ceiling: SHIPPED_SIZES.ceilings.root },
@@ -36,7 +51,7 @@ export const TARBALL_CEILING = SHIPPED_SIZES.ceilings.tarball;
 
 function usage() {
   throw new Error(
-    "usage: assert-zfb-md-wasm-budgets.mjs --build-log <log> --dist <dist> [--tarball <tgz>]",
+    "usage: assert-zfb-md-wasm-budgets.mjs --build-log <log> --dist <dist> [--tarball <tgz>] [--update-manifest [--measured-on-version <v>]]",
   );
 }
 
@@ -44,10 +59,17 @@ function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === "--update-manifest") {
+      values["update-manifest"] = true;
+      continue;
+    }
     if (!arg.startsWith("--") || argv[index + 1] === undefined) usage();
     values[arg.slice(2)] = argv[++index];
   }
   if (!values["build-log"] || !values.dist) usage();
+  if (values["measured-on-version"] !== undefined) {
+    if (!values["update-manifest"] || values["measured-on-version"].length === 0) usage();
+  }
   return values;
 }
 
@@ -109,6 +131,39 @@ function fmt(value) {
   return `${value.toLocaleString("en-US")} bytes`;
 }
 
+function measuredValues({ wasm, wasmGzip, glue, glueGzip }) {
+  return { finalWasm: wasm, gzip9: wasmGzip, glue, glueGzip9: glueGzip };
+}
+
+function manifestMismatch(artifact, measured, documented) {
+  const manifestArtifact = MANIFEST_ARTIFACTS[artifact.label];
+  for (const column of MANIFEST_COLUMNS) {
+    if (measured[column] !== documented[manifestArtifact][column]) {
+      return new Error(
+        `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
+          `documented=${documented[manifestArtifact][column]}; ${REPAIR_INSTRUCTIONS}`,
+      );
+    }
+  }
+  return undefined;
+}
+
+function assertManifestMatches(artifact, measured, documented) {
+  const mismatch = manifestMismatch(artifact, measured, documented);
+  if (mismatch) throw mismatch;
+}
+
+function writeMeasuredManifest(manifestPath, measured, measuredOnVersion) {
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  for (const [artifactLabel, manifestArtifact] of Object.entries(MANIFEST_ARTIFACTS)) {
+    for (const column of MANIFEST_COLUMNS) {
+      manifest.measured[manifestArtifact][column] = measured[artifactLabel][column];
+    }
+  }
+  if (measuredOnVersion !== undefined) manifest.measuredOnVersion = measuredOnVersion;
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 function selfTest() {
   // Fixture mirrors build.mjs's real #2451 summary labels, including commas
   // and literal parentheses in the wasm-opt line.
@@ -149,6 +204,50 @@ function selfTest() {
     if (bytesFromLine(section, "wasm-opt -O1 (final)") !== fixtureMetrics[artifact.label][4])
       throw new Error("wasm-opt fixture parse failed");
   }
+
+  const documented = SHIPPED_SIZES.measured;
+  const mismatched = { ...documented.root, finalWasm: documented.root.finalWasm + 1 };
+  let mismatch;
+  try {
+    assertManifestMatches(ARTIFACTS[0], { ...mismatched }, documented);
+  } catch (error) {
+    mismatch = error;
+  }
+  if (!mismatch?.message.includes("default finalWasm")) {
+    throw new Error("manifest mismatch fixture did not name artifact and column");
+  }
+
+  const fixtureDirectory = mkdtempSync(join(tmpdir(), "zfb-md-wasm-budget-self-test-"));
+  const fixtureManifestPath = join(fixtureDirectory, "shipped-sizes.json");
+  const fixtureManifest = {
+    measuredOnVersion: SHIPPED_SIZES.measuredOnVersion,
+    measured: structuredClone(SHIPPED_SIZES.measured),
+    ceilings: structuredClone(SHIPPED_SIZES.ceilings),
+  };
+  const ceilingsBefore = JSON.stringify(fixtureManifest.ceilings);
+  const updatedMeasured = {
+    default: {
+      ...fixtureManifest.measured.root,
+      finalWasm: fixtureManifest.measured.root.finalWasm + 2,
+    },
+    "highlight-only": fixtureManifest.measured.highlight,
+    "render-only": fixtureManifest.measured.render,
+    "parse-only": fixtureManifest.measured.parse,
+  };
+  writeFileSync(fixtureManifestPath, `${JSON.stringify(fixtureManifest, null, 2)}\n`);
+  writeMeasuredManifest(fixtureManifestPath, updatedMeasured, "2.9.0");
+  const updatedManifest = JSON.parse(readFileSync(fixtureManifestPath, "utf8"));
+  if (JSON.stringify(updatedManifest.ceilings) !== ceilingsBefore) {
+    throw new Error("--update-manifest fixture changed ceilings");
+  }
+  if (updatedManifest.measured.root.finalWasm !== updatedMeasured.default.finalWasm) {
+    throw new Error("--update-manifest fixture did not write measured values");
+  }
+  if (updatedManifest.measuredOnVersion !== "2.9.0") {
+    throw new Error("--update-manifest fixture did not update measuredOnVersion");
+  }
+  rmSync(fixtureDirectory, { recursive: true, force: true });
+
   console.log("OK: build summary metric parser self-test");
 }
 
@@ -156,6 +255,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const sections = parseBuildLog(args["build-log"]);
   const dist = resolve(args.dist);
+  const measuredByArtifact = {};
 
   if (!statSync(dist).isDirectory()) throw new Error(`dist directory is missing: ${dist}`);
 
@@ -167,6 +267,7 @@ function main() {
     const wasmGzip = gzipSync(readFileSync(wasmPath), { level: 9 }).length;
     const glue = fileBytes(gluePath);
     const glueGzip = gzipSync(readFileSync(gluePath), { level: 9 }).length;
+    const measured = measuredValues({ wasm, wasmGzip, glue, glueGzip });
 
     // These two metrics are emitted by the production build before the shared
     // cdylib is overwritten by the next feature pass.
@@ -195,6 +296,11 @@ function main() {
         `${artifact.label} gzip-9 size ${wasmGzip} exceeds ceiling ${artifact.ceiling}`,
       );
     }
+
+    if (!args["update-manifest"]) {
+      assertManifestMatches(artifact, measured, SHIPPED_SIZES.measured);
+    }
+    measuredByArtifact[artifact.label] = measured;
   }
 
   const totalDist = distBytes(dist);
@@ -208,6 +314,13 @@ function main() {
     }
   } else {
     console.log(`complete packed tarball: not supplied (ceiling=${fmt(TARBALL_CEILING)})`);
+  }
+
+  if (args["update-manifest"]) {
+    writeMeasuredManifest(MANIFEST_PATH, measuredByArtifact, args["measured-on-version"]);
+    console.log(
+      `updated ${MANIFEST_PATH} measured section${args["measured-on-version"] ? ` and measuredOnVersion=${args["measured-on-version"]}` : ""}`,
+    );
   }
 }
 
