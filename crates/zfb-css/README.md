@@ -69,6 +69,20 @@ When `ZFB_TAILWIND_BIN` is set, `pnpm fetch:tailwind` is a no-op (it trusts
 the override). The engine's path resolution is implemented at
 [`crates/zfb-css/src/engine.rs`](src/engine.rs).
 
+### Oxide warm-up policy
+
+Before the real compile, the CSS engine normally runs a one-off Tailwind
+warm-up so the Bun standalone CLI extracts its embedded
+`@tailwindcss/oxide` native addon under cross-process serialization. In
+automatic mode, this warm-up is skipped only when the selected executable is
+recognized as a Node/npm Tailwind CLI. It still runs for the bundled
+standalone binary, other native executables, and executables that cannot be
+classified. Setting `ZFB_TAILWIND_BIN` alone does not change this policy.
+
+Set `ZFB_TAILWIND_OXIDE_WARMUP` to `1`, `true`, or `on` to force the warm-up
+on, or to `0`, `false`, or `off` to force it off. An unset, empty, or
+unrecognized value selects automatic mode.
+
 ### Running the heavyweight tests locally
 
 Tests that need the real binary are gated with `#[ignore]` and run via:
