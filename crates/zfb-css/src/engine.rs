@@ -12,13 +12,38 @@
 //! is engine-agnostic.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
+
+const OXIDE_WARMUP_SHAPE_READ_LIMIT: u64 = 64 * 1024;
+
+/// Controls whether the Tailwind subprocess performs the standalone Bun
+/// binary's oxide extraction warm-up before the real build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OxideWarmupPolicy {
+    /// Skip only executables positively recognized as Node/npm CLI wrappers.
+    Auto,
+    /// Run the warm-up regardless of the executable's shape.
+    Always,
+    /// Never run the warm-up.
+    Never,
+}
+
+fn parse_oxide_warmup_policy(value: Option<&OsStr>) -> OxideWarmupPolicy {
+    let Some(value) = value.and_then(OsStr::to_str) else {
+        return OxideWarmupPolicy::Auto;
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" => OxideWarmupPolicy::Always,
+        "0" | "false" | "off" => OxideWarmupPolicy::Never,
+        _ => OxideWarmupPolicy::Auto,
+    }
+}
 
 /// Abstraction over "produce a single CSS string of utility classes for the
 /// given project sources".
@@ -74,6 +99,12 @@ pub struct TailwindSubprocessConfig {
     /// `ZFB_TAILWIND_BIN` environment variable (checked at engine
     /// construction time, not at every invocation).
     pub binary_path: PathBuf,
+
+    /// Policy for the standalone-Bun oxide extraction warm-up.
+    ///
+    /// Default: [`OxideWarmupPolicy::Auto`], or the value parsed from
+    /// `ZFB_TAILWIND_OXIDE_WARMUP` at construction time.
+    pub oxide_warmup: OxideWarmupPolicy,
 
     /// Working directory for the subprocess. The Tailwind v4 CLI resolves
     /// `@source "..."` directives relative to this directory.
@@ -215,6 +246,8 @@ impl Default for TailwindSubprocessConfig {
         // mirroring the build-time override contract in
         // `crates/zfb/build.rs` / `BUILDING.md`.
         let env_override = std::env::var_os("ZFB_TAILWIND_BIN").filter(|v| !v.is_empty());
+        let oxide_warmup =
+            parse_oxide_warmup_policy(std::env::var_os("ZFB_TAILWIND_OXIDE_WARMUP").as_deref());
         let binary_path = match env_override {
             Some(p) => PathBuf::from(p),
             None => PathBuf::from("crates/zfb/binaries/tailwindcss-v4"),
@@ -222,6 +255,7 @@ impl Default for TailwindSubprocessConfig {
         let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             binary_path,
+            oxide_warmup,
             working_dir,
             input_css: None,
             extra_args: Vec::new(),
@@ -241,6 +275,12 @@ impl TailwindSubprocessConfig {
     /// Override the binary path (chainable).
     pub fn with_binary_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.binary_path = path.into();
+        self
+    }
+
+    /// Override the oxide extraction warm-up policy (chainable).
+    pub fn with_oxide_warmup(mut self, policy: OxideWarmupPolicy) -> Self {
+        self.oxide_warmup = policy;
         self
     }
 
@@ -1035,7 +1075,7 @@ impl CssEngine for TailwindSubprocessEngine {
         // load a half-written addon and die with
         // `undefined is not a constructor (new import_oxide.Scanner(...))`.
         // See `ensure_oxide_extracted` and zfb#1237 for the full rationale.
-        ensure_oxide_extracted(&self.config.binary_path);
+        ensure_oxide_extracted_with_policy(&self.config.binary_path, self.config.oxide_warmup);
 
         // Both the sweep and the temp-file create below must agree on the
         // entry's directory — compute it once via the shared helper.
@@ -1156,6 +1196,13 @@ impl CssEngine for TailwindSubprocessEngine {
     }
 }
 
+// Preserve the original one-argument test seam so the established concurrency
+// regression continues to exercise an unconditional warm-up unchanged.
+#[cfg(test)]
+fn ensure_oxide_extracted(binary_path: &Path) -> bool {
+    ensure_oxide_extracted_with_policy(binary_path, OxideWarmupPolicy::Always)
+}
+
 /// Force the Tailwind v4 standalone binary to extract its embedded oxide
 /// native addon (`.node`) **once, serialized across processes**, before any
 /// concurrent build invocation can race on it.
@@ -1197,10 +1244,18 @@ impl CssEngine for TailwindSubprocessEngine {
 /// Best-effort: any IO/warm-up failure is swallowed — the real invocation that
 /// follows is the source of truth for genuine errors.
 ///
+/// Under [`OxideWarmupPolicy::Auto`], the protocol is skipped only when the
+/// executable is positively recognized as a Node/npm CLI wrapper. Unknown,
+/// native, and unreadable files all warm: a false warm costs one throwaway
+/// compile, while a false skip silently reintroduces zfb#1237's intermittent
+/// extraction race. In particular, `ZFB_TAILWIND_BIN` is only a path override,
+/// not evidence that the target is non-standalone; CI commonly points it at the
+/// standalone binary itself.
+///
 /// Returns `true` if this call ran the protocol, `false` if this process had
 /// already warmed the binary. The production call site ignores the return;
 /// tests use it to assert the once-per-process / serialized contract.
-fn ensure_oxide_extracted(binary_path: &Path) -> bool {
+fn ensure_oxide_extracted_with_policy(binary_path: &Path, policy: OxideWarmupPolicy) -> bool {
     static WARMED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     let warmed = WARMED.get_or_init(|| Mutex::new(HashSet::new()));
 
@@ -1212,12 +1267,112 @@ fn ensure_oxide_extracted(binary_path: &Path) -> bool {
     if guard.contains(binary_path) {
         return false;
     }
+    // A skipped path must not enter WARMED: a later `Always` decision for the
+    // same path has higher precedence and must still run the protocol.
+    if !should_warm_oxide(binary_path, policy) {
+        return false;
+    }
     warm_oxide_cross_process(binary_path);
     guard.insert(binary_path.to_path_buf());
     true
 }
 
-/// Cross-process half of [`ensure_oxide_extracted`]: serialize the first oxide
+fn should_warm_oxide(binary_path: &Path, policy: OxideWarmupPolicy) -> bool {
+    match policy {
+        OxideWarmupPolicy::Always => true,
+        OxideWarmupPolicy::Never => false,
+        OxideWarmupPolicy::Auto => !is_node_cli_shape(binary_path),
+    }
+}
+
+fn is_node_cli_shape(binary_path: &Path) -> bool {
+    use std::io::Read;
+
+    let Ok(file) = std::fs::File::open(binary_path) else {
+        return false;
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(OXIDE_WARMUP_SHAPE_READ_LIMIT)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return false;
+    }
+
+    let first_line = bytes.split(|&byte| byte == b'\n').next().unwrap_or(&[]);
+    if shebang_points_to_node(first_line) {
+        return true;
+    }
+
+    let is_posix_shell = first_line.starts_with(b"#!/bin/sh")
+        || first_line.starts_with(b"#!/usr/bin/sh")
+        || first_line.starts_with(b"#!/usr/bin/env sh");
+    if is_posix_shell
+        && (contains_ascii_case_insensitive(&bytes, b"exec node")
+            || contains_ascii_case_insensitive(&bytes, b"cmd-shim-target="))
+    {
+        return true;
+    }
+
+    let is_windows_shim = binary_path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("cmd")
+                || ext.eq_ignore_ascii_case("ps1")
+                || ext.eq_ignore_ascii_case("bat")
+        });
+    is_windows_shim && contains_node_word(&bytes)
+}
+
+fn shebang_points_to_node(first_line: &[u8]) -> bool {
+    let Some(command) = first_line.strip_prefix(b"#!") else {
+        return false;
+    };
+    let mut words = command.split(|byte| byte.is_ascii_whitespace());
+    let Some(interpreter) = words.find(|word| !word.is_empty()) else {
+        return false;
+    };
+    if is_node_executable_name(interpreter) {
+        return true;
+    }
+    if !path_basename(interpreter).eq_ignore_ascii_case(b"env") {
+        return false;
+    }
+    words
+        .filter(|word| !word.is_empty() && !word.starts_with(b"-"))
+        .any(is_node_executable_name)
+}
+
+fn is_node_executable_name(path: &[u8]) -> bool {
+    let name = path_basename(path);
+    name.eq_ignore_ascii_case(b"node") || name.eq_ignore_ascii_case(b"node.exe")
+}
+
+fn path_basename(path: &[u8]) -> &[u8] {
+    path.rsplit(|byte| *byte == b'/' || *byte == b'\\')
+        .next()
+        .unwrap_or(path)
+}
+
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+fn contains_node_word(bytes: &[u8]) -> bool {
+    bytes.windows(4).enumerate().any(|(index, window)| {
+        window.eq_ignore_ascii_case(b"node")
+            && (index == 0
+                || !(bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_'))
+            && (index + 4 == bytes.len()
+                || !(bytes[index + 4].is_ascii_alphanumeric() || bytes[index + 4] == b'_'))
+    })
+}
+
+/// Cross-process half of [`ensure_oxide_extracted_with_policy`]: serialize the first oxide
 /// extraction via an advisory file lock, so concurrent `zfb build` child
 /// processes do not race the shared addon. Best-effort — any IO error is
 /// swallowed.
@@ -2240,6 +2395,183 @@ mod tests {
             is_tailwind_entry_tmp(tmp.path()),
             "generated name must match the predicate: {}",
             tmp.path().display()
+        );
+    }
+
+    fn write_shape_fixture(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("write executable-shape fixture");
+        path
+    }
+
+    #[test]
+    fn oxide_warmup_policy_parser_is_pure_and_fail_safe() {
+        for value in ["1", "true", "on", " TRUE ", "On"] {
+            assert_eq!(
+                parse_oxide_warmup_policy(Some(OsStr::new(value))),
+                OxideWarmupPolicy::Always
+            );
+        }
+        for value in ["0", "false", "off", " FALSE ", "OfF"] {
+            assert_eq!(
+                parse_oxide_warmup_policy(Some(OsStr::new(value))),
+                OxideWarmupPolicy::Never
+            );
+        }
+        for value in ["", " ", "yes", "2", "sometimes"] {
+            assert_eq!(
+                parse_oxide_warmup_policy(Some(OsStr::new(value))),
+                OxideWarmupPolicy::Auto
+            );
+        }
+        assert_eq!(parse_oxide_warmup_policy(None), OxideWarmupPolicy::Auto);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert_eq!(
+                parse_oxide_warmup_policy(Some(OsStr::from_bytes(b"true\xff"))),
+                OxideWarmupPolicy::Auto
+            );
+        }
+    }
+
+    #[test]
+    fn auto_policy_skips_only_recognized_node_cli_shapes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let node = write_shape_fixture(dir.path(), "tailwind-node", b"#!/usr/bin/node\n");
+        let env_node = write_shape_fixture(
+            dir.path(),
+            "tailwind-env-node",
+            b"#!/usr/bin/env node\nconsole.log('tailwind');\n",
+        );
+        let npm_shim = write_shape_fixture(
+            dir.path(),
+            "tailwind-shim",
+            b"#!/bin/sh\nbasedir=$(dirname \"$0\")\nexec node \"$basedir/cli.mjs\" \"$@\"\n",
+        );
+        let cmd = write_shape_fixture(
+            dir.path(),
+            "tailwind.cmd",
+            br#"@ECHO off
+node  "%~dp0\..\@tailwindcss\cli\dist\index.mjs" %*
+"#,
+        );
+        let ps1 = write_shape_fixture(
+            dir.path(),
+            "tailwind.ps1",
+            br#"#!/usr/bin/env pwsh
+& "node$exe" "$basedir/../@tailwindcss/cli/dist/index.mjs" $args
+"#,
+        );
+        let bat = write_shape_fixture(dir.path(), "tailwind.bat", b"@node.exe cli.mjs %*\r\n");
+
+        for path in [&node, &env_node, &npm_shim, &cmd, &ps1, &bat] {
+            assert!(
+                !should_warm_oxide(path, OxideWarmupPolicy::Auto),
+                "recognized Node/npm shape should skip: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn auto_policy_scans_a_byte_realistic_pnpm_shim_past_byte_800() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fixture = br#"#!/bin/sh
+basedir=$(dirname "$(echo "$0" | sed -e 's,\\,/,g')")
+
+case `uname` in
+    *CYGWIN*|*MINGW*|*MSYS*)
+        if command -v cygpath > /dev/null 2>&1; then
+            basedir=`cygpath -w "$basedir"`
+        fi
+    ;;
+esac
+
+if [ -z "$NODE_PATH" ]; then
+  export NODE_PATH="/workspace/node_modules/.pnpm/prettier@3.8.3/node_modules/prettier/node_modules:/workspace/node_modules/.pnpm/prettier@3.8.3/node_modules:/workspace/node_modules/.pnpm/node_modules:/workspace/packages/site/node_modules:/workspace/packages/site/node_modules/.pnpm/node_modules"
+else
+  export NODE_PATH="/workspace/node_modules/.pnpm/prettier@3.8.3/node_modules/prettier/node_modules:/workspace/node_modules/.pnpm/prettier@3.8.3/node_modules:/workspace/node_modules/.pnpm/node_modules:/workspace/packages/site/node_modules:/workspace/packages/site/node_modules/.pnpm/node_modules:$NODE_PATH"
+fi
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/../prettier/bin/prettier.cjs" "$@"
+else
+  exec node  "$basedir/../prettier/bin/prettier.cjs" "$@"
+fi
+# cmd-shim-target=/workspace/node_modules/prettier/bin/prettier.cjs
+"#;
+        let exec_offset = fixture
+            .windows(b"exec node".len())
+            .position(|window| window == b"exec node")
+            .expect("fixture contains exec node");
+        assert!(exec_offset > 800, "fixture marker offset was {exec_offset}");
+        assert!(
+            (900..=1300).contains(&fixture.len()),
+            "fixture length was {}",
+            fixture.len()
+        );
+
+        let path = write_shape_fixture(dir.path(), "prettier", fixture);
+        assert!(!should_warm_oxide(&path, OxideWarmupPolicy::Auto));
+    }
+
+    #[test]
+    fn auto_policy_warms_unknown_native_unreadable_and_out_of_window_shapes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let native_small = write_shape_fixture(dir.path(), "native-small", b"\x7fELF\x02\x01");
+        let mut native_large_bytes = vec![0; 70 * 1024];
+        native_large_bytes[..2].copy_from_slice(b"MZ");
+        let native_large = write_shape_fixture(dir.path(), "native-large", &native_large_bytes);
+        let garbage = write_shape_fixture(dir.path(), "garbage", b"node-ish garbage");
+        let native_wrapper = write_shape_fixture(
+            dir.path(),
+            "native-wrapper",
+            b"#!/bin/sh\nexec /opt/tailwindcss-v4 \"$@\"\n",
+        );
+        let shell_mentions_node = write_shape_fixture(
+            dir.path(),
+            "shell-mentions-node",
+            b"#!/bin/sh # node is installed\nexec /opt/tailwindcss-v4 \"$@\"\n",
+        );
+        let mut late_marker = b"#!/bin/sh\n".to_vec();
+        late_marker.resize(OXIDE_WARMUP_SHAPE_READ_LIMIT as usize, b'#');
+        late_marker.extend_from_slice(b"exec node cli.mjs\n");
+        let late_marker = write_shape_fixture(dir.path(), "late-marker", &late_marker);
+        let nonexistent = dir.path().join("nonexistent");
+
+        for path in [
+            &native_small,
+            &native_large,
+            &garbage,
+            &native_wrapper,
+            &shell_mentions_node,
+            &late_marker,
+            &nonexistent,
+            &dir.path().to_path_buf(),
+        ] {
+            assert!(
+                should_warm_oxide(path, OxideWarmupPolicy::Auto),
+                "unrecognized shape should warm: {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_oxide_warmup_policy_has_precedence_and_auto_skip_is_not_cached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let node = write_shape_fixture(dir.path(), "tailwind-node", b"#!/usr/bin/env node\n");
+
+        assert!(!should_warm_oxide(&node, OxideWarmupPolicy::Never));
+        assert!(should_warm_oxide(&node, OxideWarmupPolicy::Always));
+        assert!(!ensure_oxide_extracted_with_policy(
+            &node,
+            OxideWarmupPolicy::Auto
+        ));
+        assert!(
+            ensure_oxide_extracted_with_policy(&node, OxideWarmupPolicy::Always),
+            "Auto skip must not be cached into WARMED"
         );
     }
 

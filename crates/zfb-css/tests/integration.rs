@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use zfb_css::{
     build_synthesised_entry_css, link_href, scan_css_module_imports, AuthoredCssEngine, CssEngine,
     CssModulesOutput, CssModulesProcessor, CssPipeline, CssPipelineConfig, NativeRustEngine,
-    TailwindSubprocessConfig, TailwindSubprocessEngine,
+    OxideWarmupPolicy, TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 
 #[test]
@@ -43,6 +43,60 @@ fn subprocess_engine_mock_short_circuits_command() {
         .produce_utility_css(&[PathBuf::from("pages/index.tsx")])
         .expect("mock engine should succeed");
     assert!(css.contains(".mock-utility"));
+}
+
+#[cfg(unix)]
+#[test]
+fn node_npm_cli_shape_runs_only_the_real_tailwind_invocation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Windows is intentionally out of scope: this repository has no Windows
+    // Rust test leg, while pure shape tests above cover its .cmd/.ps1 forms.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fake_bin = dir.path().join("tailwindcss");
+    let log = dir.path().join("invocations.log");
+    std::fs::write(
+        &fake_bin,
+        br#"#!/bin/sh
+# cmd-shim-target=/workspace/node_modules/@tailwindcss/cli/dist/index.mjs
+basedir=$(dirname "$0")
+printf '%s\n' "$*" >> "$basedir/invocations.log"
+previous=
+output=
+for argument in "$@"; do
+  if [ "$previous" = "-o" ]; then output=$argument; fi
+  previous=$argument
+done
+: > "$output"
+"#,
+    )
+    .expect("write fake tailwind executable");
+    std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake tailwind executable");
+
+    let config = TailwindSubprocessConfig::default()
+        .with_binary_path(&fake_bin)
+        .with_working_dir(dir.path())
+        .with_oxide_warmup(OxideWarmupPolicy::Auto);
+    let engine = TailwindSubprocessEngine::new(config);
+
+    for expected_count in 1..=2 {
+        engine
+            .produce_utility_css(&[])
+            .expect("fake tailwind invocation should succeed");
+        let invocations = std::fs::read_to_string(&log).expect("read invocation log");
+        let lines: Vec<_> = invocations.lines().collect();
+        assert_eq!(lines.len(), expected_count);
+        assert!(lines
+            .iter()
+            .all(|line| line.contains("-i ") && line.contains("-o ")));
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("warmup.css") && !line.contains("warmup.out.css")),
+            "Node/npm CLI shape must never receive a warm-up invocation: {lines:?}"
+        );
+    }
 }
 
 #[test]
