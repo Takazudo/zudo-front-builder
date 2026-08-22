@@ -1252,9 +1252,10 @@ fn ensure_oxide_extracted(binary_path: &Path) -> bool {
 /// not evidence that the target is non-standalone; CI commonly points it at the
 /// standalone binary itself.
 ///
-/// Returns `true` if this call ran the protocol, `false` if this process had
-/// already warmed the binary. The production call site ignores the return;
-/// tests use it to assert the once-per-process / serialized contract.
+/// Returns `true` if this call ran the protocol, `false` if policy skipped it
+/// or this process had already warmed the binary. The production call site
+/// ignores the return; tests use it to assert the decision precedence and the
+/// once-per-process / serialized contract.
 fn ensure_oxide_extracted_with_policy(binary_path: &Path, policy: OxideWarmupPolicy) -> bool {
     static WARMED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
     let warmed = WARMED.get_or_init(|| Mutex::new(HashSet::new()));
@@ -2562,8 +2563,9 @@ fi
     fn explicit_oxide_warmup_policy_has_precedence_and_auto_skip_is_not_cached() {
         let dir = tempfile::tempdir().expect("tempdir");
         let node = write_shape_fixture(dir.path(), "tailwind-node", b"#!/usr/bin/env node\n");
+        let native = write_shape_fixture(dir.path(), "tailwind-native", b"\x7fELF\x02\x01");
 
-        assert!(!should_warm_oxide(&node, OxideWarmupPolicy::Never));
+        assert!(!should_warm_oxide(&native, OxideWarmupPolicy::Never));
         assert!(should_warm_oxide(&node, OxideWarmupPolicy::Always));
         assert!(!ensure_oxide_extracted_with_policy(
             &node,
