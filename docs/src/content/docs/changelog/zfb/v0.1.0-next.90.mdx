@@ -1,0 +1,97 @@
+---
+title: v0.1.0-next.90
+sidebar_position: 86
+---
+
+# v0.1.0-next.90
+
+Released: 2026-07-21
+
+## Breaking Changes
+
+- A relative import (`./` or `../`) that resolves *above* your project root — including from a claimed workspace-sibling package's own source — now hard-fails with `Could not resolve`, where it previously succeeded by accident. On a pnpm workspace, before this release, a dual-target tsconfig rebase kept a graceful fallback to the LIVE tree, so a walk-above-root import happened to resolve against your real filesystem. `0906fb0f` (#1692) replaced that with a wholesale mirror of the first-party workspace tree; an import that escapes even that wider mirror has nowhere staged left to land. The `#1702` stage-escape guard family (which closes an unrelated symlink-escape hole) then correctly classifies this same accidental live-tree reach as an offender, so it is rejected rather than quietly re-admitted. **This behavior is intentional and stays** — it is not a regression to be reverted; see the tracked decision issues (#1726/#1730/#1733) if you believe your project needs the old fallback restored.
+  - **Migration**: move the target inside the project, or expose it as a real package import — add a wildcard `exports` entry to the target package's `package.json` (e.g. `"./src/*": "./src/*"`) and import it by package specifier (e.g. `@scope/pkg/src/button.ts`) instead of a relative path. `node_modules` is always included in the staged build tree, so a package-specifier import keeps resolving.
+  - **Diagnostics**: the build error now names every escaping import in one run (esbuild's own 10-message cap is uncapped for this diagnostic) and reports the REAL source path of each offending importer — never the ephemeral shadow-copy tempdir — even when the importer is itself a wholesale-mirrored workspace-sibling file (issue #1839). One caveat: esbuild never visits an unresolved module's own imports, so this report is *per-run* complete (every offender esbuild actually attempted), not *migration* complete — fixing the imports it names can surface further offenders on the next run. A lexical pre-scan that predicted every offender up front was deliberately not built: it would have to re-implement esbuild's own resolution algorithm to stay accurate, the unbounded-parity trap this project's build tooling avoids elsewhere.
+
+## Features
+
+- feat(zfb): feed sibling mirror roots into Tailwind @source content globs (b6aaee26)
+- feat(zfb): thread virtual-module claims into command-layer CSS discovery (d95170bc)
+- feat(zfb-build): skip fast path for unchanged sibling mirror files (1cec011d)
+- feat(zfb): add committed smoke script proving vendor-override contract on a clean tree (06df34f9)
+- feat(zfb): stage override binaries directly into vendor snapshot (ce25accb)
+- feat(zfb): align consumers on canonical URL encoding + global collision check (100e725f)
+- feat(zfb-render): canonical percent-encoding codec at paths() URL choke point (2b059dd1)
+- feat(zfb): wire dev-boot watcher-liveness probe with isolation + Ctrl+C cleanup (c6f1d152)
+- feat(zfb-watcher): add production watcher-liveness self-check primitive (4aed300f)
+- feat(zfb-build): specifier-aware stack-frame filtering in the reprojector (1042f8b9)
+- feat(zfb): enable the guard (b) stage-escape audit at build/dev call sites (6caf51a8)
+- feat(zfb-islands): wire guard (b) stage-escape audit into the esbuild layer (a1cab6fa)
+- feat(zfb-build): SSR work-mirror stage-escape audit (c79f1aed)
+- feat(zfb): Guard (a) — reject island/client-scoped workspace package-name imports (96358f5c)
+- feat(zfb-build): add guard (b) metafile stage-escape audit primitive (89730ed7)
+- feat(zfb-build): workspace tier for virtual-module import remap (466aee23)
+- feat(zfb, zfb-css): sibling .module.css class maps + CSS emission through the claim plan (ff042bfe)
+- feat(zfb-build): fixed-point stage import.meta.glob matched files (22d51d19)
+- feat(zfb-build): wholesale sibling mirror + root loose-file staging (0906fb0f)
+- feat(zfb-build): create work node_modules link under exclusions; invert resurrection guard (09f109fa)
+- feat(zfb-css): add workspace-aware CSS-modules hash root (0ced561e)
+
+## Bug Fixes
+
+- fix(zfb-content): validate MDX expressions before stringifying recovery (46981074)
+- fix(zfb-content): harden the no-pipeline emitter expression sink too (5a454279)
+- fix(zfb-content): recover leaked backslash-escape MDX expressions (038cd6a2)
+- fix(zfb): emit direct virtual-module CSS-module imports (cd89368c)
+- fix(zfb): serialize virtual-module test fixture path as a JSON string (a90b65b3)
+- fix(zfb-build): evict mirror_skip on downstream overwrite (78cb8f4d)
+- fix(zfb): document Unix-host + warm-CARGO_HOME prerequisites for verify-vendor-override.sh (b8eb2b7d)
+- fix(zfb): align runtime override resolution with build-time empty=unset contract (1823c85c)
+- fix(zfb-server): canonicalize IPv6 through IpAddr in the Exact-rule matcher (832be477)
+- fix(zfb-server): split origin matcher so IP literals need explicit rules (215a156d)
+- fix(zfb): canonicalize literal segments across the paths encoding boundary (f2064df4)
+- fix(zfb): align remaining non-canonical producers with the boundary (eb5a2357)
+- fix(zfb-render): resolve file-symlink alias relative imports via canonical dir (f21a3ed9)
+- fix(zfb-render): keep plugin attribution for missing alias siblings (79a704b4)
+- fix(zfb-render): canonical, non-widening alias disk-read containment (393cb8c1)
+- fix(zfb-watcher): bound Watcher::shutdown against a saturated outbound channel (7c72a8ee)
+- fix(zfb): apply watcher-liveness deep-review findings (99c55652)
+- fix(zfb): scope client/islands virtual-module remap to the workspace tier, cover the islands flow (8b659f9c)
+- fix(zfb): remap virtual-module sibling imports in the client-preprocess flow (e6e5e0b9)
+- fix(zfb-build): exclude sibling node_modules from the workspace remap tier (9bf92df4)
+- fix(zfb): codex-review findings on the sibling CSS command-layer test (c226e103)
+- fix(zfb-build): rewrite claimed sibling .module.css files in the work mirror (8fb230e0)
+- fix(zfb-build): stage claimed-region glob matches and their plain deps (0288e27e)
+- fix(zfb-build): preflight project-root loose files before materialising (c2a7b25b)
+- fix(zfb-css): tag sibling-relative hash input to avoid collision with project-relative (4a5cab53)
+- fix(zfb-islands): keep stage-audit metafiles out of the strict outdir read-back (267c399d)
+- fix(zfb): use .err().expect over .unwrap_err in guard-a test (fa6f83c9)
+
+## Other Changes
+
+- Validate the dev content-trace inner worker's shape, not just its wrapper (a915199c)
+- Add strict main-worker load contract for callable default.fetch (30874315)
+- Make Headers polyfill iteration live per WHATWG map-iterate semantics (1195146b)
+- Add URLSearchParams plus-space form-urlencoded handling (657b3560)
+- Fix Response constructor aliasing a caller-owned Headers instance (6a863eb3)
+- Fetch BodyInit content-type defaulting for the Response polyfill (c458baa7)
+- Ordered multi-value headers across the JS→Rust response bridge (f7a5d480)
+- refactor(zfb): extract watcher-liveness probe lifecycle into commands/watcher_liveness_probe.rs (5de9431d)
+- refactor(zfb): single derivation point for dev inner-bundle specifier + frame-filter cleanup (96e40622)
+- refactor(zfb): make dev content-trace wrapper a real ESM module (02b3f107)
+- test(zfb): prove watcher-liveness probe activity never causes an orchestrator tick (431d871f)
+- test(zfb): confirm decoy export-syntax e2e coverage for dev content-trace wrapper (faeaa9de)
+- test(zfb): orchestrator-boundary + e2e Scenario D confirm pass for sibling plain-module invalidation (5358b844)
+- test(zfb-islands): prove Guard (b) rejects a real-esbuild workspace-package escape (7beb0819)
+- test(zfb): drive Guard (a) through the real islands scanner (bba7496b)
+- test(zfb): extend the reroot-host cross-pipeline test with a virtual-module workspace-sibling proof (4a329433)
+- test(zfb-build, zfb): real-esbuild sibling-mirror regression matrix (63e56a3d)
+- docs(zfb): add the new Guard (b) env-gate test to the #[ignore] manifest (0678a7ff)
+- docs(zfb): add the islands-side #1682 twin, finalize both to "guarded by this epic" wording (6dc83794)
+- docs(zfb-islands): fix stale test-comment reference after dropping the env-gate integration test plan (c7975f13)
+- docs(claude): remove topic worktrees at wave-merge time (disk pressure rule) (4e953aca)
+- chore(zfb-build): expose SiblingMirrorPlan cross-crate for #1696 (5cd55193)
+- style: cargo fmt zfb-watcher lib.rs (fmt drift from the tiny-cleanups epic) (997d1732)
+- style: cargo fmt embedded_v8_smoke.rs (fmt drift from the response-polyfills epic) (5afdb886)
+- style(zfb-build): cargo fmt the epic's bundler.rs + sibling-mirror test (6ed4240a)
+- ci(health): cap the zfb-debug transfer artifact at 1-day retention (65cada61)

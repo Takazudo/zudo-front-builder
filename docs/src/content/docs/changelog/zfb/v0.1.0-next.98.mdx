@@ -1,0 +1,27 @@
+---
+title: v0.1.0-next.98
+sidebar_position: 94
+---
+
+# v0.1.0-next.98
+
+Released: 2026-07-29
+
+## Features
+
+- feat(zfb-types,zfb-router,zfb-build): single `_`-prefix privacy predicate (fd74e97a)
+- feat(zfb-build,zfb-types): share one roster+parse across SSR audit/enrolment; glob-aware workspace-walk pruning (#2142) (e7c63654)
+
+## Bug Fixes
+
+- fix(scripts): make check-exam-ignore-parity.sh run on bash 3.2 (#2147) (4f3b6ad9)
+
+## Other Changes
+
+- docs: split root CLAUDE.md into scoped crates/CLAUDE.md (#2150) (7a7970e0)
+- refactor(zfb): delegate the 4th has_node_modules_segment copy to zfb-types (#2146, #2128) (60faa1d9)
+- refactor(zfb-build,zfb-islands): delegate has_node_modules_segment copies to zfb-types (#2146, #2128) (8c8cabe8)
+- style(zfb-types): cargo fmt page_privacy.rs (1674824e)
+- refactor(zfb-build): narrow accepted_enrolment_set\* to pub(crate) (#2143) (e8436333)
+- refactor(zfb-build): extract shared classify_metafile_input for audit + enrolment (#2141) (fd96d986)
+- test(zfb-build): add byte-exact goldens for stage-escape audit diagnostics (#2141) (6882f4f3)

@@ -1,26 +1,23 @@
 ---
 title: Changelog
 sidebar_position: 99
-category_sort_order: desc
+pagination_prev: null
+pagination_next: null
 ---
 
-# Changelog
-
-This section tracks released versions of `@takazudo/zfb` and its lockstep workspace packages
-(`@takazudo/zfb-runtime`, `@takazudo/zfb-adapter-cloudflare`, `create-zfb`, and the five
-platform binaries).
-
-Each version has its own page below, sorted newest-first.
+The changelog is split into five package lanes while preserving the complete shared lockstep
+history. Releases through **v2.10.0** were published together: their release pages live in the
+`zfb` lane and cover `@takazudo/zfb`, the Rust engine and CLI, and the five platform carrier
+packages. The other four lanes are reserved for package-specific notes after that shared-history
+cutoff; historical pages are not duplicated into them.
 
 ## Release process (internal)
 
-Maintainers use the `/l-make-release` Claude Code skill to bump versions and write entries
-in this section. See the skill's SKILL.md for the full flow.
+Maintainers use the `/l-make-release` Claude Code skill to bump versions and write entries in the
+appropriate lane. See the skill's `SKILL.md` for the full flow.
 
 The Mac x86_64 build is optional via the `/l-make-mac-release-binary` skill — if the user
-pre-uploads the archive to the draft GH Release before publishing it, `release.yml` skips
-the slow `macos-13` CI leg.
+pre-uploads the archive to the draft GH Release before publishing it, `release.yml` skips the slow
+`macos-13` CI leg.
 
-## Versions
-
-Pages below this one list every released version.
+<CategoryNav category="changelog" />

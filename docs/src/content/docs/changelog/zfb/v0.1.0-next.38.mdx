@@ -1,0 +1,43 @@
+---
+title: v0.1.0-next.38
+sidebar_position: 34
+---
+
+# v0.1.0-next.38
+
+Released: 2026-06-11
+
+A large release rolling up eight development epics since next.37 — headlined by client-side scripts (`.client.*` + `clientScript()`), a new `when="media"` island hydration strategy, Vite-style `allowedHosts` host validation, exported `VNode` types, a TypeScript `slugify()` port, and stricter cross-file link validation. Plus a wave of dev-loop performance work and security hardening.
+
+## Breaking Changes
+
+- Removed the non-functional `linkValidation.allowExternal` knob (c562c92). It never had any effect; delete it from your config if present.
+- Builds with `linkValidation: { failOnBroken: true }` that previously passed despite broken cross-file anchor fragments (e.g. `./target.mdx#typo`) will now fail (#980). Audit your internal anchor links when upgrading.
+
+## Features
+
+- **Client scripts**: a new `.client.*` convention plus a `clientScript()` SSR helper that returns base-prefixed asset URLs. Entries are discovered across all roots and bundled per-entry with esbuild, wired through both `zfb build` and `zfb dev` with live reload on change (#971, #978). See the new "Client scripts" guide (EN + JA).
+- **`when="media"` island hydration**: hydrate an island when a media query matches, with lazy props parsing (EN + JA docs).
+- **`VNode` types exported**: the `VNode` union is widened (`| object`) and `VNode` types are now exported from `@takazudo/zfb`, supporting Preact slot patterns and strict-mode usage (#972).
+- **`slugify()` ported to TypeScript**: the Rust `slugify` / `SlugAllocator` is reimplemented in TS behind a shared parity fixture, so client and server produce identical slugs (#973).
+- **Vite-style `allowedHosts`**: non-localhost dev binds now enforce `allowedHosts` + Origin checks (IP-literal hosts are always allowed).
+- **`copyPublicWithBase` config knob**: opt-in base-prefixed copying of public assets.
+- Post-compile cross-file anchor check in `bundle()` (#980): `linkValidation` now verifies `./other.md#fragment` links against the target file's actual headings, not just file existence. The check runs after all files are compiled so every file's heading map is complete; transcluded headings are included. Targets outside the bundler's walked directories degrade to existence-only validation.
+- Island-marker registry warning: `zfb build` now warns when an island marker is missing from the registry (#984 / #990).
+- `ZFB_DEV_TIMING=1`: per-tick phase timing (materialise / esbuild / post / teardown) for `zfb dev` profiling (#991, #993).
+
+## Bug Fixes
+
+- Verbose error response bodies are now gated to dev mode only (#926).
+- Scanner registers `export { Foo as default }` with the correct marker name (#989).
+- Stop auto-injecting client scripts into every page head; skip `*.client.*` files in page-route scanning (#971).
+- Support legacy `MediaQueryList` listeners in `scheduleMedia` (older Safari).
+- `paths()` is memoised once per router instance (#974).
+- Security: symlink-containment + canonicalization for static-file and `/assets` reads, and a narrowed TOCTOU race via `ServeDir`.
+- livereload uses a direct `import()` instead of a `new Function` shim; prefetch cancels on focusout, awaits link load/error, and resets its observer on swap.
+
+## Other Changes
+
+- Dev-loop performance: persistent shadow-tree session (compute always, write only on change), MDX compile cache keyed by config fingerprint, byte-identical bundle skips, narrowed per-edit render sets, and no-op tick skips (#939, #940, #944, #956, #958, #977, #993).
+- docs: adopt `@takazudo/zudo-doc` 0.2.0 stable + `safelist.css`, removing the vendor-copy workaround.
+- ci: concurrency blocks on the smoke, release, and security-audit workflows.

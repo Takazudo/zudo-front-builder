@@ -1,0 +1,23 @@
+---
+title: v0.1.0-next.30
+sidebar_position: 26
+---
+
+# v0.1.0-next.30
+
+Released: 2026-06-05
+
+## Features
+
+- Next.js-style `[[...slug]]` optional-catchall route segments: `pages/docs/[[...slug]].tsx` matches both the bare directory URL (`/docs`, with `slug = []`) and nested paths (`/docs/a/b`). `paths()` accepts an explicit empty array only for the optional form — required `[...slug]` stays strict, and `""`, `"/"`, and `[""]` remain invalid for both forms. The zero-segment entry builds to `dist/docs/index.html` and reports `slug: []` in the route manifest; the worker runtime resolves the zero-segment Hono match (which captures no params) to the empty-array `paths()` entry; dev SSR and `zfb dev` template translation understand the new form. Scan-time conflict validation rejects an optional catchall beside a same-prefix bare-URL producer (`index.tsx` / `docs.tsx`) or another catchall, requires it to be the last segment, and allows only one per route. (786ad95, 9988410)
+
+## Bug Fixes
+
+- `@takazudo/zfb-runtime`: the declared hono floor is now `^4.12.23` (was `^4.7.0`), so the range no longer admits versions carrying 9 known advisories (all patched at >=4.12.21). The embedded `HONO_VERSION` pin used when the zfb binary embeds framework packages is synced to match. (72c5ff1, 569afc0)
+- Route registration order now uses a per-segment specificity rank vector on the Rust side, aligned with the bundled Hono runtime's ordering — a static-prefixed (optional) catchall no longer loses `/docs` or `/docs/a` to a less-specific top-level dynamic route in dev SSR. Fixes a dev/prod routing divergence (and a pre-existing required-catchall ordering quirk). (be6b013)
+- Router ambiguity detection now rejects param-name-insensitive duplicate route shapes: `pages/docs/[...a].tsx` vs `pages/docs/[...b].tsx` (or `[a].tsx` vs `[b].tsx`) previously slipped through and silently shadowed one another via alphabetical tiebreak. Routes differing in any static segment are unaffected. (c59ac34)
+- Docs site: astro 6.4.4 + mermaid 11.15.0 bumps clear all 7 remaining `pnpm audit --prod` advisories (2 astro, 4 mermaid, 1 transitive uuid). (307f012, 68db318)
+
+## Other Changes
+
+- `/l-make-release` skill runs fully autonomously by default; `--confirm` opts into the interactive proposal wait. (3e09893)

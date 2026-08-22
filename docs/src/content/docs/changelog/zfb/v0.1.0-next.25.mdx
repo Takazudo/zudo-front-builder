@@ -1,0 +1,22 @@
+---
+title: v0.1.0-next.25
+sidebar_position: 21
+---
+
+# v0.1.0-next.25
+
+Released: 2026-06-02
+
+## Breaking Changes
+
+- Remove the `markdown.features.admonitionsPreset` feature entirely and replace it with a generic `markdown.features.directives` map (`name → DirectiveSpec`) that registers **zero** default directive names. Configs still setting `admonitionsPreset` now fail to load (`deny_unknown_fields`). (318da76)
+- Rename the config spec types to drop the `Admonition` prefix: `AdmonitionDirectiveSpec → DirectiveSpec`, `AdmonitionDirectiveFullSpec → DirectiveFullSpec`, `AdmonitionDirectiveKind → DirectiveSpecKind`. (449bad7)
+
+## Features
+
+- Add `markdown.features.directives` — register your own `:::name` / `::name` / `:name` → `<Component>` mappings (short form `"Component"` or full form `{ component, kind, titleFromLabel }`). zfb is the engine; admonitions are now an opt-in **recipe** you assemble yourself (you supply the components). (700326c, 217d60f)
+
+## Other Changes
+
+- docs: reframe the markdown-features docs around the generic directives engine; add a `directives` feature page and an admonitions **recipe** page (with `details` as a separate collapsible). (03175db)
+- test: migrate the suite to explicit `directives` maps; add zero-default + per-kind coverage and a removal-proof test; drop the orphaned admonitions snapshot fixture. (b069f1f, 91d1afa, 4e72a0b)

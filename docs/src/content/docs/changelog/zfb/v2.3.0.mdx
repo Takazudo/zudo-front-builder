@@ -1,0 +1,39 @@
+---
+title: v2.3.0
+sidebar_position: 103
+---
+
+# v2.3.0
+
+Released: 2026-08-08
+
+The documentation desktop table of contents can now be collapsed, giving narrower reading layouts
+more room without losing access to page navigation.
+
+Cross-file Markdown fragment validation now survives `resolveMarkdownLinks`: links rewritten from
+source-space `.mdx#fragment` references into output URLs retain enough trusted source metadata for
+the post-compile validator to check their target headings. Replayed candidates are deduplicated
+without collapsing genuinely repeated authored links, and the corrected English and Japanese
+concept links now point at headings that exist.
+
+Showcase CI tools are now installed from the repository's frozen pnpm lockfile. Wrangler stays
+pinned and runs from the showcase directory, HTML validation is exact-versioned, and Cloudflare
+credentials are scoped to the upload step rather than dependency installation. The production
+dependency floor for `js-yaml` also moves to 3.15.1 for the latest high-severity quadratic-CPU fix.
+
+## Features
+
+- feat(docs): enable the desktop TOC collapse toggle (#2334) (9d8db824)
+
+## Bug Fixes
+
+- fix: raise js-yaml security floor (3e05c3f7)
+- fix: deduplicate fragment candidate replays (8ce6791d)
+- fix: preserve resolved markdown fragments (#2338) (7a9e7167)
+
+## Other Changes
+
+- test: confirm docs fragment enforcement (#2339) (714a1c9e)
+- ci: lock showcase deployment tools (#2336) (5bfc45da)
+- docs: correct broken concept fragments (#2337) (3bce36ac)
+- chore(deps): bump @takazudo/* docs deps (zudo-doc 5.2.0, zfb 2.2.0) (762d2bef)

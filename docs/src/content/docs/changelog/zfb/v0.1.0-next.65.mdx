@@ -1,0 +1,12 @@
+---
+title: v0.1.0-next.65
+sidebar_position: 61
+---
+
+# v0.1.0-next.65
+
+Released: 2026-06-26
+
+## Bug Fixes
+
+- fix(islands): the islands esbuild bundler no longer drops the consumer's tsconfig `paths` (e.g. `@/*`) when a plugin registers aliases or virtual modules — `"use client"` islands importing through `@/` now bundle and hydrate (#1238) (2cb9681a)

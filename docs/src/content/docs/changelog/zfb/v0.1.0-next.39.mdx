@@ -1,0 +1,28 @@
+---
+title: v0.1.0-next.39
+sidebar_position: 35
+---
+
+# v0.1.0-next.39
+
+Released: 2026-06-12
+
+Headlined by npm-dist `"use client"` island scanning (#999 / PR #1001): islands shipped inside regular npm packages under `node_modules` are now registered and hydrated, so package-provided layout islands work without scaffold-side shims. Plus link-resolution fixes for directory-style hrefs, island-registry hardening, and a test-reliability epic.
+
+## Features
+
+- **npm-dist island scanning**: the island scanner now registers `"use client"` modules from regular npm packages under `node_modules`, keyed through each package's `exports` map (#999, aa88ae2). Require-only CJS packages without an ESM export are treated as inert rather than mis-registered (6c1b47e).
+- `zfb build` warns on island marker-name collisions and hints when a marker likely comes from an npm-package island (#999, b52fe32).
+
+## Bug Fixes
+
+- Non-component exports are dropped from the island registry, and generated mount guards harden to a component-shape check (#998).
+- React per-island unmount is gated on `__zfb_ok` like the Preact arm, preventing unmount races on partially-hydrated pages (#1002).
+- Directory-relative links (`subpage/`, `./dir/`, `../dir/`, dotted directory hrefs) now resolve via extensionless and index-file candidates (#1004).
+- Config-loader subprocess spawn retries on transient `ETXTBSY` errors (#1008).
+- Shadow-root paths are canonicalized (macOS only) for byte-deterministic esbuild output across symlinked temp dirs (#1006).
+
+## Other Changes
+
+- Test reliability epic (#1013): deterministic `ETXTBSY` retry/exhaustion tests via an injectable spawn seam (#1014), stale-proof `locate_esbuild` with loud harness-bug skips, and runtime-root derivation coverage (#1015).
+- docs: add `"use client"` to four dead island components in the docs app; bump `@takazudo/zudo-doc` to 0.2.1 and retire the copy-public transition fallback (#997).

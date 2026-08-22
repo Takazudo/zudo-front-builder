@@ -1,0 +1,12 @@
+---
+title: v0.1.0-next.34
+sidebar_position: 30
+---
+
+# v0.1.0-next.34
+
+Released: 2026-06-07
+
+## Bug Fixes
+
+- The npm bin wrapper (`bin/zfb.mjs`) no longer orphans the native binary when the wrapper process receives `SIGTERM`/`SIGINT`: it now uses async `spawn` with signal forwarding (plus `SIGHUP` on POSIX) and re-raises the child's termination signal, so supervisors that signal only the wrapper (`concurrently --kill-others`, Playwright `webServer` teardown, `timeout(1)`, CI runners) cleanly stop a long-running `zfb dev` instead of leaving it bound to its port at PPID 1. The EACCES / spawn-failure diagnostics are preserved. (#873, #874) (7d32769)

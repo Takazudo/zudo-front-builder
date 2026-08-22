@@ -1,0 +1,26 @@
+---
+title: v0.1.0-next.31
+sidebar_position: 27
+---
+
+# v0.1.0-next.31
+
+Released: 2026-06-06
+
+## Features
+
+- `ScanMeta.near_miss_candidates`: the islands scanner now counts modules that look like they intended to be a `"use client"` island but registered none — a misplaced/misspelled directive, or a valid directive with no exported component. Detection is AST-based (a top-level expression-statement string literal whose normalized value equals `use client`), so comments and embedded substrings no longer trip it while mis-cased or whitespace-malformed directives still do. (58c20df, 8102e63)
+
+## Bug Fixes
+
+- `tailwind: { enabled: false }` no longer disables the entire authored-CSS pipeline. The flag previously killed the CSS emitter and the CSS-Modules class-name rewrite while the build still exited 0 — no `styles-*.css`, no stylesheet link, no scoped class attributes. A new Tailwind-free `AuthoredCssEngine` path keeps authored global CSS + CSS Modules flowing through the combine/hash/emit stages with no Tailwind subprocess, strips the template's `@import "tailwindcss"` lines (which nothing would resolve), and threads `project_root` so scoped class names in HTML match the emitted stylesheet. Both `zfb build` and `zfb dev` are covered. (#824) (5481b82, 8ea2b07, b140dfd)
+- CSS Modules scoped class names are now reproducible across machines: the `[hash]` input is the project-relative module path (forward-slash normalized) instead of the absolute path, so byte-identical sources produce identical scoped names and `styles-<hash>.css` filenames regardless of checkout location. Same-basename modules in different dirs stay distinct; the no-root fallback keeps the absolute path. (#825) (d1dc121)
+- `zfb dev` now picks up git-restored files (`git checkout --`, `git stash pop`, `git pull`, branch switches) instead of serving the pre-restore render indefinitely. The debouncer's sticky-Removed coalescing arm is gone — a Create/Modify after a pending Removed overrides it — and on-disk existence is authoritative for the Removed boundary at flush in both directions: pending Removed + present path → Modified, pending Created/Modified + absent path → Removed. (#823) (4ec4a07, 36e9315)
+- Stranded `zfb-tailwind-entry-*.css` temp files (left in the project root when SIGKILL / Ctrl-C skips RAII cleanup) are now self-healed: every Tailwind run sweeps entry files older than a 60s staleness window before creating its own, so an aborted run's orphan never lands in the user's `git add -A`. (#821) (576e7f3)
+- The empty-islands warning is demoted to a quiet info note on intentionally island-free sites. The loud "Verify each island module..." hint now fires only when `near_miss_candidates > 0` — i.e. when there is an actual authoring mistake to point at. (#822) (1da1105)
+
+## Other Changes
+
+- Deep-review DRY refactors across build.rs / zfb-css / zfb-watcher: shared `run_css_emitter` helper, `CssModulesConfig::for_project_root` constructor, single `is_tailwind_import_line` predicate, dead-param removal, doc corrections. No behavior change. (b81f46f)
+- Documented the accepted residual concurrent-build race in the tailwind entry sweep (two builds sharing a working_dir): worst case is one loud build failure, not corruption. (#821) (c1e200b)
+- `/l-make-release` skill publishes the GitHub Release autonomously by default; `--confirm` opts into the interactive stop-at-draft flow. (65d60c8)

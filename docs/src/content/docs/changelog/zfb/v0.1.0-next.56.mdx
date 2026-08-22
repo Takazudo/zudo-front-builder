@@ -1,0 +1,12 @@
+---
+title: v0.1.0-next.56
+sidebar_position: 52
+---
+
+# v0.1.0-next.56
+
+Released: 2026-06-22
+
+## Other Changes
+
+- docs(zfb-runtime): document the `<ClientRouter />` runtime auto-include behavior and the bootstrap-island escape hatch in the README. Mounting `<ClientRouter />` already ships the client-router runtime to the browser automatically (the island scanner injects the side-effect import into `assets/islands.js`); the manual `"use client"` bootstrap island is now documented only as the fallback for the import shapes detection deliberately skips (`import * as`, `import type`). (#1152, 91e575f, 488d4b9)

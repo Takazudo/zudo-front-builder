@@ -1,0 +1,21 @@
+---
+title: v0.1.0-next.33
+sidebar_position: 29
+---
+
+# v0.1.0-next.33
+
+Released: 2026-06-07
+
+## Features
+
+- Configurable hierarchical heading-ID strategy for HeadingLinks: `headingIds: { strategy: 'hierarchical' }` prefixes each heading slug with its ancestor chain's final id (`foo` / `foo-moo` / `foo-moo-mew`) and dedups on the full path, via a shared `SlugAllocator` so the rendered `<hN id>` and the `headings` export use one algorithm. The default stays `flat` (byte-stable with previous output). (#871, #872) (4e34adf, 8458404)
+
+## Bug Fixes
+
+- `Pipeline::set_heading_id_strategy` is now public, so a custom pipeline that hand-wires `HeadingLinksPlugin::with_strategy(Hierarchical)` can keep the headings export in sync with the rendered ids. (#871) (729fba7)
+
+## Other Changes
+
+- TS config types mirror the new `headingIds` field (`HeadingIdsConfig` on `MarkdownFeaturesConfig`), and the heading-links docs page covers the strategy knob, the hierarchical rules, and the anchor-breaking caveat. (#871) (3130501)
+- Unit + integration tests covering the hierarchical heading-ID strategy: sibling pops, depth jumps, full-path dedup, parent prefixes, reset between documents, JSX-nested headings, and a flat golden regression guarding byte-stability. (#871) (a7243cc)

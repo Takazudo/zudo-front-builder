@@ -79,6 +79,27 @@ it can be modified, rather than requiring the host to reconstruct package intern
 - **Do not add `_category_.json` sidecars.** They are not read under zfb: zudo-doc's `loadCategoryMeta` reads them with `node:fs`, which the SSG runtime stubs with a throwing proxy, so the read fails closed to an empty map with no build error (zfb#2196). They also each emitted a data-file skip warning (zfb#1032). All 17 were migrated to frontmatter and deleted — upstream retired the sidecar in favour of frontmatter, which `build-tree.js` reads first at every site
 - **Careful with `category_no_page: true`** on a directory named in `headerNav` (`docs/zfb.config.ts`): it suppresses the category's `href` and its page is never emitted, but the header still links it from every page — a site-wide 404 that `--strict-broken` does **not** catch
 
+### Changelog lanes
+
+The changelog has five package lanes in this stable order: `zfb`, `zfb-runtime`,
+`zfb-adapter-cloudflare`, `create-zfb`, and `zfb-md-wasm`. The `zfb` lane owns
+`@takazudo/zfb`, the Rust engine/CLI, and the five platform carrier packages; each other lane
+owns only its named package. The complete shared lockstep history through **v2.10.0** stays in
+`src/content/docs/changelog/zfb/` and must not be duplicated into another lane.
+
+Release pages use the path convention
+`src/content/docs/changelog/<lane>/v<version>.mdx`, which emits
+`/docs/changelog/<lane>/v<version>/`. For a new release, calculate that lane's
+`sidebar_position` as **max existing release position + 1**; do not reuse a position from another
+lane. Each lane index owns its own descending release order, and its previous/next pagination is
+disabled. The oldest release in every populated lane must stop its pager at the lane boundary with
+`pagination_next: null`; no pager may cross from one lane into another.
+
+In `docs/zfb.config.ts`, `Changelog` is the parent header item with `categoryMatch: "changelog"`
+and the five lane paths as children. The child items intentionally omit `categoryMatch`: nav-scope
+matches only the first slug segment, so the parent owns the `changelog` scope and lane paths stay
+under it.
+
 ### Links
 
 - Use **relative `.mdx` paths** for cross-doc links: `[label](../other-dir/page.mdx)` — zfb's `resolveMarkdownLinks` converts these to root-relative route URLs at build time (the only fully reliable form).

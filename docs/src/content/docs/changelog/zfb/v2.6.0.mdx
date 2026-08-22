@@ -1,0 +1,29 @@
+---
+title: v2.6.0
+sidebar_position: 109
+---
+
+# v2.6.0
+
+Released: 2026-08-18
+
+## Features
+
+- add emitRenderArtifacts config/CLI plumbing (50eb1ca0)
+- region identity, raw-source digest, and headings metadata channel (bfa657f0)
+- wrap rendered content regions in render-artifact sentinels (132893f4)
+- extract, strip, and write render artifacts (e747e78e)
+
+## Bug Fixes
+
+- tolerate about:srcdoc history restrictions in client router (296c2994)
+- apply code-review findings — SSR sentinel leak, non-HTML stripping, metadata-key dedup, route-map first-wins, md-only direct pages, docs digest (74562834)
+
+## Other Changes
+
+- skip the render-metadata digest when the walk does not want it (0956d593)
+- tighten the render-metadata channel after self-review (f5de6f1b)
+- tighten the render-artifact pass after self-review (311a24e3)
+- real-build confirm gate for render artifact export (a46b0cc7)
+- sharpen the flag-off entry-module parity comment (8aa9c804)
+- document emitRenderArtifacts config, CLI flags, and the JSON contract (03b5ee2a)

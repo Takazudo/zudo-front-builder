@@ -1,0 +1,28 @@
+---
+title: v0.1.0-next.72
+sidebar_position: 68
+---
+
+# v0.1.0-next.72
+
+Released: 2026-06-30
+
+## Bug Fixes
+
+- fix(css): refresh CSS asset & re-scan Tailwind on transitive-CSS / component-class edits (db81247)
+- fix(css): make @import scanner UTF-8-safe (2169eef)
+- fix(dev): invalidate consuming route on imported-component edits (ab70a6f)
+- fix(dev): merge Module/Content edges instead of clobbering (7103b6f)
+- fix(graph): treat consumer-less reverse entry as not-known in knows() (34f7315)
+
+## Other Changes
+
+- [Dev Dep Invalidation Followups] boot-edge merge-not-replace, watch-target note, Level-4 e2e (a5cc19f)
+- dev: merge-not-replace boot graph load + boot-time watch-target note (e40432d)
+- test: implement three Level-4 dev-dep-invalidation e2e bodies (16d27f9)
+- [Dev Dep Invalidation] Invalidate dependent routes + refresh CSS on imported-component / transitive-CSS edits in dev (b7c9221)
+- test(dev): update derive_watch_roots tests for `src` default root (39d6e89)
+- test(dev): relink #1284 e2e stubs to tracking issue #1290 (30237a5)
+- style: cargo fmt for #1287 graph test additions (a2dc543)
+- test(dev): light-review fixes — real Style-edge repro + fix-author migration notes (88a451b)
+- test(dev): diagnose #1284 dep-invalidation — research doc + failing repro tests (22abc62)

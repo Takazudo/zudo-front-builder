@@ -1,0 +1,47 @@
+---
+title: v0.1.0-next.54
+sidebar_position: 50
+---
+
+# v0.1.0-next.54
+
+Released: 2026-06-21
+
+## Bug Fixes
+
+- fix(zfb-css): normalise backslashes unconditionally in hash_filename for cross-OS hash stability (4c11839)
+- fix(headers): preserve multi-valued response headers (e.g. multiple Set-Cookie) (2ad790a)
+- fix(consistency): doc-drift + dead-code + cross-table parity cleanup (13 items) (ff1c3b3)
+- fix(cli): 6 localized sharp-edge fixes (#1142) (e674d9e)
+- fix(zfb-watcher): break debouncer starvation/livelock under continuous event streams (1072727)
+- fix(zfb-build): make PluginHost::shutdown idempotent and bound reader teardown (#1140) (a9744d0)
+- fix(zfb-server): fail closed on missing Origin/Host headers when LAN-exposed (6944e68)
+- fix(zfb-runtime): defensive guards in client-router (sub #1137 ← #1112) (ece3780)
+- fix(reading-time): extend is_cjk_char to cover supplementary-plane CJK (U+20000-U+2FA1F) (b52e39a)
+- fix(plugin-resolver): anchor leaf tsconfig paths on leaf dir, not parent baseUrl (2bf64a8)
+- fix(new): cleanup partial scaffold on failure + harden sanitize_pkg_name (d316731)
+- fix(content): 4 correctness fixes with tests (a8e53e4)
+- fix(zfb-md-extras): 3 security/correctness fixes with tests (35bff71)
+- fix(zfb-build): make define_vars BTreeMap for deterministic --define arg order (00a3597)
+- fix(config-loader): error on present-but-non-array plugins value (7aa8d8d)
+- fix(zfb-server): cap request body at 2 MiB via DefaultBodyLimit (6078779)
+- fix(docs): replace DOMContentLoaded with AFTER_NAVIGATE_EVENT in islands (e7d99de)
+
+## Other Changes
+
+- perf(item3+4): precompute canonical roots at startup; catch_unwind for render hook (2770e7b)
+- perf(item2): single-pass rewrite_islands (one lol_html pass + N string splices) (7b45a6f)
+- perf(item1): encode dispatch_fetch body as base64 + atob decode in JS (0348c30)
+- perf(item5): stream count_words via in-word state machine, add mixed-input test (9f22ae0)
+- review nits: abort wedged reader task on shutdown timeout; clear external-script timer on load (bf71718)
+- test: harden 5 reliability items (s#1146) (ce671c2)
+- docs(item6): document ASSETS re-probe trade-off in worker-wrapper.mjs (9c25dd8)
+- docs: review sweep — remove dead de locale, guard docTags routes, extract HomePageBody, annotate search, fix a11y (ef6c9a6)
+- chore: pin tool versions and reconcile Homebrew tap name (d2f13b9)
+- chore(packages): add optional react peer deps and publishConfig to platform stubs (9e48fca)
+- chore(docs): bump @takazudo/zudo-doc 0.2.11→0.2.15 + zfb stack next.53 (62edee4)
+- fix(clippy): type alias for island seen-flags; div_ceil in base64 capacity (-D warnings) (9dbeb2b)
+- fix(clippy): rewrite SSE subscriber-wait loop as while-let (-D warnings) (576b850)
+- fix(new): use char-array pattern in trim_start_matches (clippy) (3257adf)
+- fix(ci): keep define_vars as HashMap with sorted --define emit; rustfmt (e8606ac)
+- style: cargo fmt for #1143 additions (73517cf)

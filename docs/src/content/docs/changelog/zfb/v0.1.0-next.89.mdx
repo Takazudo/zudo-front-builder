@@ -1,0 +1,38 @@
+---
+title: v0.1.0-next.89
+sidebar_position: 85
+---
+
+# v0.1.0-next.89
+
+Released: 2026-07-18
+
+## Features
+
+- feat(zfb-types): workspace-scoped module-worker naming (58281379)
+- feat(zfb-build): re-root the SSR shadow at the workspace first-party boundary (30fc3679)
+- feat(zfb-build): stage workspace-sibling first-party files in the SSR shadow (16a118a3)
+- feat(zfb-build): thread workspace-scoped worker naming, drop the #1667 guard (c756e8d1)
+- feat(zfb-build): surface dynamic workspace-sibling watch registration as an observable signal (15683dc9)
+
+## Bug Fixes
+
+- fix(zfb): search esbuild's default-export alias clause first in dev rewrite (aaeb484b)
+- fix(zfb): retry earlier anchored export clauses in dev default-export rewrite (863437e6)
+- fix(zfb): re-root client-script preprocessing stage at the workspace boundary (b0210ef6)
+- fix(zfb-build): honor bundle.exclude for the workspace node_modules link (7e7463fe)
+- fix(zfb-types): reject the project root itself in scoped worker naming (541b02c1)
+- fix(zfb-server): enforce Host/Origin validation on loopback binds (352d096f)
+
+## Other Changes
+
+- test(zfb-build): pin the #1668 workspace-sibling preprocessing guard (a9657073)
+- test(zfb): workspace-shaped client-script stage units for the re-root (91e65715)
+- test(zfb): env-gated cross-pipeline case for a claimed workspace host (a30b3bad)
+- test(zfb-build): cover the #1675 SSR shadow workspace layout re-root (18bde30c)
+- test(zfb-build): invert the #1672 guard-pin tests into sibling-staging assertions (d3ca0d3a)
+- test(zfb): drop the literal "?raw" from the reroot fixture payloads (0667b237)
+- test(zfb-build): invert the #1667 guard-pin test into a scoped-companion assertion (ebda1674)
+- test(zfb): L4 e2e for dev workspace-sibling raw/worker watch invalidation (bb5f88fe)
+- test(zfb): wire #1678 e2e into T3 exam lane + reconcile ignore manifest (60adf063)
+- docs(zfb): note the node_modules escape + dev-invalidation limits (39dace9e)

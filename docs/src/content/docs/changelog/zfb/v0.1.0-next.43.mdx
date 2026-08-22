@@ -1,0 +1,13 @@
+---
+title: v0.1.0-next.43
+sidebar_position: 39
+---
+
+# v0.1.0-next.43
+
+Released: 2026-06-13
+
+## Bug Fixes
+
+- The release npm-publish step is now idempotent and tolerant of npm's double-PUT race: each package is skipped if its `name@version` is already on the registry, and a "cannot publish over the previously published versions" / `EPUBLISHCONFLICT` (plus a post-failure registry recheck for the lost-ACK case) is treated as a skip — so a partial publish can be safely re-run and a transient network blip no longer aborts the release. Any other publish error still fails the job (ebe2c1a).
+- Non-platform packages publish via a per-package `pnpm -r --filter <name>` loop so a mid-list conflict can't abort the rest (80a9754).

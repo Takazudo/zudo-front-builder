@@ -1,0 +1,93 @@
+---
+title: v0.1.0-next.81
+sidebar_position: 77
+---
+
+# v0.1.0-next.81
+
+Released: 2026-07-15
+
+## Features
+
+- feat(islands): ship browser resources through asset lifecycle (2fd48511)
+- feat(md-wasm): add browser resource package entry (0f853c9a)
+- feat(islands): carry browser file resources (b1b76465)
+- feat(md-wasm): expose highlightCode API (14c145fe)
+- feat(content): share class highlight renderer (0033177f)
+- feat: define content provenance contract (cc5d3d74)
+- feat(zfb): type SSR Wasm imports (490a5286)
+- feat(render): load bundle-relative Wasm imports (213cfa0a)
+- feat(adapter): forward emitted wasm assets (92c54071)
+- feat(bundler): manifest copied wasm assets (cfde4f41)
+
+## Bug Fixes
+
+- fix(bundler): bound cyclic exclusion dependency staging (718e0d6c)
+- fix(md-wasm): force recovery with deterministic wasm trap (d0a49111)
+- fix: derive content trace event default (0b89f477)
+- fix: preserve paths content provenance in dev (babebc0d)
+- fix: support zero-pages injected dev routes (b82f7208)
+- fix(zfb): render injected root routes in dev (8fd0c2e4)
+- fix(zfb): canonicalize lazy injected route URLs (23919574)
+- fix: extract paths from local export clauses (666cb652)
+- fix(adapter): validate emitted wasm asset paths (74b00c2e)
+- fix(bundler): parse wasm import references (84248df1)
+- fix(release): advance latest dist-tag for @takazudo/zfb-md-wasm too (4f876106)
+
+## Other Changes
+
+- Merge pull request #1644 from Takazudo/codex/1631-bundle-exclude-cycle (7a8102a0)
+- chore: start bundle exclude cycle fix [skip ci] (39a01acc)
+- Merge pull request #1643 from Takazudo/base/md-wasm-semantic-highlight (afe59edc)
+- test: keep packed browser fixture install deterministic (f5fbfac5)
+- merge: stage browser fixture dependencies (68710ee2)
+- test: stage browser fixture dependencies (46b46038)
+- merge: add md wasm browser confirmation lane (d5a21ed6)
+- test: add md-wasm browser confirmation lane (4f465876)
+- merge: ship browser resources through asset lifecycle (0aa212d2)
+- merge: add browser resource package entry (87250e88)
+- merge: carry browser file resources (d63139c3)
+- merge: expose typed highlight code API (24aee977)
+- merge: share arbitrary code class renderer (db6d036c)
+- merge: decide md wasm resource delivery (e0ebe0ea)
+- docs(research): decide md-wasm resource delivery (c98d8f27)
+- merge: verify canonical hi roles prerequisite (86b93731)
+- chore: verify canonical hi roles prerequisite (747e9535)
+- chore: start md wasm semantic highlight epic (58dca2fd)
+- Merge pull request #1632 from Takazudo/base/hi-roles (1b6f76fd)
+- Merge topic: guard TypeScript highlight role union (e5a7a641)
+- test: guard TypeScript highlight role union (22c5bf3c)
+- Merge topic: derive highlight roles from canonical table (479bfeda)
+- refactor: derive highlight roles from canonical table (e0558a01)
+- chore: start Hi Roles epic (ffef3bb6)
+- Merge pull request #1630 from Takazudo/base/content-edges (f9667149)
+- Merge topic: verify content edge lifecycle (d3b48092)
+- test: cover content edge restart lifecycle (314457fd)
+- Merge topic: wire content provenance (25882d92)
+- Wire dev content provenance (65d36a00)
+- Merge topic: define content provenance contract (68aebae6)
+- Merge topic: add cold-boot aggregate guard (6fa2e418)
+- test: add cold-boot content aggregate guard (e345baee)
+- chore: start Content Edges epic (ca2208c7)
+- Merge pull request #1629 from Takazudo/base/zero-pages (4b6ab515)
+- Merge topic: confirm true zero-pages routes (a640811b)
+- docs: clarify zero-pages bundler roots (f429e39c)
+- Merge topic: clarify injected route parity docs (a88de83b)
+- docs: clarify injected route parity (e04e881b)
+- Merge topic: render injected root routes in dev (d918086a)
+- Merge topic: certify node modules virtual routes (9b650d8c)
+- test: certify node modules virtual routes (42ae24dc)
+- Merge topic: canonicalize lazy injected route URLs (c368c0b2)
+- Merge topic: compiled JS paths export clauses (147f8559)
+- chore: start Zero Pages epic (fea42f73)
+- Merge pull request #1628 from Takazudo/base/wasm-ssr (42856958)
+- Merge topic: add Wasm SSR dev smoke (8e5c35a0)
+- test(zfb): add Wasm SSR dev smoke (ab6d2387)
+- Merge topic: confirm Wasm SSR adapter handoff (34f7f4f7)
+- ci(zfb): schedule Wasm SSR Wrangler confirmation (a7d3105c)
+- test(zfb): confirm Wasm SSR adapter handoff (444a1e7b)
+- Merge topic: type SSR Wasm imports (682fb08c)
+- Merge topic: forward emitted Wasm assets (d457c907)
+- Merge topic: load bundle-relative Wasm imports (d094d3fa)
+- Merge topic: manifest copied wasm assets (072eade4)
+- chore: start Wasm SSR epic (9ad231f5)

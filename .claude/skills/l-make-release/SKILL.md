@@ -6,7 +6,7 @@ argument-description: "Optional — with NO argument the level is judged from th
 
 # /l-make-release
 
-Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes a changelog doc, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-15-intel CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
+Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes five package-specific changelog docs, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-15-intel CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
 
 ## Invocation & autonomy
 
@@ -248,6 +248,20 @@ Categorize each commit by its conventional-commit prefix:
 - **Bug Fixes**: `fix:` prefix
 - **Other Changes**: everything else (`docs:`, `chore:`, `refactor:`, `ci:`, `test:`, `style:`, `perf:`, etc.)
 
+Then classify every user-facing commit and diff into package lanes by ownership:
+
+- **zfb**: the Rust engine/CLI, `@takazudo/zfb`, and all native carrier packaging.
+- **zfb-runtime**: browser/runtime package behavior and API.
+- **zfb-adapter-cloudflare**: Cloudflare adapter behavior and API.
+- **create-zfb**: generator CLI and generated-project behavior.
+- **zfb-md-wasm**: the MD/WASM package, entries, API, artifacts, and package behavior.
+
+A change that affects multiple packages MUST appear in every affected lane. Do not put repo-only
+docs, tests, CI, or maintenance changes with no package-facing effect in any lane. Every lane still
+gets a page for the lockstep version; when a lane has no package-specific change, preserve its date
+and use exactly `- No package-specific changes.` Never copy another package's narrative into an
+unchanged lane.
+
 Present the proposal to the user:
 
 ```
@@ -280,7 +294,7 @@ else `feat:` → minor, else patch), so do it before finalizing the proposed ver
   already states the intent — no ask.)
 - **With `--confirm`**: **wait for explicit user confirmation before proceeding.** If the trigger was a loose phrase, restate the proposed bump plainly so the user can catch a wrong version strategy before anything is written.
 
-## Step 4: Bump + Sync + Changelog mdx
+## Step 4: Bump + Sync + Package Changelog MDX
 
 ### 4a. Update packages/zfb/package.json
 
@@ -315,14 +329,27 @@ git diff pnpm-lock.yaml | grep -P '^[+-](?!  )' | head -20
 
 If you see non-version-related changes (structural changes, unexpected lines), stop and surface the diff to the user before proceeding.
 
-### 4d. Write changelog mdx
+### 4d. Write five package changelog MDX pages
 
-Create `docs/src/content/docs/changelog/v<version>.mdx`:
+Create exactly these five English pages (there are no Japanese mirrors because the changelog is
+default-locale-only):
+
+```text
+docs/src/content/docs/changelog/zfb/v<version>.mdx
+docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx
+docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx
+docs/src/content/docs/changelog/create-zfb/v<version>.mdx
+docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx
+```
+
+Use this shape for each page:
 
 ```mdx
 ---
 title: 'v<version>'
 sidebar_position: <computed>
+# Include only for a lane's first-ever release page:
+pagination_next: null
 ---
 
 # v<version>
@@ -348,34 +375,53 @@ Released: <YYYY-MM-DD>
 
 Rules:
 
-- Only include sections that have entries.
+- Only include sections that have entries for that package. If there are none, the entire body
+  after `Released:` is exactly a blank line followed by `- No package-specific changes.`
 - Use today's date for `Released`.
 - Each entry: commit subject followed by the short hash in parentheses.
-- `sidebar_position` formula: `MAJOR*10000000 + MINOR*100000 + PATCH*1000 + (prereleaseN || 999)`
-  - Every slot is 3 digits wide: minor and patch up to 99, prerelease N up to 998. Stable versions
-    use `999` in the prerelease slot so they sort **above** every prerelease on the same release
-    triple, under the changelog category's `category_sort_order: desc`.
-  - Examples: `1.0.1-next.1` = **10001001**; `1.0.1-next.10` = **10001010**; `1.0.1-next.99` = **10001099**; `1.0.1` (stable) = **10001999**; `1.1.0` = **10100999**; `2.0.0` = **20000999**.
-  - Desc-sorted: 20000999 > 10100999 > 10001999 > 10001099 > 10001010 > 10001001 → stable above its own prereleases, newer prereleases above older ones, at any N.
-  - **Why this is wider than it looks like it needs to be** (do NOT "simplify" it back): the previous
-    formula gave each slot only one digit — `MAJOR*10000 + MINOR*1000 + PATCH*10 + (N || 10)` — so it
-    broke as soon as a prerelease counter reached 10. Real collisions in this repo's own history:
-    `0.1.0-next.10` computed **1010**, identical to what stable `0.1.0` would have taken, and
-    `0.1.0-next.11` = **1011** sorted *above* it. A minor of `0.10.0` collided with `1.0.0` the same
-    way. The `0.1.0-next.*` line ran to **next.99**, so this was not a theoretical bound.
-  - **Legacy values are intentionally NOT migrated.** Every changelog page written before v1.0.0
-    keeps its old-formula number (the largest is `v1.0.0.mdx` at **10010**). No migration is needed:
-    the smallest value this formula can emit for any version after 1.0.0 is `1.0.1-next.1` =
-    10001001, which already exceeds 10010, so new entries always sort above every legacy entry and
-    relative order is preserved across the two schemes. Do not renumber the existing pages.
+- Duplicate cross-package changes into every affected page.
+- Omit repo-only docs/tests/CI/maintenance changes with no package-facing effect.
+- Compute `sidebar_position` independently in each package directory. Scan only that lane's
+  non-index `v*.mdx` pages, take its maximum, and add one. Run all five scans — never derive one
+  lane's position from another or scan the retired changelog root:
+
+  ```bash
+  ZFB_POSITION=$(find docs/src/content/docs/changelog/zfb -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
+  ZFB_RUNTIME_POSITION=$(find docs/src/content/docs/changelog/zfb-runtime -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
+  ZFB_ADAPTER_CLOUDFLARE_POSITION=$(find docs/src/content/docs/changelog/zfb-adapter-cloudflare -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
+  CREATE_ZFB_POSITION=$(find docs/src/content/docs/changelog/create-zfb -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
+  ZFB_MD_WASM_POSITION=$(find docs/src/content/docs/changelog/zfb-md-wasm -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
+  ```
+
+  The migrated `zfb` lane continues after its historical maximum. A lane with no existing version
+  pages gets position 1; include `pagination_next: null` in that first page's frontmatter so its
+  previous/next traversal cannot cross into another package lane. Omit that key on later pages.
+  `index.mdx` is excluded by each `v*.mdx` scan.
+
+  - This replaces the retired encoded-semver mega-number formula
+    (`MAJOR*10000000 + MINOR*100000 + PATCH*1000 + …`, values like `20700999`). All 110 pre-existing
+    pages were renumbered to plain 1..N in semver order on 2026-08-18 (zudo-doc's own changelog uses
+    the same plain-increment style). Do NOT resurrect the mega-number formula: a mega-number page
+    sorts above every incremental page and would pin itself to the top of the sidebar forever.
+  - Edge case — releasing on an older line (e.g. a `2.6.x` patch after `2.7.0` exists): plain
+    max+1 would place it above `2.7.0` in the sidebar. This has never happened in this repo
+    (releases are strictly forward); if it ever does, renumber the affected tail by hand so
+    position order matches semver order, and say so in the release report.
 
 ## Step 5: Build + Test (focused)
 
 ```bash
-pnpm --filter @takazudo/zfb test && cargo test --package zfb
+pnpm --filter @takazudo/zfb test && \
+  cargo test --package zfb && \
+  pnpm --filter docs check && \
+  pnpm --filter docs build && \
+  pnpm --filter docs check:html
 ```
 
-If anything fails, stop and tell the user. Do not proceed.
+The docs build's `--strict-broken` flag is supplied by the `docs` package's `build` script. Run all
+five commands before the direct release push so type/content errors, strict broken links, and
+malformed emitted HTML cannot be published. If anything fails, stop and tell the user. Do not
+proceed.
 
 If you used `--lockfile-only` in 4c (so `node_modules` is still "stale" per pnpm), the TS test's pre-run deps check will try to auto-install and hit the same no-TTY purge abort. Either run `CI=1 pnpm install` once first, or skip the check for this run: `pnpm --config.verify-deps-before-run=false --filter @takazudo/zfb test` (the bump changes only internal version numbers, not external deps, so the existing `node_modules` is valid for the test — and CI re-validates with a clean install at Step 7 regardless). The `cargo test` leg is unaffected.
 
@@ -388,7 +434,12 @@ Note: the Rust CLI binary is built by `.github/workflows/release.yml` — do not
 Stage and commit all bumped files atomically in a **single commit**:
 
 ```bash
-git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.yaml crates/zfb/src/commands/new.rs docs/src/content/docs/changelog/v<version>.mdx
+git add packages/*/package.json crates/zfb-md-wasm/npm/package.json pnpm-lock.yaml crates/zfb/src/commands/new.rs \
+  docs/src/content/docs/changelog/zfb/v<version>.mdx \
+  docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx \
+  docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx \
+  docs/src/content/docs/changelog/create-zfb/v<version>.mdx \
+  docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx
 git commit -m "chore(release): bump to v<version>"
 git push origin main
 ```
@@ -431,15 +482,31 @@ If it exists:
 
 This check is scoped to the **target** version. A draft for a *different* (earlier, superseded) version is an orphan from an abandoned run — that case is caught by Step 1's draft scan and cleaned up via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft).
 
-Also verify that the most-recent commit on `main` matches the version in the mdx (the `Released:` date and the filename `v<version>.mdx` should align with the current HEAD). If there is a mismatch, surface it and recommend rollback before proceeding.
+Also verify that the most-recent commit on `main` matches the version in all five MDX pages (each
+`Released:` date and each filename `v<version>.mdx` should align with the current HEAD). If any page
+is missing or mismatched, surface it and recommend rollback before proceeding.
 
 ## Step 9: Pre-create Draft GH Release
 
 ```bash
-NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/v<version>.mdx)
+ZFB_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb/v<version>.mdx)
+ZFB_RUNTIME_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx)
+ZFB_ADAPTER_CLOUDFLARE_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx)
+CREATE_ZFB_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/create-zfb/v<version>.mdx)
+ZFB_MD_WASM_NOTES=$(sed -n '/^Released:/,$ p' docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx)
+RELEASE_NOTES=$(printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s\n\n%s' \
+  '## @takazudo/zfb' "$ZFB_NOTES" \
+  '## @takazudo/zfb-runtime' "$ZFB_RUNTIME_NOTES" \
+  '## @takazudo/zfb-adapter-cloudflare' "$ZFB_ADAPTER_CLOUDFLARE_NOTES" \
+  '## create-zfb' "$CREATE_ZFB_NOTES" \
+  '## @takazudo/zfb-md-wasm' "$ZFB_MD_WASM_NOTES")
 PRERELEASE_FLAG=$([[ "<version>" =~ -next\.|-beta\.|-rc\. ]] && echo "--prerelease" || echo "")
-gh release create v<version> --target <bump-sha> --title "v<version>" --notes "$NOTES" --draft $PRERELEASE_FLAG
+gh release create v<version> --target <bump-sha> --title "v<version>" --notes "$RELEASE_NOTES" --draft $PRERELEASE_FLAG
 ```
+
+Keep these five extractions independent: never reuse one lane's variable as another package's body.
+This remains one GitHub Release with the existing tag, binary assets, npm publication order, and
+Homebrew flow; only its notes are assembled from the five package sources.
 
 The tag is created remotely as a draft. The `release: published` webhook event does NOT fire on draft creation (by design).
 
@@ -673,7 +740,7 @@ gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagN
    git rev-list --count <bump-sha>..HEAD
    ```
 
-   - **`0` — the bump is still HEAD** (created this run, nothing built on top): revert it. The Step 6 commit is atomic, so one revert undoes `package.json` + the lockfile **and** removes the new `v<version>.mdx` together:
+   - **`0` — the bump is still HEAD** (created this run, nothing built on top): revert it. The Step 6 commit is atomic, so one revert undoes `package.json` + the lockfile **and** removes all five new package MDX pages together:
 
      ```bash
      git revert --no-edit <bump-sha>
@@ -704,7 +771,7 @@ Fix the issue, commit the fix, push, then re-invoke `/watch-ci`. Do not proceed 
 
 Default (autonomous): draft → delete and recreate; published → stop with an error (never delete a published Release). With `--confirm`: prompt reuse / delete-and-recreate / abort and wait for user choice before acting.
 
-### Mismatched mdx + commit (Step 8)
+### Mismatched package MDX + commit (Step 8)
 
 Surface the mismatch clearly. Recommend rolling back (see "Rolling back the bump" below), then re-run `/l-make-release`. Wait for user decision.
 
@@ -721,4 +788,4 @@ git revert --no-edit <bump-sha>
 git push origin main
 ```
 
-The atomic Step 6 commit means one revert undoes `package.json`, the lockfile, **and** the new `v<version>.mdx` together — a separate `rm` is not needed. If the bump is buried under later commits, do NOT revert; leave the version and let the next release supersede it. Then re-run `/l-make-release` from the start.
+The atomic Step 6 commit means one revert undoes `package.json`, the lockfile, **and** all five new package MDX pages together — separate `rm` commands are not needed. If the bump is buried under later commits, do NOT revert; leave the version and let the next release supersede it. Then re-run `/l-make-release` from the start.
