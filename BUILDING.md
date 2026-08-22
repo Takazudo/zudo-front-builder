@@ -68,6 +68,8 @@ Each binary resolves its source **independently** — you can override one and l
 
 An empty-string value (e.g. an env var that is set but blank) is treated as unset, not as an override.
 
+Setting `ZFB_TAILWIND_BIN` does **not** by itself disable the one-off oxide warm-up. In automatic mode, `zfb` skips the warm-up only when it recognizes the selected executable as a Node/npm Tailwind CLI; the bundled standalone binary, other native executables, and executables it cannot classify still warm. `ZFB_TAILWIND_OXIDE_WARMUP` can override that decision: `1` / `true` / `on` forces the warm-up on, while `0` / `false` / `off` forces it off. Unset, empty, and unrecognized values retain automatic mode.
+
 Cargo re-runs the build script when either override env var changes (`cargo:rerun-if-env-changed`), and — once an override path is validated — when that file's contents change (`cargo:rerun-if-changed=<path>`), so editing an override binary in place and rebuilding picks it up without a manual `touch`.
 
 See [`crates/zfb-css/README.md`](./crates/zfb-css/README.md) ("Getting the binary") for the Tailwind runtime contract and the [`crates/zfb/binaries/README.md`](./crates/zfb/binaries/README.md) for the runtime resolution layout.
@@ -105,6 +107,7 @@ ZFB_TAILWIND_BIN="$(pwd)/crates/zfb/binaries/tailwindcss-v4" \
 ```
 
 The `ZFB_TAILWIND_BIN` export is needed because `cargo test -p <crate>` runs with the package directory as CWD, while the engine's default relative path is resolved from the workspace root.
+Because this recipe points the override at the staged standalone binary, automatic mode still performs the oxide warm-up and preserves the cross-process extraction protection introduced in #1237.
 
 ## Format / lint
 
