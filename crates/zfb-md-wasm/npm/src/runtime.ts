@@ -15,19 +15,15 @@ interface WasmGlueModule {
   // nevertheless use the same wasm-bindgen surface and recovery
   // implementation below.
   //
-  // `compile`/`renderHtml` are optional: the highlight-only wasm artifact
-  // (`./highlight` entry, zfb#1849, epic zfb#1845) is compiled with the
-  // `pipeline` Cargo feature off (see crates/zfb-md-wasm/Cargo.toml), so its
-  // wasm-bindgen glue never generates these exports at all. `createWasmApi`
-  // below is shared by both entries; only `src/index.ts`/`src/browser.ts`
-  // re-export the functions that call them.
+  // Capability functions are structural and optional because each singleton
+  // artifact's wasm-bindgen glue contains only its selected Rust export.
+  // Public entries expose only the matching calls from `createWasmApi`.
   initSync(input?: { module: WebAssembly.Module }): unknown;
   compile?(source: string, optionsJson: string): string;
   renderHtml?(source: string, optionsJson: string): string;
-  // Raw-mdast export (zfb#1857, epic zfb#1854); pipeline-gated like
-  // compile/renderHtml -- the highlight-only artifact never generates it.
+  // Raw-mdast export (zfb#1857, epic zfb#1854).
   parseToAst?(source: string, optionsJson: string): string;
-  highlightCode(code: string, optionsJson: string): string;
+  highlightCode?(code: string, optionsJson: string): string;
   version(): string;
   __forceTrapForTests(): void;
 }
@@ -195,16 +191,13 @@ export function createWasmApi({
     await getInstance();
   }
 
-  // Both throw helpers below fire only if `compile`/`renderHtml` were
-  // somehow invoked against the highlight-only glue -- unreachable through
-  // the public API surface, since `src/highlight.ts`/`src/highlight-browser.ts`
-  // never re-export these two functions. Kept as a clear runtime error
-  // rather than a silent `undefined()` crash.
-  function requirePipelineExport<T>(fn: T | undefined, name: string): T {
+  // Public entry surfaces make missing calls unreachable. This guard keeps
+  // structural glue mismatches artifact-neutral and actionable.
+  function requireCapability<T>(fn: T | undefined, name: string): T {
     if (!fn) {
       throw new Error(
-        `zfb-md-wasm: ${name}() is not available in the highlight-only wasm artifact ` +
-          `(built with the \`pipeline\` Cargo feature off) -- use the default \`.\` entry instead.`,
+        `zfb-md-wasm: ${name}() is not available in this wasm artifact. ` +
+          `Import an entry whose artifact provides that capability.`,
       );
     }
     return fn;
@@ -213,7 +206,7 @@ export function createWasmApi({
   async function compile(source: string, options: ZfbMdWasmOptions = {}): Promise<CompileResult> {
     const optionsJson = JSON.stringify(options);
     const json = await callWasm(({ glue }) =>
-      requirePipelineExport(glue.compile, "compile").call(glue, source, optionsJson),
+      requireCapability(glue.compile, "compile").call(glue, source, optionsJson),
     );
     return JSON.parse(json) as CompileResult;
   }
@@ -224,7 +217,7 @@ export function createWasmApi({
   ): Promise<RenderHtmlResult> {
     const optionsJson = JSON.stringify(options);
     const json = await callWasm(({ glue }) =>
-      requirePipelineExport(glue.renderHtml, "renderHtml").call(glue, source, optionsJson),
+      requireCapability(glue.renderHtml, "renderHtml").call(glue, source, optionsJson),
     );
     return JSON.parse(json) as RenderHtmlResult;
   }
@@ -242,7 +235,7 @@ export function createWasmApi({
   ): Promise<ParseToAstResult> {
     const optionsJson = JSON.stringify(options);
     const json = await callWasm(({ glue }) =>
-      requirePipelineExport(glue.parseToAst, "parseToAst").call(glue, source, optionsJson),
+      requireCapability(glue.parseToAst, "parseToAst").call(glue, source, optionsJson),
     );
     return JSON.parse(json) as ParseToAstResult;
   }
@@ -252,7 +245,9 @@ export function createWasmApi({
     options: HighlightCodeOptions,
   ): Promise<HighlightCodeResult> {
     const optionsJson = JSON.stringify(options);
-    const json = await callWasm(({ glue }) => glue.highlightCode(code, optionsJson));
+    const json = await callWasm(({ glue }) =>
+      requireCapability(glue.highlightCode, "highlightCode").call(glue, code, optionsJson),
+    );
     return JSON.parse(json) as HighlightCodeResult;
   }
 

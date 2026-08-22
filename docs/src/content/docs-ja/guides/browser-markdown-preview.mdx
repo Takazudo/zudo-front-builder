@@ -7,7 +7,7 @@ sidebar_position: 7.5
 <Info title="このページで扱う内容">
 
 `@takazudo/zfb-md-wasm`、zfb の md/mdx → JS/HTML パイプラインの **ブラウザ側での動的変換**
-向け WebAssembly ビルド。2 つの API 階層（`compile()` と `renderHtml()`）、`parseToAst()`
+向け WebAssembly ビルド。完全なルート API（`compile()` と `renderHtml()`）、`parseToAst()`
 による生の mdast ツリーへのパース（および検証付きの `toMdastRoot()` アダプタ）、直接的な
 セマンティックな `highlightCode()`、ブラウザでコンパイル済みモジュールを評価する方法、
 Vite でのパッケージの使い方、テストとツールでの Node 利用、そしてパリティ保証の明示的な
@@ -41,7 +41,63 @@ Node ≥ 20 でもこのパッケージをロードできます — パッケー
 
 </Note>
 
-## 2 つの API 階層
+## 最小のエントリを選ぶ
+
+ルート（`@takazudo/zfb-md-wasm`）は完全な後方互換の面で、`compile` を export する唯一の
+エントリです。既存のルートと `@takazudo/zfb-md-wasm/highlight` のインポートに移行は不要です。
+追加された `/render` と `/parse` は独立した **SWC-free** グラフで、`swc_core` と `zfb-render`
+を除外しながら `zfb-content` と `syntect-fancy` を意図的に保持します。parse は syntect-free
+ではありません。
+
+| インポート | gzip-9 wasm（2.10.0） | 正確なランタイム値 | 型の面 | 使う場面 |
+| --- | ---: | --- | --- | --- |
+| `@takazudo/zfb-md-wasm` | 1,458,446 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | compile/render/parse/raw-mdast/highlight の現在の完全な型セット | MDX をコンパイル、または複数の API を使う場合 |
+| `@takazudo/zfb-md-wasm/highlight` | 758,255 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換 |
+| `@takazudo/zfb-md-wasm/render` | 1,011,152 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML にする場合 |
+| `@takazudo/zfb-md-wasm/parse` | 276,432 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
+
+focused エントリは、対応する private リソースペアだけを持ちます:
+
+```text
+wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs + zfb_md_wasm_render_bg.wasm
+wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs + zfb_md_wasm_parse_bg.wasm
+```
+
+宣言サイドカーも対応ディレクトリに閉じています。各エントリは独立したコンパイル済みモジュール、
+インスタンス、世代、リトライ状態、終端状態を持ちます。複数のエントリをインポートすると、独立した
+ペアとインスタンスが意図的にロードされます。
+
+Node の直接利用とブラウザ対応バンドラでは、focused サブパスを選びます:
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm/render";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm/parse";
+```
+
+ブラウザのユーザー操作から遅延インポートすると、選択したエントリのペアだけが取得されます:
+
+```ts
+renderButton.addEventListener("click", async () => {
+  const { renderHtml } = await import("@takazudo/zfb-md-wasm/render");
+  const { html } = await renderHtml(source, { filename: "preview.md" });
+  preview.innerHTML = html ?? "";
+});
+
+parseButton.addEventListener("click", async () => {
+  const { parseToAst, toMdastRoot } = await import("@takazudo/zfb-md-wasm/parse");
+  const parsed = await parseToAst(source, { filename: "preview.md" });
+  const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+  inspect(root);
+});
+```
+
+`compile()` はルートだけにあり、ホストによる評価、JSX ランタイム、コンポーネントを必要とする
+モジュールソースを返します。`toMdastRoot()` は、パース済みデータを利用側の制御された AST-to-React レンダラーで
+解釈するためのアダプタです。slim エントリは author JavaScript を評価しません。`renderHtml` は
+サニタイザーではなく、生 HTML は信頼できないままです。MDX JSX / 式 / ESM 形状の AST ノードは
+不活性なデータです。
+
+## 完全なルート API
 
 `compile()` と `renderHtml()` はどちらも、markdown/MDX の `source` 文字列とオプション
 オブジェクト — すべてのフィールドは任意で、`{}` はすべてのデフォルトを選びます — を受け
@@ -138,14 +194,18 @@ Markdown → hast → HTML 文字列で、**実行時に SWC をスキップし�
 ```ts
 import { renderHtml } from "@takazudo/zfb-md-wasm";
 
-const { html, frontmatter, diagnostics } = await renderHtml("# Heading\n\nSome **bold** text.\n", {
+const { html, frontmatter, diagnostics } = await renderHtml("Budget <8 ms\n", {
   filename: "post.md",
 });
-// html -> "<h1>Heading</h1><p>Some <strong>bold</strong> text.</p>"
+// html -> "<p>Budget &lt;8 ms</p>"
 ```
 
-`renderHtml` は `jsxRuntime` / `development` を受け取って無視するため、オプション
-オブジェクトを動的に組み立てれば、1 つで両方の階層に使えます。
+`renderHtml` は `.md` から CommonMark、`.mdx` から MDX を推論し、明示的な
+`dialect: "markdown" | "mdx"` はどちらの有効な拡張子も上書きします。ファイル名を
+省略すると `<anonymous>.md` が使われるため CommonMark になります。`compile` は MDX
+専用のままで `dialect` を受け取って無視し、`renderHtml` は `jsxRuntime` / `development`
+を受け取って無視するため、オプションオブジェクトを動的に組み立てれば 1 つで両方の階層に
+使えます。
 
 ## AST へのパース（parseToAst）
 
@@ -373,14 +433,26 @@ interface HighlightCodeResult {
 
 ### 遅延ロードされるブラウザリソースとサーバー MIME
 
-パッケージのブラウザ export は 2 つの静的リソースを宣言します:
-`zfb_md_wasm_glue.zfb-resource.mjs` と `zfb_md_wasm_bg.wasm` です。zfb の本番ビルドは、
-次の名前のハッシュ付き island アセットを出力します:
+すべてのパッケージエントリは、自分自身の glue/wasm ペアだけを静的に宣言します。ルートは
+`wasm/zfb_md_wasm_glue.zfb-resource.mjs` と `wasm/zfb_md_wasm_bg.wasm` を保持し、focused
+ペアは次のとおりです:
+
+```text
+wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs
+wasm-render/zfb_md_wasm_render_bg.wasm
+wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs
+wasm-parse/zfb_md_wasm_parse_bg.wasm
+```
+
+zfb の本番ビルドは、選択したペアをハッシュ付き island アセットとして出力します:
 
 ```text
 assets/islands-resource-zfb_md_wasm_glue.zfb-resource-<hash>.mjs
 assets/islands-resource-zfb_md_wasm_bg-<hash>.wasm
 ```
+
+focused アセットは、stem に `render` または `parse` を含む同じ命名規則になります
+（例: `islands-resource-zfb_md_wasm_render_bg-<hash>.wasm`）。
 
 [`./highlight` サブパス](#バンドルサイズ) は代わりに、独自の別のリソースのペアを宣言します
 — `zfb_md_wasm_highlight_glue.zfb-resource.mjs` と `zfb_md_wasm_highlight_bg.wasm` — で、
@@ -391,18 +463,25 @@ assets/islands-resource-zfb_md_wasm_highlight_glue.zfb-resource-<hash>.mjs
 assets/islands-resource-zfb_md_wasm_highlight_bg-<hash>.wasm
 ```
 
-同じバンドルで `@takazudo/zfb-md-wasm` と `@takazudo/zfb-md-wasm/highlight` の両方を
-インポートすると、両方の wasm アーティファクトがロードされます — バンドルごとに 1 つの
-エントリを選んでください。
+同じバンドルで複数のエントリをインポートすると、各 private ペアと独立したコンパイル済み
+モジュール / インスタンス状態が意図どおりロードされます。可能ならバンドルごとに 1 つを選び、
+両方の機能が必要な場合は複数利用できます。
 
-初期ページロードから除外するには、ユーザー操作からのみルートを動的にインポートします。
-最初の公開 API 呼び出しで、グルーと wasm がフェッチされます:
+初期ページロードから除外するには、ユーザー操作からのみ選択したエントリを動的にインポートします。
+その最初の公開 API 呼び出しで、グルーと wasm がフェッチされます:
 
 ```ts
 button.addEventListener("click", async () => {
-  const { highlightCode } = await import("@takazudo/zfb-md-wasm");
-  const result = await highlightCode(editor.value, { language: "javascript" });
+  const { renderHtml } = await import("@takazudo/zfb-md-wasm/render");
+  const result = await renderHtml(editor.value, { filename: "preview.md" });
   preview.innerHTML = result.html ?? "";
+});
+
+parseButton.addEventListener("click", async () => {
+  const { parseToAst, toMdastRoot } = await import("@takazudo/zfb-md-wasm/parse");
+  const parsed = await parseToAst(editor.value, { filename: "preview.md" });
+  const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+  inspect(root);
 });
 ```
 
@@ -411,18 +490,52 @@ button.addEventListener("click", async () => {
 しないでください: zfb がハッシュ付きの URL グラフを維持できるよう、パックされたブラウザ
 エントリを使ってください。
 
+### 出荷アーティファクトのサイズと上限
+
+出荷された **2.10.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
+グルーコードのバイト数とその gzip です:
+
+| エントリ / グラフ | final wasm | gzip-9 | glue | glue gzip-9 |
+| --- | ---: | ---: | ---: | ---: |
+| root（full） | 3,274,064 B | 1,458,446 B | 14,998 B | 4,199 B |
+| highlight | 1,476,740 B | 758,255 B | 8,758 B | 2,637 B |
+| render | 2,083,465 B | 1,011,152 B | 8,772 B | 2,661 B |
+| parse | 624,976 B | 276,432 B | 11,159 B | 3,797 B |
+
+#2447 の決定スナップショットでは、split パッケージの構成が 3,638,607 B、root + highlight が
+2,314,818 B、クリーンな本番の参照上限は 210 秒、選択されたスナップショットの中央値は 155.015 秒
+[153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 820,000 B、
+render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
+いずれも上限の内側で出荷されており、上限までの余裕は root 141,554 B、highlight 61,745 B、
+render 88,848 B、parse 48,568 B です。これらは永続的な保証ではなく 2.10.0 の測定値です —
+実際にインストールしたバージョンで測り直してください。
+
+highlight グラフから `swc_core` をゲートで外したこと（#2449 / #2450）は、
+**証明可能性の勝利であって、サイズの勝利ではありません**。出荷された highlight の
+アーティファクトは、#2447 の SWC 保持ベースラインよりわずか 7,965 B 小さいだけです
+（1,484,705 B → 1,476,740 B、gzip-9 は 767,009 B → 758,244 B で −8,765 B）。wasm-opt は
+到達不能な `swc_core` を既にデッドストリップしていたのであり、#2450 の完全パリティと
+`swc_core` 不在のアサーションが、その創発的な性質を保証されたものへと変えました。
+highlight だけを使う利用者にとって意味のある差は、root と highlight の差のほうです:
+raw で 1,797,324 B、gzip-9 で 700,191 B 小さく、highlight は root の raw バイトの約 45%、
+gzip 後のバイトの約 52% に収まります。
+
 ## Node での利用（テストとツール）
 
-同じ `compile` / `renderHtml` / `highlightCode` / `version` API が、追加のセットアップ
-なしで Node ≥ 20 の下で動作します — これはまさに、パッケージ自身の vitest スイートが wasm
-ビルドを検証する方法です。プレビュー出力のスナップショットテストや、`zfb` バイナリを
-起動せずにパリティチェックを行いたいツールに有用です。
+エントリは追加のセットアップなしで Node ≥ 20 の下で動作します。ツールやスナップショット
+テストでは、処理に対応するリソースペアを直接選びます:
 
 ```ts
-import { renderHtml } from "@takazudo/zfb-md-wasm";
+import { renderHtml } from "@takazudo/zfb-md-wasm/render";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm/parse";
 
 const { html } = await renderHtml("# Hello from Node\n");
+const parsed = await parseToAst("# Hello from Node\n", { filename: "post.md" });
+const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
 ```
+
+同じ利用者が `compile` も必要とする場合はルートを使います。ルートと highlight のインポートは後方互換です。
 
 ## パリティ保証と制限
 
@@ -443,17 +556,16 @@ const { html } = await renderHtml("# Hello from Node\n");
 - **クロスファイル機能はありません。** ルートテーブルのリンク解決とクロスファイルの
   アンカー解決には、プロジェクト全体のルートグラフが必要ですが、単一ドキュメントのブラウザ
   呼び出しはそれを決して持ちません。
-- **デフォルトの wasm アーティファクトは、`renderHtml` のみの用途でも SWC を含みます。**
-  単一の cdylib は、利用者が `renderHtml` しか呼ばないというだけで、ダウンロードから SWC を
-  tree-shaking で除去することはできません。スリムな `renderHtml` 専用のアーティファクトは、
-  文書化された可能なフォローアップであり、ここでは実装されていません。
-- **スリムな `highlightCode` 専用のアーティファクトは利用可能です** — `./highlight` の
-  export サブパス経由です。markdown/MDX/JSX パイプライン全体（SWC）を落とし、`init`、
-  `highlightCode`、`version` のみを export します — `compile` や `renderHtml` はありません。
-  完全な文法セットを保ちつつ、デフォルトのアーティファクトのおよそ半分のダウンロードサイズ
-  です（生で約 52% 小さく、gzip で約 45% 小さい）。両方のアーティファクトは、共有のオラクル
-  に対してバイト単位で同一にハイライトします。利用者がコードのハイライトしか行わない場合は、
-  `@takazudo/zfb-md-wasm/highlight` としてインポートしてください。
+- **ルートは互換性 / コンパイラのエントリです。** `compile` は author JavaScript を実行し得る
+  唯一の経路なので、完全なグラフを保持します。SWC-free な処理には `/render` または `/parse`、
+  直接的なハイライトには `/highlight` を選んでください。focused エントリは意図的に
+  `zfb-content` / `syntect-fancy` を保持し、parse は syntect-free ではありません。
+- **`renderHtml` はサニタイザーではありません。** 生 HTML は信頼できないままです。MDX の JSX /
+  式 / ESM 形状の AST ノードは不活性なデータであり、既にパースされた AST を解釈できるのは
+  利用側の制御されたコードだけです。slim エントリは author JavaScript を評価しません。
+- **`renderHtml` はファイル名から構文を選びます。** `.md` は CommonMark、`.mdx` は MDX を
+  使い、明示的な `dialect` はどちらの有効な拡張子も上書きします。`compile` は MDX 専用の
+  ままです。
 - **シンタックスハイライトは syntect の `fancy-regex` バックエンドを使います** — ネイティブ
   zfb の `oniguruma` バックエンドではありません（`oniguruma` は wasm にコンパイルできません）。
   ネイティブ側の挙動については [シンタックスハイライト](./syntax-highlighting.mdx) を参照
@@ -463,11 +575,34 @@ const { html } = await renderHtml("# Hello from Node\n");
 
 ## バンドルサイズ
 
-SWC を wasm バイトに含めるため、これは設計上大きなモジュールになります — ビルドは、サイズ
-最適化プロファイル（`opt-level = "z"`、LTO、1 つの codegen unit、`panic = "abort"`）に加えて
-`wasm-opt` を適用して縮小します。ここの特定の数値に依存しないでください。リリースごとに
-変わります。CI の `wasm-md` ジョブは、実行のたびに権威ある gzip サイズを出力します — この
-ページに書かれた数値を信頼するのではなく、そのジョブのサイズ行で現在の値を確認してください。
+出荷された **2.10.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
+グルーコードのバイト数とその gzip です:
+
+| エントリ / グラフ | final wasm | gzip-9 | glue | glue gzip-9 |
+| --- | ---: | ---: | ---: | ---: |
+| root（full） | 3,274,064 B | 1,458,446 B | 14,998 B | 4,199 B |
+| highlight | 1,476,740 B | 758,255 B | 8,758 B | 2,637 B |
+| render | 2,083,465 B | 1,011,152 B | 8,772 B | 2,661 B |
+| parse | 624,976 B | 276,432 B | 11,159 B | 3,797 B |
+
+#2447 の決定スナップショットでは、split パッケージの構成が 3,638,607 B、root + highlight が
+2,314,818 B、クリーンな本番の上限は 210 秒、決定スナップショットの中央値は 155.015 秒
+[153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 820,000 B、
+render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
+いずれも上限の内側で出荷されており、上限までの余裕は root 141,554 B、highlight 61,745 B、
+render 88,848 B、parse 48,568 B です。これらは永続的な保証ではなく 2.10.0 の測定値です —
+実際にインストールしたバージョンで測り直してください。
+
+highlight グラフから `swc_core` をゲートで外したこと（#2449 / #2450）は、
+**証明可能性の勝利であって、サイズの勝利ではありません**。出荷された highlight の
+アーティファクトは、#2447 の SWC 保持ベースラインよりわずか 7,965 B 小さいだけです
+（1,484,705 B → 1,476,740 B、gzip-9 は 767,009 B → 758,244 B で −8,765 B）。wasm-opt は
+到達不能な `swc_core` を既にデッドストリップしていたのであり、#2450 の完全パリティと
+`swc_core` 不在のアサーションが、その創発的な性質を保証されたものへと変えました。
+highlight だけを使う利用者にとって意味のある差は、root と highlight の差のほうです:
+raw で 1,797,324 B、gzip-9 で 700,191 B 小さく、highlight は root の raw バイトの約 45%、
+gzip 後のバイトの約 52% に収まります。
 
 ## トラップからの回復
 

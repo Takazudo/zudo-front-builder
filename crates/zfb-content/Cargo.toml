@@ -8,7 +8,8 @@ description = "zfb content engine: markdown/MDX pipeline, frontmatter, syntect, 
 [lib]
 
 [features]
-default = ["syntect-onig"]
+default = ["syntect-onig", "compiler"]
+compiler = ["dep:swc_core"]
 # Syntect regex backend selection (zfb#1573). Exactly one backend must be
 # enabled: `syntect-onig` (oniguruma, C — the historical native backend) or
 # `syntect-fancy` (pure Rust — the only backend that compiles for
@@ -82,7 +83,7 @@ unicode_categories = "0.1"
 # at a different version line — the AST types from `swc_core::ecma::ast`
 # would not unify with `swc_ecma_ast::*`, breaking interop with
 # `zfb-render`.
-swc_core = { workspace = true, features = [
+swc_core = { workspace = true, optional = true, features = [
     "common",
     "ecma_ast",
     "ecma_parser",
@@ -91,10 +92,6 @@ swc_core = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-# Used by tests/mdx_jsx_emit.rs to pipe emitter output through SWC and
-# assert it parses as valid JS. Pure dev-only — keeps zfb-content's
-# runtime dependency surface minimal.
-zfb-render = { path = "../zfb-render", default-features = false }
 # Used by tests/walk_order_determinism.rs to create temp directories
 # for fake MDX file paths.
 tempfile = { workspace = true }

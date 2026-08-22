@@ -455,6 +455,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "compiler")]
     fn extract_tsx_pulls_export_const_frontmatter() {
         let path = PathBuf::from("page.tsx");
         let src = "export const frontmatter = { title: 'Tsx', count: 7 };\n\

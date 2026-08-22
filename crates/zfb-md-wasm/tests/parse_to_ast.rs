@@ -1,3 +1,5 @@
+#![cfg(feature = "parse")]
+
 //! Native (rlib) integration tests for the `parseToAst` export (zfb#1857,
 //! epic zfb#1854).
 //!
@@ -37,8 +39,6 @@
 //!   scope); remark-parity (needs real JS remark — npm package scope);
 //!   benchmark characteristics (the bench harness under `npm/test/bench/`
 //!   measures, it does not assert).
-
-#![cfg(feature = "pipeline")]
 
 use std::fs;
 use std::path::PathBuf;
@@ -1323,13 +1323,10 @@ fn frontmatter_diagnostics_use_original_source_utf16_columns() {
     }
 }
 
+#[cfg(all(feature = "compile", feature = "render"))]
 #[test]
 fn compile_and_render_html_reject_parse_only_keys() {
-    for key in [
-        r#""dialect":"mdx""#,
-        r#""directives":true"#,
-        r#""frontmatter":"extract""#,
-    ] {
+    for key in [r#""directives":true"#, r#""frontmatter":"extract""#] {
         for result in [
             parse(zfb_md_wasm::compile(
                 "# ok\n",

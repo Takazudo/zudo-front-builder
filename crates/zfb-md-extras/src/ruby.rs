@@ -53,15 +53,17 @@
 //! (no word boundaries), so the **bare form takes the whole preceding Text
 //! run** as the base.
 //!
-//! Because MDX parses `{ruby}` as an `MdxTextExpression`, the caret forms
-//! arrive as multi-node sibling sequences (see `to_mdast` shapes):
+//! With MDX parsing, `{ruby}` becomes an `MdxTextExpression`, so the caret
+//! forms arrive as multi-node sibling sequences (see `to_mdast` shapes):
 //!
 //! - braced base = 3-node sequence `Expr("base"), Text("^"), Expr("ruby")`
 //! - bare base   = 2-node sequence `Text("…base^"), Expr("ruby")`
 //!   (the trailing `^` must be split off the `Text` node)
 //!
-//! so the rewrite is a **look-behind** over the previous sibling(s), not an
-//! in-place one-node replacement.
+//! so that rewrite is a **look-behind** over the previous sibling(s), not an
+//! in-place one-node replacement. With CommonMark parsing, the whole syntax
+//! remains in a `Text` node; the raw-text scanner applies the same grammar and
+//! false-positive guards there.
 //!
 //! ## False-positive guard (CRITICAL)
 //!
@@ -85,10 +87,10 @@
 //!
 //! # Implementation notes
 //!
-//! The pipeline uses MDX-aware parsing (via `markdown-rs`). In that mode, any
-//! `{...}` at the inline level is parsed as a `MdxTextExpression` node rather
-//! than a `Text` node. The expression's `value` field carries the raw content
-//! inside the braces (e.g. `"漢字|かんじ"`). This visitor:
+//! In MDX mode, any `{...}` at the inline level is parsed as an
+//! `MdxTextExpression` node rather than a `Text` node. The expression's
+//! `value` field carries the raw content inside the braces (e.g.
+//! `"漢字|かんじ"`). This visitor:
 //!
 //! 1. Scans `MdxTextExpression` children in inline containers (`Paragraph`,
 //!    `Heading`, `Emphasis`, `Strong`, …) for the `base|ruby` pattern.
@@ -97,9 +99,8 @@
 //! 3. Also handles `MdxFlowExpression` at the block level by wrapping the
 //!    resulting ruby element in a `Paragraph`.
 //!
-//! `Text` nodes that happen to contain `{base|ruby}` (possible if MDX parsing
-//! is switched off for a specific node) are also scanned via `split_text_node`
-//! for completeness.
+//! `Text` nodes containing either ruby form are also scanned via
+//! `split_text_node`; this is the primary path for CommonMark input.
 //!
 //! # Edge cases
 //!
@@ -119,8 +120,8 @@
 //!
 //! This feature does **NOT** include automatic furigana detection (e.g.
 //! kuromoji-style morphological segmentation). It only parses the explicit
-//! `{base|ruby}` syntax. Auto-furigana is a separate, much harder feature
-//! that is intentionally excluded from this implementation.
+//! caret and pipe forms above. Auto-furigana is a separate, much harder
+//! feature that is intentionally excluded from this implementation.
 //!
 //! # Wire
 //!
@@ -432,7 +433,7 @@ fn next_token(input: &str) -> ParseResult<'_> {
 /// rather than parsing `{...}` as an expression. In practice the default MDX
 /// pipeline will almost always use `MdxTextExpression` for `{...}` inline
 /// content; this branch covers edge-cases or non-MDX parse modes.
-fn split_text_node(value: &str) -> Option<Vec<MdastNode>> {
+fn split_pipe_text_node(value: &str) -> Option<Vec<MdastNode>> {
     if !value.contains('{') {
         return None;
     }
@@ -482,6 +483,124 @@ fn split_text_node(value: &str) -> Option<Vec<MdastNode>> {
     } else {
         None
     }
+}
+
+/// Parse `{base}^{ruby}` when it begins at `input`.
+fn parse_braced_caret(input: &str) -> Option<(String, String, &str)> {
+    let base_and_rest = input.strip_prefix('{')?;
+    let base_end = base_and_rest.find('}')?;
+    let base = &base_and_rest[..base_end];
+    let ruby_and_rest = base_and_rest[base_end + 1..].strip_prefix("^{")?;
+    let ruby_end = ruby_and_rest.find('}')?;
+    let ruby = &ruby_and_rest[..ruby_end];
+    if !caret_ruby_value_ok(base) || !caret_ruby_value_ok(ruby) {
+        return None;
+    }
+    Some((
+        base.to_string(),
+        ruby.to_string(),
+        &ruby_and_rest[ruby_end + 1..],
+    ))
+}
+
+/// Parse the `{ruby}` half when `input` begins at the bare form's caret.
+fn parse_bare_caret_tail(input: &str) -> Option<(String, &str)> {
+    let ruby_and_rest = input.strip_prefix("^{")?;
+    let ruby_end = ruby_and_rest.find('}')?;
+    let ruby = &ruby_and_rest[..ruby_end];
+    if !caret_ruby_value_ok(ruby) {
+        return None;
+    }
+    Some((ruby.to_string(), &ruby_and_rest[ruby_end + 1..]))
+}
+
+/// Find the next raw-text caret annotation.
+///
+/// For the bare form, the base is the entire text run before the caret — the
+/// same boundary MDX produces before its `{ruby}` expression node. Braced
+/// forms may have an ordinary literal prefix which is returned separately.
+fn find_caret_annotation(input: &str) -> Option<(&str, String, String, &str)> {
+    for (index, character) in input.char_indices() {
+        if character == '{' {
+            if let Some((base, ruby, rest)) = parse_braced_caret(&input[index..]) {
+                return Some((&input[..index], base, ruby, rest));
+            }
+        }
+        if character == '^' {
+            let base = &input[..index];
+            // A closing brace immediately before the caret is an explicit
+            // braced-form attempt. If `parse_braced_caret` rejected it above,
+            // do not reinterpret the same bytes as a bare base merely because
+            // they contain CJK text (for example `{これは||x}^{c}`).
+            let explicit_braced_form = base.ends_with('}') && base.rfind('{').is_some();
+            if !explicit_braced_form && has_non_ascii(base) {
+                if let Some((ruby, rest)) = parse_bare_caret_tail(&input[index..]) {
+                    return Some(("", base.to_string(), ruby, rest));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Split caret annotations from a CommonMark/raw `Text` node.
+fn split_caret_text_node(value: &str) -> Option<Vec<MdastNode>> {
+    let mut nodes = Vec::new();
+    let mut rest = value;
+    let mut found_any = false;
+
+    while !rest.is_empty() {
+        let Some((prefix, base, ruby, tail)) = find_caret_annotation(rest) else {
+            nodes.push(MdastNode::Text(Text {
+                value: rest.to_string(),
+                position: None,
+            }));
+            break;
+        };
+        if !prefix.is_empty() {
+            nodes.push(MdastNode::Text(Text {
+                value: prefix.to_string(),
+                position: None,
+            }));
+        }
+        nodes.push(make_ruby_node(&base, &ruby));
+        found_any = true;
+        rest = tail;
+    }
+
+    found_any.then(|| merge_adjacent_text(nodes))
+}
+
+/// Scan both ruby syntaxes in a raw `Text` node.
+///
+/// Pipe annotations are split first so each remaining text run has the same
+/// sibling boundary the MDX parser would create. The caret scanner can then
+/// apply its pinned "whole preceding text run" rule without swallowing a
+/// pipe annotation into the bare base.
+fn split_text_node(value: &str) -> Option<Vec<MdastNode>> {
+    let pipe_nodes = split_pipe_text_node(value).unwrap_or_else(|| {
+        vec![MdastNode::Text(Text {
+            value: value.to_string(),
+            position: None,
+        })]
+    });
+    let pipe_changed = pipe_nodes.len() != 1 || !matches!(&pipe_nodes[0], MdastNode::Text(_));
+    let mut caret_changed = false;
+    let mut nodes = Vec::new();
+    for node in pipe_nodes {
+        match node {
+            MdastNode::Text(text) => {
+                if let Some(replacement) = split_caret_text_node(&text.value) {
+                    caret_changed = true;
+                    nodes.extend(replacement);
+                } else {
+                    nodes.push(MdastNode::Text(text));
+                }
+            }
+            other => nodes.push(other),
+        }
+    }
+    (pipe_changed || caret_changed).then(|| merge_adjacent_text(nodes))
 }
 
 /// Merge consecutive `Text` nodes into a single `Text` node.
@@ -650,7 +769,7 @@ fn rewrite_inline_children(children: &mut Vec<MdastNode>) -> bool {
 
 // ── Visitor ──────────────────────────────────────────────────────────────────
 
-/// Mdast visitor that rewrites `{base|ruby}` patterns into inline
+/// Mdast visitor that rewrites caret and pipe ruby annotations into inline
 /// `<ruby><rb>…</rb><rt>…</rt></ruby>` JSX elements.
 ///
 /// In the MDX pipeline, `{base|ruby}` is parsed as:
@@ -662,8 +781,8 @@ fn rewrite_inline_children(children: &mut Vec<MdastNode>) -> bool {
 /// - Flow: replaces `MdxFlowExpression` with a `Paragraph` wrapping the ruby
 ///   element, so the HTML output gets a `<p>` wrapper.
 ///
-/// `Text` nodes that happen to contain `{base|ruby}` literals are also scanned
-/// (covers non-MDX or pre-MDX-parse contexts).
+/// `Text` nodes containing either form are also scanned (the CommonMark and
+/// other non-MDX contexts).
 ///
 /// Wire via `features.ruby: true` in `zfb.config.ts`. The plugin is registered
 /// in the **mdast phase** (before mdast→hast conversion).
@@ -1140,6 +1259,39 @@ mod tests {
         assert!(matches!(nodes[0], MdastNode::MdxJsxTextElement(_)));
         assert!(matches!(nodes[1], MdastNode::Text(_)));
         assert!(matches!(nodes[2], MdastNode::MdxJsxTextElement(_)));
+    }
+
+    #[test]
+    fn split_commonmark_bare_caret_annotation() {
+        let nodes = split_text_node("これは^{これ}です").unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert!(matches!(nodes[0], MdastNode::MdxJsxTextElement(_)));
+        assert!(matches!(&nodes[1], MdastNode::Text(text) if text.value == "です"));
+    }
+
+    #[test]
+    fn split_commonmark_braced_caret_annotation() {
+        let nodes = split_text_node("prefix {ABC}^{xyz} suffix").unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert!(matches!(&nodes[0], MdastNode::Text(text) if text.value == "prefix "));
+        assert!(matches!(nodes[1], MdastNode::MdxJsxTextElement(_)));
+        assert!(matches!(&nodes[2], MdastNode::Text(text) if text.value == " suffix"));
+    }
+
+    #[test]
+    fn split_commonmark_caret_keeps_ascii_superscripts_and_js_like_ruby() {
+        assert!(split_text_node("2^{n}").is_none());
+        assert!(split_text_node("これは^{n+1}").is_none());
+        assert!(split_text_node("{これは||x}^{c}").is_none());
+    }
+
+    #[test]
+    fn split_commonmark_pipe_then_caret_preserves_text_run_boundaries() {
+        let nodes = split_text_node("{日|に}これは^{これ}").unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes
+            .iter()
+            .all(|node| matches!(node, MdastNode::MdxJsxTextElement(_))));
     }
 
     #[test]

@@ -13,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { assertPackedContents, packedPaths } from "../scripts/assert-packed.mjs";
+import { assertPackedArchive } from "../scripts/assert-packed.mjs";
 import { createWasmApi } from "../src/runtime.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,6 +62,13 @@ function installTarballConsumer(archivePath: string): string {
   return fixtureRoot;
 }
 
+function copyPackedConsumerFixtures(fixtureRoot: string): void {
+  const sourceRoot = join(packageRoot, "test", "fixtures", "packed-consumer");
+  for (const name of ["consumer.mjs", "consumer.ts", "consumer-negative.ts", "tsconfig.json"]) {
+    cpSync(join(sourceRoot, name), join(fixtureRoot, name));
+  }
+}
+
 function esbuildBin(): string {
   return resolve(packageRoot, "node_modules", ".bin", "esbuild");
 }
@@ -71,6 +78,11 @@ function packedPackage(): string {
   return packedArchive;
 }
 
+function withoutImportQuery(path: string): string {
+  const queryStart = path.search(/[?#]/);
+  return queryStart === -1 ? path : path.slice(0, queryStart);
+}
+
 describe("packed browser conditional entry", () => {
   afterAll(() => {
     rmSync(tempRoot, { recursive: true, force: true });
@@ -78,7 +90,7 @@ describe("packed browser conditional entry", () => {
 
   it("contains exactly the required generated resources in its tarball", () => {
     const archive = packedPackage();
-    assertPackedContents(packedPaths(archive));
+    expect(assertPackedArchive(archive)).toBeGreaterThan(0);
   });
 
   it("composes recovery markers with an emitted glue URL's existing query and hash", async () => {
@@ -114,36 +126,141 @@ describe("packed browser conditional entry", () => {
 
   it("resolves every public declaration from a tarball-only isolated consumer", () => {
     const fixtureRoot = installTarballConsumer(packedPackage());
-    writeFileSync(
-      join(fixtureRoot, "consumer.ts"),
-      [
-        'import { MdastAdapterError, toMdastRoot, type MdastRoot } from "@takazudo/zfb-md-wasm";',
-        'import { highlightCode, type HighlightCodeResult } from "@takazudo/zfb-md-wasm/highlight";',
-        "declare const raw: MdastRoot;",
-        "const root: ReturnType<typeof toMdastRoot> = toMdastRoot(raw);",
-        "const error: MdastAdapterError | undefined = undefined;",
-        'const highlighted: Promise<HighlightCodeResult> = highlightCode("x", { language: "text" });',
-        "void root; void error; void highlighted;",
-      ].join("\n"),
-    );
-    writeFileSync(
-      join(fixtureRoot, "tsconfig.json"),
-      JSON.stringify({
-        compilerOptions: {
-          strict: true,
-          noEmit: true,
-          module: "NodeNext",
-          moduleResolution: "NodeNext",
-          target: "ES2022",
-          skipLibCheck: false,
-        },
-        include: ["consumer.ts"],
-      }),
-    );
+    copyPackedConsumerFixtures(fixtureRoot);
     execFileSync(resolve(packageRoot, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.json"], {
       cwd: fixtureRoot,
       stdio: "pipe",
     });
+  });
+
+  it("runs all four direct Node ESM calls from the unpacked tarball", () => {
+    const fixtureRoot = unpackForConsumer(packedPackage());
+    copyPackedConsumerFixtures(fixtureRoot);
+    const output = execFileSync(process.execPath, [join(fixtureRoot, "consumer.mjs")], {
+      cwd: fixtureRoot,
+      encoding: "utf8",
+    });
+    const summary = JSON.parse(output) as {
+      compiled: number;
+      highlighted: number;
+      rendered: string;
+      parsed: string;
+      versions: string[];
+    };
+    expect(summary.compiled).toBeGreaterThan(0);
+    expect(summary.highlighted).toBeGreaterThan(0);
+    expect(summary.rendered).toBe("<p>Budget &lt;8 ms</p>");
+    expect(summary.parsed).toBe("root");
+    expect(summary.versions).toHaveLength(4);
+  });
+
+  it.each([
+    {
+      entry: ".",
+      browserFile: "browser.js",
+      resourceDir: "wasm",
+      resourceStem: "zfb_md_wasm",
+      exportSource:
+        "export { compile, highlightCode, init, parseToAst, renderHtml, version } from '@takazudo/zfb-md-wasm';",
+    },
+    {
+      entry: "./highlight",
+      browserFile: "highlight-browser.js",
+      resourceDir: "wasm-highlight",
+      resourceStem: "zfb_md_wasm_highlight",
+      exportSource:
+        "export { highlightCode, init, version } from '@takazudo/zfb-md-wasm/highlight';",
+    },
+    {
+      entry: "./render",
+      browserFile: "render-browser.js",
+      resourceDir: "wasm-render",
+      resourceStem: "zfb_md_wasm_render",
+      exportSource: "export { init, renderHtml, version } from '@takazudo/zfb-md-wasm/render';",
+    },
+    {
+      entry: "./parse",
+      browserFile: "parse-browser.js",
+      resourceDir: "wasm-parse",
+      resourceStem: "zfb_md_wasm_parse",
+      exportSource:
+        "export { init, parseToAst, toMdastRoot, version } from '@takazudo/zfb-md-wasm/parse';",
+    },
+  ])("selects only the $entry browser entry and its own resource pair in esbuild", (fixture) => {
+    const fixtureRoot = unpackForConsumer(packedPackage());
+    const entryPath = join(fixtureRoot, `${fixture.resourceDir}-entry.mjs`);
+    const outDir = join(fixtureRoot, `${fixture.resourceDir}-out`);
+    const metafilePath = join(outDir, "meta.json");
+    writeFileSync(entryPath, fixture.exportSource);
+
+    execFileSync(
+      esbuildBin(),
+      [
+        entryPath,
+        "--bundle",
+        "--format=esm",
+        "--platform=browser",
+        "--outdir=" + outDir,
+        "--metafile=" + metafilePath,
+        "--loader:.zfb-resource.mjs=file",
+        "--loader:.wasm=file",
+        "--asset-names=islands-resource-[name]-[hash]",
+      ],
+      { cwd: fixtureRoot, stdio: "pipe" },
+    );
+
+    const metafile = JSON.parse(readFileSync(metafilePath, "utf8")) as {
+      inputs: Record<string, unknown>;
+    };
+    const inputNames = Object.keys(metafile.inputs);
+    const normalizedInputNames = inputNames.map(withoutImportQuery);
+    expect(normalizedInputNames.some((path) => path.endsWith(`/dist/${fixture.browserFile}`))).toBe(
+      true,
+    );
+    expect(
+      normalizedInputNames.some((path) =>
+        path.endsWith(
+          `/dist/${fixture.entry === "." ? "index.js" : fixture.entry.slice(2) + ".js"}`,
+        ),
+      ),
+    ).toBe(false);
+
+    const resourceInputs = normalizedInputNames.filter(
+      (path) =>
+        path.includes(`/dist/${fixture.resourceDir}/`) &&
+        path.endsWith(fixture.resourceStem + "_bg.wasm"),
+    );
+    const glueInputs = normalizedInputNames.filter(
+      (path) =>
+        path.includes(`/dist/${fixture.resourceDir}/`) &&
+        path.endsWith(fixture.resourceStem + "_glue.zfb-resource.mjs"),
+    );
+    expect(resourceInputs).toHaveLength(1);
+    expect(glueInputs).toHaveLength(1);
+    expect(
+      new Set(
+        resourceInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`))),
+      ),
+    ).toEqual(new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_bg.wasm`]));
+    expect(
+      new Set(glueInputs.map((path) => path.slice(path.indexOf(`/dist/${fixture.resourceDir}/`)))),
+    ).toEqual(
+      new Set([`/dist/${fixture.resourceDir}/${fixture.resourceStem}_glue.zfb-resource.mjs`]),
+    );
+    expect(
+      normalizedInputNames.filter(
+        (path) =>
+          /dist\/wasm(?:-[^/]+)?\/zfb_md_wasm.*\.(?:mjs|wasm)$/.test(path) &&
+          !path.includes(`/dist/${fixture.resourceDir}/`),
+      ),
+    ).toHaveLength(0);
+
+    const outputFiles = readdirSync(outDir);
+    const resources = outputFiles.filter((name) => name.startsWith("islands-resource-"));
+    expect(resources).toHaveLength(2);
+    expect(resources.filter((name) => name.endsWith(".mjs"))).toHaveLength(1);
+    expect(resources.filter((name) => name.endsWith(".wasm"))).toHaveLength(1);
+    expect(resources.every((name) => name.includes(fixture.resourceStem))).toBe(true);
   });
 
   it("selects browser.js and keeps relative glue/wasm resources through generic esbuild", async () => {
@@ -171,7 +288,7 @@ describe("packed browser conditional entry", () => {
     writeFileSync(
       entryPath,
       [
-        'export { MdastAdapterError, __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init, parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm";',
+        'export { MdastAdapterError, __forceTrapForTests, __getTrapRecoveryStateForTests, highlightCode, init, parseToAst, renderHtml, toMdastRoot } from "@takazudo/zfb-md-wasm";',
       ].join("\n"),
     );
 
@@ -289,6 +406,14 @@ describe("packed browser conditional entry", () => {
         children: [{ type: "containerDirective", name: "note" }],
       });
       expect(bundled.MdastAdapterError).toBeTypeOf("function");
+
+      const rendered = await bundled.renderHtml("Budget <8 ms\n", {
+        filename: "preview.md",
+      });
+      expect(rendered).toMatchObject({
+        html: "<p>Budget &lt;8 ms</p>",
+        diagnostics: [],
+      });
       expect(after.currentGeneration).toBe(before.currentGeneration + 1);
       expect(after.trapRecoveriesStarted).toBe(before.trapRecoveriesStarted + 1);
       expect(after.freshInstanceStarts).toBe(before.freshInstanceStarts + 3);

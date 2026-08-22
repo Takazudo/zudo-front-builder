@@ -127,7 +127,7 @@ remaining platform archives (linux + windows) and their .sha256 files.
 
 If v<version> is a STABLE release, update Homebrew ONLY after that run succeeds (the script
 404s if any platform's .sha256 is not yet on the Release). SKIP for prereleases — brew tracks
-the stable channel; testers use `npm i -g zfb@next` or ZFB_VERSION=latest-prerelease:
+the stable channel; testers use `npm i -g @takazudo/zfb@next` or ZFB_VERSION=latest-prerelease:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
 ============================================================

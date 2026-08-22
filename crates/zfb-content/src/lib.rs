@@ -19,6 +19,10 @@ pub mod render_metadata;
 pub mod schema;
 pub mod serializer;
 pub mod syntect_highlight;
+#[cfg(feature = "compiler")]
+pub mod tsx_frontmatter;
+#[cfg(not(feature = "compiler"))]
+#[path = "tsx_frontmatter_compiler_off.rs"]
 pub mod tsx_frontmatter;
 
 pub use content_bridge::{
@@ -64,9 +68,9 @@ pub use syntect_highlight::{
 // full contract; re-exported here so downstream crates (e.g. the future
 // `zfb-md-wasm`) can name every facade type/fn from the crate root.
 pub use facade::{
-    build_pipeline, build_pipeline_from_json, compile_mdx_jsx_from_config, parse_pipeline_options,
-    render_html, render_html_from_config, render_mdx_jsx_module, FacadeError, GfmOptions,
-    PipelineOptions,
+    build_pipeline, build_pipeline_for_dialect, build_pipeline_from_json,
+    compile_mdx_jsx_from_config, parse_pipeline_options, render_html, render_html_from_config,
+    render_mdx_jsx_module, FacadeError, GfmOptions, PipelineOptions,
 };
 
 pub use plugins::toc::TocConfig;

@@ -23,17 +23,19 @@
 //!   input (follow-up noted in README); runtime behaviour of the emitted
 //!   JS (zfb-render's own tests cover the SWC pipeline).
 
+#[cfg(feature = "highlight")]
 use std::collections::BTreeMap;
 
+#[cfg(any(feature = "render", feature = "parse", feature = "highlight"))]
 use serde_json::Value;
 
-#[cfg(feature = "pipeline")]
+#[cfg(all(feature = "compile", feature = "render", feature = "parse"))]
 #[derive(Debug, serde::Deserialize)]
 struct DiagnosticFixtureManifest {
     fixtures: Vec<DiagnosticFixture>,
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(all(feature = "compile", feature = "render", feature = "parse"))]
 #[derive(Debug, serde::Deserialize)]
 struct DiagnosticFixture {
     slug: String,
@@ -43,7 +45,7 @@ struct DiagnosticFixture {
     column: u64,
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(all(feature = "compile", feature = "render", feature = "parse"))]
 fn diagnostic_fixtures() -> Vec<DiagnosticFixture> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/parse-to-ast/diagnostics.json");
@@ -53,18 +55,18 @@ fn diagnostic_fixtures() -> Vec<DiagnosticFixture> {
         .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()))
         .fixtures
 }
+#[cfg(feature = "highlight")]
 use zfb_content::syntect_highlight::Highlighter;
 
+#[cfg(any(feature = "render", feature = "parse", feature = "highlight"))]
 fn parse(result: String) -> Value {
     serde_json::from_str(&result).expect("API output is always a JSON document")
 }
 
-// `compile`/`render_html` and everything only they exercise (below) are
-// gated on `pipeline` (default-on, see crate docs) -- the highlight-only
-// artifact drops them (zfb#1849, epic zfb#1845). `cargo test -p
-// zfb-md-wasm --no-default-features` therefore runs only the
-// `highlight_code`/`version` tests further down.
-#[cfg(feature = "pipeline")]
+// Each API tier is gated by its matching additive capability. The default
+// `pipeline` alias enables all four; a no-feature test build retains only
+// the unconditional `version` test.
+#[cfg(feature = "compile")]
 const MDX_FIXTURE: &str = "---\n\
 title: Hello WASM\n\
 tags:\n\
@@ -80,13 +82,13 @@ draft: false\n\
 \n\
 The answer is {6 * 7}.\n";
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 const MDX_OPTIONS: &str =
     r#"{"filename":"post.mdx","pipeline":{"features":{"githubAlerts":true}}}"#;
 
 // ── compile tier ────────────────────────────────────────────────────────────
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[test]
 fn compile_full_fixture_emits_mdx_content_module() {
     let out = parse(zfb_md_wasm::compile(MDX_FIXTURE, MDX_OPTIONS));
@@ -133,7 +135,7 @@ fn compile_full_fixture_emits_mdx_content_module() {
     assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[test]
 fn compile_react_runtime_switches_import_source() {
     let out = parse(zfb_md_wasm::compile("hello\n", r#"{"jsxRuntime":"react"}"#));
@@ -145,7 +147,7 @@ fn compile_react_runtime_switches_import_source() {
     assert_eq!(out["frontmatter"], Value::Null, "no frontmatter → null");
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[test]
 fn compile_malformed_mdx_returns_structured_markdown_diagnostic() {
     // Frontmatter occupies file lines 1–3; the unclosed `<Card>` element
@@ -172,7 +174,7 @@ fn compile_malformed_mdx_returns_structured_markdown_diagnostic() {
     assert_eq!(diag["column"], 1);
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[test]
 fn compile_unclosed_expression_reports_shifted_position() {
     let src = "---\ntitle: x\n---\n\nvalue is {1 +\n";
@@ -184,7 +186,7 @@ fn compile_unclosed_expression_reports_shifted_position() {
     assert_eq!(diag["column"], 14);
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(all(feature = "compile", feature = "render", feature = "parse"))]
 #[test]
 fn markdown_diagnostics_use_original_source_utf16_coordinates_for_every_entrypoint() {
     for fixture in diagnostic_fixtures() {
@@ -226,7 +228,7 @@ fn markdown_diagnostics_use_original_source_utf16_coordinates_for_every_entrypoi
 
 // ── renderHtml tier ─────────────────────────────────────────────────────────
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[test]
 fn render_html_full_fixture_with_frontmatter() {
     let src = "---\ntitle: Doc\ncount: 3\n---\n\n# Heading\n\nSome **bold** text.\n";
@@ -242,7 +244,7 @@ fn render_html_full_fixture_with_frontmatter() {
     assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[test]
 fn render_html_without_frontmatter_yields_null_frontmatter() {
     let out = parse(zfb_md_wasm::render_html("# Just a heading\n", "{}"));
@@ -250,7 +252,7 @@ fn render_html_without_frontmatter_yields_null_frontmatter() {
     assert_eq!(out["frontmatter"], Value::Null);
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[test]
 fn render_html_accepts_compile_tier_options_document() {
     // One options document must be shareable across both tiers:
@@ -263,9 +265,80 @@ fn render_html_accepts_compile_tier_options_document() {
     assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
 }
 
+#[cfg(feature = "render")]
+#[test]
+fn render_html_infers_commonmark_for_md_and_keeps_mdx_for_mdx() {
+    for options in [r#"{}"#, r#"{"filename":"preview.md"}"#] {
+        let markdown = parse(zfb_md_wasm::render_html("Budget <8 ms\n", options));
+        assert_eq!(markdown["html"], "<p>Budget &lt;8 ms</p>", "{options}");
+        assert_eq!(
+            markdown["diagnostics"].as_array().map(Vec::len),
+            Some(0),
+            "{options}"
+        );
+    }
+
+    let mdx = parse(zfb_md_wasm::render_html(
+        "Budget <8 ms\n",
+        r#"{"filename":"preview.mdx"}"#,
+    ));
+    assert_eq!(mdx["html"], Value::Null);
+    assert_eq!(mdx["diagnostics"][0]["source"], "markdown");
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_html_explicit_dialect_overrides_extension_and_preserves_gfm() {
+    let markdown = parse(zfb_md_wasm::render_html(
+        "Budget <8 ms\n\n~~old~~\n",
+        r#"{"filename":"preview.mdx","dialect":"markdown","pipeline":{"gfm":{"strikethrough":true}}}"#,
+    ));
+    assert_eq!(
+        markdown["html"],
+        "<p>Budget &lt;8 ms</p><p><del>old</del></p>"
+    );
+    assert_eq!(markdown["diagnostics"].as_array().map(Vec::len), Some(0));
+
+    let mdx = parse(zfb_md_wasm::render_html(
+        "Budget <8 ms\n",
+        r#"{"filename":"preview.md","dialect":"mdx"}"#,
+    ));
+    assert_eq!(mdx["html"], Value::Null);
+    assert_eq!(mdx["diagnostics"][0]["source"], "markdown");
+
+    let no_strikethrough = parse(zfb_md_wasm::render_html(
+        "~~old~~\n",
+        r#"{"filename":"preview.md","pipeline":{"gfm":{"strikethrough":false}}}"#,
+    ));
+    assert_eq!(no_strikethrough["html"], "<p>~~old~~</p>");
+}
+
+#[cfg(feature = "compile")]
+#[test]
+fn compile_accepts_and_ignores_the_render_only_dialect() {
+    let out = parse(zfb_md_wasm::compile(
+        "<Widget />\n",
+        r#"{"filename":"post.md","dialect":"markdown"}"#,
+    ));
+    assert!(out["code"]
+        .as_str()
+        .is_some_and(|code| code.contains("Widget")));
+    assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_html_rejects_null_or_unknown_dialect_values() {
+    for options in [r#"{"dialect":null}"#, r#"{"dialect":"commonmark"}"#] {
+        let out = parse(zfb_md_wasm::render_html("# ok\n", options));
+        assert_eq!(out["html"], Value::Null, "{options}");
+        assert_eq!(out["diagnostics"][0]["source"], "options", "{options}");
+    }
+}
+
 // ── options / frontmatter diagnostics ───────────────────────────────────────
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[test]
 fn non_json_options_return_options_diagnostic() {
     let out = parse(zfb_md_wasm::render_html("# hi\n", "not json"));
@@ -277,7 +350,7 @@ fn non_json_options_return_options_diagnostic() {
     assert_eq!(diag["line"], 1);
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[test]
 fn unknown_top_level_option_is_rejected() {
     let out = parse(zfb_md_wasm::compile("# hi\n", r#"{"bogus":1}"#));
@@ -292,7 +365,7 @@ fn unknown_top_level_option_is_rejected() {
     );
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[test]
 fn unknown_pipeline_option_is_rejected() {
     let out = parse(zfb_md_wasm::compile(
@@ -309,7 +382,7 @@ fn unknown_pipeline_option_is_rejected() {
     );
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[test]
 fn unknown_theme_name_is_a_diagnostic_not_a_panic() {
     // Theme names are validated at pipeline construction (zfb#1067 /
@@ -330,7 +403,7 @@ fn unknown_theme_name_is_a_diagnostic_not_a_panic() {
     );
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[test]
 fn invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
     let out = parse(zfb_md_wasm::render_html(
@@ -353,7 +426,7 @@ fn invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
     assert_eq!(diag["column"], 1);
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "render")]
 #[test]
 fn unterminated_frontmatter_returns_frontmatter_diagnostic() {
     let out = parse(zfb_md_wasm::render_html(
@@ -371,7 +444,7 @@ fn unterminated_frontmatter_returns_frontmatter_diagnostic() {
     );
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "compile")]
 #[test]
 fn non_markdown_filename_is_an_options_diagnostic() {
     let out = parse(zfb_md_wasm::compile("# hi\n", r#"{"filename":"page.tsx"}"#));
@@ -393,7 +466,7 @@ fn non_markdown_filename_is_an_options_diagnostic() {
 // renderHtml tiers above are covered for, so parseToAst's cross-cutting
 // behavior isn't only proven by its own dedicated file.
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[test]
 fn parse_to_ast_malformed_mdx_returns_structured_markdown_diagnostic() {
     // Same fixture/shift arithmetic as `compile_malformed_mdx_returns_structured_markdown_diagnostic`.
@@ -415,7 +488,7 @@ fn parse_to_ast_malformed_mdx_returns_structured_markdown_diagnostic() {
     assert_eq!(diag["column"], 1);
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[test]
 fn parse_to_ast_non_json_options_return_options_diagnostic() {
     let out = parse(zfb_md_wasm::parse_to_ast("# hi\n", "not json"));
@@ -426,7 +499,7 @@ fn parse_to_ast_non_json_options_return_options_diagnostic() {
     assert_eq!(diag["line"], 1);
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[test]
 fn parse_to_ast_unknown_top_level_option_is_rejected() {
     let out = parse(zfb_md_wasm::parse_to_ast("# hi\n", r#"{"bogus":1}"#));
@@ -441,7 +514,7 @@ fn parse_to_ast_unknown_top_level_option_is_rejected() {
     );
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[test]
 fn parse_to_ast_invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
     let out = parse(zfb_md_wasm::parse_to_ast(
@@ -460,7 +533,7 @@ fn parse_to_ast_invalid_yaml_frontmatter_returns_frontmatter_diagnostic() {
     );
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[test]
 fn parse_to_ast_non_markdown_filename_is_an_options_diagnostic() {
     let out = parse(zfb_md_wasm::parse_to_ast(
@@ -478,7 +551,7 @@ fn parse_to_ast_non_markdown_filename_is_an_options_diagnostic() {
     );
 }
 
-#[cfg(feature = "pipeline")]
+#[cfg(feature = "parse")]
 #[test]
 fn parse_to_ast_rejects_compile_and_visitor_options() {
     for options in [
@@ -495,6 +568,7 @@ fn parse_to_ast_rejects_compile_and_visitor_options() {
 
 // ── direct highlightCode tier ──────────────────────────────────────────────
 
+#[cfg(feature = "highlight")]
 #[test]
 fn highlight_code_matches_the_native_semantic_renderer_for_promised_languages() {
     for (language, code) in [
@@ -525,6 +599,7 @@ fn highlight_code_matches_the_native_semantic_renderer_for_promised_languages() 
     }
 }
 
+#[cfg(feature = "highlight")]
 #[test]
 fn highlight_code_applies_prefix_and_full_name_role_overrides() {
     let out = parse(zfb_md_wasm::highlight_code(
@@ -542,6 +617,7 @@ fn highlight_code_applies_prefix_and_full_name_role_overrides() {
     assert_eq!(out["diagnostics"], Value::Array(vec![]));
 }
 
+#[cfg(feature = "highlight")]
 #[test]
 fn highlight_code_unknown_language_is_escaped_markup_plus_warning() {
     let out = parse(zfb_md_wasm::highlight_code(
@@ -566,6 +642,7 @@ fn highlight_code_unknown_language_is_escaped_markup_plus_warning() {
     assert_eq!(diagnostic["column"], Value::Null);
 }
 
+#[cfg(feature = "highlight")]
 #[test]
 fn highlight_code_accepts_empty_and_incomplete_source() {
     let empty = parse(zfb_md_wasm::highlight_code("", r#"{"language":"rust"}"#));
@@ -580,6 +657,7 @@ fn highlight_code_accepts_empty_and_incomplete_source() {
     assert_eq!(incomplete["diagnostics"], Value::Array(vec![]));
 }
 
+#[cfg(feature = "highlight")]
 #[test]
 fn highlight_code_invalid_options_are_structured_and_non_trapping() {
     for options in [

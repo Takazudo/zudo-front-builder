@@ -75,7 +75,7 @@ Read the current version from `packages/zfb/package.json` (the version source-of
 
 Every rule below sets two independent things: **which component bumps** (major / minor / patch) and
 **which channel the result lands on**. The `-next.N` forms publish to the npm `next` tag and leave
-`latest` untouched; the `stable` forms publish to `latest` — the version a bare `npm i zfb`,
+`latest` untouched; the `stable` forms publish to `latest` — the version a bare `npm i @takazudo/zfb`,
 `brew install`, or `curl | sh` resolves to.
 
 **Stable-by-default.** The no-argument path judges the level from the commits and, for **patch** and
@@ -540,7 +540,7 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    tap remote or a `.sha256` not yet uploaded.
 
    For **prereleases**, skip this entirely — brew tracks the stable channel. Testers use
-   `npm i -g zfb@next` or the curl installer with `ZFB_VERSION=latest-prerelease`.
+   `npm i -g @takazudo/zfb@next` or the curl installer with `ZFB_VERSION=latest-prerelease`.
 
    **b. Report.** Release URL, and confirm npm landed with `npm view @takazudo/zfb dist-tags`. For a
    stable release, state the tap commit so the Homebrew half is verifiable at a glance.
@@ -550,11 +550,11 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
 
 Print the message below **verbatim** (substitute the actual version string for `<version>`), picking the block that matches whether the Mac archive was uploaded in Step 10. Do not paraphrase command strings or URLs.
 
-The Homebrew step is gated to **stable** releases (it tracks the stable channel, like npm `latest`). If `<version>` is a prerelease (`-next.` / `-beta.` / `-rc.`), do NOT run `update-homebrew-formula.sh` — direct prerelease testers to `npm i -g zfb@next` or the curl installer's `ZFB_VERSION=latest-prerelease`.
+The Homebrew step is gated to **stable** releases (it tracks the stable channel, like npm `latest`). If `<version>` is a prerelease (`-next.` / `-beta.` / `-rc.`), do NOT run `update-homebrew-formula.sh` — direct prerelease testers to `npm i -g @takazudo/zfb@next` or the curl installer's `ZFB_VERSION=latest-prerelease`.
 
 **Note — prerelease dual-tag (RESOLVED as of v1.0.0, 2026-07-31)**: while
 `@takazudo/zfb dist-tags.latest` was empty or was itself a prerelease (contains `"-"`),
-`release.yml` advanced **both** `next` and `latest` on every `*-next.*` publish, so `npm i -g zfb`
+`release.yml` advanced **both** `next` and `latest` on every `*-next.*` publish, so `npm i -g @takazudo/zfb`
 (no tag) followed prereleases. **v1.0.0 now holds `latest`, so that gate is self-disabled and
 prereleases no longer touch `latest`** — this is history, not current behavior. Do not expect a
 `-next.N` publish to move `latest`. See RELEASE_DAY_CHECKLIST.md "Prerelease dual-tag policy" for
@@ -585,7 +585,7 @@ npm packages:
 
 If this is a STABLE release, update Homebrew once the Release run above succeeds (the script
 fetches every platform's .sha256 from the Release and 404s if it has not finished). SKIP this
-for prereleases — brew tracks the stable channel; testers use `npm i -g zfb@next` or the curl
+for prereleases — brew tracks the stable channel; testers use `npm i -g @takazudo/zfb@next` or the curl
 installer with ZFB_VERSION=latest-prerelease:
 
   ./scripts/update-homebrew-formula.sh v<version> --push
@@ -632,7 +632,7 @@ remaining platform archives (linux + windows, and the macos-15-intel leg under O
 
 If this is a STABLE release, update Homebrew once the Release run above succeeds (the script
 fetches every platform's .sha256 from the Release and 404s if it has not finished). SKIP this
-for prereleases — brew tracks the stable channel; testers use `npm i -g zfb@next` or the curl
+for prereleases — brew tracks the stable channel; testers use `npm i -g @takazudo/zfb@next` or the curl
 installer with ZFB_VERSION=latest-prerelease:
 
   ./scripts/update-homebrew-formula.sh v<version> --push

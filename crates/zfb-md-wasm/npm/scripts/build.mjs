@@ -2,17 +2,12 @@
 /**
  * scripts/build.mjs — builds @takazudo/zfb-md-wasm (zfb#1577, epic zfb#1572).
  *
- * Builds TWO wasm artifacts (zfb#1849, epic zfb#1845):
+ * Builds four isolated wasm artifacts sequentially:
  *   - the default artifact (all default-on Cargo features -- compile,
- *     renderHtml, highlightCode) under `src/wasm/`, served by the package's
- *     `.` entry.
- *   - a highlight-only artifact (`cargo ... --no-default-features`, which
- *     drops the `pipeline` feature -- see crates/zfb-md-wasm/Cargo.toml)
- *     under `src/wasm-highlight/`, served by the package's `./highlight`
- *     entry. The md/MDX/JSX pipeline dominates the shipped bytes (Wave-1
- *     measurement on epic #1845: 51.8% raw / 44.5% gzip of the default
- *     artifact) -- dropping it is the size knob for consumers that only
- *     need syntax highlighting.
+ *     renderHtml, parseToAst, highlightCode) under `src/wasm/`, served by the
+ *     package's `.` entry.
+ *   - explicit highlight, render, and parse singleton feature artifacts under
+ *     `src/wasm-highlight/`, `src/wasm-render/`, and `src/wasm-parse/`.
  *
  * Each artifact goes through the same 3-step pipeline:
  *   1. cargo rustc --target wasm32-unknown-unknown --profile wasm-release
@@ -25,36 +20,35 @@
  *   2. wasm-bindgen --target web                (ESM glue, browser + Node)
  *   3. wasm-opt -O1 (binaryen, pinned via the `binaryen` devDependency)
  *
- * Sequencing between the two artifacts is load-bearing: both cargo rustc
- * invocations write the SAME cdylib path
+ * Sequencing between the four artifacts is load-bearing: every cargo rustc
+ * invocation writes the SAME cdylib path
  * (target/wasm32-unknown-unknown/wasm-release/zfb_md_wasm.wasm) — the
  * default artifact's cdylib must be fully consumed by wasm-bindgen (step 2)
- * before the highlight-only cargo rustc pass overwrites it. The two
- * artifacts are therefore built one after the other, never in parallel.
+ * before the next cargo rustc pass overwrites it. The four artifacts are
+ * therefore built one after the other, never in parallel.
  *
- * After both artifacts:
+ * After all four artifacts:
  *   4. tsc (src/*.ts -> dist/*.js) — compiles every entry (index/browser/
- *      highlight/highlight-browser) in one pass, since it needs both
- *      src/wasm/ and src/wasm-highlight/ to already exist for the
- *      resource-URL imports to resolve.
+ *      and every direct/browser singleton) in one pass, after all generated
+ *      resource directories exist.
  *   5. mark each artifact's generated glue as a zfb file-loader resource,
- *      then copy src/wasm/ -> dist/wasm/ and src/wasm-highlight/ ->
- *      dist/wasm-highlight/.
+ *      then copy all four source resource directories into `dist`.
  *
- * Prints the raw + gzip size of BOTH final wasm binaries (epic #1572's
- * download-size concern; #1579's CI size-report line and #1580's docs page
- * both read these numbers back out of this script's stdout).
+ * Prints raw, generated-glue, final, and gzip sizes for every artifact (epic
+ * #1572's download-size concern; #1579's CI size-report line and #1580's docs
+ * page read these numbers back out of this script's stdout).
  *
  * Usage: node scripts/build.mjs   (run via `pnpm build` / `pnpm --filter
  * @takazudo/zfb-md-wasm build`)
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, cpSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, cpSync, renameSync, readdirSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
+import { SHIPPED_SIZES } from "../../shipped-sizes.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, ".."); // crates/zfb-md-wasm/npm
@@ -76,8 +70,43 @@ const EXPECTED_WASM_BINDGEN_VERSION = "0.2.121";
 // further but produce a *larger* gzip payload (aggressive inlining reduces
 // the redundancy gzip exploits) — see this package's README "Artifact size"
 // section for the measured numbers. -O1 minimized the gzip size we actually
-// ship over the wire. Shared by both artifacts.
+// ship over the wire. Shared by all four artifacts.
 const WASM_OPT_LEVEL = "-O1";
+
+export const ARTIFACTS = [
+  {
+    label: "default",
+    entry: ".",
+    cargoFeatureArgs: [],
+    outName: "zfb_md_wasm",
+    dirName: "wasm",
+    gzipCeiling: SHIPPED_SIZES.ceilings.root,
+  },
+  {
+    label: "highlight-only",
+    entry: "./highlight",
+    cargoFeatureArgs: ["--no-default-features", "--features", "highlight"],
+    outName: "zfb_md_wasm_highlight",
+    dirName: "wasm-highlight",
+    gzipCeiling: SHIPPED_SIZES.ceilings.highlight,
+  },
+  {
+    label: "render-only",
+    entry: "./render",
+    cargoFeatureArgs: ["--no-default-features", "--features", "render"],
+    outName: "zfb_md_wasm_render",
+    dirName: "wasm-render",
+    gzipCeiling: SHIPPED_SIZES.ceilings.render,
+  },
+  {
+    label: "parse-only",
+    entry: "./parse",
+    cargoFeatureArgs: ["--no-default-features", "--features", "parse"],
+    outName: "zfb_md_wasm_parse",
+    dirName: "wasm-parse",
+    gzipCeiling: SHIPPED_SIZES.ceilings.parse,
+  },
+];
 
 function log(msg) {
   console.log(`[build] ${msg}`);
@@ -164,7 +193,7 @@ function fmtBytes(n) {
 /**
  * Builds one wasm artifact end-to-end (cargo rustc -> wasm-bindgen ->
  * wasm-opt) into `srcOutDir`. `cargoFeatureArgs` is `[]` for the default
- * artifact or `["--no-default-features"]` for the highlight-only one;
+ * artifact or the exact singleton feature arguments for a slim artifact;
  * `outName` becomes both the wasm-bindgen `--out-name` and the emitted file
  * stems (`<outName>_bg.wasm`, `<outName>_glue.zfb-resource.mjs`, …).
  */
@@ -197,7 +226,7 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
       env,
     },
   );
-  // Both artifacts' cargo rustc pass writes this SAME path (see module doc
+  // Every artifact's cargo rustc pass writes this SAME path (see module doc
   // "Sequencing" note) -- read it immediately, before the next artifact's
   // cargo rustc pass (if any) overwrites it.
   const cdylibPath = resolve(
@@ -221,13 +250,18 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
   const resourceGluePath = resolve(srcOutDir, `${outName}_glue.zfb-resource.mjs`);
   const resourceGlueDeclarationPath = resolve(srcOutDir, `${outName}_glue.zfb-resource.d.mts`);
 
-  // One canonical generated runtime serves both entries. The marker turns the
-  // browser entry's static import into an esbuild file resource, while the
-  // direct entry dynamically imports this exact same module.
+  // One canonical generated runtime serves both variants of this entry. The
+  // marker turns the browser variant's static import into an esbuild file
+  // resource, while the direct variant dynamically imports this same module.
   renameSync(gluePath, resourceGluePath);
   renameSync(glueDeclarationPath, resourceGlueDeclarationPath);
   const bindgenSize = readFileSync(bgWasmPath).length;
+  const glueBytes = readFileSync(resourceGluePath);
+  const glueSize = glueBytes.length;
+  const glueGzipSize = gzipSync(glueBytes, { level: 9 }).length;
   log(`${label} wasm-bindgen output: ${fmtBytes(bindgenSize)}`);
+  log(`${label} generated glue: ${fmtBytes(glueSize)}`);
+  log(`${label} generated glue gzip -9: ${fmtBytes(glueGzipSize)}`);
 
   log(`== ${label} 3/3: wasm-opt ${WASM_OPT_LEVEL} ==`);
   const wasmOptBin = resolveWasmOptBin();
@@ -254,7 +288,21 @@ function buildWasmArtifact({ env, label, cargoFeatureArgs, outName, srcOutDir })
   log(`${label} wasm-opt output: ${fmtBytes(finalSize)}`);
   log(`${label} gzip -9: ${fmtBytes(gzipSize)}`);
 
-  return { cdylibSize, bindgenSize, finalSize, gzipSize };
+  const expectedFiles = [
+    `${outName}_glue.zfb-resource.mjs`,
+    `${outName}_glue.zfb-resource.d.mts`,
+    `${outName}_bg.wasm`,
+    `${outName}_bg.wasm.d.ts`,
+  ].sort();
+  const actualFiles = readdirSync(srcOutDir).sort();
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    throw new Error(
+      `${label} generated resource set is not closed: expected ${expectedFiles.join(", ")}; ` +
+        `received ${actualFiles.join(", ")}`,
+    );
+  }
+
+  return { cdylibSize, bindgenSize, glueSize, glueGzipSize, finalSize, gzipSize };
 }
 
 function main() {
@@ -264,26 +312,21 @@ function main() {
   const distDir = resolve(pkgRoot, "dist");
   rmSync(distDir, { recursive: true, force: true });
 
-  const defaultStats = buildWasmArtifact({
-    env,
-    label: "default",
-    cargoFeatureArgs: [],
-    outName: "zfb_md_wasm",
-    srcOutDir: resolve(pkgRoot, "src/wasm"),
-  });
-
-  const highlightStats = buildWasmArtifact({
-    env,
-    label: "highlight-only",
-    cargoFeatureArgs: ["--no-default-features"],
-    outName: "zfb_md_wasm_highlight",
-    srcOutDir: resolve(pkgRoot, "src/wasm-highlight"),
-  });
+  const stats = ARTIFACTS.map((artifact) => ({
+    artifact,
+    stats: buildWasmArtifact({
+      env,
+      label: artifact.label,
+      cargoFeatureArgs: artifact.cargoFeatureArgs,
+      outName: artifact.outName,
+      srcOutDir: resolve(pkgRoot, "src", artifact.dirName),
+    }),
+  }));
 
   log(`== tsc ==`);
   run(resolve(pkgRoot, "node_modules/.bin/tsc"), [], { cwd: pkgRoot, env });
 
-  for (const dirName of ["wasm", "wasm-highlight"]) {
+  for (const { dirName } of ARTIFACTS) {
     const distSubDir = resolve(distDir, dirName);
     mkdirSync(distSubDir, { recursive: true });
     cpSync(resolve(pkgRoot, "src", dirName), distSubDir, { recursive: true });
@@ -291,20 +334,25 @@ function main() {
 
   console.log("");
   console.log("== zfb-md-wasm build summary ==");
-  console.log("-- default artifact (`.` entry) --");
-  console.log(`cdylib (cargo, wasm-release profile): ${fmtBytes(defaultStats.cdylibSize)}`);
-  console.log(`wasm-bindgen --target web:             ${fmtBytes(defaultStats.bindgenSize)}`);
-  console.log(
-    `wasm-opt ${WASM_OPT_LEVEL} (final):              ${fmtBytes(defaultStats.finalSize)}`,
-  );
-  console.log(`gzip -9 (final):                       ${fmtBytes(defaultStats.gzipSize)}`);
-  console.log("-- highlight-only artifact (`./highlight` entry) --");
-  console.log(`cdylib (cargo, wasm-release profile): ${fmtBytes(highlightStats.cdylibSize)}`);
-  console.log(`wasm-bindgen --target web:             ${fmtBytes(highlightStats.bindgenSize)}`);
-  console.log(
-    `wasm-opt ${WASM_OPT_LEVEL} (final):              ${fmtBytes(highlightStats.finalSize)}`,
-  );
-  console.log(`gzip -9 (final):                       ${fmtBytes(highlightStats.gzipSize)}`);
+  for (const { artifact, stats: artifactStats } of stats) {
+    console.log(`-- ${artifact.label} artifact (\`${artifact.entry}\` entry) --`);
+    console.log(`raw cdylib:                            ${fmtBytes(artifactStats.cdylibSize)}`);
+    console.log(`wasm-bindgen binary:                   ${fmtBytes(artifactStats.bindgenSize)}`);
+    console.log(`generated glue:                        ${fmtBytes(artifactStats.glueSize)}`);
+    console.log(`generated glue gzip -9:                ${fmtBytes(artifactStats.glueGzipSize)}`);
+    console.log(
+      `wasm-opt ${WASM_OPT_LEVEL} (final):              ${fmtBytes(artifactStats.finalSize)}`,
+    );
+    console.log(`gzip -9 (final):                       ${fmtBytes(artifactStats.gzipSize)}`);
+    if (artifactStats.gzipSize > artifact.gzipCeiling) {
+      throw new Error(
+        `${artifact.label} gzip-9 size ${artifactStats.gzipSize} exceeds ceiling ${artifact.gzipCeiling}`,
+      );
+    }
+  }
 }
 
-main();
+const argument = process.argv[1];
+if (argument !== undefined && import.meta.url === pathToFileURL(argument).href) {
+  main();
+}

@@ -12,7 +12,7 @@ export interface GfmOptions {
   footnoteDefinition?: boolean;
 }
 
-/** Base syntax selected by `parseToAst`. */
+/** Base syntax selected by `parseToAst` and `renderHtml`. */
 export type ParseDialect = "markdown" | "mdx";
 
 /** How `parseToAst` handles recognized YAML frontmatter. */
@@ -124,6 +124,11 @@ export interface ZfbMdWasmOptions {
    * `<anonymous>.md` for `renderHtml`.
    */
   filename?: string;
+  /**
+   * Consumed only by `renderHtml`; `compile` accepts and ignores it.
+   * Without an override, `.md` selects CommonMark and `.mdx` selects MDX.
+   */
+  dialect?: ParseDialect;
   /** Consumed only by `compile`; `renderHtml` accepts and ignores it. */
   jsxRuntime?: JsxRuntime;
   /** Consumed only by `compile`; `renderHtml` accepts and ignores it. */

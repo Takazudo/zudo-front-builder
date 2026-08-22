@@ -14,6 +14,8 @@
 //!    [`Pipeline::with_defaults_and_full_config_class`] when
 //!    `codeHighlight.mode` is `"class"` (Highlight Tokens epic zfb#1528,
 //!    wasm routing sub zfb#1852) — see [`build_pipeline`].
+//!    [`build_pipeline_for_dialect`] optionally replaces the primary MDX
+//!    parser with CommonMark without changing that resolved visitor chain.
 //! 2. [`render_html`] promotes the `pipeline.run(input)` →
 //!    [`crate::serializer::serialize`] composition that today only exists
 //!    inlined in test helpers (e.g. `tests/integration_pipeline.rs`) into a
@@ -440,6 +442,26 @@ pub fn build_pipeline(options: &PipelineOptions) -> Result<Pipeline, FacadeError
             Some(&options.features),
         )?),
     }
+}
+
+/// Build the fully-wired pipeline with an explicit primary parse dialect.
+///
+/// MDX preserves [`build_pipeline`]'s existing byte-for-byte construction.
+/// Markdown swaps only [`Pipeline::run`]'s base syntax to CommonMark while
+/// retaining the same resolved GFM switches and visitor configuration.
+///
+/// # Errors
+/// Returns the same configuration and highlighting errors as
+/// [`build_pipeline`].
+pub fn build_pipeline_for_dialect(
+    options: &PipelineOptions,
+    dialect: ParseDialect,
+) -> Result<Pipeline, FacadeError> {
+    let mut pipeline = build_pipeline(options)?;
+    if dialect == ParseDialect::Markdown {
+        pipeline.use_commonmark_dialect();
+    }
+    Ok(pipeline)
 }
 
 /// Parse `config_json` and build a fully-wired [`Pipeline`] in one step.

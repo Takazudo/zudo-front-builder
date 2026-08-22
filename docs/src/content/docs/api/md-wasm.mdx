@@ -1,6 +1,6 @@
 ---
 title: zfb-md-wasm
-description: "Reference for @takazudo/zfb-md-wasm — the WebAssembly build of zfb's markdown/MDX pipeline. Exports, async signatures, option/result types (ZfbMdWasmOptions, PipelineOptions, Diagnostic, ParseToAstOptions, HighlightCodeOptions, HighlightRole), the raw mdast shape, and package entry points."
+description: "Reference for @takazudo/zfb-md-wasm — the WebAssembly build of zfb's markdown/MDX pipeline. Exports, async signatures, option/result types (ZfbMdWasmOptions, ParseDialect, PipelineOptions, Diagnostic, ParseToAstOptions, HighlightCodeOptions, HighlightRole), the raw mdast shape, and package entry points."
 sidebar_position: 7
 ---
 
@@ -47,7 +47,7 @@ Eagerly instantiate the wasm module. Calling it up front only controls **when** 
 function compile(source: string, options?: ZfbMdWasmOptions): Promise<CompileResult>
 ```
 
-MDX → JSX → SWC → ES-module JS, the same emitter zfb's own build uses. `options` defaults to `{}`. `jsxRuntime` and `development` are consumed only here — `renderHtml` accepts and silently ignores both, so one options object can serve either call.
+MDX → JSX → SWC → ES-module JS, the same emitter zfb's own build uses. `options` defaults to `{}`. `jsxRuntime` and `development` are consumed only here — `renderHtml` accepts and silently ignores both. Conversely, `dialect` is consumed only by `renderHtml`; `compile` accepts and ignores it, so one options object can serve either call.
 
 ## `renderHtml(source, options?)`
 
@@ -55,7 +55,7 @@ MDX → JSX → SWC → ES-module JS, the same emitter zfb's own build uses. `op
 function renderHtml(source: string, options?: ZfbMdWasmOptions): Promise<RenderHtmlResult>
 ```
 
-Markdown → mdast → visitors → hast → HTML string, skipping SWC entirely. `options` defaults to `{}`.
+Markdown/MDX → mdast → visitors → hast → HTML string, skipping SWC entirely. `options` defaults to `{}`. Without an explicit `dialect`, a `.md` filename selects CommonMark and `.mdx` selects MDX; omitting `filename` uses `"<anonymous>.md"`, hence CommonMark. `dialect: "markdown" | "mdx"` overrides either valid extension without waiving the extension gate.
 
 ## `parseToAst(source, options?)`
 
@@ -104,6 +104,7 @@ The options document shared by `compile` and `renderHtml`. Every field is option
 | Field | Type | Description |
 |---|---|---|
 | `filename?` | `string` | Must end in `.md` or `.mdx`. Defaults to `"<anonymous>.mdx"` for `compile`, `"<anonymous>.md"` for `renderHtml`. |
+| `dialect?` | `"markdown" \| "mdx"` | Consumed only by `renderHtml`; overrides filename inference. `compile` accepts and ignores it. |
 | `jsxRuntime?` | `"preact" \| "react"` | Consumed only by `compile`; `renderHtml` accepts and ignores it. |
 | `development?` | `boolean` | Consumed only by `compile`; `renderHtml` accepts and ignores it. |
 | `pipeline?` | `PipelineOptions` | Shared pipeline configuration. |
@@ -244,14 +245,97 @@ With `directives: true` (see [`ParseToAstOptions`](#type-reference-parsetoastopt
 
 ## Package entry points
 
-Two subpath exports, both compiled from the same crate but shipping distinct wasm artifacts:
+The root (`.`) remains the complete compatibility API. Existing root and
+`./highlight` imports require no migration. The additive `./render` and
+`./parse` entries are isolated **SWC-free** graphs: they omit `swc_core` and
+`zfb-render` while intentionally retaining `zfb-content` and `syntect-fancy`.
+Parse is not syntect-free.
 
-| Subpath | Artifact | Re-exported surface | Use when |
-|---|---|---|---|
-| `.` | Full pipeline (carries SWC) | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, all three error classes, every type above | Compiling MDX, rendering Markdown to HTML, or parsing to a raw AST. |
-| `./highlight` | Slim, highlight-only — built with the `pipeline` Cargo feature off, so `compile`/`renderHtml`/`parseToAst` don't even exist on the underlying glue | `init`, `highlightCode`, `version`, both trap error classes, the `HighlightRole`/`HighlightCodeOptions`/`HighlightCodeResult`/`HighlightDiagnostic*` types | Only ever calling `highlightCode` — roughly half the download of the default artifact. |
+| Subpath | gzip-9 wasm (2.10.0) | Exact runtime values | Exact type surface | Use when |
+| --- | ---: | --- | --- | --- |
+| `.` | 1,458,446 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `toMdastRoot`, `MdastAdapterError`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | Full current compile/render/parse/raw-mdast/highlight types | Compile MDX or use several current APIs |
+| `./highlight` | 758,255 B | `init`, `highlightCode`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` | Highlight code only; public API/resources stay compatible |
+| `./render` | 1,011,152 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` | Render Markdown to HTML without compiler bytes |
+| `./parse` | 276,432 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` | Parse and optionally interpret an AST in controlled consumer code |
 
-Each subpath's `exports` map resolves a `browser` condition (a static, bundler-friendly resource path used by `src/browser.ts` / `src/highlight-browser.ts`) ahead of a `default` condition (the dynamic Node-`fs`-or-`fetch` loader in `src/index.ts` / `src/highlight.ts`); both conditions share the same `types` entry and the same underlying `createWasmApi` runtime.
+The focused resource pairs are private and non-interchangeable:
+
+```text
+wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs
+wasm-render/zfb_md_wasm_render_bg.wasm
+wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs
+wasm-parse/zfb_md_wasm_parse_bg.wasm
+```
+
+Their declaration sidecars stay in their matching directories. Each entry
+creates one independent `createWasmApi` state (compiled module, instance,
+generation, retry state, and terminal state). Importing multiple entries
+intentionally loads independent pairs and instances.
+
+Direct Node and browser-aware imports use the same subpath:
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm/render";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm/parse";
+```
+
+For lazy browser loading, import from a user action. The browser condition uses
+static `?url` edges to only the selected entry's pair:
+
+```ts
+renderButton.addEventListener("click", async () => {
+  const { renderHtml } = await import("@takazudo/zfb-md-wasm/render");
+  const { html } = await renderHtml(source, { filename: "preview.md" });
+  preview.innerHTML = html ?? "";
+});
+
+parseButton.addEventListener("click", async () => {
+  const { parseToAst, toMdastRoot } = await import("@takazudo/zfb-md-wasm/parse");
+  const parsed = await parseToAst(source, { filename: "preview.md" });
+  const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+  inspect(root);
+});
+```
+
+`compile` is root-only and returns module source requiring host evaluation,
+the JSX runtime, and components. `toMdastRoot` is a controlled consumer-side
+adapter; an AST-to-React renderer may interpret the resulting data. No slim entry evaluates author
+JavaScript. `renderHtml` is not a sanitizer and raw HTML remains untrusted;
+MDX JSX/expression/ESM-shaped AST nodes remain inert data.
+
+### Shipped artifact sizes and locked ceilings
+
+These are the shipped **2.10.0** artifact rows — optimized final wasm after
+wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
+bytes/gzip:
+
+| Entry/graph | final wasm | gzip-9 | glue | glue gzip-9 |
+| --- | ---: | ---: | ---: | ---: |
+| root (full) | 3,274,064 B | 1,458,446 B | 14,998 B | 4,199 B |
+| highlight | 1,476,740 B | 758,255 B | 8,758 B | 2,637 B |
+| render | 2,083,465 B | 1,011,152 B | 8,772 B | 2,661 B |
+| parse | 624,976 B | 276,432 B | 11,159 B | 3,797 B |
+
+The #2447 decision snapshot found the split package layout at 3,638,607 B
+versus 2,314,818 B for root plus highlight, a 210 s clean production
+ceiling, and a selected-snapshot median of 155.015 s [153.496, 165.977].
+Locked gzip-9 ceilings are root 1,600,000 B, highlight 820,000 B, render
+1,100,000 B, and parse 325,000 B; the complete packed tarball ceiling is
+3,900,000 B. All four ship inside their ceilings, with 141,554 B (root),
+61,745 B (highlight), 88,848 B (render), and 48,568 B (parse) of headroom.
+These are 2.10.0 measurements, not permanent promises — re-measure against
+the version you actually install.
+
+Gating `swc_core` out of the highlight graph (#2449/#2450) was a
+**provability win, not a size win**. The shipped highlight artifact is only
+7,965 B smaller than #2447's SWC-retaining baseline (1,484,705 B →
+1,476,740 B; gzip-9 767,009 B → 758,244 B, −8,765 B) — wasm-opt was already
+dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
+no-`swc_core` assertions turned that emergent property into a guaranteed
+one. The delta that matters to a highlight-only consumer is root versus
+highlight: the highlight artifact is 1,797,324 B smaller raw and 700,191 B
+smaller gzip-9, landing at about 45% of root's raw bytes and 52% of its
+gzipped bytes.
 
 The package is **ESM-only** (`"type": "module"`, no `require` support) and requires **Node ≥ 20.0.0**. Call `version()` (above) at runtime, or check the installed package's own `package.json`, rather than trusting a version number baked into this page — it drifts release to release.
 

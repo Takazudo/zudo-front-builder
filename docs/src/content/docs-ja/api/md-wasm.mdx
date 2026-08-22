@@ -1,6 +1,6 @@
 ---
 title: zfb-md-wasm
-description: "@takazudo/zfb-md-wasm のリファレンス — zfb の markdown/MDX パイプラインの WebAssembly ビルド。エクスポート、async のシグネチャ、オプション / 結果の型（ZfbMdWasmOptions、PipelineOptions、Diagnostic、ParseToAstOptions、HighlightCodeOptions、HighlightRole）、生の mdast の形、パッケージのエントリポイント。"
+description: "@takazudo/zfb-md-wasm のリファレンス — zfb の markdown/MDX パイプラインの WebAssembly ビルド。エクスポート、async のシグネチャ、オプション / 結果の型（ZfbMdWasmOptions、ParseDialect、PipelineOptions、Diagnostic、ParseToAstOptions、HighlightCodeOptions、HighlightRole）、生の mdast の形、パッケージのエントリポイント。"
 sidebar_position: 7
 ---
 
@@ -47,7 +47,7 @@ wasm モジュールを事前にインスタンス化します。前もって呼
 function compile(source: string, options?: ZfbMdWasmOptions): Promise<CompileResult>
 ```
 
-MDX → JSX → SWC → ES モジュール JS。zfb 自身のビルドが使うのと同じエミッタです。`options` のデフォルトは `{}` です。`jsxRuntime` と `development` はここでのみ消費されます — `renderHtml` は両方を受け取りますが黙って無視するため、1 つのオプションオブジェクトでどちらの呼び出しにも使えます。
+MDX → JSX → SWC → ES モジュール JS。zfb 自身のビルドが使うのと同じエミッタです。`options` のデフォルトは `{}` です。`jsxRuntime` と `development` はここでのみ消費され、`renderHtml` は両方を受け取りますが黙って無視します。反対に、`dialect` は `renderHtml` だけが消費し、`compile` は受け取って無視するため、1 つのオプションオブジェクトでどちらの呼び出しにも使えます。
 
 ## `renderHtml(source, options?)`
 
@@ -55,7 +55,7 @@ MDX → JSX → SWC → ES モジュール JS。zfb 自身のビルドが使う�
 function renderHtml(source: string, options?: ZfbMdWasmOptions): Promise<RenderHtmlResult>
 ```
 
-Markdown → mdast → ビジター → hast → HTML 文字列。SWC を完全にスキップします。`options` のデフォルトは `{}` です。
+Markdown/MDX → mdast → ビジター → hast → HTML 文字列。SWC を完全にスキップします。`options` のデフォルトは `{}` です。明示的な `dialect` がない場合、`.md` のファイル名は CommonMark、`.mdx` は MDX を選びます。`filename` を省略すると `"<anonymous>.md"` が使われるため CommonMark になります。`dialect: "markdown" | "mdx"` は、拡張子のゲートを免除せずに、どちらの有効な拡張子も上書きします。
 
 ## `parseToAst(source, options?)`
 
@@ -104,6 +104,7 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 | フィールド | 型 | 説明 |
 |---|---|---|
 | `filename?` | `string` | `.md` または `.mdx` で終わる必要があります。デフォルトは `compile` では `"<anonymous>.mdx"`、`renderHtml` では `"<anonymous>.md"` です。 |
+| `dialect?` | `"markdown" \| "mdx"` | `renderHtml` だけが消費し、ファイル名による推論を上書きします。`compile` は受け取って無視します。 |
 | `jsxRuntime?` | `"preact" \| "react"` | `compile` でのみ消費されます。`renderHtml` は受け取って無視します。 |
 | `development?` | `boolean` | `compile` でのみ消費されます。`renderHtml` は受け取って無視します。 |
 | `pipeline?` | `PipelineOptions` | 共有のパイプライン設定。 |
@@ -244,12 +245,93 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 
 ## パッケージのエントリポイント
 
-2 つのサブパスエクスポート。どちらも同じクレートからコンパイルされますが、異なる wasm アーティファクトを提供します:
+ルート（`.`）は完全な後方互換 API のままです。既存のルートと
+`./highlight` のインポートに移行は必要ありません。追加された `./render` と
+`./parse` は独立した **SWC-free** グラフです。`swc_core` と `zfb-render` を除外しつつ、
+`zfb-content` と `syntect-fancy` は意図的に保持します。parse は syntect-free ではありません。
 
-| サブパス | アーティファクト | 再エクスポートされる面 | 使う場面 |
-|---|---|---|---|
-| `.` | フルパイプライン（SWC を含む） | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、3 つのエラークラスすべて、上記のすべての型 | MDX のコンパイル、Markdown の HTML へのレンダリング、または生の AST へのパース。 |
-| `./highlight` | スリム、ハイライト専用 — `pipeline` の Cargo feature をオフにしてビルドされるため、`compile` / `renderHtml` / `parseToAst` は基盤のグルーに存在すらしません | `init`、`highlightCode`、`version`、両方のトラップエラークラス、`HighlightRole` / `HighlightCodeOptions` / `HighlightCodeResult` / `HighlightDiagnostic*` の型 | `highlightCode` しか呼ばない場合 — デフォルトのアーティファクトのおよそ半分のダウンロードサイズ。 |
+| サブパス | gzip-9 wasm（2.10.0） | 正確なランタイム値 | 正確な型の面 | 使う場面 |
+| --- | ---: | --- | --- | --- |
+| `.` | 1,458,446 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | 現在の compile/render/parse/raw-mdast/highlight の完全な型セット | MDX のコンパイル、または複数の現在の API を使う場合 |
+| `./highlight` | 758,255 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換のまま |
+| `./render` | 1,011,152 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML へ描画する場合 |
+| `./parse` | 276,432 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
+
+focused エントリのリソースペアは非公開で、互いに置き換えられません:
+
+```text
+wasm-render/zfb_md_wasm_render_glue.zfb-resource.mjs
+wasm-render/zfb_md_wasm_render_bg.wasm
+wasm-parse/zfb_md_wasm_parse_glue.zfb-resource.mjs
+wasm-parse/zfb_md_wasm_parse_bg.wasm
+```
+
+宣言サイドカーも対応するディレクトリに閉じています。各エントリは独立した
+`createWasmApi` 状態（コンパイル済みモジュール、インスタンス、世代、リトライ状態、
+終端状態）を作ります。複数エントリをインポートすると、独立したペアとインスタンスが
+意図どおりロードされます。
+
+Node の直接利用とブラウザ対応バンドラでは、同じサブパスをインポートします:
+
+```ts
+import { renderHtml } from "@takazudo/zfb-md-wasm/render";
+import { parseToAst, toMdastRoot } from "@takazudo/zfb-md-wasm/parse";
+```
+
+ブラウザで遅延ロードする場合は、ユーザー操作からインポートします。browser 条件は
+選択したエントリ自身のペアだけへ静的な `?url` エッジを張ります:
+
+```ts
+renderButton.addEventListener("click", async () => {
+  const { renderHtml } = await import("@takazudo/zfb-md-wasm/render");
+  const { html } = await renderHtml(source, { filename: "preview.md" });
+  preview.innerHTML = html ?? "";
+});
+
+parseButton.addEventListener("click", async () => {
+  const { parseToAst, toMdastRoot } = await import("@takazudo/zfb-md-wasm/parse");
+  const parsed = await parseToAst(source, { filename: "preview.md" });
+  const root = parsed.ast === null ? null : toMdastRoot(parsed.ast);
+  inspect(root);
+});
+```
+
+`compile` はルートだけにあり、ホストによる評価、JSX ランタイム、コンポーネントを必要とする
+モジュールソースを返します。`toMdastRoot` は、すでにパースされたデータを利用側の制御された
+AST-to-React レンダラーで解釈するためのアダプタです。slim エントリは author JavaScript を評価しません。
+`renderHtml` はサニタイザーではなく、生 HTML は信頼できないままです。MDX の JSX / 式 /
+ESM 形状の AST ノードは不活性なデータとして扱われます。
+
+### 出荷アーティファクトのサイズと上限
+
+出荷された **2.10.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
+グルーコードのバイト数とその gzip です:
+
+| エントリ / グラフ | final wasm | gzip-9 | glue | glue gzip-9 |
+| --- | ---: | ---: | ---: | ---: |
+| root（full） | 3,274,064 B | 1,458,446 B | 14,998 B | 4,199 B |
+| highlight | 1,476,740 B | 758,255 B | 8,758 B | 2,637 B |
+| render | 2,083,465 B | 1,011,152 B | 8,772 B | 2,661 B |
+| parse | 624,976 B | 276,432 B | 11,159 B | 3,797 B |
+
+#2447 の決定スナップショットでは、split パッケージの構成が 3,638,607 B、root + highlight が
+2,314,818 B、クリーンな本番 4 ステップの上限は 210 秒、選択されたスナップショットの中央値は 155.015 秒
+[153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 820,000 B、
+render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
+いずれも上限の内側で出荷されており、上限までの余裕は root 141,554 B、highlight 61,745 B、
+render 88,848 B、parse 48,568 B です。これらは永続的な保証ではなく 2.10.0 の測定値です —
+実際にインストールしたバージョンで測り直してください。
+
+highlight グラフから `swc_core` をゲートで外したこと（#2449 / #2450）は、
+**証明可能性の勝利であって、サイズの勝利ではありません**。出荷された highlight の
+アーティファクトは、#2447 の SWC 保持ベースラインよりわずか 7,965 B 小さいだけです
+（1,484,705 B → 1,476,740 B、gzip-9 は 767,009 B → 758,244 B で −8,765 B）。wasm-opt は
+到達不能な `swc_core` を既にデッドストリップしていたのであり、#2450 の完全パリティと
+`swc_core` 不在のアサーションが、その創発的な性質を保証されたものへと変えました。
+highlight だけを使う利用者にとって意味のある差は、root と highlight の差のほうです:
+raw で 1,797,324 B、gzip-9 で 700,191 B 小さく、highlight は root の raw バイトの約 45%、
+gzip 後のバイトの約 52% に収まります。
 
 各サブパスの `exports` マップは、`default` 条件（`src/index.ts` / `src/highlight.ts` にある、動的な Node の `fs` または `fetch` ローダ）よりも先に `browser` 条件（`src/browser.ts` / `src/highlight-browser.ts` が使う、静的でバンドラフレンドリーなリソースパス）を解決します。両方の条件は同じ `types` エントリと、同じ基盤の `createWasmApi` ランタイムを共有します。
 

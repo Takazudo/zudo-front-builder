@@ -192,6 +192,12 @@ jobs:
 
       - run: pnpm format:check
 
+      # Keep the shipped-size documentation synchronized with the manifest
+      # (issue #2482). This pure-Node check is cheap and belongs in the health
+      # job's fast checks; it does not require the wasm-md package build.
+      - name: Assert md-wasm documentation matches shipped sizes
+        run: node scripts/assert-md-wasm-size-docs.mjs
+
       # Compiles every target (incl. benches/examples) AND triggers crates/zfb's
       # build.rs to download + SHA-verify + stage the pinned esbuild 0.25.12 into
       # crates/zfb/binaries/esbuild/esbuild — the slot that
@@ -649,29 +655,43 @@ jobs:
       - name: cargo test (zfb --no-default-features --lib)
         run: cargo test --no-default-features -p zfb --lib
 
-  # @takazudo/zfb-md-wasm CI (epic #1572, issue #1579): checks the crate on
-  # its wasm32 target and builds + tests the npm package. Modeled on
-  # build-no-v8 above (same shape: checkout, pnpm/node, rust toolchain,
-  # scoped rust-cache, install, then a handful of check/build/test steps) —
-  # but this crate needs the wasm32-unknown-unknown target, which is NOT in
-  # rust-toolchain.toml's `targets` (decision baked in #1575: keep that file
-  # native-only so every other job's toolchain setup stays untouched, and
-  # install the wasm target only in the one job that needs it).
+  # @takazudo/zfb-md-wasm CI (epic #2446, issue #2454): every supported
+  # capability surface is checked on wasm32 and natively where applicable,
+  # then the exact four-artifact production build is packed and inspected.
+  # This crate needs wasm32-unknown-unknown, which is NOT in
+  # rust-toolchain.toml's `targets`; install it only in this job.
   #
   # NOT added to the `main` branch ruleset's required-status-checks (see
   # CLAUDE.md "Branch ruleset on main"): this job runs on every PR
-  # unconditionally, same as build-no-v8, but promoting it to required is a
-  # separate follow-up decision per repo policy — do not add it here.
+  # unconditionally, same as build-no-v8.
   wasm-md:
     name: wasm-md
     runs-on: ubuntu-latest
-    # Generous headroom over build-no-v8's 20 min: this job compiles the
-    # zfb-md-wasm dependency subgraph under `cargo check`/`clippy`'s dev
-    # profile in BOTH feature configs (default + `--no-default-features`,
-    # zfb#1849), plus BOTH configs again under the size-optimized
-    # `wasm-release` profile via `pnpm build`'s two-artifact pass, and
-    # additionally compiles wasm-bindgen-cli from source on a cold cache.
+    # Keep this exact timeout: the four clean production passes plus setup,
+    # package tests, and pack have ample headroom under the locked 35 minutes.
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: default
+            cargo_args: ""
+            graph_config: default
+          - label: no-features
+            cargo_args: "--no-default-features"
+            graph_config: none
+          - label: highlight
+            cargo_args: "--no-default-features --features highlight"
+            graph_config: highlight
+          - label: render
+            cargo_args: "--no-default-features --features render"
+            graph_config: render
+          - label: parse
+            cargo_args: "--no-default-features --features parse"
+            graph_config: parse
+          - label: pipeline
+            cargo_args: "--no-default-features --features pipeline"
+            graph_config: pipeline
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
@@ -699,32 +719,17 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: cargo check (zfb-md-wasm, wasm32-unknown-unknown)
-        run: cargo check --target wasm32-unknown-unknown -p zfb-md-wasm
+      - name: cargo check (${{ matrix.label }}, wasm32-unknown-unknown)
+        run: cargo check --target wasm32-unknown-unknown -p zfb-md-wasm ${{ matrix.cargo_args }}
 
-      - name: cargo clippy (zfb-md-wasm, wasm32-unknown-unknown)
-        run: cargo clippy --target wasm32-unknown-unknown -p zfb-md-wasm -- -D warnings
+      - name: cargo clippy (${{ matrix.label }}, wasm32-unknown-unknown)
+        run: cargo clippy --target wasm32-unknown-unknown -p zfb-md-wasm ${{ matrix.cargo_args }} -- -D warnings
 
-      # The highlight-only build knob (zfb#1849, epic zfb#1845): `pipeline`
-      # is the crate's default-on feature gating compile/renderHtml (see
-      # Cargo.toml) -- npm/scripts/build.mjs's SECOND artifact pass builds
-      # exactly this feature config, so it must stay check/clippy clean on
-      # its own, same as the default config above.
-      - name: cargo check (zfb-md-wasm, wasm32-unknown-unknown, --no-default-features)
-        run: cargo check --target wasm32-unknown-unknown -p zfb-md-wasm --no-default-features
+      - name: cargo test (${{ matrix.label }}, native scoped)
+        run: cargo test -p zfb-md-wasm ${{ matrix.cargo_args }}
 
-      - name: cargo clippy (zfb-md-wasm, wasm32-unknown-unknown, --no-default-features)
-        run: cargo clippy --target wasm32-unknown-unknown -p zfb-md-wasm --no-default-features -- -D warnings
-
-      # Defense in depth over the two cargo steps above: onig_sys (C) and
-      # deno_core (rusty_v8) already fail to compile for wasm32 so a
-      # regression pulling them in would break `cargo check` — but a wasm-safe
-      # tokio feature subset (sync/macros/time) DOES compile for wasm32, so a
-      # dependency edit that dragged tokio into the graph would pass the checks
-      # above and silently bloat the artifact. This named-crate assertion is
-      # the only thing that catches that.
-      - name: Assert zfb-md-wasm graph is free of onig_sys / deno_core / tokio
-        run: bash scripts/assert-zfb-md-wasm-graph.sh
+      - name: Assert isolated zfb-md-wasm graph (${{ matrix.label }})
+        run: bash scripts/assert-zfb-md-wasm-graph.sh ${{ matrix.graph_config }}
 
       # wasm-bindgen requires an EXACT version match between this CLI and the
       # `wasm-bindgen` crate resolved in Cargo.lock (pinned in
@@ -733,24 +738,55 @@ jobs:
       # SHA-pinned prebuilt-binary action covers this exact version, so this
       # installs from source like the rest of the toolchain.
       - name: Install wasm-bindgen-cli (pinned to match Cargo.lock)
+        if: ${{ matrix.label == 'default' }}
         run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
 
       # wasm-opt (binaryen) comes from the package's own devDependency via
       # the `pnpm install` above — nothing extra to install for it here.
-      - name: Build @takazudo/zfb-md-wasm npm package
-        run: pnpm --filter @takazudo/zfb-md-wasm build
+      # A distinct initially nonexistent target directory makes the production
+      # timing comparable to the locked clean-run measurement. Hosted-runner
+      # timing is informational; the Apple-M4 210-second reference is printed
+      # by the wrapper without becoming a cross-machine flaky gate.
+      - name: Build four @takazudo/zfb-md-wasm artifacts (timed)
+        if: ${{ matrix.label == 'default' }}
+        shell: bash
+        run: |
+          TARGET_DIR="$RUNNER_TEMP/zfb-md-wasm-production-target-$GITHUB_RUN_ID"
+          test ! -e "$TARGET_DIR" || {
+            echo "::error::production target directory already exists: $TARGET_DIR"
+            exit 1
+          }
+          BUILD_LOG="$RUNNER_TEMP/zfb-md-wasm-build-$GITHUB_RUN_ID.log"
+          ZFB_RELEASE_VERSION="$(node -p "require('./crates/zfb-md-wasm/npm/package.json').version")" \
+          CARGO_TARGET_DIR="$TARGET_DIR" \
+            node scripts/run-zfb-md-wasm-build-timed.mjs 2>&1 | tee "$BUILD_LOG"
+          echo "ZFB_MD_WASM_BUILD_LOG=$BUILD_LOG" >> "$GITHUB_ENV"
 
       # Whatever tests exist at merge time — do NOT assert the parity
       # suite's presence. #1578 (a same-wave sibling) adds a test file under
       # this package's test/ dir; once merged this step picks it up
       # automatically, no wiring change needed here.
       - name: Test @takazudo/zfb-md-wasm npm package
+        if: ${{ matrix.label == 'default' }}
         run: pnpm --filter @takazudo/zfb-md-wasm test
+
+      - name: Assert generated wasm exports and exact resource sets
+        if: ${{ matrix.label == 'default' }}
+        shell: bash
+        run: bash scripts/assert-zfb-md-wasm-exports.sh crates/zfb-md-wasm/npm/dist
+
+      - name: Enforce four-artifact gzip budgets and report metrics
+        if: ${{ matrix.label == 'default' }}
+        run: |
+          node scripts/assert-zfb-md-wasm-budgets.mjs \
+            --build-log "$ZFB_MD_WASM_BUILD_LOG" \
+            --dist crates/zfb-md-wasm/npm/dist
 
       # Produce exactly the archive a consumer receives. The browser job must
       # install this artifact; it may not resolve the source package or copy
       # glue/wasm files out of the working tree.
       - name: Pack and assert @takazudo/zfb-md-wasm published artifact
+        if: ${{ matrix.label == 'default' }}
         shell: bash
         run: |
           ARTIFACT_DIR="$GITHUB_WORKSPACE/wasm-md-artifact"
@@ -759,14 +795,20 @@ jobs:
           test -f "$TARBALL" || { echo "::error::packed tarball missing: $TARBALL"; exit 1; }
           mv "$TARBALL" "$ARTIFACT_DIR/zfb-md-wasm.tgz"
           node crates/zfb-md-wasm/npm/scripts/assert-packed.mjs "$ARTIFACT_DIR/zfb-md-wasm.tgz"
+          node scripts/assert-zfb-md-wasm-release.mjs \
+            --dist crates/zfb-md-wasm/npm/dist \
+            --package crates/zfb-md-wasm/npm/package.json \
+            --tarball "$ARTIFACT_DIR/zfb-md-wasm.tgz"
+          node scripts/assert-zfb-md-wasm-budgets.mjs \
+            --build-log "$ZFB_MD_WASM_BUILD_LOG" \
+            --dist crates/zfb-md-wasm/npm/dist \
+            --tarball "$ARTIFACT_DIR/zfb-md-wasm.tgz"
 
-      # Informational only (no size budget enforced here). The package
-      # README's "Artifact size" section and the docs page (#1580) point
-      # back at this job's log as the authoritative, freshly-measured
-      # number. Recomputed directly from the built .wasm file rather than
-      # grepped out of the build step's stdout, so it stays correct even if
-      # build.mjs's log format changes.
-      - name: Report gzip'd .wasm size (informational)
+      # The budget step above is authoritative. Keep this compact file-based
+      # report for log readers, covering all four artifacts with the exact
+      # Node gzipSync(level 9) definition.
+      - name: Report four gzip'd .wasm sizes
+        if: ${{ matrix.label == 'default' }}
         run: |
           report_size() {
             local label="$1" wasm_file="$2"
@@ -790,11 +832,12 @@ jobs:
             echo "zfb-md-wasm $label .wasm size: raw=${raw_bytes} bytes, gzip-9=${gzip_bytes} bytes"
           }
           report_size "default (\`.\` entry)" "crates/zfb-md-wasm/npm/dist/wasm/zfb_md_wasm_bg.wasm"
-          # Highlight-only artifact (zfb#1849, epic zfb#1845) -- the size
-          # knob this job's build step's SECOND artifact pass produces.
           report_size "highlight-only (\`./highlight\` entry)" "crates/zfb-md-wasm/npm/dist/wasm-highlight/zfb_md_wasm_highlight_bg.wasm"
+          report_size "render-only (\`./render\` entry)" "crates/zfb-md-wasm/npm/dist/wasm-render/zfb_md_wasm_render_bg.wasm"
+          report_size "parse-only (\`./parse\` entry)" "crates/zfb-md-wasm/npm/dist/wasm-parse/zfb_md_wasm_parse_bg.wasm"
 
       - name: Upload asserted @takazudo/zfb-md-wasm tarball
+        if: ${{ matrix.label == 'default' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: zfb-md-wasm-packed-tarball
