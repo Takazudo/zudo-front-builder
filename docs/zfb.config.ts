@@ -78,7 +78,21 @@ export default defineConfig(
         path: "/docs/markdown-features",
         categoryMatch: "markdown-features",
       },
-      { label: "Changelog", path: "/docs/changelog", categoryMatch: "changelog" },
+      {
+        label: "Changelog",
+        path: "/docs/changelog",
+        categoryMatch: "changelog",
+        children: [
+          { label: "zfb", path: "/docs/changelog/zfb" },
+          { label: "zfb-runtime", path: "/docs/changelog/zfb-runtime" },
+          {
+            label: "zfb-adapter-cloudflare",
+            path: "/docs/changelog/zfb-adapter-cloudflare",
+          },
+          { label: "create-zfb", path: "/docs/changelog/create-zfb" },
+          { label: "zfb-md-wasm", path: "/docs/changelog/zfb-md-wasm" },
+        ],
+      },
     ],
     headerRightItems: [
       { type: "component", component: "github-link" },
