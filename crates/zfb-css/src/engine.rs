@@ -1306,9 +1306,7 @@ fn is_node_cli_shape(binary_path: &Path) -> bool {
         return true;
     }
 
-    let is_posix_shell = first_line.starts_with(b"#!/bin/sh")
-        || first_line.starts_with(b"#!/usr/bin/sh")
-        || first_line.starts_with(b"#!/usr/bin/env sh");
+    let is_posix_shell = shebang_points_to_posix_sh(first_line);
     if is_posix_shell
         && (contains_ascii_case_insensitive(&bytes, b"exec node")
             || contains_ascii_case_insensitive(&bytes, b"cmd-shim-target="))
@@ -1328,6 +1326,19 @@ fn is_node_cli_shape(binary_path: &Path) -> bool {
 }
 
 fn shebang_points_to_node(first_line: &[u8]) -> bool {
+    shebang_points_to_executable(first_line, is_node_executable_name)
+}
+
+fn shebang_points_to_posix_sh(first_line: &[u8]) -> bool {
+    shebang_points_to_executable(first_line, |path| {
+        path_basename(path).eq_ignore_ascii_case(b"sh")
+    })
+}
+
+fn shebang_points_to_executable(
+    first_line: &[u8],
+    matches_executable: impl Fn(&[u8]) -> bool,
+) -> bool {
     let Some(command) = first_line.strip_prefix(b"#!") else {
         return false;
     };
@@ -1335,15 +1346,18 @@ fn shebang_points_to_node(first_line: &[u8]) -> bool {
     let Some(interpreter) = words.find(|word| !word.is_empty()) else {
         return false;
     };
-    if is_node_executable_name(interpreter) {
+    if matches_executable(interpreter) {
         return true;
     }
     if !path_basename(interpreter).eq_ignore_ascii_case(b"env") {
         return false;
     }
-    words
-        .filter(|word| !word.is_empty() && !word.starts_with(b"-"))
-        .any(is_node_executable_name)
+    let Some(executable) =
+        words.find(|word| !word.is_empty() && !word.starts_with(b"-") && !word.contains(&b'='))
+    else {
+        return false;
+    };
+    matches_executable(executable)
 }
 
 fn is_node_executable_name(path: &[u8]) -> bool {
@@ -2535,6 +2549,18 @@ fi
             "shell-mentions-node",
             b"#!/bin/sh # node is installed\nexec /opt/tailwindcss-v4 \"$@\"\n",
         );
+        let shell_prefix_only = write_shape_fixture(
+            dir.path(),
+            "shell-prefix-only",
+            b"#!/bin/shim\nexec node /opt/tailwindcss-v4 \"$@\"\n",
+        );
+        let env_not_node =
+            write_shape_fixture(dir.path(), "env-not-node", b"#!/usr/bin/env python node\n");
+        let env_shell_prefix_only = write_shape_fixture(
+            dir.path(),
+            "env-shell-prefix-only",
+            b"#!/usr/bin/env sh-wrapper sh\n# cmd-shim-target=/opt/tailwindcss-v4\n",
+        );
         let mut late_marker = b"#!/bin/sh\n".to_vec();
         late_marker.resize(OXIDE_WARMUP_SHAPE_READ_LIMIT as usize, b'#');
         late_marker.extend_from_slice(b"exec node cli.mjs\n");
@@ -2547,6 +2573,9 @@ fi
             &garbage,
             &native_wrapper,
             &shell_mentions_node,
+            &shell_prefix_only,
+            &env_not_node,
+            &env_shell_prefix_only,
             &late_marker,
             &nonexistent,
             &dir.path().to_path_buf(),
