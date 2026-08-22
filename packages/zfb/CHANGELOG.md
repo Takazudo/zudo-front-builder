@@ -1,6 +1,6 @@
 # Changelog
 
-> **Newer releases:** see https://takazudomodular.com/pj/zudo-front-builder/docs/changelog/ for v0.1.0-next.5 and later. Entries below are historical (kept for npm readers).
+> **Newer releases:** shared lockstep releases from v0.1.0-next.5 through v2.10.0 and future `@takazudo/zfb` releases live at https://takazudomodular.com/pj/zudo-front-builder/docs/changelog/zfb/. Entries below are historical (kept for npm readers).
 
 ## Unreleased
 

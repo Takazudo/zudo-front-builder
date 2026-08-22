@@ -79,6 +79,42 @@ lists disagree with each other or with the workspace's set of non-private packag
 `drift-net.yml` deliberately smokes **`latest` only**. A scheduled leg on `next`
 would go red every week whenever the tag is correctly absent.
 
+## Five-lane release changelog contract
+
+All ten published npm packages keep one lockstep version and the existing single GitHub Release,
+tag, binary/npm publication, and Homebrew topology. Each future release nevertheless authors
+exactly five default-locale-only English MDX notes:
+
+- `docs/src/content/docs/changelog/zfb/v<version>.mdx` owns the Rust engine/CLI,
+  `@takazudo/zfb`, and native carrier packaging.
+- `docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx` owns browser/runtime behavior and API.
+- `docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx` owns Cloudflare adapter
+  behavior and API.
+- `docs/src/content/docs/changelog/create-zfb/v<version>.mdx` owns the generator CLI and generated
+  project behavior.
+- `docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx` owns the MD/WASM package, entries,
+  API, artifacts, and package behavior.
+
+Duplicate a cross-package change into every affected note. Omit repo-only docs/tests/CI/maintenance
+with no package-facing effect. Every lockstep lane still receives a dated page; an unchanged lane
+must use exactly `- No package-specific changes.` and must not borrow another package's narrative.
+
+Shared historical lockstep notes from v0.1.0-next.5 through v2.10.0 belong to the `zfb` lane. Future
+notes belong to their package lane; do not claim the initially empty runtime, adapter, create, or
+MD/WASM lanes contain shared-history versions.
+
+Compute `sidebar_position` independently for each lane by scanning only that directory's non-index
+`v*.mdx` pages and adding one to its maximum; never use the retired root
+`docs/src/content/docs/changelog/v*.mdx` path or a global maximum. The migrated `zfb` lane continues
+after its historical maximum. An empty lane starts at position 1, and its first-ever page must set
+`pagination_next: null` so pager traversal cannot cross into another package lane.
+
+The GitHub Release body has five explicit package headings and independently extracts the body of
+the matching MDX source beneath each heading. Never reuse one lane's extracted notes for another.
+Before the direct release push, run the package/Rust focused checks plus docs check, strict docs
+build, and emitted-HTML validation. The executable release procedure lives in
+`.claude/skills/l-make-release/SKILL.md`.
+
 ## Testing
 
 zfb follows the **zudo-test-wisdom** strategy (the full guide: <https://takazudomodular.com/pj/zudo-test>). This section is the zfb-adapted, agent-facing summary — read it before writing or fixing tests. Every test sits on **two axes**:
