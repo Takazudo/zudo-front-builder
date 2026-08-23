@@ -17,7 +17,7 @@ export default function PlaygroundProbe() {
       // Keep the focused entry point behind the user action: no WASM-related
       // resource should be requested before this handler runs.
       const { version } = await import("@takazudo/zfb-md-wasm/parse");
-      setWasmStatus(`Loaded @takazudo/zfb-md-wasm ${version()}.`);
+      setWasmStatus(`Loaded @takazudo/zfb-md-wasm ${await version()}.`);
     } catch {
       setWasmStatus("Could not load @takazudo/zfb-md-wasm.");
     } finally {
