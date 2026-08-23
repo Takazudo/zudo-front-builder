@@ -17,6 +17,7 @@
     "check": "zfb check",
     "check:html": "html-validate \"dist/**/*.html\"",
     "check:wrangler-pin": "node scripts/check-wrangler-pin.mjs",
+    "test": "vitest run",
     "setup:doc-skill": "bash scripts/setup-doc-skill.sh",
     "b4push": "pnpm check && pnpm build"
   },
@@ -45,6 +46,7 @@
     "html-validate": "^10.0.0",
     "pagefind": "^1.4.0",
     "npm-run-all2": "^7.0.2",
+    "vitest": "^2.1.9",
     "wrangler": "4.85.0"
   }
 }
