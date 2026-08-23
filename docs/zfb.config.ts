@@ -53,6 +53,10 @@ export default defineConfig(
     tocToggle: true,
     imageEnlarge: true,
     dynamicPageTransition: true,
+    // Host-authored MDX components enter the package-owned chrome through
+    // this bindings module. The route stubs also import it statically so zfb's
+    // island scanner can discover its client components.
+    chromeBindingsModule: "./src/chrome-bindings.tsx",
 
     // ── Chrome ─────────────────────────────────────────────────────────
     footer: {
