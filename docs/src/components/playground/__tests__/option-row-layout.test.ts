@@ -20,6 +20,8 @@ describe("playground option row layout", () => {
     expect(rowClasses).toBeDefined();
     expect(rowClasses).not.toContain("py-vsp-");
     expect(labelClasses).toContain("min-h-[44px]");
+    expect(labelClasses).toContain("min-w-0");
+    expect(labelClasses).toContain("[overflow-wrap:anywhere]");
     expect(labelClasses).not.toContain("py-vsp-");
   });
 
