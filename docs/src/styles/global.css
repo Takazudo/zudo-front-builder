@@ -16,6 +16,13 @@
 @import "@takazudo/zudo-doc/page-loading.css";
 @import "@takazudo/zudo-doc/features.css";
 
+/* Keep the exact highlight API identifier readable on narrow screens. The
+   marker scopes this exception to the host-owned playground page; shared
+   package title typography remains untouched. */
+.zd-content:has([data-zfb-island="HighlightPlayground"]) > h1.text-heading {
+  overflow-wrap: anywhere;
+}
+
 /* Scan this project's own source for Tailwind utility classes. */
 @source "src/content/**/*.{mdx,md}";
 @source "pages/**/*.{tsx,ts,jsx,js}";
