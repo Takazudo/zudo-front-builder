@@ -19,8 +19,10 @@ export default function OptionRow({
   disabled = false,
 }: OptionRowProps) {
   return (
-    <div className="flex flex-col gap-vsp-2xs border-b border-muted py-vsp-2xs last:border-b-0">
-      <label className="flex cursor-pointer items-center gap-hsp-sm py-vsp-xs font-mono text-small text-fg">
+    <div
+      className={`flex flex-col gap-vsp-2xs border-b border-muted last:border-b-0${children ? " pb-vsp-2xs" : ""}`}
+    >
+      <label className="flex min-h-[44px] min-w-0 cursor-pointer items-center gap-hsp-sm font-mono text-small text-fg [overflow-wrap:anywhere]">
         <input
           type="checkbox"
           className="accent-accent focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
