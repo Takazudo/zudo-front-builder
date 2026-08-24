@@ -80,6 +80,7 @@ export default defineConfig(
         path: "/docs/playground",
         categoryMatch: "playground",
         children: [
+          { label: "Index", path: "/docs/playground" },
           { label: "renderHtml", path: "/docs/playground/render" },
           { label: "compile", path: "/docs/playground/compile" },
           { label: "parseToAst", path: "/docs/playground/parse" },
