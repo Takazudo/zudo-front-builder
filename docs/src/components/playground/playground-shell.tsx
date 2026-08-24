@@ -87,8 +87,7 @@ export default function PlaygroundShell({
       <div className="flex flex-wrap items-center gap-hsp-md">
         <button
           type="button"
-          className="rounded bg-accent px-hsp-lg py-vsp-xs text-small font-semibold text-bg transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 disabled:pointer-events-none disabled:opacity-50"
-          disabled={pending}
+          className="rounded bg-accent px-hsp-lg py-vsp-xs text-small font-semibold text-bg transition-colors hover:bg-accent-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
           aria-busy={pending}
           onClick={onRun}
         >
