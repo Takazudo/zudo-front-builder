@@ -320,7 +320,7 @@ function RenderPlayground() {
               // one harmless, non-empty token so the iframe remains sandboxed;
               // notably, this list intentionally omits the script permission.
               sandbox="allow-forms"
-              className="block w-full border-0 bg-surface focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+              className="block w-full border-0 bg-surface focus:outline-2 focus:outline-accent focus:outline-offset-2"
             />
           </section>
         </div>

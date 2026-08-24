@@ -10,12 +10,12 @@ function readFrontmatterTitle(path: string): string {
 }
 
 describe("playground page titles", () => {
-  it("keeps the exact API title and pins its page-scoped wrapping rule", () => {
+  it("keeps the required locale titles and pins their page-scoped wrapping rule", () => {
     expect(readFrontmatterTitle("../../../content/docs/playground/highlight.mdx")).toBe(
-      "highlightCode",
+      "highlightCode Playground",
     );
     expect(readFrontmatterTitle("../../../content/docs-ja/playground/highlight.mdx")).toBe(
-      "highlightCode",
+      "highlightCode プレイグラウンド",
     );
 
     const globalStyles = readFileSync(

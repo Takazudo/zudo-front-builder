@@ -12,8 +12,7 @@ describe("render playground security contract", () => {
     expect(html).not.toContain("allow-scripts");
     const previewIframe = html.match(/<iframe\b[^>]*title="Rendered HTML preview"[^>]*>/)?.[0];
     expect(previewIframe).toBeDefined();
-    expect(previewIframe).toContain(
-      "focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2",
-    );
+    expect(previewIframe).toContain("focus:outline-2 focus:outline-accent focus:outline-offset-2");
+    expect(previewIframe).not.toContain("focus-visible:outline");
   });
 });
