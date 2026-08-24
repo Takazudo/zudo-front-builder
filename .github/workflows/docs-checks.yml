@@ -67,5 +67,8 @@ jobs:
       - name: Validate emitted HTML
         run: pnpm --filter docs check:html
 
+      - name: Assert emitted island markers
+        run: pnpm --filter docs check:islands
+
       - name: Check wrangler pin
         run: pnpm --filter docs check:wrangler-pin
