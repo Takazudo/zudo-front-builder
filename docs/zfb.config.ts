@@ -75,6 +75,7 @@ export default defineConfig(
       { label: "Guides", path: "/docs/guides", categoryMatch: "guides" },
       { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
       { label: "Reference", path: "/docs/api", categoryMatch: "api" },
+      { label: "Playground", path: "/docs/playground", categoryMatch: "playground" },
       { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
       { label: "Claude", path: "/docs/claude", categoryMatch: "claude" },
       {
