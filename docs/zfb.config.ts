@@ -75,7 +75,17 @@ export default defineConfig(
       { label: "Guides", path: "/docs/guides", categoryMatch: "guides" },
       { label: "Recipes", path: "/docs/recipes", categoryMatch: "recipes" },
       { label: "Reference", path: "/docs/api", categoryMatch: "api" },
-      { label: "Playground", path: "/docs/playground", categoryMatch: "playground" },
+      {
+        label: "Playground",
+        path: "/docs/playground",
+        categoryMatch: "playground",
+        children: [
+          { label: "renderHtml", path: "/docs/playground/render" },
+          { label: "compile", path: "/docs/playground/compile" },
+          { label: "parseToAst", path: "/docs/playground/parse" },
+          { label: "highlightCode", path: "/docs/playground/highlight" },
+        ],
+      },
       { label: "Architecture", path: "/docs/architecture", categoryMatch: "architecture" },
       { label: "Claude", path: "/docs/claude", categoryMatch: "claude" },
       {
