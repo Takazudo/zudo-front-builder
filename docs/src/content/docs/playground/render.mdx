@@ -1,0 +1,15 @@
+---
+title: renderHtml Playground
+description: "Render Markdown or MDX to HTML with zfb's WebAssembly pipeline."
+sidebar_position: 1
+wide: true
+---
+
+Try `renderHtml` in the browser. It runs the same Rust pipeline that `zfb build` uses, so the
+preview is not an approximation. See the [API reference](../api/md-wasm.mdx) and the
+[browser Markdown preview guide](../guides/browser-markdown-preview.mdx) for the full contract.
+
+`renderHtml` is not a sanitizer: raw HTML in the source passes through. The preview is shown in
+an iframe whose sandbox does not enable scripts, but do not treat the output as trusted HTML.
+
+<RenderPlayground />

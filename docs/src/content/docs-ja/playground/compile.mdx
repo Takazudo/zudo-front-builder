@@ -1,0 +1,30 @@
+---
+title: compile プレイグラウンド
+description: ブラウザーで zfb の MDX から ES モジュールへのコンパイルを試せます。
+sidebar_position: 2
+wide: true
+---
+
+`compile` API は、zfb のブラウザーパイプラインにおけるコンパイル段階です。MDX を JSX に
+変換し、その JSX を SWC に渡して、zfb がページに出力する ES モジュールのソースを返します。
+
+## ブラウザーでコンパイルする理由
+
+ブラウザーでのコンパイルは CMS のライブプレビューに役立ちます。編集者が入力している間も、
+`zfb build` と同じ Rust パイプラインを使えるためです。別の Markdown 実装を使うと、実際に
+公開されるページとプレビューの表示がずれる可能性があります。`@takazudo/zfb-md-wasm` を
+使えば、ビルド時の動作に近いプレビューを作れます。
+
+<CompilePlayground />
+
+## 出力されたモジュールを読む
+
+このプレイグラウンドが表示するのはソースだけです。返されたモジュールを評価したり、訪問者が
+入力した JSX をレンダリングしたりはしません。解析された `frontmatter` はモジュールソースと
+分けて表示され、通常のコンパイルエラーや Markdown エラーは diagnostics リストに表示されます。
+
+アプリケーションでソースを評価するには、ホスト、JSX ランタイム、components map を用意します。
+[ブラウザー Markdown プレビューのガイド](../guides/browser-markdown-preview.mdx)では、その方法と、
+`preact/jsx-runtime` または `react/jsx-runtime` を解決するための import map（Fragment のランタイム
+インポートを含む）を説明しています。オプションと結果の詳しい仕様は
+[zfb-md-wasm API リファレンス](../api/md-wasm.mdx)を参照してください。

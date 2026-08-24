@@ -23,7 +23,7 @@ All commands run from the **repo root** with the `--filter docs` workspace flag,
 
 - `pnpm docs:dev` — starts the dev loop, which is **two processes** run in parallel (`run-p dev:zfb dev:history`): `zfb dev` on port **4321**, and `doc-history-server` on port **4322** (feeds the `docHistory` feature; see below).
 - `pnpm docs:build` — static HTML export to `docs/dist/`
-- `pnpm docs:check` — zfb type checking (`tsc --noEmit` over `zfb.config.ts`, collection schemas, and `src/`). Note: `pages/` is excluded in `tsconfig.json`, so page modules are NOT type-checked here — they are checked when `zfb build` bundles them.
+- `pnpm docs:check` — zfb type checking (`tsc --noEmit` over `zfb.config.ts`, collection schemas, `src/`, and `pages/`).
 - `pnpm --filter docs check:html` — validates emitted HTML in `dist/` against `docs/.htmlvalidate.json` (`html-validate`); no root-level alias exists for this one.
 - `pnpm docs:preview` — serve the built `docs/dist/` locally
 
@@ -169,6 +169,7 @@ The following keys are set in `zfb.config.ts`'s `zudoDoc({ ... })` call:
 - **docHistory** — Shows document edit history on each page; fed by the `doc-history-server` dev process (port 4322) / `doc-history-out` build artifact
 - **sidebarResizer** — Draggable sidebar width
 - **sidebarToggle** — Show/hide desktop sidebar button
+- **tocToggle** — Show/hide desktop table-of-contents button
 - **imageEnlarge** — Click-to-enlarge for content images
 - **dynamicPageTransition** — Animated page transitions
 - **footer** — footer links + copyright, host-owned chrome content
