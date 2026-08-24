@@ -1,0 +1,15 @@
+---
+title: renderHtml プレイグラウンド
+description: zfb の WebAssembly パイプラインで Markdown または MDX を HTML に変換します。
+sidebar_position: 1
+wide: true
+---
+
+ブラウザで `renderHtml` を試せます。`zfb build` と同じ Rust パイプラインを実行するため、近似では
+ないプレビューを確認できます。詳しい仕様は [API リファレンス](../api/md-wasm.mdx) と
+[ブラウザ Markdown プレビューガイド](../guides/browser-markdown-preview.mdx) を参照してください。
+
+`renderHtml` はサニタイザーではありません。ソース内の raw HTML はそのまま通過します。プレビューは
+スクリプトを有効にしない sandbox の iframe に表示されますが、出力を信頼できる HTML とみなさないでください。
+
+<RenderPlayground />
