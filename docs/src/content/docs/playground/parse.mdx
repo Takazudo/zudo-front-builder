@@ -1,0 +1,36 @@
+---
+title: parseToAst Playground
+description: Inspect the raw mdast tree produced by zfb-md-wasm before zfb visitors run.
+sidebar_position: 3
+wide: true
+---
+
+<ParsePlayground />
+
+## The raw parser tier
+
+`parseToAst` is the earliest useful inspection tier in the
+[`@takazudo/zfb-md-wasm` API](../api/md-wasm.mdx). It parses Markdown or MDX into
+the raw mdast-shaped data produced by markdown-rs, before zfb visitors transform
+that tree into HTML or compiled JSX. This makes it useful when you want to see
+what the parser actually recognized, including positions and MDX-shaped nodes,
+without introducing a renderer's interpretation.
+
+The sample includes ordinary Markdown, a top-level `import`, and a JSX element
+with an attribute. Top-level MDX `import` and `export` lines deliberately degrade
+to paragraphs here: the WebAssembly boundary has no JavaScript/acorn parser, so
+the tree has no `mdxjsEsm` nodes or estree data. Also, `mdxJsxAttribute` and its
+value/expression-attribute siblings have no `position`, because markdown-rs does
+not model attribute positions. Both differences are documented contract
+divergences from remark.
+
+## When to use `toMdastRoot`
+
+Enable `toMdastRoot` when you want a strict, ecosystem-compatible mdast root for
+existing mdast or unist visitors. It validates the raw tree and returns a
+detached tree that narrows cleanly by node type. It is intentionally stricter
+than the raw tier and throws `MdastAdapterError` for unsupported or malformed
+nodes, so the playground checks parse diagnostics and a non-null AST first and
+renders adapter failures as diagnostics.
+
+For a browser-side pipeline walkthrough, see [Browser Markdown Preview](../guides/browser-markdown-preview.mdx).

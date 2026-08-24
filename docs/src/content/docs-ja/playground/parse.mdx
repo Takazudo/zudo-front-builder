@@ -1,0 +1,35 @@
+---
+title: parseToAst プレイグラウンド
+description: zfb の visitor が実行される前に zfb-md-wasm が生成する raw mdast ツリーを確認します。
+sidebar_position: 3
+wide: true
+---
+
+<ParsePlayground />
+
+## raw パーサー層
+
+[`@takazudo/zfb-md-wasm` API](../api/md-wasm.mdx) の `parseToAst` は、確認に
+適した最も早いパーサー層です。Markdown または MDX を markdown-rs が生成した
+raw mdast 形式のデータへ変換し、zfb visitor がそのツリーを HTML やコンパイル済み
+JSX へ変換する前の状態を返します。レンダラーによる解釈を加えず、パーサーが
+実際に認識したもの（位置情報や MDX 形式のノードを含む）を確認できます。
+
+サンプルには通常の Markdown、トップレベルの `import`、属性を持つ JSX 要素を
+含めています。トップレベルの MDX `import` と `export` は、ここでは意図的に
+paragraph へ変換されます。WebAssembly 境界には JavaScript/acorn パーサーがない
+ため、ツリーに `mdxjsEsm` ノードや estree データはありません。また
+`mdxJsxAttribute` とその value / expression-attribute の兄弟ノードには
+`position` がありません。markdown-rs が属性の位置をモデル化しないためです。
+どちらも remark との差異として文書化された契約です。
+
+## `toMdastRoot` を使う場面
+
+既存の mdast または unist visitor で利用できる、厳密な mdast root が必要な場合は
+`toMdastRoot` を有効にしてください。raw ツリーを検証して detached なツリーを
+返すため、ノードの型に応じた絞り込みを安全に行えます。raw 層より意図的に厳密で、
+未対応または不正なノードでは `MdastAdapterError` を throw します。そのためこの
+プレイグラウンドは、先に parse の diagnostics と AST が null でないことを確認し、
+adapter の失敗を diagnostics として表示します。
+
+ブラウザー内のパイプラインを順に確認したい場合は、[Browser Markdown Preview](../guides/browser-markdown-preview.mdx) を参照してください。
