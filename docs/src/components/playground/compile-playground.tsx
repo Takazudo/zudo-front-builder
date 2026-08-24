@@ -4,6 +4,12 @@
 
 import { useMemo, useState } from "preact/hooks";
 
+import {
+  isNoteDirectiveSample,
+  NOTE_DIRECTIVE_SAMPLE,
+  noteDirectiveFeatures,
+  type NoteDirectiveFeatures,
+} from "./admonition-sample";
 import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
@@ -30,6 +36,7 @@ interface CompileOptions {
     gfm: GfmOptions;
     cjkFriendly: boolean;
     hardBreaks: boolean;
+    features?: NoteDirectiveFeatures;
   };
 }
 
@@ -71,6 +78,8 @@ The expression {1 + 2} is emitted as source, alongside ordinary **Markdown**.
 `,
 };
 
+const COMPILE_SAMPLES = [COMPILE_SAMPLE, NOTE_DIRECTIVE_SAMPLE] as const;
+
 function isValidFilename(filename: string): boolean {
   return /\.mdx?$/.test(filename);
 }
@@ -101,12 +110,15 @@ function CompileOptionsPanel({
   filename,
   cjkFriendly,
   hardBreaks,
+  noteDirectiveEnabled,
+  activeSampleId,
   onDevelopmentChange,
   onGfmChange,
   onJsxRuntimeChange,
   onFilenameChange,
   onCjkFriendlyChange,
   onHardBreaksChange,
+  onNoteDirectiveChange,
   onPickSample,
 }: {
   development: boolean;
@@ -115,12 +127,15 @@ function CompileOptionsPanel({
   filename: string;
   cjkFriendly: boolean;
   hardBreaks: boolean;
+  noteDirectiveEnabled: boolean;
+  activeSampleId?: string;
   onDevelopmentChange: (checked: boolean) => void;
   onGfmChange: (key: GfmKey, checked: boolean) => void;
   onJsxRuntimeChange: (runtime: JsxRuntime) => void;
   onFilenameChange: (value: string) => void;
   onCjkFriendlyChange: (checked: boolean) => void;
   onHardBreaksChange: (checked: boolean) => void;
+  onNoteDirectiveChange: (checked: boolean) => void;
   onPickSample: (sample: PlaygroundSample) => void;
 }) {
   const filenameIsValid = isValidFilename(filename);
@@ -128,8 +143,8 @@ function CompileOptionsPanel({
   return (
     <div className="flex flex-col gap-vsp-sm">
       <SamplePicker
-        samples={[COMPILE_SAMPLE]}
-        activeSampleId={COMPILE_SAMPLE.id}
+        samples={COMPILE_SAMPLES}
+        activeSampleId={activeSampleId}
         onPick={onPickSample}
       />
 
@@ -184,6 +199,12 @@ function CompileOptionsPanel({
         />
         <OptionRow label="pipeline.hardBreaks" checked={hardBreaks} onChange={onHardBreaksChange} />
       </div>
+
+      <OptionRow
+        label={'pipeline.features.directives.note = "Note"'}
+        checked={noteDirectiveEnabled}
+        onChange={onNoteDirectiveChange}
+      />
     </div>
   );
 }
@@ -218,12 +239,14 @@ function CompileOutput({ result }: { result: CompileResult | null }) {
 
 function CompilePlayground() {
   const [source, setSource] = useState(COMPILE_SAMPLE.value);
+  const [activeSampleId, setActiveSampleId] = useState<string | undefined>(COMPILE_SAMPLE.id);
   const [jsxRuntime, setJsxRuntime] = useState<JsxRuntime>("preact");
   const [development, setDevelopment] = useState(false);
   const [filename, setFilename] = useState("preview.mdx");
   const [gfm, setGfm] = useState<GfmOptions>({ ...DEFAULT_GFM });
   const [cjkFriendly, setCjkFriendly] = useState(false);
   const [hardBreaks, setHardBreaks] = useState(false);
+  const [noteDirectiveEnabled, setNoteDirectiveEnabled] = useState(false);
   const [validationDiagnostics, setValidationDiagnostics] = useState<
     readonly PlaygroundDiagnostic[]
   >([]);
@@ -253,6 +276,7 @@ function CompilePlayground() {
         gfm: { ...gfm },
         cjkFriendly,
         hardBreaks,
+        ...(noteDirectiveEnabled ? { features: noteDirectiveFeatures(true) } : {}),
       },
     }).catch(() => {
       // The runner publishes rejected calls in its error state. Keeping the
@@ -274,7 +298,10 @@ function CompilePlayground() {
   return (
     <PlaygroundShell
       value={source}
-      onInput={setSource}
+      onInput={(value) => {
+        setSource(value);
+        setActiveSampleId(undefined);
+      }}
       onRun={handleRun}
       pending={state.status === "loading"}
       hasRun={state.status !== "idle" || validationDiagnostics.length > 0}
@@ -286,13 +313,20 @@ function CompilePlayground() {
           filename={filename}
           cjkFriendly={cjkFriendly}
           hardBreaks={hardBreaks}
+          noteDirectiveEnabled={noteDirectiveEnabled}
+          activeSampleId={activeSampleId}
           onDevelopmentChange={setDevelopment}
           onGfmChange={(key, checked) => setGfm((value) => ({ ...value, [key]: checked }))}
           onJsxRuntimeChange={setJsxRuntime}
           onFilenameChange={setFilename}
           onCjkFriendlyChange={setCjkFriendly}
           onHardBreaksChange={setHardBreaks}
-          onPickSample={(sample) => setSource(sample.value)}
+          onNoteDirectiveChange={setNoteDirectiveEnabled}
+          onPickSample={(sample) => {
+            setSource(sample.value);
+            setActiveSampleId(sample.id);
+            setNoteDirectiveEnabled(isNoteDirectiveSample(sample));
+          }}
         />
       }
       output={<CompileOutput result={result} />}

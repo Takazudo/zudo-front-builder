@@ -12,9 +12,11 @@ import type {
   ParseToAstResult,
 } from "@takazudo/zfb-md-wasm/parse";
 
+import { isNoteDirectiveSample, NOTE_DIRECTIVE_SAMPLE } from "./admonition-sample";
 import DiagnosticsList, { type PlaygroundDiagnostic } from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
+import SamplePicker, { type PlaygroundSample } from "./sample-picker";
 import { createModuleLoader, useWasmModule } from "./use-wasm-module";
 
 type ParseModule = typeof import("@takazudo/zfb-md-wasm/parse");
@@ -33,7 +35,10 @@ interface ParseRunResult {
   diagnostics: PlaygroundDiagnostic[];
 }
 
-const SAMPLE_SOURCE = `---
+const PARSE_SAMPLE: PlaygroundSample = {
+  id: "raw-ast",
+  label: "Raw MDX",
+  value: `---
 title: Raw AST sample
 ---
 import Callout from "./Callout";
@@ -46,7 +51,10 @@ Hello **world** and [a link](https://example.com).
 
 - one
 - two
-`;
+`,
+};
+
+const PARSE_SAMPLES = [PARSE_SAMPLE, NOTE_DIRECTIVE_SAMPLE] as const;
 
 const GFM_FIELDS: readonly { key: GfmField; label: string }[] = [
   { key: "strikethrough", label: "pipeline.gfm.strikethrough" },
@@ -257,7 +265,8 @@ function ParseOptions({
 }
 
 function ParsePlayground() {
-  const [source, setSource] = useState(SAMPLE_SOURCE);
+  const [source, setSource] = useState(PARSE_SAMPLE.value);
+  const [activeSampleId, setActiveSampleId] = useState<string | undefined>(PARSE_SAMPLE.id);
   const [dialect, setDialect] = useState<ParseDialect>("mdx");
   const [filename, setFilename] = useState("preview.mdx");
   const [directives, setDirectives] = useState(false);
@@ -279,31 +288,47 @@ function ParsePlayground() {
     void run(source, options, adaptToMdast).catch(() => undefined);
   }
 
+  function pickSample(sample: PlaygroundSample): void {
+    setSource(sample.value);
+    setActiveSampleId(sample.id);
+    setDirectives(isNoteDirectiveSample(sample));
+  }
+
   const diagnostics = state.status === "ready" ? state.result.diagnostics : [];
   const trapError = state.status === "error" ? formatTrap(state.error) : null;
 
   return (
     <PlaygroundShell
       value={source}
-      onInput={setSource}
+      onInput={(value) => {
+        setSource(value);
+        setActiveSampleId(undefined);
+      }}
       onRun={handleRun}
       pending={state.status === "loading"}
       hasRun={hasRun}
       options={
-        <ParseOptions
-          dialect={dialect}
-          filename={filename}
-          directives={directives}
-          frontmatter={frontmatter}
-          gfm={gfm}
-          adaptToMdast={adaptToMdast}
-          onDialectChange={setDialect}
-          onFilenameChange={setFilename}
-          onDirectivesChange={setDirectives}
-          onFrontmatterChange={setFrontmatter}
-          onGfmChange={(field, value) => setGfm((current) => ({ ...current, [field]: value }))}
-          onAdapterChange={setAdaptToMdast}
-        />
+        <div className="flex flex-col gap-vsp-sm">
+          <SamplePicker
+            samples={PARSE_SAMPLES}
+            activeSampleId={activeSampleId}
+            onPick={pickSample}
+          />
+          <ParseOptions
+            dialect={dialect}
+            filename={filename}
+            directives={directives}
+            frontmatter={frontmatter}
+            gfm={gfm}
+            adaptToMdast={adaptToMdast}
+            onDialectChange={setDialect}
+            onFilenameChange={setFilename}
+            onDirectivesChange={setDirectives}
+            onFrontmatterChange={setFrontmatter}
+            onGfmChange={(field, value) => setGfm((current) => ({ ...current, [field]: value }))}
+            onAdapterChange={setAdaptToMdast}
+          />
+        </div>
       }
       output={<ParseOutput state={state} />}
       diagnostics={<DiagnosticsList diagnostics={diagnostics} label="Parse diagnostics" />}

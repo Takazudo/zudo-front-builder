@@ -4,6 +4,12 @@
 
 import { useEffect, useRef, useState } from "preact/hooks";
 
+import {
+  isNoteDirectiveSample,
+  NOTE_DIRECTIVE_SAMPLE,
+  noteDirectiveFeatures,
+  type NoteDirectiveFeatures,
+} from "./admonition-sample";
 import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
 import PlaygroundShell from "./playground-shell";
@@ -32,6 +38,7 @@ interface RenderOptions {
       mode: CodeHighlightMode;
       classPrefix?: string;
     };
+    features?: NoteDirectiveFeatures;
   };
 }
 
@@ -71,7 +78,7 @@ console.log(message);
 `,
 };
 
-const SAMPLES = [SAMPLE] as const;
+const SAMPLES = [SAMPLE, NOTE_DIRECTIVE_SAMPLE] as const;
 
 function isValidFilename(filename: string): boolean {
   return filename.endsWith(".md") || filename.endsWith(".mdx");
@@ -95,6 +102,7 @@ function RenderPlayground() {
   });
   const [cjkFriendly, setCjkFriendly] = useState(false);
   const [hardBreaks, setHardBreaks] = useState(false);
+  const [noteDirectiveEnabled, setNoteDirectiveEnabled] = useState(false);
   const [theme, setTheme] = useState("");
   const [codeHighlightMode, setCodeHighlightMode] = useState<CodeHighlightMode>("inline");
   const [classPrefix, setClassPrefix] = useState("hi-");
@@ -137,6 +145,7 @@ function RenderPlayground() {
   function pickSample(sample: PlaygroundSample) {
     setSource(sample.value);
     setActiveSampleId(sample.id);
+    setNoteDirectiveEnabled(isNoteDirectiveSample(sample));
   }
 
   function runRender() {
@@ -152,6 +161,7 @@ function RenderPlayground() {
         gfm,
         cjkFriendly,
         hardBreaks,
+        ...(noteDirectiveEnabled ? { features: noteDirectiveFeatures(true) } : {}),
         ...(codeHighlightMode === "class" ? {} : theme ? { theme } : {}),
         codeHighlight: {
           mode: codeHighlightMode,
@@ -265,6 +275,12 @@ function RenderPlayground() {
             />
             <OptionRow label="pipeline.hardBreaks" checked={hardBreaks} onChange={setHardBreaks} />
           </div>
+
+          <OptionRow
+            label={'pipeline.features.directives.note = "Note"'}
+            checked={noteDirectiveEnabled}
+            onChange={setNoteDirectiveEnabled}
+          />
 
           <label className="flex flex-col gap-vsp-3xs text-small text-fg">
             <span className="font-mono">pipeline.theme</span>
