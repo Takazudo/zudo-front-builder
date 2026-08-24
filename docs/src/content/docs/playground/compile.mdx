@@ -19,6 +19,10 @@ close to build-time behavior.
 
 <CompilePlayground />
 
+The **Admonition directive** sample makes its `pipeline.features.directives.note = "Note"`
+registration explicit. Its emitted module requests `Note` from the host components map, showing
+the same framework-owned component boundary used by a build.
+
 ## Read the emitted module
 
 This playground displays source only. It does not evaluate the returned module or render visitor

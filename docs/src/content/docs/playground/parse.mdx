@@ -9,6 +9,10 @@ hide_toc: true
 
 <ParsePlayground />
 
+Choose **Admonition directive** to enable the raw parser's `directives` option. The result contains
+a generic `containerDirective` named `note`; `parseToAst` deliberately does not consult the
+component registry or run the visitor that would turn it into `<Note>`.
+
 ## The raw parser tier
 
 `parseToAst` is the earliest useful inspection tier in the

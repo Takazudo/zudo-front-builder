@@ -14,4 +14,9 @@ hide_toc: true
 `renderHtml` はサニタイザーではありません。ソース内の raw HTML はそのまま通過します。プレビューは
 スクリプトを有効にしない sandbox の iframe に表示されますが、出力を信頼できる HTML とみなさないでください。
 
+**Admonition directive** サンプルは、`pipeline.features.directives` で `note` を登録します。
+HTML ソースには生成された `<Note>` 要素が表示されます。iframe は MDX components map を評価せず、
+フレームワークの admonition 用スタイルも読み込まないため、プレビューは zudo-doc のスタイル付き
+コンポーネントではなく、変換後の構造を示します。
+
 <RenderPlayground />

@@ -14,4 +14,9 @@ preview is not an approximation. See the [API reference](../api/md-wasm.mdx) and
 `renderHtml` is not a sanitizer: raw HTML in the source passes through. The preview is shown in
 an iframe whose sandbox does not enable scripts, but do not treat the output as trusted HTML.
 
+The **Admonition directive** sample registers `note` through
+`pipeline.features.directives`. The HTML source shows the generated `<Note>` element. The iframe
+does not evaluate an MDX components map or load a framework's admonition styles, so its preview
+demonstrates the transformed structure rather than zudo-doc's styled component.
+
 <RenderPlayground />

@@ -9,6 +9,10 @@ hide_toc: true
 
 <ParsePlayground />
 
+**Admonition directive** を選ぶと、raw パーサーの `directives` オプションが有効になります。
+結果には `note` という名前の汎用 `containerDirective` が含まれます。`parseToAst` は意図的に
+components registry を参照せず、`<Note>` に変換する visitor も実行しません。
+
 ## raw パーサー層
 
 [`@takazudo/zfb-md-wasm` API](../api/md-wasm.mdx) の `parseToAst` は、確認に
