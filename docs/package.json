@@ -16,6 +16,7 @@
     "preview": "zfb preview",
     "check": "zfb check",
     "check:html": "html-validate \"dist/**/*.html\"",
+    "check:islands": "node scripts/assert-island-markers.mjs",
     "check:wrangler-pin": "node scripts/check-wrangler-pin.mjs",
     "test": "vitest run",
     "setup:doc-skill": "bash scripts/setup-doc-skill.sh",
