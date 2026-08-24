@@ -320,7 +320,12 @@ function RenderPlayground() {
               // one harmless, non-empty token so the iframe remains sandboxed;
               // notably, this list intentionally omits the script permission.
               sandbox="allow-forms"
-              className="block w-full border-0 bg-surface focus:outline-2 focus:outline-accent focus:outline-offset-2"
+              // Chromium moves sequential focus into the child browsing
+              // context without exposing :focus or :focus-visible on this
+              // element. The preview is passive output and its full source is
+              // adjacent, so omit that otherwise invisible keyboard stop.
+              tabIndex={-1}
+              className="block w-full border-0 bg-surface"
             />
           </section>
         </div>
