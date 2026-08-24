@@ -1,0 +1,31 @@
+---
+title: highlightCode Playground
+description: "Try zfb's direct semantic class-mode syntax highlighter in your browser."
+sidebar_position: 4
+wide: true
+---
+
+`highlightCode` applies zfb's semantic roles directly to source code, without requiring a Markdown
+fence. Run the sample or paste your own source to inspect the generated HTML.
+
+## Class-mode semantic highlighting
+
+Class mode gives each token a semantic class such as `hi-kw` or `hi-str`. The site's design-token
+stylesheet maps those roles to the active light or dark theme, so the same output can be rethemed
+without changing the highlighted source. The playground also shows the raw HTML next to its
+rendered form.
+
+This differs from inline-colour output: inline mode writes a colour into each token's HTML, while
+class mode leaves colour selection to CSS. `highlightCode` is intentionally closed to class mode,
+and its `language` option is required. An unknown but non-empty language keeps escaped source
+output and reports a warning; invalid options return an error diagnostic without HTML output.
+
+## Relation to native zfb
+
+Native zfb uses its Rust `syntect` setup at build time when it highlights fenced code blocks. The
+direct WebAssembly call uses the same family of bundled grammars and semantic class model for
+arbitrary source in a browser, while leaving the final colours to the host stylesheet. See the
+[API reference](../api/md-wasm.mdx) for the result contract and the
+[syntax-highlighting guide](../guides/syntax-highlighting.mdx) for native pipeline configuration.
+
+<HighlightPlayground />
