@@ -2,7 +2,7 @@
 /** @jsxImportSource preact */
 "use client";
 
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 import DiagnosticsList from "./diagnostics-list";
 import OptionRow from "./option-row";
@@ -117,6 +117,16 @@ function RenderPlayground() {
     loadModule: loadRenderModule,
     execute: (module, input, options) => module.renderHtml(input, options),
   });
+
+  useEffect(
+    () => () => {
+      // A run promise still resolves after the island is unmounted by a
+      // soft-navigation swap. Invalidate the local result guard so its callback
+      // cannot publish into the old island instance.
+      runSequenceRef.current += 1;
+    },
+    [],
+  );
 
   const invalidFilename = !isValidFilename(filename);
   const pending = state.status === "loading";

@@ -23,7 +23,7 @@ export default function OptionRow({
       <label className="flex cursor-pointer items-center gap-hsp-sm py-vsp-xs font-mono text-small text-fg">
         <input
           type="checkbox"
-          className="accent-accent"
+          className="accent-accent focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
           checked={checked}
           disabled={disabled}
           onChange={(event) => onChange(event.currentTarget.checked)}

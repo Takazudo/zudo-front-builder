@@ -218,7 +218,7 @@ function ParseOptions({
         <label className="flex items-center gap-hsp-sm text-small">
           <input
             type="checkbox"
-            className="accent-accent"
+            className="accent-accent focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
             checked={directives}
             onChange={(event) => onDirectivesChange(event.currentTarget.checked)}
           />
