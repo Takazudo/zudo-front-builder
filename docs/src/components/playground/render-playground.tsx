@@ -306,7 +306,10 @@ function RenderPlayground() {
             <iframe
               title="Rendered HTML preview"
               srcDoc={html}
-              sandbox=""
+              // Preact removes an empty sandbox attribute during hydration. Keep
+              // one harmless, non-empty token so the iframe remains sandboxed;
+              // notably, this list intentionally omits the script permission.
+              sandbox="allow-forms"
               className="block w-full border-0 bg-surface"
             />
           </section>
