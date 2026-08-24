@@ -22,4 +22,22 @@ describe("playground option row layout", () => {
     expect(labelClasses).toContain("min-h-[44px]");
     expect(labelClasses).not.toContain("py-vsp-");
   });
+
+  it("keeps bottom spacing when a row exposes nested options", () => {
+    const html = render(
+      h(
+        OptionRow,
+        {
+          label: "pipeline.codeHighlight",
+          checked: true,
+          onChange: () => undefined,
+        },
+        h("span", null, "Nested option"),
+      ),
+    );
+
+    const rowClasses = html.match(/^<div class="([^"]+)">/)?.[1];
+
+    expect(rowClasses).toContain("pb-vsp-2xs");
+  });
 });

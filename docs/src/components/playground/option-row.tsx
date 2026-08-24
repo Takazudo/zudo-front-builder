@@ -19,7 +19,9 @@ export default function OptionRow({
   disabled = false,
 }: OptionRowProps) {
   return (
-    <div className="flex flex-col gap-vsp-2xs border-b border-muted last:border-b-0">
+    <div
+      className={`flex flex-col gap-vsp-2xs border-b border-muted last:border-b-0${children ? " pb-vsp-2xs" : ""}`}
+    >
       <label className="flex min-h-[44px] cursor-pointer items-center gap-hsp-sm font-mono text-small text-fg">
         <input
           type="checkbox"
