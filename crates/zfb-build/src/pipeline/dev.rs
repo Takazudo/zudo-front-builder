@@ -662,6 +662,25 @@ impl AssetPipeline for DevAssetPipeline {
             PageSelection::Specific(s) => s.iter().cloned().collect(),
         };
 
+        // Client scripts publish before the renderer refresh and page writes.
+        // This closes the addition side of the publication window: newly
+        // rendered HTML cannot name an entry that has not been written yet.
+        // The runner owns the other side of the invariant by retaining the
+        // previous active entry/worker generation until after this tick's HTML
+        // is published; see the dev command's client-output pruning contract.
+        // Its successful return also publishes the current-only URL set into
+        // `DevPublicationState`, so the timing marker remains an honest
+        // publication boundary rather than merely a bundle-start signal.
+        if plan.rerun_client_scripts {
+            outcome.client_scripts_rerun = true;
+            if let Some(run) = &ctx.run_client_scripts {
+                outcome.client_scripts_changed = run()?;
+                if dev_timing_enabled() {
+                    eprintln!("{}", format_tick_client_scripts_published_line());
+                }
+            }
+        }
+
         // Trigger the renderer reload for SSR-only projects (issue #807): when
         // every page is `prerender = false`, the plan's SSG page set is always
         // empty, so the normal pages-non-empty guard would never fire. But the
@@ -966,24 +985,7 @@ impl AssetPipeline for DevAssetPipeline {
             }
         }
 
-        // 4. Client scripts.
-        //
-        // Re-bundle all `*.client.{ts,tsx,js,jsx}` entries and write stable
-        // files under `dist/assets/client/<name>.js`. The runner returns
-        // `true` when at least one file changed (new bytes or new entry),
-        // which the SSE layer maps to a `ReloadEvent::Page` (full reload —
-        // v1 has no finer-grained client-script hot-swap).
-        if plan.rerun_client_scripts {
-            outcome.client_scripts_rerun = true;
-            if let Some(run) = &ctx.run_client_scripts {
-                outcome.client_scripts_changed = run()?;
-                if dev_timing_enabled() {
-                    eprintln!("{}", format_tick_client_scripts_published_line());
-                }
-            }
-        }
-
-        // 5. Stale routes (issue #1025 — lazy dev render). Drain the
+        // 4. Stale routes (issue #1025 — lazy dev render). Drain the
         // renderer's per-tick stale buffer into the outcome. The render
         // callback (and the reloader's route-table/stale-state updates)
         // completed above, so by construction the staleness map already
@@ -993,7 +995,7 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.pages_stale = probe();
         }
 
-        // 6. SSR route publication (issue #1826 — Dev Self Heal epic
+        // 5. SSR route publication (issue #1826 — Dev Self Heal epic
         // #1999). Drained beside the stale buffer for the same reason and
         // at the same point: an SSR route has no `dist/` output path, so
         // it can never show up in `pages_stale`, and without this bit an
@@ -1004,7 +1006,7 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.ssr_routes_published = probe();
         }
 
-        // 7. Dynamic injected route re-staling (issue #2097 — MDX Reload
+        // 6. Dynamic injected route re-staling (issue #2097 — MDX Reload
         // Fix epic #2092). Drained beside the two probes above, for the
         // same structural reason: a dynamic injected route is re-staled
         // through a channel that performs no `tick_stale` push, so it can
@@ -1108,6 +1110,117 @@ mod tests {
         assert_eq!(
             format_tick_client_scripts_published_line(),
             "[zfb-timing] tick: client scripts published"
+        );
+    }
+
+    fn client_script_page_plan() -> RebuildPlan {
+        let mut pages = BTreeSet::new();
+        pages.insert(pid("/pages/index.tsx"));
+        RebuildPlan {
+            pages: PageSelection::Specific(pages),
+            rerun_css: false,
+            rerun_islands: false,
+            rerun_client_scripts: true,
+            renderer_fresh: true,
+            ssr_reload_needed: false,
+            prune_paths: vec![],
+            triggers: vec![],
+            content_narrowing: None,
+        }
+    }
+
+    #[test]
+    fn client_script_addition_publishes_entry_before_declaring_html() {
+        let dir = tempdir().unwrap();
+        let entry = dir.path().join("assets/client/new.js");
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let run_events = Arc::clone(&events);
+        let run_entry = entry.clone();
+        let render_events = Arc::clone(&events);
+        let render_entry = entry.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            run_client_scripts: Some(Arc::new(move || {
+                std::fs::create_dir_all(run_entry.parent().unwrap())?;
+                std::fs::write(&run_entry, "new entry")?;
+                run_events.lock().unwrap().push("client-published");
+                Ok(true)
+            })),
+            render_pages: Arc::new(move |_, _| {
+                assert!(
+                    render_entry.exists(),
+                    "new entry must exist before HTML can declare it"
+                );
+                render_events.lock().unwrap().push("page-rendered");
+                Ok(vec![RenderedPage {
+                    page: pid("/pages/index.tsx"),
+                    output_path: RelDistPath::new("index.html").unwrap(),
+                    html: r#"<script src="/assets/client/new.js"></script>"#.into(),
+                    content_type: None,
+                }])
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        };
+
+        DevAssetPipeline::new()
+            .apply(&client_script_page_plan(), &ctx)
+            .unwrap();
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["client-published", "page-rendered"]
+        );
+    }
+
+    #[test]
+    fn client_script_removal_keeps_previous_entry_through_html_publication() {
+        let dir = tempdir().unwrap();
+        let old_entry = dir.path().join("assets/client/old.js");
+        std::fs::create_dir_all(old_entry.parent().unwrap()).unwrap();
+        std::fs::write(&old_entry, "old entry").unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let run_events = Arc::clone(&events);
+        let run_entry = old_entry.clone();
+        let render_events = Arc::clone(&events);
+        let render_entry = old_entry.clone();
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            run_client_scripts: Some(Arc::new(move || {
+                assert!(
+                    run_entry.exists(),
+                    "the previous entry must be retained by the client publisher"
+                );
+                run_events.lock().unwrap().push("client-published");
+                Ok(false)
+            })),
+            render_pages: Arc::new(move |_, _| {
+                assert!(
+                    render_entry.exists(),
+                    "previously served HTML can still name the old entry until this write"
+                );
+                render_events.lock().unwrap().push("page-rendered");
+                Ok(vec![RenderedPage {
+                    page: pid("/pages/index.tsx"),
+                    output_path: RelDistPath::new("index.html").unwrap(),
+                    html: "<main>client entry removed</main>".into(),
+                    content_type: None,
+                }])
+            }),
+            run_css: None,
+            run_islands: None,
+            reload_renderer: None,
+        };
+
+        DevAssetPipeline::new()
+            .apply(&client_script_page_plan(), &ctx)
+            .unwrap();
+
+        assert!(old_entry.exists(), "old entry survives the transition tick");
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["client-published", "page-rendered"]
         );
     }
 
