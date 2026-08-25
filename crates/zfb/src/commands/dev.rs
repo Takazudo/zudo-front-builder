@@ -1763,8 +1763,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // bases collapse cleanly to "no prefix" here.
     let dev_islands_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
-    let islands_bundle_url_handle: zfb_server::IslandsBundleUrl =
-        Arc::new(std::sync::RwLock::new(None));
+    let islands_bundle_url_handle: zfb_server::IslandsBundleUrl = Arc::new(std::sync::RwLock::new(
+        zfb_server::DevPublicationState::pending(),
+    ));
 
     // Tracks chunk + module-worker companion filenames written by the most
     // recent islands bundle so the next tick can prune stale files.
@@ -1779,7 +1780,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // publishing the bundle URL late through `islands_bundle_url_handle`
     // and folding the result into the boot `BuildOutcome` so a browser that
     // loaded during the pre-bundle window gets a `ReloadEvent::Islands` and
-    // hydrates. Until the bundle lands the handle stays `None` and the
+    // hydrates. Until the bundle lands the islands slot stays `Pending` and the
     // server simply omits the `<script type="module">` (the same contract
     // the project-has-no-islands path already ships).
 
@@ -1946,12 +1947,24 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &islands_plugin_config,
     ) {
         Ok(outcome) => {
+            let published_urls =
+                dev_client_script_urls(&dev_islands_url_prefix, &outcome.output_filenames);
             if let Ok(mut guard) = live_client_script_outputs.lock() {
                 *guard = outcome.output_filenames;
             }
             raw_import_invalidation.replace_client_scripts(outcome.raw_targets);
             raw_import_invalidation.replace_client_script_workers(outcome.worker_targets);
             raw_import_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            islands_bundle_url_handle
+                .write()
+                .unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "dev.client_scripts.boot.publication_state",
+                        "rwlock poisoned, recovered"
+                    );
+                    p.into_inner()
+                })
+                .publish_client_scripts(published_urls);
         }
         Err(err) => {
             output::warn(format!(
@@ -1982,6 +1995,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // client scripts). Snapshot the shared store at use time instead.
         let plugin_virtual_module_store_for_cs = plugin_refresh.store().clone();
         let raw_invalidation = raw_import_invalidation.clone();
+        let publication_state = Arc::clone(&islands_bundle_url_handle);
+        let url_prefix = dev_islands_url_prefix.clone();
         Some(Arc::new(move || -> Result<bool> {
             let prev = output_filenames
                 .lock()
@@ -2007,6 +2022,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     &registered_for_cs,
                     &plugin_config_for_cs,
                 )?;
+            let published_urls = dev_client_script_urls(&url_prefix, &outcome.output_filenames);
             let mut guard = output_filenames.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "dev.run_client_scripts.output_filenames (write)",
@@ -2018,6 +2034,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             raw_invalidation.replace_client_scripts(outcome.raw_targets);
             raw_invalidation.replace_client_script_workers(outcome.worker_targets);
             raw_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
+            publication_state
+                .write()
+                .unwrap_or_else(|p| {
+                    tracing::warn!(
+                        site = "dev.run_client_scripts.publication_state",
+                        "rwlock poisoned, recovered"
+                    );
+                    p.into_inner()
+                })
+                .publish_client_scripts(published_urls);
             Ok(outcome.changed)
         }))
     };
@@ -2359,7 +2385,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         mode: zfb_server::ServerMode::Dev,
         // Issue #377: the dev server holds the same Arc as the
         // `run_islands` callback above; rebuild ticks rewrite the
-        // inner Option, page responses read it on every served HTML
+        // islands slot, page responses read it on every served HTML
         // request. Cloning the Arc is cheap (refcount bump).
         islands_bundle_url: Some(Arc::clone(&islands_bundle_url_handle)),
         // Issue #494 / #498: same pattern as islands — the dev server
@@ -2747,7 +2773,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 Err(e) => {
                     // Same contract as the pre-#1170 eager build's Err /
                     // write-fail arms: warn and continue. The server stays
-                    // up, the bundle-URL handle stays `None` (no
+                    // up, the publication state's islands slot stays pending (no
                     // `<script type="module">` injected), and the next
                     // successful watcher rebuild retries.
                     output::warn(format!(
@@ -3295,6 +3321,20 @@ fn boot_task_panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> St
     }
 }
 
+fn dev_client_script_urls(url_prefix: &str, output_filenames: &HashSet<String>) -> Vec<String> {
+    let mut urls: Vec<String> = output_filenames
+        .iter()
+        .map(|filename| {
+            format!(
+                "{url_prefix}{}{filename}",
+                zfb_types::STABLE_CLIENT_SCRIPTS_URL_PREFIX
+            )
+        })
+        .collect();
+    urls.sort();
+    urls
+}
+
 /// Re-bundle the project's `"use client"` islands once and publish the
 /// result: build the payload, write the stable `islands.js` under
 /// `assets_root/assets/` (issue #1189: the isolated `.zfb-build/dev-assets`
@@ -3380,7 +3420,7 @@ fn rebundle_islands(
         // stale `<script type="module">` tag — without this, removing the
         // last `"use client"` component would leave the previously-emitted
         // bundle URL visible on every page until the dev server restarts.
-        *guard = None;
+        guard.publish_islands(Vec::new());
         // Also prune companions from the last bundle — with no islands bundle
         // at all, neither chunks, module workers, nor file resources should
         // remain served.
@@ -3462,7 +3502,7 @@ fn rebundle_islands(
         bundle_url: bundle_url.clone(),
         components: Vec::new(),
     };
-    *guard = Some(bundle_url);
+    guard.publish_islands(vec![bundle_url]);
     Ok(Some(info))
 }
 
