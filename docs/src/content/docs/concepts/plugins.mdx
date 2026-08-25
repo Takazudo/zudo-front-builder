@@ -192,6 +192,8 @@ addVirtualModule(
 
 Registers an ESM page module under a URL pattern routed through the same page-rendering pipeline as `pages/<...>.tsx`. An entrypoint may be source TSX/TS or a compiled ESM `.js` module. A package can inject its published `dist/` route directly; the consuming project does not need a copied original route source. The pattern follows the `pages/` filename grammar (`/blog/[slug]`, `/api/dev/x`, `/docs/[...rest]`); relative `entrypoint` values resolve from the project root.
 
+A pattern whose first segment is `__paths__` and which has at least one further segment is reserved for zfb's internal `paths()` endpoint. The route scan rejects it with `RouterError::ReservedRoutePrefix`, and the error identifies the plugin that registered the pattern. Exactly `/__paths__` and patterns with `__paths__` in a later segment remain valid.
+
 ```ts
 injectRoute("/preset-page", "./preset/page.tsx");
 injectRoute("/package-docs/[slug]", "./node_modules/@acme/docs/dist/routes/page.js");

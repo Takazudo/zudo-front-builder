@@ -193,6 +193,15 @@ this when it builds the route table — see
   `docs/[b].tsx`), and `RouterError::OptionalCatchallConflict` when an
   optional catchall overlaps another route at the same position. The
   router never silently picks a winner.
+- A route whose first segment is `__paths__` and which has at least one
+  further segment raises `RouterError::ReservedRoutePrefix` during the
+  scan. zfb registers `/__paths__/<route-key>` before every user page as
+  its internal endpoint for evaluating `paths()` exports, so a page under
+  that prefix could never serve GET or HEAD requests. Exactly `/__paths__`,
+  a `__paths__` segment elsewhere in the route, and root catchalls remain
+  valid. `zfb build` and `zfb check` fail on the error; `zfb dev` warns and
+  keeps serving an empty page cache at boot or the previous renderer after
+  a mid-session edit.
 
 ## See also
 

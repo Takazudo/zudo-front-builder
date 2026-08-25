@@ -192,6 +192,8 @@ addVirtualModule(
 
 `pages/<...>.tsx` と同じページレンダリングパイプラインを通る URL パターンの下に ESM ページモジュールを登録します。entrypoint はソース TSX/TS でも、コンパイル済み ESM `.js` モジュールでも構いません。パッケージは公開済みの `dist/` 内ルートを直接注入でき、利用側プロジェクトに元のルートソースをコピーする必要はありません。パターンは `pages/` のファイル名文法（`/blog/[slug]`、`/api/dev/x`、`/docs/[...rest]`）に従い、相対 `entrypoint` はプロジェクトルートを基準に解決されます。
 
+先頭のセグメントが `__paths__` で、その後にもセグメントが続くパターンは、zfb が内部の `paths()` エンドポイント用に予約しています。ルートのスキャンはこのパターンを `RouterError::ReservedRoutePrefix` として拒否し、エラーには登録元のプラグイン名も示されます。ちょうど `/__paths__` になるパターンや、途中のセグメントに `__paths__` を含むパターンは有効です。
+
 ```ts
 injectRoute("/preset-page", "./preset/page.tsx");
 injectRoute("/package-docs/[slug]", "./node_modules/@acme/docs/dist/routes/page.js");
