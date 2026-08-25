@@ -25,6 +25,33 @@ use anyhow::{Context, Result};
 use zfb_graph::PageId;
 
 use crate::atomic::{atomic_write, validate_output_path};
+
+/// Parse the shared `ZFB_DEV_TIMING` gate used by the dev command and
+/// orchestrator. Keeping this local avoids coupling the build crate to the
+/// command crate while preserving the same truthy values everywhere.
+fn dev_timing_enabled() -> bool {
+    std::env::var("ZFB_DEV_TIMING")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+fn format_tick_page_write_complete_line() -> &'static str {
+    "[zfb-timing] tick: page write complete"
+}
+
+fn format_tick_islands_published_line() -> &'static str {
+    "[zfb-timing] tick: islands published"
+}
+
+fn format_tick_client_scripts_published_line() -> &'static str {
+    "[zfb-timing] tick: client scripts published"
+}
+
 use crate::pipeline::{
     AssetPipeline, BuildContext, BuildOutcome, DynamicInjectedProbe, RefreshOutcome,
     SsrPublishProbe, StaleProbe,
@@ -813,6 +840,9 @@ impl AssetPipeline for DevAssetPipeline {
                     outcome.pages_written.push(r.page.clone());
                 }
             }
+            if dev_timing_enabled() {
+                eprintln!("{}", format_tick_page_write_complete_line());
+            }
         }
 
         // Deferred prune, split by trigger (issue #1317). The two prune
@@ -929,6 +959,9 @@ impl AssetPipeline for DevAssetPipeline {
                 if let Some(info) = run()? {
                     outcome.islands_changed = info.changed;
                     outcome.islands_bundle = Some(info);
+                    if dev_timing_enabled() {
+                        eprintln!("{}", format_tick_islands_published_line());
+                    }
                 }
             }
         }
@@ -944,6 +977,9 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.client_scripts_rerun = true;
             if let Some(run) = &ctx.run_client_scripts {
                 outcome.client_scripts_changed = run()?;
+                if dev_timing_enabled() {
+                    eprintln!("{}", format_tick_client_scripts_published_line());
+                }
             }
         }
 
@@ -1056,6 +1092,22 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a/index.html")).unwrap(),
             "<h1>A</h1>"
+        );
+    }
+
+    #[test]
+    fn publication_timing_line_format_is_stable() {
+        assert_eq!(
+            format_tick_page_write_complete_line(),
+            "[zfb-timing] tick: page write complete"
+        );
+        assert_eq!(
+            format_tick_islands_published_line(),
+            "[zfb-timing] tick: islands published"
+        );
+        assert_eq!(
+            format_tick_client_scripts_published_line(),
+            "[zfb-timing] tick: client scripts published"
         );
     }
 

@@ -2683,6 +2683,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 dev_session_for_boot.as_ref(),
                 &dist_root_for_boot,
             );
+            if dev_timing_enabled() {
+                eprintln!("{}", format_boot_render_complete_line());
+            }
 
             // 4b. `_redirects` 200-rewrite pre-warm (issue #2004, Dev Self
             //     Heal epic #1999 — the fix for #1825). Cold only.
@@ -2755,6 +2758,9 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     None
                 }
             };
+            if islands_info.is_some() && dev_timing_enabled() {
+                eprintln!("{}", format_boot_islands_published_line());
+            }
 
             // 6. Fold the islands bundle into the boot outcome so
             //    `run_with_boot` broadcasts a `ReloadEvent::Islands` (via
@@ -7138,6 +7144,17 @@ pub(crate) fn dev_timing_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Stable publication-boundary lines used by the dev hydration-readiness
+/// instrumentation (issue #2550). Keep these as pure, allocation-free
+/// helpers so the call sites can gate all stderr work on `ZFB_DEV_TIMING`.
+fn format_boot_render_complete_line() -> &'static str {
+    "[zfb-timing] boot: render complete"
+}
+
+fn format_boot_islands_published_line() -> &'static str {
+    "[zfb-timing] boot: islands published"
+}
+
 /// Format the lazy-render plan's input page count (issue #2097,
 /// reinstated from #2095's skipped scope).
 ///
@@ -9865,6 +9882,18 @@ mod tests {
         assert_eq!(
             watch_backend_from_config(&cfg),
             zfb_watcher::WatchBackend::Native
+        );
+    }
+
+    #[test]
+    fn publication_timing_line_format_is_stable() {
+        assert_eq!(
+            format_boot_render_complete_line(),
+            "[zfb-timing] boot: render complete"
+        );
+        assert_eq!(
+            format_boot_islands_published_line(),
+            "[zfb-timing] boot: islands published"
         );
     }
 
