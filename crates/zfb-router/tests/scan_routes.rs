@@ -1,7 +1,8 @@
 //! Integration tests for the file-based router.
 //!
 //! Fixtures live under `tests/fixtures/pages/` (a "happy path" tree) and
-//! `tests/fixtures/pages_ambiguous/` (a tree that should be rejected).
+//! `tests/fixtures/pages_ambiguous/` (a tree that should be rejected), and
+//! `tests/fixtures/pages_reserved_paths/` (a tree with a reserved route).
 
 use std::path::{Path, PathBuf};
 
@@ -239,6 +240,17 @@ fn ambiguous_routes_are_rejected() {
             assert_eq!(template, "/blog");
         }
         other => unreachable!("expected AmbiguousRoute, got {other:?}"),
+    }
+}
+
+#[test]
+fn reserved_paths_routes_are_rejected() {
+    let err = Router::scan(&fixture("pages_reserved_paths")).unwrap_err();
+    match err {
+        RouterError::ReservedRoutePrefix { template, .. } => {
+            assert_eq!(template, "/__paths__/foo");
+        }
+        other => unreachable!("expected ReservedRoutePrefix, got {other:?}"),
     }
 }
 
