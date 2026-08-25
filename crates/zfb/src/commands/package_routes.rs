@@ -1715,6 +1715,28 @@ export default function Page() { return null; }
     }
 
     #[test]
+    fn reserved_paths_package_route_rejected_with_plugin_and_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+
+        let routes = vec![InjectedRoute {
+            pattern: "/__paths__/x".into(),
+            entrypoint: PathBuf::from("/pkg/paths.tsx"),
+            plugin: "reserved-plugin".into(),
+            prerender: None,
+        }];
+        let msg = match resolve_build_pages_root(&pages, &routes) {
+            Ok(_) => panic!("a package route under `/__paths__/` must be rejected"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            msg.contains("reserved-plugin") && msg.contains("/__paths__/x"),
+            "error must name the plugin and pattern; got:\n{msg}"
+        );
+    }
+
+    #[test]
     fn client_suffixed_package_route_does_not_clobber_user_client_script() {
         // A user `pages/widget.client.tsx` (a real client script) must NOT be
         // overwritten by a `/widget.client` package route. The route is

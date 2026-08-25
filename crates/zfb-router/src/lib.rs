@@ -11,8 +11,10 @@
 //! - `pages/blog/index.tsx` → `/blog`
 //!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`) and any non-`.tsx`
-//! files are ignored. Two source files that resolve to the same route template
-//! produce a [`RouterError::AmbiguousRoute`].
+//! files are ignored, except for pages in the reserved top-level `__paths__`
+//! namespace. Two source files that resolve to the same route template
+//! produce a [`RouterError::AmbiguousRoute`]. A page under the reserved
+//! `/__paths__/` prefix produces a [`RouterError::ReservedRoutePrefix`].
 
 pub mod error;
 pub mod route;
