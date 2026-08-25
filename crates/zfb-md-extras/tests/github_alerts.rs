@@ -135,7 +135,7 @@ fn both_features_on_alert_renders_correctly() {
         .expect("pipeline failed");
     let html = serialize(&hast);
     assert_eq!(
-        html, "<Warning>Watch out!</Warning>",
+        html, "<Warning><p>Watch out!</p></Warning>",
         "both features on: alert must render as <Warning>: {html}"
     );
 }
@@ -143,7 +143,8 @@ fn both_features_on_alert_renders_correctly() {
 /// Acceptance criterion: the `directives` step and `githubAlerts` produce the
 /// same HTML output for equivalent single-paragraph content.
 ///
-/// `:::note\n\nbody\n\n:::` and `> [!NOTE]\n> body` must both emit `<Note>body</Note>`.
+/// `:::note\n\nbody\n\n:::` and `> [!NOTE]\n> body` must both emit
+/// `<Note><p>body</p></Note>`.
 #[test]
 fn parity_with_directives_single_paragraph() {
     let directive_features = MarkdownFeaturesConfig {
