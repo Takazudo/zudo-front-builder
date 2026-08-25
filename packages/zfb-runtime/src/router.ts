@@ -33,8 +33,8 @@
 // it and returns the JSON-serialized array as `application/json`. If the
 // `paths` export is missing or throws, the response is a descriptive 500.
 // This endpoint is only meant for the build pipeline — it is safe to leave
-// registered in production because no user-authored route should start with
-// `/__paths__/` (the build pipeline rejects any route that conflicts).
+// registered in production, but `/__paths__/...` is reserved for this
+// internal protocol and a conflicting user-authored page is warned about.
 
 import { Hono } from "hono";
 import { setContentSnapshot } from "@takazudo/zfb/content";
@@ -278,21 +278,18 @@ export function createPageRouter(opts: CreatePageRouterOptions): PageRouter {
   // out of scope per issue #507.
   const pathsMemo = new Map<string, Promise<unknown[]>>();
 
-  // Sanity check: a user-authored route that happens to start with
-  // `/__paths__` (or a top-level catchall like `/:slug{.+}`) would
-  // shadow the synthetic endpoint registered below if Hono dispatched
-  // by registration order. We register `/__paths__/:routeKey{.+}` first
-  // (see directly below) but still warn on collisions so users do not
-  // ship a page that conflicts with the build pipeline's wire format.
+  // Sanity check: a user-authored route under `/__paths__/...` has its
+  // GET/HEAD responses hidden by the synthetic endpoint registered below.
+  // We register `/__paths__/:routeKey{.+}` first (see directly below), and
+  // Hono dispatches by registration order, so it wins those requests.
   for (const page of opts.pages) {
     if (routeShadowsPathsEndpoint(page.route)) {
       // Use console.warn so the message reaches the host's tail logs
       // without bringing down the worker. The build pipeline's
-      // /__paths__ requests still resolve correctly because the
-      // synthetic handler is registered first.
-      // eslint-disable-next-line no-console
+      // /__paths__ requests resolve through the synthetic handler, which
+      // is registered first and wins GET/HEAD requests.
       console.warn(
-        `[zfb-runtime] route "${page.route}" may shadow the synthetic /__paths__ endpoint; rename the page or use a more specific pattern`,
+        `[zfb-runtime] route "${page.route}" is hidden by the synthetic /__paths__ endpoint for GET/HEAD requests (it is registered first and wins); rename the page or use a more specific pattern`,
       );
     }
   }
@@ -628,33 +625,14 @@ function routeParamSpecs(route: string): RouteParamSpec[] {
 }
 
 /**
- * Heuristic check for user-authored routes that may shadow the
- * synthetic `/__paths__/<encoded-route-key>` endpoint.
+ * Check whether a user-authored route is hidden by the synthetic
+ * `/__paths__/<encoded-route-key>` endpoint.
  *
- * Returns true when the route literal contains `/__paths__` (an
- * obvious collision) or when its first segment is a Hono catchall
- * (`:name{.+}`, optionally `:name{.+}?`) or a file-system catchall
- * (`[...name]` / `[[...name]]`) at the root — those would match
- * `/__paths__/...` once Hono dispatches to them.
+ * Returns true only when the first route segment is the literal
+ * `__paths__` and at least one later segment is non-empty. Those are
+ * the routes matched by the synthetic endpoint's `:routeKey{.+}` pattern.
  */
 function routeShadowsPathsEndpoint(route: string): boolean {
-  if (route.includes("/__paths__")) {
-    return true;
-  }
-  // Strip the leading slash and look at the first segment only —
-  // anything deeper cannot match `/__paths__` because the literal
-  // first segment differs.
-  const firstSeg = route.replace(/^\/+/, "").split("/")[0] ?? "";
-  // Hono regex-quantifier catchall: `:name{.+}` / optional `:name{.+}?`.
-  if (/^:[A-Za-z_][\w]*\{\.[+*]\}\??$/.test(firstSeg)) {
-    return true;
-  }
-  // File-system catchall (pre-bracket-to-hono): `[...name]` / `[[...name]]`.
-  if (/^\[\.\.\.[A-Za-z_][\w]*\]$/.test(firstSeg)) {
-    return true;
-  }
-  if (/^\[\[\.\.\.[A-Za-z_][\w]*\]\]$/.test(firstSeg)) {
-    return true;
-  }
-  return false;
+  const segments = route.replace(/^\/+/, "").split("/");
+  return segments[0] === "__paths__" && segments.slice(1).some((segment) => segment.length > 0);
 }

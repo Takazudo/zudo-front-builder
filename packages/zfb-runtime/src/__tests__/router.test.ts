@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setContentSnapshot } from "@takazudo/zfb/content";
 
@@ -866,6 +866,79 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const body = await res.json();
     expect(body).toEqual([{ params: { slug: "hello" } }, { params: { slug: "world" } }]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// __paths__ shadow-warning predicate
+// ---------------------------------------------------------------------------
+
+describe("createPageRouter — __paths__ shadow warning", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+    vi.restoreAllMocks();
+  });
+
+  it.each(["/__paths__/foo", "/__paths__/:x", "/__paths__/*"])(
+    "warns with the corrected message for the shadowed route %s",
+    (route) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      createPageRouter({
+        pages: [{ route, module: () => Promise.resolve({ default: () => null }) }],
+        contentSnapshot: { collections: {} },
+        framework: { renderToString: () => "" },
+      });
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        `[zfb-runtime] route "${route}" is hidden by the synthetic /__paths__ endpoint for GET/HEAD requests (it is registered first and wins); rename the page or use a more specific pattern`,
+      );
+    },
+  );
+
+  it("lets the synthetic GET 404 win while the user page still handles POST", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const page: PageModule = {
+      default: async () => new Response("user page", { status: 201 }),
+    };
+    const router = createPageRouter({
+      pages: [{ route: "/__paths__/foo", module: () => Promise.resolve(page) }],
+      contentSnapshot: { collections: {} },
+      framework: { renderToString: () => "" },
+    });
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[zfb-runtime] route "/__paths__/foo" is hidden by the synthetic /__paths__ endpoint for GET/HEAD requests (it is registered first and wins); rename the page or use a more specific pattern',
+    );
+
+    const getResponse = await router(new Request("http://test.local/__paths__/foo"));
+    expect(getResponse.status).toBe(404);
+    expect(await getResponse.text()).toBe(
+      '[zfb-runtime] /__paths__: no page registered for route key "foo"',
+    );
+
+    const postResponse = await router(
+      new Request("http://test.local/__paths__/foo", { method: "POST" }),
+    );
+    expect(postResponse.status).toBe(201);
+    expect(await postResponse.text()).toBe("user page");
+  });
+
+  it.each(["/:slug{.+}", "/:slug{.+}?", "/*", "/a/__paths__/b", "/__paths__", "/__paths__/"])(
+    "does not warn for safe route %s",
+    (route) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      createPageRouter({
+        pages: [{ route, module: () => Promise.resolve({ default: () => null }) }],
+        contentSnapshot: { collections: {} },
+        framework: { renderToString: () => "" },
+      });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
