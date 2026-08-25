@@ -1499,7 +1499,12 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             self.apply_plugin_watch_invalidation(&mut plan, path);
         }
 
-        if discovered.renderer_reloaded {
+        // Keep this precise discovery result separate from the plan's
+        // `renderer_fresh` flag. The latter may also be set by ordinary
+        // pipeline planning, while a successful discovery refresh must force
+        // an apply even when no page/path work was otherwise selected.
+        let discovery_refresh_completed = discovered.renderer_reloaded;
+        if discovery_refresh_completed {
             plan.mark_renderer_fresh();
         }
         if !discovered.pages.is_empty() {
@@ -1614,7 +1619,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             );
         }
 
-        if plan.is_noop() {
+        if plan.is_noop() && !discovery_refresh_completed {
             return Ok(None);
         }
         self.resolve_all(&mut plan);
@@ -1624,6 +1629,7 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             && !plan.rerun_client_scripts
             && !plan.ssr_reload_needed
             && plan.prune_paths.is_empty()
+            && !discovery_refresh_completed
         {
             return Ok(None);
         }
@@ -2806,6 +2812,109 @@ mod tests {
             "a Created for a file the registry has never seen is genuinely new \
              and must NOT be normalized — it belongs to the discovery regime"
         );
+    }
+
+    /// A renderer-refreshing discovery hook is itself a pipeline-worthy
+    /// event. Even when the changed path has no graph consumers and the
+    /// ordinary plan is empty, the refresh must reach `apply` exactly once so
+    /// the caller can close its publication boundary for this tick.
+    #[test]
+    fn renderer_refresh_discovery_forces_one_apply_for_empty_plan() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use zfb_watcher::ChangeKind;
+
+        let pipeline = CountingPipeline::default();
+        let applies = Arc::clone(&pipeline.applies);
+        let discovery_calls = Arc::new(AtomicUsize::new(0));
+        let discovery_calls_for_hook = Arc::clone(&discovery_calls);
+        let created = PathBuf::from("/proj/unclassified/new.bin");
+        let created_for_hook = created.clone();
+        let discover: DiscoveryHook = Arc::new(move |paths| {
+            assert_eq!(paths, std::slice::from_ref(&created_for_hook));
+            discovery_calls_for_hook.fetch_add(1, Ordering::SeqCst);
+            Ok(DiscoveryOutcome {
+                renderer_reloaded: true,
+                ..DiscoveryOutcome::default()
+            })
+        });
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            ),
+            make_graph(),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+
+        let outcome = orch
+            .tick_with_kinds(
+                vec![(created, ChangeKind::Created)],
+                &noop_ctx(dist.path()),
+                Some(&discover),
+            )
+            .unwrap();
+
+        assert!(outcome.is_some(), "renderer refresh must force an apply");
+        assert_eq!(
+            discovery_calls.load(Ordering::SeqCst),
+            1,
+            "one change batch must invoke discovery exactly once"
+        );
+        let plans = applies.lock().unwrap();
+        assert_eq!(
+            plans.len(),
+            1,
+            "forced refresh must not duplicate the apply"
+        );
+        assert!(plans[0].renderer_fresh);
+        assert!(plans[0].pages.is_empty());
+        assert!(!plans[0].rerun_css);
+        assert!(!plans[0].rerun_islands);
+        assert!(!plans[0].rerun_client_scripts);
+        assert!(!plans[0].ssr_reload_needed);
+    }
+
+    /// A discovery result that did not refresh the renderer must retain the
+    /// existing no-op behavior; only the precise successful refresh result
+    /// may force an otherwise empty plan through the pipeline.
+    #[test]
+    fn discovery_without_renderer_refresh_keeps_empty_plan_a_noop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use zfb_watcher::ChangeKind;
+
+        let pipeline = CountingPipeline::default();
+        let applies = Arc::clone(&pipeline.applies);
+        let discovery_calls = Arc::new(AtomicUsize::new(0));
+        let discovery_calls_for_hook = Arc::clone(&discovery_calls);
+        let discover: DiscoveryHook = Arc::new(move |_| {
+            discovery_calls_for_hook.fetch_add(1, Ordering::SeqCst);
+            Ok(DiscoveryOutcome::default())
+        });
+        let orch = BuildOrchestrator::new(
+            OrchestratorConfig::new(
+                "/proj",
+                vec![PathBuf::from("pages"), PathBuf::from("content")],
+            ),
+            make_graph(),
+            pipeline,
+        );
+        let dist = tempfile::tempdir().unwrap();
+
+        let outcome = orch
+            .tick_with_kinds(
+                vec![(
+                    PathBuf::from("/proj/unclassified/new.bin"),
+                    ChangeKind::Created,
+                )],
+                &noop_ctx(dist.path()),
+                Some(&discover),
+            )
+            .unwrap();
+
+        assert!(outcome.is_none());
+        assert_eq!(discovery_calls.load(Ordering::SeqCst), 1);
+        assert!(applies.lock().unwrap().is_empty());
     }
 
     /// #1581 — delete→recreate must still re-discover. A `Removed` purges the

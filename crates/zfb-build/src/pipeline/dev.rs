@@ -58,10 +58,24 @@ use crate::pipeline::{
 };
 use crate::plan::{PageSelection, RebuildPlan};
 
+/// The framework-entry namespace whose publisher ran in a transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EntryPublicationKind {
+    ClientScripts,
+    Islands,
+}
+
 /// One coherent Dev document/entry publication transaction boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DocumentPublicationEvent {
     Begin,
+    /// One framework-entry publisher failed before completing its full
+    /// namespace. The command layer persists this exact kind until that same
+    /// publisher later succeeds; unrelated entry/document work cannot bless it.
+    EntryPublicationFailed(EntryPublicationKind),
+    /// One framework-entry publisher completed its full namespace, whether or
+    /// not the resulting bytes changed. This discharges only the matching kind.
+    EntryPublicationSucceeded(EntryPublicationKind),
     /// Register every currently stale document that still has an on-disk
     /// fallback before an ordinary publication commit decides retention.
     /// The pipeline emits this while holding the tick/request exclusion.
@@ -70,15 +84,30 @@ pub enum DocumentPublicationEvent {
     DocumentWriteStarted(PathBuf),
     DocumentWriteCompleted(PathBuf),
     DocumentPathsRemoved(Vec<PathBuf>),
+    /// A previously failed prune was revalidated against the current route
+    /// namespace and found live again. Keep its fallback and resolve the exact
+    /// removal obligation without falsely reporting it as deleted.
+    DocumentPathRetained(PathBuf),
     CommitPublished,
     CommitReadyOnRequest,
     /// The final request-time repair drained a previously failed lazy
     /// document transaction. Commit readiness now, but retain fallback
     /// dependencies until a later ordinary publication boundary.
     CommitLazyRepair,
+    /// The same retained lazy-repair boundary, emitted by the pipeline that
+    /// owns an already-open discovery transaction. Unlike a request terminal,
+    /// the command hook must not defer this event back into that transaction.
+    CommitDiscoveryLazyRepair,
     CommitNotExpected,
     CommitEntriesOnly,
     AbortBeforeDocumentWrite,
+    /// A framework entry became observable, but no document render/write had
+    /// started before a later cross-kind failure. Keep the staged entry
+    /// generation and readiness pending without latching document uncertainty;
+    /// a zero-page follow-up may recover through `CommitEntriesOnly`.
+    LeaveEntriesPending,
+    /// A document render/write may have partially mutated the served
+    /// generation. Only a complete document repair may clear this phase.
     LeavePending,
 }
 
@@ -94,26 +123,51 @@ pub type LazyFallbackProbe = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 struct DocumentPublicationTransaction<'a> {
     hook: Option<&'a DocumentPublicationHook>,
     fallback: Option<DocumentPublicationEvent>,
+    document_mutation_completed: bool,
+    /// Discovery raises its short-lived request-deferral gate before Begin.
+    /// Clear it after either an explicit commit event or a Drop fallback;
+    /// sticky recovery proof is owned by the separate resolved callback.
+    terminal_attempted: Option<&'a Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl<'a> DocumentPublicationTransaction<'a> {
-    fn begin(hook: Option<&'a DocumentPublicationHook>, publication_relevant: bool) -> Self {
-        if publication_relevant {
+    fn begin(
+        hook: Option<&'a DocumentPublicationHook>,
+        publication_relevant: bool,
+        external_document_boundary_pending: bool,
+        publication_already_begun: bool,
+        terminal_attempted: Option<&'a Arc<dyn Fn() + Send + Sync>>,
+    ) -> Self {
+        if publication_relevant && !publication_already_begun {
             if let Some(hook) = hook {
                 hook(DocumentPublicationEvent::Begin);
             }
         }
         Self {
             hook,
-            fallback: publication_relevant
-                .then_some(DocumentPublicationEvent::AbortBeforeDocumentWrite),
+            fallback: publication_relevant.then_some(if external_document_boundary_pending {
+                DocumentPublicationEvent::LeavePending
+            } else {
+                DocumentPublicationEvent::AbortBeforeDocumentWrite
+            }),
+            document_mutation_completed: false,
+            terminal_attempted,
+        }
+    }
+
+    fn finish_terminal_attempt(&mut self) {
+        if let Some(callback) = self.terminal_attempted.take() {
+            callback();
         }
     }
 
     fn document_mutation_started(&mut self) {
         if !matches!(
             self.fallback,
-            Some(DocumentPublicationEvent::AbortBeforeDocumentWrite)
+            Some(
+                DocumentPublicationEvent::AbortBeforeDocumentWrite
+                    | DocumentPublicationEvent::LeaveEntriesPending
+            )
         ) {
             return;
         }
@@ -123,6 +177,37 @@ impl<'a> DocumentPublicationTransaction<'a> {
         self.fallback = Some(DocumentPublicationEvent::LeavePending);
     }
 
+    fn document_mutation_completed(&self) -> bool {
+        self.document_mutation_completed
+    }
+
+    /// Record that a framework entry generation has become observable on
+    /// disk. From this point onward, restoring the previous ready snapshot on
+    /// a later cross-kind failure would be dishonest: stable entry bytes may
+    /// already name companions from the staged generation. The command-layer
+    /// hook therefore has to retain that complete generation and leave
+    /// readiness pending until a later document transaction commits it.
+    fn entry_publication_completed(&mut self) {
+        if matches!(
+            self.fallback,
+            Some(DocumentPublicationEvent::AbortBeforeDocumentWrite)
+        ) {
+            self.fallback = Some(DocumentPublicationEvent::LeaveEntriesPending);
+        }
+    }
+
+    fn entry_publication_failed(&self, kind: EntryPublicationKind) {
+        if let Some(hook) = self.hook {
+            hook(DocumentPublicationEvent::EntryPublicationFailed(kind));
+        }
+    }
+
+    fn entry_publication_succeeded(&self, kind: EntryPublicationKind) {
+        if let Some(hook) = self.hook {
+            hook(DocumentPublicationEvent::EntryPublicationSucceeded(kind));
+        }
+    }
+
     fn document_write_started(&mut self, path: PathBuf) {
         self.document_mutation_started();
         if let Some(hook) = self.hook {
@@ -130,18 +215,27 @@ impl<'a> DocumentPublicationTransaction<'a> {
         }
     }
 
-    fn document_write_completed(&self, path: PathBuf) {
+    fn document_write_completed(&mut self, path: PathBuf) {
+        self.document_mutation_completed = true;
         if let Some(hook) = self.hook {
             hook(DocumentPublicationEvent::DocumentWriteCompleted(path));
         }
     }
 
-    fn document_paths_removed(&self, paths: Vec<PathBuf>) {
+    fn document_paths_removed(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
         }
+        self.document_mutation_completed = true;
         if let Some(hook) = self.hook {
             hook(DocumentPublicationEvent::DocumentPathsRemoved(paths));
+        }
+    }
+
+    fn document_path_retained(&mut self, path: PathBuf) {
+        self.document_mutation_completed = true;
+        if let Some(hook) = self.hook {
+            hook(DocumentPublicationEvent::DocumentPathRetained(path));
         }
     }
 
@@ -150,6 +244,7 @@ impl<'a> DocumentPublicationTransaction<'a> {
         if let Some(hook) = self.hook {
             hook(event);
         }
+        self.finish_terminal_attempt();
     }
 }
 
@@ -158,6 +253,7 @@ impl Drop for DocumentPublicationTransaction<'_> {
         if let (Some(hook), Some(event)) = (self.hook, self.fallback.take()) {
             hook(event);
         }
+        self.finish_terminal_attempt();
     }
 }
 
@@ -451,6 +547,10 @@ impl WriteCache {
 struct WriteShared {
     cache: WriteCache,
     exclusion: Mutex<()>,
+    /// Exact document paths whose removal failed. A vanished path is not
+    /// naturally rediscovered by later route scans, so retain it until any
+    /// subsequent publication tick can retry the deletion.
+    failed_prunes: Mutex<HashSet<PathBuf>>,
 }
 
 impl WriteShared {
@@ -535,7 +635,101 @@ impl WriteShared {
             .with_context(|| format!("while request-writing {}", output_path.display()))?;
 
         let written = self.cache.write_bytes(&dest, bytes)?;
+        // A request-time render made this path live again. Any older failed
+        // prune for the same absolute destination is now obsolete.
+        self.cancel_failed_prune(&dest);
         Ok(RequestWriteOutcome { written })
+    }
+
+    fn failed_prunes_snapshot(&self) -> HashSet<PathBuf> {
+        self.failed_prunes
+            .lock()
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "WriteShared.failed_prunes (snapshot)",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            })
+            .clone()
+    }
+
+    fn cancel_failed_prune(&self, path: &Path) -> bool {
+        self.failed_prunes
+            .lock()
+            .unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "WriteShared.failed_prunes (cancel)",
+                    "mutex poisoned, recovered"
+                );
+                p.into_inner()
+            })
+            .remove(path)
+    }
+
+    /// Attempt one exact removal. Success and `NotFound` both reconcile the
+    /// namespace and clear the retry obligation. Any other error keeps the
+    /// path armed for a later, otherwise-unrelated publication tick.
+    fn prune_or_queue(&self, path: &PathBuf) -> bool {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.failed_prunes
+                    .lock()
+                    .unwrap_or_else(|p| {
+                        tracing::warn!(
+                            site = "WriteShared.failed_prunes (record)",
+                            "mutex poisoned, recovered"
+                        );
+                        p.into_inner()
+                    })
+                    .insert(path.clone());
+                // Preserve the existing safe-direction cache behavior: after
+                // an uncertain removal, never dedup a later repair write
+                // against bytes that may no longer describe the filesystem.
+                self.cache.evict_path(path);
+                tracing::warn!(
+                    site = "WriteShared.prune_or_queue",
+                    path = %path.display(),
+                    error = %error,
+                    "document prune failed; queued an exact retry"
+                );
+                return false;
+            }
+        }
+
+        self.cancel_failed_prune(path);
+        self.cache.evict_path(path);
+        true
+    }
+}
+
+fn attempt_document_prune(
+    shared: &WriteShared,
+    path: PathBuf,
+    live_dests: &HashSet<PathBuf>,
+    attempted: &mut HashSet<PathBuf>,
+    publication: &mut DocumentPublicationTransaction<'_>,
+    outcome: &mut BuildOutcome,
+    removed: &mut Vec<PathBuf>,
+) {
+    if !attempted.insert(path.clone()) {
+        return;
+    }
+    if live_dests.contains(&path) {
+        // The same tick (or a request writer before it acquired exclusion)
+        // made the destination live. It must not remain queued for deletion.
+        if shared.cancel_failed_prune(&path) {
+            publication.document_path_retained(path);
+        }
+        return;
+    }
+
+    publication.document_write_started(path.clone());
+    if shared.prune_or_queue(&path) {
+        removed.push(path.clone());
+        outcome.pages_pruned.push(path);
     }
 }
 
@@ -562,6 +756,26 @@ pub struct DevAssetPipeline {
     dynamic_injected_probe: Option<DynamicInjectedProbe>,
     lazy_fallback_probe: Option<LazyFallbackProbe>,
     document_publication_hook: Option<DocumentPublicationHook>,
+    /// A discovery hook begins publication before the orchestrator constructs
+    /// its plan. This probe lets `apply` adopt that pending transaction rather
+    /// than emitting a duplicate `Begin`.
+    discovery_publication_pending_probe: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Precise sticky proof that discovery completed a full renderer + route
+    /// table refresh. `renderer_fresh` alone is broader because it also covers
+    /// byte-identical `Skipped` refreshes.
+    discovery_document_boundary_probe: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// A lazy request completed while discovery owned the active transaction.
+    /// The combined terminal must retain the prior dependency generation.
+    discovery_lazy_repair_probe: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    /// Clears only discovery's active Begin→terminal request-deferral gate.
+    /// It runs after every explicit or fallback terminal attempt.
+    discovery_terminal_attempted: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Clear the adopted discovery transaction only after a terminal commit.
+    discovery_publication_resolved: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Complete absolute document namespace from the current route tables.
+    /// Failed-prune retries consult it so a lazy route that reappeared without
+    /// rendering cannot have its still-live fallback deleted later.
+    live_document_paths_probe: Option<Arc<dyn Fn() -> HashSet<PathBuf> + Send + Sync>>,
 }
 
 impl std::fmt::Debug for DevAssetPipeline {
@@ -591,6 +805,48 @@ impl std::fmt::Debug for DevAssetPipeline {
                     .as_ref()
                     .map(|_| "<callback>"),
             )
+            .field(
+                "discovery_publication_pending_probe",
+                &self
+                    .discovery_publication_pending_probe
+                    .as_ref()
+                    .map(|_| "<callback>"),
+            )
+            .field(
+                "discovery_document_boundary_probe",
+                &self
+                    .discovery_document_boundary_probe
+                    .as_ref()
+                    .map(|_| "<callback>"),
+            )
+            .field(
+                "discovery_lazy_repair_probe",
+                &self
+                    .discovery_lazy_repair_probe
+                    .as_ref()
+                    .map(|_| "<callback>"),
+            )
+            .field(
+                "discovery_terminal_attempted",
+                &self
+                    .discovery_terminal_attempted
+                    .as_ref()
+                    .map(|_| "<callback>"),
+            )
+            .field(
+                "discovery_publication_resolved",
+                &self
+                    .discovery_publication_resolved
+                    .as_ref()
+                    .map(|_| "<callback>"),
+            )
+            .field(
+                "live_document_paths_probe",
+                &self
+                    .live_document_paths_probe
+                    .as_ref()
+                    .map(|_| "<callback>"),
+            )
             .finish()
     }
 }
@@ -611,6 +867,12 @@ impl DevAssetPipeline {
             dynamic_injected_probe: None,
             lazy_fallback_probe: None,
             document_publication_hook: None,
+            discovery_publication_pending_probe: None,
+            discovery_document_boundary_probe: None,
+            discovery_lazy_repair_probe: None,
+            discovery_terminal_attempted: None,
+            discovery_publication_resolved: None,
+            live_document_paths_probe: None,
         }
     }
 
@@ -646,6 +908,35 @@ impl DevAssetPipeline {
     /// Attach the one-lock document/entry publication transaction bridge.
     pub fn with_document_publication_hook(mut self, hook: DocumentPublicationHook) -> Self {
         self.document_publication_hook = Some(hook);
+        self
+    }
+
+    /// Attach the sticky discovery-publication bridge. `pending_probe` is true
+    /// after discovery emitted `Begin`; `boundary_probe` is the narrower proof
+    /// that its refresh returned `Refreshed` rather than `Skipped`. Both stay
+    /// armed across pipeline errors and are cleared by `resolved` only after a
+    /// successful terminal commit.
+    pub fn with_discovery_publication_probes(
+        mut self,
+        pending_probe: Arc<dyn Fn() -> bool + Send + Sync>,
+        boundary_probe: Arc<dyn Fn() -> bool + Send + Sync>,
+        lazy_repair_probe: Arc<dyn Fn() -> bool + Send + Sync>,
+        terminal_attempted: Arc<dyn Fn() + Send + Sync>,
+        resolved: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        self.discovery_publication_pending_probe = Some(pending_probe);
+        self.discovery_document_boundary_probe = Some(boundary_probe);
+        self.discovery_lazy_repair_probe = Some(lazy_repair_probe);
+        self.discovery_terminal_attempted = Some(terminal_attempted);
+        self.discovery_publication_resolved = Some(resolved);
+        self
+    }
+
+    pub fn with_live_document_paths_probe(
+        mut self,
+        probe: Arc<dyn Fn() -> HashSet<PathBuf> + Send + Sync>,
+    ) -> Self {
+        self.live_document_paths_probe = Some(probe);
         self
     }
 
@@ -806,19 +1097,36 @@ impl RequestWriter {
 
 impl AssetPipeline for DevAssetPipeline {
     fn apply(&self, plan: &RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome> {
-        let has_document_writes = match &plan.pages {
+        let has_selected_documents = match &plan.pages {
             PageSelection::Specific(pages) => !pages.is_empty(),
             PageSelection::All => true,
         };
-        let publication_relevant = has_document_writes
-            || plan.rerun_islands
-            || plan.rerun_client_scripts
-            || plan.ssr_reload_needed;
         // Tick-vs-request exclusion (#727 / #804 / #1024): hold the
         // pipeline-wide lock for the WHOLE tick so no request-time write
         // can interleave with the render fan-out or the deferred-prune
         // window. See [`WriteShared`] for the discipline.
         let _exclusion = self.shared.lock_exclusion("WriteShared.exclusion (apply)");
+        let failed_prunes = self.shared.failed_prunes_snapshot();
+        let discovery_publication_pending = self
+            .discovery_publication_pending_probe
+            .as_ref()
+            .is_some_and(|probe| probe());
+        let discovery_document_boundary_pending = self
+            .discovery_document_boundary_probe
+            .as_ref()
+            .is_some_and(|probe| probe());
+        let discovery_lazy_repair_pending = self
+            .discovery_lazy_repair_probe
+            .as_ref()
+            .is_some_and(|probe| probe());
+        let publication_relevant = has_selected_documents
+            || plan.rerun_islands
+            || plan.rerun_client_scripts
+            || plan.ssr_reload_needed
+            || plan.renderer_fresh
+            || !plan.prune_paths.is_empty()
+            || !failed_prunes.is_empty()
+            || discovery_publication_pending;
         // Publication Begin belongs to the same serialization domain as
         // request-time recovery commits. Otherwise a request could finish its
         // write, a tick could Begin and block here, and the request could then
@@ -826,9 +1134,22 @@ impl AssetPipeline for DevAssetPipeline {
         let mut publication = DocumentPublicationTransaction::begin(
             self.document_publication_hook.as_ref(),
             publication_relevant,
+            discovery_document_boundary_pending || discovery_lazy_repair_pending,
+            discovery_publication_pending,
+            if discovery_publication_pending {
+                self.discovery_terminal_attempted.as_ref()
+            } else {
+                None
+            },
         );
 
         let mut outcome = BuildOutcome::default();
+        // Only an explicit `Refreshed` result from the in-apply reloader is
+        // local proof of a completed renderer boundary. Discovery's broader
+        // `renderer_fresh` includes `Skipped`; its precise sticky proof is the
+        // separate `discovery_document_boundary_pending` probe above.
+        let mut renderer_refreshed = false;
+        let mut attempted_prunes = HashSet::new();
 
         // 1. Pages.
         let pages: Vec<PageId> = match &plan.pages {
@@ -857,7 +1178,20 @@ impl AssetPipeline for DevAssetPipeline {
         if plan.rerun_client_scripts {
             outcome.client_scripts_rerun = true;
             if let Some(run) = &ctx.run_client_scripts {
-                outcome.client_scripts_changed = run()?;
+                outcome.client_scripts_changed = match run() {
+                    Ok(changed) => {
+                        publication
+                            .entry_publication_succeeded(EntryPublicationKind::ClientScripts);
+                        changed
+                    }
+                    Err(error) => {
+                        publication.entry_publication_failed(EntryPublicationKind::ClientScripts);
+                        return Err(error);
+                    }
+                };
+                if outcome.client_scripts_changed {
+                    publication.entry_publication_completed();
+                }
                 if dev_timing_enabled() {
                     eprintln!("{}", format_tick_client_scripts_published_line());
                 }
@@ -873,8 +1207,21 @@ impl AssetPipeline for DevAssetPipeline {
         if plan.rerun_islands {
             outcome.islands_rerun = true;
             if let Some(run) = &ctx.run_islands {
-                if let Some(info) = run()? {
+                let info = match run() {
+                    Ok(info) => {
+                        publication.entry_publication_succeeded(EntryPublicationKind::Islands);
+                        info
+                    }
+                    Err(error) => {
+                        publication.entry_publication_failed(EntryPublicationKind::Islands);
+                        return Err(error);
+                    }
+                };
+                if let Some(info) = info {
                     outcome.islands_changed = info.changed;
+                    if info.changed {
+                        publication.entry_publication_completed();
+                    }
                     outcome.islands_bundle = Some(info);
                     if dev_timing_enabled() {
                         eprintln!("{}", format_tick_islands_published_line());
@@ -903,21 +1250,28 @@ impl AssetPipeline for DevAssetPipeline {
                 // nothing to prune.
                 let vanished = match reload()? {
                     RefreshOutcome::Skipped => Vec::new(),
-                    RefreshOutcome::Refreshed { vanished, .. } => vanished,
+                    RefreshOutcome::Refreshed { vanished, .. } => {
+                        renderer_refreshed = true;
+                        vanished
+                    }
                 };
                 if !vanished.is_empty() {
                     let mut removed = Vec::new();
-                    outcome.pages_pruned.extend(vanished.iter().cloned());
-                    for prev in &vanished {
-                        publication.document_write_started(prev.clone());
-                        match std::fs::remove_file(prev) {
-                            Ok(()) => removed.push(prev.clone()),
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                removed.push(prev.clone());
-                            }
-                            Err(_) => {}
-                        }
-                        self.shared.cache.evict_path(prev);
+                    let live_after_refresh = self
+                        .live_document_paths_probe
+                        .as_ref()
+                        .map(|probe| probe())
+                        .unwrap_or_default();
+                    for prev in vanished {
+                        attempt_document_prune(
+                            &self.shared,
+                            prev,
+                            &live_after_refresh,
+                            &mut attempted_prunes,
+                            &mut publication,
+                            &mut outcome,
+                            &mut removed,
+                        );
                     }
                     publication.document_paths_removed(removed);
                 }
@@ -996,6 +1350,7 @@ impl AssetPipeline for DevAssetPipeline {
                             vanished,
                             changed_sources,
                         } => {
+                            renderer_refreshed = true;
                             // Fallback G5 (issue #958): the refresh ran
                             // BEFORE the render, so the route table the
                             // narrowing would match against is the
@@ -1070,6 +1425,7 @@ impl AssetPipeline for DevAssetPipeline {
                 live_dests.insert(dest.clone());
 
                 let wo = self.shared.cache.write_page(&r.page, &dest, new_bytes)?;
+                self.shared.cancel_failed_prune(&dest);
                 publication.document_write_completed(publication_path);
                 if let Some(stale) = wo.stale_path {
                     prune_candidates.push(stale);
@@ -1081,6 +1437,15 @@ impl AssetPipeline for DevAssetPipeline {
             if dev_timing_enabled() {
                 eprintln!("{}", format_tick_page_write_complete_line());
             }
+        }
+
+        // Route-table liveness is broader than this tick's eager write set. A
+        // failed-to-delete path can reappear as a lazy route and therefore be
+        // live without entering `live_dests`; protect the complete current
+        // namespace before processing planned or queued removals.
+        let mut protected_dests = live_dests.clone();
+        if let Some(probe) = &self.live_document_paths_probe {
+            protected_dests.extend(probe());
         }
 
         // Deferred prune, split by trigger (issue #1317). The two prune
@@ -1119,19 +1484,15 @@ impl AssetPipeline for DevAssetPipeline {
             // (a) Per-page stale outputs — pruned whenever the render loop
             // ran, skip or not (issue #1317 / #1301).
             for prev in prune_candidates {
-                if live_dests.contains(&prev) {
-                    continue; // another page now owns this path — skip
-                }
-                publication.document_write_started(prev.clone());
-                match std::fs::remove_file(&prev) {
-                    Ok(()) => removed.push(prev.clone()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        removed.push(prev.clone());
-                    }
-                    Err(_) => {}
-                }
-                self.shared.cache.evict_path(&prev);
-                outcome.pages_pruned.push(prev);
+                attempt_document_prune(
+                    &self.shared,
+                    prev,
+                    &protected_dests,
+                    &mut attempted_prunes,
+                    &mut publication,
+                    &mut outcome,
+                    &mut removed,
+                );
             }
 
             // (b) Globally-vanished route output paths — only when the route
@@ -1143,19 +1504,15 @@ impl AssetPipeline for DevAssetPipeline {
             // paths are handled once by the plan-prune block (1b) below.
             if !renderer_refresh_skipped {
                 for prev in route_vanished {
-                    if live_dests.contains(&prev) {
-                        continue; // another page now owns this path — skip
-                    }
-                    publication.document_write_started(prev.clone());
-                    match std::fs::remove_file(&prev) {
-                        Ok(()) => removed.push(prev.clone()),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            removed.push(prev.clone());
-                        }
-                        Err(_) => {}
-                    }
-                    self.shared.cache.evict_path(&prev);
-                    outcome.pages_pruned.push(prev);
+                    attempt_document_prune(
+                        &self.shared,
+                        prev,
+                        &protected_dests,
+                        &mut attempted_prunes,
+                        &mut publication,
+                        &mut outcome,
+                        &mut removed,
+                    );
                 }
             }
             publication.document_paths_removed(removed);
@@ -1193,16 +1550,35 @@ impl AssetPipeline for DevAssetPipeline {
         if (pages.is_empty() || renderer_refresh_skipped) && !plan.prune_paths.is_empty() {
             let mut removed = Vec::new();
             for prev in &plan.prune_paths {
-                publication.document_write_started(prev.clone());
-                match std::fs::remove_file(prev) {
-                    Ok(()) => removed.push(prev.clone()),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        removed.push(prev.clone());
-                    }
-                    Err(_) => {}
-                }
-                self.shared.cache.evict_path(prev);
-                outcome.pages_pruned.push(prev.clone());
+                attempt_document_prune(
+                    &self.shared,
+                    prev.clone(),
+                    &protected_dests,
+                    &mut attempted_prunes,
+                    &mut publication,
+                    &mut outcome,
+                    &mut removed,
+                );
+            }
+            publication.document_paths_removed(removed);
+        }
+
+        // A failed vanish is absent from future route tables and therefore
+        // from future plans. Retry the start-of-tick snapshot on every
+        // otherwise-unrelated publication, without double-attempting paths the
+        // current plan already supplied. New failures wait for the next tick.
+        if !failed_prunes.is_empty() {
+            let mut removed = Vec::new();
+            for prev in failed_prunes {
+                attempt_document_prune(
+                    &self.shared,
+                    prev,
+                    &protected_dests,
+                    &mut attempted_prunes,
+                    &mut publication,
+                    &mut outcome,
+                    &mut removed,
+                );
             }
             publication.document_paths_removed(removed);
         }
@@ -1217,12 +1593,31 @@ impl AssetPipeline for DevAssetPipeline {
             {
                 hook(DocumentPublicationEvent::SnapshotLazyFallbacks(probe()));
             }
-            let event = if has_document_writes {
+            let event = if discovery_lazy_repair_pending {
+                DocumentPublicationEvent::CommitDiscoveryLazyRepair
+            } else if has_selected_documents {
                 DocumentPublicationEvent::CommitPublished
+            } else if renderer_refreshed
+                || discovery_document_boundary_pending
+                || publication.document_mutation_completed()
+            {
+                // A complete zero-page renderer/route-table refresh makes
+                // every surviving route request-renderable. Likewise, a
+                // successful prune-only transaction reconciles the document
+                // namespace without publishing a new SSG body. Both are real
+                // document boundaries, but neither should claim that an SSG
+                // document was written (notably for SSR-only and last-route
+                // removal transitions).
+                DocumentPublicationEvent::CommitReadyOnRequest
             } else {
                 DocumentPublicationEvent::CommitEntriesOnly
             };
             publication.commit(event);
+            if discovery_publication_pending {
+                if let Some(resolved) = &self.discovery_publication_resolved {
+                    resolved();
+                }
+            }
         }
 
         // 2. CSS.
@@ -1277,7 +1672,7 @@ mod tests {
     use crate::pipeline::{RelDistPath, RenderedPage};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -1435,17 +1830,32 @@ mod tests {
             DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::EntryPublicationFailed(
+                        EntryPublicationKind::ClientScripts,
+                    ) => "client-failed",
+                    DocumentPublicationEvent::EntryPublicationFailed(
+                        EntryPublicationKind::Islands,
+                    ) => "islands-failed",
+                    DocumentPublicationEvent::EntryPublicationSucceeded(
+                        EntryPublicationKind::ClientScripts,
+                    ) => "client-succeeded",
+                    DocumentPublicationEvent::EntryPublicationSucceeded(
+                        EntryPublicationKind::Islands,
+                    ) => "islands-succeeded",
                     DocumentPublicationEvent::SnapshotLazyFallbacks(_) => "snapshot",
                     DocumentPublicationEvent::DocumentMutationStarted => "mutation",
                     DocumentPublicationEvent::DocumentWriteStarted(_) => "write-start",
                     DocumentPublicationEvent::DocumentWriteCompleted(_) => "write-complete",
                     DocumentPublicationEvent::DocumentPathsRemoved(_) => "paths-removed",
+                    DocumentPublicationEvent::DocumentPathRetained(_) => "path-retained",
                     DocumentPublicationEvent::CommitPublished => "commit",
                     DocumentPublicationEvent::CommitReadyOnRequest
                     | DocumentPublicationEvent::CommitLazyRepair
+                    | DocumentPublicationEvent::CommitDiscoveryLazyRepair
                     | DocumentPublicationEvent::CommitNotExpected
                     | DocumentPublicationEvent::CommitEntriesOnly => "other-commit",
                     DocumentPublicationEvent::AbortBeforeDocumentWrite => "abort",
+                    DocumentPublicationEvent::LeaveEntriesPending => "entries-pending",
                     DocumentPublicationEvent::LeavePending => "pending",
                 });
             }));
@@ -1488,7 +1898,9 @@ mod tests {
             vec![
                 "begin",
                 "client",
+                "client-succeeded",
                 "islands",
+                "islands-succeeded",
                 "mutation",
                 "render",
                 "write-start",
@@ -1554,6 +1966,7 @@ mod tests {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
                     DocumentPublicationEvent::DocumentMutationStarted => "mutation",
+                    DocumentPublicationEvent::LeaveEntriesPending => "entries-pending",
                     DocumentPublicationEvent::LeavePending => "pending",
                     _ => "unexpected",
                 });
@@ -1735,6 +2148,9 @@ mod tests {
             DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::EntryPublicationFailed(
+                        EntryPublicationKind::Islands,
+                    ) => "islands-failed",
                     DocumentPublicationEvent::AbortBeforeDocumentWrite => "abort",
                     _ => "unexpected",
                 });
@@ -1758,7 +2174,424 @@ mod tests {
         plan.rerun_islands = true;
 
         assert!(pipeline.apply(&plan, &ctx).is_err());
-        assert_eq!(*events.lock().unwrap(), vec!["begin", "islands", "abort"]);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["begin", "islands", "islands-failed", "abort"]
+        );
+    }
+
+    #[test]
+    fn client_publication_followed_by_islands_failure_leaves_entries_pending() {
+        let dir = tempdir().unwrap();
+        let client_dir = dir.path().join("assets/client");
+        let entry = client_dir.join("app.js");
+        let worker = client_dir.join("worker-app.js");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        std::fs::write(&entry, "console.log('old entry');\n").unwrap();
+
+        let ready = Arc::new(AtomicBool::new(true));
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let hook_ready = Arc::clone(&ready);
+        let hook_events = Arc::clone(&events);
+        let abort_worker = worker.clone();
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                let label = match event {
+                    DocumentPublicationEvent::Begin => {
+                        hook_ready.store(false, Ordering::SeqCst);
+                        "begin"
+                    }
+                    DocumentPublicationEvent::EntryPublicationFailed(
+                        EntryPublicationKind::ClientScripts,
+                    ) => "client-failed",
+                    DocumentPublicationEvent::EntryPublicationFailed(
+                        EntryPublicationKind::Islands,
+                    ) => "islands-failed",
+                    DocumentPublicationEvent::EntryPublicationSucceeded(
+                        EntryPublicationKind::ClientScripts,
+                    ) => "client-succeeded",
+                    DocumentPublicationEvent::EntryPublicationSucceeded(
+                        EntryPublicationKind::Islands,
+                    ) => "islands-succeeded",
+                    DocumentPublicationEvent::DocumentMutationStarted => "mutation",
+                    DocumentPublicationEvent::LeaveEntriesPending => {
+                        hook_ready.store(false, Ordering::SeqCst);
+                        "entries-pending"
+                    }
+                    DocumentPublicationEvent::LeavePending => {
+                        hook_ready.store(false, Ordering::SeqCst);
+                        "pending"
+                    }
+                    DocumentPublicationEvent::AbortBeforeDocumentWrite => {
+                        // Model the command-layer abort cleanup: restoring the
+                        // old ready snapshot also removes newly registered
+                        // companions. Receiving this event after the entry
+                        // write would recreate the broken served generation.
+                        hook_ready.store(true, Ordering::SeqCst);
+                        let _ = std::fs::remove_file(&abort_worker);
+                        "abort"
+                    }
+                    DocumentPublicationEvent::CommitPublished => {
+                        hook_ready.store(true, Ordering::SeqCst);
+                        "commit"
+                    }
+                    DocumentPublicationEvent::CommitEntriesOnly => {
+                        hook_ready.store(true, Ordering::SeqCst);
+                        "entries-commit"
+                    }
+                    DocumentPublicationEvent::SnapshotLazyFallbacks(_) => "snapshot",
+                    DocumentPublicationEvent::DocumentWriteStarted(_) => "write-start",
+                    DocumentPublicationEvent::DocumentWriteCompleted(_) => "write-complete",
+                    DocumentPublicationEvent::DocumentPathsRemoved(_) => "paths-removed",
+                    DocumentPublicationEvent::DocumentPathRetained(_) => "path-retained",
+                    DocumentPublicationEvent::CommitReadyOnRequest
+                    | DocumentPublicationEvent::CommitLazyRepair
+                    | DocumentPublicationEvent::CommitDiscoveryLazyRepair
+                    | DocumentPublicationEvent::CommitNotExpected => "other-commit",
+                };
+                hook_events.lock().unwrap().push(label);
+            }));
+
+        let client_events = Arc::clone(&events);
+        let published_entry = entry.clone();
+        let published_worker = worker.clone();
+        let islands_events = Arc::clone(&events);
+        let failed_ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            run_client_scripts: Some(Arc::new(move || {
+                std::fs::write(&published_worker, "self.postMessage('new worker');\n")?;
+                std::fs::write(
+                    &published_entry,
+                    "new Worker(new URL('./worker-app.js', import.meta.url));\n",
+                )?;
+                client_events.lock().unwrap().push("client");
+                Ok(true)
+            })),
+            run_islands: Some(Arc::new(move || {
+                islands_events.lock().unwrap().push("islands");
+                anyhow::bail!("islands failed after client publication")
+            })),
+            render_pages: Arc::new(|_, _| panic!("render must not run after islands failure")),
+            run_css: None,
+            reload_renderer: None,
+        };
+        let mut failed_plan = client_script_page_plan();
+        failed_plan.rerun_islands = true;
+
+        assert!(pipeline.apply(&failed_plan, &failed_ctx).is_err());
+        assert!(
+            !ready.load(Ordering::SeqCst),
+            "a visible client generation must keep readiness pending after a later failure"
+        );
+        assert!(worker.is_file(), "the staged worker must remain servable");
+        assert!(
+            std::fs::read_to_string(&entry)
+                .unwrap()
+                .contains("worker-app.js"),
+            "the staged stable entry and its companion must be retained together"
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                "begin",
+                "client",
+                "client-succeeded",
+                "islands",
+                "islands-failed",
+                "entries-pending"
+            ]
+        );
+
+        // The pipeline reports the exact failed kind and deliberately makes
+        // no claim about which later publisher can repair it. The command
+        // hook's persistent entry-kind ledger owns that cross-tick contract.
+    }
+
+    #[test]
+    fn zero_page_renderer_refresh_commits_ready_on_request_but_skip_stays_entries_only() {
+        fn run(outcome: RefreshOutcome) -> Vec<DocumentPublicationEvent> {
+            let dir = tempdir().unwrap();
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let hook_events = Arc::clone(&events);
+            let pipeline =
+                DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                    hook_events.lock().unwrap().push(event)
+                }));
+            let ctx = BuildContext {
+                dist_root: dir.path().to_path_buf(),
+                render_pages: Arc::new(|_, _| panic!("SSR-only recovery has no SSG pages")),
+                run_css: None,
+                run_islands: None,
+                run_client_scripts: None,
+                reload_renderer: Some(Arc::new(move || Ok(outcome.clone()))),
+            };
+            let mut plan = RebuildPlan::empty();
+            plan.ssr_reload_needed = true;
+
+            pipeline.apply(&plan, &ctx).unwrap();
+            let captured = events.lock().unwrap().clone();
+            captured
+        }
+
+        assert_eq!(
+            run(RefreshOutcome::Refreshed {
+                vanished: Vec::new(),
+                changed_sources: Vec::new(),
+            }),
+            vec![
+                DocumentPublicationEvent::Begin,
+                DocumentPublicationEvent::CommitReadyOnRequest,
+            ],
+            "a complete SSR-only renderer/route-table refresh is the Cold recovery boundary",
+        );
+        assert_eq!(
+            run(RefreshOutcome::Skipped),
+            vec![
+                DocumentPublicationEvent::Begin,
+                DocumentPublicationEvent::CommitEntriesOnly,
+            ],
+            "a byte-identical skip must not clear genuine document uncertainty",
+        );
+    }
+
+    #[test]
+    fn discovery_refresh_uses_precise_sticky_boundary_and_clears_only_on_success() {
+        fn run(
+            boundary_completed: bool,
+            fail_after_discovery: bool,
+        ) -> (Vec<DocumentPublicationEvent>, bool, bool, bool) {
+            let dir = tempdir().unwrap();
+            let events = Arc::new(Mutex::new(vec![DocumentPublicationEvent::Begin]));
+            let hook_events = Arc::clone(&events);
+            let pending = Arc::new(AtomicBool::new(true));
+            let active = Arc::new(AtomicBool::new(true));
+            let boundary = Arc::new(AtomicBool::new(boundary_completed));
+            let lazy_repair = Arc::new(AtomicBool::new(false));
+            let pending_probe = Arc::clone(&pending);
+            let boundary_probe = Arc::clone(&boundary);
+            let lazy_probe = Arc::clone(&lazy_repair);
+            let terminal_active = Arc::clone(&active);
+            let resolved_pending = Arc::clone(&pending);
+            let resolved_boundary = Arc::clone(&boundary);
+            let pipeline = DevAssetPipeline::new()
+                .with_discovery_publication_probes(
+                    Arc::new(move || pending_probe.load(Ordering::SeqCst)),
+                    Arc::new(move || boundary_probe.load(Ordering::SeqCst)),
+                    Arc::new(move || lazy_probe.load(Ordering::SeqCst)),
+                    Arc::new(move || terminal_active.store(false, Ordering::SeqCst)),
+                    Arc::new(move || {
+                        resolved_boundary.store(false, Ordering::SeqCst);
+                        resolved_pending.store(false, Ordering::SeqCst);
+                    }),
+                )
+                .with_document_publication_hook(Arc::new(move |event| {
+                    hook_events.lock().unwrap().push(event)
+                }));
+            let ctx = BuildContext {
+                dist_root: dir.path().to_path_buf(),
+                render_pages: Arc::new(|_, _| panic!("discovery recovery has no SSG pages")),
+                run_css: None,
+                run_islands: None,
+                run_client_scripts: fail_after_discovery.then(|| {
+                    Arc::new(|| anyhow::bail!("later client publication failed"))
+                        as crate::pipeline::ClientScriptsRunner
+                }),
+                reload_renderer: Some(Arc::new(|| {
+                    panic!("renderer_fresh discovery must not reload twice")
+                })),
+            };
+            let mut plan = RebuildPlan::empty();
+            plan.renderer_fresh = true;
+            plan.rerun_client_scripts = fail_after_discovery;
+
+            let result = pipeline.apply(&plan, &ctx);
+            assert_eq!(result.is_err(), fail_after_discovery);
+            let captured = events.lock().unwrap().clone();
+            (
+                captured,
+                pending.load(Ordering::SeqCst),
+                boundary.load(Ordering::SeqCst),
+                active.load(Ordering::SeqCst),
+            )
+        }
+
+        assert_eq!(
+            run(true, false),
+            (
+                vec![
+                    DocumentPublicationEvent::Begin,
+                    DocumentPublicationEvent::CommitReadyOnRequest,
+                ],
+                false,
+                false,
+                false,
+            ),
+            "only a completed discovery refresh is a ReadyOnRequest boundary",
+        );
+        assert_eq!(
+            run(false, false),
+            (
+                vec![
+                    DocumentPublicationEvent::Begin,
+                    DocumentPublicationEvent::CommitEntriesOnly,
+                ],
+                false,
+                false,
+                false,
+            ),
+            "renderer_fresh after a byte-identical Skipped discovery must stay entries-only",
+        );
+        assert_eq!(
+            run(true, true),
+            (
+                vec![
+                    DocumentPublicationEvent::Begin,
+                    DocumentPublicationEvent::EntryPublicationFailed(
+                        EntryPublicationKind::ClientScripts,
+                    ),
+                    DocumentPublicationEvent::LeavePending,
+                ],
+                true,
+                true,
+                false,
+            ),
+            "a later failure keeps the complete discovery proof pending but ends its active terminal window",
+        );
+    }
+
+    #[test]
+    fn failed_prune_then_exact_success_uses_a_zero_page_document_boundary() {
+        let dir = tempdir().unwrap();
+        let stale = dir.path().join("stale.html");
+        std::fs::create_dir(&stale).unwrap();
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(event)
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_, _| panic!("prune-only repair has no selected pages")),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: Some(Arc::new(|| Ok(false))),
+            reload_renderer: None,
+        };
+        let mut plan = RebuildPlan::empty();
+        plan.prune_paths = vec![stale.clone()];
+
+        let failed = pipeline.apply(&plan, &ctx).unwrap();
+        assert!(stale.is_dir(), "remove_file must fail against a directory");
+        assert!(
+            failed.pages_pruned.is_empty(),
+            "a failed removal must not be reported as successfully pruned"
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                DocumentPublicationEvent::Begin,
+                DocumentPublicationEvent::DocumentMutationStarted,
+                DocumentPublicationEvent::DocumentWriteStarted(stale.clone()),
+                DocumentPublicationEvent::CommitEntriesOnly,
+            ],
+            "a failed removal is not a completed document boundary; the exact obligation keeps this entries-only candidate pending",
+        );
+
+        std::fs::remove_dir(&stale).unwrap();
+        std::fs::write(&stale, "stale document").unwrap();
+        events.lock().unwrap().clear();
+
+        let mut unrelated_plan = RebuildPlan::empty();
+        unrelated_plan.rerun_client_scripts = true;
+        let repaired = pipeline.apply(&unrelated_plan, &ctx).unwrap();
+        assert!(
+            !stale.exists(),
+            "the persistent exact retry must remove the stale file even though the new plan omitted it"
+        );
+        assert_eq!(repaired.pages_pruned, vec![stale.clone()]);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                DocumentPublicationEvent::Begin,
+                DocumentPublicationEvent::EntryPublicationSucceeded(
+                    EntryPublicationKind::ClientScripts,
+                ),
+                DocumentPublicationEvent::DocumentMutationStarted,
+                DocumentPublicationEvent::DocumentWriteStarted(stale.clone()),
+                DocumentPublicationEvent::DocumentPathsRemoved(vec![stale]),
+                DocumentPublicationEvent::CommitReadyOnRequest,
+            ],
+            "a successful exact prune must emit a complete zero-page document boundary",
+        );
+    }
+
+    #[test]
+    fn failed_prune_is_cancelled_when_lazy_route_reappears() {
+        let dir = tempdir().unwrap();
+        let fallback = dir.path().join("reappeared/index.html");
+        std::fs::create_dir_all(&fallback).unwrap();
+        let live_documents = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
+        let live_probe_documents = Arc::clone(&live_documents);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_events = Arc::clone(&events);
+        let pipeline = DevAssetPipeline::new()
+            .with_live_document_paths_probe(Arc::new(move || {
+                live_probe_documents.lock().unwrap().clone()
+            }))
+            .with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(event)
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_, _| panic!("lazy resurrection renders no eager pages")),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: Some(Arc::new(|| Ok(false))),
+            reload_renderer: None,
+        };
+        let mut removal = RebuildPlan::empty();
+        removal.prune_paths = vec![fallback.clone()];
+
+        pipeline.apply(&removal, &ctx).unwrap();
+        std::fs::remove_dir_all(&fallback).unwrap();
+        std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
+        std::fs::write(&fallback, "still-live fallback").unwrap();
+
+        // Models a later full route refresh that resurrected this output but
+        // selected zero eager documents under lazy rendering.
+        live_documents.lock().unwrap().insert(fallback.clone());
+        events.lock().unwrap().clear();
+        let mut unrelated = RebuildPlan::empty();
+        unrelated.rerun_client_scripts = true;
+        let outcome = pipeline.apply(&unrelated, &ctx).unwrap();
+
+        assert!(fallback.is_file(), "a reappeared lazy route stays servable");
+        assert!(outcome.pages_pruned.is_empty());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                DocumentPublicationEvent::Begin,
+                DocumentPublicationEvent::EntryPublicationSucceeded(
+                    EntryPublicationKind::ClientScripts,
+                ),
+                DocumentPublicationEvent::DocumentPathRetained(fallback.clone()),
+                DocumentPublicationEvent::CommitReadyOnRequest,
+            ]
+        );
+
+        events.lock().unwrap().clear();
+        pipeline.apply(&unrelated, &ctx).unwrap();
+        assert!(
+            fallback.is_file(),
+            "clearing the stale prune obligation must prevent later resurrection deletion"
+        );
+        assert!(!events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, DocumentPublicationEvent::DocumentPathRetained(_))));
     }
 
     #[test]

@@ -83,6 +83,12 @@
 //! test pins BOTH halves, so a regression that breaks only the broadcast
 //! (leaving serving intact) is still caught.
 //!
+//! The failed-bootstrap scenario additionally asserts `/__zfb/ready`: the
+//! failed Cold generation must report `documents: pending`, and the later
+//! successful SSR-only route-table refresh must advance it to
+//! `ready_on_request`. Serving recovered before the publication-state fix,
+//! so the readiness assertion is the regression proof for the liveness bug.
+//!
 //! No sleeps are used to detect completion or recovery — both are observed
 //! via distinct, unambiguous log lines emitted by the exact code paths
 //! under test.
@@ -358,6 +364,39 @@ async fn poll_get(client: &reqwest::Client, url: &str) -> (u16, String) {
     }
 }
 
+async fn readiness_json(client: &reqwest::Client, base: &str) -> serde_json::Value {
+    let response = client
+        .get(format!("{base}/__zfb/ready"))
+        .send()
+        .await
+        .expect("GET /__zfb/ready");
+    assert_eq!(response.status().as_u16(), 200, "readiness endpoint status");
+    serde_json::from_str(&response.text().await.expect("read readiness response"))
+        .expect("valid readiness JSON")
+}
+
+async fn wait_for_publication_ready(
+    client: &reqwest::Client,
+    base: &str,
+    session: &DevSession,
+) -> serde_json::Value {
+    let started = Instant::now();
+    let mut last = serde_json::Value::Null;
+    while started.elapsed() < CONTENT_DEADLINE {
+        last = readiness_json(client, base).await;
+        if last["ready"] == true {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "publication readiness stayed false for {}s after Cold recovery; last snapshot: \
+         {last}\n{}",
+        CONTENT_DEADLINE.as_secs(),
+        session.logs(),
+    );
+}
+
 /// Poll `url` until the response body contains `needle` with status 200.
 async fn poll_until_contains(
     client: &reqwest::Client,
@@ -567,6 +606,12 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
         "recovery: boot bundle failure",
     )
     .await;
+    let pending = readiness_json(&client, &base).await;
+    assert_eq!(
+        pending["ready"], false,
+        "a failed deferred Cold bundle must not claim publication readiness"
+    );
+    assert_eq!(pending["documents"], "pending");
 
     // Subscribe to the livereload stream AFTER the failure — this
     // simulates a tab that has been sitting on the dev 404 body since
@@ -596,6 +641,16 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
         "recovery: latch fired",
     )
     .await;
+
+    let recovered_readiness = wait_for_publication_ready(&client, &base, &session).await;
+    assert_eq!(
+        recovered_readiness["documents"], "ready_on_request",
+        "a complete SSR-only route-table refresh is the repaired document boundary"
+    );
+    assert!(
+        recovered_readiness["generation"].as_u64().unwrap_or(0) > 0,
+        "Cold recovery must commit a new publication generation: {recovered_readiness}"
+    );
 
     // THE POSITIVE HALF — the server has recovered: a fresh manual GET now
     // returns 200 with the marker.
