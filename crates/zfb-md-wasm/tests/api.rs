@@ -246,6 +246,46 @@ fn render_html_full_fixture_with_frontmatter() {
 
 #[cfg(feature = "render")]
 #[test]
+fn render_html_preserves_directive_and_alert_body_markup() {
+    let src = "# Title\n\n\
+:::note[Heads up]\n\
+First paragraph with **bold**, `code` and a [link](./other.md).\n\
+\n\
+Second paragraph.\n\
+:::\n\
+\n\
+> [!IMPORTANT]\n\
+> Alert body with *emphasis*.\n";
+    let options = r#"{
+        "filename": "preview.mdx",
+        "pipeline": {
+            "features": {
+                "directives": { "note": "Note" },
+                "githubAlerts": true
+            }
+        }
+    }"#;
+
+    let out = parse(zfb_md_wasm::render_html(src, options));
+
+    assert_eq!(
+        out["html"],
+        concat!(
+            "<h1>Title</h1>",
+            "<Note title=\"Heads up\">",
+            "<p>First paragraph with <strong>bold</strong>, <code>code</code> and ",
+            "a <a href=\"./other.md\">link</a>.</p>",
+            "<p>Second paragraph.</p>",
+            "</Note>",
+            "<Important><p>Alert body with <em>emphasis</em>.</p></Important>"
+        ),
+        "component bodies must retain the normal rendered HTML subtree"
+    );
+    assert_eq!(out["diagnostics"].as_array().map(Vec::len), Some(0));
+}
+
+#[cfg(feature = "render")]
+#[test]
 fn render_html_without_frontmatter_yields_null_frontmatter() {
     let out = parse(zfb_md_wasm::render_html("# Just a heading\n", "{}"));
     assert_eq!(out["html"], "<h1>Just a heading</h1>");
