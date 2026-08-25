@@ -1,9 +1,11 @@
 mod cross_binary_lock;
 mod html_normalize;
+mod module_entry_probe;
 mod sse;
 mod watcher_handshake;
 pub use cross_binary_lock::CrossBinaryE2eLock;
 pub use html_normalize::normalize_html;
+pub use module_entry_probe::{module_entry_urls, probe_module_entries, ModuleEntryProbe};
 pub use sse::{
     assert_frame_has_data, decode_utf8_incremental, next_sse_event_name, next_sse_frame,
     wait_for_subscribers, wait_for_subscribers_polled, SseFrame,

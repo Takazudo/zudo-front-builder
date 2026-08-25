@@ -106,6 +106,8 @@ use crate::commands::dev::{dev_timing_enabled, DevRenderSession, StaleClaim};
 use crate::output;
 use crate::render_pipeline::build_output_path_for_resolved_url;
 
+type PublicationResolved = Arc<dyn Fn(&Path) + Send + Sync>;
+
 /// Build the live [`RenderOnRequestHandle`] installed into
 /// [`zfb_server::ServeOpts`] at dev boot (issue #1026).
 ///
@@ -137,8 +139,10 @@ pub(crate) fn make_render_on_request_handle(
     writer: RequestWriter,
     html_root: PathBuf,
     injected_routes: InjectedRouteSet,
+    publication_resolved: PublicationResolved,
 ) -> (RenderOnRequestHandle, LazyRenderAdapter) {
-    let adapter = LazyRenderAdapter::new(session, writer, html_root, injected_routes);
+    let adapter = LazyRenderAdapter::new(session, writer, html_root, injected_routes)
+        .with_publication_resolved(publication_resolved);
     let hook: Arc<dyn RenderOnRequestHook> = Arc::new(adapter.clone());
     (Arc::new(std::sync::RwLock::new(Some(hook))), adapter)
 }
@@ -160,6 +164,11 @@ pub(crate) struct LazyRenderAdapter {
     /// and the request renders through the unchanged flow. Empty on the
     /// parity path (no injected routes), making the fallback a no-op.
     injected_routes: InjectedRouteSet,
+    /// Invoked only after a successful guarded write while the pipeline
+    /// exclusion is still held. The callback retires the exact absolute
+    /// document recovery obligation; dependency pruning remains a later tick
+    /// boundary concern because an older response may already be in flight.
+    publication_resolved: Option<PublicationResolved>,
 }
 
 /// What one `render_if_stale` dispatch did, for tests and logging. The
@@ -209,7 +218,13 @@ impl LazyRenderAdapter {
             writer,
             html_root,
             injected_routes,
+            publication_resolved: None,
         }
+    }
+
+    fn with_publication_resolved(mut self, publication_resolved: PublicationResolved) -> Self {
+        self.publication_resolved = Some(publication_resolved);
+        self
     }
 
     /// Synchronous core of the hook — steps 3–7 of the module-level
@@ -402,13 +417,24 @@ impl LazyRenderAdapter {
         // the renderer-mutex release and here would otherwise have its
         // fresher state silently overwritten by these older bytes.
         let write_started = Instant::now();
-        match self
-            .writer
-            .request_write_guarded(&self.html_root, &entry.output_path, bytes, || {
-                self.session.claim_is_current(&claim)
-            }) {
+        let absolute_output = self.html_root.join(&entry.output_path);
+        match self.writer.request_write_guarded_then(
+            &self.html_root,
+            &entry.output_path,
+            bytes,
+            || self.session.claim_is_current(&claim),
+            || {
+                // Still under the pipeline exclusion, so no tick can re-stale
+                // this exact claim between the ABA-safe clear and recovery
+                // commit. Never retire an obligation for a superseded claim.
+                if self.session.clear_stale_claim(&claim) {
+                    if let Some(publication_resolved) = &self.publication_resolved {
+                        publication_resolved(&absolute_output);
+                    }
+                }
+            },
+        ) {
             Ok(GuardedWriteOutcome::Written(outcome)) => {
-                self.session.clear_stale_claim(&claim);
                 if timing {
                     eprintln!(
                         "{}",
@@ -828,6 +854,36 @@ mod tests {
                 .claim_stale(Path::new("posts/a/index.html"))
                 .is_none(),
             "claim cleared after a successful render+write"
+        );
+    }
+
+    #[test]
+    fn successful_request_write_reports_exact_absolute_publication_path() {
+        let h = harness(
+            posts_route(),
+            html_response("<html><body>repaired</body></html>"),
+        );
+        let resolved = Arc::new(Mutex::new(Vec::new()));
+        let resolved_for_callback = Arc::clone(&resolved);
+        let adapter = h
+            .adapter
+            .clone()
+            .with_publication_resolved(Arc::new(move |path| {
+                resolved_for_callback
+                    .lock()
+                    .unwrap()
+                    .push(path.to_path_buf());
+            }));
+        h.session
+            .mark_routes_stale([PathBuf::from("posts/a/index.html")]);
+
+        assert_eq!(
+            adapter.render_stale_route("/posts/a"),
+            LazyRenderOutcome::Rendered { written: true }
+        );
+        assert_eq!(
+            *resolved.lock().unwrap(),
+            vec![h.html_root.path().join("posts/a/index.html")]
         );
     }
 

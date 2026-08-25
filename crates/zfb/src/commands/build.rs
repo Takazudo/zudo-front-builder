@@ -57,8 +57,8 @@ use zfb_build::adapter::{
 use zfb_build::bundler::{bundle, BundleMode, BundlerInput, BundlerOutput};
 use zfb_build::head_inject::ProdHeadAssets;
 use zfb_build::pipeline::{
-    apply_prod_asset_pipeline, synthesize_page_id_from_output, AssetEmitterPayload, CompanionFile,
-    ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
+    apply_prod_asset_pipeline, synthesize_page_id_from_output, validate_companion_file_set,
+    AssetEmitterPayload, CompanionFile, ProdAssetEmitterInputs, ProdRenderedFile, RelDistPath,
 };
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
 use zfb_css::{
@@ -71,8 +71,8 @@ use zfb_islands::{
     build_production_client_scripts_with_workers, build_production_islands_asset,
     discover_client_scripts, scan_islands_with_meta_and_first_party_root,
     scan_reachable_modules_with_meta, scan_reachable_modules_with_meta_and_first_party_root,
-    BundleConfig, ClientScriptWorkerEntry, EsbuildSubprocessBundler, EsbuildSubprocessConfig,
-    FrameworkKind, FsResolver, StageAuditPolicy,
+    BundleConfig, ClientScriptBundleOutput, ClientScriptEntry, ClientScriptWorkerEntry,
+    EsbuildSubprocessBundler, EsbuildSubprocessConfig, FrameworkKind, FsResolver, StageAuditPolicy,
 };
 use zfb_router::Router;
 
@@ -5858,10 +5858,13 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 ///
 /// ## Stale-file pruning
 ///
-/// `prev_output_filenames` is the set of flat entry/worker filenames written
-/// by the *previous* call. Any previous filename absent from the new output
-/// set is deleted, including workers whose constructor import disappeared.
-/// Pass an empty set on boot and retain the returned set for the next call.
+/// `prev_output_filenames` is the set of flat entry/worker filenames declared
+/// by the *previous* successful call. Those files are retained for this call
+/// even when absent from the new output set, so HTML from the previous active
+/// generation remains servable until the caller publishes replacement HTML.
+/// Files retained from an older generation are pruned after all current
+/// outputs have been written successfully. Pass an empty set on boot and
+/// retain the returned (current-only) set for the next call.
 ///
 /// ## Return value
 ///
@@ -5876,26 +5879,337 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 ///   invalidation; the shared registry retains lexical + canonical aliases.
 /// - `worker_targets` is the complete first-party worker dependency closure;
 ///   edits to any member must rerun the client-script pipeline.
-fn write_dev_client_script_output_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
-    if std::fs::read(path).unwrap_or_default() == bytes {
-        return Ok(false);
-    }
-    std::fs::write(path, bytes)
-        .with_context(|| format!("client-scripts dev: failed to write {}", path.display()))?;
-    Ok(true)
+#[derive(Debug, Default)]
+struct PreparedDevClientScriptGeneration {
+    /// Stable entry files, keyed by their flat public basename.
+    entries: std::collections::BTreeMap<String, Vec<u8>>,
+    /// Module-worker companions shared by the complete entry generation.
+    companions: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
-fn prune_dev_client_script_outputs(
+impl PreparedDevClientScriptGeneration {
+    fn output_filenames(&self) -> std::collections::HashSet<String> {
+        self.entries
+            .keys()
+            .chain(self.companions.keys())
+            .cloned()
+            .collect()
+    }
+}
+
+/// Bundle and validate the complete client-script output namespace in memory.
+///
+/// In particular, this helper must finish every entry bundle before the caller
+/// performs its first public write. A later entry failure can therefore never
+/// leave an earlier stable entry from the failed generation on disk.
+fn prepare_dev_client_script_generation<F>(
+    entries: &[ClientScriptEntry],
+    workers_by_entry: &std::collections::BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
+    mut bundle_entry: F,
+) -> Result<PreparedDevClientScriptGeneration>
+where
+    F: FnMut(&ClientScriptEntry, &[ClientScriptWorkerEntry]) -> Result<ClientScriptBundleOutput>,
+{
+    // Know the entire stable-entry namespace before accepting any companion.
+    // This catches a worker emitted by an early entry that collides with a
+    // stable entry bundled later in the generation.
+    let mut entry_filenames = std::collections::BTreeMap::new();
+    for entry in entries {
+        let filename = zfb_types::stable_client_script_filename(&entry.entry_name);
+        if let Some(previous_source) =
+            entry_filenames.insert(filename.clone(), entry.source_path.clone())
+        {
+            return Err(anyhow!(
+                "client-scripts dev: stable entry filename collision for {filename:?}: {} vs {}",
+                previous_source.display(),
+                entry.source_path.display()
+            ));
+        }
+    }
+
+    let mut prepared = PreparedDevClientScriptGeneration::default();
+    for entry in entries {
+        let workers = workers_by_entry
+            .get(&entry.entry_name)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let output = bundle_entry(entry, workers).with_context(|| {
+            format!(
+                "client-scripts dev: bundler failed for entry `{}` ({})",
+                entry.entry_name,
+                entry.source_path.display()
+            )
+        })?;
+        let entry_filename = zfb_types::stable_client_script_filename(&entry.entry_name);
+
+        // Reuse the final writer-side safety boundary shared by production
+        // and the islands dev publisher. Byte payloads are irrelevant to the
+        // filename check, so avoid cloning potentially large bundles here.
+        let companion_names = output
+            .companions
+            .iter()
+            .map(|companion| CompanionFile {
+                filename: companion.filename.clone(),
+                bytes: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        validate_companion_file_set(&entry_filename, &companion_names).with_context(|| {
+            format!(
+                "client-scripts dev: invalid entry/companion namespace for `{}`",
+                entry.entry_name
+            )
+        })?;
+
+        for companion in output.companions {
+            if let Some(entry_source) = entry_filenames.get(&companion.filename) {
+                return Err(anyhow!(
+                    "client-scripts dev: output filename collision for {:?}: stable entry {} vs module worker from {}",
+                    companion.filename,
+                    entry_source.display(),
+                    entry.source_path.display()
+                ));
+            }
+            if let Some(previous) = prepared.companions.get(&companion.filename) {
+                if previous != &companion.bytes {
+                    return Err(anyhow!(
+                        "client-scripts dev: deterministic module-worker filename collision for {:?} produced different bytes",
+                        companion.filename
+                    ));
+                }
+                continue;
+            }
+            prepared
+                .companions
+                .insert(companion.filename, companion.bytes);
+        }
+        prepared
+            .entries
+            .insert(entry_filename, output.js.into_bytes());
+    }
+
+    Ok(prepared)
+}
+
+trait DevClientScriptAtomicWriter {
+    fn atomic_write(&mut self, path: &Path, bytes: &[u8]) -> Result<()>;
+}
+
+struct FsDevClientScriptAtomicWriter;
+
+impl DevClientScriptAtomicWriter for FsDevClientScriptAtomicWriter {
+    fn atomic_write(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
+        zfb_build::atomic_write(path, bytes)
+    }
+}
+
+struct PlannedDevClientScriptWrite {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    previous_bytes: Option<Vec<u8>>,
+}
+
+/// Marker for the one client-publication error that must not restore a prior
+/// ready state: the public write failed and its compensating rollback failed
+/// too, so disk may contain a partial generation.
+#[derive(Debug)]
+pub(crate) struct DevClientScriptRollbackError {
+    publication_path: PathBuf,
+    publication_error: String,
+    rollback_paths: Vec<PathBuf>,
+    rollback_error: String,
+}
+
+impl DevClientScriptRollbackError {
+    /// Flat output names whose compensating rollback failed. These exact
+    /// files remain unsafe until a later complete client generation publishes
+    /// them successfully.
+    pub(crate) fn uncertain_output_filenames(&self) -> impl Iterator<Item = &str> {
+        self.rollback_paths
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+    }
+}
+
+impl std::fmt::Display for DevClientScriptRollbackError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "client-scripts dev: failed to publish {}: {}; rollback also failed: {}",
+            self.publication_path.display(),
+            self.publication_error,
+            self.rollback_error
+        )
+    }
+}
+
+impl std::error::Error for DevClientScriptRollbackError {}
+
+fn read_optional_dev_client_script_output(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "client-scripts dev: failed to snapshot existing output {}",
+                path.display()
+            )
+        }),
+    }
+}
+
+fn rollback_dev_client_script_writes<W: DevClientScriptAtomicWriter>(
+    writer: &mut W,
+    applied: &[&PlannedDevClientScriptWrite],
+) -> Vec<(PathBuf, String)> {
+    let mut failures = Vec::new();
+    for write in applied.iter().rev() {
+        let result = match &write.previous_bytes {
+            Some(previous_bytes) => writer.atomic_write(&write.path, previous_bytes),
+            None => match std::fs::remove_file(&write.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            },
+        };
+        if let Err(error) = result {
+            failures.push((write.path.clone(), format!("{error:#}")));
+        }
+    }
+    failures
+}
+
+/// Atomically commit one fully prepared generation.
+///
+/// Every companion is published before every stable entry, so an entry never
+/// points at a companion that has not yet been installed. If any atomic write
+/// reports an error — including after replacing its destination — all paths
+/// attempted by this commit are restored in reverse order. Existing files are
+/// restored byte-for-byte and newly created candidates are removed.
+fn commit_prepared_dev_client_script_generation<W: DevClientScriptAtomicWriter>(
+    client_dir: &Path,
+    prepared: PreparedDevClientScriptGeneration,
+    writer: &mut W,
+) -> Result<bool> {
+    // Validate and snapshot the entire commit before its first write. The two
+    // chained maps deliberately encode the publication barrier: companions
+    // first, stable entries last.
+    let mut planned = Vec::new();
+    for (filename, bytes) in prepared.companions.into_iter().chain(prepared.entries) {
+        let path = zfb_build::validate_output_path(client_dir, Path::new(&filename)).with_context(
+            || format!("client-scripts dev: refused to write output filename {filename:?}"),
+        )?;
+        let previous_bytes = read_optional_dev_client_script_output(&path)?;
+        if previous_bytes.as_deref() == Some(bytes.as_slice()) {
+            continue;
+        }
+        planned.push(PlannedDevClientScriptWrite {
+            path,
+            bytes,
+            previous_bytes,
+        });
+    }
+
+    let mut applied = Vec::new();
+    for write in &planned {
+        // Include the current path in rollback before attempting it: a writer
+        // may replace the destination successfully and only then surface a
+        // durability error.
+        applied.push(write);
+        if let Err(write_error) = writer.atomic_write(&write.path, &write.bytes) {
+            let rollback_failures = rollback_dev_client_script_writes(writer, &applied);
+            return if rollback_failures.is_empty() {
+                Err(write_error).with_context(|| {
+                    format!(
+                        "client-scripts dev: failed to publish {}; restored previous generation",
+                        write.path.display()
+                    )
+                })
+            } else {
+                let rollback_paths = rollback_failures
+                    .iter()
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                let rollback_error = rollback_failures
+                    .iter()
+                    .map(|(path, error)| format!("{}: {error}", path.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Err(DevClientScriptRollbackError {
+                    publication_path: write.path.clone(),
+                    publication_error: format!("{write_error:#}"),
+                    rollback_paths,
+                    rollback_error,
+                }
+                .into())
+            };
+        }
+    }
+
+    Ok(!planned.is_empty())
+}
+
+fn bundle_and_commit_dev_client_script_generation<F, W>(
+    client_dir: &Path,
+    entries: &[ClientScriptEntry],
+    workers_by_entry: &std::collections::BTreeMap<String, Vec<ClientScriptWorkerEntry>>,
+    prev_output_filenames: &std::collections::HashSet<String>,
+    writer: &mut W,
+    bundle_entry: F,
+) -> Result<(bool, std::collections::HashSet<String>)>
+where
+    F: FnMut(&ClientScriptEntry, &[ClientScriptWorkerEntry]) -> Result<ClientScriptBundleOutput>,
+    W: DevClientScriptAtomicWriter,
+{
+    let prepared = prepare_dev_client_script_generation(entries, workers_by_entry, bundle_entry)?;
+    let current_output_filenames = prepared.output_filenames();
+    let mut changed = commit_prepared_dev_client_script_generation(client_dir, prepared, writer)?;
+    changed |= prune_unretained_dev_client_script_outputs(
+        client_dir,
+        prev_output_filenames,
+        &current_output_filenames,
+    );
+    Ok((changed, current_output_filenames))
+}
+
+fn prune_unretained_dev_client_script_outputs(
     client_dir: &Path,
     previous: &std::collections::HashSet<String>,
     current: &std::collections::HashSet<String>,
 ) -> bool {
     let mut changed = false;
-    for stale_filename in previous.difference(current) {
-        let stale_path = client_dir.join(stale_filename);
-        if !stale_path.exists() {
+    let entries = match std::fs::read_dir(client_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(error) => {
+            output::warn(format!(
+                "client-scripts dev: failed to inspect output directory {}: {error}",
+                client_dir.display()
+            ));
+            return false;
+        }
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_type()
+            .map(|file_type| file_type.is_file())
+            .unwrap_or(false)
+        {
             continue;
         }
+        let filename = entry.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        // This directory is framework-owned and dev client outputs are flat
+        // JavaScript files. Leave directories and any unrelated file type
+        // alone rather than broadening the prune boundary.
+        if Path::new(filename).extension().and_then(|ext| ext.to_str()) != Some("js")
+            || previous.contains(filename)
+            || current.contains(filename)
+        {
+            continue;
+        }
+        let stale_path = entry.path();
         if let Err(error) = std::fs::remove_file(&stale_path) {
             output::warn(format!(
                 "client-scripts dev: failed to prune stale file {}: {error}",
@@ -6026,33 +6340,18 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
             &worker_build_context,
         )?
     };
-    let mut current_output_filenames: std::collections::HashSet<String> = entries
-        .iter()
-        .map(|entry| zfb_types::stable_client_script_filename(&entry.entry_name))
-        .collect();
-    if let Some(stage) = &preprocess_stage {
-        current_output_filenames.extend(
-            stage
-                .workers_by_entry
-                .values()
-                .flatten()
-                .map(|worker| worker.filename.clone()),
-        );
-    }
-
-    // Prune stale entry and worker outputs before writing. Because the set is
-    // filename-based, removing a Worker constructor prunes its stable
-    // companion even while the owning client entry remains present.
-    let mut any_changed = prune_dev_client_script_outputs(
-        &client_dir,
-        prev_output_filenames,
-        &current_output_filenames,
-    );
-
     if entries.is_empty() {
+        // Keep the immediately previous active set for one generation. Any
+        // older retained extras can be removed now because already-published
+        // HTML can name only `prev_output_filenames`.
+        let any_changed = prune_unretained_dev_client_script_outputs(
+            &client_dir,
+            prev_output_filenames,
+            &std::collections::HashSet::new(),
+        );
         return Ok(DevClientScriptsOutcome {
             changed: any_changed,
-            output_filenames: current_output_filenames,
+            output_filenames: std::collections::HashSet::new(),
             raw_targets: std::collections::BTreeSet::new(),
             worker_targets: std::collections::BTreeSet::new(),
             client_script_siblings: std::collections::BTreeSet::new(),
@@ -6181,75 +6480,27 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         .with_define(bundle_define)
         .with_preserve_symlinks(preserve_symlinks);
 
-    if let Some(parent) = client_dir.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "client-scripts dev: failed to create parent dir {}",
-                parent.display()
-            )
-        })?;
-    }
-    std::fs::create_dir_all(&client_dir).with_context(|| {
-        format!(
-            "client-scripts dev: failed to create client dir {}",
-            client_dir.display()
-        )
-    })?;
-
     let empty_workers = std::collections::BTreeMap::new();
     let workers_by_entry = preprocess_stage
         .as_ref()
         .map(|stage| &stage.workers_by_entry)
         .unwrap_or(&empty_workers);
-    let mut emitted_companions: std::collections::BTreeMap<String, Vec<u8>> =
-        std::collections::BTreeMap::new();
-    for entry in bundle_entries {
-        let workers = workers_by_entry
-            .get(&entry.entry_name)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        let output = bundler
-            .bundle_client_script_file_with_workers(
+    let mut writer = FsDevClientScriptAtomicWriter;
+    let (any_changed, current_output_filenames) = bundle_and_commit_dev_client_script_generation(
+        &client_dir,
+        bundle_entries,
+        workers_by_entry,
+        prev_output_filenames,
+        &mut writer,
+        |entry, workers| {
+            bundler.bundle_client_script_file_with_workers(
                 &entry.entry_name,
                 &entry.source_path,
                 workers,
                 &bundle_cfg,
             )
-            .with_context(|| {
-                format!(
-                    "client-scripts dev: bundler failed for entry `{}` ({})",
-                    entry.entry_name,
-                    entry.source_path.display()
-                )
-            })?;
-
-        let out_path = client_dir.join(zfb_types::stable_client_script_filename(&entry.entry_name));
-
-        // Only write (and signal changed) when the bytes differ from
-        // what's already on disk — avoids spurious page reloads on
-        // no-op saves.
-        let new_bytes = output.js.as_bytes();
-        if write_dev_client_script_output_if_changed(&out_path, new_bytes)? {
-            any_changed = true;
-        }
-
-        for companion in output.companions {
-            if let Some(previous) = emitted_companions.get(&companion.filename) {
-                if previous != &companion.bytes {
-                    return Err(anyhow!(
-                        "client-scripts dev: deterministic module-worker filename collision for {:?} produced different bytes",
-                        companion.filename
-                    ));
-                }
-                continue;
-            }
-            let companion_path = client_dir.join(&companion.filename);
-            if write_dev_client_script_output_if_changed(&companion_path, &companion.bytes)? {
-                any_changed = true;
-            }
-            emitted_companions.insert(companion.filename, companion.bytes);
-        }
-    }
+        },
+    )?;
 
     Ok(DevClientScriptsOutcome {
         changed: any_changed,
@@ -14360,8 +14611,419 @@ mod tests {
         assert!(stage.worker_targets.contains(&payload));
     }
 
+    #[derive(Default)]
+    struct RecordingDevClientScriptWriter {
+        writes: Vec<PathBuf>,
+    }
+
+    impl DevClientScriptAtomicWriter for RecordingDevClientScriptWriter {
+        fn atomic_write(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
+            self.writes.push(path.to_path_buf());
+            zfb_build::atomic_write(path, bytes)
+        }
+    }
+
+    /// Aggregate-review regression: the old dev loop published each stable
+    /// entry immediately, so a later entry's bundle error left the earlier
+    /// served bytes from a generation the caller subsequently aborted.
     #[test]
-    fn client_script_worker_importer_removal_plans_rebuild_and_prunes_on_second_tick() {
+    fn dev_client_later_entry_bundle_failure_keeps_all_served_bytes_unchanged() {
+        let tmp = tempdir().unwrap();
+        let client_dir = tmp.path().join("assets/client");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        let alpha_path = client_dir.join("alpha.js");
+        std::fs::write(&alpha_path, b"ALPHA_PREVIOUS").unwrap();
+
+        let entries = vec![
+            ClientScriptEntry {
+                entry_name: "alpha".into(),
+                source_path: PathBuf::from("pages/alpha.client.ts"),
+            },
+            ClientScriptEntry {
+                entry_name: "beta".into(),
+                source_path: PathBuf::from("pages/beta.client.ts"),
+            },
+        ];
+        let workers = BTreeMap::new();
+        let previous = std::collections::HashSet::from(["alpha.js".to_string()]);
+        let mut writer = RecordingDevClientScriptWriter::default();
+
+        let error = bundle_and_commit_dev_client_script_generation(
+            &client_dir,
+            &entries,
+            &workers,
+            &previous,
+            &mut writer,
+            |entry, _| match entry.entry_name.as_str() {
+                "alpha" => Ok(ClientScriptBundleOutput {
+                    js: "import './worker-alpha.js';\nALPHA_NEXT".into(),
+                    companions: vec![zfb_islands::BundleChunk {
+                        filename: "worker-alpha.js".into(),
+                        bytes: b"WORKER_ALPHA_NEXT".to_vec(),
+                    }],
+                }),
+                "beta" => Err(anyhow!("injected later-entry bundle failure")),
+                other => panic!("unexpected entry {other}"),
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("injected later-entry bundle failure"),
+            "{error:#}"
+        );
+        assert!(
+            writer.writes.is_empty(),
+            "the complete generation must bundle before its first write"
+        );
+        assert_eq!(std::fs::read(alpha_path).unwrap(), b"ALPHA_PREVIOUS");
+        assert!(
+            !client_dir.join("worker-alpha.js").exists(),
+            "a companion prepared for an aborted generation must never appear"
+        );
+    }
+
+    struct FailOnceAfterAtomicWrite {
+        fail_on_publish_write: usize,
+        publish_writes: usize,
+        failed: bool,
+        published_paths: Vec<PathBuf>,
+    }
+
+    impl DevClientScriptAtomicWriter for FailOnceAfterAtomicWrite {
+        fn atomic_write(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
+            zfb_build::atomic_write(path, bytes)?;
+            if self.failed {
+                // Rollback uses the same production-shaped atomic writer. The
+                // injected durability failure fires once, not process-wide.
+                return Ok(());
+            }
+            self.publish_writes += 1;
+            self.published_paths.push(path.to_path_buf());
+            if self.publish_writes == self.fail_on_publish_write {
+                self.failed = true;
+                return Err(anyhow!("injected post-replacement durability failure"));
+            }
+            Ok(())
+        }
+    }
+
+    /// Exercise the harder failure shape: the late writer has already
+    /// replaced/created its destination before reporting an error. Rollback
+    /// must restore old bytes and remove every new candidate, including that
+    /// failing path itself.
+    #[test]
+    fn dev_client_late_commit_failure_rolls_back_complete_generation() {
+        let tmp = tempdir().unwrap();
+        let client_dir = tmp.path().join("assets/client");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        std::fs::write(client_dir.join("alpha.js"), b"ALPHA_PREVIOUS").unwrap();
+        std::fs::write(client_dir.join("worker-a-existing.js"), b"WORKER_PREVIOUS").unwrap();
+
+        let entries = vec![
+            ClientScriptEntry {
+                entry_name: "alpha".into(),
+                source_path: PathBuf::from("pages/alpha.client.ts"),
+            },
+            ClientScriptEntry {
+                entry_name: "beta".into(),
+                source_path: PathBuf::from("pages/beta.client.ts"),
+            },
+        ];
+        let workers = BTreeMap::new();
+        let previous = std::collections::HashSet::from([
+            "alpha.js".to_string(),
+            "worker-a-existing.js".to_string(),
+        ]);
+        let mut writer = FailOnceAfterAtomicWrite {
+            fail_on_publish_write: 4,
+            publish_writes: 0,
+            failed: false,
+            published_paths: Vec::new(),
+        };
+
+        let error = bundle_and_commit_dev_client_script_generation(
+            &client_dir,
+            &entries,
+            &workers,
+            &previous,
+            &mut writer,
+            |entry, _| {
+                Ok(match entry.entry_name.as_str() {
+                    "alpha" => ClientScriptBundleOutput {
+                        js: "import './worker-a-existing.js';\nimport './worker-z-new.js';\nALPHA_NEXT"
+                            .into(),
+                        companions: vec![
+                            zfb_islands::BundleChunk {
+                                filename: "worker-z-new.js".into(),
+                                bytes: b"WORKER_NEW".to_vec(),
+                            },
+                            zfb_islands::BundleChunk {
+                                filename: "worker-a-existing.js".into(),
+                                bytes: b"WORKER_NEXT".to_vec(),
+                            },
+                        ],
+                    },
+                    "beta" => ClientScriptBundleOutput {
+                        js: "BETA_NEXT".into(),
+                        companions: Vec::new(),
+                    },
+                    other => panic!("unexpected entry {other}"),
+                })
+            },
+        )
+        .unwrap_err();
+
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("injected post-replacement durability failure"),
+            "{error_text}"
+        );
+        assert!(
+            error_text.contains("restored previous generation"),
+            "{error_text}"
+        );
+        assert_eq!(
+            writer
+                .published_paths
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "worker-a-existing.js",
+                "worker-z-new.js",
+                "alpha.js",
+                "beta.js",
+            ],
+            "every companion must commit before the first stable entry"
+        );
+        assert_eq!(
+            std::fs::read(client_dir.join("worker-a-existing.js")).unwrap(),
+            b"WORKER_PREVIOUS"
+        );
+        assert_eq!(
+            std::fs::read(client_dir.join("alpha.js")).unwrap(),
+            b"ALPHA_PREVIOUS"
+        );
+        assert!(!client_dir.join("worker-z-new.js").exists());
+        assert!(!client_dir.join("beta.js").exists());
+    }
+
+    /// A companion failure is earlier than the stable-entry publication
+    /// barrier. Even when that companion was replaced before the error was
+    /// reported, the rollback must complete without attempting the entry.
+    #[test]
+    fn dev_client_companion_commit_failure_never_touches_stable_entry() {
+        let tmp = tempdir().unwrap();
+        let client_dir = tmp.path().join("assets/client");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        std::fs::write(client_dir.join("alpha.js"), b"ALPHA_PREVIOUS").unwrap();
+        std::fs::write(client_dir.join("worker-a-existing.js"), b"WORKER_PREVIOUS").unwrap();
+
+        let entries = vec![ClientScriptEntry {
+            entry_name: "alpha".into(),
+            source_path: PathBuf::from("pages/alpha.client.ts"),
+        }];
+        let mut writer = FailOnceAfterAtomicWrite {
+            fail_on_publish_write: 2,
+            publish_writes: 0,
+            failed: false,
+            published_paths: Vec::new(),
+        };
+
+        let error = bundle_and_commit_dev_client_script_generation(
+            &client_dir,
+            &entries,
+            &BTreeMap::new(),
+            &std::collections::HashSet::from([
+                "alpha.js".to_string(),
+                "worker-a-existing.js".to_string(),
+            ]),
+            &mut writer,
+            |_entry, _| {
+                Ok(ClientScriptBundleOutput {
+                    js: "import './worker-a-existing.js';\nimport './worker-z-new.js';\nALPHA_NEXT"
+                        .into(),
+                    companions: vec![
+                        zfb_islands::BundleChunk {
+                            filename: "worker-z-new.js".into(),
+                            bytes: b"WORKER_NEW".to_vec(),
+                        },
+                        zfb_islands::BundleChunk {
+                            filename: "worker-a-existing.js".into(),
+                            bytes: b"WORKER_NEXT".to_vec(),
+                        },
+                    ],
+                })
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("restored previous generation"),
+            "{error:#}"
+        );
+        assert_eq!(
+            writer
+                .published_paths
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["worker-a-existing.js", "worker-z-new.js"],
+            "the companion error must stop before stable-entry publication"
+        );
+        assert_eq!(
+            std::fs::read(client_dir.join("worker-a-existing.js")).unwrap(),
+            b"WORKER_PREVIOUS"
+        );
+        assert!(!client_dir.join("worker-z-new.js").exists());
+        assert_eq!(
+            std::fs::read(client_dir.join("alpha.js")).unwrap(),
+            b"ALPHA_PREVIOUS"
+        );
+    }
+
+    struct FailPublicationAndRollbackWriter {
+        calls: usize,
+    }
+
+    impl DevClientScriptAtomicWriter for FailPublicationAndRollbackWriter {
+        fn atomic_write(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
+            self.calls += 1;
+            match self.calls {
+                1 => {
+                    zfb_build::atomic_write(path, bytes)?;
+                    Err(anyhow!("injected publication durability failure"))
+                }
+                2 => Err(anyhow!("injected rollback write failure")),
+                call => panic!("unexpected writer call {call}"),
+            }
+        }
+    }
+
+    /// A failed compensating write leaves disk unsafe for the old readiness
+    /// state. Surface a typed marker so the outer document transaction can
+    /// conservatively leave publication pending instead of claiming rollback.
+    #[test]
+    fn dev_client_rollback_failure_returns_distinguishable_marker() {
+        let tmp = tempdir().unwrap();
+        let client_dir = tmp.path().join("assets/client");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        let alpha_path = client_dir.join("alpha.js");
+        std::fs::write(&alpha_path, b"ALPHA_PREVIOUS").unwrap();
+
+        let entries = vec![ClientScriptEntry {
+            entry_name: "alpha".into(),
+            source_path: PathBuf::from("pages/alpha.client.ts"),
+        }];
+        let mut writer = FailPublicationAndRollbackWriter { calls: 0 };
+        let error = bundle_and_commit_dev_client_script_generation(
+            &client_dir,
+            &entries,
+            &BTreeMap::new(),
+            &std::collections::HashSet::from(["alpha.js".to_string()]),
+            &mut writer,
+            |_entry, _| {
+                Ok(ClientScriptBundleOutput {
+                    js: "ALPHA_UNSAFE_PARTIAL_GENERATION".into(),
+                    companions: Vec::new(),
+                })
+            },
+        )
+        .unwrap_err();
+
+        let marker = error
+            .downcast_ref::<DevClientScriptRollbackError>()
+            .unwrap_or_else(|| {
+                panic!("rollback failure must remain downcastable through anyhow: {error:#}")
+            });
+        assert_eq!(
+            marker.uncertain_output_filenames().collect::<Vec<_>>(),
+            ["alpha.js"]
+        );
+        let error_text = format!("{error:#}");
+        assert!(
+            error_text.contains("injected publication durability failure"),
+            "{error_text}"
+        );
+        assert!(
+            error_text.contains("injected rollback write failure"),
+            "{error_text}"
+        );
+        assert_eq!(writer.calls, 2);
+        assert_eq!(
+            std::fs::read(alpha_path).unwrap(),
+            b"ALPHA_UNSAFE_PARTIAL_GENERATION",
+            "the marker identifies exactly the case where prior-ready is unsafe"
+        );
+    }
+
+    #[test]
+    fn removed_client_entry_is_retained_for_one_generation_then_pruned() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let entry_source = root.join("pages/widget.client.ts");
+        std::fs::write(&entry_source, "console.log('widget');\n").unwrap();
+        let assets_root = root.join("dev-assets");
+        let registered = zfb_build::ClientEntryList::new();
+
+        let first = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &registered,
+        )
+        .unwrap();
+        let client_dir = assets_root
+            .join(zfb_types::DIST_ASSETS_DIR)
+            .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
+        let entry_output = client_dir.join("widget.js");
+        assert!(first.output_filenames.contains("widget.js"));
+        assert!(entry_output.exists());
+
+        std::fs::remove_file(entry_source).unwrap();
+        let second = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &first.output_filenames,
+            &registered,
+        )
+        .unwrap();
+        assert!(
+            second.output_filenames.is_empty(),
+            "publication state reports only the current declared set"
+        );
+        assert!(
+            entry_output.exists(),
+            "the removed entry remains servable through the transition generation"
+        );
+
+        let third = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &second.output_filenames,
+            &registered,
+        )
+        .unwrap();
+        assert!(
+            third.changed,
+            "pruning the retained entry is an asset change"
+        );
+        assert!(
+            !entry_output.exists(),
+            "the entry is pruned once no served generation can declare it"
+        );
+    }
+
+    #[test]
+    fn client_script_worker_importer_removal_retains_then_prunes_companion() {
         struct PlanOnlyPipeline;
 
         impl zfb_build::AssetPipeline for PlanOnlyPipeline {
@@ -14458,13 +15120,16 @@ mod tests {
         let second_outputs = second_outcome.output_filenames;
         let second_raw = second_outcome.raw_targets;
         let second_worker_targets = second_outcome.worker_targets;
-        assert!(second_changed, "stale worker pruning is an asset change");
+        assert!(
+            second_changed,
+            "removing the constructor changes the current entry bundle bytes"
+        );
         assert!(second_raw.is_empty());
         assert!(second_worker_targets.is_empty());
         assert!(!second_outputs.contains(&worker_filename));
         assert!(
-            !worker_output.exists(),
-            "stale worker companion must be pruned"
+            worker_output.exists(),
+            "stale worker companion must remain servable for the transition generation"
         );
 
         // Replacing the registry after the successful second tick prevents
@@ -14472,6 +15137,24 @@ mod tests {
         invalidation.replace_client_script_workers(second_worker_targets);
         let settled = orchestrator.plan_for_changes([importer]);
         assert!(!settled.rerun_client_scripts);
+
+        let third_outcome = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &second_outputs,
+            &registered,
+        )
+        .unwrap();
+        assert!(
+            third_outcome.changed,
+            "pruning the retained worker companion is an asset change"
+        );
+        assert!(
+            !worker_output.exists(),
+            "worker companion is pruned after its one-generation retention"
+        );
     }
 
     #[cfg(unix)]

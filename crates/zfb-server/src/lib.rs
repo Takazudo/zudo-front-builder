@@ -65,13 +65,658 @@ use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::info;
 
-/// Shared handle to the currently-emitted dev-mode islands bundle URL
-/// (issue #377).
+/// Publication status for one class of dev asset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssetSlot {
+    /// This project has no asset of this class.
+    NotExpected,
+    /// Discovery or publication has not completed yet.
+    Pending,
+    /// The complete current set of publicly served URLs.
+    Published { urls: Vec<String> },
+}
+
+/// Publication status of the document side of a Dev generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentSlot {
+    /// A boot/tick transaction may still expose a partial document set.
+    Pending,
+    /// The complete eager SSG document set was written successfully.
+    Published,
+    /// Routes were published and armed for coherent render-on-request.
+    ReadyOnRequest,
+    /// This project has no SSG document generation to publish.
+    NotExpected,
+}
+
+/// One atomic snapshot of all dev assets that affect hydration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevPublicationState {
+    pub generation: u64,
+    pub islands: AssetSlot,
+    pub client_scripts: AssetSlot,
+    pub documents: DocumentSlot,
+    staged_islands: Option<AssetSlot>,
+    staged_client_scripts: Option<AssetSlot>,
+    retained_islands: Option<AssetSlot>,
+    previous_documents: Option<DocumentSlot>,
+    uncertain_document_write: bool,
+    entry_update_pending: bool,
+}
+
+impl DevPublicationState {
+    /// Initial state while deferred asset publications are unresolved.
+    pub fn pending() -> Self {
+        Self {
+            generation: 0,
+            islands: AssetSlot::Pending,
+            client_scripts: AssetSlot::Pending,
+            documents: DocumentSlot::Pending,
+            staged_islands: None,
+            staged_client_scripts: None,
+            retained_islands: None,
+            previous_documents: None,
+            uncertain_document_write: false,
+            entry_update_pending: false,
+        }
+    }
+
+    /// Compatibility constructor for callers that only exercise islands.
+    pub fn from_islands_url(url: Option<String>) -> Self {
+        Self {
+            generation: 0,
+            islands: Self::slot_from_urls(url.into_iter().collect()),
+            client_scripts: AssetSlot::NotExpected,
+            documents: DocumentSlot::Published,
+            staged_islands: None,
+            staged_client_scripts: None,
+            retained_islands: None,
+            previous_documents: None,
+            uncertain_document_write: false,
+            entry_update_pending: false,
+        }
+    }
+
+    /// Begin one coherent document/entry publication transaction.
+    pub fn begin_document_update(&mut self) {
+        if self.previous_documents.is_none() {
+            self.previous_documents = Some(self.documents);
+            self.documents = DocumentSlot::Pending;
+        }
+    }
+
+    /// Stage the complete islands URL set for the current transaction.
+    pub fn stage_islands(&mut self, urls: Vec<String>) {
+        self.staged_islands = Some(Self::slot_from_urls(urls));
+    }
+
+    /// Stage the complete client-script URL set for the current transaction.
+    pub fn stage_client_scripts(&mut self, urls: Vec<String>) {
+        self.staged_client_scripts = Some(Self::slot_from_urls(urls));
+    }
+
+    /// Atomically commit staged entries with a document publication boundary.
+    pub fn commit_document_update(&mut self, documents: DocumentSlot) -> bool {
+        self.commit_document_update_with_retention(documents, false)
+    }
+
+    /// Commit a document boundary while optionally preserving an older
+    /// islands entry for lazy request-time fallback bodies.
+    pub fn commit_document_update_with_retention(
+        &mut self,
+        documents: DocumentSlot,
+        retain_fallback: bool,
+    ) -> bool {
+        if self.uncertain_document_write {
+            return false;
+        }
+        if let Some(islands) = self.staged_islands.take() {
+            let previous = std::mem::replace(&mut self.islands, islands);
+            if !retain_fallback
+                || !matches!(self.retained_islands, Some(AssetSlot::Published { .. }))
+            {
+                self.retained_islands = Some(previous);
+            }
+        } else if !retain_fallback {
+            self.retained_islands = None;
+        }
+        if let Some(client_scripts) = self.staged_client_scripts.take() {
+            self.client_scripts = client_scripts;
+        }
+        self.documents = documents;
+        self.previous_documents = None;
+        self.uncertain_document_write = false;
+        self.entry_update_pending = false;
+        self.bump_generation();
+        true
+    }
+
+    /// Resolve the partial-write latch after the command-owned obligation
+    /// ledger proves every failed source/output has been repaired or removed.
+    pub fn resolve_document_uncertainty(&mut self) {
+        self.uncertain_document_write = false;
+    }
+
+    /// Complete a transaction whose final outstanding document was written
+    /// by the lazy request path. The generation becomes ready immediately,
+    /// while the previous island declaration remains selectable until the
+    /// next ordinary publication boundary can safely prune dependencies.
+    pub fn commit_lazy_repair(&mut self) -> bool {
+        self.resolve_document_uncertainty();
+        self.commit_document_update_with_retention(DocumentSlot::ReadyOnRequest, true)
+    }
+
+    /// Commit staged entries while retaining the prior document semantics.
+    /// Returns `false` when a prior document write may have failed partway;
+    /// only a later complete document boundary may resolve that uncertainty.
+    pub fn commit_entry_update(&mut self) -> bool {
+        self.commit_entry_update_with_retention(false)
+    }
+
+    /// Entries-only counterpart used while lazy fallback documents still
+    /// require the previous framework asset generation.
+    pub fn commit_entry_update_with_retention(&mut self, retain_fallback: bool) -> bool {
+        if self.uncertain_document_write {
+            return false;
+        }
+        let documents = self.previous_documents.unwrap_or(self.documents);
+        self.commit_document_update_with_retention(documents, retain_fallback)
+    }
+
+    /// Abort before any document could have changed and restore the last good
+    /// public phase. Initial boot has no good phase, so its staged entries stay
+    /// available behind `Pending` for a later successful document retry.
+    pub fn abort_document_update_before_write(&mut self) {
+        if self.uncertain_document_write {
+            self.documents = DocumentSlot::Pending;
+            return;
+        }
+        if self.entry_update_pending {
+            // A prior tick already made staged stable-entry bytes observable.
+            // A later pre-mutation failure must not restore old readiness or
+            // discard the staged filename set that keeps companions alive.
+            self.documents = DocumentSlot::Pending;
+            return;
+        }
+        match self.previous_documents.take() {
+            Some(DocumentSlot::Pending) | None => {
+                self.documents = DocumentSlot::Pending;
+            }
+            Some(previous) => {
+                self.documents = previous;
+                self.staged_islands = None;
+                self.staged_client_scripts = None;
+            }
+        }
+    }
+
+    /// Leave a possibly partially written document transaction unresolved.
+    /// The committed generation/assets remain available for transition-safe
+    /// injection, while readiness stays false until a later successful commit.
+    pub fn leave_document_update_pending(&mut self) {
+        self.documents = DocumentSlot::Pending;
+        self.uncertain_document_write = true;
+    }
+
+    /// Leave an entry-only publication transaction unresolved without
+    /// claiming that a document write may have partially succeeded. The
+    /// previous document phase stays available for a later entries-only
+    /// commit after the command-owned entry repair obligation is resolved.
+    pub fn leave_entry_update_pending(&mut self) {
+        if self.previous_documents.is_none() {
+            self.previous_documents = Some(self.documents);
+        }
+        self.documents = DocumentSlot::Pending;
+        self.entry_update_pending = true;
+    }
+
+    /// Entry-only pending state after a complete document boundary already
+    /// succeeded. Remember that boundary (which may differ from the previous
+    /// mode, e.g. `NotExpected` -> `Published`) so a later entries-only repair
+    /// commits the correct document semantics.
+    pub fn leave_entry_update_pending_after_document_boundary(&mut self, documents: DocumentSlot) {
+        self.previous_documents = Some(documents);
+        self.documents = DocumentSlot::Pending;
+        // This method is called only after the complete document boundary
+        // succeeded. Resolve any older partial-document latch even though a
+        // separate entry obligation still keeps readiness pending.
+        self.uncertain_document_write = false;
+        self.entry_update_pending = true;
+    }
+
+    /// Select an islands URL that is safe on both sides of a document update:
+    /// additions may use an already-written staged entry, while removals keep
+    /// using the committed entry until the new document set commits.
+    pub fn islands_urls_for_response(&self, body_has_islands: bool) -> &[String] {
+        let transitioning = self.staged_islands.is_some() || self.retained_islands.is_some();
+        if transitioning && !body_has_islands {
+            return &[];
+        }
+        match (
+            self.staged_islands.as_ref(),
+            &self.islands,
+            self.retained_islands.as_ref(),
+        ) {
+            (Some(AssetSlot::Published { urls }), _, _) => urls,
+            (_, AssetSlot::Published { urls }, _) => urls,
+            (_, _, Some(AssetSlot::Published { urls })) => urls,
+            _ => &[],
+        }
+    }
+
+    /// Whether entries and the document side are coherently published.
+    pub fn is_ready(&self) -> bool {
+        !matches!(self.islands, AssetSlot::Pending)
+            && !matches!(self.client_scripts, AssetSlot::Pending)
+            && !matches!(self.documents, DocumentSlot::Pending)
+    }
+
+    /// Compatibility immediate islands publication for standalone server
+    /// callers. It clears islands candidate/fallback residue so a later
+    /// response cannot override this value, but deliberately does not resolve
+    /// an in-flight document transaction; transactional callers must use the
+    /// stage/commit API as one coherent unit.
+    pub fn publish_islands(&mut self, urls: Vec<String>) {
+        self.bump_generation();
+        self.islands = Self::slot_from_urls(urls);
+        self.staged_islands = None;
+        self.retained_islands = None;
+    }
+
+    /// Compatibility immediate client-script publication. As above, this
+    /// clears the corresponding staged value without resolving documents.
+    pub fn publish_client_scripts(&mut self, urls: Vec<String>) {
+        self.bump_generation();
+        self.client_scripts = Self::slot_from_urls(urls);
+        self.staged_client_scripts = None;
+    }
+
+    fn slot_from_urls(urls: Vec<String>) -> AssetSlot {
+        if urls.is_empty() {
+            AssetSlot::NotExpected
+        } else {
+            AssetSlot::Published { urls }
+        }
+    }
+
+    fn bump_generation(&mut self) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("dev publication generation overflowed");
+    }
+}
+
+impl Default for DevPublicationState {
+    fn default() -> Self {
+        Self::pending()
+    }
+}
+
+#[cfg(test)]
+mod publication_state_tests {
+    use super::{AssetSlot, DevPublicationState, DocumentSlot};
+
+    #[test]
+    fn entries_stay_uncommitted_until_document_boundary() {
+        let mut state = DevPublicationState::pending();
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/main.js".to_string()]);
+        state.stage_islands(vec!["/assets/islands.js".to_string()]);
+
+        assert_eq!(state.generation, 0);
+        assert!(!state.is_ready());
+        assert_eq!(state.client_scripts, AssetSlot::Pending);
+        assert_eq!(state.islands, AssetSlot::Pending);
+        assert_eq!(
+            state.islands_urls_for_response(true),
+            &["/assets/islands.js".to_string()]
+        );
+        assert!(state.islands_urls_for_response(false).is_empty());
+
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        assert_eq!(state.generation, 1);
+        assert!(state.is_ready());
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec!["/assets/client/main.js".to_string()]
+            }
+        );
+        assert_eq!(
+            state.islands,
+            AssetSlot::Published {
+                urls: vec!["/assets/islands.js".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn empty_successful_publications_are_not_expected_after_no_page_commit() {
+        let mut state = DevPublicationState::pending();
+
+        state.begin_document_update();
+        state.stage_client_scripts(Vec::new());
+        state.stage_islands(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::NotExpected));
+
+        assert_eq!(state.generation, 1);
+        assert!(state.is_ready());
+        assert_eq!(state.client_scripts, AssetSlot::NotExpected);
+        assert_eq!(state.islands, AssetSlot::NotExpected);
+        assert_eq!(state.documents, DocumentSlot::NotExpected);
+    }
+
+    #[test]
+    fn lazy_routes_can_commit_ready_on_request_without_ssg_documents() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_client_scripts(Vec::new());
+        state.stage_islands(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::ReadyOnRequest));
+
+        assert_eq!(state.generation, 1);
+        assert!(state.is_ready());
+        assert_eq!(state.documents, DocumentSlot::ReadyOnRequest);
+    }
+
+    #[test]
+    fn final_lazy_request_repair_recovers_readiness_and_generation() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands.js".to_string()]);
+        state.stage_client_scripts(Vec::new());
+        state.leave_document_update_pending();
+
+        assert!(!state.is_ready());
+        assert_eq!(state.generation, 0);
+        assert!(state.commit_lazy_repair());
+        assert!(state.is_ready());
+        assert_eq!(state.generation, 1);
+        assert_eq!(state.documents, DocumentSlot::ReadyOnRequest);
+    }
+
+    #[test]
+    fn failed_partial_update_stays_pending_with_transition_safe_islands() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_client_scripts(Vec::new());
+        state.stage_islands(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::Published));
+
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands.js".to_string()]);
+        state.leave_document_update_pending();
+
+        assert_eq!(state.generation, 1);
+        assert!(!state.is_ready());
+        assert_eq!(
+            state.islands_urls_for_response(true),
+            &["/assets/islands.js".to_string()]
+        );
+
+        assert!(!state.commit_document_update(DocumentSlot::Published));
+        state.resolve_document_uncertainty();
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        assert_eq!(state.generation, 2);
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn removal_retains_previous_island_for_response_transition() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands.js".to_string()));
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        assert_eq!(
+            state.islands_urls_for_response(true),
+            &["/assets/islands.js".to_string()]
+        );
+        assert!(state.islands_urls_for_response(false).is_empty());
+
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        assert_eq!(state.islands, AssetSlot::NotExpected);
+        assert_eq!(
+            state.islands_urls_for_response(true),
+            &["/assets/islands.js".to_string()]
+        );
+        assert!(state.islands_urls_for_response(false).is_empty());
+
+        state.begin_document_update();
+        assert!(state.commit_entry_update());
+        assert!(state.islands_urls_for_response(true).is_empty());
+    }
+
+    #[test]
+    fn lazy_fallback_survives_later_generations_until_non_preserving_boundary() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands.js".to_string()));
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        assert!(state.commit_document_update_with_retention(DocumentSlot::ReadyOnRequest, true,));
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/later.js".to_string()]);
+        assert!(state.commit_document_update_with_retention(DocumentSlot::ReadyOnRequest, true,));
+        assert_eq!(
+            state.islands_urls_for_response(true),
+            &["/assets/islands.js".to_string()],
+            "later lazy generations must retain the old marker-bearing fallback",
+        );
+
+        state.begin_document_update();
+        assert!(state.commit_entry_update());
+        assert!(state.islands_urls_for_response(true).is_empty());
+    }
+
+    #[test]
+    fn entries_only_tick_cannot_commit_after_uncertain_partial_document_write() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::Published));
+
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-c.js".to_string()]);
+        state.leave_document_update_pending();
+
+        state.begin_document_update();
+        assert!(!state.commit_entry_update());
+        assert_eq!(state.generation, 1);
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert!(!state.is_ready());
+
+        state.resolve_document_uncertainty();
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        assert_eq!(state.generation, 2);
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn repaired_entry_only_update_restores_not_expected_documents() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::NotExpected));
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/unsafe.js".to_string()]);
+        state.leave_entry_update_pending();
+
+        assert_eq!(state.generation, 1);
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert_eq!(state.previous_documents, Some(DocumentSlot::NotExpected));
+        assert!(!state.uncertain_document_write);
+        assert!(!state.is_ready());
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/repaired.js".to_string()]);
+        assert!(state.commit_entry_update());
+
+        assert_eq!(state.generation, 2);
+        assert_eq!(state.documents, DocumentSlot::NotExpected);
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec!["/assets/client/repaired.js".to_string()]
+            }
+        );
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn repaired_entry_only_update_restores_published_documents() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands-published.js".to_string()));
+
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-unsafe.js".to_string()]);
+        state.leave_entry_update_pending();
+
+        assert_eq!(state.generation, 0);
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert_eq!(state.previous_documents, Some(DocumentSlot::Published));
+        assert!(!state.uncertain_document_write);
+        assert!(!state.is_ready());
+
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-repaired.js".to_string()]);
+        assert!(state.commit_entry_update());
+
+        assert_eq!(state.generation, 1);
+        assert_eq!(state.documents, DocumentSlot::Published);
+        assert_eq!(
+            state.islands,
+            AssetSlot::Published {
+                urls: vec!["/assets/islands-repaired.js".to_string()]
+            }
+        );
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn repaired_entry_only_update_restores_completed_new_document_mode() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::NotExpected));
+
+        // Documents became publishable, but a separate entry obligation kept
+        // the combined generation pending at that completed boundary.
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/unsafe.js".to_string()]);
+        state.leave_document_update_pending();
+        assert!(state.uncertain_document_write);
+        state.leave_entry_update_pending_after_document_boundary(DocumentSlot::Published);
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert_eq!(state.previous_documents, Some(DocumentSlot::Published));
+        assert!(!state.uncertain_document_write);
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/repaired.js".to_string()]);
+        assert!(state.commit_entry_update());
+        assert_eq!(state.documents, DocumentSlot::Published);
+        assert_eq!(state.generation, 2);
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn entry_pending_survives_a_later_pre_write_abort() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(vec!["/assets/client/old.js".to_string()]);
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        let ready_generation = state.generation;
+
+        // Tick A made the replacement observable, then failed in a later
+        // entry kind before document rendering.
+        state.begin_document_update();
+        state.stage_client_scripts(vec![
+            "/assets/client/new.js".to_string(),
+            "/assets/client/worker-new.js".to_string(),
+        ]);
+        state.leave_entry_update_pending();
+        assert!(state.entry_update_pending);
+        assert!(!state.is_ready());
+
+        // Tick B fails before any new mutation. It must not restore the old
+        // ready phase or discard Tick A's staged entry/worker generation.
+        state.begin_document_update();
+        state.abort_document_update_before_write();
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert!(state.entry_update_pending);
+        assert_eq!(state.generation, ready_generation);
+        assert!(!state.is_ready());
+
+        // Tick C can still commit the retained complete generation.
+        state.begin_document_update();
+        assert!(state.commit_entry_update());
+        assert_eq!(state.documents, DocumentSlot::Published);
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec![
+                    "/assets/client/new.js".to_string(),
+                    "/assets/client/worker-new.js".to_string(),
+                ]
+            }
+        );
+        assert!(!state.entry_update_pending);
+        assert_eq!(state.generation, ready_generation + 1);
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn pre_write_entry_error_restores_previous_good_generation() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands-p.js".to_string()));
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-c.js".to_string()]);
+        state.abort_document_update_before_write();
+
+        assert_eq!(state.generation, 0);
+        assert_eq!(state.documents, DocumentSlot::Published);
+        assert!(state.is_ready());
+        assert_eq!(
+            state.islands_urls_for_response(true),
+            &["/assets/islands-p.js".to_string()]
+        );
+    }
+
+    #[test]
+    fn immediate_publish_apis_clear_hidden_transactional_residue() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands-p.js".to_string()));
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-c.js".to_string()]);
+        state.stage_client_scripts(vec!["/assets/client/c.js".to_string()]);
+
+        state.publish_islands(Vec::new());
+        state.publish_client_scripts(vec!["/assets/client/immediate.js".to_string()]);
+        assert!(state.islands_urls_for_response(true).is_empty());
+
+        state.resolve_document_uncertainty();
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        assert_eq!(state.islands, AssetSlot::NotExpected);
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec!["/assets/client/immediate.js".to_string()]
+            }
+        );
+    }
+}
+
+/// Shared handle to the current atomic dev publication state.
 ///
-/// `None` (outer) means "no islands path configured for this server"
-/// — the page handler skips head injection entirely. `Some(url)`
-/// inside the lock carries the public URL the dev orchestrator wrote
-/// last (`/assets/islands.js` for projects without a base prefix, or
+/// `None` (outer) means "no publication state configured for this server".
+/// The islands slot carries the public URL the dev orchestrator wrote last
+/// (`/assets/islands.js` for projects without a base prefix, or
 /// `/foo/assets/islands.js` when `base: "/foo/"` is configured).
 ///
 /// Reads happen on every served HTML response in dev mode; writes happen
@@ -81,7 +726,7 @@ use tracing::info;
 ///
 /// Cloning the [`Arc`] is cheap; the [`AppState`] holds one clone and the
 /// bin crate's `run_islands` callback holds another.
-pub type IslandsBundleUrl = Arc<RwLock<Option<String>>>;
+pub type IslandsBundleUrl = Arc<RwLock<DevPublicationState>>;
 
 /// Shared handle to the currently-emitted dev-mode CSS bundle URL
 /// (issue #494 / #498).
@@ -247,8 +892,9 @@ pub struct ServeOpts {
 
     /// Shared handle to the current dev-mode islands bundle URL
     /// (issue #377). `None` for projects with no `"use client"`
-    /// components (or when the bin crate has not seeded a bundle yet);
-    /// `Some(<arc>)` carrying a URL like `/assets/islands.js` that the
+    /// components (or when the bin crate has not seeded publication state);
+    /// `Some(<arc>)` carrying the atomic publication state whose islands slot
+    /// may contain a URL like `/assets/islands.js` that the
     /// page handler splices into every served HTML response's `<head>`
     /// via the byte-level helper in
     /// [`zfb_build::head_inject::inject_prod_head_assets`].

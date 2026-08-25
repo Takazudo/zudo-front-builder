@@ -97,6 +97,16 @@
 //!    failure message, then restores the valid source and asserts recovery
 //!    — an SSE `page` event, the "cold-lazy bootstrap recovered" info
 //!    line, and a first-request 200.
+//! 9. `dev_200_document_declares_and_serves_islands_module` — readiness guard
+//!    for the boot publication window: readiness stays false while the
+//!    injected islands slow step is held, remains false after the staged entry
+//!    is written but before the document generation, then turns true only once
+//!    the rendered 200 document and its browser-requested islands entry are
+//!    both available.
+//! 10. `dev_tick_client_script_publication_add_remove_ordering` — real watcher
+//!     ticks prove a newly-added client entry is published before the page
+//!     write, and a removed entry remains served through the transition page
+//!     write before a later publication prunes it.
 //!
 //! ## Spawn / teardown discipline (from `dev_serve_e2e.rs` /
 //! `build_terminates.rs`)
@@ -115,7 +125,9 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{
+    locate_esbuild, next_sse_event_name, probe_module_entries, zfb_binary, CrossBinaryE2eLock,
+};
 
 /// Serializes the spawning tests in this file: each boots a full V8 +
 /// esbuild dev session; running them concurrently would double memory
@@ -274,11 +286,11 @@ const RENDER_DEADLINE: Duration = Duration::from_secs(90);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-fn fixture_dir() -> PathBuf {
+fn fixture_dir_named(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("dev-loop-basic")
+        .join(name)
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -372,11 +384,15 @@ impl DevSession {
 /// deterministically BEFORE the process ever starts, with no race against
 /// the boot task (see `spawn_dev_in_root`'s doc comment).
 fn prepare_dev_root(tmp: &tempfile::TempDir) -> PathBuf {
+    prepare_dev_root_from_fixture(tmp, "dev-loop-basic")
+}
+
+fn prepare_dev_root_from_fixture(tmp: &tempfile::TempDir, fixture_name: &str) -> PathBuf {
     let root = tmp
         .path()
         .canonicalize()
         .expect("canonicalize fixture root");
-    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    copy_dir(&fixture_dir_named(fixture_name), &root).expect("copy fixture into tempdir");
     root
 }
 
@@ -404,6 +420,7 @@ fn spawn_dev_in_root(root: &Path, esbuild: &Path, extra_env: &[(&str, &str)]) ->
         .env_remove("ZFB_DEV_DEFER_BUNDLE")
         .env_remove("ZFB_DEV_TEST_SLOW_DIGEST_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_ISLANDS_MS")
+        .env_remove("ZFB_DEV_TEST_SLOW_POST_ISLANDS_MS")
         .env_remove("ZFB_DEV_TEST_SLOW_BUNDLE_MS");
     for (k, v) in extra_env {
         cmd.env(k, v);
@@ -464,6 +481,194 @@ async fn wait_for_banner_port(session: &mut DevSession) -> Option<u16> {
         );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+fn log_line_count(session: &DevSession, needle: &str) -> usize {
+    session
+        .logs()
+        .lines()
+        .filter(|line| line.contains(needle))
+        .count()
+}
+
+async fn wait_for_log_line(session: &DevSession, needle: &str, deadline: Duration) {
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        if session.logs().lines().any(|line| line.contains(needle)) {
+            return;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "did not observe timing line {needle:?} within {}s.\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
+}
+
+fn tick_kind_line_count(session: &DevSession, required_names: &[&str]) -> usize {
+    session
+        .logs()
+        .lines()
+        .filter(|line| {
+            line.contains("[zfb-timing] tick():")
+                && required_names.iter().all(|name| line.contains(name))
+        })
+        .count()
+}
+
+async fn wait_for_tick_kinds(
+    session: &DevSession,
+    required_names: &[&str],
+    minimum_count: usize,
+    deadline: Duration,
+) -> String {
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        let logs = session.logs();
+        let matching = logs
+            .lines()
+            .filter(|line| {
+                line.contains("[zfb-timing] tick():")
+                    && required_names.iter().all(|name| line.contains(name))
+            })
+            .count();
+        if matching > minimum_count {
+            return logs;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "did not observe a coalesced tick containing {:?} after count {} within {}s.\n{}",
+        required_names,
+        minimum_count,
+        deadline.as_secs(),
+        session.logs(),
+    );
+}
+
+async fn wait_for_tick_publication(
+    session: &DevSession,
+    client_before: usize,
+    page_before: usize,
+    deadline: Duration,
+) -> String {
+    const CLIENT_MARKER: &str = "[zfb-timing] tick: client scripts published";
+    const PAGE_MARKER: &str = "[zfb-timing] tick: page write complete";
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        let logs = session.logs();
+        let client_count = logs
+            .lines()
+            .filter(|line| line.contains(CLIENT_MARKER))
+            .count();
+        let page_count = logs
+            .lines()
+            .filter(|line| line.contains(PAGE_MARKER))
+            .count();
+        if client_count > client_before && page_count > page_before {
+            return logs;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "did not observe one client-publication + page-write marker pair within {}s \
+         (before counts: client={client_before}, page={page_before}).\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
+}
+
+fn assert_tick_publication_order(logs: &str, client_before: usize, page_before: usize) {
+    const CLIENT_MARKER: &str = "[zfb-timing] tick: client scripts published";
+    const PAGE_MARKER: &str = "[zfb-timing] tick: page write complete";
+    let lines: Vec<&str> = logs.lines().collect();
+    let client_at = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains(CLIENT_MARKER))
+        .nth(client_before)
+        .map(|(index, _)| index)
+        .expect("new client-publication marker in captured logs");
+    let page_at = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains(PAGE_MARKER))
+        .nth(page_before)
+        .map(|(index, _)| index)
+        .expect("new page-write marker in captured logs");
+    assert!(
+        client_at < page_at,
+        "client-script publication must precede the page-write boundary; \
+         client marker at line {client_at}, page marker at line {page_at}.\n{logs}"
+    );
+}
+
+async fn ready_json(client: &reqwest::Client, url: &str) -> serde_json::Value {
+    let response = client.get(url).send().await.expect("GET /__zfb/ready");
+    assert_eq!(response.status().as_u16(), 200, "readiness endpoint status");
+    serde_json::from_str(&response.text().await.expect("read readiness JSON body"))
+        .expect("valid readiness JSON")
+}
+
+fn ready_generation(body: &serde_json::Value) -> u64 {
+    body["generation"]
+        .as_u64()
+        .expect("readiness JSON generation")
+}
+
+async fn wait_for_publication_ready(
+    client: &reqwest::Client,
+    ready_url: &str,
+    minimum_generation: u64,
+    deadline: Duration,
+    session: &DevSession,
+) -> serde_json::Value {
+    let start = Instant::now();
+    let mut last = serde_json::Value::Null;
+    while start.elapsed() < deadline {
+        last = ready_json(client, ready_url).await;
+        if last["ready"] == true && ready_generation(&last) > minimum_generation {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "readiness endpoint did not advance above generation {minimum_generation} within \
+         {}s; last snapshot: {last}\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
+}
+
+async fn wait_for_client_script_urls(
+    client: &reqwest::Client,
+    ready_url: &str,
+    minimum_generation: u64,
+    expected_status: &str,
+    expected_urls: &[&str],
+    deadline: Duration,
+    session: &DevSession,
+) -> serde_json::Value {
+    let expected_urls = serde_json::json!(expected_urls);
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        let body = ready_json(client, ready_url).await;
+        let urls_match = body["client_scripts"]["urls"] == expected_urls;
+        if ready_generation(&body) > minimum_generation
+            && body["client_scripts"]["status"] == expected_status
+            && urls_match
+        {
+            return body;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "readiness endpoint did not reach client_scripts status {expected_status:?} and \
+         URLs {expected_urls} above generation {minimum_generation} within {}s.\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
 }
 
 fn client() -> reqwest::Client {
@@ -977,6 +1182,452 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 9 — dev hydration readiness during the held islands window (#2552).
+// ---------------------------------------------------------------------------
+
+/// Regression guard for the complete boot publication window: while the
+/// injected islands build is held, readiness must remain pending and the page
+/// must not be a real document. Once the staged entry is written, the
+/// post-islands hold creates an entry-written/document-not-yet-published
+/// phase; readiness must still remain false there. Only after the timing
+/// marker for the boot render has landed may readiness become true, and the
+/// returned document must then pass the browser-shaped module-entry probe.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_200_document_declares_and_serves_islands_module() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = prepare_dev_root_from_fixture(&tmp, "dev-islands-entry-probe");
+    // These finite holds are test-local phase delimiters, not wall-clock
+    // readiness proxies. The islands hold gives us the entry-pending phase;
+    // the post-islands hold is deliberately after the staged entry write and
+    // before route/document publication, so a readiness signal keyed only to
+    // an entry returning 200 cannot pass this test.
+    const HELD_ISLANDS_MS: u64 = 5_000;
+    const HELD_POST_ISLANDS_MS: u64 = 15_000;
+    let slow_islands = HELD_ISLANDS_MS.to_string();
+    let slow_post_islands = HELD_POST_ISLANDS_MS.to_string();
+    let mut session = spawn_dev_in_root(
+        &root,
+        &esbuild,
+        &[
+            ("ZFB_DEV_TEST_SLOW_ISLANDS_MS", slow_islands.as_str()),
+            (
+                "ZFB_DEV_TEST_SLOW_POST_ISLANDS_MS",
+                slow_post_islands.as_str(),
+            ),
+            ("ZFB_DEV_TIMING", "1"),
+            ("ZFB_DEV_EAGER", "1"),
+        ],
+    );
+
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip
+    };
+    let base = format!("http://localhost:{port}");
+    let page_url = format!("{base}/");
+    let ready_url = format!("{base}/__zfb/ready");
+    let client = client();
+
+    // Phase 1 — the injected islands step is still held. The endpoint is the
+    // authoritative phase signal: an entry-pending state cannot be confused
+    // with a merely slow HTTP response. The first page response must not be a
+    // real rendered document during this phase.
+    let pending = ready_json(&client, &ready_url).await;
+    assert_eq!(
+        pending["ready"], false,
+        "readiness must stay false while islands are held"
+    );
+    assert_eq!(pending["islands"]["status"], "pending");
+    let pending_page = client
+        .get(&page_url)
+        .send()
+        .await
+        .expect("request page during held islands phase");
+    assert_ne!(
+        pending_page.status().as_u16(),
+        200,
+        "the document must not publish before the held islands entry; status={}\n{}",
+        pending_page.status(),
+        session.logs(),
+    );
+
+    // Phase 2 — the staged islands entry has been written, but the injected
+    // post-islands hold keeps route/document work before the publication
+    // boundary. The file itself must already be browser-reachable. This is
+    // the critical BOTH-side assertion: an entry that is directly reachable
+    // must not make readiness true on its own.
+    wait_for_log_line(
+        &session,
+        "[zfb-timing] boot: islands published",
+        RENDER_DEADLINE,
+    )
+    .await;
+    let islands_response = client
+        .get(format!("{base}/assets/islands.js"))
+        .send()
+        .await
+        .expect("request staged islands entry during post-islands hold");
+    assert_eq!(
+        islands_response.status().as_u16(),
+        200,
+        "the staged islands entry must be reachable before document commit; {}",
+        session.logs(),
+    );
+    let entry_published = ready_json(&client, &ready_url).await;
+    assert_eq!(
+        entry_published["ready"], false,
+        "staged entry reachability alone is not document readiness"
+    );
+    assert_eq!(
+        entry_published["documents"], "pending",
+        "document generation must remain pending during the post-islands hold"
+    );
+
+    // Phase 3 — only after the boot-render publication marker may the
+    // readiness signal turn green. This is anchored to the production timing
+    // boundary rather than to a guessed sleep duration.
+    wait_for_log_line(
+        &session,
+        "[zfb-timing] boot: render complete",
+        RENDER_DEADLINE,
+    )
+    .await;
+    let published = ready_json(&client, &ready_url).await;
+    assert_eq!(published["ready"], true);
+    assert_eq!(published["islands"]["status"], "published");
+    let response = client
+        .get(&page_url)
+        .send()
+        .await
+        .expect("request published islands document");
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        200,
+        "the fixture document must be served with 200; body:\n{body}\n{}",
+        session.logs(),
+    );
+    assert!(
+        body.contains("<h1>dev-islands-entry-probe</h1>") && body.contains("data-zfb-island"),
+        concat!(
+            "the 200 response must be the rendered islands fixture, not a different or partial ",
+            "document; body:\n{}\n{}"
+        ),
+        body,
+        session.logs(),
+    );
+
+    let probes = probe_module_entries(&client, &body, &page_url)
+        .await
+        .expect("probe same-origin module entries declared by the 200 document");
+    assert!(
+        !probes.is_empty(),
+        concat!(
+            "200 HTML must declare an islands module entry after the boot ",
+            "publication boundary; probes={:?}\n{}"
+        ),
+        probes,
+        session.logs(),
+    );
+    assert!(
+        probes
+            .iter()
+            .any(|probe| probe.url.path().ends_with("/assets/islands.js")),
+        concat!(
+            "200 HTML must declare the islands module entry, not only unrelated ",
+            "module scripts; probes={:?}\n{}"
+        ),
+        probes,
+        session.logs(),
+    );
+    for probe in probes {
+        assert_eq!(
+            probe.status.as_u16(),
+            200,
+            concat!(
+                "every module entry declared by the 200 document must answer 200; ",
+                "{} returned {}\n{}"
+            ),
+            probe.url,
+            probe.status,
+            session.logs(),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 10 — client-script add/remove publication ordering (#2555).
+// ---------------------------------------------------------------------------
+
+/// A real watcher tick must publish a newly discovered client entry before
+/// the page write that references it. On removal, the old entry remains
+/// reachable through the transition page write and is pruned only by the
+/// later committed generation.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_tick_client_script_publication_add_remove_ordering() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = prepare_dev_root(&tmp);
+    let index_path = root.join("pages/index.tsx");
+    let original_index = fs::read_to_string(&index_path).expect("read dev-loop-basic index");
+    let tagged_index = original_index
+        .replacen(
+            "import { SharedNote } from \"../components/shared-note\";",
+            "import { clientScript } from \"@takazudo/zfb\";\nimport { SharedNote } from \"../components/shared-note\";",
+            1,
+        )
+        .replacen(
+            "<title>dev-loop-basic fixture</title>",
+            "<title>dev-loop-basic fixture</title>\n        <script type=\"module\" src={clientScript(\"order\")} />",
+            1,
+        );
+    assert_ne!(
+        tagged_index, original_index,
+        "the dev-loop-basic fixture must expose the clientScript insertion points"
+    );
+    let order_source = "export const ORDER_CLIENT_MARKER = \"ORDER_CLIENT_V1\";\n";
+
+    let mut session = spawn_dev_in_root(&root, &esbuild, &[("ZFB_DEV_TIMING", "1")]);
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip
+    };
+    let base = format!("http://localhost:{port}");
+    let page_url = format!("{base}/");
+    let ready_url = format!("{base}/__zfb/ready");
+    let order_url = format!("{base}/assets/client/order.js");
+    let client = client();
+
+    // Boot is deliberately clean: there is no client entry and no page tag.
+    // The add transition below writes both synchronously, before polling, so
+    // zfb-watcher's 50ms debounce receives one coalesced batch containing the
+    // entry creation and the page reference.
+    wait_for_log_line(
+        &session,
+        "[zfb-timing] boot: render complete",
+        RENDER_DEADLINE,
+    )
+    .await;
+    let baseline = ready_json(&client, &ready_url).await;
+    assert_eq!(baseline["ready"], true);
+    assert_eq!(baseline["client_scripts"]["status"], "not_expected");
+    let baseline_generation = ready_generation(&baseline);
+    let page = client
+        .get(&page_url)
+        .send()
+        .await
+        .expect("request clean boot document");
+    assert_eq!(page.status().as_u16(), 200, "clean boot document status");
+    let page_body = page.text().await.expect("read clean boot document");
+    assert!(
+        !page_body.contains("/assets/client/order.js"),
+        "clean boot document must not name the not-yet-added client entry"
+    );
+
+    // Addition: create the entry, then add the page reference in one
+    // synchronous write pair. The timing kind line pins that both paths were
+    // actually coalesced into the same watcher tick.
+    let client_marker = "[zfb-timing] tick: client scripts published";
+    let page_marker = "[zfb-timing] tick: page write complete";
+    let client_before_add = log_line_count(&session, client_marker);
+    let page_before_add = log_line_count(&session, page_marker);
+    let add_batch_before = tick_kind_line_count(&session, &["order.client.ts", "index.tsx"]);
+    let order_path = root.join("pages/order.client.ts");
+    fs::write(&order_path, order_source).expect("add order.client.ts");
+    fs::write(&index_path, &tagged_index).expect("add clientScript tag");
+    wait_for_tick_kinds(
+        &session,
+        &["order.client.ts", "index.tsx"],
+        add_batch_before,
+        RENDER_DEADLINE,
+    )
+    .await;
+    let add_logs = wait_for_tick_publication(
+        &session,
+        client_before_add,
+        page_before_add,
+        RENDER_DEADLINE,
+    )
+    .await;
+    assert_tick_publication_order(&add_logs, client_before_add, page_before_add);
+    let added = wait_for_client_script_urls(
+        &client,
+        &ready_url,
+        baseline_generation,
+        "published",
+        &["/assets/client/order.js"],
+        RENDER_DEADLINE,
+        &session,
+    )
+    .await;
+    let added_generation = ready_generation(&added);
+    assert!(
+        added_generation > baseline_generation,
+        "client-script addition must advance the publication generation"
+    );
+    let added_entry = client
+        .get(&order_url)
+        .send()
+        .await
+        .expect("request added client entry");
+    assert_eq!(added_entry.status().as_u16(), 200);
+    let added_body = added_entry.text().await.expect("read added client entry");
+    assert!(
+        added_body.contains("ORDER_CLIENT_MARKER") || added_body.contains("ORDER_CLIENT_V1"),
+        "the added client entry must contain its fixture marker"
+    );
+    let added_page = client
+        .get(&page_url)
+        .send()
+        .await
+        .expect("request added document");
+    assert_eq!(added_page.status().as_u16(), 200);
+    let added_page_body = added_page.text().await.expect("read added document");
+    assert!(
+        added_page_body.contains("/assets/client/order.js"),
+        "the committed added document must name the published client entry"
+    );
+
+    // Removal: remove the page tag and delete the entry in one synchronous
+    // write pair. The old URL must remain served after this successful
+    // removal generation; a later successful client generation is the point
+    // at which the previous lazy fallback may be pruned.
+    let untagged_index = tagged_index
+        .replace("import { clientScript } from \"@takazudo/zfb\";\n", "")
+        .replace(
+            "        <script type=\"module\" src={clientScript(\"order\")} />\n",
+            "",
+        );
+    assert_ne!(
+        untagged_index, tagged_index,
+        "the clientScript tag removal must change the fixture"
+    );
+    let client_before_remove = log_line_count(&session, client_marker);
+    let page_before_remove = log_line_count(&session, page_marker);
+    let remove_batch_before = tick_kind_line_count(&session, &["order.client.ts", "index.tsx"]);
+    fs::write(&index_path, &untagged_index).expect("remove clientScript tag");
+    fs::remove_file(&order_path).expect("remove order.client.ts");
+    wait_for_tick_kinds(
+        &session,
+        &["order.client.ts", "index.tsx"],
+        remove_batch_before,
+        RENDER_DEADLINE,
+    )
+    .await;
+    let remove_logs = wait_for_tick_publication(
+        &session,
+        client_before_remove,
+        page_before_remove,
+        RENDER_DEADLINE,
+    )
+    .await;
+    assert_tick_publication_order(&remove_logs, client_before_remove, page_before_remove);
+    let removed = wait_for_client_script_urls(
+        &client,
+        &ready_url,
+        added_generation,
+        "not_expected",
+        &[],
+        RENDER_DEADLINE,
+        &session,
+    )
+    .await;
+    assert!(
+        ready_generation(&removed) > added_generation,
+        "client-script removal must advance the publication generation"
+    );
+    let removed_page = client
+        .get(&page_url)
+        .send()
+        .await
+        .expect("request removal document");
+    assert_eq!(removed_page.status().as_u16(), 200);
+    let removed_page_body = removed_page.text().await.expect("read removal document");
+    assert!(
+        !removed_page_body.contains("/assets/client/order.js"),
+        "the committed removal document must not name the old entry"
+    );
+    let retained_entry = client
+        .get(&order_url)
+        .send()
+        .await
+        .expect("request retained removed client entry");
+    assert_eq!(
+        retained_entry.status().as_u16(),
+        200,
+        "the removed entry must remain servable after the removal page commit"
+    );
+
+    // A later successful client generation is the cleanup boundary. Its
+    // marker/page-write order is checked as well, and the old order asset is
+    // no longer retained afterward.
+    let cleanup_path = root.join("pages/cleanup.client.ts");
+    let client_before_cleanup = log_line_count(&session, client_marker);
+    let page_before_cleanup = log_line_count(&session, page_marker);
+    fs::write(
+        &cleanup_path,
+        "export const CLEANUP_CLIENT_MARKER = \"CLEANUP_CLIENT_V1\";\n",
+    )
+    .expect("add cleanup.client.ts");
+    let cleanup_logs = wait_for_tick_publication(
+        &session,
+        client_before_cleanup,
+        page_before_cleanup,
+        RENDER_DEADLINE,
+    )
+    .await;
+    assert_tick_publication_order(&cleanup_logs, client_before_cleanup, page_before_cleanup);
+    let cleaned = wait_for_client_script_urls(
+        &client,
+        &ready_url,
+        ready_generation(&removed),
+        "published",
+        &["/assets/client/cleanup.js"],
+        RENDER_DEADLINE,
+        &session,
+    )
+    .await;
+    assert!(
+        ready_generation(&cleaned) > ready_generation(&removed),
+        "cleanup client generation must advance publication generation"
+    );
+    let pruned_entry = client
+        .get(&order_url)
+        .send()
+        .await
+        .expect("request pruned client entry");
+    assert_ne!(
+        pruned_entry.status().as_u16(),
+        200,
+        "the removed entry must be pruned after the later successful client generation"
+    );
+
+    let final_page = client
+        .get(&page_url)
+        .send()
+        .await
+        .expect("request final document");
+    assert_eq!(final_page.status().as_u16(), 200);
+    let final_body = final_page.text().await.expect("read final document");
+    assert!(
+        !final_body.contains("/assets/client/order.js"),
+        "the final committed document must not name the removed entry"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test 5 — bind-before-bundle guard (issue #1182).
 // ---------------------------------------------------------------------------
 
@@ -1439,8 +2090,8 @@ async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
 /// 1. Prepare the root, corrupt `pages/index.tsx`, THEN spawn Cold.
 /// 2. Assert the FIRST deferred bundle fails: the error-level cold-lazy
 ///    failure message (`deferred_bundle_failure_message`'s Cold branch)
-///    appears in the logs, and `GET /` serves the controlled 404 (no route
-///    table was ever published).
+///    appears in the logs, `/__zfb/ready` reports documents pending, and
+///    `GET /` serves the controlled 404 (no route table was ever published).
 /// 3. Subscribe to SSE (before the fix, so the recovery event can't be
 ///    missed), then restore the ORIGINAL `pages/index.tsx` source — an
 ///    ordinary watcher-tick edit, exercising the SAME
@@ -1448,8 +2099,9 @@ async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
 ///    does.
 /// 4. Assert recovery: a hard-asserted `page` SSE event, the "cold-lazy
 ///    bootstrap recovered" info line (the mechanism's own explicit signal —
-///    proves THIS is what fired, not just any successful publish), and a
-///    first-request 200 with the real homepage content.
+///    proves THIS is what fired, not just any successful publish), readiness
+///    advancing to a non-pending generation, and a first-request 200 with the
+///    real homepage content.
 ///
 /// ## Falsifiability
 ///
@@ -1490,6 +2142,7 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
     let base = format!("http://localhost:{port}");
     let client = client();
     let root_url = format!("{base}/");
+    let ready_url = format!("{base}/__zfb/ready");
 
     // Step 2 — the FIRST deferred bundle must fail LOUDLY. Wait for the
     // error-level cold-lazy failure message first: it is the authoritative
@@ -1548,6 +2201,13 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
          doesn't look like the controlled dev 404 page; body:\n{body}\n{}",
         session.logs(),
     );
+    let pending = ready_json(&client, &ready_url).await;
+    assert_eq!(
+        pending["ready"], false,
+        "a failed deferred Cold bundle must keep framework publication pending"
+    );
+    assert_eq!(pending["documents"], "pending");
+    let pending_generation = ready_generation(&pending);
 
     // Step 3 — subscribe to SSE BEFORE the fix (broadcast, not a queue: an
     // event fired before subscription is gone forever).
@@ -1577,6 +2237,18 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
         "expected the \"dev: cold-lazy bootstrap recovered\" info line after the fixed \
          source republished (issue #1809's recovery latch).\n{}",
         session.logs(),
+    );
+    let recovered_readiness = wait_for_publication_ready(
+        &client,
+        &ready_url,
+        pending_generation,
+        RENDER_DEADLINE,
+        &session,
+    )
+    .await;
+    assert_ne!(
+        recovered_readiness["documents"], "pending",
+        "the successful Cold route-table recovery must commit a complete document boundary"
     );
 
     // First request after recovery: 200 with the real homepage content.
