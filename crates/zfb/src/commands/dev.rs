@@ -2434,13 +2434,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // 7b. Deferred boot task (issues #1166, #1170). Now that the listener
     //     is bound and the server is about to accept connections, run the
     //     work that used to block the bind:
-    //       1. compute_manifest_digest (the size-bound walk we moved)
-    //       2. load_persisted_graph (digest-gated cache reuse)
-    //       3. seed the graph from session.page_ids()
-    //       4. boot render (boot-lazy mark-stale vs eager initial_build)
-    //       5. eager islands bundle (issue #1170 — the other size-bound
-    //          step we moved; folded into the boot outcome so a tab loaded
-    //          during the pre-bundle window gets a livereload and hydrates)
+    //       0. eager islands bundle (issue #1170 — the other size-bound
+    //          step we moved; published before any route becomes requestable)
+    //       1. deferred dev bundle / route-table publication when needed
+    //       2. compute_manifest_digest (the size-bound walk we moved)
+    //       3. load_persisted_graph (digest-gated cache reuse)
+    //       4. seed the graph from session.page_ids()
+    //       5. boot render (boot-lazy mark-stale vs eager initial_build)
     //     then orchestrator.run drains the watcher loop.
     //     The digest is published into `manifest_digest_slot` so the
     //     shutdown persistence path (step 8) can read it; until it lands
@@ -2484,8 +2484,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
         }
 
-        // Steps 1-5 (digest walk, persisted-graph load, graph seed, boot
-        // render, and the eager islands bundle — issue #1170) now run inside
+        // Steps 0-5 (eager islands publication, deferred bundle, digest walk,
+        // persisted-graph load, graph seed, and boot render) now run inside
         // a ONE-SHOT BOOT HOOK that `BuildOrchestrator::run_with_boot`
         // invokes AFTER the notify watch is registered but BEFORE the drain
         // loop consumes events (issue #1166 startup-race fixes):
@@ -2525,7 +2525,68 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
             }
 
-            // 0. Deferred dev bundle (issue #1182). When the eager dev bundle
+            // 0. Eager islands bundle (issue #1170). This is the last
+            //    size-bound step that used to run synchronously before
+            //    `TcpListener::bind`; on a large-dependency consumer its
+            //    `"use client"` scan + esbuild bundle was the dominant
+            //    pre-bind cost. Running it HERE (post-bind, inside the
+            //    deferred boot hook) keeps cold-start reachability O(1) in
+            //    the consumer's dependency-tree size.
+            //
+            //    It deliberately precedes step 1's deferred route-table
+            //    publication. In Cold mode, publishing those tables also
+            //    makes their stale routes request-renderable through the
+            //    render-on-request hook. Islands must therefore already be
+            //    published before step 1, or that hook could expose fresh
+            //    200 HTML whose declared hydration module still returns 404.
+            //
+            //    Test-only slow-step injection (issue #1170 regression
+            //    guard): `ZFB_DEV_TEST_SLOW_ISLANDS_MS` sleeps right before
+            //    the islands build, so a test can prove the port accepts
+            //    connections / answers HTTP while this slow step is still in
+            //    flight. Reverting the deferral (building islands before the
+            //    bind) makes that assertion fail. Blocking `std::thread::sleep`
+            //    is fine for the same reason the boot-render slow-step above
+            //    is: request handling runs on other multi-thread runtime
+            //    workers. Independent of the digest / boot-render slow-steps.
+            if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_ISLANDS_MS") {
+                if let Ok(ms) = raw.trim().parse::<u64>() {
+                    if ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
+                }
+            }
+            let islands_info = match rebundle_islands(
+                &project_root_for_boot,
+                &dev_assets_root_for_boot,
+                framework_for_boot,
+                bundle_config_for_boot.as_ref(),
+                &islands_plugin_config_for_boot,
+                &islands_url_prefix_for_boot,
+                &islands_url_handle_for_boot,
+                &islands_companion_names_for_boot,
+                &raw_import_invalidation_for_boot,
+            ) {
+                Ok(info) => info,
+                Err(e) => {
+                    // Same contract as the pre-#1170 eager build's Err /
+                    // write-fail arms: warn and continue. The server stays
+                    // up, the publication state's islands slot stays pending
+                    // (no `<script type="module">` injected), and the next
+                    // successful watcher rebuild retries.
+                    output::warn(format!(
+                        "initial islands bundle failed (no <script \
+                         type=\"module\"> will be injected until the next \
+                         successful rebuild): {e:#}"
+                    ));
+                    None
+                }
+            };
+            if islands_info.is_some() && dev_timing_enabled() {
+                eprintln!("{}", format_boot_islands_published_line());
+            }
+
+            // 1. Deferred dev bundle (issue #1182). When the eager dev bundle
             //    was deferred past `TcpListener::bind` (boot-lazy + servable
             //    `dist/` — `defer_dev_bundle`), build the renderer + route
             //    tables NOW, on this deferred boot task, and publish them in
@@ -2535,7 +2596,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //    the prebuilt `dist/` serves every route — that is what makes
             //    first-accept O(1) regardless of project size.
             //
-            //    Ordered FIRST in the hook — before the graph seed (step 3) —
+            //    Ordered before the graph seed (step 4) —
             //    because the seed reads `session.page_ids()`, which is empty on
             //    the scaffold until the route tables are published here. Run
             //    before the seed, the graph is populated from a live route
@@ -2593,7 +2654,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                             // Issue #1808 (post-implementation review finding):
                             // Cold has no `dist/` seed to serve during the gap
                             // between this publish and `run_boot_render`'s
-                            // stale-mark further down — steps 1-3 (the
+                            // stale-mark further down — steps 2-4 (the
                             // manifest-digest walk + persisted-graph load,
                             // #1161) run in between and can be slow on a large
                             // tree. Left unmarked, a request in that gap
@@ -2637,7 +2698,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                                 output::error(msg);
                             } else {
                                 // Auto — same warn-and-continue contract as
-                                // the eager islands boot build below: the
+                                // the eager islands boot build above: the
                                 // server stays up serving the prebuilt
                                 // `dist/`, the renderer slot stays `None`,
                                 // and the next watcher tick's
@@ -2649,11 +2710,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
             }
 
-            // 1. Manifest digest — the size-bound walk moved past bind.
+            // 2. Manifest digest — the size-bound walk moved past bind.
             let manifest_digest =
                 compute_manifest_digest(&project_root_for_boot, &digest_watch_roots);
 
-            // 2+3. Load the persisted graph (digest-gated) and assemble the
+            // 3+4. Load the persisted graph (digest-gated) and assemble the
             //      boot graph under a single lock acquisition.
             //
             //      On a cache hit, `assemble_boot_graph` MERGES the persisted
@@ -2665,7 +2726,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //      are taken from the persisted graph for pages not yet carrying
             //      them. Globals from the persisted graph are merged in too.
             //
-            //      The seed step (formerly step 3) is folded in: pages the
+            //      The seed step (formerly step 4) is folded in: pages the
             //      router scan knows but the graph does not yet have any record
             //      of are seeded with an empty dep set so `plan_for_changes`
             //      can resolve `PageSelection::All` before the first watcher
@@ -2698,7 +2759,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 *slot = manifest_digest;
             }
 
-            // 4. Boot render — eager by default (zfb#642 / #644), opt-in
+            // 5. Boot render — eager by default (zfb#642 / #644), opt-in
             //    boot-lazy (#1057). Returns the eager outcome (or `None` for
             //    boot-lazy / no-pages / render error) so `run_with_boot` can
             //    broadcast a reload after the render lands. See
@@ -2713,12 +2774,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 eprintln!("{}", format_boot_render_complete_line());
             }
 
-            // 4b. `_redirects` 200-rewrite pre-warm (issue #2004, Dev Self
+            // 5b. `_redirects` 200-rewrite pre-warm (issue #2004, Dev Self
             //     Heal epic #1999 — the fix for #1825). Cold only.
             //
             //     Placed HERE deliberately, between the boot render and the
             //     tick-stale drain below:
-            //       - AFTER step 0/4, so the route tables are published and
+            //       - AFTER step 1/5, so the route tables are published and
             //         a target's reverse lookup can resolve. Run earlier, on
             //         a deferred boot, every target would miss.
             //       - BEFORE the drain, so the stale marks it lays down ride
@@ -2732,60 +2793,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //     `crate::dev_rewrite_prewarm` for the rejected alternative.
             if let Some(wiring) = rewrite_prewarm_for_boot.as_ref() {
                 wiring.run_for_caller_drain(&redirects_handle_for_boot);
-            }
-
-            // 5. Eager islands bundle (issue #1170). This is the last
-            //    size-bound step that used to run synchronously before
-            //    `TcpListener::bind`; on a large-dependency consumer its
-            //    `"use client"` scan + esbuild bundle was the dominant
-            //    pre-bind cost. Running it HERE (post-bind, on the deferred
-            //    boot task) keeps cold-start reachability O(1) in the
-            //    consumer's dependency-tree size.
-            //
-            //    Test-only slow-step injection (issue #1170 regression
-            //    guard): `ZFB_DEV_TEST_SLOW_ISLANDS_MS` sleeps right before
-            //    the islands build, so a test can prove the port accepts
-            //    connections / answers HTTP while this slow step is still in
-            //    flight. Reverting the deferral (building islands before the
-            //    bind) makes that assertion fail. Blocking `std::thread::sleep`
-            //    is fine for the same reason the boot-render slow-step above
-            //    is: request handling runs on other multi-thread runtime
-            //    workers. Independent of the digest / boot-render slow-steps.
-            if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_ISLANDS_MS") {
-                if let Ok(ms) = raw.trim().parse::<u64>() {
-                    if ms > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(ms));
-                    }
-                }
-            }
-            let islands_info = match rebundle_islands(
-                &project_root_for_boot,
-                &dev_assets_root_for_boot,
-                framework_for_boot,
-                bundle_config_for_boot.as_ref(),
-                &islands_plugin_config_for_boot,
-                &islands_url_prefix_for_boot,
-                &islands_url_handle_for_boot,
-                &islands_companion_names_for_boot,
-                &raw_import_invalidation_for_boot,
-            ) {
-                Ok(info) => info,
-                Err(e) => {
-                    // Same contract as the pre-#1170 eager build's Err /
-                    // write-fail arms: warn and continue. The server stays
-                    // up, the publication state's islands slot stays pending (no
-                    // `<script type="module">` injected), and the next
-                    // successful watcher rebuild retries.
-                    output::warn(format!(
-                        "initial islands bundle failed (no <script \
-                         type=\"module\"> will be injected until the next \
-                         successful rebuild): {e:#}"
-                    ));
-                    None
-                }
-            };
-            if islands_info.is_some() && dev_timing_enabled() {
-                eprintln!("{}", format_boot_islands_published_line());
             }
 
             // 6. Fold the islands bundle into the boot outcome so
@@ -2818,7 +2825,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //     ALREADY drained `tick_stale` into `outcome.pages_stale`. So
             //     this drain returns empty and the `if !boot_stale.is_empty()`
             //     fold below is inert — no behaviour change, no double-count.
-            //   - Deferred boot-lazy: step 0 published the renderer and
+            //   - Deferred boot-lazy: step 1 published the renderer and
             //     `run_boot_render`'s boot-lazy branch staled every route →
             //     this drains + broadcasts them (the original #1182 case).
             //   - Non-deferred boot-lazy (a servable seed present but the #1188

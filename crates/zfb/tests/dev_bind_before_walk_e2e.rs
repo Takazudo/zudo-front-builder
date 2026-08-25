@@ -990,13 +990,13 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
 // Test 9 — dev hydration readiness during the held islands window (#2552).
 // ---------------------------------------------------------------------------
 
-/// RED guard for the boot publication window: once the eager render has
-/// published a real 200 document, its browser-requested islands module must
-/// already be declared and reachable while the injected islands slow-step is
-/// still holding the deferred boot task open. The assertions are deliberately
-/// written in their desired post-fix form; issue #2533 supplies the product
-/// fix beneath this test.
-#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2533"]
+/// Regression guard for the boot publication window: islands publication must
+/// complete before the eager render can expose a real 200 document whose
+/// browser-requested islands module is declared and reachable. This test uses
+/// a finite, test-local islands hold: the old ordering exposes the rendered RED
+/// page throughout that phase, while the fixed ordering waits out the phase and
+/// only then renders the GREEN page. The assertions remain phase-anchored; no
+/// elapsed-time assertion stands in for the served document/module contract.
 #[tokio::test(flavor = "multi_thread")]
 async fn dev_200_document_declares_and_serves_islands_module() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
@@ -1008,6 +1008,9 @@ async fn dev_200_document_declares_and_serves_islands_module() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = prepare_dev_root_from_fixture(&tmp, "dev-islands-entry-probe");
+    // Shadow the module-level 120s bind-order hold only for this regression:
+    // the fixed order must wait out the phase and still render within 90s.
+    const SLOW_ISLANDS_MS: u64 = 5_000;
     let slow = SLOW_ISLANDS_MS.to_string();
     let mut session = spawn_dev_in_root(
         &root,
@@ -1026,9 +1029,9 @@ async fn dev_200_document_declares_and_serves_islands_module() {
     let client = client();
 
     // The route is not published until the eager render completes, so poll
-    // only for the first actual 200 response. The islands slow-step is
-    // injected after that render and holds the deferred boot task open; this
-    // test never infers readiness from elapsed wall-clock time.
+    // only for the first actual 200 response. The islands slow-step now gates
+    // that render; this test never infers readiness from elapsed wall-clock
+    // time.
     let render_start = Instant::now();
     let mut observed: Option<(u16, String)> = None;
     while render_start.elapsed() < RENDER_DEADLINE {
