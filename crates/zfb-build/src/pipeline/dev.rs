@@ -79,6 +79,13 @@ pub enum DocumentPublicationEvent {
     CommitNotExpected,
     CommitEntriesOnly,
     AbortBeforeDocumentWrite,
+    /// A framework entry became observable, but no document render/write had
+    /// started before a later cross-kind failure. Keep the staged entry
+    /// generation and readiness pending without latching document uncertainty;
+    /// a zero-page follow-up may recover through `CommitEntriesOnly`.
+    LeaveEntriesPending,
+    /// A document render/write may have partially mutated the served
+    /// generation. Only a complete document repair may clear this phase.
     LeavePending,
 }
 
@@ -113,7 +120,10 @@ impl<'a> DocumentPublicationTransaction<'a> {
     fn document_mutation_started(&mut self) {
         if !matches!(
             self.fallback,
-            Some(DocumentPublicationEvent::AbortBeforeDocumentWrite)
+            Some(
+                DocumentPublicationEvent::AbortBeforeDocumentWrite
+                    | DocumentPublicationEvent::LeaveEntriesPending
+            )
         ) {
             return;
         }
@@ -130,7 +140,12 @@ impl<'a> DocumentPublicationTransaction<'a> {
     /// hook therefore has to retain that complete generation and leave
     /// readiness pending until a later document transaction commits it.
     fn entry_publication_completed(&mut self) {
-        self.document_mutation_started();
+        if matches!(
+            self.fallback,
+            Some(DocumentPublicationEvent::AbortBeforeDocumentWrite)
+        ) {
+            self.fallback = Some(DocumentPublicationEvent::LeaveEntriesPending);
+        }
     }
 
     fn document_write_started(&mut self, path: PathBuf) {
@@ -1462,6 +1477,7 @@ mod tests {
                     | DocumentPublicationEvent::CommitNotExpected
                     | DocumentPublicationEvent::CommitEntriesOnly => "other-commit",
                     DocumentPublicationEvent::AbortBeforeDocumentWrite => "abort",
+                    DocumentPublicationEvent::LeaveEntriesPending => "entries-pending",
                     DocumentPublicationEvent::LeavePending => "pending",
                 });
             }));
@@ -1504,8 +1520,8 @@ mod tests {
             vec![
                 "begin",
                 "client",
-                "mutation",
                 "islands",
+                "mutation",
                 "render",
                 "write-start",
                 "write-complete",
@@ -1570,6 +1586,7 @@ mod tests {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
                     DocumentPublicationEvent::DocumentMutationStarted => "mutation",
+                    DocumentPublicationEvent::LeaveEntriesPending => "entries-pending",
                     DocumentPublicationEvent::LeavePending => "pending",
                     _ => "unexpected",
                 });
@@ -1799,6 +1816,10 @@ mod tests {
                         "begin"
                     }
                     DocumentPublicationEvent::DocumentMutationStarted => "mutation",
+                    DocumentPublicationEvent::LeaveEntriesPending => {
+                        hook_ready.store(false, Ordering::SeqCst);
+                        "entries-pending"
+                    }
                     DocumentPublicationEvent::LeavePending => {
                         hook_ready.store(false, Ordering::SeqCst);
                         "pending"
@@ -1816,14 +1837,17 @@ mod tests {
                         hook_ready.store(true, Ordering::SeqCst);
                         "commit"
                     }
+                    DocumentPublicationEvent::CommitEntriesOnly => {
+                        hook_ready.store(true, Ordering::SeqCst);
+                        "entries-commit"
+                    }
                     DocumentPublicationEvent::SnapshotLazyFallbacks(_) => "snapshot",
                     DocumentPublicationEvent::DocumentWriteStarted(_) => "write-start",
                     DocumentPublicationEvent::DocumentWriteCompleted(_) => "write-complete",
                     DocumentPublicationEvent::DocumentPathsRemoved(_) => "paths-removed",
                     DocumentPublicationEvent::CommitReadyOnRequest
                     | DocumentPublicationEvent::CommitLazyRepair
-                    | DocumentPublicationEvent::CommitNotExpected
-                    | DocumentPublicationEvent::CommitEntriesOnly => "other-commit",
+                    | DocumentPublicationEvent::CommitNotExpected => "other-commit",
                 };
                 hook_events.lock().unwrap().push(label);
             }));
@@ -1868,46 +1892,34 @@ mod tests {
         );
         assert_eq!(
             *events.lock().unwrap(),
-            vec!["begin", "client", "mutation", "islands", "pending"]
+            vec!["begin", "client", "islands", "entries-pending"]
         );
 
         events.lock().unwrap().clear();
         let recovery_events = Arc::clone(&events);
         let recovery_ctx = BuildContext {
             dist_root: dir.path().to_path_buf(),
-            render_pages: Arc::new(move |_, _| {
-                recovery_events.lock().unwrap().push("render");
-                Ok(vec![RenderedPage {
-                    page: pid("/pages/index.tsx"),
-                    output_path: RelDistPath::new("index.html").unwrap(),
-                    html: r#"<script src="/assets/client/app.js"></script>"#.into(),
-                    content_type: None,
-                }])
-            }),
+            render_pages: Arc::new(|_, _| panic!("entry-only recovery has no pages")),
             run_css: None,
             run_islands: None,
-            run_client_scripts: None,
+            run_client_scripts: Some(Arc::new(move || {
+                recovery_events.lock().unwrap().push("client-repair");
+                Ok(true)
+            })),
             reload_renderer: None,
         };
-        let mut recovery_plan = client_script_page_plan();
-        recovery_plan.rerun_client_scripts = false;
+        let mut recovery_plan = RebuildPlan::empty();
+        recovery_plan.rerun_client_scripts = true;
 
         pipeline.apply(&recovery_plan, &recovery_ctx).unwrap();
         assert!(
             ready.load(Ordering::SeqCst),
-            "the later successful document transaction commits the retained entry generation"
+            "a zero-page follow-up must recover through CommitEntriesOnly"
         );
         assert!(entry.is_file() && worker.is_file());
         assert_eq!(
             *events.lock().unwrap(),
-            vec![
-                "begin",
-                "mutation",
-                "render",
-                "write-start",
-                "write-complete",
-                "commit"
-            ]
+            vec!["begin", "client-repair", "entries-commit"]
         );
     }
 

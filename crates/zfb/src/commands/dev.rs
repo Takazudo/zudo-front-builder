@@ -1086,10 +1086,16 @@ struct DocumentObligations {
 }
 
 impl DocumentObligations {
+    fn has_document_failures(&self) -> bool {
+        !self.failed_sources.is_empty() || !self.failed_outputs.is_empty()
+    }
+
+    fn has_client_publication_failures(&self) -> bool {
+        !self.client_publication_uncertain_outputs.is_empty()
+    }
+
     fn has_eager_failures(&self) -> bool {
-        !self.failed_sources.is_empty()
-            || !self.failed_outputs.is_empty()
-            || !self.client_publication_uncertain_outputs.is_empty()
+        self.has_document_failures() || self.has_client_publication_failures()
     }
 
     fn retain_lazy_dependencies(&self) -> bool {
@@ -1193,6 +1199,24 @@ impl DocumentObligations {
     fn record_client_publication_success(&mut self, outputs: &HashSet<String>) {
         self.client_publication_uncertain_outputs
             .retain(|filename| !outputs.contains(filename));
+    }
+}
+
+fn leave_publication_pending_for_failures(
+    publication: &mut zfb_server::DevPublicationState,
+    has_document_failures: bool,
+    completed_documents: Option<zfb_server::DocumentSlot>,
+) {
+    if has_document_failures {
+        publication.leave_document_update_pending();
+    } else if let Some(documents) = completed_documents {
+        publication.leave_entry_update_pending_after_document_boundary(documents);
+    } else {
+        // Entry rollback uncertainty is persistent in DocumentObligations,
+        // but it must not poison the independent partial-document latch. A
+        // zero-page/SSR-only tick can then recover through CommitEntriesOnly
+        // once a later client generation repairs every exact unsafe output.
+        publication.leave_entry_update_pending();
     }
 }
 
@@ -1703,10 +1727,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     | DocumentPublicationEvent::CommitNotExpected
                     | DocumentPublicationEvent::CommitEntriesOnly
             );
-            let (has_eager_failures, preserve_lazy) = {
+            let (has_document_failures, has_client_failures, preserve_lazy) = {
                 let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
                 (
-                    obligations.has_eager_failures(),
+                    obligations.has_document_failures(),
+                    obligations.has_client_publication_failures(),
                     if is_commit {
                         obligations.publication_retention(recovery_commit)
                     } else {
@@ -1714,23 +1739,32 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     },
                 )
             };
+            let has_eager_failures = has_document_failures || has_client_failures;
             let committed = match event {
                 DocumentPublicationEvent::CommitPublished => {
-                    if has_eager_failures {
-                        publication.leave_document_update_pending();
-                        return;
-                    }
-                    publication.resolve_document_uncertainty();
                     let documents = if preserve_lazy {
                         zfb_server::DocumentSlot::ReadyOnRequest
                     } else {
                         zfb_server::DocumentSlot::Published
                     };
+                    if has_eager_failures {
+                        leave_publication_pending_for_failures(
+                            &mut publication,
+                            has_document_failures,
+                            Some(documents),
+                        );
+                        return;
+                    }
+                    publication.resolve_document_uncertainty();
                     publication.commit_document_update_with_retention(documents, preserve_lazy)
                 }
                 DocumentPublicationEvent::CommitReadyOnRequest => {
                     if has_eager_failures {
-                        publication.leave_document_update_pending();
+                        leave_publication_pending_for_failures(
+                            &mut publication,
+                            has_document_failures,
+                            Some(zfb_server::DocumentSlot::ReadyOnRequest),
+                        );
                         return;
                     }
                     publication.resolve_document_uncertainty();
@@ -1741,14 +1775,22 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
                 DocumentPublicationEvent::CommitLazyRepair => {
                     if has_eager_failures {
-                        publication.leave_document_update_pending();
+                        leave_publication_pending_for_failures(
+                            &mut publication,
+                            has_document_failures,
+                            Some(zfb_server::DocumentSlot::ReadyOnRequest),
+                        );
                         return;
                     }
                     publication.commit_lazy_repair()
                 }
                 DocumentPublicationEvent::CommitNotExpected => {
                     if has_eager_failures {
-                        publication.leave_document_update_pending();
+                        leave_publication_pending_for_failures(
+                            &mut publication,
+                            has_document_failures,
+                            Some(zfb_server::DocumentSlot::NotExpected),
+                        );
                         return;
                     }
                     publication.resolve_document_uncertainty();
@@ -1759,6 +1801,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 }
                 DocumentPublicationEvent::CommitEntriesOnly => {
                     if has_eager_failures {
+                        leave_publication_pending_for_failures(
+                            &mut publication,
+                            has_document_failures,
+                            None,
+                        );
                         return;
                     }
                     publication.commit_entry_update_with_retention(preserve_lazy)
@@ -1770,7 +1817,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         // not restore the prior ready snapshot or delete its
                         // newly emitted companions; a later successful client
                         // publish must repair the complete generation first.
-                        publication.leave_document_update_pending();
+                        leave_publication_pending_for_failures(
+                            &mut publication,
+                            has_document_failures,
+                            None,
+                        );
                         return;
                     }
                     publication.abort_document_update_before_write();
@@ -1825,6 +1876,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         );
                         *unresolved = baseline;
                     }
+                    return;
+                }
+                DocumentPublicationEvent::LeaveEntriesPending => {
+                    publication.leave_entry_update_pending();
                     return;
                 }
                 DocumentPublicationEvent::LeavePending => {
@@ -10642,6 +10697,44 @@ mod tests {
             !obligations.has_eager_failures(),
             "only a complete later publication of the exact unsafe output discharges the obligation"
         );
+    }
+
+    #[test]
+    fn entry_only_publication_recovers_after_exact_client_repair_without_pages() {
+        let mut publication = zfb_server::DevPublicationState::pending();
+        publication.begin_document_update();
+        publication.stage_islands(Vec::new());
+        publication.stage_client_scripts(Vec::new());
+        assert!(publication.commit_document_update(zfb_server::DocumentSlot::NotExpected));
+        let ready_generation = publication.generation;
+
+        let mut obligations = DocumentObligations::default();
+        publication.begin_document_update();
+        obligations.record_client_publication_rollback_failure(["alpha.js".to_string()]);
+        leave_publication_pending_for_failures(&mut publication, false, None);
+        assert!(!publication.is_ready());
+
+        // A complete but non-exact generation cannot bless retained corrupt
+        // alpha bytes, even though this project has no page write to perform.
+        publication.begin_document_update();
+        publication.stage_client_scripts(vec!["/assets/client/beta.js".to_string()]);
+        obligations.record_client_publication_success(&HashSet::from(["beta.js".to_string()]));
+        assert!(obligations.has_client_publication_failures());
+        leave_publication_pending_for_failures(&mut publication, false, None);
+        assert!(!publication.is_ready());
+        assert_eq!(publication.generation, ready_generation);
+
+        // Republishing the exact unsafe filename discharges the persistent
+        // obligation. Entry-only commit must now restore the prior
+        // NotExpected document semantics without resolving a document latch.
+        publication.begin_document_update();
+        publication.stage_client_scripts(vec!["/assets/client/alpha.js".to_string()]);
+        obligations.record_client_publication_success(&HashSet::from(["alpha.js".to_string()]));
+        assert!(!obligations.has_eager_failures());
+        assert!(publication.commit_entry_update());
+        assert!(publication.is_ready());
+        assert_eq!(publication.documents, zfb_server::DocumentSlot::NotExpected);
+        assert_eq!(publication.generation, ready_generation + 1);
     }
 
     #[cfg(feature = "embed_v8")]

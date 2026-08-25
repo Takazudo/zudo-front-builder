@@ -247,6 +247,26 @@ impl DevPublicationState {
         self.uncertain_document_write = true;
     }
 
+    /// Leave an entry-only publication transaction unresolved without
+    /// claiming that a document write may have partially succeeded. The
+    /// previous document phase stays available for a later entries-only
+    /// commit after the command-owned entry repair obligation is resolved.
+    pub fn leave_entry_update_pending(&mut self) {
+        if self.previous_documents.is_none() {
+            self.previous_documents = Some(self.documents);
+        }
+        self.documents = DocumentSlot::Pending;
+    }
+
+    /// Entry-only pending state after a complete document boundary already
+    /// succeeded. Remember that boundary (which may differ from the previous
+    /// mode, e.g. `NotExpected` -> `Published`) so a later entries-only repair
+    /// commits the correct document semantics.
+    pub fn leave_entry_update_pending_after_document_boundary(&mut self, documents: DocumentSlot) {
+        self.previous_documents = Some(documents);
+        self.documents = DocumentSlot::Pending;
+    }
+
     /// Select an islands URL that is safe on both sides of a document update:
     /// additions may use an already-written staged entry, while removals keep
     /// using the committed entry until the new document set commits.
@@ -493,6 +513,94 @@ mod publication_state_tests {
 
         state.resolve_document_uncertainty();
         assert!(state.commit_document_update(DocumentSlot::Published));
+        assert_eq!(state.generation, 2);
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn repaired_entry_only_update_restores_not_expected_documents() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::NotExpected));
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/unsafe.js".to_string()]);
+        state.leave_entry_update_pending();
+
+        assert_eq!(state.generation, 1);
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert_eq!(state.previous_documents, Some(DocumentSlot::NotExpected));
+        assert!(!state.uncertain_document_write);
+        assert!(!state.is_ready());
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/repaired.js".to_string()]);
+        assert!(state.commit_entry_update());
+
+        assert_eq!(state.generation, 2);
+        assert_eq!(state.documents, DocumentSlot::NotExpected);
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec!["/assets/client/repaired.js".to_string()]
+            }
+        );
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn repaired_entry_only_update_restores_published_documents() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands-published.js".to_string()));
+
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-unsafe.js".to_string()]);
+        state.leave_entry_update_pending();
+
+        assert_eq!(state.generation, 0);
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert_eq!(state.previous_documents, Some(DocumentSlot::Published));
+        assert!(!state.uncertain_document_write);
+        assert!(!state.is_ready());
+
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-repaired.js".to_string()]);
+        assert!(state.commit_entry_update());
+
+        assert_eq!(state.generation, 1);
+        assert_eq!(state.documents, DocumentSlot::Published);
+        assert_eq!(
+            state.islands,
+            AssetSlot::Published {
+                urls: vec!["/assets/islands-repaired.js".to_string()]
+            }
+        );
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn repaired_entry_only_update_restores_completed_new_document_mode() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::NotExpected));
+
+        // Documents became publishable, but a separate entry obligation kept
+        // the combined generation pending at that completed boundary.
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/unsafe.js".to_string()]);
+        state.leave_entry_update_pending_after_document_boundary(DocumentSlot::Published);
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert_eq!(state.previous_documents, Some(DocumentSlot::Published));
+        assert!(!state.uncertain_document_write);
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/repaired.js".to_string()]);
+        assert!(state.commit_entry_update());
+        assert_eq!(state.documents, DocumentSlot::Published);
         assert_eq!(state.generation, 2);
         assert!(state.is_ready());
     }
