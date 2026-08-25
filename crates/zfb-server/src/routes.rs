@@ -12,6 +12,8 @@
 //!   `Cache-Control: no-store`.
 //! - `GET /__zfb/reload` — SSE event stream. See
 //!   [`crate::livereload::sse_response`].
+//! - `GET /__zfb/ready` — Dev-only JSON snapshot of framework-owned asset
+//!   publication readiness.
 //! - `GET /` and `GET /*path` — render HTML out of the in-memory page
 //!   cache, then fall back to `<html_root>/...`, then `<public_root>/...`,
 //!   and finally — in Dev only, as a last resort before the dev 404 — the
@@ -95,6 +97,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get};
 use axum::Router;
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use serde::Serialize;
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use zfb_types::escape_html;
@@ -592,6 +595,7 @@ pub fn build_router(state: AppState) -> Router {
             let redirect_target = format!("{prefix}/");
             let prefix_for_404 = prefix.clone();
             let mode_for_404 = state.mode;
+            let publication_handle_for_404 = state.islands_bundle_url.clone();
 
             build_core_router(state, &prefix)
                 // Bare `/` lands the developer on the home page — but only `/`
@@ -619,7 +623,15 @@ pub fn build_router(state: AppState) -> Router {
                 // the developer follows the hint.
                 .fallback(get(move |uri: Uri| {
                     let prefix = prefix_for_404.clone();
-                    async move { unprefixed_404_response(&prefix, uri.path(), mode_for_404) }
+                    let publication_handle = publication_handle_for_404.clone();
+                    async move {
+                        unprefixed_404_response(
+                            &prefix,
+                            uri.path(),
+                            mode_for_404,
+                            publication_handle.as_ref(),
+                        )
+                    }
                 }))
         }
     };
@@ -668,6 +680,7 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
 
     let livereload_path = format!("{prefix}/__zfb/livereload.js");
     let sse_path = format!("{prefix}/__zfb/reload");
+    let ready_path = format!("{prefix}/__zfb/ready");
     let assets_mount = format!("{prefix}/assets");
     let root_path = format!("{prefix}/");
     let wild_path = format!("{prefix}/{{*path}}");
@@ -685,7 +698,8 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
     if is_dev {
         router = router
             .route(&livereload_path, get(livereload_js))
-            .route(&sse_path, get(sse_handler));
+            .route(&sse_path, get(sse_handler))
+            .route(&ready_path, get(dev_ready));
     }
     router
         .nest_service(&assets_mount, assets_service)
@@ -698,23 +712,18 @@ fn build_core_router(state: AppState, prefix: &str) -> Router {
         .with_state(state)
 }
 
-/// Build the dev 404 served when a request lands outside the configured
-/// `base` prefix. Mirrors [`DEV_404_BODY`] but appends a one-line hint
-/// pointing at the prefix so the developer notices the typo / forgotten
-/// base instead of staring at a blank "page not in cache" body.
+/// Clone the current Dev publication state from the shared handle, if any.
 ///
-/// The hint is HTML-escaped — `prefix` and `path` come from request
-/// data and could otherwise smuggle markup into the response.
-/// Read the current dev-mode islands bundle URL from the shared
-/// state handle, if any. Returns the locked string by clone so the
-/// caller can hold the result across the response build without
-/// keeping the read lock alive. A poisoned lock (writer panicked) is
-/// recovered into a non-poisoned guard rather than re-panicking — a
-/// dev-server crash on a stale lock would be the worst possible UX
-/// for a feature whose whole purpose is to make islands "just work"
-/// in dev.
-fn current_islands_bundle_url(handle: &Option<crate::IslandsBundleUrl>) -> Option<String> {
-    let arc = handle.as_ref()?;
+/// The page response shaper derives both its islands URL and its readiness
+/// headers from this one clone. That keeps a response from publishing a URL
+/// from one generation alongside metadata from another generation if a
+/// watcher tick arrives while the response is being assembled. A poisoned
+/// lock (writer panicked) is recovered into a non-poisoned guard rather than
+/// re-panicking, matching the existing islands/CSS readers.
+fn current_publication_state(
+    handle: Option<&crate::IslandsBundleUrl>,
+) -> Option<crate::DevPublicationState> {
+    let arc = handle?;
     let guard = arc.read().unwrap_or_else(|p| {
         tracing::warn!(
             site = "AppState.islands_bundle_url",
@@ -722,14 +731,11 @@ fn current_islands_bundle_url(handle: &Option<crate::IslandsBundleUrl>) -> Optio
         );
         p.into_inner()
     });
-    match &guard.islands {
-        crate::AssetSlot::Published { urls } => urls.first().cloned(),
-        crate::AssetSlot::NotExpected | crate::AssetSlot::Pending => None,
-    }
+    Some(guard.clone())
 }
 
 /// Read the current dev-mode CSS bundle URL from the shared state
-/// handle, if any. Mirrors [`current_islands_bundle_url`] for CSS.
+/// handle, if any. Mirrors [`current_publication_state`] for CSS.
 /// Returns the locked string by clone so the caller can hold the result
 /// across the response build without keeping the read lock alive. A
 /// poisoned lock is recovered rather than re-panicking.
@@ -745,7 +751,95 @@ fn current_css_bundle_url(handle: &Option<crate::CssBundleUrl>) -> Option<String
     guard.clone()
 }
 
-fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) -> Response {
+#[derive(Debug, Serialize)]
+struct DevReadyAsset {
+    status: &'static str,
+    urls: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DevReadyExclusions {
+    dist_root_boot_lazy_seed: &'static str,
+    stale_dev_pages_html_across_restart: &'static str,
+    public_html_and_user_authored_scripts: &'static str,
+    deferred_islands_companions_and_chunks: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct DevReadyResponse {
+    generation: u64,
+    ready: bool,
+    islands: DevReadyAsset,
+    client_scripts: DevReadyAsset,
+    exclusions: DevReadyExclusions,
+}
+
+fn ready_asset(slot: &crate::AssetSlot) -> DevReadyAsset {
+    match slot {
+        crate::AssetSlot::NotExpected => DevReadyAsset {
+            status: "not_expected",
+            urls: Vec::new(),
+        },
+        crate::AssetSlot::Pending => DevReadyAsset {
+            status: "pending",
+            urls: Vec::new(),
+        },
+        crate::AssetSlot::Published { urls } => DevReadyAsset {
+            status: "published",
+            urls: urls.clone(),
+        },
+    }
+}
+
+fn publication_is_ready(state: &crate::DevPublicationState) -> bool {
+    !matches!(state.islands, crate::AssetSlot::Pending)
+        && !matches!(state.client_scripts, crate::AssetSlot::Pending)
+}
+
+/// Handler for the Dev-only readiness endpoint. The complete JSON body is
+/// built from the same one-lock snapshot used by page response headers and
+/// islands injection. Preview and Embed never mount this handler.
+async fn dev_ready(State(state): State<AppState>) -> Response {
+    let publication = current_publication_state(state.islands_bundle_url.as_ref())
+        .unwrap_or_else(crate::DevPublicationState::pending);
+    let body = DevReadyResponse {
+        generation: publication.generation,
+        ready: publication_is_ready(&publication),
+        islands: ready_asset(&publication.islands),
+        client_scripts: ready_asset(&publication.client_scripts),
+        exclusions: DevReadyExclusions {
+            dist_root_boot_lazy_seed:
+                "dist_root boot-lazy seed bytes from a past zfb build are excluded from asset readiness",
+            stale_dev_pages_html_across_restart:
+                "stale .zfb-build/dev-pages HTML surviving a dev restart is excluded from asset readiness",
+            public_html_and_user_authored_scripts:
+                "public/*.html and user-authored <script> tags are excluded from framework-owned asset readiness",
+            deferred_islands_companions_and_chunks:
+                "deferred islands-chunk-* companions/chunks are excluded from this readiness signal",
+        },
+    };
+    let mut response = axum::Json(body).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Build the dev 404 served when a request lands outside the configured
+/// `base` prefix. Mirrors [`DEV_404_BODY`] but appends a one-line hint
+/// pointing at the prefix so the developer notices the typo / forgotten
+/// base instead of staring at a blank "page not in cache" body.
+///
+/// The hint is HTML-escaped — `prefix` and `path` come from request data and
+/// could otherwise smuggle markup into the response. The publication state
+/// supplies readiness metadata, while this static body deliberately disables
+/// islands head injection.
+fn unprefixed_404_response(
+    prefix: &str,
+    path: &str,
+    mode: crate::ServerMode,
+    publication_handle: Option<&crate::IslandsBundleUrl>,
+) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>zfb dev — 404 (base mismatch)</title></head><body><h1>404 — outside configured base</h1><p>This dev server is mounted under <code>{}</code> (from <code>base</code> in <code>zfb.config.ts</code>). The path <code>{}</code> is not under that prefix. Try <a href=\"{}/\">{}/</a> instead.</p></body></html>",
         escape_html(prefix),
@@ -767,11 +861,8 @@ fn unprefixed_404_response(prefix: &str, path: &str, mode: crate::ServerMode) ->
         // so the trailing-slash post-process is a no-op either way.
         false,
         mode,
-        // The unprefixed 404 page is a static body with no `<head>`
-        // anchor, so the islands splicer would no-op anyway. Pass None
-        // to keep the surface tight — this handler has no AppState in
-        // scope.
-        None,
+        false,
+        publication_handle,
         // Same reasoning as islands: no AppState in scope, pass None.
         None,
     )
@@ -849,7 +940,6 @@ async fn serve_page(
     // the browser would request `/__zfb/livereload.js` (unprefixed) and
     // hit the dev 404. Empty when no `base` is configured.
     let lr_prefix = state.base_prefix.as_deref().unwrap_or("");
-
     // The page-cache fallback below only handles GET/HEAD. Track this
     // so a non-GET request that does not match any plugin (or hits a
     // plugin that returns Passthrough) is rejected with `405 Allow:
@@ -931,7 +1021,8 @@ async fn serve_page(
                 lr_prefix,
                 state.trailing_slash,
                 state.mode,
-                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                true,
+                state.islands_bundle_url.as_ref(),
                 current_css_bundle_url(&state.css_bundle_url).as_deref(),
             );
         }
@@ -1033,7 +1124,7 @@ async fn serve_page(
                     lr_prefix,
                     state.trailing_slash,
                     state.mode,
-                    current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                    state.islands_bundle_url.as_ref(),
                     current_css_bundle_url(&state.css_bundle_url).as_deref(),
                 )
                 .await;
@@ -1152,7 +1243,8 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
                 lr_prefix,
                 state.trailing_slash,
                 state.mode,
-                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                true,
+                state.islands_bundle_url.as_ref(),
                 current_css_bundle_url(&state.css_bundle_url).as_deref(),
             );
         }
@@ -1227,7 +1319,8 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
             lr_prefix,
             state.trailing_slash,
             state.mode,
-            current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+            true,
+            state.islands_bundle_url.as_ref(),
             current_css_bundle_url(&state.css_bundle_url).as_deref(),
         );
     }
@@ -1265,7 +1358,8 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
                 lr_prefix,
                 state.trailing_slash,
                 state.mode,
-                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                true,
+                state.islands_bundle_url.as_ref(),
                 current_css_bundle_url(&state.css_bundle_url).as_deref(),
             );
         }
@@ -1325,7 +1419,8 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
                 lr_prefix,
                 state.trailing_slash,
                 state.mode,
-                current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+                true,
+                state.islands_bundle_url.as_ref(),
                 current_css_bundle_url(&state.css_bundle_url).as_deref(),
             );
         }
@@ -1341,7 +1436,8 @@ async fn serve_from_waterfall(state: &AppState, trimmed: &str, lr_prefix: &str) 
         lr_prefix,
         state.trailing_slash,
         state.mode,
-        current_islands_bundle_url(&state.islands_bundle_url).as_deref(),
+        true,
+        state.islands_bundle_url.as_ref(),
         current_css_bundle_url(&state.css_bundle_url).as_deref(),
     )
 }
@@ -1679,7 +1775,7 @@ async fn dispatch_ssr(
     lr_prefix: &str,
     add_trailing_slash: bool,
     mode: crate::ServerMode,
-    islands_bundle_url: Option<&str>,
+    publication_handle: Option<&crate::IslandsBundleUrl>,
     css_bundle_url: Option<&str>,
 ) -> Response {
     let mut req_headers: std::collections::BTreeMap<String, String> =
@@ -1720,7 +1816,8 @@ async fn dispatch_ssr(
         lr_prefix,
         add_trailing_slash,
         mode,
-        islands_bundle_url,
+        true,
+        publication_handle,
         css_bundle_url,
     );
     // Merge any extra headers the SSR handler set (Set-Cookie, Vary,
@@ -1747,7 +1844,12 @@ async fn dispatch_ssr(
         // by `page_response_bytes`.)
         if matches!(
             lower.as_str(),
-            "content-type" | "content-length" | "transfer-encoding" | "connection"
+            "content-type"
+                | "content-length"
+                | "transfer-encoding"
+                | "connection"
+                | "x-zfb-dev-generation"
+                | "x-zfb-dev-ready"
         ) {
             continue;
         }
@@ -1964,7 +2066,8 @@ pub(crate) fn page_response_bytes(
     base_prefix: &str,
     add_trailing_slash: bool,
     mode: crate::ServerMode,
-    islands_bundle_url: Option<&str>,
+    inject_islands: bool,
+    publication_handle: Option<&crate::IslandsBundleUrl>,
     css_bundle_url: Option<&str>,
 ) -> Response {
     // Live-reload script injection and the default `Cache-Control: no-
@@ -1973,6 +2076,15 @@ pub(crate) fn page_response_bytes(
     // cache busting that would defeat a host's own caching policy).
     let is_dev = matches!(mode, crate::ServerMode::Dev);
     let inject_reload = inject_reload && is_dev;
+    // Snapshot at the final response-shaping boundary, after any plugin,
+    // redirect, SSR, or render-on-request await that selected this body.
+    // Islands injection and readiness headers both derive from this one
+    // clone, keeping document metadata temporally adjacent and atomic.
+    let publication_state = if is_dev {
+        current_publication_state(publication_handle)
+    } else {
+        None
+    };
     // Issue #377: dev-mode initial-load injection of the islands
     // `<script type="module">` tag. Gated to Dev mode so Preview/Embed
     // callers never ship the unhashed `/assets/islands.js` URL — that
@@ -1982,8 +2094,15 @@ pub(crate) fn page_response_bytes(
     // call-site logic). When the bundle URL is empty/whitespace it is
     // treated as absent (the bin crate seeds the handle with `None`
     // when no `"use client"` islands exist).
-    let islands_script_url = if is_dev && inject_reload {
-        islands_bundle_url.map(str::trim).filter(|u| !u.is_empty())
+    let islands_script_url = if is_dev && inject_reload && inject_islands {
+        publication_state
+            .as_ref()
+            .and_then(|state| match &state.islands {
+                crate::AssetSlot::Published { urls } => urls.first().map(String::as_str),
+                crate::AssetSlot::NotExpected | crate::AssetSlot::Pending => None,
+            })
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
     } else {
         None
     };
@@ -2089,6 +2208,29 @@ pub(crate) fn page_response_bytes(
         // production CDN downstream will set).
         resp.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    // Issue #2556: publish readiness metadata only on Dev HTML responses.
+    // Both values come from the same cloned publication state that supplied
+    // the islands URL above, so the document cannot be split across
+    // generations. A missing outer handle is treated as the initial pending
+    // state so every Dev HTML response still carries an explicit signal;
+    // production callers never receive these headers.
+    if is_dev && is_html_content_type {
+        let fallback_publication = crate::DevPublicationState::pending();
+        let publication = publication_state.as_ref().unwrap_or(&fallback_publication);
+        let generation = HeaderValue::from_str(&publication.generation.to_string())
+            .expect("u64 generation is always a valid header value");
+        let ready = if publication_is_ready(publication) {
+            HeaderValue::from_static("true")
+        } else {
+            HeaderValue::from_static("false")
+        };
+        resp.headers_mut().insert(
+            header::HeaderName::from_static("x-zfb-dev-generation"),
+            generation,
+        );
+        resp.headers_mut()
+            .insert(header::HeaderName::from_static("x-zfb-dev-ready"), ready);
     }
     resp
 }
