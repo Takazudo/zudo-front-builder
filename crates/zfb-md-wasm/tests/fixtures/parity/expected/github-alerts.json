@@ -1,5 +1,5 @@
 {
-  "html": "<Note>This is a note with bold text.</Note><Warning>First paragraph of the warning.Second paragraph.</Warning><Tip>A helpful tip.</Tip>",
+  "html": "<Note><p>This is a note with <strong>bold</strong> text.</p></Note><Warning><p>First paragraph of the warning.</p><p>Second paragraph.</p></Warning><Tip><p>A helpful tip.</p></Tip>",
   "frontmatter": null,
   "diagnostics": []
 }
