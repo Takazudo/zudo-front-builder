@@ -14,14 +14,20 @@ export type SavedFocus = {
 
 const PERSIST_ATTR = "data-zfb-transition-persist";
 
-// Cross-package "needs-remount" flag written onto a persisted island whose props
-// changed across the swap. @takazudo/zfb's mountNewIslands consumes it — the
-// island mounted-map lives in that separate package, so a DOM attribute is the
-// only channel the two packages share. Namespaced under data-zfb-* like every
-// other zfb marker so it can't collide with a bare attribute a consumer sets on
-// the same island root. Replaces the opaque `ssr` attribute the original Astro
-// port set here but nothing consumed — zfb islands are marker divs, not
-// <astro-island> custom elements. See client-router/port-spec.md §12.3 / #1389.
+// Cross-package island attributes must use the same literal strings here and in
+// @takazudo/zfb's runtime: PERSIST_ATTR is read by both packages;
+// ISLAND_REMOUNT_ATTR below is written here and consumed there; that runtime's
+// public ISLAND_MOUNTED_ATTR ("data-zfb-island-mounted") is preserved on lifted
+// islands and cleared/re-written there during a props-changed remount.
+//
+// ISLAND_REMOUNT_ATTR is written onto a persisted island whose props changed
+// across the swap. @takazudo/zfb's mountNewIslands consumes it — the island
+// mounted-map lives in that separate package, so a DOM attribute is the only
+// channel the two packages share. Namespaced under data-zfb-* like every other
+// zfb marker so it can't collide with a bare attribute a consumer sets on the
+// same island root. Replaces the opaque `ssr` attribute the original Astro port
+// set here but nothing consumed — zfb islands are marker divs, not <astro-island>
+// custom elements. See client-router/port-spec.md §12.3 / #1389.
 const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
 
 const NON_OVERRIDABLE_ZFB_ATTRS = ["data-zfb-transition", "data-zfb-transition-fallback"];

@@ -24,6 +24,7 @@ export {
   mountNewIslands,
   cancelPendingIslands,
   unmountIslands,
+  ISLAND_MOUNTED_ATTR,
 } from "./runtime.js";
 export type { IslandManifest, IslandManifestValue } from "./runtime.js";
 export type { VNode, VNodeArray, VNodeObject } from "./jsx-types.js";
