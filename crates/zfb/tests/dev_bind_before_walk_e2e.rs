@@ -617,6 +617,30 @@ fn ready_generation(body: &serde_json::Value) -> u64 {
         .expect("readiness JSON generation")
 }
 
+async fn wait_for_publication_ready(
+    client: &reqwest::Client,
+    ready_url: &str,
+    minimum_generation: u64,
+    deadline: Duration,
+    session: &DevSession,
+) -> serde_json::Value {
+    let start = Instant::now();
+    let mut last = serde_json::Value::Null;
+    while start.elapsed() < deadline {
+        last = ready_json(client, ready_url).await;
+        if last["ready"] == true && ready_generation(&last) > minimum_generation {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "readiness endpoint did not advance above generation {minimum_generation} within \
+         {}s; last snapshot: {last}\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
+}
+
 async fn wait_for_client_script_urls(
     client: &reqwest::Client,
     ready_url: &str,
@@ -2066,8 +2090,8 @@ async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
 /// 1. Prepare the root, corrupt `pages/index.tsx`, THEN spawn Cold.
 /// 2. Assert the FIRST deferred bundle fails: the error-level cold-lazy
 ///    failure message (`deferred_bundle_failure_message`'s Cold branch)
-///    appears in the logs, and `GET /` serves the controlled 404 (no route
-///    table was ever published).
+///    appears in the logs, `/__zfb/ready` reports documents pending, and
+///    `GET /` serves the controlled 404 (no route table was ever published).
 /// 3. Subscribe to SSE (before the fix, so the recovery event can't be
 ///    missed), then restore the ORIGINAL `pages/index.tsx` source — an
 ///    ordinary watcher-tick edit, exercising the SAME
@@ -2075,8 +2099,9 @@ async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
 ///    does.
 /// 4. Assert recovery: a hard-asserted `page` SSE event, the "cold-lazy
 ///    bootstrap recovered" info line (the mechanism's own explicit signal —
-///    proves THIS is what fired, not just any successful publish), and a
-///    first-request 200 with the real homepage content.
+///    proves THIS is what fired, not just any successful publish), readiness
+///    advancing to a non-pending generation, and a first-request 200 with the
+///    real homepage content.
 ///
 /// ## Falsifiability
 ///
@@ -2117,6 +2142,7 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
     let base = format!("http://localhost:{port}");
     let client = client();
     let root_url = format!("{base}/");
+    let ready_url = format!("{base}/__zfb/ready");
 
     // Step 2 — the FIRST deferred bundle must fail LOUDLY. Wait for the
     // error-level cold-lazy failure message first: it is the authoritative
@@ -2175,6 +2201,13 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
          doesn't look like the controlled dev 404 page; body:\n{body}\n{}",
         session.logs(),
     );
+    let pending = ready_json(&client, &ready_url).await;
+    assert_eq!(
+        pending["ready"], false,
+        "a failed deferred Cold bundle must keep framework publication pending"
+    );
+    assert_eq!(pending["documents"], "pending");
+    let pending_generation = ready_generation(&pending);
 
     // Step 3 — subscribe to SSE BEFORE the fix (broadcast, not a queue: an
     // event fired before subscription is gone forever).
@@ -2204,6 +2237,18 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
         "expected the \"dev: cold-lazy bootstrap recovered\" info line after the fixed \
          source republished (issue #1809's recovery latch).\n{}",
         session.logs(),
+    );
+    let recovered_readiness = wait_for_publication_ready(
+        &client,
+        &ready_url,
+        pending_generation,
+        RENDER_DEADLINE,
+        &session,
+    )
+    .await;
+    assert_ne!(
+        recovered_readiness["documents"], "pending",
+        "the successful Cold route-table recovery must commit a complete document boundary"
     );
 
     // First request after recovery: 200 with the real homepage content.
