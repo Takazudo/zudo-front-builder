@@ -181,6 +181,14 @@ would have no cached reference to swap from.
 Content hashing is the production pipeline's responsibility. In dev the stable name
 is correct by design, not an oversight.
 
+Lazy island chunks are the exception to that stable entry name: esbuild gives
+`islands-chunk-<hash>.js` files content-hashed names. Within one dev process, after
+lazy-render obligations have resolved, the server keeps the companion files from the
+two previous islands generations on disk. This lets a document that was already open
+before a rebuild perform its deferred `import()` without receiving a 404. Older
+generations are pruned, and `/__zfb/ready` still makes no promise that a deferred chunk
+needed later by an open document is available.
+
 ## What this means in practice
 
 Three typical edit scenarios, and which event fires:
@@ -195,10 +203,10 @@ dynamic-imported and its hydration runs, re-mounting every island on the page. T
 preserve scroll position or per-component state across that swap, install a
 `window.__zfbIslandsReload` hook (see [The three SSE event types](#the-three-sse-event-types)).
 
-**Edit a page file that consumes an island.** Both page and island are dirty. The
-orchestrator re-renders the page; the HTML almost certainly changed; a `Page` event
-fires. The browser gets a fresh full-page load with up-to-date server-rendered HTML.
-Any concurrent `Islands` events for that tab are mooted by the reload.
+**Edit a page file that consumes an island.** The page is dirty, but a page-only edit
+does not by itself mark islands dirty or re-bundle them. The orchestrator re-renders
+the page; if the HTML changed, a `Page` event fires. The browser gets a fresh full-page
+load with up-to-date server-rendered HTML.
 
 **Edit a CSS file only.** No pages are dirty, no islands re-bundle. The CSS pipeline
 runs; if the output changed, a `Css` event fires. The browser swaps the stylesheet

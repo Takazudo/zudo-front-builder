@@ -33,8 +33,10 @@
 // it and returns the JSON-serialized array as `application/json`. If the
 // `paths` export is missing or throws, the response is a descriptive 500.
 // This endpoint is only meant for the build pipeline — it is safe to leave
-// registered in production, but `/__paths__/...` is reserved for this
-// internal protocol and a conflicting user-authored page is warned about.
+// registered in production. During build/check/dev route scans, `zfb-router`
+// rejects `pages/__paths__/<...>` with `RouterError::ReservedRoutePrefix`.
+// The warning below remains as belt-and-braces for `createPageRouter` callers
+// that hand-build `pages` and therefore bypass the scanner.
 
 import { Hono } from "hono";
 import { setContentSnapshot } from "@takazudo/zfb/content";

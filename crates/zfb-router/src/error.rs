@@ -76,4 +76,19 @@ pub enum RouterError {
         second: PathBuf,
         reason: String,
     },
+
+    /// A page route starts with the literal `__paths__` segment and has at
+    /// least one more segment (`pages/__paths__/foo.tsx` → `/__paths__/foo`).
+    /// `/__paths__/<route-key>` is the synthetic endpoint the build pipeline
+    /// uses to evaluate `paths()` exports (`@takazudo/zfb-runtime`'s
+    /// `createPageRouter` registers `/__paths__/:routeKey{.+}` before every
+    /// user page), so such a page would never be served for GET/HEAD. A page
+    /// at exactly `/__paths__`, or under a different first segment, is fine.
+    #[error(
+        "reserved route {template:?} in {path}: the `/__paths__/` prefix is reserved for \
+         zfb's internal paths() enumeration endpoint, so this page would never be served; \
+         move it to a different top-level directory",
+        path = path.display(),
+    )]
+    ReservedRoutePrefix { path: PathBuf, template: String },
 }

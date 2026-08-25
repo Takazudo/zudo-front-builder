@@ -15,10 +15,14 @@
 //! | `pages/docs/[[...slug]].tsx`        | `/docs/:slug{.+}?` | optional catchall: also `/docs`|
 //! | `pages/[lang]/[slug].tsx`           | `/:lang/:slug`     |                                |
 //!
+//! The `/__paths__/<route-key>` prefix is reserved for the synthetic
+//! `paths()` enumeration endpoint and cannot be used by page routes.
+//!
 //! Files starting with `_` (e.g. `_app.tsx`, `_document.tsx`), and any page
 //! nested under a directory starting with `_` (e.g. `_components/foo.tsx`),
-//! are ignored — see [`zfb_types::path_has_private_prefix_component`], the
-//! single source of truth shared with the bundler's `derive_route`.
+//! are ignored, except for the reserved top-level `__paths__` namespace — see
+//! [`zfb_types::path_has_private_prefix_component`], the single source of
+//! truth shared with the bundler's `derive_route`.
 //! Accepted page extensions: `.tsx`, `.ts`, `.jsx`, `.js`, `.mdx`, `.md`,
 //! `.html` (see [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`], the single source of
 //! truth shared with the bundler). Files with any other extension are
@@ -66,6 +70,10 @@ use crate::route::{Route, RouteKind, Segment};
 /// regression fix — earlier diff briefly dropped `.mdx` while extending the
 /// allowlist).
 const ACCEPTED_PAGE_EXTENSIONS: &[&str] = zfb_types::ROUTABLE_PAGE_EXTENSIONS;
+
+// Reserved by `packages/zfb-runtime/src/router.ts`'s
+// `app.get("/__paths__/:routeKey{.+}")` endpoint.
+const RESERVED_ROUTE_PREFIX: &str = "__paths__";
 
 /// Maximum specificity points awarded per route segment. The exact value is an
 /// implementation detail; only relative ordering matters.
@@ -162,7 +170,21 @@ fn scan_pages_inner(pages_dir: &Path) -> Result<(Vec<Route>, Vec<String>), Route
         // conventionally private (e.g. `pages/_components/`, `_app.tsx`).
         // Shared with `zfb-build`'s `derive_route` so the two layers cannot
         // silently drift apart again (issue #2123 / #2148).
-        if zfb_types::path_has_private_prefix_component(rel) {
+        // `__paths__` is normally `_`-prefixed, but its first component is a
+        // reserved router namespace. Let it reach `parse_route` so page files
+        // below `/__paths__/` raise `ReservedRoutePrefix` instead of being
+        // silently hidden by the privacy convention. The reservation is
+        // first-component-only; nested `__paths__` directories keep the
+        // existing private-directory behavior.
+        let first_component_is_reserved = rel
+            .components()
+            .next()
+            .and_then(|component| match component {
+                Component::Normal(name) => name.to_str(),
+                _ => None,
+            })
+            .is_some_and(|name| name == RESERVED_ROUTE_PREFIX);
+        if zfb_types::path_has_private_prefix_component(rel) && !first_component_is_reserved {
             continue;
         }
 
@@ -349,6 +371,15 @@ fn parse_route(source: &Path, rel: &Path) -> Result<Route, RouterError> {
             });
         }
         segments.push(parsed);
+    }
+
+    if segments.len() >= 2
+        && matches!(&segments[0], Segment::Static(s) if s == RESERVED_ROUTE_PREFIX)
+    {
+        return Err(RouterError::ReservedRoutePrefix {
+            path: source.to_path_buf(),
+            template: prefix_template(&segments),
+        });
     }
 
     let kind = classify(&segments);
@@ -888,6 +919,52 @@ mod tests {
             fs::write(&abs, "export default function P() { return null; }\n").unwrap();
         }
         user_page_shape_keys(tmp.path())
+    }
+
+    #[test]
+    fn reserved_route_prefix_is_rejected_and_controls_are_accepted() {
+        for path in [
+            "__paths__/foo.tsx",
+            "__paths__/[slug].tsx",
+            "__paths__/a/b.tsx",
+            "__paths__/[slug].md",
+        ] {
+            let err = scan_tree(&[path]).unwrap_err();
+            assert!(
+                matches!(err, RouterError::ReservedRoutePrefix { .. }),
+                "expected ReservedRoutePrefix for {path}, got {err:?}",
+            );
+            if path == "__paths__/foo.tsx" {
+                assert!(err.to_string().contains("/__paths__/foo"));
+                assert!(err.to_string().contains(path));
+            }
+        }
+
+        for path in [
+            "__paths__.tsx",
+            "__paths__/index.tsx",
+            "a/__paths__/b.tsx",
+            "[[...rest]].tsx",
+            "[...rest].tsx",
+        ] {
+            assert!(
+                scan_tree(&[path]).is_ok(),
+                "positive-control route should be accepted: {path}",
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_route_prefix_is_rejected_by_page_census() {
+        let err = census_tree(&["__paths__/foo.tsx"]).unwrap_err();
+        assert!(matches!(err, RouterError::ReservedRoutePrefix { .. }));
+    }
+
+    #[test]
+    fn reserved_route_prefix_is_rejected_by_route_shape_helper() {
+        let err = route_shape_key_for_pages_rel(Path::new("__paths__/x.tsx")).unwrap_err();
+        assert!(matches!(err, RouterError::ReservedRoutePrefix { .. }));
+        assert!(route_shape_key_for_pages_rel(Path::new("__paths__.tsx")).is_ok());
     }
 
     #[test]
