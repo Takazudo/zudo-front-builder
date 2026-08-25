@@ -24,12 +24,11 @@
 //! siblings, so the rendered HTML shows them in full and an end-to-end
 //! assertion is meaningful here. The `reparse_block` site is covered at
 //! Level 1 instead, in `plugins::directives`'s own `mod tests` — its
-//! output lands inside an `MdxJsxFlowElement`, which this HTML path hands
-//! to `reconstruct_jsx`, whose documented lossy fallback stringifies
-//! nested markdown (`[label](url)` → the text `label`). An HTML assertion
-//! there would be measuring `reconstruct_jsx`, not the construct
-//! threading. Asserting on the mdast the re-parse produces is both exact
-//! and immune to that.
+//! output lands inside an `MdxJsxFlowElement`, whose children the HTML path
+//! now renders normally. An HTML assertion there would still conflate the
+//! secondary parser's construct threading with the later renderer.
+//! Asserting on the mdast the re-parse produces is exact and isolates the
+//! behavior under test.
 //!
 //! Structure:
 //!
@@ -305,8 +304,8 @@ fn transcluded_bare_url_does_not_swallow_trailing_cjk() {
 // shared with `Pipeline::run`) and its own construct set, so it can
 // regress independently — the same reason `gfm_autolink_nested_link.rs`
 // covers both entry points for the sibling defect. It is also the path
-// that matters in production for directives, whose bodies stay structured
-// here instead of being flattened by `reconstruct_jsx`.
+// that matters in production for directives. Both paths now retain body
+// structure, but they use separate renderers and can regress independently.
 
 /// Compile through the JSX-emit path with `source_path` armed, so
 /// `TranscludePlugin` can resolve a relative include.
@@ -642,14 +641,11 @@ fn jsx_wrapped_include(include: &str) -> String {
 /// zfb#2402: the include site's placement decides whether
 /// `HardBreaksPlugin` may run, and this shape is the one where it may
 /// not. The original motivation was that an `MdxJsxFlowElement` on the
-/// HTML path went through `reconstruct_jsx`'s lossy catch-all, which
-/// stringified a `Break` to the EMPTY string — so normalising hard
-/// breaks into a JSX-nested include DELETED the author's newline
-/// instead of rendering `<br>`. zfb#2401 has since fixed that renderer
-/// (a `Break` in a JSX body now renders `<br />`), but the placement
-/// rule this test pins is unchanged and independent of it: no `Break`
-/// is ever injected here, so the author's literal newline is what must
-/// survive.
+/// HTML path used to stringify a `Break` to the empty string. zfb#2401
+/// first protected that node, and zfb#2570 now renders all JSX-body
+/// children normally. The placement rule this test pins is unchanged and
+/// independent of either renderer fix: no `Break` is injected here, so
+/// the author's literal newline is what must survive.
 ///
 /// Unlike the collapsed-directive-body site (whose end-to-end reach is
 /// masked by the zfb#2401 chain-ordering interaction documented below),
@@ -679,8 +675,8 @@ fn transcluded_hard_break_inside_a_literal_jsx_element_keeps_the_newline_on_the_
     assert!(
         rendered.contains("first line\nsecond line"),
         "the author's newline must survive inside a JSX body — the placement \
-         gate injects no Break here, so there is nothing for zfb#2401's \
-         `<br />` rendering to act on (zfb#2402): {rendered}"
+         gate injects no Break here, so there is no `<br/>` node to render \
+         (zfb#2402): {rendered}"
     );
 }
 
@@ -737,15 +733,12 @@ fn nested_transclude_applies_cjk_and_hard_breaks_at_both_levels() {
     );
 }
 
-// ── zfb#2401: a `Break` nested in a JSX body is no longer swallowed ─────
+// ── zfb#2401 / zfb#2570: JSX bodies use normal HTML rendering ──────────
 //
-// `reconstruct_jsx`'s catch-all (`other => other.to_string()`) treats
-// `Break` as one of markdown-rs's "voids" and renders it as `""`, so a
-// hard break inside an `MdxJsxFlowElement` body was DELETED — fusing the
-// words on either side of it with not even a space between them. The fix
-// gates the fallback arm on `subtree_contains_break` in addition to
-// `subtree_contains_footnote`, routing such a subtree through the one
-// shared `jsx_body_stringify` mirror, which renders `Break` as `<br />`.
+// zfb#2401 first prevented a `Break` from disappearing in the historical
+// lossy JSX-body stringifier. zfb#2570 replaced that stringifier with the
+// normal mdast → hast → HTML path, so the same body now retains its
+// paragraph structure and uses the serializer's canonical `<br/>` form.
 
 const COLLAPSED_DIRECTIVE_HARD_BREAK_SRC: &str = ":::note\nfirst line\nsecond line\n:::\n";
 
@@ -766,9 +759,8 @@ fn text_node(value: &str) -> markdown::mdast::Node {
 /// destroying `single_text_collapsed`'s precondition, so recognition
 /// falls through to `transform_block_container` — which wraps the body
 /// in a `Paragraph` (`paragraph_from_lines`) and hands the whole
-/// `MdxJsxFlowElement` to the HTML path's lossy stringifier with the
-/// `Break` nested one level down. That nesting is why a direct
-/// `MdastNode::Break(_)` arm on `reconstruct_jsx` would never fire here.
+/// `MdxJsxFlowElement` to the HTML path with the `Break` nested one level
+/// down. Recursive child rendering must preserve that exact structure.
 #[test]
 fn collapsed_directive_body_hard_break_renders_br_on_the_html_path() {
     let dir = tmpdir();
@@ -790,7 +782,7 @@ fn collapsed_directive_body_hard_break_renders_br_on_the_html_path() {
         "the two lines must never be fused into one word run (zfb#2401): {rendered}"
     );
     assert_eq!(
-        rendered, "<Note>first line<br />second line</Note>",
+        rendered, "<Note><p>first line<br/>second line</p></Note>",
         "unexpected rendering of the zfb#2401 repro"
     );
 }
@@ -798,8 +790,7 @@ fn collapsed_directive_body_hard_break_renders_br_on_the_html_path() {
 /// `hardBreaks: false` for the same input, pinned to its LITERAL
 /// serialized output rather than a vague "unchanged": with no
 /// `HardBreaksPlugin` in the chain the body stays a single `Text` child
-/// carrying the newline, `subtree_contains_break` is `false`, and the
-/// subtree takes the byte-identical `other.to_string()` catch-all.
+/// carrying the newline. The surrounding paragraph remains explicit.
 #[test]
 fn collapsed_directive_body_without_hard_breaks_keeps_the_literal_newline() {
     let dir = tmpdir();
@@ -812,7 +803,7 @@ fn collapsed_directive_body_without_hard_breaks_keeps_the_literal_newline() {
         COLLAPSED_DIRECTIVE_HARD_BREAK_SRC,
     );
 
-    assert_eq!(rendered, "<Note>first line\nsecond line</Note>");
+    assert_eq!(rendered, "<Note><p>first line\nsecond line</p></Note>");
 }
 
 /// Focused counterpart to the end-to-end test above: the exact nested
@@ -841,16 +832,14 @@ fn jsx_body_break_nested_in_a_paragraph_reconstructs_as_br() {
 
     let rendered = zfb_content::serializer::serialize(&zfb_content::pipeline::mdast_to_hast(&jsx));
 
-    assert_eq!(rendered, "<Note>first line<br />second line</Note>");
+    assert_eq!(rendered, "<Note><p>first line<br/>second line</p></Note>");
 }
 
-/// Byte-identity control: a JSX body whose subtree contains NEITHER a
-/// footnote NOR a `Break` still takes the untouched `other.to_string()`
-/// catch-all, which drops `Strong`'s formatting while retaining every
-/// character. Guards the widened gate from becoming "recurse generally",
-/// which the issue puts explicitly out of scope.
+/// A JSX body without a footnote or hard break still takes the same normal
+/// recursive path: block structure and inline formatting are not special
+/// cases of those earlier fixes.
 #[test]
-fn jsx_body_without_a_break_or_footnote_still_takes_the_lossy_catch_all() {
+fn jsx_body_without_a_break_or_footnote_renders_structured_html() {
     use markdown::mdast;
 
     let jsx = mdast::Node::MdxJsxFlowElement(mdast::MdxJsxFlowElement {
@@ -871,13 +860,11 @@ fn jsx_body_without_a_break_or_footnote_still_takes_the_lossy_catch_all() {
 
     let rendered = zfb_content::serializer::serialize(&zfb_content::pipeline::mdast_to_hast(&jsx));
 
-    assert_eq!(rendered, "<Note>plain bold</Note>");
+    assert_eq!(rendered, "<Note><p>plain <strong>bold</strong></p></Note>");
 }
 
-/// Both features present in ONE fallback subtree — the interaction the
-/// single shared stringifier exists to protect. A second, parallel
-/// `Break`-only mirror would render the break but lose the footnote
-/// marker (or vice versa) depending on which gate won.
+/// Both features present in one recursively rendered subtree. The shared
+/// footnote cursor and normal `Break` conversion must compose.
 #[test]
 fn collapsed_directive_body_renders_a_footnote_and_a_hard_break_together() {
     let dir = tmpdir();
@@ -920,28 +907,19 @@ fn collapsed_directive_body_renders_a_footnote_and_a_hard_break_together() {
     );
 }
 
-// ── zfb#2408: the `cjkFriendly` sibling of the `Break` case, MEASURED ──
+// ── zfb#2408 / zfb#2570: CJK directive-body formatting ────────────────
 //
 // zfb#2401 speculated that `markdown.cjkFriendly` interacts with a
 // collapsed directive body the same way `hardBreaks` did. It reaches
-// `reconstruct_jsx`'s fallback by the same route — `CjkFriendlyPlugin` is
+// `reconstruct_jsx` by the same route — `CjkFriendlyPlugin` is
 // wired into the top-level mdast chain before `DirectiveRegistry`, so it
 // retokenises the body's single multi-line `Text` child into
 // `Text`/`Strong`/`Text`, and `single_text_collapsed` (`directives.rs`)
 // bails on `children.len() != 1` exactly as it did for the `Break` nodes
-// `HardBreaksPlugin` injected. But the OUTCOME is a different defect
-// class, which is why zfb#2408 changed no rendering code.
-//
-// `Break` is one of `to_string()`'s voids: it rendered as `""`, DELETING
-// the author's newline and fusing `first linesecond line`. `Strong` is a
-// container, and `to_string()` returns a container's children's text — so
-// every character of the body survives and only the `<strong>` wrapper is
-// dropped. That is the catch-all's deliberate, documented lossiness (see
-// `reconstruct_jsx`'s doc comment in `pipeline.rs`), not content deletion,
-// so it stays on the catch-all and is documented instead — in both locales
-// of `docs/src/content/docs*/markdown-features/cjk-friendly.mdx`.
-//
-// These tests exist so the next reader does not have to re-measure.
+// `HardBreaksPlugin` injected. zfb#2408 measured the then-deliberate loss
+// of the `<strong>` wrapper. zfb#2570 changes that HTML-path contract:
+// recursively rendered component children now retain the wrapper and the
+// paragraph that owns it.
 
 /// Wrap `body` in a collapsed (blank-line-less) `:::note` container.
 fn collapsed_note(body: &str) -> String {
@@ -955,29 +933,23 @@ fn collapsed_cjk_emphasis_src() -> String {
     collapsed_note(&format!("{CJK_EMPHASIS_BODY}\n二行目"))
 }
 
-/// The zfb#2408 measurement, pinned to its LITERAL output.
-///
-/// The `<strong>` is gone, but `これは`, `重要。` and `テスト` are all still
-/// there — no character of the body text is lost, and the second line's
-/// newline survives verbatim (`hardBreaks` is off, so no `Break` is
-/// injected). The prose control proves `cjkFriendly` really did tokenise
-/// the marker, so the flattening is attributable to the HTML path's
-/// stringifier rather than to the emphasis never being recognised at all.
+/// The zfb#2408 measurement updated for the zfb#2570 contract. Both the
+/// `<strong>` wrapper and all body text survive, with the paragraph and
+/// literal newline retained when `hardBreaks` is off.
 #[test]
-fn collapsed_directive_body_cjk_emphasis_loses_formatting_but_not_content() {
+fn collapsed_directive_body_cjk_emphasis_preserves_formatting_and_content() {
     let dir = tmpdir();
     let render =
         |src: &str| render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, true, false, src);
 
     assert_eq!(
         render(&collapsed_cjk_emphasis_src()),
-        "<Note>これは重要。テスト\n二行目</Note>"
+        "<Note><p>これは<strong>重要。</strong>テスト\n二行目</p></Note>"
     );
-    // A single-line body loses the emphasis identically — the flattening
-    // is the stringifier's, not a consequence of the multi-line shape.
+    // A single-line body retains the same inline structure.
     assert_eq!(
         render(&collapsed_note(CJK_EMPHASIS_BODY)),
-        "<Note>これは重要。テスト</Note>"
+        "<Note><p>これは<strong>重要。</strong>テスト</p></Note>"
     );
     // Control: the same markers as ordinary prose keep their <strong>.
     assert_eq!(
@@ -986,28 +958,23 @@ fn collapsed_directive_body_cjk_emphasis_loses_formatting_but_not_content() {
     );
 }
 
-/// The formatting loss above belongs to `reconstruct_jsx`'s catch-all, not
-/// to `cjkFriendly` and not to the collapsed shape. Plain ASCII emphasis
-/// with `cjkFriendly` OFF flattens identically — markdown-rs tokenises
-/// `**bold**` into a `Strong` during the initial parse, so
-/// `single_text_collapsed`'s one-`Text`-child precondition is already gone
-/// before any visitor runs — and so does a blank-line-separated body,
-/// which that function never inspects. `cjkFriendly` only decides whether
-/// the CJK-flanked `**` becomes a `Strong` at all; with it off the marker
-/// stays literal text instead of being flattened away.
+/// Recursive HTML body rendering is independent of `cjkFriendly` and of
+/// collapsed versus blank-line-separated directive syntax. Plain ASCII
+/// emphasis is preserved with `cjkFriendly` off; CJK-flanked markers stay
+/// literal only when that option prevents them from being tokenised.
 #[test]
-fn directive_body_emphasis_loss_is_not_specific_to_cjk_friendly_or_to_collapsed_bodies() {
+fn directive_body_emphasis_survives_across_cjk_and_body_shapes() {
     let dir = tmpdir();
     let render =
         |src: &str| render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, false, false, src);
 
     assert_eq!(
         render(&collapsed_note("plain **bold** text\nsecond line")),
-        "<Note>plain bold text\nsecond line</Note>"
+        "<Note><p>plain <strong>bold</strong> text\nsecond line</p></Note>"
     );
     assert_eq!(
         render(":::note\n\nplain **bold** text\n\n:::\n"),
-        "<Note>plain bold text</Note>"
+        "<Note><p>plain <strong>bold</strong> text</p></Note>"
     );
     // Control: the same markers as ordinary prose keep their <strong>.
     assert_eq!(
@@ -1018,16 +985,13 @@ fn directive_body_emphasis_loss_is_not_specific_to_cjk_friendly_or_to_collapsed_
     // so `**` survives as literal text rather than being flattened away.
     assert_eq!(
         render(&collapsed_cjk_emphasis_src()),
-        "<Note>これは**重要。**テスト\n二行目</Note>"
+        "<Note><p>これは**重要。**テスト\n二行目</p></Note>"
     );
 }
 
-/// The scope boundary the docs note leans on: `zfb build` compiles content
-/// through the MDX/JSX emit path (`zfb_render`'s loader calls
-/// `mdx_to_jsx_module_with_pipeline`), which renders a JSX body
-/// recursively, so the flattening above is confined to the HTML render
-/// path — `zfb_content::facade::render_html`, exposed to JS as
-/// `zfb-md-wasm`'s `renderHtml`. Same source, emphasis intact.
+/// `zfb build` uses a separate MDX/JSX emitter. Keep its long-standing
+/// recursive result pinned beside the HTML-path coverage so the two public
+/// surfaces continue to retain the same author formatting.
 #[test]
 fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
     let dir = tmpdir();
@@ -1042,7 +1006,7 @@ fn collapsed_directive_body_cjk_emphasis_survives_on_the_jsx_path() {
 
     assert!(
         jsx.contains("<_components.strong>重要。</_components.strong>"),
-        "the JSX path must keep the emphasis the HTML path flattens: {jsx}"
+        "the JSX path must keep the emphasis too: {jsx}"
     );
 }
 
@@ -1093,11 +1057,11 @@ fn nested_collapsed_directive_renders_the_same_with_and_without_hard_breaks() {
 
     assert_eq!(
         render(false),
-        "<Note>prose above<Tip>inner body</Tip></Note>"
+        "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>"
     );
     assert_eq!(
         render(true),
-        "<Note>prose above<Tip>inner body</Tip></Note>"
+        "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>"
     );
 }
 
@@ -1150,7 +1114,7 @@ fn deep_outer_fence_nests_innermost_first_under_hard_breaks() {
             DEEP_NESTED_COLLAPSED_SRC,
         );
         assert_eq!(
-            rendered, "<Note>prose above<Tip>inner body</Tip></Note>",
+            rendered, "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>",
             "5-colon outer fence with hardBreaks={hard_breaks}"
         );
 
@@ -1172,11 +1136,8 @@ fn deep_outer_fence_nests_innermost_first_under_hard_breaks() {
 /// The `cjkFriendly` half of the same defect: no hard break anywhere, but
 /// the CJK-flanked `**…**` in the body retokenises into `Text`/`Strong`/
 /// `Text`, which loses `single_text_collapsed`'s precondition just as a
-/// `Break` does. The nested run must still be recognised, every character
-/// must survive, and the `<strong>` must still flatten on the HTML path —
-/// that flattening is `reconstruct_jsx`'s documented lossiness (zfb#2408),
-/// deliberately NOT this issue's scope, so it is pinned here rather than
-/// quietly fixed.
+/// `Break` does. The nested run must still be recognised, and the HTML
+/// path must preserve the resulting `<strong>` and paragraph structure.
 #[test]
 fn nested_collapsed_directive_is_recognised_when_cjk_friendly_splits_the_body() {
     let dir = tmpdir();
@@ -1185,13 +1146,13 @@ fn nested_collapsed_directive_is_recognised_when_cjk_friendly_splits_the_body() 
     let rendered = render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, true, false, src);
     assert_eq!(
         rendered,
-        "<Note>これは重要。テスト<Tip>inner body</Tip></Note>"
+        "<Note><p>これは<strong>重要。</strong>テスト</p><Tip><p>inner body</p></Tip></Note>"
     );
 
     let jsx = compile_jsx_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, true, false, src);
     assert!(
         jsx.contains("<_components.strong>重要。</_components.strong>"),
-        "the JSX path must keep the emphasis the HTML path flattens: {jsx}"
+        "the JSX path must keep the emphasis too: {jsx}"
     );
     assert!(
         jsx.contains("Tip") && !jsx.contains(":::tip"),
@@ -1218,7 +1179,7 @@ fn transcluded_nested_collapsed_directive_renders_the_same_with_hard_breaks_on()
             &include,
         );
         assert_eq!(
-            rendered, "<Note>prose above<Tip>inner body</Tip></Note>",
+            rendered, "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>",
             "transcluded nested run with hardBreaks={hard_breaks}"
         );
     }
@@ -1265,7 +1226,7 @@ fn spaced_nested_directive_renders_the_same_with_and_without_hard_breaks() {
                 hard_breaks,
                 SPACED_NESTED_SRC,
             ),
-            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>",
             "spaced nested run with hardBreaks={hard_breaks}"
         );
     }
@@ -1288,7 +1249,7 @@ fn collapsed_nested_directive_output_is_unchanged_beside_the_spaced_form() {
                 hard_breaks,
                 NESTED_COLLAPSED_SRC,
             ),
-            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>",
             "collapsed nested run with hardBreaks={hard_breaks}"
         );
     }
@@ -1310,7 +1271,7 @@ fn spaced_deep_outer_fence_nests_innermost_first_on_both_emit_paths() {
                 hard_breaks,
                 SPACED_DEEP_NESTED_SRC,
             ),
-            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>",
             "5-colon spaced outer fence with hardBreaks={hard_breaks}"
         );
 
@@ -1349,7 +1310,7 @@ fn transcluded_nested_spaced_directive_renders_the_same_with_hard_breaks_on() {
                 hard_breaks,
                 &include,
             ),
-            "<Note>prose above<Tip>inner body</Tip></Note>",
+            "<Note><p>prose above</p><Tip><p>inner body</p></Tip></Note>",
             "transcluded spaced nested run with hardBreaks={hard_breaks}"
         );
     }
@@ -1368,11 +1329,11 @@ fn spaced_unclosed_opener_leaves_the_later_padded_directive_intact() {
 
     assert_eq!(
         render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, false, false, src),
-        "<p>:::warning\nnever closed</p><Note>padded body</Note>"
+        "<p>:::warning\nnever closed</p><Note><p>padded body</p></Note>"
     );
     assert_eq!(
         render_in_full(dir.path(), ResolvedGfmConstructs::ALL_ON, false, true, src),
-        "<p>:::warning<br/>never closed</p><Note>padded body</Note>"
+        "<p>:::warning<br/>never closed</p><Note><p>padded body</p></Note>"
     );
 }
 
@@ -1392,7 +1353,7 @@ fn transcluded_simple_collapsed_directive_keeps_its_literal_output() {
             false,
             &include
         ),
-        "<Note>first line\nsecond line</Note>"
+        "<Note><p>first line\nsecond line</p></Note>"
     );
     assert_eq!(
         render_in_full(
@@ -1402,7 +1363,7 @@ fn transcluded_simple_collapsed_directive_keeps_its_literal_output() {
             true,
             &include
         ),
-        "<Note>first line<br />second line</Note>"
+        "<Note><p>first line<br/>second line</p></Note>"
     );
 }
 
@@ -1423,7 +1384,7 @@ fn sibling_collapsed_runs_still_transform_under_hard_breaks() {
             src,
         );
         assert_eq!(
-            rendered, "<Note>first.</Note><Tip>second.</Tip>",
+            rendered, "<Note><p>first.</p></Note><Tip><p>second.</p></Tip>",
             "sibling collapsed runs with hardBreaks={hard_breaks}"
         );
     }
@@ -1523,8 +1484,8 @@ fn unknown_and_unclosed_collapsed_fences_stay_literal_under_hard_breaks() {
 // `DirectiveRegistry` runs travel into the `MdxJsxFlowElement`
 // `transform_block_container` builds, and `reconstruct_jsx` used to
 // stringify them to the EMPTY string — deleting the author's newline with
-// no separator at all (`first linesecond line`). They now render as
-// `<br />`, pinned end-to-end by
+// no separator at all (`first linesecond line`). They now render through
+// the normal serializer as `<br/>`, pinned end-to-end by
 // `collapsed_directive_body_hard_break_renders_br_on_the_html_path` above.
 //
 // The chain-ordering question this comment used to leave open is CLOSED.
@@ -1535,13 +1496,10 @@ fn unknown_and_unclosed_collapsed_fences_stay_literal_under_hard_breaks() {
 // both no-recurse at `MdxJsxFlowElement`, so running them after directives
 // would blind them to every directive body, and compensating through
 // `reparse_block` would re-fire the `SecondaryParsePlacement` gate and flip
-// the `<br />` pin named above. Do not re-open it as a reorder; the
+// the `<br/>` pin named above. Do not re-open it as a reorder; the
 // reasoning is recorded on zfb#2412.
 //
-// The `markdown.cjkFriendly` half of the same pre-emption was MEASURED in
-// #2408 and needed no renderer fix: `CjkFriendlyPlugin` injects `Strong`,
-// a CONTAINER whose `to_string()` returns its children's text, so the body
-// keeps every character and loses only the `<strong>` — the catch-all's
-// deliberate lossiness, not deletion. Pinned by the zfb#2408 section
-// above; documented in both locales of
-// `docs/src/content/docs*/markdown-features/cjk-friendly.mdx`.
+// The `markdown.cjkFriendly` half of the same pre-emption was measured in
+// #2408: `CjkFriendlyPlugin` injects `Strong`. Issue #2570 now preserves
+// that structure on the HTML path too. The updated output is pinned above
+// and documented in both CJK-friendly guide locales.

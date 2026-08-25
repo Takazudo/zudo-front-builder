@@ -778,11 +778,11 @@ impl Pipeline {
     /// code-enrichment (#2207).
     ///
     /// The JSX-emit path uses this so a fence nested inside an MDX JSX
-    /// element body (`<Note>…</Note>`) or a `:::` directive — which the
-    /// mdast→hast conversion flattens into an opaque
-    /// [`HastNode::JsxRaw`] payload that the live hast visitors never
-    /// traverse — is highlighted exactly like a top-level fence. The
-    /// chain is handed out OWNED (fresh instances per call,
+    /// element body (`<Note>…</Note>`) or a `:::` directive — whose outer
+    /// component becomes an opaque [`HastNode::JsxRaw`] payload that the
+    /// live hast visitors never traverse — is highlighted exactly like a
+    /// top-level fence. The chain is handed out OWNED (fresh instances per
+    /// call,
     /// reconstructed from the stored `NestedCodeChainSpec` config)
     /// so the caller can run it inside the emit walk without borrowing
     /// the pipeline — `mdx_to_jsx_module_inner` still needs
@@ -2189,15 +2189,12 @@ impl Pipeline {
     ///
     /// Deliberately does NOT apply `jsx_nested_image_dimensions` /
     /// `jsx_nested_external_links` (zfb#2247): this HTML path feeds
-    /// `mdast_to_hast`, whose `reconstruct_jsx` fallback (below)
-    /// lossily stringifies markdown nested in JSX (`[label](url)` →
-    /// text `label`) — no nested `<a>`/`<img>` elements exist here to
-    /// treat, and running the mutators would change this path's output
-    /// (a synthesized JSX element gets structurally reconstructed
-    /// instead of stringified, for treated nodes only). Applying them
-    /// only in `apply_mdast_visitors*` (the MDX compile path, which
-    /// keeps `MdxJsxTextElement` nodes structured all the way to
-    /// `JsxEmitter`) keeps this path's output byte-identical.
+    /// `mdast_to_hast`, whose `reconstruct_jsx` renders nested Markdown
+    /// to HTML inside one opaque `JsxRaw` string. By the hast-visitor
+    /// phase, nested `<a>`/`<img>` elements are no longer traversable.
+    /// Applying the dedicated mdast mutators here would add compile-path
+    /// policies to `renderHtml`, a separate contract change. They remain
+    /// scoped to `apply_mdast_visitors*` and the MDX compile path.
     ///
     /// # Errors
     /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
@@ -2236,7 +2233,7 @@ impl Pipeline {
     /// Also deliberately does NOT apply `jsx_nested_image_dimensions` /
     /// `jsx_nested_external_links` (zfb#2247) — same reasoning as
     /// [`Pipeline::run`]'s doc comment (this is the other HTML-path
-    /// entry point, sharing its `reconstruct_jsx` fallback).
+    /// entry point, sharing its `reconstruct_jsx` HTML reconstruction).
     ///
     /// # Errors
     /// Returns [`PipelineError::Parse`] if markdown-rs rejects the input.
@@ -2709,10 +2706,10 @@ fn register_post_syntect_features_config_derived(
 /// `MdxJsxText*`, `MdxFlow/TextExpression`, and `Math`/`InlineMath`
 /// nodes during [`mdast_to_hast_with`].
 ///
-/// The default strategy ([`JsxEmitStrategy::HtmlPath`]) preserves the
-/// pre-#121 HTML serializer behaviour: `reconstruct_jsx` falls back
-/// to `Node::to_string()` for non-text children (lossy in markdown
-/// formatting, but stable for the project's HTML snapshots).
+/// The default strategy ([`JsxEmitStrategy::HtmlPath`]) reconstructs the
+/// outer JSX source while rendering its children through the normal
+/// mdast → hast → HTML path. This keeps custom-component tags available
+/// to compile-free consumers without flattening their Markdown bodies.
 ///
 /// The JSX-aware strategy ([`JsxEmitStrategy::JsxPath`]) is used by
 /// `mdx_jsx_emit::mdx_to_jsx_module_with_pipeline` to produce
@@ -2740,9 +2737,8 @@ pub enum JsxEmitStrategy<'a> {
 /// Convert an mdast node into a hast node.
 ///
 /// Convenience wrapper over [`mdast_to_hast_with`] using
-/// [`JsxEmitStrategy::HtmlPath`] — i.e. the pre-#121 HTML-path
-/// behaviour. Existing callers (the HTML serializer path,
-/// `Pipeline::run`) keep their snapshot output unchanged.
+/// [`JsxEmitStrategy::HtmlPath`]. Existing callers include the HTML
+/// serializer path and `Pipeline::run`.
 ///
 /// See the module docs for the full coverage list. Unhandled node
 /// types degrade to [`HastNode::Raw("".into())`] so the pipeline
@@ -2829,24 +2825,13 @@ pub fn mdast_to_hast_with_model(
             // points at a marker that was never emitted — so assert the
             // two walks covered the same set.
             //
-            // Extended to the HTML path by issue #2396: previously this
-            // was JSX-path-only, because `JsxEmitStrategy::HtmlPath`'s
-            // `reconstruct_jsx` is a documented lossy fallback that
-            // stringifies an MDX JSX element's children instead of
-            // recursing — a footnote inside a JSX body used to go
-            // unclaimed there, which would have fired this very assert
-            // on valid input. `reconstruct_jsx` now gets DEDICATED
-            // recursive handling for footnotes specifically
-            // (`subtree_contains_footnote` + `jsx_body_stringify`),
-            // so the invariant holds on both paths — verified by this
-            // crate's full test suite (including a same-document,
-            // six-container-variant sweep nested inside JSX) with the
-            // gate temporarily removed, zero failures. `reconstruct_jsx`
-            // remains lossy in general for every OTHER construct
-            // (Image/Table/Code/Math nested in JSX, out of #2396's
-            // scope — see its "Out of scope" section); this assert only
-            // ever inspects footnote occurrence counts, so that general
-            // lossiness cannot trip it.
+            // Extended to the HTML path by issue #2396. A JSX-nested
+            // reference must claim from this same cursor while the
+            // component body is recursively rendered; otherwise its
+            // definition would carry a backreference to a marker that
+            // never appeared. The shared recursive HTML rendering used
+            // by `reconstruct_jsx` keeps this invariant for footnotes and
+            // every other Markdown child shape alike.
             //
             // The one theoretical gap — a `FootnoteReference` stranded
             // inside a `LinkReference` (reference-style link) that
@@ -3315,9 +3300,9 @@ fn render_footnote_item(
 
 /// Pick the right JSX-text producer for the supplied strategy and
 /// invoke it. The HTML-path strategy uses the in-module
-/// `reconstruct_jsx` (lossy fallback for non-text children, preserves
-/// pre-#121 HTML snapshot output). The JSX-path strategy delegates to
-/// the user-supplied closure (typically the recursive renderer in
+/// `reconstruct_jsx`, which preserves the JSX shell and serializes its
+/// Markdown children as HTML. The JSX-path strategy delegates to the
+/// user-supplied closure (typically the recursive renderer in
 /// `mdx_jsx_emit`).
 fn emit_jsx_raw(
     node: &MdastNode,
@@ -3327,10 +3312,9 @@ fn emit_jsx_raw(
     if let JsxEmitStrategy::JsxPath(emit) = strategy {
         return emit(node, fc);
     }
-    // HTML-path strategy: preserve pre-#121 behaviour exactly, except for
-    // footnotes (issue #2396) — `reconstruct_jsx` needs the same `fc` the
-    // main walk uses so a `FootnoteReference`/`FootnoteDefinition` nested
-    // in a JSX body claims from (and is counted by) the one shared cursor.
+    // HTML-path strategy: `reconstruct_jsx` needs the same `fc` the main
+    // walk uses so a `FootnoteReference` nested in a JSX body claims from
+    // (and is counted by) the one shared cursor.
     match node {
         MdastNode::MdxJsxFlowElement(j) => {
             reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children, fc)
@@ -3449,40 +3433,15 @@ fn task_list_checkbox_hast(checked: bool) -> HastNode {
     }
 }
 
-/// Best-effort textual reconstruction of an MDX JSX element.
+/// Reconstruct an MDX JSX element for the HTML render path.
 ///
-/// We do NOT try to round-trip every MDX construct losslessly here; the
-/// goal is to produce a plausible source-level snippet so the serializer
-/// can pass it through verbatim. Sub 4 plugins that synthesize JSX
-/// elements (e.g. `<Note>`) typically build the [`HastNode::Raw`]
-/// payload themselves and bypass this path.
-///
-/// **HTML-path-only behaviour.** This helper feeds the HTML serializer
-/// path (`Pipeline::run`); on the JSX-emit path (#121) the dedicated
-/// `mdx_jsx_emit::reconstruct_jsx_recursive` is used instead so
-/// markdown formatting inside MDX JSX bodies (`<Note>**bold**</Note>`)
-/// survives as proper JSX elements. Updating this fallback to recurse
-/// would change long-standing HTML snapshot output (admonition bodies
-/// would gain `<p>` wrappers), which the issue brief explicitly
-/// forbids ("Pipeline::run behaviour unchanged").
-///
-/// Footnotes are the first exception (issue #2396): `fc` is threaded
-/// through so a `FootnoteReference`/`FootnoteDefinition` anywhere in the
-/// children (including nested inside another JSX element) is caught by
-/// the `subtree_contains_footnote` gate in the fallback arm below and
-/// rendered through `jsx_body_stringify` instead of the plain
-/// `other.to_string()`, which silently drops the reference marker and
-/// inlines the definition body at the wrong spot.
-///
-/// `Break` is the second exception (issue #2401), gated for the same
-/// structural reason: it is one of `to_string()`'s "voids", so a hard
-/// break inside a JSX body vanishes ENTIRELY and fuses the words on
-/// either side of it (`:::note\nfirst line\nsecond line\n:::` under
-/// `markdown.hardBreaks` rendered `first linesecond line`). That is
-/// deletion of author content, categorically different from
-/// `Strong`/`Emphasis`, which merely drop their formatting while
-/// retaining every character — which is why those stay on the
-/// deliberately lossy catch-all and `Break` does not.
+/// The opening/closing tags and attributes remain JSX-shaped so generated
+/// directive and alert component names survive for downstream consumers.
+/// Each child is converted through the normal mdast → hast path and then
+/// serialized as HTML, preserving inline formatting, links, code spans,
+/// block structure, escaping, and the shared document footnote state.
+/// The completed string remains one opaque [`HastNode::JsxRaw`] payload;
+/// live hast visitors therefore still cannot descend into the component.
 fn reconstruct_jsx(
     name: Option<&str>,
     attrs: &[AttributeContent],
@@ -3498,128 +3457,13 @@ fn reconstruct_jsx(
         return format!("<{tag}{space}{attrs_str} />");
     }
 
+    let html_strategy = JsxEmitStrategy::HtmlPath;
     let inner: String = children
         .iter()
-        .map(|c| match c {
-            MdastNode::Text(t) => t.value.clone(),
-            MdastNode::Html(h) => h.value.clone(),
-            MdastNode::MdxFlowExpression(e) => format!("{{{}}}", e.value),
-            MdastNode::MdxTextExpression(e) => format!("{{{}}}", e.value),
-            MdastNode::MdxJsxFlowElement(j) => {
-                reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children, fc)
-            }
-            MdastNode::MdxJsxTextElement(j) => {
-                reconstruct_jsx(j.name.as_deref(), &j.attributes, &j.children, fc)
-            }
-            // Fallback: stringify the markdown text content. This loses
-            // formatting but keeps content visible; downstream plugins
-            // generally avoid putting markdown inside JSX bodies anyway.
-            // Gated on whether the subtree contains a footnote node
-            // (issue #2396) or a `Break` (issue #2401) so every OTHER
-            // subtree keeps taking the exact `other.to_string()` path —
-            // byte-identity for input carrying neither is structural,
-            // not dependent on a hand-copied mirror of markdown-rs's own
-            // dispatch staying in sync across crate bumps. Both
-            // exceptions share ONE mirror, so a subtree carrying both
-            // renders both correctly by construction.
-            other if subtree_contains_footnote(other) || subtree_contains_break(other) => {
-                jsx_body_stringify(other, fc)
-            }
-            other => other.to_string(),
-        })
+        .map(|child| crate::serializer::serialize(&mdast_to_hast_inner(child, &html_strategy, fc)))
         .collect();
 
     format!("<{tag}{space}{attrs_str}>{inner}</{tag}>")
-}
-
-/// True if `node` or anything reachable through its `Node::children()`
-/// subtree is a `FootnoteReference` or `FootnoteDefinition`. Used only to
-/// decide, per child, whether `reconstruct_jsx`'s fallback arm needs the
-/// footnote-aware stringifier — see that arm's doc comment.
-fn subtree_contains_footnote(node: &MdastNode) -> bool {
-    if matches!(
-        node,
-        MdastNode::FootnoteReference(_) | MdastNode::FootnoteDefinition(_)
-    ) {
-        return true;
-    }
-    node.children()
-        .is_some_and(|children| children.iter().any(subtree_contains_footnote))
-}
-
-/// True if `node` or anything reachable through its `Node::children()`
-/// subtree is a `Break` (a hard line break). Used only to decide, per
-/// child, whether `reconstruct_jsx`'s fallback arm needs the recursive
-/// stringifier — see that arm's doc comment.
-///
-/// The gate has to be subtree-wide, not a direct-child match: the real
-/// repro (issue #2401) reaches `reconstruct_jsx` as an
-/// `MdxJsxFlowElement` whose children are `Paragraph`s built by
-/// `directives::paragraph_from_lines`, with the `Break` nested INSIDE
-/// one of them. A direct `MdastNode::Break(_)` arm on `reconstruct_jsx`
-/// would never fire for it.
-fn subtree_contains_break(node: &MdastNode) -> bool {
-    if matches!(node, MdastNode::Break(_)) {
-        return true;
-    }
-    node.children()
-        .is_some_and(|children| children.iter().any(subtree_contains_break))
-}
-
-/// Recursive stringifier for a JSX-body subtree that
-/// `subtree_contains_footnote` or `subtree_contains_break` flagged as
-/// containing a node the plain `to_string()` renders destructively.
-///
-/// Mirrors markdown-rs's own `Node::to_string()` dispatch (recurse
-/// containers via `Node::children()`, literals return their `value`,
-/// voids return an empty string) so every other node in the subtree
-/// renders exactly as `to_string()` would — `Node::children()`
-/// returns `Some` for precisely the set of variants `to_string()` treats
-/// as containers, so generic recursion through it reproduces that
-/// dispatch without hand-copying its ~30 arms. Keeping ONE mirror for
-/// both exceptions (rather than a second parallel stringifier per
-/// exception) is what makes a subtree carrying a footnote AND a `Break`
-/// correct by construction. Three variants are special-cased instead of
-/// falling through to that mirror:
-///
-/// - `FootnoteReference` is one of `to_string()`'s "voids" (renders as
-///   `""`), which is exactly the "reference vanishes" bug this issue
-///   fixes. Here it claims its next occurrence from the shared cursor
-///   (mirroring the top-level `MdastNode::FootnoteReference` arm in
-///   `mdast_to_hast_inner`) and renders the same `<sup><a>` marker
-///   through the serializer — consistent with how `Html` nodes already
-///   splice raw markup verbatim into this lossy string.
-/// - `FootnoteDefinition` is one of `to_string()`'s "containers", which
-///   would inline its body at the definition point. It always
-///   stringifies to empty here, matching the top-level
-///   `MdastNode::FootnoteDefinition` arm in `mdast_to_hast_inner` — a
-///   definition's body renders exactly once, in the footnote section
-///   `mdast_to_hast_with` appends at document end.
-/// - `Break` is another of `to_string()`'s "voids", so a hard break in a
-///   JSX body used to be deleted outright, fusing the words on either
-///   side of it (issue #2401). It renders as literal `<br />`: this
-///   string becomes a raw JSX payload the serializer passes through
-///   verbatim, and it cannot land inside an attribute value (attributes
-///   are reconstructed separately by `render_attrs`). The sibling
-///   transclusion assertion in `tests/gfm_secondary_parse_sites.rs`
-///   already pins `<br` as a hard break's rendering under
-///   `markdown.hardBreaks`, so this keeps JSX bodies consistent with
-///   every other surface.
-fn jsx_body_stringify(node: &MdastNode, fc: &FootnoteRenderCtx<'_>) -> String {
-    match node {
-        MdastNode::FootnoteReference(r) => fc
-            .next_reference(&r.identifier)
-            .map(|(entry, footnote_ref)| {
-                crate::serializer::serialize(&footnote_reference_marker(entry, footnote_ref))
-            })
-            .unwrap_or_default(),
-        MdastNode::FootnoteDefinition(_) => String::new(),
-        MdastNode::Break(_) => "<br />".to_string(),
-        other => match other.children() {
-            Some(children) => children.iter().map(|c| jsx_body_stringify(c, fc)).collect(),
-            None => other.to_string(),
-        },
-    }
 }
 
 /// Render an MDX attribute list back to JSX-ish source text.
@@ -4890,7 +4734,7 @@ mod tests {
         let _ = mdast_to_hast_with(&root, &JsxEmitStrategy::JsxPath(&strategy_fn));
     }
 
-    // ── issue #2396: footnote-aware `reconstruct_jsx` on the HTML path ──
+    // ── issue #2396: footnotes inside HTML-path JSX bodies ─────────────
     //
     // Before this fix, `reconstruct_jsx`'s catch-all (`other =>
     // other.to_string()`) silently dropped a `FootnoteReference` nested
@@ -4899,10 +4743,10 @@ mod tests {
     // `data-footnote-backref` pointing at an anchor that was never
     // emitted, and inlined a nested `FootnoteDefinition`'s body as plain
     // text at the definition point AND rendered it again in the
-    // section. `subtree_contains_footnote` + `jsx_body_stringify`
-    // fix both defects for exactly the subtrees that contain a footnote,
-    // leaving every other subtree on the byte-identical `to_string()`
-    // path.
+    // section. Issue #2396 added dedicated footnote recursion; issue #2570
+    // later generalized `reconstruct_jsx` to render every child through
+    // the normal mdast → hast → HTML path while retaining the same shared
+    // footnote cursor.
 
     /// Repro shape 1 (issue #2396's primary repro): a `note`-directive
     /// body reaching `MdxJsxFlowElement` via `DirectiveRegistry::
@@ -5023,15 +4867,11 @@ mod tests {
         );
     }
 
-    /// Scope-guard negative control (acceptance criterion 4): a
-    /// reference-style link definition nested in JSX, with NO footnote
-    /// anywhere in the subtree, is still silently swallowed by the
-    /// catch-all — `subtree_contains_footnote` is `false` so the arm
-    /// takes the untouched `other.to_string()` path, true by
-    /// construction. Mirrors `catch_all_still_swallows_reference_style_
-    /// link_definitions` above, scoped to inside JSX.
+    /// Reference-style definitions are metadata rather than visible body
+    /// content, so normal recursive HTML rendering still omits their URL
+    /// and title inside JSX. Mirrors the top-level definition behavior.
     #[test]
-    fn catch_all_still_swallows_reference_style_link_definitions_nested_in_jsx() {
+    fn html_rendering_omits_reference_style_link_definitions_nested_in_jsx() {
         let h = run("<Note>\n\nPara text.\n\n[label]: /elsewhere \"Title\"\n\n</Note>\n");
 
         let jsx = note_jsx(&h);
@@ -5041,8 +4881,7 @@ mod tests {
         );
         assert!(
             !jsx.contains("/elsewhere") && !jsx.contains("Title"),
-            "the definition's url/title must not leak into rendered text \
-             (still silently dropped by the catch-all), got: {jsx:?}"
+            "the definition's url/title must not leak into rendered text: {jsx:?}"
         );
     }
 
@@ -5088,18 +4927,9 @@ mod tests {
     /// documents for the (unrelated) `reparse_block` call site — this
     /// test never reaches `reparse_block` at all.
     ///
-    /// Checked at the mdast level (not the rendered HTML string)
-    /// deliberately: `reconstruct_jsx`'s fallback arm — `footnote_aware_
-    /// stringify` when the subtree contains a footnote, `other.to_
-    /// string()` otherwise — has ALWAYS discarded Strong/Emphasis
-    /// wrapper syntax for a JSX-body child, footnote or no footnote (see
-    /// #2396's "Out of scope" section: "everything except footnotes must
-    /// stay exactly as lossy as today"). Asserting `<strong>` in the
-    /// serialized JsxRaw string would measure that pre-existing,
-    /// unrelated lossiness, not whether the two fixes compose — so this
-    /// replays `Pipeline::run`'s own mdast-phase half (parse +
-    /// `mdast_visitors` chain, no hast conversion) and inspects the tree
-    /// directly.
+    /// Checked at the mdast level to isolate the CJK visitor and directive
+    /// transform from later rendering. The sibling HTML-level test below
+    /// proves that issue #2570 then retains the resulting `Strong` node.
     #[test]
     fn directive_body_footnote_and_cjk_emphasis_compose_at_the_mdast_level() {
         let (p, src) = directive_body_footnote_and_cjk_pipeline();
@@ -5172,6 +5002,10 @@ mod tests {
         // emphasis — same assertions, different subject.
         let jsx = note_jsx(&h);
         assert_footnote_renders_once(&h, &jsx, "n", "the note body.");
+        assert!(
+            jsx.contains("<strong>重要。</strong>"),
+            "the HTML path must retain CJK emphasis beside the footnote: {jsx}"
+        );
     }
 
     // ── zfb#2247: shared mdast-phase wiring for the JSX-nested mutation
