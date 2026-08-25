@@ -44,7 +44,7 @@
 //! regardless of whether `directives` is also enabled.
 //!
 //! ```html
-//! <Note>body text</Note>
+//! <Note><p>body text</p></Note>
 //! ```
 //!
 //! # Wave 4 (#572)

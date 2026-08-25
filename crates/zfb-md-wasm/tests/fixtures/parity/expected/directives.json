@@ -1,5 +1,5 @@
 {
-  "html": "<Note>note body</Note><Tip>tip body</Tip><Warning>warning body</Warning><Details title=\"Click me\">hidden body</Details>",
+  "html": "<Note><p>note body</p></Note><Tip><p>tip body</p></Tip><Warning><p>warning body</p></Warning><Details title=\"Click me\"><p>hidden body</p></Details>",
   "frontmatter": null,
   "diagnostics": []
 }

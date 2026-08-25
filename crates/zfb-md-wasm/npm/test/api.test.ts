@@ -116,6 +116,36 @@ describe("renderHtml (md -> HTML, no SWC)", () => {
     expect(out.html).toContain("<Note>");
     expect(out.diagnostics).toHaveLength(0);
   });
+
+  it("preserves rendered HTML inside directive and alert component bodies", async () => {
+    const out = await renderHtml(
+      "# Title\n\n" +
+        ":::note[Heads up]\n" +
+        "First paragraph with **bold**, `code` and a [link](./other.md).\n\n" +
+        "Second paragraph.\n" +
+        ":::\n\n" +
+        "> [!IMPORTANT]\n" +
+        "> Alert body with *emphasis*.\n",
+      {
+        filename: "preview.mdx",
+        pipeline: {
+          features: {
+            directives: { note: "Note" },
+            githubAlerts: true,
+          },
+        },
+      },
+    );
+
+    expect(out.html).toBe(
+      '<h1>Title</h1><Note title="Heads up">' +
+        "<p>First paragraph with <strong>bold</strong>, <code>code</code> and " +
+        'a <a href="./other.md">link</a>.</p>' +
+        "<p>Second paragraph.</p></Note>" +
+        "<Important><p>Alert body with <em>emphasis</em>.</p></Important>",
+    );
+    expect(out.diagnostics).toHaveLength(0);
+  });
 });
 
 describe("compile (mdx -> ES-module JS via SWC)", () => {

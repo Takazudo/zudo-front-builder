@@ -66,6 +66,12 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+const expectedRichRenderHtml =
+  '<Note title="Heads up">' +
+  '<p>First paragraph with <strong>bold</strong> and a <a href="./other.md">link</a>.</p>' +
+  "<p>Second paragraph.</p></Note>" +
+  "<Important><p>Alert body with <em>emphasis</em>.</p></Important>";
+
 function isExpectedTransient503(message) {
   return /^Failed to load resource: the server responded with a status of 503 \(Service Unavailable\)$/.test(
     message,
@@ -335,8 +341,8 @@ async function exerciseFreshAction(origin, label, action, glueKind, wasmKind) {
       assert(result.result.diagnostics.length === 0, `${label}: highlight action failed`);
     } else if (action === "render") {
       assert(
-        result.result.diagnostics.length === 0 && result.result.html === "<h1>Render subpath</h1>",
-        `${label}: render action failed`,
+        result.result.diagnostics.length === 0 && result.result.html === expectedRichRenderHtml,
+        `${label}: rich directive/alert render action failed: ${result.result.html}`,
       );
     } else {
       assert(
