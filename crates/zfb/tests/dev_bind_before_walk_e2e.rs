@@ -97,6 +97,10 @@
 //!    failure message, then restores the valid source and asserts recovery
 //!    — an SSE `page` event, the "cold-lazy bootstrap recovered" info
 //!    line, and a first-request 200.
+//! 9. `dev_200_document_declares_and_serves_islands_module` — RED readiness
+//!    guard for the boot publication window: while the injected islands slow
+//!    step is held open, a served 200 document must declare a same-origin
+//!    islands module and that browser-requested entry must answer 200.
 //!
 //! ## Spawn / teardown discipline (from `dev_serve_e2e.rs` /
 //! `build_terminates.rs`)
@@ -115,7 +119,9 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{
+    locate_esbuild, next_sse_event_name, probe_module_entries, zfb_binary, CrossBinaryE2eLock,
+};
 
 /// Serializes the spawning tests in this file: each boots a full V8 +
 /// esbuild dev session; running them concurrently would double memory
@@ -274,11 +280,11 @@ const RENDER_DEADLINE: Duration = Duration::from_secs(90);
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-fn fixture_dir() -> PathBuf {
+fn fixture_dir_named(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("dev-loop-basic")
+        .join(name)
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -372,11 +378,15 @@ impl DevSession {
 /// deterministically BEFORE the process ever starts, with no race against
 /// the boot task (see `spawn_dev_in_root`'s doc comment).
 fn prepare_dev_root(tmp: &tempfile::TempDir) -> PathBuf {
+    prepare_dev_root_from_fixture(tmp, "dev-loop-basic")
+}
+
+fn prepare_dev_root_from_fixture(tmp: &tempfile::TempDir, fixture_name: &str) -> PathBuf {
     let root = tmp
         .path()
         .canonicalize()
         .expect("canonicalize fixture root");
-    copy_dir(&fixture_dir(), &root).expect("copy fixture into tempdir");
+    copy_dir(&fixture_dir_named(fixture_name), &root).expect("copy fixture into tempdir");
     root
 }
 
@@ -974,6 +984,128 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
     );
 
     // The deferred slow step is still sleeping; Drop group-kills it.
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — dev hydration readiness during the held islands window (#2552).
+// ---------------------------------------------------------------------------
+
+/// RED guard for the boot publication window: once the eager render has
+/// published a real 200 document, its browser-requested islands module must
+/// already be declared and reachable while the injected islands slow-step is
+/// still holding the deferred boot task open. The assertions are deliberately
+/// written in their desired post-fix form; issue #2533 supplies the product
+/// fix beneath this test.
+#[ignore = "pending-feature: https://github.com/Takazudo/zudo-front-builder/issues/2533"]
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_200_document_declares_and_serves_islands_module() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = prepare_dev_root_from_fixture(&tmp, "dev-islands-entry-probe");
+    let slow = SLOW_ISLANDS_MS.to_string();
+    let mut session = spawn_dev_in_root(
+        &root,
+        &esbuild,
+        &[
+            ("ZFB_DEV_TEST_SLOW_ISLANDS_MS", slow.as_str()),
+            ("ZFB_DEV_EAGER", "1"),
+        ],
+    );
+
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip
+    };
+    let base = format!("http://localhost:{port}");
+    let page_url = format!("{base}/");
+    let client = client();
+
+    // The route is not published until the eager render completes, so poll
+    // only for the first actual 200 response. The islands slow-step is
+    // injected after that render and holds the deferred boot task open; this
+    // test never infers readiness from elapsed wall-clock time.
+    let render_start = Instant::now();
+    let mut observed: Option<(u16, String)> = None;
+    while render_start.elapsed() < RENDER_DEADLINE {
+        if let Ok(resp) = client.get(&page_url).send().await {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            if status == 200 {
+                observed = Some((status, body));
+                break;
+            }
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    let (status, body) = observed.unwrap_or_else(|| {
+        panic!(
+            concat!(
+                "GET / did not serve the fixture document with 200 within {}s of the ready ",
+                "banner while ZFB_DEV_TEST_SLOW_ISLANDS_MS={} held the deferred boot task.\n{}"
+            ),
+            RENDER_DEADLINE.as_secs(),
+            SLOW_ISLANDS_MS,
+            session.logs(),
+        )
+    });
+    assert_eq!(
+        status,
+        200,
+        "the fixture document must be served with 200; body:\n{body}\n{}",
+        session.logs(),
+    );
+    assert!(
+        body.contains("<h1>dev-islands-entry-probe</h1>") && body.contains("data-zfb-island"),
+        concat!(
+            "the 200 response must be the rendered islands fixture, not a different or partial ",
+            "document; body:\n{}\n{}"
+        ),
+        body,
+        session.logs(),
+    );
+
+    let probes = probe_module_entries(&client, &body, &page_url)
+        .await
+        .expect("probe same-origin module entries declared by the 200 document");
+    assert!(
+        !probes.is_empty(),
+        concat!(
+            "200 HTML must declare an islands module entry while ",
+            "ZFB_DEV_TEST_SLOW_ISLANDS_MS={} holds the deferred boot task; probes={:?}\n{}"
+        ),
+        SLOW_ISLANDS_MS,
+        probes,
+        session.logs(),
+    );
+    assert!(
+        probes
+            .iter()
+            .any(|probe| probe.url.path().ends_with("/assets/islands.js")),
+        concat!(
+            "200 HTML must declare the islands module entry, not only unrelated ",
+            "module scripts; probes={:?}\n{}"
+        ),
+        &probes,
+        session.logs(),
+    );
+    for probe in probes {
+        assert_eq!(
+            probe.status.as_u16(),
+            200,
+            concat!(
+                "every module entry declared by the 200 document must answer 200; ",
+                "{} returned {}\n{}"
+            ),
+            probe.url,
+            probe.status,
+            session.logs(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
