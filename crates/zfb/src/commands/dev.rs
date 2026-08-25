@@ -1094,6 +1094,7 @@ impl DocumentObligations {
         !self.client_publication_uncertain_outputs.is_empty()
     }
 
+    #[cfg(test)]
     fn has_eager_failures(&self) -> bool {
         self.has_document_failures() || self.has_client_publication_failures()
     }
@@ -1153,9 +1154,12 @@ impl DocumentObligations {
     }
 
     /// Resolve one successfully request-published absolute output. Returns
-    /// true exactly when this write drains the final eager/lazy recovery
+    /// true exactly when this write drains the final *document* recovery
     /// obligation, arming one-generation fallback retention for the recovery
-    /// commit. An ordinary later commit consumes that retention.
+    /// boundary. A separate client-publication obligation may still keep the
+    /// combined generation pending; the boundary event must nevertheless
+    /// clear document uncertainty and remember `ReadyOnRequest` so an exact
+    /// later client repair can finish with `CommitEntriesOnly`.
     fn resolve_lazy_request_path(&mut self, output: &Path) -> bool {
         let was_obligated = self.failed_outputs.contains(output)
             || self.lazy_outputs.contains(output)
@@ -1167,7 +1171,7 @@ impl DocumentObligations {
             return false;
         }
         self.resolve_document_path(output);
-        let drained = !self.has_eager_failures() && self.lazy_outputs.is_empty();
+        let drained = !self.has_document_failures() && self.lazy_outputs.is_empty();
         if drained {
             self.drained_lazy_retention = true;
         }
@@ -10735,6 +10739,46 @@ mod tests {
         assert!(publication.is_ready());
         assert_eq!(publication.documents, zfb_server::DocumentSlot::NotExpected);
         assert_eq!(publication.generation, ready_generation + 1);
+    }
+
+    #[test]
+    fn request_document_repair_then_exact_client_repair_recovers_entry_only() {
+        let mut publication = zfb_server::DevPublicationState::from_islands_url(None);
+        let ready_generation = publication.generation;
+        publication.begin_document_update();
+        publication.leave_document_update_pending();
+
+        let source = PageId::new(PathBuf::from("pages/lazy.tsx"));
+        let output = PathBuf::from("/dev-pages/lazy/index.html");
+        let mut obligations = DocumentObligations::default();
+        obligations.record_source_failure(source, [output.clone()]);
+        obligations.record_lazy_outputs([output.clone()]);
+        obligations.record_client_publication_rollback_failure(["alpha.js".to_string()]);
+
+        assert!(
+            obligations.resolve_lazy_request_path(&output),
+            "the final document repair must emit its boundary even while a client obligation remains"
+        );
+        assert!(!obligations.has_document_failures());
+        assert!(obligations.has_client_publication_failures());
+        leave_publication_pending_for_failures(
+            &mut publication,
+            false,
+            Some(zfb_server::DocumentSlot::ReadyOnRequest),
+        );
+        assert!(!publication.is_ready());
+
+        publication.begin_document_update();
+        publication.stage_client_scripts(vec!["/assets/client/alpha.js".to_string()]);
+        obligations.record_client_publication_success(&HashSet::from(["alpha.js".to_string()]));
+        assert!(!obligations.has_eager_failures());
+        assert!(publication.commit_entry_update_with_retention(true));
+        assert_eq!(
+            publication.documents,
+            zfb_server::DocumentSlot::ReadyOnRequest
+        );
+        assert_eq!(publication.generation, ready_generation + 1);
+        assert!(publication.is_ready());
     }
 
     #[cfg(feature = "embed_v8")]

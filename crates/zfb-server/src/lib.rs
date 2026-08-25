@@ -101,6 +101,7 @@ pub struct DevPublicationState {
     retained_islands: Option<AssetSlot>,
     previous_documents: Option<DocumentSlot>,
     uncertain_document_write: bool,
+    entry_update_pending: bool,
 }
 
 impl DevPublicationState {
@@ -116,6 +117,7 @@ impl DevPublicationState {
             retained_islands: None,
             previous_documents: None,
             uncertain_document_write: false,
+            entry_update_pending: false,
         }
     }
 
@@ -131,6 +133,7 @@ impl DevPublicationState {
             retained_islands: None,
             previous_documents: None,
             uncertain_document_write: false,
+            entry_update_pending: false,
         }
     }
 
@@ -183,6 +186,7 @@ impl DevPublicationState {
         self.documents = documents;
         self.previous_documents = None;
         self.uncertain_document_write = false;
+        self.entry_update_pending = false;
         self.bump_generation();
         true
     }
@@ -227,6 +231,13 @@ impl DevPublicationState {
             self.documents = DocumentSlot::Pending;
             return;
         }
+        if self.entry_update_pending {
+            // A prior tick already made staged stable-entry bytes observable.
+            // A later pre-mutation failure must not restore old readiness or
+            // discard the staged filename set that keeps companions alive.
+            self.documents = DocumentSlot::Pending;
+            return;
+        }
         match self.previous_documents.take() {
             Some(DocumentSlot::Pending) | None => {
                 self.documents = DocumentSlot::Pending;
@@ -256,6 +267,7 @@ impl DevPublicationState {
             self.previous_documents = Some(self.documents);
         }
         self.documents = DocumentSlot::Pending;
+        self.entry_update_pending = true;
     }
 
     /// Entry-only pending state after a complete document boundary already
@@ -265,6 +277,11 @@ impl DevPublicationState {
     pub fn leave_entry_update_pending_after_document_boundary(&mut self, documents: DocumentSlot) {
         self.previous_documents = Some(documents);
         self.documents = DocumentSlot::Pending;
+        // This method is called only after the complete document boundary
+        // succeeded. Resolve any older partial-document latch even though a
+        // separate entry obligation still keeps readiness pending.
+        self.uncertain_document_write = false;
+        self.entry_update_pending = true;
     }
 
     /// Select an islands URL that is safe on both sides of a document update:
@@ -592,6 +609,8 @@ mod publication_state_tests {
         // the combined generation pending at that completed boundary.
         state.begin_document_update();
         state.stage_client_scripts(vec!["/assets/client/unsafe.js".to_string()]);
+        state.leave_document_update_pending();
+        assert!(state.uncertain_document_write);
         state.leave_entry_update_pending_after_document_boundary(DocumentSlot::Published);
         assert_eq!(state.documents, DocumentSlot::Pending);
         assert_eq!(state.previous_documents, Some(DocumentSlot::Published));
@@ -602,6 +621,53 @@ mod publication_state_tests {
         assert!(state.commit_entry_update());
         assert_eq!(state.documents, DocumentSlot::Published);
         assert_eq!(state.generation, 2);
+        assert!(state.is_ready());
+    }
+
+    #[test]
+    fn entry_pending_survives_a_later_pre_write_abort() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(vec!["/assets/client/old.js".to_string()]);
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        let ready_generation = state.generation;
+
+        // Tick A made the replacement observable, then failed in a later
+        // entry kind before document rendering.
+        state.begin_document_update();
+        state.stage_client_scripts(vec![
+            "/assets/client/new.js".to_string(),
+            "/assets/client/worker-new.js".to_string(),
+        ]);
+        state.leave_entry_update_pending();
+        assert!(state.entry_update_pending);
+        assert!(!state.is_ready());
+
+        // Tick B fails before any new mutation. It must not restore the old
+        // ready phase or discard Tick A's staged entry/worker generation.
+        state.begin_document_update();
+        state.abort_document_update_before_write();
+        assert_eq!(state.documents, DocumentSlot::Pending);
+        assert!(state.entry_update_pending);
+        assert_eq!(state.generation, ready_generation);
+        assert!(!state.is_ready());
+
+        // Tick C can still commit the retained complete generation.
+        state.begin_document_update();
+        assert!(state.commit_entry_update());
+        assert_eq!(state.documents, DocumentSlot::Published);
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec![
+                    "/assets/client/new.js".to_string(),
+                    "/assets/client/worker-new.js".to_string(),
+                ]
+            }
+        );
+        assert!(!state.entry_update_pending);
+        assert_eq!(state.generation, ready_generation + 1);
         assert!(state.is_ready());
     }
 
