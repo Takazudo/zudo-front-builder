@@ -69,7 +69,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 #[cfg(feature = "embed_v8")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -1065,6 +1066,114 @@ fn spawn_redirects_watch(
     (handle, join)
 }
 
+/// Persistent proof obligations for a document/entry publication. Unlike a
+/// per-tick flag, these survive unrelated narrowed ticks until the exact
+/// failed source/output is repaired or a lazy output is request-published.
+#[derive(Debug, Default)]
+struct DocumentObligations {
+    failed_sources: HashMap<PageId, HashSet<PathBuf>>,
+    failed_outputs: HashSet<PathBuf>,
+    lazy_outputs: HashSet<PathBuf>,
+    drained_lazy_retention: bool,
+}
+
+impl DocumentObligations {
+    fn has_eager_failures(&self) -> bool {
+        !self.failed_sources.is_empty() || !self.failed_outputs.is_empty()
+    }
+
+    fn retain_lazy_dependencies(&self) -> bool {
+        !self.lazy_outputs.is_empty() || self.drained_lazy_retention
+    }
+
+    fn record_source_success(
+        &mut self,
+        source: &PageId,
+        outputs: impl IntoIterator<Item = PathBuf>,
+    ) {
+        for output in outputs {
+            self.failed_outputs.remove(&output);
+            self.lazy_outputs.remove(&output);
+            if let Some(failed) = self.failed_sources.get_mut(source) {
+                failed.remove(&output);
+            }
+        }
+        if self
+            .failed_sources
+            .get(source)
+            .is_some_and(HashSet::is_empty)
+        {
+            self.failed_sources.remove(source);
+        }
+    }
+
+    fn record_source_failure(
+        &mut self,
+        source: PageId,
+        outputs: impl IntoIterator<Item = PathBuf>,
+    ) {
+        let outputs: HashSet<PathBuf> = outputs.into_iter().collect();
+        if !outputs.is_empty() {
+            self.failed_sources
+                .entry(source)
+                .or_default()
+                .extend(outputs);
+        }
+    }
+
+    fn record_lazy_outputs(&mut self, outputs: impl IntoIterator<Item = PathBuf>) {
+        for output in outputs {
+            self.lazy_outputs.insert(output);
+        }
+    }
+
+    fn resolve_document_path(&mut self, output: &Path) {
+        self.failed_outputs.remove(output);
+        self.lazy_outputs.remove(output);
+        self.failed_sources.retain(|_, outputs| {
+            outputs.remove(output);
+            !outputs.is_empty()
+        });
+    }
+
+    /// Resolve one successfully request-published absolute output. Returns
+    /// true exactly when this write drains the final eager/lazy recovery
+    /// obligation, arming one-generation fallback retention for the recovery
+    /// commit. An ordinary later commit consumes that retention.
+    fn resolve_lazy_request_path(&mut self, output: &Path) -> bool {
+        let was_obligated = self.failed_outputs.contains(output)
+            || self.lazy_outputs.contains(output)
+            || self
+                .failed_sources
+                .values()
+                .any(|outputs| outputs.contains(output));
+        if !was_obligated {
+            return false;
+        }
+        self.resolve_document_path(output);
+        let drained = !self.has_eager_failures() && self.lazy_outputs.is_empty();
+        if drained {
+            self.drained_lazy_retention = true;
+        }
+        drained
+    }
+
+    fn publication_retention(&mut self, recovery_commit: bool) -> bool {
+        if !self.lazy_outputs.is_empty() {
+            return true;
+        }
+        if recovery_commit {
+            return self.drained_lazy_retention;
+        }
+        self.drained_lazy_retention = false;
+        false
+    }
+
+    fn start_document_write(&mut self, output: PathBuf) {
+        self.failed_outputs.insert(output);
+    }
+}
+
 /// Entry point for `zfb dev`.
 ///
 /// Available only when the `embed_v8` cargo feature is on (issue #371,
@@ -1446,6 +1555,344 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // still `None` and the save is SKIPPED — never write a graph tagged
     // with a wrong/absent digest.
     let manifest_digest_slot: Arc<Mutex<Option<ManifestDigest>>> = Arc::new(Mutex::new(None));
+
+    // Issue #2557: one lock owns committed document + framework-entry state,
+    // plus the candidate entry set for an in-flight boot/tick transaction.
+    let islands_bundle_url_handle: zfb_server::IslandsBundleUrl = Arc::new(std::sync::RwLock::new(
+        zfb_server::DevPublicationState::pending(),
+    ));
+    let live_companion_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let staged_companion_filenames: Arc<Mutex<Option<HashSet<String>>>> =
+        Arc::new(Mutex::new(None));
+    let unresolved_companion_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let baseline_unresolved_companion_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let retained_companion_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let live_client_script_outputs: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let staged_client_script_outputs: Arc<Mutex<Option<HashSet<String>>>> =
+        Arc::new(Mutex::new(None));
+    let unresolved_client_script_outputs: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let baseline_unresolved_client_script_outputs: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let document_obligations = Arc::new(Mutex::new(DocumentObligations::default()));
+
+    // The pipeline's initial-build completion is validated by
+    // `run_boot_render` (known routes + zero rendered is not success), so hold
+    // its automatic commit until that caller makes the boot-specific decision.
+    let boot_publication_guard = Arc::new(AtomicBool::new(true));
+    let document_publication_hook: zfb_build::pipeline::dev::DocumentPublicationHook = {
+        let state = Arc::clone(&islands_bundle_url_handle);
+        let boot_guard = Arc::clone(&boot_publication_guard);
+        let obligations = Arc::clone(&document_obligations);
+        let live_islands = Arc::clone(&live_companion_filenames);
+        let staged_islands = Arc::clone(&staged_companion_filenames);
+        let retained_islands = Arc::clone(&retained_companion_filenames);
+        let unresolved_islands = Arc::clone(&unresolved_companion_filenames);
+        let baseline_islands = Arc::clone(&baseline_unresolved_companion_filenames);
+        let live_clients = Arc::clone(&live_client_script_outputs);
+        let staged_clients = Arc::clone(&staged_client_script_outputs);
+        let unresolved_clients = Arc::clone(&unresolved_client_script_outputs);
+        let baseline_clients = Arc::clone(&baseline_unresolved_client_script_outputs);
+        let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
+        Arc::new(move |event| {
+            use zfb_build::pipeline::dev::DocumentPublicationEvent;
+
+            match &event {
+                DocumentPublicationEvent::Begin => {
+                    *baseline_islands.lock().unwrap_or_else(|p| p.into_inner()) =
+                        unresolved_islands
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                    *baseline_clients.lock().unwrap_or_else(|p| p.into_inner()) =
+                        unresolved_clients
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                    state
+                        .write()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .begin_document_update();
+                    return;
+                }
+                DocumentPublicationEvent::SnapshotLazyFallbacks(paths) => {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .record_lazy_outputs(paths.iter().cloned());
+                    return;
+                }
+                DocumentPublicationEvent::DocumentMutationStarted => return,
+                DocumentPublicationEvent::DocumentWriteStarted(path) => {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .start_document_write(path.clone());
+                    return;
+                }
+                DocumentPublicationEvent::DocumentWriteCompleted(path) => {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .resolve_document_path(path);
+                    return;
+                }
+                DocumentPublicationEvent::DocumentPathsRemoved(paths) => {
+                    let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                    for path in paths {
+                        obligations.resolve_document_path(path);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+
+            if boot_guard.load(Ordering::SeqCst)
+                && matches!(
+                    &event,
+                    DocumentPublicationEvent::CommitPublished
+                        | DocumentPublicationEvent::CommitReadyOnRequest
+                        | DocumentPublicationEvent::CommitLazyRepair
+                        | DocumentPublicationEvent::CommitNotExpected
+                        | DocumentPublicationEvent::CommitEntriesOnly
+                )
+            {
+                return;
+            }
+
+            let mut publication = state.write().unwrap_or_else(|p| {
+                tracing::warn!(
+                    site = "dev.document_publication_hook",
+                    "rwlock poisoned, recovered"
+                );
+                p.into_inner()
+            });
+            let recovery_commit = matches!(&event, DocumentPublicationEvent::CommitLazyRepair);
+            let is_commit = matches!(
+                &event,
+                DocumentPublicationEvent::CommitPublished
+                    | DocumentPublicationEvent::CommitReadyOnRequest
+                    | DocumentPublicationEvent::CommitLazyRepair
+                    | DocumentPublicationEvent::CommitNotExpected
+                    | DocumentPublicationEvent::CommitEntriesOnly
+            );
+            let (has_eager_failures, preserve_lazy) = {
+                let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                (
+                    obligations.has_eager_failures(),
+                    if is_commit {
+                        obligations.publication_retention(recovery_commit)
+                    } else {
+                        obligations.retain_lazy_dependencies()
+                    },
+                )
+            };
+            let committed = match event {
+                DocumentPublicationEvent::CommitPublished => {
+                    if has_eager_failures {
+                        publication.leave_document_update_pending();
+                        return;
+                    }
+                    publication.resolve_document_uncertainty();
+                    let documents = if preserve_lazy {
+                        zfb_server::DocumentSlot::ReadyOnRequest
+                    } else {
+                        zfb_server::DocumentSlot::Published
+                    };
+                    publication.commit_document_update_with_retention(documents, preserve_lazy)
+                }
+                DocumentPublicationEvent::CommitReadyOnRequest => {
+                    if has_eager_failures {
+                        publication.leave_document_update_pending();
+                        return;
+                    }
+                    publication.resolve_document_uncertainty();
+                    publication.commit_document_update_with_retention(
+                        zfb_server::DocumentSlot::ReadyOnRequest,
+                        preserve_lazy,
+                    )
+                }
+                DocumentPublicationEvent::CommitLazyRepair => {
+                    if has_eager_failures {
+                        publication.leave_document_update_pending();
+                        return;
+                    }
+                    publication.commit_lazy_repair()
+                }
+                DocumentPublicationEvent::CommitNotExpected => {
+                    if has_eager_failures {
+                        publication.leave_document_update_pending();
+                        return;
+                    }
+                    publication.resolve_document_uncertainty();
+                    publication.commit_document_update_with_retention(
+                        zfb_server::DocumentSlot::NotExpected,
+                        preserve_lazy,
+                    )
+                }
+                DocumentPublicationEvent::CommitEntriesOnly => {
+                    if has_eager_failures {
+                        return;
+                    }
+                    publication.commit_entry_update_with_retention(preserve_lazy)
+                }
+                DocumentPublicationEvent::AbortBeforeDocumentWrite => {
+                    publication.abort_document_update_before_write();
+                    let restored_previous =
+                        !matches!(publication.documents, zfb_server::DocumentSlot::Pending);
+                    drop(publication);
+                    if restored_previous {
+                        *staged_islands.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                        *staged_clients.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                        let live = live_islands
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let retained = retained_islands
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let baseline = baseline_islands
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let mut unresolved =
+                            unresolved_islands.lock().unwrap_or_else(|p| p.into_inner());
+                        let candidates: HashSet<String> = unresolved
+                            .difference(&baseline)
+                            .filter(|name| !live.contains(*name) && !retained.contains(*name))
+                            .cloned()
+                            .collect();
+                        prune_dev_companions("islands", &assets_dir, &candidates, &HashSet::new());
+                        *unresolved = baseline;
+
+                        let live = live_clients
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let baseline = baseline_clients
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let mut unresolved =
+                            unresolved_clients.lock().unwrap_or_else(|p| p.into_inner());
+                        let candidates: HashSet<String> = unresolved
+                            .difference(&baseline)
+                            .filter(|name| !live.contains(*name))
+                            .cloned()
+                            .collect();
+                        prune_dev_companions(
+                            "client scripts",
+                            &assets_dir.join(zfb_types::DIST_CLIENT_SCRIPTS_DIR),
+                            &candidates,
+                            &HashSet::new(),
+                        );
+                        *unresolved = baseline;
+                    }
+                    return;
+                }
+                DocumentPublicationEvent::LeavePending => {
+                    publication.leave_document_update_pending();
+                    return;
+                }
+                DocumentPublicationEvent::Begin
+                | DocumentPublicationEvent::SnapshotLazyFallbacks(_)
+                | DocumentPublicationEvent::DocumentMutationStarted
+                | DocumentPublicationEvent::DocumentWriteStarted(_)
+                | DocumentPublicationEvent::DocumentWriteCompleted(_)
+                | DocumentPublicationEvent::DocumentPathsRemoved(_) => unreachable!(),
+            };
+            if !committed {
+                return;
+            }
+            drop(publication);
+
+            if let Some(next) = staged_clients
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
+            {
+                let mut live = live_clients.lock().unwrap_or_else(|p| p.into_inner());
+                if preserve_lazy {
+                    unresolved_clients
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .extend(live.iter().cloned());
+                }
+                *live = next;
+            }
+            if !preserve_lazy {
+                let live = live_clients
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                let candidates = std::mem::take(
+                    &mut *unresolved_clients.lock().unwrap_or_else(|p| p.into_inner()),
+                );
+                prune_dev_companions(
+                    "client scripts",
+                    &assets_dir.join(zfb_types::DIST_CLIENT_SCRIPTS_DIR),
+                    &candidates,
+                    &live,
+                );
+            }
+
+            let next_islands = staged_islands
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            let mut live = live_islands.lock().unwrap_or_else(|p| p.into_inner());
+            let mut retained = retained_islands.lock().unwrap_or_else(|p| p.into_inner());
+            let old_retained = std::mem::take(&mut *retained);
+            if let Some(next) = next_islands {
+                let previous = std::mem::replace(&mut *live, next);
+                if preserve_lazy {
+                    retained.extend(previous);
+                    retained.extend(old_retained.iter().cloned());
+                } else {
+                    *retained = previous;
+                }
+            } else if preserve_lazy {
+                retained.extend(old_retained.iter().cloned());
+            }
+            let keep: HashSet<String> = live.iter().chain(retained.iter()).cloned().collect();
+            if preserve_lazy {
+                unresolved_islands
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .extend(keep.iter().cloned());
+            } else {
+                let mut prune_candidates = std::mem::take(
+                    &mut *unresolved_islands.lock().unwrap_or_else(|p| p.into_inner()),
+                );
+                prune_candidates.extend(old_retained);
+                prune_dev_companions("islands", &assets_dir, &prune_candidates, &keep);
+            }
+        })
+    };
+    let lazy_publication_resolved: Arc<dyn Fn(&Path) + Send + Sync> = {
+        let obligations = Arc::clone(&document_obligations);
+        let publication = Arc::clone(&document_publication_hook);
+        Arc::new(move |output_path| {
+            // Only retire the exact absolute document obligation here. A
+            // response may already have selected the old body and fetch its
+            // framework assets after this write completes, so dependency
+            // cleanup is deliberately deferred to the next successful
+            // non-preserving publication boundary.
+            let drained = obligations
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .resolve_lazy_request_path(output_path);
+            if drained {
+                publication(zfb_build::pipeline::dev::DocumentPublicationEvent::CommitLazyRepair);
+            }
+        })
+    };
     // Issue #1025 — wire the stale probe so each tick's BuildOutcome
     // reports the routes the lazy render callback marked stale
     // (`pages_stale`). Always wired when a render session exists; the
@@ -1456,6 +1903,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             let probe_session = session.clone();
             let ssr_probe_session = session.clone();
             let dynamic_injected_probe_session = session.clone();
+            let lazy_fallback_probe_session = session.clone();
+            let lazy_fallback_root = dev_html_root.clone();
             // Issue #1826 — the SSR-publication signal rides the same
             // per-tick drain discipline as `pages_stale`, on its own
             // probe because SSR routes have no output path to report.
@@ -1481,8 +1930,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     .inner
                     .take_dynamic_injected_restaled()
             }))
+            .with_lazy_fallback_probe(Arc::new(move || {
+                lazy_fallback_probe_session
+                    .inner
+                    .existing_stale_documents(&lazy_fallback_root)
+            }))
+            .with_document_publication_hook(Arc::clone(&document_publication_hook))
         }
-        None => DevAssetPipeline::new(),
+        None => DevAssetPipeline::new()
+            .with_document_publication_hook(Arc::clone(&document_publication_hook)),
     };
     // Issue #1026 — clone the request-time write handle out BEFORE the
     // pipeline is moved into the orchestrator below. The lazy render
@@ -1719,7 +2175,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         // Issue #534 — pass `dev_html_root` (under `.zfb-build/`), not
         // `dist_root`, so per-route dev renders do not overwrite the
         // production HTML files that `pnpm preview` serves.
-        Some(session) => make_render_callback(session.clone(), dev_html_root.clone()),
+        Some(session) => make_render_callback(
+            session.clone(),
+            dev_html_root.clone(),
+            Some(Arc::clone(&document_obligations)),
+        ),
         None => Arc::new(|_pages: &[PageId], _narrowing| Ok(Vec::new())),
     };
 
@@ -1763,15 +2223,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // bases collapse cleanly to "no prefix" here.
     let dev_islands_url_prefix: String =
         zfb_types::dev_mount_prefix(cfg.base.as_deref()).unwrap_or_default();
-    let islands_bundle_url_handle: zfb_server::IslandsBundleUrl = Arc::new(std::sync::RwLock::new(
-        zfb_server::DevPublicationState::pending(),
-    ));
-
-    // Tracks chunk + module-worker companion filenames written by the most
-    // recent islands bundle so the next tick can prune stale files.
-    let live_companion_filenames: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
-
     // Issue #1170 — the eager initial islands bundle used to run HERE,
     // synchronously, before `TcpListener::bind`. On a large-dependency
     // consumer its `"use client"` scan + esbuild bundle was the dominant
@@ -1802,7 +2253,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let bundle_config = cfg.bundle.clone();
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
-        let companion_names = Arc::clone(&live_companion_filenames);
+        let staged_companion_names = Arc::clone(&staged_companion_filenames);
+        let unresolved_companion_names = Arc::clone(&unresolved_companion_filenames);
         let raw_invalidation = raw_import_invalidation.clone();
         // The watcher tick and the deferred boot build (issue #1170) share
         // ONE implementation — `rebundle_islands` — so the boot-time bundle
@@ -1824,7 +2276,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &plugin_cfg,
                 &url_prefix,
                 &url_handle,
-                &companion_names,
+                &staged_companion_names,
+                &unresolved_companion_names,
                 &raw_invalidation,
             )
         }))
@@ -1932,9 +2385,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     //
     // Tracks every entry/worker basename written by the most recent bundle so
     // the next rebuild can prune removed/renamed entries and stale workers.
-    let live_client_script_outputs: Arc<Mutex<std::collections::HashSet<String>>> =
-        Arc::new(Mutex::new(std::collections::HashSet::new()));
-
     // Eager boot bundle — non-fatal, mirrors islands / CSS.
     match crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
         &project_root,
@@ -1949,9 +2399,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Ok(outcome) => {
             let published_urls =
                 dev_client_script_urls(&dev_islands_url_prefix, &outcome.output_filenames);
-            if let Ok(mut guard) = live_client_script_outputs.lock() {
-                *guard = outcome.output_filenames;
+            if let Ok(mut guard) = staged_client_script_outputs.lock() {
+                *guard = Some(outcome.output_filenames.clone());
             }
+            unresolved_client_script_outputs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .extend(outcome.output_filenames);
             raw_import_invalidation.replace_client_scripts(outcome.raw_targets);
             raw_import_invalidation.replace_client_script_workers(outcome.worker_targets);
             raw_import_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
@@ -1964,7 +2418,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     );
                     p.into_inner()
                 })
-                .publish_client_scripts(published_urls);
+                .stage_client_scripts(published_urls);
         }
         Err(err) => {
             output::warn(format!(
@@ -1982,6 +2436,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
         let output_filenames = Arc::clone(&live_client_script_outputs);
+        let staged_output_filenames = Arc::clone(&staged_client_script_outputs);
+        let unresolved_output_filenames = Arc::clone(&unresolved_client_script_outputs);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
         // Aliases never change after setup — capture those once (mirrors
@@ -1998,7 +2454,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let publication_state = Arc::clone(&islands_bundle_url_handle);
         let url_prefix = dev_islands_url_prefix.clone();
         Some(Arc::new(move || -> Result<bool> {
-            let prev = output_filenames
+            let mut prev = output_filenames
                 .lock()
                 .unwrap_or_else(|p| {
                     tracing::warn!(
@@ -2008,6 +2464,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     p.into_inner()
                 })
                 .clone();
+            prev.extend(
+                unresolved_output_filenames
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .cloned(),
+            );
             let plugin_config_for_cs = crate::commands::build::IslandsPluginConfig {
                 alias_entries: plugin_alias_entries_for_cs.clone(),
                 virtual_modules: plugin_virtual_module_store_for_cs.snapshot_pairs(),
@@ -2023,14 +2486,19 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     &plugin_config_for_cs,
                 )?;
             let published_urls = dev_client_script_urls(&url_prefix, &outcome.output_filenames);
-            let mut guard = output_filenames.lock().unwrap_or_else(|p| {
+            let mut guard = staged_output_filenames.lock().unwrap_or_else(|p| {
                 tracing::warn!(
-                    site = "dev.run_client_scripts.output_filenames (write)",
+                    site = "dev.run_client_scripts.staged_output_filenames",
                     "mutex poisoned, recovered"
                 );
                 p.into_inner()
             });
-            *guard = outcome.output_filenames;
+            *guard = Some(outcome.output_filenames.clone());
+            drop(guard);
+            unresolved_output_filenames
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .extend(outcome.output_filenames);
             raw_invalidation.replace_client_scripts(outcome.raw_targets);
             raw_invalidation.replace_client_script_workers(outcome.worker_targets);
             raw_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
@@ -2043,7 +2511,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     );
                     p.into_inner()
                 })
-                .publish_client_scripts(published_urls);
+                .stage_client_scripts(published_urls);
             Ok(outcome.changed)
         }))
     };
@@ -2240,7 +2708,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // framework, the islands plugin config, the URL prefix, the shared
     // bundle-URL handle, and the live-companion tracker.
     let islands_url_handle_for_boot = Arc::clone(&islands_bundle_url_handle);
-    let islands_companion_names_for_boot = Arc::clone(&live_companion_filenames);
+    let staged_islands_companion_names_for_boot = Arc::clone(&staged_companion_filenames);
+    let unresolved_islands_companion_names_for_boot = Arc::clone(&unresolved_companion_filenames);
     let islands_plugin_config_for_boot = islands_plugin_config.clone();
     let raw_import_invalidation_for_boot = raw_import_invalidation.clone();
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
@@ -2293,6 +2762,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 request_writer.clone(),
                 dev_html_root.clone(),
                 injected,
+                Arc::clone(&lazy_publication_resolved),
             )
         });
     let (render_on_request_hook, lazy_render_adapter) = match hook_and_adapter {
@@ -2564,7 +3034,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &islands_plugin_config_for_boot,
                 &islands_url_prefix_for_boot,
                 &islands_url_handle_for_boot,
-                &islands_companion_names_for_boot,
+                &staged_islands_companion_names_for_boot,
+                &unresolved_islands_companion_names_for_boot,
                 &raw_import_invalidation_for_boot,
             ) {
                 Ok(info) => info,
@@ -2585,6 +3056,21 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             if islands_info.is_some() && dev_timing_enabled() {
                 eprintln!("{}", format_boot_islands_published_line());
             }
+            // Test-only publication-barrier hold (issue #2557). This seam is
+            // deliberately after the islands entry is successfully staged
+            // and its timing marker is emitted, but before routes, digest, or
+            // documents can publish. A real-process regression can therefore
+            // deterministically assert `ready=false` in the exact historical
+            // entry-written/document-pending window.
+            if islands_info.is_some() {
+                if let Ok(raw) = std::env::var("ZFB_DEV_TEST_SLOW_POST_ISLANDS_MS") {
+                    if let Ok(ms) = raw.trim().parse::<u64>() {
+                        if ms > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                        }
+                    }
+                }
+            }
 
             // 1. Deferred dev bundle (issue #1182). When the eager dev bundle
             //    was deferred past `TcpListener::bind` (boot-lazy + servable
@@ -2602,6 +3088,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //    before the seed, the graph is populated from a live route
             //    table; run after, every watcher tick would be a cold-start
             //    no-op.
+            let mut document_routes_usable = !defer_dev_bundle;
             if defer_dev_bundle {
                 // Test-only slow-step injection (issue #1182 regression guard):
                 // `ZFB_DEV_TEST_SLOW_BUNDLE_MS` sleeps right before the deferred
@@ -2622,6 +3109,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 if let Some(ref session) = dev_session_for_boot {
                     match session.refresh_bundle_and_routes() {
                         Ok(_) => {
+                            document_routes_usable = true;
                             // Publish the live SSR route handle now the route
                             // tables exist: `refresh_bundle_and_routes` swaps
                             // the SESSION tables but not the server's
@@ -2764,12 +3252,34 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             //    boot-lazy / no-pages / render error) so `run_with_boot` can
             //    broadcast a reload after the render lands. See
             //    `run_boot_render`.
-            let render_outcome = run_boot_render(
+            let mut boot_render = run_boot_render(
                 orchestrator,
                 ctx,
                 dev_session_for_boot.as_ref(),
                 &dist_root_for_boot,
             );
+            if !document_routes_usable {
+                boot_render.boundary = BootDocumentBoundary::Failed;
+            }
+            boot_publication_guard.store(false, Ordering::SeqCst);
+            use zfb_build::pipeline::dev::DocumentPublicationEvent;
+            match boot_render.boundary {
+                BootDocumentBoundary::Published => {
+                    document_publication_hook(DocumentPublicationEvent::CommitPublished);
+                }
+                BootDocumentBoundary::ReadyOnRequest => {
+                    document_publication_hook(DocumentPublicationEvent::Begin);
+                    document_publication_hook(DocumentPublicationEvent::CommitReadyOnRequest);
+                }
+                BootDocumentBoundary::NotExpected => {
+                    document_publication_hook(DocumentPublicationEvent::Begin);
+                    document_publication_hook(DocumentPublicationEvent::CommitNotExpected);
+                }
+                BootDocumentBoundary::Failed => {
+                    document_publication_hook(DocumentPublicationEvent::LeavePending);
+                }
+            }
+            let render_outcome = boot_render.outcome;
             if dev_timing_enabled() {
                 eprintln!("{}", format_boot_render_complete_line());
             }
@@ -3360,7 +3870,7 @@ fn dev_client_script_urls(url_prefix: &str, output_filenames: &HashSet<String>) 
 /// writer panic must not strand the watcher loop). Disk / companion-write
 /// failures are returned as `Err`: the watcher path propagates it (a tick
 /// failure is loud), the boot path warns-and-continues (issue #1170).
-#[allow(clippy::too_many_arguments)] // 9 params: #1497 added bundle_config + raw_invalidation; mirrors build_default_islands_payload_with_bundle_options' threaded inputs, a struct would just shuffle the same fields
+#[allow(clippy::too_many_arguments)] // publication staging adds the companion candidate tracker; a struct would only shuffle these threaded build inputs
 fn rebundle_islands(
     project_root: &Path,
     // Where dev assets are written + served from (issue #1189: the isolated
@@ -3371,7 +3881,8 @@ fn rebundle_islands(
     plugin_config: &crate::commands::build::IslandsPluginConfig,
     url_prefix: &str,
     url_handle: &zfb_server::IslandsBundleUrl,
-    companion_names: &Arc<Mutex<HashSet<String>>>,
+    staged_companion_names: &Arc<Mutex<Option<HashSet<String>>>>,
+    unresolved_companion_names: &Arc<Mutex<HashSet<String>>>,
     raw_invalidation: &zfb_build::RawImportInvalidation,
 ) -> anyhow::Result<Option<IslandsBundleInfo>> {
     // Marker names are only needed by the production build pass; dev mode
@@ -3406,48 +3917,14 @@ fn rebundle_islands(
             crate::commands::build::IslandsGlobPolicy::WarnAndSkip,
             Some(raw_invalidation),
         )?;
-    // Serialize the complete generation replacement — companions, entry,
-    // stale cleanup, then the visible URL — under the existing URL lock. A
-    // request therefore observes either the prior published generation or the
-    // new one, never a URL that points at an entry whose companions are still
-    // being written.
-    //
-    // Treat lock poisoning as a soft event: a writer panic should not abort
-    // the watcher loop. Recover the inner and continue.
-    let mut guard = url_handle.write().unwrap_or_else(|p| {
-        tracing::warn!(
-            site = "dev.rebundle_islands.url_handle",
-            "rwlock poisoned, recovered"
-        );
-        p.into_inner()
-    });
     let Some(payload) = payload else {
-        // The project produced no islands bundle this run. Clear the shared
-        // URL so the next served HTML response does NOT keep injecting a
-        // stale `<script type="module">` tag — without this, removing the
-        // last `"use client"` component would leave the previously-emitted
-        // bundle URL visible on every page until the dev server restarts.
-        guard.publish_islands(Vec::new());
-        // Also prune companions from the last bundle — with no islands bundle
-        // at all, neither chunks, module workers, nor file resources should
-        // remain served.
-        {
-            let mut prev = companion_names.lock().unwrap_or_else(|p| {
-                tracing::warn!(
-                    site = "dev.rebundle_islands.companion_names (clear)",
-                    "mutex poisoned, recovered"
-                );
-                p.into_inner()
-            });
-            let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
-            if let Err(e) = refresh_dev_island_chunks(&assets_dir, &[], &prev) {
-                tracing::warn!(
-                    error = %e,
-                    "dev islands: failed to prune stale companions after no-bundle tick (ignored)"
-                );
-            }
-            *prev = HashSet::new();
-        }
+        url_handle
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .stage_islands(Vec::new());
+        *staged_companion_names
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(HashSet::new());
         return Ok(None);
     };
     let bundle_url = if url_prefix.is_empty() {
@@ -3458,14 +3935,7 @@ fn rebundle_islands(
     // Validate and write the complete companion generation before publishing
     // the stable entry. This includes chunks, module workers, and typed
     // file-loader resources in one collision-checked namespace.
-    {
-        let mut prev = companion_names.lock().unwrap_or_else(|p| {
-            tracing::warn!(
-                site = "dev.rebundle_islands.companion_names",
-                "mutex poisoned, recovered"
-            );
-            p.into_inner()
-        });
+    let names = {
         let assets_dir = assets_root.join(zfb_types::DIST_ASSETS_DIR);
         let entry_relative =
             Path::new(zfb_types::DIST_ASSETS_DIR).join(zfb_types::STABLE_ISLANDS_FILENAME);
@@ -3483,7 +3953,7 @@ fn rebundle_islands(
             &payload.companions,
         )
         .context("dev islands: invalid entry/companion filename set")?;
-        write_prepared_dev_companions("islands", companion_writes)
+        write_tracked_islands_companions(unresolved_companion_names, &names, companion_writes)
             .context("dev islands: failed to write companion files")?;
         atomic_write(&islands_out_path, &payload.bytes).with_context(|| {
             format!(
@@ -3492,9 +3962,8 @@ fn rebundle_islands(
             )
         })?;
 
-        prune_dev_companions("islands", &assets_dir, &prev, &names);
-        *prev = names;
-    }
+        names
+    };
     // The bundler does not currently surface a "bytes-changed" bit back
     // through `build_default_islands_payload` — the URL stays stable
     // (`/assets/islands.js`) on every rebuild, the bytes on disk update in
@@ -3509,7 +3978,13 @@ fn rebundle_islands(
         bundle_url: bundle_url.clone(),
         components: Vec::new(),
     };
-    guard.publish_islands(vec![bundle_url]);
+    *staged_companion_names
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(names.clone());
+    url_handle
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .stage_islands(vec![bundle_url]);
     Ok(Some(info))
 }
 
@@ -3540,13 +4015,26 @@ fn rebundle_islands(
 /// controlled `DEV_404_BODY` (a
 /// complete HTML page carrying the live-reload script, which auto-upgrades
 /// the instant the real render lands) — never a wrong/empty/partial body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BootDocumentBoundary {
+    Published,
+    ReadyOnRequest,
+    NotExpected,
+    Failed,
+}
+
+struct BootRenderResult {
+    outcome: Option<BuildOutcome>,
+    boundary: BootDocumentBoundary,
+}
+
 #[cfg(feature = "embed_v8")]
 fn run_boot_render(
     orchestrator: &BuildOrchestrator<DevAssetPipeline>,
     ctx: &BuildContext,
     dev_session: Option<&DevRenderSession>,
     dist_root: &Path,
-) -> Option<BuildOutcome> {
+) -> BootRenderResult {
     let mode = dev_session
         .map(|s| {
             boot_lazy_decision(
@@ -3616,7 +4104,15 @@ fn run_boot_render(
         // Boot-lazy renders nothing eagerly (each route re-renders on its
         // first request), so there is no eager outcome to broadcast. The
         // request-time render path drives its own reload.
-        return None;
+        let boundary = if dev_session.is_some_and(|session| session.route_count() > 0) {
+            BootDocumentBoundary::ReadyOnRequest
+        } else {
+            BootDocumentBoundary::NotExpected
+        };
+        return BootRenderResult {
+            outcome: None,
+            boundary,
+        };
     }
 
     // Issue #1808 — Auto requested boot-lazy but no servable `dist/` seed
@@ -3670,7 +4166,15 @@ fn run_boot_render(
             // during the pre-render window received the dev 404 page (which
             // carries the live-reload script); broadcasting here auto-
             // refreshes that tab the instant the real HTML lands on disk.
-            Some(outcome)
+            let boundary = if expected_routes > 0 && outcome.pages_rendered == 0 {
+                BootDocumentBoundary::Failed
+            } else {
+                BootDocumentBoundary::Published
+            };
+            BootRenderResult {
+                outcome: Some(outcome),
+                boundary,
+            }
         }
         Ok(None) => {
             // No pages in the graph at all (renderer disabled or a
@@ -3678,14 +4182,20 @@ fn run_boot_render(
             // the user can poke at it / fix the project; SSR-only routes
             // still work via the request-time path. Nothing rendered → no
             // reload to broadcast.
-            None
+            BootRenderResult {
+                outcome: None,
+                boundary: BootDocumentBoundary::NotExpected,
+            }
         }
         Err(err) => {
             output::error(format!(
                 "dev initial render failed — every route will 404 until the next \
                  successful rebuild: {err:#}"
             ));
-            None
+            BootRenderResult {
+                outcome: None,
+                boundary: BootDocumentBoundary::Failed,
+            }
         }
     }
 }
@@ -4017,6 +4527,7 @@ type PreparedDevCompanionSet<'a> = (HashSet<String>, Vec<PreparedDevCompanion<'a
 /// non-fatal at the boot path, fatal at the watcher tick path).  Errors
 /// deleting stale companions are logged and ignored — a stale file that fails to
 /// delete is preferable to aborting the rebuild loop.
+#[cfg(test)]
 fn refresh_dev_island_chunks(
     assets_dir: &Path,
     companions: &[zfb_build::pipeline::CompanionFile],
@@ -4104,6 +4615,22 @@ fn write_prepared_dev_companions(
         })?;
     }
     Ok(())
+}
+
+/// Register the complete islands candidate generation before its first disk
+/// write. If a later companion or stable-entry write fails, the publication
+/// abort path can therefore remove every partially emitted hashed file;
+/// deleting a registered name that was never written is harmless.
+fn write_tracked_islands_companions(
+    unresolved_companion_names: &Mutex<HashSet<String>>,
+    names: &HashSet<String>,
+    companion_writes: Vec<PreparedDevCompanion<'_>>,
+) -> anyhow::Result<()> {
+    unresolved_companion_names
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .extend(names.iter().cloned());
+    write_prepared_dev_companions("islands", companion_writes)
 }
 
 /// Prune only stale names from the prior successful generation. A deletion
@@ -4766,6 +5293,30 @@ impl DevRenderInner {
         drained
     }
 
+    /// Snapshot every stale route that still has an observable on-disk
+    /// fallback document. Unlike the per-tick stale buffer this covers all
+    /// producers, including static/dynamic injected routes and future
+    /// out-of-band stale channels. The caller runs this under the pipeline's
+    /// tick/request exclusion immediately before publication commit.
+    fn existing_stale_documents(&self, html_root: &Path) -> Vec<PathBuf> {
+        let relative_paths: Vec<PathBuf> = self
+            .stale
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entries
+            .keys()
+            .cloned()
+            .collect();
+        let mut existing: Vec<PathBuf> = relative_paths
+            .into_iter()
+            .map(|path| html_root.join(path))
+            .filter(|path| path.is_file())
+            .collect();
+        existing.sort();
+        existing.dedup();
+        existing
+    }
+
     /// Claim a stale route for a request-time render (issue #1025).
     ///
     /// `Some(claim)` when `output_path` is currently stale, `None` when
@@ -4896,13 +5447,15 @@ impl DevRenderInner {
     /// generation. A route re-staled at a higher generation mid-render
     /// stays stale (ABA safety), so the next request re-renders it
     /// against the newer world.
-    fn clear_if_current(&self, claim: &StaleClaim) {
+    fn clear_if_current(&self, claim: &StaleClaim) -> bool {
         let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(recorded) = stale.entries.get(&claim.output_path) {
             if claim.generation >= *recorded {
                 stale.entries.remove(&claim.output_path);
+                return true;
             }
         }
+        false
     }
 
     /// Revalidation read for the guarded request-time write (issue
@@ -5959,7 +6512,7 @@ impl DevRenderSession {
 
     /// Forward of [`DevRenderInner::clear_if_current`] for the lazy
     /// render adapter (issue #1026).
-    pub(crate) fn clear_stale_claim(&self, claim: &StaleClaim) {
+    pub(crate) fn clear_stale_claim(&self, claim: &StaleClaim) -> bool {
         self.inner.clear_if_current(claim)
     }
 
@@ -9365,6 +9918,7 @@ fn lazy_render_tick(
     dist_dir: &Path,
     pages: &[PageId],
     narrowing: Option<&zfb_build::ContentNarrowing>,
+    obligations: Option<&Mutex<DocumentObligations>>,
 ) -> Result<Vec<RenderedPage>> {
     let eager_sets = compute_lazy_eager_sets(session, narrowing);
 
@@ -9421,6 +9975,29 @@ fn lazy_render_tick(
         let filter = RouteFilter::Only(eager.clone());
         match session.render_one(page, dist_dir, &filter) {
             Ok(rendered) => {
+                let rendered_set: HashSet<PathBuf> = rendered
+                    .iter()
+                    .map(|output| output.output_path.as_path().to_path_buf())
+                    .collect();
+                let missing: Vec<PathBuf> = eager
+                    .iter()
+                    .filter(|output| !rendered_set.contains(*output))
+                    .cloned()
+                    .collect();
+                if let Some(obligations) = obligations {
+                    let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                    obligations.record_source_success(
+                        page,
+                        rendered
+                            .iter()
+                            .map(|output| dist_dir.join(&output.output_path)),
+                    );
+                    obligations.record_source_failure(
+                        page.clone(),
+                        missing.iter().map(|output| dist_dir.join(output)),
+                    );
+                }
+                stale.extend(missing);
                 rendered_paths.extend(
                     rendered
                         .iter()
@@ -9429,6 +10006,15 @@ fn lazy_render_tick(
                 out.extend(rendered);
             }
             Err(err) => {
+                if let Some(obligations) = obligations {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .record_source_failure(
+                            page.clone(),
+                            eager.iter().map(|output| dist_dir.join(output)),
+                        );
+                }
                 // The eager routes did NOT reach disk — mark them stale
                 // so the request-time path retries, and keep the
                 // watcher alive (same tolerance as the eager callback).
@@ -9463,7 +10049,11 @@ fn lazy_render_tick(
 
 /// Build the [`PageRenderer`] callback that the orchestrator hands to
 /// [`DevAssetPipeline`].
-fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRenderer {
+fn make_render_callback(
+    session: DevRenderSession,
+    dist_dir: PathBuf,
+    obligations: Option<Arc<Mutex<DocumentObligations>>>,
+) -> PageRenderer {
     Arc::new(move |pages: &[PageId], narrowing| {
         // Issue #1025 — lazy dev render. Switch ON (the default since
         // the #1027 activation flip) routes the tick through the
@@ -9475,7 +10065,13 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
         // lazy boot would 404 every route (review finding on #1025).
         #[cfg(feature = "embed_v8")]
         if session.inner.lazy_render && !session.inner.take_boot_render_pending() {
-            let result = lazy_render_tick(&session, &dist_dir, pages, narrowing);
+            let result = lazy_render_tick(
+                &session,
+                &dist_dir,
+                pages,
+                narrowing,
+                obligations.as_deref(),
+            );
             if let Err(error) = session.reconcile_content_provenance() {
                 output::warn(format!(
                     "content provenance unavailable after lazy render; \
@@ -9504,12 +10100,50 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
         };
         let mut out = Vec::with_capacity(pages.len());
         for page in pages {
+            let expected_outputs: Vec<(PathBuf, PathBuf)> = {
+                let tables = session
+                    .inner
+                    .routes
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner());
+                tables
+                    .routes_by_source
+                    .get(page.path())
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| {
+                        let relative = entry.entry.output_path.clone();
+                        let absolute = dist_dir.join(&relative);
+                        (relative, absolute)
+                    })
+                    .collect()
+            };
             let filter = match &tick_narrowing {
                 TickNarrowing::Off => &RouteFilter::All,
                 TickNarrowing::PerSource(map) => map.get(page.path()).unwrap_or(&RouteFilter::All),
             };
+            let selected_outputs: Vec<PathBuf> = expected_outputs
+                .iter()
+                .filter(|(relative, _)| filter.allows(relative))
+                .map(|(_, absolute)| absolute.clone())
+                .collect();
             match session.render_one(page, &dist_dir, filter) {
                 Ok(rendered) => {
+                    let rendered_outputs: HashSet<PathBuf> = rendered
+                        .iter()
+                        .map(|output| dist_dir.join(&output.output_path))
+                        .collect();
+                    if let Some(obligations) = obligations.as_deref() {
+                        let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                        obligations.record_source_success(page, rendered_outputs.iter().cloned());
+                        obligations.record_source_failure(
+                            page.clone(),
+                            selected_outputs
+                                .iter()
+                                .filter(|output| !rendered_outputs.contains(*output))
+                                .cloned(),
+                        );
+                    }
                     // A static route yields one page; a dynamic SSG route
                     // yields one page per `paths()`-resolved URL (#502/#507).
                     // An empty Vec means the source path is unknown to the
@@ -9520,6 +10154,12 @@ fn make_render_callback(session: DevRenderSession, dist_dir: PathBuf) -> PageRen
                     out.extend(rendered);
                 }
                 Err(err) => {
+                    if let Some(obligations) = obligations.as_deref() {
+                        obligations
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .record_source_failure(page.clone(), selected_outputs.iter().cloned());
+                    }
                     // One page's render failure must not kill the
                     // watcher. Log and continue.
                     output::error(format!(
@@ -9873,6 +10513,95 @@ mod tests {
         resolve_probe_parent_dir, unique_probe_session_dir_name,
     };
     use std::path::PathBuf;
+
+    #[test]
+    fn document_obligations_survive_unrelated_ticks_and_drain_by_exact_output() {
+        let source_b = PageId::new(PathBuf::from("pages/b.tsx"));
+        let output_b1 = PathBuf::from("/dev-pages/b/index.html");
+        let output_b2 = PathBuf::from("/dev-pages/b/alt.html");
+        let output_c = PathBuf::from("/dev-pages/c/index.html");
+        let mut obligations = DocumentObligations::default();
+
+        obligations.record_source_failure(source_b.clone(), [output_b1.clone(), output_b2.clone()]);
+        obligations.record_lazy_outputs([output_b1.clone(), output_b2.clone()]);
+        obligations.record_source_success(
+            &PageId::new(PathBuf::from("pages/c.tsx")),
+            [output_c.clone()],
+        );
+
+        assert!(
+            obligations.has_eager_failures(),
+            "unrelated C cannot clear B"
+        );
+        assert!(!obligations.resolve_lazy_request_path(&output_c));
+        obligations.record_source_success(&source_b, [output_b1.clone()]);
+        assert!(
+            obligations.has_eager_failures(),
+            "a narrowed b1 success must retain unresolved b2",
+        );
+        assert!(!obligations.resolve_lazy_request_path(&output_b1));
+        assert!(obligations.has_eager_failures());
+        assert!(obligations.resolve_lazy_request_path(&output_b2));
+        assert!(!obligations.has_eager_failures());
+        assert!(obligations.publication_retention(true));
+        assert!(obligations.retain_lazy_dependencies());
+        assert!(!obligations.publication_retention(false));
+        assert!(!obligations.retain_lazy_dependencies());
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn complete_stale_snapshot_registers_only_existing_fallbacks_and_drains_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let html_root = dir.path().join("dev-pages");
+        let dynamic = PathBuf::from("preset/dynamic.html");
+        let static_injected = PathBuf::from("preset/static.html");
+        let external = PathBuf::from("external/channel.html");
+        let first_render = PathBuf::from("new/no-fallback.html");
+        for relative in [&dynamic, &static_injected, &external] {
+            let path = html_root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"old fallback").unwrap();
+        }
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        // Exercise the dynamic-injected channel, which deliberately never
+        // enters the per-tick stale buffer.
+        inner.note_dynamic_injected(&dynamic);
+        inner.restale_dynamic_injected();
+        // Static injected seeds use the ordinary tick-side marker.
+        inner.mark_stale([static_injected.clone(), first_render.clone()]);
+        // Model a future/out-of-band producer that writes only the canonical
+        // stale map: the snapshot must not depend on today's producer list.
+        {
+            let mut stale = inner.stale.lock().unwrap();
+            let generation = stale.generation;
+            stale.entries.insert(external.clone(), generation);
+        }
+
+        let snapshot = inner.existing_stale_documents(&html_root);
+
+        assert_eq!(
+            snapshot,
+            vec![
+                html_root.join(&external),
+                html_root.join(&dynamic),
+                html_root.join(&static_injected),
+            ],
+            "the complete stale map is authoritative, independent of which channel marked it",
+        );
+        assert!(
+            !snapshot.contains(&html_root.join(first_render)),
+            "a first-render route without fallback bytes must not retain old dependencies",
+        );
+
+        let mut obligations = DocumentObligations::default();
+        obligations.record_lazy_outputs(snapshot.clone());
+        assert!(obligations.publication_retention(false));
+        assert!(!obligations.resolve_lazy_request_path(&snapshot[0]));
+        assert!(!obligations.resolve_lazy_request_path(&snapshot[1]));
+        assert!(obligations.resolve_lazy_request_path(&snapshot[2]));
+        assert!(obligations.publication_retention(true));
+    }
 
     // -----------------------------------------------------------------
     // Watch backend selection (issue #2174)
@@ -11344,7 +12073,7 @@ mod tests {
         let session = DevRenderSession {
             inner: Arc::new(stub_dev_inner(HashMap::new(), Vec::new())),
         };
-        let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
+        let cb = make_render_callback(session, PathBuf::from("/tmp/dist"), None);
         // A source path not present in routes_by_source is still dropped.
         let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
         let out = cb(&pages, None).unwrap();
@@ -11446,7 +12175,7 @@ mod tests {
         let session = DevRenderSession {
             inner: Arc::new(stub_dev_inner(routes, Vec::new())),
         };
-        let cb = make_render_callback(session, PathBuf::from("/tmp/dist"));
+        let cb = make_render_callback(session, PathBuf::from("/tmp/dist"), None);
         let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
         let out = cb(&pages, None).unwrap();
         assert!(out.is_empty(), "errors must yield empty list, not panic");
@@ -14030,8 +14759,8 @@ mod tests {
 
                 let mut pages = matrix_pages();
                 pages.push(PageId::new(PathBuf::from("pages/unknown.tsx")));
-                let rendered =
-                    lazy_render_tick(&session, tmp.path(), &pages, None).expect("tick succeeds");
+                let rendered = lazy_render_tick(&session, tmp.path(), &pages, None, None)
+                    .expect("tick succeeds");
 
                 assert!(rendered.is_empty(), "an all-lazy tick renders nothing");
                 assert_eq!(
@@ -14100,8 +14829,9 @@ mod tests {
                 let hint = hint_for(&[edited]);
                 let dist = tmp.path().join("dist");
                 std::fs::create_dir_all(&dist).unwrap();
-                let rendered = lazy_render_tick(&session, &dist, &matrix_pages(), Some(&hint))
-                    .expect("the eager render succeeds against the stub host");
+                let rendered =
+                    lazy_render_tick(&session, &dist, &matrix_pages(), Some(&hint), None)
+                        .expect("the eager render succeeds against the stub host");
 
                 assert_eq!(
                     rendered.len(),
@@ -14141,8 +14871,9 @@ mod tests {
 
                 let edited = write_entry(tmp.path(), "a.mdx", "title: A", "updated body");
                 let hint = hint_for(&[edited]);
-                let rendered = lazy_render_tick(&session, tmp.path(), &matrix_pages(), Some(&hint))
-                    .expect("a failed eager render keeps the watcher alive");
+                let rendered =
+                    lazy_render_tick(&session, tmp.path(), &matrix_pages(), Some(&hint), None)
+                        .expect("a failed eager render keeps the watcher alive");
 
                 assert!(rendered.is_empty(), "no live renderer in this stub");
                 assert_eq!(
@@ -14174,7 +14905,7 @@ mod tests {
                     .inner
                     .boot_render_done
                     .store(false, std::sync::atomic::Ordering::SeqCst);
-                let cb = make_render_callback(session.clone(), tmp.path().to_path_buf());
+                let cb = make_render_callback(session.clone(), tmp.path().to_path_buf(), None);
                 let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
 
                 // Boot invocation: eager path (render error swallowed
@@ -14204,7 +14935,8 @@ mod tests {
                 // ON: the static route is marked stale instead of rendered.
                 let (tmp_on, cfg_on) = scaffold(&[]);
                 let session_on = lazy_session_at(&tmp_on, cfg_on, matrix_routes());
-                let cb_on = make_render_callback(session_on.clone(), tmp_on.path().to_path_buf());
+                let cb_on =
+                    make_render_callback(session_on.clone(), tmp_on.path().to_path_buf(), None);
                 let pages = vec![PageId::new(PathBuf::from("pages/index.tsx"))];
                 let out_on = cb_on(&pages, None).expect("lazy tick succeeds");
                 assert!(out_on.is_empty());
@@ -14219,7 +14951,7 @@ mod tests {
                 let (tmp_off, cfg_off) = scaffold(&[]);
                 let session_off = session_at(&tmp_off, cfg_off, matrix_routes());
                 let cb_off =
-                    make_render_callback(session_off.clone(), tmp_off.path().to_path_buf());
+                    make_render_callback(session_off.clone(), tmp_off.path().to_path_buf(), None);
                 let out_off = cb_off(&pages, None).expect("eager tick tolerates render errors");
                 assert!(out_off.is_empty());
                 assert!(
@@ -15106,6 +15838,50 @@ mod tests {
             std::fs::read_dir(&assets).unwrap().count(),
             0,
             "the complete filename set must validate before any companion write"
+        );
+    }
+
+    #[test]
+    fn failed_islands_companion_generation_is_tracked_before_writes_and_abort_prunes_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+        let live_name = "islands-chunk-LIVE0000.js";
+        let first_name = "islands-chunk-CAND0001.js";
+        let failing_name = "islands-chunk-CAND0002.js";
+        std::fs::write(assets.join(live_name), b"live generation").unwrap();
+        // Validation accepts this contained destination, but atomic replacement
+        // of a directory fails after the preceding companion has landed.
+        std::fs::create_dir(assets.join(failing_name)).unwrap();
+        let companions = vec![
+            make_companion(first_name, b"partial candidate"),
+            make_companion(failing_name, b"must fail"),
+        ];
+        let (names, writes) = prepare_dev_companion_writes(
+            "islands",
+            &assets,
+            zfb_types::STABLE_ISLANDS_FILENAME,
+            &companions,
+        )
+        .unwrap();
+        let unresolved = Mutex::new(HashSet::new());
+
+        assert!(write_tracked_islands_companions(&unresolved, &names, writes).is_err());
+        assert_eq!(*unresolved.lock().unwrap(), names);
+        assert_eq!(
+            std::fs::read(assets.join(first_name)).unwrap(),
+            b"partial candidate",
+            "the seam must fail after at least one candidate write",
+        );
+
+        let live = HashSet::from([live_name.to_string()]);
+        let candidates = std::mem::take(&mut *unresolved.lock().unwrap());
+        prune_dev_companions("islands", &assets, &candidates, &live);
+
+        assert!(!assets.join(first_name).exists());
+        assert_eq!(
+            std::fs::read(assets.join(live_name)).unwrap(),
+            b"live generation",
+            "abort cleanup must never delete the committed generation",
         );
     }
 

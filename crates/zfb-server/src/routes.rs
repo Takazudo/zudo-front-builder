@@ -771,6 +771,7 @@ struct DevReadyResponse {
     ready: bool,
     islands: DevReadyAsset,
     client_scripts: DevReadyAsset,
+    documents: &'static str,
     exclusions: DevReadyExclusions,
 }
 
@@ -792,8 +793,16 @@ fn ready_asset(slot: &crate::AssetSlot) -> DevReadyAsset {
 }
 
 fn publication_is_ready(state: &crate::DevPublicationState) -> bool {
-    !matches!(state.islands, crate::AssetSlot::Pending)
-        && !matches!(state.client_scripts, crate::AssetSlot::Pending)
+    state.is_ready()
+}
+
+fn ready_documents(slot: crate::DocumentSlot) -> &'static str {
+    match slot {
+        crate::DocumentSlot::Pending => "pending",
+        crate::DocumentSlot::Published => "published",
+        crate::DocumentSlot::ReadyOnRequest => "ready_on_request",
+        crate::DocumentSlot::NotExpected => "not_expected",
+    }
 }
 
 /// Handler for the Dev-only readiness endpoint. The complete JSON body is
@@ -807,6 +816,7 @@ async fn dev_ready(State(state): State<AppState>) -> Response {
         ready: publication_is_ready(&publication),
         islands: ready_asset(&publication.islands),
         client_scripts: ready_asset(&publication.client_scripts),
+        documents: ready_documents(publication.documents),
         exclusions: DevReadyExclusions {
             dist_root_boot_lazy_seed:
                 "dist_root boot-lazy seed bytes from a past zfb build are excluded from asset readiness",
@@ -2085,6 +2095,8 @@ pub(crate) fn page_response_bytes(
     } else {
         None
     };
+    let body_has_islands =
+        std::str::from_utf8(&body).is_ok_and(|html| html.contains("data-zfb-island"));
     // Issue #377: dev-mode initial-load injection of the islands
     // `<script type="module">` tag. Gated to Dev mode so Preview/Embed
     // callers never ship the unhashed `/assets/islands.js` URL — that
@@ -2097,9 +2109,11 @@ pub(crate) fn page_response_bytes(
     let islands_script_url = if is_dev && inject_reload && inject_islands {
         publication_state
             .as_ref()
-            .and_then(|state| match &state.islands {
-                crate::AssetSlot::Published { urls } => urls.first().map(String::as_str),
-                crate::AssetSlot::NotExpected | crate::AssetSlot::Pending => None,
+            .and_then(|state| {
+                state
+                    .islands_urls_for_response(body_has_islands)
+                    .first()
+                    .map(String::as_str)
             })
             .map(str::trim)
             .filter(|u| !u.is_empty())
