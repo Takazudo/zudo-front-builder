@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { setContentSnapshot } from "@takazudo/zfb/content";
 
@@ -866,6 +866,32 @@ describe("createPageRouter — __paths__ endpoint", () => {
     const body = await res.json();
     expect(body).toEqual([{ params: { slug: "hello" } }, { params: { slug: "world" } }]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// __paths__ shadow-warning predicate
+// ---------------------------------------------------------------------------
+
+describe("createPageRouter — __paths__ shadow warning", () => {
+  afterEach(() => {
+    setContentSnapshot(undefined);
+    vi.restoreAllMocks();
+  });
+
+  it.each(["/:slug{.+}", "/:slug{.+}?", "/*", "/a/__paths__/b", "/__paths__", "/__paths__/"])(
+    "does not warn for safe route %s",
+    (route) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      createPageRouter({
+        pages: [{ route, module: () => Promise.resolve({ default: () => null }) }],
+        contentSnapshot: { collections: {} },
+        framework: { renderToString: () => "" },
+      });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
