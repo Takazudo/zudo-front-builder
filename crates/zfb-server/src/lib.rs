@@ -65,13 +65,124 @@ use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::info;
 
-/// Shared handle to the currently-emitted dev-mode islands bundle URL
-/// (issue #377).
+/// Publication status for one class of dev asset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AssetSlot {
+    /// This project has no asset of this class.
+    NotExpected,
+    /// Discovery or publication has not completed yet.
+    Pending,
+    /// The complete current set of publicly served URLs.
+    Published { urls: Vec<String> },
+}
+
+/// One atomic snapshot of all dev assets that affect hydration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevPublicationState {
+    pub generation: u64,
+    pub islands: AssetSlot,
+    pub client_scripts: AssetSlot,
+}
+
+impl DevPublicationState {
+    /// Initial state while deferred asset publications are unresolved.
+    pub fn pending() -> Self {
+        Self {
+            generation: 0,
+            islands: AssetSlot::Pending,
+            client_scripts: AssetSlot::Pending,
+        }
+    }
+
+    /// Compatibility constructor for callers that only exercise islands.
+    pub fn from_islands_url(url: Option<String>) -> Self {
+        Self {
+            generation: 0,
+            islands: Self::slot_from_urls(url.into_iter().collect()),
+            client_scripts: AssetSlot::NotExpected,
+        }
+    }
+
+    /// Publish the complete islands URL set and advance the generation.
+    pub fn publish_islands(&mut self, urls: Vec<String>) {
+        self.bump_generation();
+        self.islands = Self::slot_from_urls(urls);
+    }
+
+    /// Publish the complete client-script URL set and advance the generation.
+    pub fn publish_client_scripts(&mut self, urls: Vec<String>) {
+        self.bump_generation();
+        self.client_scripts = Self::slot_from_urls(urls);
+    }
+
+    fn slot_from_urls(urls: Vec<String>) -> AssetSlot {
+        if urls.is_empty() {
+            AssetSlot::NotExpected
+        } else {
+            AssetSlot::Published { urls }
+        }
+    }
+
+    fn bump_generation(&mut self) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("dev publication generation overflowed");
+    }
+}
+
+impl Default for DevPublicationState {
+    fn default() -> Self {
+        Self::pending()
+    }
+}
+
+#[cfg(test)]
+mod publication_state_tests {
+    use super::{AssetSlot, DevPublicationState};
+
+    #[test]
+    fn successful_publications_advance_one_shared_generation() {
+        let mut state = DevPublicationState::pending();
+
+        state.publish_client_scripts(vec!["/assets/client/main.js".to_string()]);
+        assert_eq!(state.generation, 1);
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec!["/assets/client/main.js".to_string()]
+            }
+        );
+        assert_eq!(state.islands, AssetSlot::Pending);
+
+        state.publish_islands(vec!["/assets/islands.js".to_string()]);
+        assert_eq!(state.generation, 2);
+        assert_eq!(
+            state.islands,
+            AssetSlot::Published {
+                urls: vec!["/assets/islands.js".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn empty_successful_publications_are_not_expected() {
+        let mut state = DevPublicationState::pending();
+
+        state.publish_client_scripts(Vec::new());
+        state.publish_islands(Vec::new());
+
+        assert_eq!(state.generation, 2);
+        assert_eq!(state.client_scripts, AssetSlot::NotExpected);
+        assert_eq!(state.islands, AssetSlot::NotExpected);
+    }
+}
+
+/// Shared handle to the current atomic dev publication state.
 ///
-/// `None` (outer) means "no islands path configured for this server"
-/// — the page handler skips head injection entirely. `Some(url)`
-/// inside the lock carries the public URL the dev orchestrator wrote
-/// last (`/assets/islands.js` for projects without a base prefix, or
+/// `None` (outer) means "no publication state configured for this server".
+/// The islands slot carries the public URL the dev orchestrator wrote last
+/// (`/assets/islands.js` for projects without a base prefix, or
 /// `/foo/assets/islands.js` when `base: "/foo/"` is configured).
 ///
 /// Reads happen on every served HTML response in dev mode; writes happen
@@ -81,7 +192,7 @@ use tracing::info;
 ///
 /// Cloning the [`Arc`] is cheap; the [`AppState`] holds one clone and the
 /// bin crate's `run_islands` callback holds another.
-pub type IslandsBundleUrl = Arc<RwLock<Option<String>>>;
+pub type IslandsBundleUrl = Arc<RwLock<DevPublicationState>>;
 
 /// Shared handle to the currently-emitted dev-mode CSS bundle URL
 /// (issue #494 / #498).
@@ -247,8 +358,9 @@ pub struct ServeOpts {
 
     /// Shared handle to the current dev-mode islands bundle URL
     /// (issue #377). `None` for projects with no `"use client"`
-    /// components (or when the bin crate has not seeded a bundle yet);
-    /// `Some(<arc>)` carrying a URL like `/assets/islands.js` that the
+    /// components (or when the bin crate has not seeded publication state);
+    /// `Some(<arc>)` carrying the atomic publication state whose islands slot
+    /// may contain a URL like `/assets/islands.js` that the
     /// page handler splices into every served HTML response's `<head>`
     /// via the byte-level helper in
     /// [`zfb_build::head_inject::inject_prod_head_assets`].

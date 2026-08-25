@@ -459,11 +459,11 @@ pub struct AppState {
     pub trailing_slash: bool,
 
     /// Optional shared handle to the current dev-mode islands bundle URL
-    /// (issue #377). When `Some` and the inner lock holds `Some(url)`,
+    /// (issue #377). When `Some` and the islands slot is `Published`,
     /// every served HTML response in [`crate::ServerMode::Dev`] mode
     /// has a `<script type="module" src="<url>"></script>` spliced into
     /// `<head>` via [`zfb_build::head_inject::inject_prod_head_assets`].
-    /// `None` (outer) or `None` inside the lock both fall back to "no
+    /// `None` (outer), `Pending`, and `NotExpected` all fall back to "no
     /// injection" — projects without `"use client"` components must
     /// not ship a script tag pointing at a non-existent bundle.
     ///
@@ -722,7 +722,10 @@ fn current_islands_bundle_url(handle: &Option<crate::IslandsBundleUrl>) -> Optio
         );
         p.into_inner()
     });
-    guard.clone()
+    match &guard.islands {
+        crate::AssetSlot::Published { urls } => urls.first().cloned(),
+        crate::AssetSlot::NotExpected | crate::AssetSlot::Pending => None,
+    }
 }
 
 /// Read the current dev-mode CSS bundle URL from the shared state
@@ -3097,7 +3100,9 @@ mod tests {
     }
 
     fn make_islands_bundle_url(url: &str) -> crate::IslandsBundleUrl {
-        Arc::new(std::sync::RwLock::new(Some(url.to_string())))
+        Arc::new(std::sync::RwLock::new(
+            crate::DevPublicationState::from_islands_url(Some(url.to_string())),
+        ))
     }
 
     #[tokio::test]
