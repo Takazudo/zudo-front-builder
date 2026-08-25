@@ -28,7 +28,23 @@ window.runFixture = async (action = "root") => {
   }
   if (action === "render") {
     return {
-      result: await renderHtml("# Render subpath\n"),
+      result: await renderHtml(
+        ":::note[Heads up]\n" +
+          "First paragraph with **bold** and a [link](./other.md).\n\n" +
+          "Second paragraph.\n" +
+          ":::\n\n" +
+          "> [!IMPORTANT]\n" +
+          "> Alert body with *emphasis*.\n",
+        {
+          filename: "preview.mdx",
+          pipeline: {
+            features: {
+              directives: { note: "Note" },
+              githubAlerts: true,
+            },
+          },
+        },
+      ),
       state: getRenderRecoveryState(),
     };
   }
