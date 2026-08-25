@@ -1066,6 +1066,114 @@ fn spawn_redirects_watch(
     (handle, join)
 }
 
+/// Persistent proof obligations for a document/entry publication. Unlike a
+/// per-tick flag, these survive unrelated narrowed ticks until the exact
+/// failed source/output is repaired or a lazy output is request-published.
+#[derive(Debug, Default)]
+struct DocumentObligations {
+    failed_sources: HashMap<PageId, HashSet<PathBuf>>,
+    failed_outputs: HashSet<PathBuf>,
+    lazy_outputs: HashSet<PathBuf>,
+    drained_lazy_retention: bool,
+}
+
+impl DocumentObligations {
+    fn has_eager_failures(&self) -> bool {
+        !self.failed_sources.is_empty() || !self.failed_outputs.is_empty()
+    }
+
+    fn retain_lazy_dependencies(&self) -> bool {
+        !self.lazy_outputs.is_empty() || self.drained_lazy_retention
+    }
+
+    fn record_source_success(
+        &mut self,
+        source: &PageId,
+        outputs: impl IntoIterator<Item = PathBuf>,
+    ) {
+        for output in outputs {
+            self.failed_outputs.remove(&output);
+            self.lazy_outputs.remove(&output);
+            if let Some(failed) = self.failed_sources.get_mut(source) {
+                failed.remove(&output);
+            }
+        }
+        if self
+            .failed_sources
+            .get(source)
+            .is_some_and(HashSet::is_empty)
+        {
+            self.failed_sources.remove(source);
+        }
+    }
+
+    fn record_source_failure(
+        &mut self,
+        source: PageId,
+        outputs: impl IntoIterator<Item = PathBuf>,
+    ) {
+        let outputs: HashSet<PathBuf> = outputs.into_iter().collect();
+        if !outputs.is_empty() {
+            self.failed_sources
+                .entry(source)
+                .or_default()
+                .extend(outputs);
+        }
+    }
+
+    fn record_lazy_outputs(&mut self, outputs: impl IntoIterator<Item = PathBuf>) {
+        for output in outputs {
+            self.lazy_outputs.insert(output);
+        }
+    }
+
+    fn resolve_document_path(&mut self, output: &Path) {
+        self.failed_outputs.remove(output);
+        self.lazy_outputs.remove(output);
+        self.failed_sources.retain(|_, outputs| {
+            outputs.remove(output);
+            !outputs.is_empty()
+        });
+    }
+
+    /// Resolve one successfully request-published absolute output. Returns
+    /// true exactly when this write drains the final eager/lazy recovery
+    /// obligation, arming one-generation fallback retention for the recovery
+    /// commit. An ordinary later commit consumes that retention.
+    fn resolve_lazy_request_path(&mut self, output: &Path) -> bool {
+        let was_obligated = self.failed_outputs.contains(output)
+            || self.lazy_outputs.contains(output)
+            || self
+                .failed_sources
+                .values()
+                .any(|outputs| outputs.contains(output));
+        if !was_obligated {
+            return false;
+        }
+        self.resolve_document_path(output);
+        let drained = !self.has_eager_failures() && self.lazy_outputs.is_empty();
+        if drained {
+            self.drained_lazy_retention = true;
+        }
+        drained
+    }
+
+    fn publication_retention(&mut self, recovery_commit: bool) -> bool {
+        if !self.lazy_outputs.is_empty() {
+            return true;
+        }
+        if recovery_commit {
+            return self.drained_lazy_retention;
+        }
+        self.drained_lazy_retention = false;
+        false
+    }
+
+    fn start_document_write(&mut self, output: PathBuf) {
+        self.failed_outputs.insert(output);
+    }
+}
+
 /// Entry point for `zfb dev`.
 ///
 /// Available only when the `embed_v8` cargo feature is on (issue #371,
@@ -1459,6 +1567,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Arc::new(Mutex::new(None));
     let unresolved_companion_filenames: Arc<Mutex<HashSet<String>>> =
         Arc::new(Mutex::new(HashSet::new()));
+    let baseline_unresolved_companion_filenames: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
     let retained_companion_filenames: Arc<Mutex<HashSet<String>>> =
         Arc::new(Mutex::new(HashSet::new()));
     let live_client_script_outputs: Arc<Mutex<HashSet<String>>> =
@@ -1467,32 +1577,80 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Arc::new(Mutex::new(None));
     let unresolved_client_script_outputs: Arc<Mutex<HashSet<String>>> =
         Arc::new(Mutex::new(HashSet::new()));
+    let baseline_unresolved_client_script_outputs: Arc<Mutex<HashSet<String>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let document_obligations = Arc::new(Mutex::new(DocumentObligations::default()));
 
     // The pipeline's initial-build completion is validated by
     // `run_boot_render` (known routes + zero rendered is not success), so hold
     // its automatic commit until that caller makes the boot-specific decision.
     let boot_publication_guard = Arc::new(AtomicBool::new(true));
-    let document_render_failed = Arc::new(AtomicBool::new(false));
     let document_publication_hook: zfb_build::pipeline::dev::DocumentPublicationHook = {
         let state = Arc::clone(&islands_bundle_url_handle);
         let boot_guard = Arc::clone(&boot_publication_guard);
-        let render_failed = Arc::clone(&document_render_failed);
+        let obligations = Arc::clone(&document_obligations);
         let live_islands = Arc::clone(&live_companion_filenames);
         let staged_islands = Arc::clone(&staged_companion_filenames);
         let retained_islands = Arc::clone(&retained_companion_filenames);
         let unresolved_islands = Arc::clone(&unresolved_companion_filenames);
+        let baseline_islands = Arc::clone(&baseline_unresolved_companion_filenames);
         let live_clients = Arc::clone(&live_client_script_outputs);
         let staged_clients = Arc::clone(&staged_client_script_outputs);
         let unresolved_clients = Arc::clone(&unresolved_client_script_outputs);
+        let baseline_clients = Arc::clone(&baseline_unresolved_client_script_outputs);
         let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
         Arc::new(move |event| {
             use zfb_build::pipeline::dev::DocumentPublicationEvent;
 
+            match &event {
+                DocumentPublicationEvent::Begin => {
+                    *baseline_islands.lock().unwrap_or_else(|p| p.into_inner()) =
+                        unresolved_islands
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                    *baseline_clients.lock().unwrap_or_else(|p| p.into_inner()) =
+                        unresolved_clients
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                    state
+                        .write()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .begin_document_update();
+                    return;
+                }
+                DocumentPublicationEvent::DocumentMutationStarted => return,
+                DocumentPublicationEvent::DocumentWriteStarted(path) => {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .start_document_write(path.clone());
+                    return;
+                }
+                DocumentPublicationEvent::DocumentWriteCompleted(path) => {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .resolve_document_path(path);
+                    return;
+                }
+                DocumentPublicationEvent::DocumentPathsRemoved(paths) => {
+                    let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                    for path in paths {
+                        obligations.resolve_document_path(path);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+
             if boot_guard.load(Ordering::SeqCst)
                 && matches!(
-                    event,
+                    &event,
                     DocumentPublicationEvent::CommitPublished
                         | DocumentPublicationEvent::CommitReadyOnRequest
+                        | DocumentPublicationEvent::CommitLazyRepair
                         | DocumentPublicationEvent::CommitNotExpected
                         | DocumentPublicationEvent::CommitEntriesOnly
                 )
@@ -1507,42 +1665,127 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 );
                 p.into_inner()
             });
-            match event {
-                DocumentPublicationEvent::Begin => {
-                    render_failed.store(false, Ordering::SeqCst);
-                    publication.begin_document_update();
-                }
+            let recovery_commit = matches!(&event, DocumentPublicationEvent::CommitLazyRepair);
+            let is_commit = matches!(
+                &event,
+                DocumentPublicationEvent::CommitPublished
+                    | DocumentPublicationEvent::CommitReadyOnRequest
+                    | DocumentPublicationEvent::CommitLazyRepair
+                    | DocumentPublicationEvent::CommitNotExpected
+                    | DocumentPublicationEvent::CommitEntriesOnly
+            );
+            let (has_eager_failures, preserve_lazy) = {
+                let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                (
+                    obligations.has_eager_failures(),
+                    if is_commit {
+                        obligations.publication_retention(recovery_commit)
+                    } else {
+                        obligations.retain_lazy_dependencies()
+                    },
+                )
+            };
+            let committed = match event {
                 DocumentPublicationEvent::CommitPublished => {
-                    if render_failed.swap(false, Ordering::SeqCst) {
+                    if has_eager_failures {
                         publication.leave_document_update_pending();
                         return;
                     }
-                    publication.commit_document_update(zfb_server::DocumentSlot::Published);
+                    publication.resolve_document_uncertainty();
+                    let documents = if preserve_lazy {
+                        zfb_server::DocumentSlot::ReadyOnRequest
+                    } else {
+                        zfb_server::DocumentSlot::Published
+                    };
+                    publication.commit_document_update_with_retention(documents, preserve_lazy)
                 }
                 DocumentPublicationEvent::CommitReadyOnRequest => {
-                    publication.commit_document_update(zfb_server::DocumentSlot::ReadyOnRequest);
-                }
-                DocumentPublicationEvent::CommitNotExpected => {
-                    publication.commit_document_update(zfb_server::DocumentSlot::NotExpected);
-                }
-                DocumentPublicationEvent::CommitEntriesOnly => {
-                    if !publication.commit_entry_update() {
+                    if has_eager_failures {
+                        publication.leave_document_update_pending();
                         return;
                     }
+                    publication.resolve_document_uncertainty();
+                    publication.commit_document_update_with_retention(
+                        zfb_server::DocumentSlot::ReadyOnRequest,
+                        preserve_lazy,
+                    )
+                }
+                DocumentPublicationEvent::CommitLazyRepair => {
+                    if has_eager_failures {
+                        publication.leave_document_update_pending();
+                        return;
+                    }
+                    publication.commit_lazy_repair()
+                }
+                DocumentPublicationEvent::CommitNotExpected => {
+                    if has_eager_failures {
+                        publication.leave_document_update_pending();
+                        return;
+                    }
+                    publication.resolve_document_uncertainty();
+                    publication.commit_document_update_with_retention(
+                        zfb_server::DocumentSlot::NotExpected,
+                        preserve_lazy,
+                    )
+                }
+                DocumentPublicationEvent::CommitEntriesOnly => {
+                    if has_eager_failures {
+                        return;
+                    }
+                    publication.commit_entry_update_with_retention(preserve_lazy)
                 }
                 DocumentPublicationEvent::AbortBeforeDocumentWrite => {
                     publication.abort_document_update_before_write();
-                    if !matches!(publication.documents, zfb_server::DocumentSlot::Pending) {
+                    let restored_previous =
+                        !matches!(publication.documents, zfb_server::DocumentSlot::Pending);
+                    drop(publication);
+                    if restored_previous {
                         *staged_islands.lock().unwrap_or_else(|p| p.into_inner()) = None;
                         *staged_clients.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                        unresolved_islands
+                        let live = live_islands
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .clear();
-                        unresolved_clients
+                            .clone();
+                        let retained = retained_islands
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .clear();
+                            .clone();
+                        let baseline = baseline_islands
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let mut unresolved =
+                            unresolved_islands.lock().unwrap_or_else(|p| p.into_inner());
+                        let candidates: HashSet<String> = unresolved
+                            .difference(&baseline)
+                            .filter(|name| !live.contains(*name) && !retained.contains(*name))
+                            .cloned()
+                            .collect();
+                        prune_dev_companions("islands", &assets_dir, &candidates, &HashSet::new());
+                        *unresolved = baseline;
+
+                        let live = live_clients
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let baseline = baseline_clients
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        let mut unresolved =
+                            unresolved_clients.lock().unwrap_or_else(|p| p.into_inner());
+                        let candidates: HashSet<String> = unresolved
+                            .difference(&baseline)
+                            .filter(|name| !live.contains(*name))
+                            .cloned()
+                            .collect();
+                        prune_dev_companions(
+                            "client scripts",
+                            &assets_dir.join(zfb_types::DIST_CLIENT_SCRIPTS_DIR),
+                            &candidates,
+                            &HashSet::new(),
+                        );
+                        *unresolved = baseline;
                     }
                     return;
                 }
@@ -1550,6 +1793,14 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     publication.leave_document_update_pending();
                     return;
                 }
+                DocumentPublicationEvent::Begin
+                | DocumentPublicationEvent::DocumentMutationStarted
+                | DocumentPublicationEvent::DocumentWriteStarted(_)
+                | DocumentPublicationEvent::DocumentWriteCompleted(_)
+                | DocumentPublicationEvent::DocumentPathsRemoved(_) => unreachable!(),
+            };
+            if !committed {
+                return;
             }
             drop(publication);
 
@@ -1558,12 +1809,30 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .unwrap_or_else(|p| p.into_inner())
                 .take()
             {
-                *live_clients.lock().unwrap_or_else(|p| p.into_inner()) = next;
+                let mut live = live_clients.lock().unwrap_or_else(|p| p.into_inner());
+                if preserve_lazy {
+                    unresolved_clients
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .extend(live.iter().cloned());
+                }
+                *live = next;
             }
-            unresolved_clients
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clear();
+            if !preserve_lazy {
+                let live = live_clients
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                let candidates = std::mem::take(
+                    &mut *unresolved_clients.lock().unwrap_or_else(|p| p.into_inner()),
+                );
+                prune_dev_companions(
+                    "client scripts",
+                    &assets_dir.join(zfb_types::DIST_CLIENT_SCRIPTS_DIR),
+                    &candidates,
+                    &live,
+                );
+            }
 
             let next_islands = staged_islands
                 .lock()
@@ -1573,13 +1842,47 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             let mut retained = retained_islands.lock().unwrap_or_else(|p| p.into_inner());
             let old_retained = std::mem::take(&mut *retained);
             if let Some(next) = next_islands {
-                *retained = std::mem::replace(&mut *live, next);
+                let previous = std::mem::replace(&mut *live, next);
+                if preserve_lazy {
+                    retained.extend(previous);
+                    retained.extend(old_retained.iter().cloned());
+                } else {
+                    *retained = previous;
+                }
+            } else if preserve_lazy {
+                retained.extend(old_retained.iter().cloned());
             }
             let keep: HashSet<String> = live.iter().chain(retained.iter()).cloned().collect();
-            let mut prune_candidates =
-                std::mem::take(&mut *unresolved_islands.lock().unwrap_or_else(|p| p.into_inner()));
-            prune_candidates.extend(old_retained);
-            prune_dev_companions("islands", &assets_dir, &prune_candidates, &keep);
+            if preserve_lazy {
+                unresolved_islands
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .extend(keep.iter().cloned());
+            } else {
+                let mut prune_candidates = std::mem::take(
+                    &mut *unresolved_islands.lock().unwrap_or_else(|p| p.into_inner()),
+                );
+                prune_candidates.extend(old_retained);
+                prune_dev_companions("islands", &assets_dir, &prune_candidates, &keep);
+            }
+        })
+    };
+    let lazy_publication_resolved: Arc<dyn Fn(&Path) + Send + Sync> = {
+        let obligations = Arc::clone(&document_obligations);
+        let publication = Arc::clone(&document_publication_hook);
+        Arc::new(move |output_path| {
+            // Only retire the exact absolute document obligation here. A
+            // response may already have selected the old body and fetch its
+            // framework assets after this write completes, so dependency
+            // cleanup is deliberately deferred to the next successful
+            // non-preserving publication boundary.
+            let drained = obligations
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .resolve_lazy_request_path(output_path);
+            if drained {
+                publication(zfb_build::pipeline::dev::DocumentPublicationEvent::CommitLazyRepair);
+            }
         })
     };
     // Issue #1025 — wire the stale probe so each tick's BuildOutcome
@@ -1860,7 +2163,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         Some(session) => make_render_callback(
             session.clone(),
             dev_html_root.clone(),
-            Some(Arc::clone(&document_render_failed)),
+            Some(Arc::clone(&document_obligations)),
         ),
         None => Arc::new(|_pages: &[PageId], _narrowing| Ok(Vec::new())),
     };
@@ -2444,6 +2747,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 request_writer.clone(),
                 dev_html_root.clone(),
                 injected,
+                Arc::clone(&lazy_publication_resolved),
             )
         });
     let (render_on_request_hook, lazy_render_adapter) = match hook_and_adapter {
@@ -5092,13 +5396,15 @@ impl DevRenderInner {
     /// generation. A route re-staled at a higher generation mid-render
     /// stays stale (ABA safety), so the next request re-renders it
     /// against the newer world.
-    fn clear_if_current(&self, claim: &StaleClaim) {
+    fn clear_if_current(&self, claim: &StaleClaim) -> bool {
         let mut stale = self.stale.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(recorded) = stale.entries.get(&claim.output_path) {
             if claim.generation >= *recorded {
                 stale.entries.remove(&claim.output_path);
+                return true;
             }
         }
+        false
     }
 
     /// Revalidation read for the guarded request-time write (issue
@@ -6155,7 +6461,7 @@ impl DevRenderSession {
 
     /// Forward of [`DevRenderInner::clear_if_current`] for the lazy
     /// render adapter (issue #1026).
-    pub(crate) fn clear_stale_claim(&self, claim: &StaleClaim) {
+    pub(crate) fn clear_stale_claim(&self, claim: &StaleClaim) -> bool {
         self.inner.clear_if_current(claim)
     }
 
@@ -9561,7 +9867,7 @@ fn lazy_render_tick(
     dist_dir: &Path,
     pages: &[PageId],
     narrowing: Option<&zfb_build::ContentNarrowing>,
-    render_failed: Option<&AtomicBool>,
+    obligations: Option<&Mutex<DocumentObligations>>,
 ) -> Result<Vec<RenderedPage>> {
     let eager_sets = compute_lazy_eager_sets(session, narrowing);
 
@@ -9618,6 +9924,29 @@ fn lazy_render_tick(
         let filter = RouteFilter::Only(eager.clone());
         match session.render_one(page, dist_dir, &filter) {
             Ok(rendered) => {
+                let rendered_set: HashSet<PathBuf> = rendered
+                    .iter()
+                    .map(|output| output.output_path.as_path().to_path_buf())
+                    .collect();
+                let missing: Vec<PathBuf> = eager
+                    .iter()
+                    .filter(|output| !rendered_set.contains(*output))
+                    .cloned()
+                    .collect();
+                if let Some(obligations) = obligations {
+                    let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                    obligations.record_source_success(
+                        page,
+                        rendered
+                            .iter()
+                            .map(|output| dist_dir.join(&output.output_path)),
+                    );
+                    obligations.record_source_failure(
+                        page.clone(),
+                        missing.iter().map(|output| dist_dir.join(output)),
+                    );
+                }
+                stale.extend(missing);
                 rendered_paths.extend(
                     rendered
                         .iter()
@@ -9626,8 +9955,14 @@ fn lazy_render_tick(
                 out.extend(rendered);
             }
             Err(err) => {
-                if let Some(failed) = render_failed {
-                    failed.store(true, Ordering::SeqCst);
+                if let Some(obligations) = obligations {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .record_source_failure(
+                            page.clone(),
+                            eager.iter().map(|output| dist_dir.join(output)),
+                        );
                 }
                 // The eager routes did NOT reach disk — mark them stale
                 // so the request-time path retries, and keep the
@@ -9645,6 +9980,12 @@ fn lazy_render_tick(
     // eager-rendered routes are cleared last — fresh output supersedes
     // any staling from earlier ticks; the two sets are disjoint within
     // this tick.
+    if let Some(obligations) = obligations {
+        obligations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .record_lazy_outputs(stale.iter().map(|path| dist_dir.join(path)));
+    }
     session.inner.mark_stale(stale);
     session.inner.clear_stale(&rendered_paths);
 
@@ -9666,7 +10007,7 @@ fn lazy_render_tick(
 fn make_render_callback(
     session: DevRenderSession,
     dist_dir: PathBuf,
-    render_failed: Option<Arc<AtomicBool>>,
+    obligations: Option<Arc<Mutex<DocumentObligations>>>,
 ) -> PageRenderer {
     Arc::new(move |pages: &[PageId], narrowing| {
         // Issue #1025 — lazy dev render. Switch ON (the default since
@@ -9684,7 +10025,7 @@ fn make_render_callback(
                 &dist_dir,
                 pages,
                 narrowing,
-                render_failed.as_deref(),
+                obligations.as_deref(),
             );
             if let Err(error) = session.reconcile_content_provenance() {
                 output::warn(format!(
@@ -9714,12 +10055,50 @@ fn make_render_callback(
         };
         let mut out = Vec::with_capacity(pages.len());
         for page in pages {
+            let expected_outputs: Vec<(PathBuf, PathBuf)> = {
+                let tables = session
+                    .inner
+                    .routes
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner());
+                tables
+                    .routes_by_source
+                    .get(page.path())
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| {
+                        let relative = entry.entry.output_path.clone();
+                        let absolute = dist_dir.join(&relative);
+                        (relative, absolute)
+                    })
+                    .collect()
+            };
             let filter = match &tick_narrowing {
                 TickNarrowing::Off => &RouteFilter::All,
                 TickNarrowing::PerSource(map) => map.get(page.path()).unwrap_or(&RouteFilter::All),
             };
+            let selected_outputs: Vec<PathBuf> = expected_outputs
+                .iter()
+                .filter(|(relative, _)| filter.allows(relative))
+                .map(|(_, absolute)| absolute.clone())
+                .collect();
             match session.render_one(page, &dist_dir, filter) {
                 Ok(rendered) => {
+                    let rendered_outputs: HashSet<PathBuf> = rendered
+                        .iter()
+                        .map(|output| dist_dir.join(&output.output_path))
+                        .collect();
+                    if let Some(obligations) = obligations.as_deref() {
+                        let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
+                        obligations.record_source_success(page, rendered_outputs.iter().cloned());
+                        obligations.record_source_failure(
+                            page.clone(),
+                            selected_outputs
+                                .iter()
+                                .filter(|output| !rendered_outputs.contains(*output))
+                                .cloned(),
+                        );
+                    }
                     // A static route yields one page; a dynamic SSG route
                     // yields one page per `paths()`-resolved URL (#502/#507).
                     // An empty Vec means the source path is unknown to the
@@ -9730,8 +10109,11 @@ fn make_render_callback(
                     out.extend(rendered);
                 }
                 Err(err) => {
-                    if let Some(failed) = render_failed.as_deref() {
-                        failed.store(true, Ordering::SeqCst);
+                    if let Some(obligations) = obligations.as_deref() {
+                        obligations
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .record_source_failure(page.clone(), selected_outputs.iter().cloned());
                     }
                     // One page's render failure must not kill the
                     // watcher. Log and continue.
@@ -10086,6 +10468,41 @@ mod tests {
         resolve_probe_parent_dir, unique_probe_session_dir_name,
     };
     use std::path::PathBuf;
+
+    #[test]
+    fn document_obligations_survive_unrelated_ticks_and_drain_by_exact_output() {
+        let source_b = PageId::new(PathBuf::from("pages/b.tsx"));
+        let output_b1 = PathBuf::from("/dev-pages/b/index.html");
+        let output_b2 = PathBuf::from("/dev-pages/b/alt.html");
+        let output_c = PathBuf::from("/dev-pages/c/index.html");
+        let mut obligations = DocumentObligations::default();
+
+        obligations.record_source_failure(source_b.clone(), [output_b1.clone(), output_b2.clone()]);
+        obligations.record_lazy_outputs([output_b1.clone(), output_b2.clone()]);
+        obligations.record_source_success(
+            &PageId::new(PathBuf::from("pages/c.tsx")),
+            [output_c.clone()],
+        );
+
+        assert!(
+            obligations.has_eager_failures(),
+            "unrelated C cannot clear B"
+        );
+        assert!(!obligations.resolve_lazy_request_path(&output_c));
+        obligations.record_source_success(&source_b, [output_b1.clone()]);
+        assert!(
+            obligations.has_eager_failures(),
+            "a narrowed b1 success must retain unresolved b2",
+        );
+        assert!(!obligations.resolve_lazy_request_path(&output_b1));
+        assert!(obligations.has_eager_failures());
+        assert!(obligations.resolve_lazy_request_path(&output_b2));
+        assert!(!obligations.has_eager_failures());
+        assert!(obligations.publication_retention(true));
+        assert!(obligations.retain_lazy_dependencies());
+        assert!(!obligations.publication_retention(false));
+        assert!(!obligations.retain_lazy_dependencies());
+    }
 
     // -----------------------------------------------------------------
     // Watch backend selection (issue #2174)

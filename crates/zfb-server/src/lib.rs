@@ -153,10 +153,28 @@ impl DevPublicationState {
     }
 
     /// Atomically commit staged entries with a document publication boundary.
-    pub fn commit_document_update(&mut self, documents: DocumentSlot) {
+    pub fn commit_document_update(&mut self, documents: DocumentSlot) -> bool {
+        self.commit_document_update_with_retention(documents, false)
+    }
+
+    /// Commit a document boundary while optionally preserving an older
+    /// islands entry for lazy request-time fallback bodies.
+    pub fn commit_document_update_with_retention(
+        &mut self,
+        documents: DocumentSlot,
+        retain_fallback: bool,
+    ) -> bool {
+        if self.uncertain_document_write {
+            return false;
+        }
         if let Some(islands) = self.staged_islands.take() {
-            self.retained_islands = Some(std::mem::replace(&mut self.islands, islands));
-        } else {
+            let previous = std::mem::replace(&mut self.islands, islands);
+            if !retain_fallback
+                || !matches!(self.retained_islands, Some(AssetSlot::Published { .. }))
+            {
+                self.retained_islands = Some(previous);
+            }
+        } else if !retain_fallback {
             self.retained_islands = None;
         }
         if let Some(client_scripts) = self.staged_client_scripts.take() {
@@ -166,18 +184,39 @@ impl DevPublicationState {
         self.previous_documents = None;
         self.uncertain_document_write = false;
         self.bump_generation();
+        true
+    }
+
+    /// Resolve the partial-write latch after the command-owned obligation
+    /// ledger proves every failed source/output has been repaired or removed.
+    pub fn resolve_document_uncertainty(&mut self) {
+        self.uncertain_document_write = false;
+    }
+
+    /// Complete a transaction whose final outstanding document was written
+    /// by the lazy request path. The generation becomes ready immediately,
+    /// while the previous island declaration remains selectable until the
+    /// next ordinary publication boundary can safely prune dependencies.
+    pub fn commit_lazy_repair(&mut self) -> bool {
+        self.resolve_document_uncertainty();
+        self.commit_document_update_with_retention(DocumentSlot::ReadyOnRequest, true)
     }
 
     /// Commit staged entries while retaining the prior document semantics.
     /// Returns `false` when a prior document write may have failed partway;
     /// only a later complete document boundary may resolve that uncertainty.
     pub fn commit_entry_update(&mut self) -> bool {
+        self.commit_entry_update_with_retention(false)
+    }
+
+    /// Entries-only counterpart used while lazy fallback documents still
+    /// require the previous framework asset generation.
+    pub fn commit_entry_update_with_retention(&mut self, retain_fallback: bool) -> bool {
         if self.uncertain_document_write {
             return false;
         }
         let documents = self.previous_documents.unwrap_or(self.documents);
-        self.commit_document_update(documents);
-        true
+        self.commit_document_update_with_retention(documents, retain_fallback)
     }
 
     /// Abort before any document could have changed and restore the last good
@@ -211,16 +250,20 @@ impl DevPublicationState {
     /// Select an islands URL that is safe on both sides of a document update:
     /// additions may use an already-written staged entry, while removals keep
     /// using the committed entry until the new document set commits.
-    pub fn islands_urls_for_response(&self) -> &[String] {
-        match self.staged_islands.as_ref() {
-            Some(AssetSlot::Published { urls }) => urls,
-            Some(AssetSlot::NotExpected | AssetSlot::Pending) | None => {
-                match (&self.islands, self.retained_islands.as_ref()) {
-                    (AssetSlot::Published { urls }, _) => urls,
-                    (_, Some(AssetSlot::Published { urls })) => urls,
-                    _ => &[],
-                }
-            }
+    pub fn islands_urls_for_response(&self, body_has_islands: bool) -> &[String] {
+        let transitioning = self.staged_islands.is_some() || self.retained_islands.is_some();
+        if transitioning && !body_has_islands {
+            return &[];
+        }
+        match (
+            self.staged_islands.as_ref(),
+            &self.islands,
+            self.retained_islands.as_ref(),
+        ) {
+            (Some(AssetSlot::Published { urls }), _, _) => urls,
+            (_, AssetSlot::Published { urls }, _) => urls,
+            (_, _, Some(AssetSlot::Published { urls })) => urls,
+            _ => &[],
         }
     }
 
@@ -232,16 +275,23 @@ impl DevPublicationState {
     }
 
     /// Compatibility immediate islands publication for standalone server
-    /// callers that do not participate in a document transaction.
+    /// callers. It clears islands candidate/fallback residue so a later
+    /// response cannot override this value, but deliberately does not resolve
+    /// an in-flight document transaction; transactional callers must use the
+    /// stage/commit API as one coherent unit.
     pub fn publish_islands(&mut self, urls: Vec<String>) {
         self.bump_generation();
         self.islands = Self::slot_from_urls(urls);
+        self.staged_islands = None;
+        self.retained_islands = None;
     }
 
-    /// Compatibility immediate client-script publication.
+    /// Compatibility immediate client-script publication. As above, this
+    /// clears the corresponding staged value without resolving documents.
     pub fn publish_client_scripts(&mut self, urls: Vec<String>) {
         self.bump_generation();
         self.client_scripts = Self::slot_from_urls(urls);
+        self.staged_client_scripts = None;
     }
 
     fn slot_from_urls(urls: Vec<String>) -> AssetSlot {
@@ -283,11 +333,12 @@ mod publication_state_tests {
         assert_eq!(state.client_scripts, AssetSlot::Pending);
         assert_eq!(state.islands, AssetSlot::Pending);
         assert_eq!(
-            state.islands_urls_for_response(),
+            state.islands_urls_for_response(true),
             &["/assets/islands.js".to_string()]
         );
+        assert!(state.islands_urls_for_response(false).is_empty());
 
-        state.commit_document_update(DocumentSlot::Published);
+        assert!(state.commit_document_update(DocumentSlot::Published));
         assert_eq!(state.generation, 1);
         assert!(state.is_ready());
         assert_eq!(
@@ -311,7 +362,7 @@ mod publication_state_tests {
         state.begin_document_update();
         state.stage_client_scripts(Vec::new());
         state.stage_islands(Vec::new());
-        state.commit_document_update(DocumentSlot::NotExpected);
+        assert!(state.commit_document_update(DocumentSlot::NotExpected));
 
         assert_eq!(state.generation, 1);
         assert!(state.is_ready());
@@ -326,10 +377,26 @@ mod publication_state_tests {
         state.begin_document_update();
         state.stage_client_scripts(Vec::new());
         state.stage_islands(Vec::new());
-        state.commit_document_update(DocumentSlot::ReadyOnRequest);
+        assert!(state.commit_document_update(DocumentSlot::ReadyOnRequest));
 
         assert_eq!(state.generation, 1);
         assert!(state.is_ready());
+        assert_eq!(state.documents, DocumentSlot::ReadyOnRequest);
+    }
+
+    #[test]
+    fn final_lazy_request_repair_recovers_readiness_and_generation() {
+        let mut state = DevPublicationState::pending();
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands.js".to_string()]);
+        state.stage_client_scripts(Vec::new());
+        state.leave_document_update_pending();
+
+        assert!(!state.is_ready());
+        assert_eq!(state.generation, 0);
+        assert!(state.commit_lazy_repair());
+        assert!(state.is_ready());
+        assert_eq!(state.generation, 1);
         assert_eq!(state.documents, DocumentSlot::ReadyOnRequest);
     }
 
@@ -339,7 +406,7 @@ mod publication_state_tests {
         state.begin_document_update();
         state.stage_client_scripts(Vec::new());
         state.stage_islands(Vec::new());
-        state.commit_document_update(DocumentSlot::Published);
+        assert!(state.commit_document_update(DocumentSlot::Published));
 
         state.begin_document_update();
         state.stage_islands(vec!["/assets/islands.js".to_string()]);
@@ -348,11 +415,13 @@ mod publication_state_tests {
         assert_eq!(state.generation, 1);
         assert!(!state.is_ready());
         assert_eq!(
-            state.islands_urls_for_response(),
+            state.islands_urls_for_response(true),
             &["/assets/islands.js".to_string()]
         );
 
-        state.commit_document_update(DocumentSlot::Published);
+        assert!(!state.commit_document_update(DocumentSlot::Published));
+        state.resolve_document_uncertainty();
+        assert!(state.commit_document_update(DocumentSlot::Published));
         assert_eq!(state.generation, 2);
         assert!(state.is_ready());
     }
@@ -364,20 +433,44 @@ mod publication_state_tests {
         state.begin_document_update();
         state.stage_islands(Vec::new());
         assert_eq!(
-            state.islands_urls_for_response(),
+            state.islands_urls_for_response(true),
             &["/assets/islands.js".to_string()]
         );
+        assert!(state.islands_urls_for_response(false).is_empty());
 
-        state.commit_document_update(DocumentSlot::Published);
+        assert!(state.commit_document_update(DocumentSlot::Published));
         assert_eq!(state.islands, AssetSlot::NotExpected);
         assert_eq!(
-            state.islands_urls_for_response(),
+            state.islands_urls_for_response(true),
             &["/assets/islands.js".to_string()]
+        );
+        assert!(state.islands_urls_for_response(false).is_empty());
+
+        state.begin_document_update();
+        assert!(state.commit_entry_update());
+        assert!(state.islands_urls_for_response(true).is_empty());
+    }
+
+    #[test]
+    fn lazy_fallback_survives_later_generations_until_non_preserving_boundary() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands.js".to_string()));
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        assert!(state.commit_document_update_with_retention(DocumentSlot::ReadyOnRequest, true,));
+
+        state.begin_document_update();
+        state.stage_client_scripts(vec!["/assets/client/later.js".to_string()]);
+        assert!(state.commit_document_update_with_retention(DocumentSlot::ReadyOnRequest, true,));
+        assert_eq!(
+            state.islands_urls_for_response(true),
+            &["/assets/islands.js".to_string()],
+            "later lazy generations must retain the old marker-bearing fallback",
         );
 
         state.begin_document_update();
         assert!(state.commit_entry_update());
-        assert!(state.islands_urls_for_response().is_empty());
+        assert!(state.islands_urls_for_response(true).is_empty());
     }
 
     #[test]
@@ -386,7 +479,7 @@ mod publication_state_tests {
         state.begin_document_update();
         state.stage_islands(Vec::new());
         state.stage_client_scripts(Vec::new());
-        state.commit_document_update(DocumentSlot::Published);
+        assert!(state.commit_document_update(DocumentSlot::Published));
 
         state.begin_document_update();
         state.stage_islands(vec!["/assets/islands-c.js".to_string()]);
@@ -398,7 +491,8 @@ mod publication_state_tests {
         assert_eq!(state.documents, DocumentSlot::Pending);
         assert!(!state.is_ready());
 
-        state.commit_document_update(DocumentSlot::Published);
+        state.resolve_document_uncertainty();
+        assert!(state.commit_document_update(DocumentSlot::Published));
         assert_eq!(state.generation, 2);
         assert!(state.is_ready());
     }
@@ -415,8 +509,31 @@ mod publication_state_tests {
         assert_eq!(state.documents, DocumentSlot::Published);
         assert!(state.is_ready());
         assert_eq!(
-            state.islands_urls_for_response(),
+            state.islands_urls_for_response(true),
             &["/assets/islands-p.js".to_string()]
+        );
+    }
+
+    #[test]
+    fn immediate_publish_apis_clear_hidden_transactional_residue() {
+        let mut state =
+            DevPublicationState::from_islands_url(Some("/assets/islands-p.js".to_string()));
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands-c.js".to_string()]);
+        state.stage_client_scripts(vec!["/assets/client/c.js".to_string()]);
+
+        state.publish_islands(Vec::new());
+        state.publish_client_scripts(vec!["/assets/client/immediate.js".to_string()]);
+        assert!(state.islands_urls_for_response(true).is_empty());
+
+        state.resolve_document_uncertainty();
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        assert_eq!(state.islands, AssetSlot::NotExpected);
+        assert_eq!(
+            state.client_scripts,
+            AssetSlot::Published {
+                urls: vec!["/assets/client/immediate.js".to_string()]
+            }
         );
     }
 }

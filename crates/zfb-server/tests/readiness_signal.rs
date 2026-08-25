@@ -123,7 +123,71 @@ fn publish_all(handle: &zfb_server::IslandsBundleUrl, prefix: &str) {
     state.begin_document_update();
     state.stage_islands(vec![format!("{prefix}/assets/islands.js")]);
     state.stage_client_scripts(vec![format!("{prefix}/assets/client/main.js")]);
-    state.commit_document_update(DocumentSlot::Published);
+    assert!(state.commit_document_update(DocumentSlot::Published));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn islands_selection_tracks_old_and_new_bodies_across_addition_and_removal() {
+    let handle = publication_handle();
+    let h = Harness::start(zfb_server::ServerMode::Dev, None, Some(Arc::clone(&handle))).await;
+    h.pages
+        .insert("/", "<html><head></head><body>old islandless</body></html>")
+        .await;
+
+    {
+        let mut state = handle.write().expect("publication write lock");
+        state.begin_document_update();
+        state.stage_islands(vec!["/assets/islands.js".to_string()]);
+        state.stage_client_scripts(Vec::new());
+    }
+    let old_addition_body = reqwest::get(h.url("/"))
+        .await
+        .expect("old addition body")
+        .text()
+        .await
+        .expect("old addition text");
+    assert!(!old_addition_body.contains("src=\"/assets/islands.js\""));
+
+    h.pages
+        .insert(
+            "/",
+            "<html><head></head><body><div data-zfb-island>new islands</div></body></html>",
+        )
+        .await;
+    let new_addition_body = reqwest::get(h.url("/"))
+        .await
+        .expect("new addition body")
+        .text()
+        .await
+        .expect("new addition text");
+    assert!(new_addition_body.contains("src=\"/assets/islands.js\""));
+
+    {
+        let mut state = handle.write().expect("publication write lock");
+        assert!(state.commit_document_update(DocumentSlot::Published));
+        state.begin_document_update();
+        state.stage_islands(Vec::new());
+        state.stage_client_scripts(Vec::new());
+        assert!(state.commit_document_update(DocumentSlot::Published));
+    }
+    let old_removal_body = reqwest::get(h.url("/"))
+        .await
+        .expect("old removal body")
+        .text()
+        .await
+        .expect("old removal text");
+    assert!(old_removal_body.contains("src=\"/assets/islands.js\""));
+
+    h.pages
+        .insert("/", "<html><head></head><body>new islandless</body></html>")
+        .await;
+    let new_removal_body = reqwest::get(h.url("/"))
+        .await
+        .expect("new removal body")
+        .text()
+        .await
+        .expect("new removal text");
+    assert!(!new_removal_body.contains("src=\"/assets/islands.js\""));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -133,7 +197,7 @@ async fn dev_headers_and_ready_endpoint_follow_pending_to_published_state() {
     h.pages
         .insert(
             "/",
-            "<!doctype html><html><head></head><body>home</body></html>",
+            "<!doctype html><html><head></head><body><div data-zfb-island>home</div></body></html>",
         )
         .await;
     h.pages.insert("/feed.xml", "<feed />").await;
@@ -254,7 +318,7 @@ async fn dev_headers_and_ready_endpoint_follow_pending_to_published_state() {
     {
         let mut state = handle.write().expect("publication write lock");
         state.stage_client_scripts(vec!["/assets/client/main.js".to_string()]);
-        state.commit_document_update(DocumentSlot::Published);
+        assert!(state.commit_document_update(DocumentSlot::Published));
     }
     let published_page = reqwest::get(h.url("/")).await.expect("published page");
     assert_eq!(
@@ -345,7 +409,10 @@ async fn response_snapshot_is_taken_after_render_hook_unblocks() {
     )
     .await;
     h.pages
-        .insert("/", "<html><head></head><body>blocked</body></html>")
+        .insert(
+            "/",
+            "<html><head></head><body><div data-zfb-island>blocked</div></body></html>",
+        )
         .await;
 
     let response_task = tokio::spawn({
@@ -396,7 +463,7 @@ async fn islandless_and_scriptless_publications_are_ready() {
         state.begin_document_update();
         state.stage_islands(Vec::new());
         state.stage_client_scripts(Vec::new());
-        state.commit_document_update(DocumentSlot::Published);
+        assert!(state.commit_document_update(DocumentSlot::Published));
     }
 
     let page = reqwest::get(h.url("/")).await.expect("ready page");
@@ -435,7 +502,10 @@ async fn base_prefix_preserves_urls_and_shapes_base_mismatch_404() {
     )
     .await;
     h.pages
-        .insert("/", "<html><head></head><body>base</body></html>")
+        .insert(
+            "/",
+            "<html><head></head><body><div data-zfb-island>base</div></body></html>",
+        )
         .await;
 
     let page = reqwest::get(h.url("/site/")).await.expect("base page");

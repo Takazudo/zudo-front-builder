@@ -2095,6 +2095,8 @@ pub(crate) fn page_response_bytes(
     } else {
         None
     };
+    let body_has_islands =
+        std::str::from_utf8(&body).is_ok_and(|html| html.contains("data-zfb-island"));
     // Issue #377: dev-mode initial-load injection of the islands
     // `<script type="module">` tag. Gated to Dev mode so Preview/Embed
     // callers never ship the unhashed `/assets/islands.js` URL — that
@@ -2109,7 +2111,7 @@ pub(crate) fn page_response_bytes(
             .as_ref()
             .and_then(|state| {
                 state
-                    .islands_urls_for_response()
+                    .islands_urls_for_response(body_has_islands)
                     .first()
                     .map(String::as_str)
             })

@@ -59,11 +59,19 @@ use crate::pipeline::{
 use crate::plan::{PageSelection, RebuildPlan};
 
 /// One coherent Dev document/entry publication transaction boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DocumentPublicationEvent {
     Begin,
+    DocumentMutationStarted,
+    DocumentWriteStarted(PathBuf),
+    DocumentWriteCompleted(PathBuf),
+    DocumentPathsRemoved(Vec<PathBuf>),
     CommitPublished,
     CommitReadyOnRequest,
+    /// The final request-time repair drained a previously failed lazy
+    /// document transaction. Commit readiness now, but retain fallback
+    /// dependencies until a later ordinary publication boundary.
+    CommitLazyRepair,
     CommitNotExpected,
     CommitEntriesOnly,
     AbortBeforeDocumentWrite,
@@ -81,11 +89,7 @@ struct DocumentPublicationTransaction<'a> {
 }
 
 impl<'a> DocumentPublicationTransaction<'a> {
-    fn begin(
-        hook: Option<&'a DocumentPublicationHook>,
-        publication_relevant: bool,
-        has_document_writes: bool,
-    ) -> Self {
+    fn begin(hook: Option<&'a DocumentPublicationHook>, publication_relevant: bool) -> Self {
         if publication_relevant {
             if let Some(hook) = hook {
                 hook(DocumentPublicationEvent::Begin);
@@ -93,11 +97,43 @@ impl<'a> DocumentPublicationTransaction<'a> {
         }
         Self {
             hook,
-            fallback: publication_relevant.then_some(if has_document_writes {
-                DocumentPublicationEvent::LeavePending
-            } else {
-                DocumentPublicationEvent::AbortBeforeDocumentWrite
-            }),
+            fallback: publication_relevant
+                .then_some(DocumentPublicationEvent::AbortBeforeDocumentWrite),
+        }
+    }
+
+    fn document_mutation_started(&mut self) {
+        if !matches!(
+            self.fallback,
+            Some(DocumentPublicationEvent::AbortBeforeDocumentWrite)
+        ) {
+            return;
+        }
+        if let Some(hook) = self.hook {
+            hook(DocumentPublicationEvent::DocumentMutationStarted);
+        }
+        self.fallback = Some(DocumentPublicationEvent::LeavePending);
+    }
+
+    fn document_write_started(&mut self, path: PathBuf) {
+        self.document_mutation_started();
+        if let Some(hook) = self.hook {
+            hook(DocumentPublicationEvent::DocumentWriteStarted(path));
+        }
+    }
+
+    fn document_write_completed(&self, path: PathBuf) {
+        if let Some(hook) = self.hook {
+            hook(DocumentPublicationEvent::DocumentWriteCompleted(path));
+        }
+    }
+
+    fn document_paths_removed(&self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
+        }
+        if let Some(hook) = self.hook {
+            hook(DocumentPublicationEvent::DocumentPathsRemoved(paths));
         }
     }
 
@@ -111,7 +147,7 @@ impl<'a> DocumentPublicationTransaction<'a> {
 
 impl Drop for DocumentPublicationTransaction<'_> {
     fn drop(&mut self) {
-        if let (Some(hook), Some(event)) = (self.hook, self.fallback) {
+        if let (Some(hook), Some(event)) = (self.hook, self.fallback.take()) {
             hook(event);
         }
     }
@@ -458,6 +494,23 @@ impl WriteShared {
         )?))
     }
 
+    fn request_write_guarded_then(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+        after_write: impl FnOnce(),
+    ) -> Result<GuardedWriteOutcome> {
+        let _exclusion = self.lock_exclusion("WriteShared.exclusion (request_write_guarded_then)");
+        if !revalidate() {
+            return Ok(GuardedWriteOutcome::Skipped);
+        }
+        let outcome = self.validate_and_write(dist_root, output_path, bytes)?;
+        after_write();
+        Ok(GuardedWriteOutcome::Written(outcome))
+    }
+
     /// The exclusion-agnostic core shared by [`Self::request_write`] and
     /// [`Self::request_write_guarded`]. Callers MUST hold the exclusion
     /// lock.
@@ -709,6 +762,24 @@ impl RequestWriter {
         self.shared
             .request_write_guarded(dist_root, output_path, bytes, revalidate)
     }
+
+    /// Guarded request write plus an indivisible publication finalizer.
+    pub fn request_write_guarded_then(
+        &self,
+        dist_root: &Path,
+        output_path: &Path,
+        bytes: Vec<u8>,
+        revalidate: impl FnOnce() -> bool,
+        after_write: impl FnOnce(),
+    ) -> Result<GuardedWriteOutcome> {
+        self.shared.request_write_guarded_then(
+            dist_root,
+            output_path,
+            bytes,
+            revalidate,
+            after_write,
+        )
+    }
 }
 
 impl AssetPipeline for DevAssetPipeline {
@@ -721,16 +792,19 @@ impl AssetPipeline for DevAssetPipeline {
             || plan.rerun_islands
             || plan.rerun_client_scripts
             || plan.ssr_reload_needed;
-        let mut publication = DocumentPublicationTransaction::begin(
-            self.document_publication_hook.as_ref(),
-            publication_relevant,
-            has_document_writes,
-        );
         // Tick-vs-request exclusion (#727 / #804 / #1024): hold the
         // pipeline-wide lock for the WHOLE tick so no request-time write
         // can interleave with the render fan-out or the deferred-prune
         // window. See [`WriteShared`] for the discipline.
         let _exclusion = self.shared.lock_exclusion("WriteShared.exclusion (apply)");
+        // Publication Begin belongs to the same serialization domain as
+        // request-time recovery commits. Otherwise a request could finish its
+        // write, a tick could Begin and block here, and the request could then
+        // accidentally commit that not-yet-rendered tick.
+        let mut publication = DocumentPublicationTransaction::begin(
+            self.document_publication_hook.as_ref(),
+            publication_relevant,
+        );
 
         let mut outcome = BuildOutcome::default();
 
@@ -810,11 +884,20 @@ impl AssetPipeline for DevAssetPipeline {
                     RefreshOutcome::Refreshed { vanished, .. } => vanished,
                 };
                 if !vanished.is_empty() {
+                    let mut removed = Vec::new();
                     outcome.pages_pruned.extend(vanished.iter().cloned());
                     for prev in &vanished {
-                        let _ = std::fs::remove_file(prev);
+                        publication.document_write_started(prev.clone());
+                        match std::fs::remove_file(prev) {
+                            Ok(()) => removed.push(prev.clone()),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                removed.push(prev.clone());
+                            }
+                            Err(_) => {}
+                        }
                         self.shared.cache.evict_path(prev);
                     }
+                    publication.document_paths_removed(removed);
                 }
             }
         }
@@ -933,6 +1016,7 @@ impl AssetPipeline for DevAssetPipeline {
         let mut prune_candidates: Vec<PathBuf> = Vec::new();
         let mut live_dests: HashSet<PathBuf> = HashSet::new();
         if !pages.is_empty() {
+            publication.document_mutation_started();
             let rendered = (ctx.render_pages)(&pages, narrowing.as_ref())?;
             outcome.pages_rendered = rendered.len();
 
@@ -943,6 +1027,12 @@ impl AssetPipeline for DevAssetPipeline {
             // same tick has already written (or will write) to — i.e. the
             // two-page output-path swap scenario described in issue #727.
             for r in rendered {
+                // `RelDistPath` is lexically contained, so record its stable
+                // absolute identity before filesystem/symlink validation.
+                // A validation failure is itself an unresolved document
+                // attempt and must survive unrelated narrowed ticks.
+                let publication_path = ctx.dist_root.join(r.output_path.as_path());
+                publication.document_write_started(publication_path.clone());
                 // Reject any output_path that escapes dist_root via
                 // `..` or absolute roots before we touch the
                 // filesystem. Paths come from the renderer/router but
@@ -958,6 +1048,7 @@ impl AssetPipeline for DevAssetPipeline {
                 live_dests.insert(dest.clone());
 
                 let wo = self.shared.cache.write_page(&r.page, &dest, new_bytes)?;
+                publication.document_write_completed(publication_path);
                 if let Some(stale) = wo.stale_path {
                     prune_candidates.push(stale);
                 }
@@ -1002,13 +1093,21 @@ impl AssetPipeline for DevAssetPipeline {
         // the (b) route-vanished gate specifically, NOT to (a) — the next
         // reader must not re-derive it for all pruning.
         if !pages.is_empty() {
+            let mut removed = Vec::new();
             // (a) Per-page stale outputs — pruned whenever the render loop
             // ran, skip or not (issue #1317 / #1301).
             for prev in prune_candidates {
                 if live_dests.contains(&prev) {
                     continue; // another page now owns this path — skip
                 }
-                let _ = std::fs::remove_file(&prev);
+                publication.document_write_started(prev.clone());
+                match std::fs::remove_file(&prev) {
+                    Ok(()) => removed.push(prev.clone()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        removed.push(prev.clone());
+                    }
+                    Err(_) => {}
+                }
                 self.shared.cache.evict_path(&prev);
                 outcome.pages_pruned.push(prev);
             }
@@ -1025,11 +1124,19 @@ impl AssetPipeline for DevAssetPipeline {
                     if live_dests.contains(&prev) {
                         continue; // another page now owns this path — skip
                     }
-                    let _ = std::fs::remove_file(&prev);
+                    publication.document_write_started(prev.clone());
+                    match std::fs::remove_file(&prev) {
+                        Ok(()) => removed.push(prev.clone()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            removed.push(prev.clone());
+                        }
+                        Err(_) => {}
+                    }
                     self.shared.cache.evict_path(&prev);
                     outcome.pages_pruned.push(prev);
                 }
             }
+            publication.document_paths_removed(removed);
         }
 
         // 1b. Prune paths from the plan (issue #804 P2): paths explicitly
@@ -1062,11 +1169,20 @@ impl AssetPipeline for DevAssetPipeline {
         // a skipped tick — that half does not consume `route_vanished`, only
         // the (b) route-vanished half does.
         if (pages.is_empty() || renderer_refresh_skipped) && !plan.prune_paths.is_empty() {
+            let mut removed = Vec::new();
             for prev in &plan.prune_paths {
-                let _ = std::fs::remove_file(prev);
+                publication.document_write_started(prev.clone());
+                match std::fs::remove_file(prev) {
+                    Ok(()) => removed.push(prev.clone()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        removed.push(prev.clone());
+                    }
+                    Err(_) => {}
+                }
                 self.shared.cache.evict_path(prev);
                 outcome.pages_pruned.push(prev.clone());
             }
+            publication.document_paths_removed(removed);
         }
 
         // This is the hydration publication boundary: all selected document
@@ -1292,8 +1408,13 @@ mod tests {
             DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::DocumentMutationStarted => "mutation",
+                    DocumentPublicationEvent::DocumentWriteStarted(_) => "write-start",
+                    DocumentPublicationEvent::DocumentWriteCompleted(_) => "write-complete",
+                    DocumentPublicationEvent::DocumentPathsRemoved(_) => "paths-removed",
                     DocumentPublicationEvent::CommitPublished => "commit",
                     DocumentPublicationEvent::CommitReadyOnRequest
+                    | DocumentPublicationEvent::CommitLazyRepair
                     | DocumentPublicationEvent::CommitNotExpected
                     | DocumentPublicationEvent::CommitEntriesOnly => "other-commit",
                     DocumentPublicationEvent::AbortBeforeDocumentWrite => "abort",
@@ -1336,7 +1457,17 @@ mod tests {
         assert!(pipeline.apply(&plan, &ctx).is_err());
         assert_eq!(
             *events.lock().unwrap(),
-            vec!["begin", "client", "islands", "render", "commit", "css"]
+            vec![
+                "begin",
+                "client",
+                "islands",
+                "mutation",
+                "render",
+                "write-start",
+                "write-complete",
+                "commit",
+                "css"
+            ]
         );
     }
 
@@ -1350,6 +1481,7 @@ mod tests {
             DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::DocumentMutationStarted => "mutation",
                     DocumentPublicationEvent::LeavePending => "pending",
                     _ => "unexpected",
                 });
@@ -1367,11 +1499,161 @@ mod tests {
         };
 
         assert!(pipeline.apply(&client_script_page_plan(), &ctx).is_err());
-        assert_eq!(*events.lock().unwrap(), vec!["begin", "render", "pending"]);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["begin", "mutation", "render", "pending"]
+        );
     }
 
     #[test]
-    fn islands_failure_prevents_document_render_and_leaves_transaction_pending() {
+    fn document_write_failure_records_exact_path_and_leaves_pending() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("index.html");
+        std::fs::create_dir_all(&dest).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(event);
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_, _| {
+                Ok(vec![RenderedPage {
+                    page: pid("/pages/index.tsx"),
+                    output_path: RelDistPath::new("index.html").unwrap(),
+                    html: "<main>cannot replace directory</main>".into(),
+                    content_type: None,
+                }])
+            }),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+
+        assert!(pipeline.apply(&client_script_page_plan(), &ctx).is_err());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                DocumentPublicationEvent::Begin,
+                DocumentPublicationEvent::DocumentMutationStarted,
+                DocumentPublicationEvent::DocumentWriteStarted(dest),
+                DocumentPublicationEvent::LeavePending,
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_validation_failure_records_lexical_path_and_leaves_pending() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        symlink(outside.path(), dir.path().join("escape")).unwrap();
+        let attempted = dir.path().join("escape/index.html");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(event);
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_, _| {
+                Ok(vec![RenderedPage {
+                    page: pid("/pages/index.tsx"),
+                    output_path: RelDistPath::new("escape/index.html").unwrap(),
+                    html: "<main>escape rejected</main>".into(),
+                    content_type: None,
+                }])
+            }),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+
+        assert!(pipeline.apply(&client_script_page_plan(), &ctx).is_err());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                DocumentPublicationEvent::Begin,
+                DocumentPublicationEvent::DocumentMutationStarted,
+                DocumentPublicationEvent::DocumentWriteStarted(attempted),
+                DocumentPublicationEvent::LeavePending,
+            ]
+        );
+    }
+
+    #[test]
+    fn request_repair_finalizer_serializes_before_next_publication_begin() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let (begin_tx, begin_rx) = mpsc::channel();
+        let pipeline = Arc::new(
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                if event == DocumentPublicationEvent::Begin {
+                    begin_tx.send(()).unwrap();
+                }
+            })),
+        );
+        let writer = pipeline.request_writer();
+        let (finalizer_entered_tx, finalizer_entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let write_root = root.clone();
+        let request = std::thread::spawn(move || {
+            writer
+                .request_write_guarded_then(
+                    &write_root,
+                    Path::new("repair.html"),
+                    b"repaired".to_vec(),
+                    || true,
+                    || {
+                        finalizer_entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    },
+                )
+                .unwrap()
+        });
+        finalizer_entered_rx.recv().unwrap();
+
+        let tick_pipeline = Arc::clone(&pipeline);
+        let tick = std::thread::spawn(move || {
+            let mut plan = RebuildPlan::empty();
+            plan.rerun_client_scripts = true;
+            let ctx = BuildContext {
+                dist_root: root,
+                render_pages: Arc::new(|_, _| Ok(Vec::new())),
+                run_css: None,
+                run_islands: None,
+                run_client_scripts: None,
+                reload_renderer: None,
+            };
+            tick_pipeline.apply(&plan, &ctx).unwrap();
+        });
+
+        assert!(
+            begin_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "tick Begin must wait for the request recovery finalizer",
+        );
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            request.join().unwrap(),
+            GuardedWriteOutcome::Written(_)
+        ));
+        begin_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("tick Begin after request finalizer");
+        tick.join().unwrap();
+    }
+
+    #[test]
+    fn islands_failure_before_document_render_aborts_transaction() {
         let dir = tempdir().unwrap();
         let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
         let hook_events = Arc::clone(&events);
@@ -1381,7 +1663,7 @@ mod tests {
             DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
-                    DocumentPublicationEvent::LeavePending => "pending",
+                    DocumentPublicationEvent::AbortBeforeDocumentWrite => "abort",
                     _ => "unexpected",
                 });
             }));
@@ -1404,7 +1686,7 @@ mod tests {
         plan.rerun_islands = true;
 
         assert!(pipeline.apply(&plan, &ctx).is_err());
-        assert_eq!(*events.lock().unwrap(), vec!["begin", "islands", "pending"]);
+        assert_eq!(*events.lock().unwrap(), vec!["begin", "islands", "abort"]);
     }
 
     #[test]
