@@ -1332,29 +1332,28 @@ describe("island mounted marker state contract (#2541)", () => {
     await Promise.resolve();
   }
 
-  function importResultThatHandlesCallbackThrow(module: Module): Promise<Module> {
-    // The URL path attaches a rejection handler to the import promise, but a
-    // throwing mount callback rejects the child promise returned by `.then`.
-    // This Promise-compatible test seam routes that expected callback failure
-    // through the supplied rejection handler so Vitest does not report an
-    // unrelated unhandled rejection while we assert the public marker state.
-    return {
-      then(
-        onFulfilled: (value: Module) => unknown,
-        onRejected?: (reason: unknown) => unknown,
-      ): Promise<void> {
-        return new Promise((resolve) => {
-          queueMicrotask(() => {
-            try {
-              onFulfilled(module);
-            } catch (error) {
-              onRejected?.(error);
-            }
-            resolve();
-          });
-        });
+  // Deliberately controlled thenable: capturing the runtime's fulfillment
+  // callback lets the test observe a synchronous mount throw directly and
+  // retry without creating an unhandled child rejection.
+  function controlledImport(module: Module): {
+    promise: Promise<Module>;
+    fulfill: () => unknown;
+  } {
+    let onFulfilled: ((value: Module) => unknown) | undefined;
+    const promise = {
+      then(fulfillment: (value: Module) => unknown): Promise<void> {
+        onFulfilled = fulfillment;
+        return Promise.resolve();
       },
     } as unknown as Promise<Module>;
+
+    return {
+      promise,
+      fulfill: () => {
+        if (!onFulfilled) throw new Error("import fulfillment callback was not registered");
+        return onFulfilled(module);
+      },
+    };
   }
 
   function island(selector = "[data-zfb-island]"): HTMLElement {
@@ -1562,32 +1561,55 @@ describe("island mounted marker state contract (#2541)", () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  it("leaves the marker absent when a URL mount throws synchronously", async () => {
+  it("clears the marker after a URL mount throws and allows a successful retry", async () => {
     document.body.innerHTML = `<div data-zfb-island="Throws" data-when="load"></div>`;
     const el = island();
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const mount = vi.fn(() => {
+    const throwingMount = vi.fn(() => {
       throw new Error("URL mount failed");
     });
-    stubImporter(() => importResultThatHandlesCallbackThrow({ mount }));
+    const successfulMount = vi.fn(() => {
+      expect(isMounted(el)).toBe(false);
+    });
+    const firstImport = controlledImport({ mount: throwingMount });
+    let importerCalls = 0;
+    stubImporter(() => {
+      importerCalls += 1;
+      return importerCalls === 1
+        ? firstImport.promise
+        : Promise.resolve({ mount: successfulMount });
+    });
+
+    mountIslands({ Throws: "/islands/Throws.js" });
+    expect(() => firstImport.fulfill()).toThrow("URL mount failed");
+
+    expect(throwingMount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(false);
 
     mountIslands({ Throws: "/islands/Throws.js" });
     await flushImport();
 
-    expect(mount).toHaveBeenCalledTimes(1);
-    expect(isMounted(el)).toBe(false);
-    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(importerCalls).toBe(2);
+    expect(successfulMount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(true);
   });
 
-  it("leaves the marker absent when an inline mount throws synchronously", () => {
+  it("clears the marker after an inline mount throws and allows a successful retry", () => {
     document.body.innerHTML = `<div data-zfb-island="Throws" data-when="load"></div>`;
     const el = island();
+    let shouldThrow = true;
     const mount = vi.fn(() => {
-      throw new Error("inline mount failed");
+      expect(isMounted(el)).toBe(false);
+      if (shouldThrow) throw new Error("inline mount failed");
     });
 
     expect(() => mountIslands({ Throws: { mount } })).toThrow("inline mount failed");
     expect(isMounted(el)).toBe(false);
+
+    shouldThrow = false;
+    mountIslands({ Throws: { mount } });
+
+    expect(mount).toHaveBeenCalledTimes(2);
+    expect(isMounted(el)).toBe(true);
   });
 
   it("leaves the marker absent when a URL import is rejected", async () => {
