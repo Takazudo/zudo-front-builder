@@ -93,6 +93,7 @@ use std::sync::Arc;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, Extensions, HeaderMap, HeaderValue, Method, Request, StatusCode, Uri};
+use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, get};
 use axum::Router;
@@ -582,6 +583,10 @@ pub struct AppState {
 pub fn build_router(state: AppState) -> Router {
     let host_validation = state.host_validation.clone();
     let prefix = state.base_prefix.clone();
+    let publication_headers = DevPublicationHeaderLayerState {
+        mode: state.mode,
+        publication_handle: state.islands_bundle_url.clone(),
+    };
 
     let router = match prefix {
         // No base prefix configured — keep the byte-for-byte
@@ -643,13 +648,25 @@ pub fn build_router(state: AppState) -> Router {
     // leaving base-prefixed deployments exposed. No-op (router returned
     // unchanged) when the validator is not enforcing (loopback bind).
     // TraceLayer wraps outermost so rejected requests still get traced.
-    crate::host_validation::apply_host_validation_layer(router, host_validation)
+    let router = crate::host_validation::apply_host_validation_layer(router, host_validation)
         // Body cap owned by `plugin_middleware` (issue #1544) so dev and
         // preview apply the exact same limit — see
         // [`crate::plugin_middleware::PLUGIN_BODY_LIMIT_BYTES`] for the
         // rationale.
-        .layer(crate::plugin_middleware::body_limit_layer())
-        .layer(TraceLayer::new_for_http())
+        .layer(crate::plugin_middleware::body_limit_layer());
+    // Final-response fallback for HTML surfaces that do not pass through
+    // `page_response_bytes`: middleware/embed responses, security rejections,
+    // and `.html` files under the static assets service. Existing pairs are
+    // never replaced, preserving the one-snapshot page/body invariant.
+    let router = if matches!(publication_headers.mode, crate::ServerMode::Dev) {
+        router.layer(from_fn_with_state(
+            publication_headers,
+            annotate_dev_html_publication_headers,
+        ))
+    } else {
+        router
+    };
+    router.layer(TraceLayer::new_for_http())
 }
 
 /// Assemble the core route table — every route prefixed with `prefix`
@@ -794,6 +811,88 @@ fn ready_asset(slot: &crate::AssetSlot) -> DevReadyAsset {
 
 fn publication_is_ready(state: &crate::DevPublicationState) -> bool {
     state.is_ready()
+}
+
+/// Add the generation/readiness pair to one Dev HTML response.
+///
+/// Callers own the Dev + HTML gate and pass a snapshot captured at their
+/// final response-shaping boundary. Keeping the snapshot outside this helper
+/// lets normal pages use the exact same clone for islands selection, while
+/// framework-generated HTML errors can publish the same metadata without
+/// changing their established body or cache behavior.
+fn apply_dev_publication_headers(
+    response: &mut Response,
+    publication_state: Option<&crate::DevPublicationState>,
+) {
+    let fallback_publication = crate::DevPublicationState::pending();
+    let publication = publication_state.unwrap_or(&fallback_publication);
+    let generation = HeaderValue::from_str(&publication.generation.to_string())
+        .expect("u64 generation is always a valid header value");
+    let ready = if publication_is_ready(publication) {
+        HeaderValue::from_static("true")
+    } else {
+        HeaderValue::from_static("false")
+    };
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-zfb-dev-generation"),
+        generation,
+    );
+    response
+        .headers_mut()
+        .insert(header::HeaderName::from_static("x-zfb-dev-ready"), ready);
+}
+
+/// Apply readiness metadata to an HTML response that bypassed
+/// [`page_response_bytes`] (plugin middleware or an embed handler).
+///
+/// These responses do not participate in framework head-asset injection, so
+/// taking one final snapshot after the handler returns is the document-specific
+/// publication boundary. Ordinary pages must continue to use their earlier
+/// shared snapshot instead of calling this helper a second time.
+fn apply_dev_publication_headers_if_html(
+    response: &mut Response,
+    mode: crate::ServerMode,
+    publication_handle: Option<&crate::IslandsBundleUrl>,
+) {
+    if !matches!(mode, crate::ServerMode::Dev) {
+        return;
+    }
+    let has_pair = response.headers().contains_key("x-zfb-dev-generation")
+        && response.headers().contains_key("x-zfb-dev-ready");
+    if has_pair {
+        return;
+    }
+    let is_html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/html"));
+    if !is_html {
+        return;
+    }
+    let publication = current_publication_state(publication_handle);
+    apply_dev_publication_headers(response, publication.as_ref());
+}
+
+#[derive(Clone)]
+struct DevPublicationHeaderLayerState {
+    mode: crate::ServerMode,
+    publication_handle: Option<crate::IslandsBundleUrl>,
+}
+
+async fn annotate_dev_html_publication_headers(
+    State(state): State<DevPublicationHeaderLayerState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    apply_dev_publication_headers_if_html(
+        &mut response,
+        state.mode,
+        state.publication_handle.as_ref(),
+    );
+    response
 }
 
 fn ready_documents(slot: crate::DocumentSlot) -> &'static str {
@@ -1090,6 +1189,7 @@ async fn serve_page(
                 body.clone(),
                 state.base_prefix.as_deref(),
                 state.mode,
+                state.islands_bundle_url.as_ref(),
             )
             .await;
         }
@@ -1804,7 +1904,7 @@ async fn dispatch_ssr(
     let resp = match set.dispatcher.dispatch(req).await {
         Ok(r) => r,
         Err(e) => {
-            return ssr_error_response(url_path, &e.message, mode);
+            return ssr_error_response(url_path, &e.message, mode, publication_handle);
         }
     };
     // Pick the content-type from the SSR response headers (case-
@@ -1902,6 +2002,7 @@ async fn dispatch_embed_handler(
     body: Bytes,
     base_prefix: Option<&str>,
     mode: crate::ServerMode,
+    publication_handle: Option<&crate::IslandsBundleUrl>,
 ) -> Response {
     // Rebuild the inbound request so the handler sees a plain
     // `http::Request<Body>` — no axum-specific extractors required.
@@ -1925,6 +2026,7 @@ async fn dispatch_embed_handler(
             return embed_handler_error_response(
                 &format!("failed to rebuild request for embed handler: {e}"),
                 mode,
+                publication_handle,
             );
         }
     };
@@ -1938,7 +2040,11 @@ async fn dispatch_embed_handler(
 /// inbound request was already a valid axum request — but the explicit
 /// fallback avoids a panic if some future header/value combination
 /// trips the `http::Request::builder` checks.
-fn embed_handler_error_response(message: &str, mode: crate::ServerMode) -> Response {
+fn embed_handler_error_response(
+    message: &str,
+    mode: crate::ServerMode,
+    publication_handle: Option<&crate::IslandsBundleUrl>,
+) -> Response {
     // Dev mode: verbose body with the error detail. Preview/Embed: generic body
     // only; full detail is logged server-side so clients never see internal info.
     let body = if matches!(mode, crate::ServerMode::Dev) {
@@ -1961,13 +2067,19 @@ fn embed_handler_error_response(message: &str, mode: crate::ServerMode) -> Respo
         .into_response();
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    apply_dev_publication_headers_if_html(&mut resp, mode, publication_handle);
     resp
 }
 
 /// Build the HTML 5xx response served when [`SsrDispatcher::dispatch`]
 /// returns an error. Surfaces the underlying message so the developer
 /// sees the V8 stack trace instead of an empty 500.
-fn ssr_error_response(url_path: &str, message: &str, mode: crate::ServerMode) -> Response {
+fn ssr_error_response(
+    url_path: &str,
+    message: &str,
+    mode: crate::ServerMode,
+    publication_handle: Option<&crate::IslandsBundleUrl>,
+) -> Response {
     // Dev mode: verbose body with path + V8 detail. Preview/Embed: generic body
     // only; full detail is logged server-side so clients never see internal info.
     let body = if matches!(mode, crate::ServerMode::Dev) {
@@ -1991,6 +2103,7 @@ fn ssr_error_response(url_path: &str, message: &str, mode: crate::ServerMode) ->
         .into_response();
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    apply_dev_publication_headers_if_html(&mut resp, mode, publication_handle);
     resp
 }
 
@@ -2230,21 +2343,7 @@ pub(crate) fn page_response_bytes(
     // state so every Dev HTML response still carries an explicit signal;
     // production callers never receive these headers.
     if is_dev && is_html_content_type {
-        let fallback_publication = crate::DevPublicationState::pending();
-        let publication = publication_state.as_ref().unwrap_or(&fallback_publication);
-        let generation = HeaderValue::from_str(&publication.generation.to_string())
-            .expect("u64 generation is always a valid header value");
-        let ready = if publication_is_ready(publication) {
-            HeaderValue::from_static("true")
-        } else {
-            HeaderValue::from_static("false")
-        };
-        resp.headers_mut().insert(
-            header::HeaderName::from_static("x-zfb-dev-generation"),
-            generation,
-        );
-        resp.headers_mut()
-            .insert(header::HeaderName::from_static("x-zfb-dev-ready"), ready);
+        apply_dev_publication_headers(&mut resp, publication_state.as_ref());
     }
     resp
 }
@@ -2334,6 +2433,131 @@ mod tests {
     async fn body_string(resp: Response) -> String {
         let bytes = to_bytes(resp.into_body(), 1_000_000).await.unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn assert_dev_publication_headers(resp: &Response, generation: &str, ready: &str) {
+        assert_eq!(
+            resp.headers()
+                .get("x-zfb-dev-generation")
+                .and_then(|value| value.to_str().ok()),
+            Some(generation),
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-zfb-dev-ready")
+                .and_then(|value| value.to_str().ok()),
+            Some(ready),
+        );
+    }
+
+    #[test]
+    fn framework_html_errors_publish_dev_readiness_headers() {
+        let pending = Arc::new(RwLock::new(crate::DevPublicationState::pending()));
+        let embed_error = embed_handler_error_response(
+            "request reconstruction failed",
+            crate::ServerMode::Dev,
+            Some(&pending),
+        );
+        assert_dev_publication_headers(&embed_error, "0", "false");
+
+        let mut ready = crate::DevPublicationState::from_islands_url(None);
+        ready.begin_document_update();
+        assert!(ready.commit_document_update(crate::DocumentSlot::Published));
+        let ready = Arc::new(RwLock::new(ready));
+        let ssr_error = ssr_error_response(
+            "/broken",
+            "renderer failed",
+            crate::ServerMode::Dev,
+            Some(&ready),
+        );
+        assert_dev_publication_headers(&ssr_error, "1", "true");
+    }
+
+    #[test]
+    fn framework_html_errors_omit_dev_readiness_headers_in_preview() {
+        let publication = Arc::new(RwLock::new(crate::DevPublicationState::pending()));
+        let responses = [
+            embed_handler_error_response(
+                "request reconstruction failed",
+                crate::ServerMode::Preview,
+                Some(&publication),
+            ),
+            ssr_error_response(
+                "/broken",
+                "renderer failed",
+                crate::ServerMode::Preview,
+                Some(&publication),
+            ),
+        ];
+
+        for response in responses {
+            assert!(response.headers().get("x-zfb-dev-generation").is_none());
+            assert!(response.headers().get("x-zfb-dev-ready").is_none());
+            assert_eq!(
+                response.headers().get(header::CACHE_CONTROL),
+                Some(&HeaderValue::from_static("no-store")),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_embed_handler_html_publishes_dev_readiness_headers() {
+        let mut state = test_state();
+        state.islands_bundle_url = Some(Arc::new(RwLock::new(
+            crate::DevPublicationState::from_islands_url(None),
+        )));
+        state.embed_handlers = Some(crate::embed_handlers::EmbedHandlerSet::new(vec![
+            crate::embed_handlers::EmbedHandler {
+                pattern: "/embedded".to_string(),
+                handler: crate::embed_handlers::erase_handler_for_test(|_req, _params| async {
+                    axum::response::Html("<html><body>embedded</body></html>")
+                }),
+            },
+        ]));
+
+        let response = test_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/embedded")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_dev_publication_headers(&response, "0", "true");
+    }
+
+    #[tokio::test]
+    async fn successful_embed_handler_html_omits_dev_headers_in_preview() {
+        let mut state = test_state();
+        state.mode = crate::ServerMode::Preview;
+        state.islands_bundle_url = Some(Arc::new(RwLock::new(
+            crate::DevPublicationState::from_islands_url(None),
+        )));
+        state.embed_handlers = Some(crate::embed_handlers::EmbedHandlerSet::new(vec![
+            crate::embed_handlers::EmbedHandler {
+                pattern: "/embedded".to_string(),
+                handler: crate::embed_handlers::erase_handler_for_test(|_req, _params| async {
+                    axum::response::Html("<html><body>embedded</body></html>")
+                }),
+            },
+        ]));
+
+        let response = test_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/embedded")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-zfb-dev-generation").is_none());
+        assert!(response.headers().get("x-zfb-dev-ready").is_none());
     }
 
     /// Issue #534 regression — on a cache miss the page handler must read
@@ -2737,6 +2961,39 @@ mod tests {
             "live public/ file must win over the stale dist_root seed copy (#1390); \
              got body:\n{body}",
         );
+    }
+
+    #[tokio::test]
+    async fn static_html_asset_publishes_dev_readiness_headers() {
+        use tempfile::TempDir;
+
+        let dist = TempDir::new().expect("dist tempdir");
+        let assets = dist.path().join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(
+            assets.join("status.html"),
+            "<!doctype html><html><body>status</body></html>",
+        )
+        .unwrap();
+
+        let mut state = test_state();
+        state.dist_root = dist.path().to_path_buf();
+        state.islands_bundle_url = Some(Arc::new(RwLock::new(
+            crate::DevPublicationState::from_islands_url(None),
+        )));
+
+        let response = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/status.html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_dev_publication_headers(&response, "0", "true");
     }
 
     /// Issue #1189 wiring: `build_core_router` must mount `/assets/*` as a
@@ -3472,6 +3729,15 @@ mod tests {
         })
     }
 
+    fn plugin_html_response() -> PluginDispatchOutcome {
+        PluginDispatchOutcome::Response(crate::plugin_middleware::PluginResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/html".to_string())],
+            body: "<html><body>plugin</body></html>".to_string(),
+            body_encoding: PluginResponseEncoding::Utf8,
+        })
+    }
+
     fn state_with_dispatcher(dispatcher: Arc<RecordingDispatcher>, path: &str) -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
         let set = DevMiddlewareSet {
@@ -3530,6 +3796,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("x-zfb-dev-generation").is_none());
+        assert!(resp.headers().get("x-zfb-dev-ready").is_none());
 
         let captured = dispatcher
             .last
@@ -3544,6 +3812,85 @@ mod tests {
             captured.headers.get("content-type").map(String::as_str),
             Some("application/json"),
         );
+    }
+
+    #[tokio::test]
+    async fn successful_plugin_html_publishes_dev_readiness_headers() {
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: plugin_html_response(),
+        });
+        let mut state = state_with_dispatcher(dispatcher, "/plugin-html");
+        state.islands_bundle_url = Some(Arc::new(RwLock::new(
+            crate::DevPublicationState::from_islands_url(None),
+        )));
+
+        let response = test_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/plugin-html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_dev_publication_headers(&response, "0", "true");
+    }
+
+    #[tokio::test]
+    async fn plugin_generated_html_error_publishes_dev_readiness_headers() {
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: PluginDispatchOutcome::Response(crate::plugin_middleware::PluginResponse {
+                status: 200,
+                headers: vec![("content-type".to_string(), "text/html".to_string())],
+                body: "not valid base64".to_string(),
+                body_encoding: PluginResponseEncoding::Base64,
+            }),
+        });
+        let state = state_with_dispatcher(dispatcher, "/plugin-error");
+
+        let response = test_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/plugin-error")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_dev_publication_headers(&response, "0", "false");
+    }
+
+    #[tokio::test]
+    async fn successful_plugin_html_omits_dev_headers_in_preview() {
+        let dispatcher = Arc::new(RecordingDispatcher {
+            last: tokio::sync::Mutex::new(None),
+            outcome: plugin_html_response(),
+        });
+        let mut state = state_with_dispatcher(dispatcher, "/plugin-html");
+        state.mode = crate::ServerMode::Preview;
+        state.islands_bundle_url = Some(Arc::new(RwLock::new(
+            crate::DevPublicationState::from_islands_url(None),
+        )));
+
+        let response = test_router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/plugin-html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-zfb-dev-generation").is_none());
+        assert!(response.headers().get("x-zfb-dev-ready").is_none());
     }
 
     #[tokio::test]
@@ -5123,11 +5470,11 @@ mod tests {
     // fail-closed missing-Origin path and the loopback short-circuit
     // without needing a full plugin/SSR stack wired up.
 
-    fn enforced_state() -> AppState {
+    fn enforced_state_for_mode(mode: crate::ServerMode) -> AppState {
         let (tx, _rx) = broadcast::channel::<ReloadEvent>(16);
         let dist = std::env::temp_dir().join("zfb-test-dist");
         AppState {
-            mode: crate::ServerMode::Dev,
+            mode,
             pages: PageCache::new(),
             broadcast: tx,
             plugins: None,
@@ -5146,7 +5493,7 @@ mod tests {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
                 None,
                 &[],
-                crate::ServerMode::Dev,
+                mode,
             ),
             render_on_request_hook: None,
             redirects: None,
@@ -5155,6 +5502,96 @@ mod tests {
             dev_assets_root: None,
             canonical_public_root: None,
         }
+    }
+
+    fn enforced_state() -> AppState {
+        enforced_state_for_mode(crate::ServerMode::Dev)
+    }
+
+    fn with_test_embed_handler(mut state: AppState) -> AppState {
+        state.embed_handlers = Some(crate::embed_handlers::EmbedHandlerSet::new(vec![
+            crate::embed_handlers::EmbedHandler {
+                pattern: "/secure".to_string(),
+                handler: crate::embed_handlers::erase_handler_for_test(|_req, _params| async {
+                    axum::response::Html("<html><body>secure</body></html>")
+                }),
+            },
+        ]));
+        state
+    }
+
+    #[tokio::test]
+    async fn host_rejection_html_publishes_dev_headers_but_not_preview_headers() {
+        let mut dev_state = enforced_state();
+        dev_state.islands_bundle_url = Some(Arc::new(RwLock::new(
+            crate::DevPublicationState::from_islands_url(None),
+        )));
+        let dev_response = build_router(dev_state)
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::HOST, "evil.test:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dev_response.status(), StatusCode::FORBIDDEN);
+        assert_dev_publication_headers(&dev_response, "0", "true");
+
+        let preview_response = build_router(enforced_state_for_mode(crate::ServerMode::Preview))
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(header::HOST, "evil.test:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preview_response.status(), StatusCode::FORBIDDEN);
+        assert!(preview_response
+            .headers()
+            .get("x-zfb-dev-generation")
+            .is_none());
+        assert!(preview_response.headers().get("x-zfb-dev-ready").is_none());
+    }
+
+    #[tokio::test]
+    async fn origin_rejection_html_publishes_dev_headers_but_not_preview_headers() {
+        let dev_response = build_router(with_test_embed_handler(enforced_state()))
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/secure")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dev_response.status(), StatusCode::FORBIDDEN);
+        assert_dev_publication_headers(&dev_response, "0", "false");
+
+        let preview_state =
+            with_test_embed_handler(enforced_state_for_mode(crate::ServerMode::Preview));
+        let preview_response = build_router(preview_state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/secure")
+                    .header(header::HOST, "localhost:3000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preview_response.status(), StatusCode::FORBIDDEN);
+        assert!(preview_response
+            .headers()
+            .get("x-zfb-dev-generation")
+            .is_none());
+        assert!(preview_response.headers().get("x-zfb-dev-ready").is_none());
     }
 
     #[test]
