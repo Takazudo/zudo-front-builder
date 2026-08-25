@@ -101,6 +101,7 @@ use zfb_server::{
 };
 
 use crate::cli::DevArgs;
+use crate::commands::dev_companion_ledger::IslandsCompanionLedger;
 use crate::commands::resolve::{resolve_addr, resolve_host, resolve_port, resolve_under_root};
 use crate::commands::watcher_liveness_probe::spawn_watcher_liveness_probe;
 use crate::config;
@@ -1653,16 +1654,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     let islands_bundle_url_handle: zfb_server::IslandsBundleUrl = Arc::new(std::sync::RwLock::new(
         zfb_server::DevPublicationState::pending(),
     ));
-    let live_companion_filenames: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
-    let staged_companion_filenames: Arc<Mutex<Option<HashSet<String>>>> =
-        Arc::new(Mutex::new(None));
-    let unresolved_companion_filenames: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
-    let baseline_unresolved_companion_filenames: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
-    let retained_companion_filenames: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+    let islands_companion_ledger = Arc::new(Mutex::new(IslandsCompanionLedger::default()));
     let live_client_script_outputs: Arc<Mutex<HashSet<String>>> =
         Arc::new(Mutex::new(HashSet::new()));
     let staged_client_script_outputs: Arc<Mutex<Option<HashSet<String>>>> =
@@ -1681,11 +1673,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let state = Arc::clone(&islands_bundle_url_handle);
         let boot_guard = Arc::clone(&boot_publication_guard);
         let obligations = Arc::clone(&document_obligations);
-        let live_islands = Arc::clone(&live_companion_filenames);
-        let staged_islands = Arc::clone(&staged_companion_filenames);
-        let retained_islands = Arc::clone(&retained_companion_filenames);
-        let unresolved_islands = Arc::clone(&unresolved_companion_filenames);
-        let baseline_islands = Arc::clone(&baseline_unresolved_companion_filenames);
+        let islands_ledger = Arc::clone(&islands_companion_ledger);
         let live_clients = Arc::clone(&live_client_script_outputs);
         let staged_clients = Arc::clone(&staged_client_script_outputs);
         let unresolved_clients = Arc::clone(&unresolved_client_script_outputs);
@@ -1698,11 +1686,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
 
             match &event {
                 DocumentPublicationEvent::Begin => {
-                    *baseline_islands.lock().unwrap_or_else(|p| p.into_inner()) =
-                        unresolved_islands
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .clone();
+                    islands_ledger
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .begin();
                     *baseline_clients.lock().unwrap_or_else(|p| p.into_inner()) =
                         unresolved_clients
                             .lock()
@@ -1933,29 +1920,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         !matches!(publication.documents, zfb_server::DocumentSlot::Pending);
                     drop(publication);
                     if restored_previous {
-                        *staged_islands.lock().unwrap_or_else(|p| p.into_inner()) = None;
                         *staged_clients.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                        let live = live_islands
+                        let aborted = islands_ledger
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .clone();
-                        let retained = retained_islands
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .clone();
-                        let baseline = baseline_islands
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .clone();
-                        let mut unresolved =
-                            unresolved_islands.lock().unwrap_or_else(|p| p.into_inner());
-                        let candidates: HashSet<String> = unresolved
-                            .difference(&baseline)
-                            .filter(|name| !live.contains(*name) && !retained.contains(*name))
-                            .cloned()
-                            .collect();
-                        prune_dev_companions("islands", &assets_dir, &candidates, &HashSet::new());
-                        *unresolved = baseline;
+                            .abort_candidate();
+                        prune_dev_companions("islands", &assets_dir, &aborted, &HashSet::new());
 
                         let live = live_clients
                             .lock()
@@ -2048,37 +2018,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 );
             }
 
-            let next_islands = staged_islands
+            let plan = islands_ledger
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .take();
-            let mut live = live_islands.lock().unwrap_or_else(|p| p.into_inner());
-            let mut retained = retained_islands.lock().unwrap_or_else(|p| p.into_inner());
-            let old_retained = std::mem::take(&mut *retained);
-            if let Some(next) = next_islands {
-                let previous = std::mem::replace(&mut *live, next);
-                if preserve_lazy {
-                    retained.extend(previous);
-                    retained.extend(old_retained.iter().cloned());
-                } else {
-                    *retained = previous;
-                }
-            } else if preserve_lazy {
-                retained.extend(old_retained.iter().cloned());
-            }
-            let keep: HashSet<String> = live.iter().chain(retained.iter()).cloned().collect();
-            if preserve_lazy {
-                unresolved_islands
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .extend(keep.iter().cloned());
-            } else {
-                let mut prune_candidates = std::mem::take(
-                    &mut *unresolved_islands.lock().unwrap_or_else(|p| p.into_inner()),
-                );
-                prune_candidates.extend(old_retained);
-                prune_dev_companions("islands", &assets_dir, &prune_candidates, &keep);
-            }
+                .commit(preserve_lazy);
+            prune_dev_companions("islands", &assets_dir, &plan.candidates, &plan.keep);
         })
     };
     let lazy_publication_resolved: Arc<dyn Fn(&Path) + Send + Sync> = {
@@ -2512,8 +2456,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let bundle_config = cfg.bundle.clone();
         let url_prefix = dev_islands_url_prefix.clone();
         let url_handle = Arc::clone(&islands_bundle_url_handle);
-        let staged_companion_names = Arc::clone(&staged_companion_filenames);
-        let unresolved_companion_names = Arc::clone(&unresolved_companion_filenames);
+        let companion_ledger = Arc::clone(&islands_companion_ledger);
         let raw_invalidation = raw_import_invalidation.clone();
         // The watcher tick and the deferred boot build (issue #1170) share
         // ONE implementation — `rebundle_islands` — so the boot-time bundle
@@ -2535,8 +2478,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &plugin_cfg,
                 &url_prefix,
                 &url_handle,
-                &staged_companion_names,
-                &unresolved_companion_names,
+                &companion_ledger,
                 &raw_invalidation,
             )
         }))
@@ -2552,7 +2494,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Tracks CSS companion filenames (content-hashed package `url()` assets
     // rebased into the stylesheet, issue #2317) written by the most recent
     // CSS generation so the next tick can prune stale files. Deliberately a
-    // SEPARATE `Arc` from islands' `live_companion_filenames` above — see
+    // SEPARATE `Arc` from islands' companion ledger above — see
     // `publish_dev_css_generation`'s doc comment for why sharing one tracker
     // across asset kinds would let pruning one kind delete the other's
     // files.
@@ -3004,8 +2946,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // framework, the islands plugin config, the URL prefix, the shared
     // bundle-URL handle, and the live-companion tracker.
     let islands_url_handle_for_boot = Arc::clone(&islands_bundle_url_handle);
-    let staged_islands_companion_names_for_boot = Arc::clone(&staged_companion_filenames);
-    let unresolved_islands_companion_names_for_boot = Arc::clone(&unresolved_companion_filenames);
+    let islands_companion_ledger_for_boot = Arc::clone(&islands_companion_ledger);
     let islands_plugin_config_for_boot = islands_plugin_config.clone();
     let raw_import_invalidation_for_boot = raw_import_invalidation.clone();
     let islands_url_prefix_for_boot = dev_islands_url_prefix.clone();
@@ -3330,8 +3271,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 &islands_plugin_config_for_boot,
                 &islands_url_prefix_for_boot,
                 &islands_url_handle_for_boot,
-                &staged_islands_companion_names_for_boot,
-                &unresolved_islands_companion_names_for_boot,
+                &islands_companion_ledger_for_boot,
                 &raw_import_invalidation_for_boot,
             ) {
                 Ok(info) => info,
@@ -4152,21 +4092,21 @@ fn dev_client_script_urls(url_prefix: &str, output_filenames: &HashSet<String>) 
 /// result: build the payload, write the stable `islands.js` under
 /// `assets_root/assets/` (issue #1189: the isolated `.zfb-build/dev-assets`
 /// root, NOT the build-shared `dist/`),
-/// refresh / prune chunk and module-worker companions, and rewrite the shared
-/// bundle-URL handle. Returns `Some(IslandsBundleInfo { changed: true, .. })` when a
-/// bundle was produced (so `outcome_to_events` emits a
+/// write and stage chunk, module-worker, and resource companions, and rewrite
+/// the shared bundle-URL handle. Returns
+/// `Some(IslandsBundleInfo { changed: true, .. })` when a bundle was produced
+/// (so `outcome_to_events` emits a
 /// `ReloadEvent::Islands`), or `None` when the project has no `"use client"`
-/// components this run — in which case the handle is cleared and stale
-/// companions are pruned so no `<script type="module">` and no dead chunk or
-/// worker files keep being served.
+/// components this run — in which case the handle and staged companion set
+/// are cleared.
 ///
 /// Shared by the watcher-tick `run_islands` callback and the deferred boot
-/// build (issue #1170) so both write disk, prune companions, and publish the URL
+/// build (issue #1170) so both write disk, stage companions, and publish the URL
 /// IDENTICALLY — the two paths cannot drift. Lock poisoning is recovered (a
 /// writer panic must not strand the watcher loop). Disk / companion-write
 /// failures are returned as `Err`: the watcher path propagates it (a tick
 /// failure is loud), the boot path warns-and-continues (issue #1170).
-#[allow(clippy::too_many_arguments)] // publication staging adds the companion candidate tracker; a struct would only shuffle these threaded build inputs
+#[allow(clippy::too_many_arguments)] // shared boot/tick inputs remain independent of companion state ownership
 fn rebundle_islands(
     project_root: &Path,
     // Where dev assets are written + served from (issue #1189: the isolated
@@ -4177,8 +4117,7 @@ fn rebundle_islands(
     plugin_config: &crate::commands::build::IslandsPluginConfig,
     url_prefix: &str,
     url_handle: &zfb_server::IslandsBundleUrl,
-    staged_companion_names: &Arc<Mutex<Option<HashSet<String>>>>,
-    unresolved_companion_names: &Arc<Mutex<HashSet<String>>>,
+    companion_ledger: &Arc<Mutex<IslandsCompanionLedger>>,
     raw_invalidation: &zfb_build::RawImportInvalidation,
 ) -> anyhow::Result<Option<IslandsBundleInfo>> {
     // Marker names are only needed by the production build pass; dev mode
@@ -4218,9 +4157,10 @@ fn rebundle_islands(
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .stage_islands(Vec::new());
-        *staged_companion_names
+        companion_ledger
             .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(HashSet::new());
+            .unwrap_or_else(|p| p.into_inner())
+            .stage(HashSet::new());
         return Ok(None);
     };
     let bundle_url = if url_prefix.is_empty() {
@@ -4249,7 +4189,7 @@ fn rebundle_islands(
             &payload.companions,
         )
         .context("dev islands: invalid entry/companion filename set")?;
-        write_tracked_islands_companions(unresolved_companion_names, &names, companion_writes)
+        write_tracked_islands_companions(companion_ledger, &names, companion_writes)
             .context("dev islands: failed to write companion files")?;
         atomic_write(&islands_out_path, &payload.bytes).with_context(|| {
             format!(
@@ -4274,9 +4214,10 @@ fn rebundle_islands(
         bundle_url: bundle_url.clone(),
         components: Vec::new(),
     };
-    *staged_companion_names
+    companion_ledger
         .lock()
-        .unwrap_or_else(|p| p.into_inner()) = Some(names.clone());
+        .unwrap_or_else(|p| p.into_inner())
+        .stage(names.clone());
     url_handle
         .write()
         .unwrap_or_else(|p| p.into_inner())
@@ -4690,8 +4631,8 @@ fn build_dev_css_and_publish_mirror_roots(
 /// published generation or the new one, never a URL pointing at an entry
 /// whose companions are still being written.
 ///
-/// `companion_names` MUST be a tracker dedicated to CSS — never islands'
-/// `live_companion_filenames`. Pruning only ever diffs `companion_names`'
+/// `companion_names` MUST be a tracker dedicated to CSS — never the islands
+/// companion ledger. Pruning only ever diffs `companion_names`'
 /// previous value against the new generation's set, so passing the wrong
 /// tracker would delete the other asset kind's files the moment either
 /// kind's companion set changed.
@@ -4798,13 +4739,12 @@ fn publish_dev_css_generation(
 // operate on a caller-supplied `entry_filename` and companion list, never on
 // islands- or CSS-specific state. Each asset kind gets its own thin wrapper
 // (`refresh_dev_island_chunks` / `refresh_dev_css_companions`) supplying its
-// own stable entry filename, and — critically — each kind's caller tracks
-// its OWN `Arc<Mutex<HashSet<String>>>` of live companion names
-// (`live_companion_filenames` for islands, `live_css_companion_filenames`
-// for CSS, never shared). Because pruning only ever diffs one kind's
-// `prev`/`new` sets against each other, sharing these primitives between
-// kinds can never let one kind's generation replacement delete the other's
-// files — only passing the wrong tracker Arc could, and no call site does.
+// own stable entry filename. Critically, islands use their publication ledger
+// while CSS has its own `Arc<Mutex<HashSet<String>>>`; the state is never
+// shared. Because pruning only ever compares one kind's candidates and keep
+// sets, sharing these primitives between kinds cannot let one kind delete the
+// other's files — only passing the wrong state handle could, and no call site
+// does.
 
 type PreparedDevCompanion<'a> = (&'a zfb_build::pipeline::CompanionFile, PathBuf);
 type PreparedDevCompanionSet<'a> = (HashSet<String>, Vec<PreparedDevCompanion<'a>>);
@@ -4918,14 +4858,14 @@ fn write_prepared_dev_companions(
 /// abort path can therefore remove every partially emitted hashed file;
 /// deleting a registered name that was never written is harmless.
 fn write_tracked_islands_companions(
-    unresolved_companion_names: &Mutex<HashSet<String>>,
+    companion_ledger: &Mutex<IslandsCompanionLedger>,
     names: &HashSet<String>,
     companion_writes: Vec<PreparedDevCompanion<'_>>,
 ) -> anyhow::Result<()> {
-    unresolved_companion_names
+    companion_ledger
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .extend(names.iter().cloned());
+        .track_candidate(names);
     write_prepared_dev_companions("islands", companion_writes)
 }
 
@@ -16951,6 +16891,52 @@ mod tests {
     }
 
     #[test]
+    fn companion_ledger_retains_two_generations_across_document_only_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+        let mut ledger = IslandsCompanionLedger::default();
+
+        let publish = |ledger: &mut IslandsCompanionLedger, filename: &str| {
+            let companions = vec![make_companion(filename, filename.as_bytes())];
+            let (names, writes) = prepare_dev_companion_writes(
+                "islands",
+                &assets,
+                zfb_types::STABLE_ISLANDS_FILENAME,
+                &companions,
+            )
+            .unwrap();
+            ledger.track_candidate(&names);
+            write_prepared_dev_companions("islands", writes).unwrap();
+            ledger.stage(names);
+            let plan = ledger.commit(false);
+            prune_dev_companions("islands", &assets, &plan.candidates, &plan.keep);
+        };
+
+        publish(&mut ledger, "islands-chunk-GEN1AAAA.js");
+        assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
+        publish(&mut ledger, "islands-chunk-GEN2BBBB.js");
+        assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
+        assert!(assets.join("islands-chunk-GEN2BBBB.js").exists());
+        let document_only = ledger.commit(false);
+        prune_dev_companions(
+            "islands",
+            &assets,
+            &document_only.candidates,
+            &document_only.keep,
+        );
+        assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
+
+        publish(&mut ledger, "islands-chunk-GEN3CCCC.js");
+        assert!(assets.join("islands-chunk-GEN1AAAA.js").exists());
+
+        publish(&mut ledger, "islands-chunk-GEN4DDDD.js");
+        assert!(!assets.join("islands-chunk-GEN1AAAA.js").exists());
+        assert!(assets.join("islands-chunk-GEN2BBBB.js").exists());
+        assert!(assets.join("islands-chunk-GEN3CCCC.js").exists());
+        assert!(assets.join("islands-chunk-GEN4DDDD.js").exists());
+    }
+
+    #[test]
     fn prunes_all_chunks_when_new_set_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         let assets = dir.path().to_path_buf();
@@ -17070,19 +17056,25 @@ mod tests {
             &companions,
         )
         .unwrap();
-        let unresolved = Mutex::new(HashSet::new());
+        let ledger = Mutex::new(IslandsCompanionLedger::default());
+        {
+            let mut ledger = ledger.lock().unwrap();
+            ledger.track_candidate(&HashSet::from([live_name.to_string()]));
+            ledger.stage(HashSet::from([live_name.to_string()]));
+            let _ = ledger.commit(false);
+            ledger.begin();
+        }
 
-        assert!(write_tracked_islands_companions(&unresolved, &names, writes).is_err());
-        assert_eq!(*unresolved.lock().unwrap(), names);
+        assert!(write_tracked_islands_companions(&ledger, &names, writes).is_err());
         assert_eq!(
             std::fs::read(assets.join(first_name)).unwrap(),
             b"partial candidate",
             "the seam must fail after at least one candidate write",
         );
 
-        let live = HashSet::from([live_name.to_string()]);
-        let candidates = std::mem::take(&mut *unresolved.lock().unwrap());
-        prune_dev_companions("islands", &assets, &candidates, &live);
+        let candidates = ledger.lock().unwrap().abort_candidate();
+        assert_eq!(candidates, names);
+        prune_dev_companions("islands", &assets, &candidates, &HashSet::new());
 
         assert!(!assets.join(first_name).exists());
         assert_eq!(
