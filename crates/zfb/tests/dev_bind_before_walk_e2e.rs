@@ -103,7 +103,11 @@
 //!    is written but before the document generation, then turns true only once
 //!    the rendered 200 document and its browser-requested islands entry are
 //!    both available.
-//! 10. `dev_tick_client_script_publication_add_remove_ordering` — real watcher
+//! 10. `dev_retains_previous_islands_chunk_generations_for_open_documents` —
+//!     real watcher ticks prove content-hashed lazy chunks survive a
+//!     document-only tick and two later islands generations, then are pruned
+//!     on the third later islands generation.
+//! 11. `dev_tick_client_script_publication_add_remove_ordering` — real watcher
 //!     ticks prove a newly-added client entry is published before the page
 //!     write, and a removed entry remains served through the transition page
 //!     write before a later publication prunes it.
@@ -506,6 +510,48 @@ async fn wait_for_log_line(session: &DevSession, needle: &str, deadline: Duratio
     );
 }
 
+async fn wait_for_log_line_count_above(
+    session: &DevSession,
+    needle: &str,
+    minimum_count: usize,
+    deadline: Duration,
+) {
+    let start = Instant::now();
+    while start.elapsed() < deadline {
+        if log_line_count(session, needle) > minimum_count {
+            return;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    panic!(
+        "did not observe timing line {needle:?} above count {minimum_count} within {}s.\n{}",
+        deadline.as_secs(),
+        session.logs(),
+    );
+}
+
+fn islands_chunk_names(entry: &str) -> Vec<String> {
+    const PREFIX: &str = "./islands-chunk-";
+    let mut names = Vec::new();
+    let mut remaining = entry;
+    while let Some(start) = remaining.find(PREFIX) {
+        let rest = &remaining[start + 2..];
+        let end = rest
+            .find(".js")
+            .unwrap_or_else(|| panic!("split chunk reference had no .js suffix:\n{entry}"));
+        let name = rest[..end + ".js".len()].to_owned();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+        remaining = &rest[end + ".js".len()..];
+    }
+    assert!(
+        !names.is_empty(),
+        "islands entry did not reference a split chunk:\n{entry}"
+    );
+    names
+}
+
 fn tick_kind_line_count(session: &DevSession, required_names: &[&str]) -> usize {
     session
         .logs()
@@ -677,6 +723,49 @@ fn client() -> reqwest::Client {
         .timeout(Duration::from_secs(5))
         .build()
         .expect("build reqwest client")
+}
+
+async fn assert_asset_status(
+    client: &reqwest::Client,
+    base: &str,
+    asset_name: &str,
+    expected_status: u16,
+    session: &DevSession,
+) -> String {
+    let response = client
+        .get(format!("{base}/assets/{asset_name}"))
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("request asset {asset_name}: {error}\n{}", session.logs()));
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        expected_status,
+        "GET /assets/{asset_name} returned {status}, expected {expected_status}; body:\n{body}\n{}",
+        session.logs(),
+    );
+    body
+}
+
+async fn islands_chunk_with_marker(
+    client: &reqwest::Client,
+    base: &str,
+    entry: &str,
+    marker: &str,
+    session: &DevSession,
+) -> String {
+    let names = islands_chunk_names(entry);
+    for name in &names {
+        let body = assert_asset_status(client, base, name, 200, session).await;
+        if body.contains(marker) {
+            return name.clone();
+        }
+    }
+    panic!(
+        "none of the referenced islands chunks contained marker {marker:?}; chunks={names:?}\n{}",
+        session.logs(),
+    );
 }
 
 /// Reqwest client for the SSE live-reload subscription (Tests 7/8).
@@ -1363,7 +1452,183 @@ async fn dev_200_document_declares_and_serves_islands_module() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 10 — client-script add/remove publication ordering (#2555).
+// Test 10 — islands companion retention across document-only ticks (#2587).
+// ---------------------------------------------------------------------------
+
+/// Content-hashed lazy chunks referenced by an already-open document must
+/// survive a document-only boundary and the next two islands generations.
+/// The third later islands generation prunes the oldest chunk, proving the
+/// retention window is bounded rather than append-only.
+#[tokio::test(flavor = "multi_thread")]
+async fn dev_retains_previous_islands_chunk_generations_for_open_documents() {
+    let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!("[dev_bind_before_walk_e2e] no esbuild; skipping.");
+        return;
+    };
+
+    const ISLANDS_MARKER: &str = "[zfb-timing] tick: islands published";
+    const PAGE_MARKER: &str = "[zfb-timing] tick: page write complete";
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = prepare_dev_root_from_fixture(&tmp, "dev-islands-chunk-retention");
+    let lazy_part_path = root.join("components/lazy-part.tsx");
+    let page_path = root.join("pages/index.tsx");
+    let mut session = spawn_dev_in_root(
+        &root,
+        &esbuild,
+        &[("ZFB_DEV_EAGER", "1"), ("ZFB_DEV_TIMING", "1")],
+    );
+
+    let Some(port) = wait_for_banner_port(&mut session).await else {
+        return; // known-skip
+    };
+    let base = format!("http://localhost:{port}");
+    let ready_url = format!("{base}/__zfb/ready");
+    let client = client();
+
+    // Boot: inspect the emitted assets and establish the document's original
+    // lazy-chunk obligation before any watcher tick.
+    wait_for_log_line(
+        &session,
+        "[zfb-timing] boot: islands published",
+        RENDER_DEADLINE,
+    )
+    .await;
+    wait_for_log_line(
+        &session,
+        "[zfb-timing] boot: render complete",
+        RENDER_DEADLINE,
+    )
+    .await;
+    let boot_ready = ready_json(&client, &ready_url).await;
+    assert_eq!(boot_ready["ready"], true, "boot publication readiness");
+    let mut generation = ready_generation(&boot_ready);
+    let entry0 = assert_asset_status(&client, &base, "islands.js", 200, &session).await;
+    let chunk0 =
+        islands_chunk_with_marker(&client, &base, &entry0, "lazy part boot", &session).await;
+    let emitted_assets: Vec<String> = fs::read_dir(root.join(".zfb-build/dev-assets/assets"))
+        .expect("inspect emitted dev assets after boot")
+        .map(|entry| {
+            entry
+                .expect("read emitted dev asset")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        emitted_assets.iter().any(|name| name == &chunk0),
+        "boot assets must contain referenced split chunk {chunk0:?}; assets={emitted_assets:?}"
+    );
+    assert_asset_status(&client, &base, &chunk0, 200, &session).await;
+
+    // First islands generation: the stable entry points at a new chunk, but
+    // the original document's chunk remains reachable for one lap.
+    let islands_before = log_line_count(&session, ISLANDS_MARKER);
+    fs::write(
+        &lazy_part_path,
+        "export const lazyPart = \"lazy part generation one\";\n",
+    )
+    .expect("write first lazy-part generation");
+    wait_for_log_line_count_above(&session, ISLANDS_MARKER, islands_before, RENDER_DEADLINE).await;
+    let ready =
+        wait_for_publication_ready(&client, &ready_url, generation, RENDER_DEADLINE, &session)
+            .await;
+    generation = ready_generation(&ready);
+    let entry1 = assert_asset_status(&client, &base, "islands.js", 200, &session).await;
+    let chunk1 = islands_chunk_with_marker(
+        &client,
+        &base,
+        &entry1,
+        "lazy part generation one",
+        &session,
+    )
+    .await;
+    assert_ne!(
+        chunk1, chunk0,
+        "lazy-part edit must change the chunk hash; entry before:\n{entry0}\nentry after:\n{entry1}"
+    );
+    assert_asset_status(&client, &base, &chunk0, 200, &session).await;
+
+    // Document-only boundary: publication advances, but islands must not
+    // re-bundle and the retained original chunk must not be cleared.
+    let page_before = log_line_count(&session, PAGE_MARKER);
+    let islands_before_page = log_line_count(&session, ISLANDS_MARKER);
+    let original_page = fs::read_to_string(&page_path).expect("read retention fixture page");
+    let edited_page = original_page.replacen(
+        "<h1>dev-islands-chunk-retention</h1>",
+        "<h1>dev-islands-chunk-retention page edit</h1>",
+        1,
+    );
+    assert_ne!(
+        edited_page, original_page,
+        "page edit fixture insertion point"
+    );
+    fs::write(&page_path, edited_page).expect("write document-only generation");
+    wait_for_log_line_count_above(&session, PAGE_MARKER, page_before, RENDER_DEADLINE).await;
+    let ready =
+        wait_for_publication_ready(&client, &ready_url, generation, RENDER_DEADLINE, &session)
+            .await;
+    generation = ready_generation(&ready);
+    assert_eq!(
+        log_line_count(&session, ISLANDS_MARKER),
+        islands_before_page,
+        "a page-only edit must not publish an islands generation\n{}",
+        session.logs(),
+    );
+    assert_asset_status(&client, &base, &chunk0, 200, &session).await;
+
+    // Second later islands generation: chunk0 is the K=2 retained lap and
+    // must still be available to an open document.
+    let islands_before = log_line_count(&session, ISLANDS_MARKER);
+    fs::write(
+        &lazy_part_path,
+        "export const lazyPart = \"lazy part generation two is longer\";\n",
+    )
+    .expect("write second lazy-part generation");
+    wait_for_log_line_count_above(&session, ISLANDS_MARKER, islands_before, RENDER_DEADLINE).await;
+    let ready =
+        wait_for_publication_ready(&client, &ready_url, generation, RENDER_DEADLINE, &session)
+            .await;
+    generation = ready_generation(&ready);
+    assert_asset_status(&client, &base, &chunk0, 200, &session).await;
+
+    // Third later islands generation: chunk0 falls outside the bounded
+    // window, while chunk1 and the newest chunk stay served.
+    let islands_before = log_line_count(&session, ISLANDS_MARKER);
+    fs::write(
+        &lazy_part_path,
+        "export const lazyPart = \"lazy part generation three is longer still\";\n",
+    )
+    .expect("write third lazy-part generation");
+    wait_for_log_line_count_above(&session, ISLANDS_MARKER, islands_before, RENDER_DEADLINE).await;
+    let ready =
+        wait_for_publication_ready(&client, &ready_url, generation, RENDER_DEADLINE, &session)
+            .await;
+    let final_generation = ready_generation(&ready);
+    assert!(
+        final_generation > generation,
+        "third islands generation bump"
+    );
+    let newest_entry = assert_asset_status(&client, &base, "islands.js", 200, &session).await;
+    let newest_chunk = islands_chunk_with_marker(
+        &client,
+        &base,
+        &newest_entry,
+        "lazy part generation three is longer still",
+        &session,
+    )
+    .await;
+    assert_ne!(newest_chunk, chunk1, "third edit must emit a newer chunk");
+    assert_asset_status(&client, &base, &chunk0, 404, &session).await;
+    assert_asset_status(&client, &base, &newest_chunk, 200, &session).await;
+    assert_asset_status(&client, &base, &chunk1, 200, &session).await;
+}
+
+// ---------------------------------------------------------------------------
+// Test 11 — client-script add/remove publication ordering (#2555).
 // ---------------------------------------------------------------------------
 
 /// A real watcher tick must publish a newly discovered client entry before
