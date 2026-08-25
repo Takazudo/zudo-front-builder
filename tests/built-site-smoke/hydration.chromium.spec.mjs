@@ -19,6 +19,8 @@
  *      that a broken bundle (one that loads but throws before attaching
  *      event listeners) fails this lane even when it produces no visible
  *      page error.
+ *   3. The Counter wrapper has no mounted marker while the islands entry is
+ *      held, then receives it after the real mount completes.
  *
  * The `[data-zfb-island="Counter"]` selector targets the wrapper `<div>`
  * emitted by the `<Island>` JSX component (packages/zfb/src/island.ts) —
@@ -54,29 +56,64 @@ test("built site loads with zero page errors and its island hydrates", async ({ 
     }
   });
 
-  await page.goto("/");
+  // Hold the real build's islands entry before it can execute. A first
+  // assertion after an ordinary page.goto() is too late: the entry can load
+  // and mount the island before the test gets its first turn, making the
+  // "before" check tautological and unable to catch an SSR-time write.
+  let releaseIslandsModule = () => {};
+  const islandsModuleHeld = new Promise((resolve) => {
+    releaseIslandsModule = resolve;
+  });
+  let islandsModuleRequested = false;
+  const islandsModuleRoute = /\/assets\/islands[^/]*\.js(?:\?.*)?$/;
+  await page.route(islandsModuleRoute, async (route) => {
+    islandsModuleRequested = true;
+    await islandsModuleHeld;
+    await route.continue();
+  });
 
-  const counterButton = page.locator('[data-zfb-island="Counter"] button');
+  const navigation = page.goto("/", { waitUntil: "domcontentloaded" });
+  try {
+    await expect.poll(() => islandsModuleRequested).toBe(true);
 
-  // SSR-rendered initial state — present even before hydration completes.
-  await expect(counterButton).toBeVisible();
-  await expect(counterButton).toHaveText("Count: 0");
+    const counterIsland = page.locator('[data-zfb-island="Counter"]');
+    // The SSR wrapper is already in the DOM while the islands module is held,
+    // so this is a genuine pre-hydration observation.
+    await expect(counterIsland).toHaveCount(1);
+    expect(await counterIsland.getAttribute("data-zfb-island-mounted")).toBeNull();
 
-  // The actual hydration proof: a click only updates the DOM if the client
-  // bundle loaded, ran, and attached a real Preact event listener.
-  await counterButton.click();
-  await expect(counterButton).toHaveText("Count: 1");
+    releaseIslandsModule();
+    await navigation;
+    await expect(counterIsland).toHaveAttribute("data-zfb-island-mounted", "");
 
-  await counterButton.click();
-  await expect(counterButton).toHaveText("Count: 2");
+    const counterButton = counterIsland.locator("button");
 
-  expect(pageErrors, `page errors fired during load/hydration: ${pageErrors.join("; ")}`).toEqual(
-    [],
-  );
-  expect(
-    consoleErrors,
-    `console.error calls fired during load/hydration: ${consoleErrors.join("; ")}`,
-  ).toEqual([]);
+    // SSR-rendered initial state — present even before hydration completes.
+    await expect(counterButton).toBeVisible();
+    await expect(counterButton).toHaveText("Count: 0");
+
+    // The actual hydration proof: a click only updates the DOM if the client
+    // bundle loaded, ran, and attached a real Preact event listener.
+    await counterButton.click();
+    await expect(counterButton).toHaveText("Count: 1");
+
+    await counterButton.click();
+    await expect(counterButton).toHaveText("Count: 2");
+
+    expect(pageErrors, `page errors fired during load/hydration: ${pageErrors.join("; ")}`).toEqual(
+      [],
+    );
+    expect(
+      consoleErrors,
+      `console.error calls fired during load/hydration: ${consoleErrors.join("; ")}`,
+    ).toEqual([]);
+  } finally {
+    // Always unblock and settle navigation before removing the route, so a
+    // failed assertion cannot leave the held request or its promise behind.
+    releaseIslandsModule();
+    await navigation.catch(() => undefined);
+    await page.unroute(islandsModuleRoute);
+  }
 });
 
 test("glob-consuming island (import.meta.glob) builds, expands, and hydrates — #1385 pt.1", async ({

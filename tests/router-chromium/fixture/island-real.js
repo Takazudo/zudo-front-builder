@@ -7,6 +7,7 @@
 // mount/unmount contract closely enough to prove the router's persist
 // handshake against genuine side effects. See island-persist.chromium.spec.mjs.
 const PERSIST_ATTR = "data-zfb-transition-persist";
+const ISLAND_MOUNTED_ATTR = "data-zfb-island-mounted";
 
 // element -> cleanup thunk, mirrors zfb/runtime.ts's module-private `mounted`
 // WeakMap<Element, () => void>.
@@ -17,6 +18,14 @@ window.__islandDebug = { mounts: 0, unmounts: 0 };
 
 function mountCounter(el) {
   if (mounted.has(el)) return;
+  const cleanup = mountCounterElement(el);
+  mounted.set(el, cleanup);
+  // Match zfb/runtime.ts: the public marker is written only after the mount
+  // work has returned successfully.
+  el.setAttribute(ISLAND_MOUNTED_ATTR, "");
+}
+
+function mountCounterElement(el) {
   let count = 0;
   const out = el.querySelector("[data-counter-value]");
   const btn = el.querySelector("[data-counter-inc]");
@@ -27,16 +36,21 @@ function mountCounter(el) {
   };
   btn.addEventListener("click", onClick);
   window.__islandDebug.mounts++;
-  mounted.set(el, () => {
+  return () => {
     btn.removeEventListener("click", onClick);
     window.__islandDebug.unmounts++;
-  });
+  };
+}
+
+function stripStaleMountedMarker(el) {
+  if (!mounted.has(el)) el.removeAttribute(ISLAND_MOUNTED_ATTR);
 }
 
 export function cancelPendingIslands() {}
 
 export function mountNewIslands() {
   for (const el of document.querySelectorAll("[data-counter-island]")) {
+    stripStaleMountedMarker(el);
     mountCounter(el);
   }
 }
@@ -58,9 +72,11 @@ export function unmountIslands(root = document.body, incomingBody) {
     const id = el.getAttribute(PERSIST_ATTR);
     if (id && preserved.has(id)) continue;
     const cleanup = mounted.get(el);
-    if (cleanup) {
-      cleanup();
+    try {
+      cleanup?.();
+    } finally {
       mounted.delete(el);
+      el.removeAttribute(ISLAND_MOUNTED_ATTR);
     }
   }
 }
