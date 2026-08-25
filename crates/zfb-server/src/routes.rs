@@ -656,8 +656,10 @@ pub fn build_router(state: AppState) -> Router {
         .layer(crate::plugin_middleware::body_limit_layer());
     // Final-response fallback for HTML surfaces that do not pass through
     // `page_response_bytes`: middleware/embed responses, security rejections,
-    // and `.html` files under the static assets service. Existing pairs are
-    // never replaced, preserving the one-snapshot page/body invariant.
+    // and `.html` files under the static assets service. Existing pairs from
+    // `page_response_bytes` are never replaced, preserving the one-snapshot
+    // page/body invariant. Untrusted plugin/embed pairs are stripped at their
+    // dispatch boundaries before reaching this layer.
     let router = if matches!(publication_headers.mode, crate::ServerMode::Dev) {
         router.layer(from_fn_with_state(
             publication_headers,
@@ -848,7 +850,9 @@ fn apply_dev_publication_headers(
 /// These responses do not participate in framework head-asset injection, so
 /// taking one final snapshot after the handler returns is the document-specific
 /// publication boundary. Ordinary pages must continue to use their earlier
-/// shared snapshot instead of calling this helper a second time.
+/// shared snapshot instead of calling this helper a second time. Raw plugin and
+/// embed responses have their untrusted copies of these reserved headers
+/// stripped at dispatch time, so only an ordinary page can arrive with a pair.
 fn apply_dev_publication_headers_if_html(
     response: &mut Response,
     mode: crate::ServerMode,
@@ -2032,7 +2036,14 @@ async fn dispatch_embed_handler(
     };
     *req.extensions_mut() = extensions.clone();
 
-    handler(req, params).await
+    let mut response = handler(req, params).await;
+    // Embed handlers own arbitrary response headers, but the Dev publication
+    // pair is reserved for the framework. Strip both names even outside Dev so
+    // Preview/Embed responses cannot leak a handler-supplied readiness signal;
+    // the outer Dev-only HTML layer will publish the authoritative snapshot.
+    response.headers_mut().remove("x-zfb-dev-generation");
+    response.headers_mut().remove("x-zfb-dev-ready");
+    response
 }
 
 /// Build the HTML 5xx response served when reconstructing the request
@@ -2450,6 +2461,20 @@ mod tests {
         );
     }
 
+    fn embed_html_response_with_untrusted_dev_headers() -> Response {
+        let mut response =
+            axum::response::Html("<html><body>embedded</body></html>").into_response();
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-zfb-dev-generation"),
+            HeaderValue::from_static("999"),
+        );
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-zfb-dev-ready"),
+            HeaderValue::from_static("false"),
+        );
+        response
+    }
+
     #[test]
     fn framework_html_errors_publish_dev_readiness_headers() {
         let pending = Arc::new(RwLock::new(crate::DevPublicationState::pending()));
@@ -2501,7 +2526,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_embed_handler_html_publishes_dev_readiness_headers() {
+    async fn embed_handler_html_cannot_override_dev_readiness_headers() {
         let mut state = test_state();
         state.islands_bundle_url = Some(Arc::new(RwLock::new(
             crate::DevPublicationState::from_islands_url(None),
@@ -2510,7 +2535,7 @@ mod tests {
             crate::embed_handlers::EmbedHandler {
                 pattern: "/embedded".to_string(),
                 handler: crate::embed_handlers::erase_handler_for_test(|_req, _params| async {
-                    axum::response::Html("<html><body>embedded</body></html>")
+                    embed_html_response_with_untrusted_dev_headers()
                 }),
             },
         ]));
@@ -2540,7 +2565,7 @@ mod tests {
             crate::embed_handlers::EmbedHandler {
                 pattern: "/embedded".to_string(),
                 handler: crate::embed_handlers::erase_handler_for_test(|_req, _params| async {
-                    axum::response::Html("<html><body>embedded</body></html>")
+                    embed_html_response_with_untrusted_dev_headers()
                 }),
             },
         ]));
@@ -3732,7 +3757,11 @@ mod tests {
     fn plugin_html_response() -> PluginDispatchOutcome {
         PluginDispatchOutcome::Response(crate::plugin_middleware::PluginResponse {
             status: 200,
-            headers: vec![("content-type".to_string(), "text/html".to_string())],
+            headers: vec![
+                ("content-type".to_string(), "text/html".to_string()),
+                ("x-zfb-dev-generation".to_string(), "999".to_string()),
+                ("x-zfb-dev-ready".to_string(), "false".to_string()),
+            ],
             body: "<html><body>plugin</body></html>".to_string(),
             body_encoding: PluginResponseEncoding::Utf8,
         })
@@ -3815,7 +3844,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn successful_plugin_html_publishes_dev_readiness_headers() {
+    async fn plugin_html_cannot_override_dev_readiness_headers() {
         let dispatcher = Arc::new(RecordingDispatcher {
             last: tokio::sync::Mutex::new(None),
             outcome: plugin_html_response(),

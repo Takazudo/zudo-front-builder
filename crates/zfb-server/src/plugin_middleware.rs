@@ -441,10 +441,17 @@ pub async fn dispatch_plugin(
                 // into_bytes), so any Content-Length / Transfer-Encoding the
                 // plugin returned is stale; Connection is hop-by-hop. Drop
                 // them and let hyper recompute framing (matches dispatch_ssr).
+                // The readiness pair is framework-owned: accepting values
+                // supplied by a plugin would let it spoof or stale the Dev
+                // publication snapshot applied by the outer response layer.
                 let lower = k.to_ascii_lowercase();
                 if matches!(
                     lower.as_str(),
-                    "content-length" | "transfer-encoding" | "connection"
+                    "content-length"
+                        | "transfer-encoding"
+                        | "connection"
+                        | "x-zfb-dev-generation"
+                        | "x-zfb-dev-ready"
                 ) {
                     continue;
                 }
