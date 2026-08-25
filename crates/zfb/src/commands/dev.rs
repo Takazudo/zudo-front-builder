@@ -1075,6 +1075,11 @@ struct DocumentObligations {
     failed_outputs: HashSet<PathBuf>,
     lazy_outputs: HashSet<PathBuf>,
     drained_lazy_retention: bool,
+    /// The final lazy document repair completed while an exact client
+    /// publication obligation still blocked the combined commit. Its later
+    /// `CommitEntriesOnly` is part of that same recovery boundary and must
+    /// preserve the prior islands fallback for one more generation.
+    client_blocked_lazy_repair: bool,
     /// A client-script commit whose own reverse rollback failed. Unlike an
     /// ordinary bundle/write error, this can leave stable entry bytes from an
     /// incomplete generation on disk, so unrelated document successes must
@@ -1174,11 +1179,15 @@ impl DocumentObligations {
         let drained = !self.has_document_failures() && self.lazy_outputs.is_empty();
         if drained {
             self.drained_lazy_retention = true;
+            self.client_blocked_lazy_repair = self.has_client_publication_failures();
         }
         drained
     }
 
     fn publication_retention(&mut self, recovery_commit: bool) -> bool {
+        if !recovery_commit {
+            self.client_blocked_lazy_repair = false;
+        }
         if !self.lazy_outputs.is_empty() {
             return true;
         }
@@ -1187,6 +1196,10 @@ impl DocumentObligations {
         }
         self.drained_lazy_retention = false;
         false
+    }
+
+    fn take_client_blocked_lazy_repair(&mut self) -> bool {
+        std::mem::take(&mut self.client_blocked_lazy_repair)
     }
 
     fn start_document_write(&mut self, output: PathBuf) {
@@ -1722,7 +1735,6 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 );
                 p.into_inner()
             });
-            let recovery_commit = matches!(&event, DocumentPublicationEvent::CommitLazyRepair);
             let is_commit = matches!(
                 &event,
                 DocumentPublicationEvent::CommitPublished
@@ -1733,15 +1745,22 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             );
             let (has_document_failures, has_client_failures, preserve_lazy) = {
                 let mut obligations = obligations.lock().unwrap_or_else(|p| p.into_inner());
-                (
-                    obligations.has_document_failures(),
-                    obligations.has_client_publication_failures(),
-                    if is_commit {
-                        obligations.publication_retention(recovery_commit)
-                    } else {
-                        obligations.retain_lazy_dependencies()
-                    },
-                )
+                let has_document_failures = obligations.has_document_failures();
+                let has_client_failures = obligations.has_client_publication_failures();
+                let has_eager_failures = has_document_failures || has_client_failures;
+                let recovery_commit = matches!(&event, DocumentPublicationEvent::CommitLazyRepair)
+                    || (matches!(&event, DocumentPublicationEvent::CommitEntriesOnly)
+                        && !has_eager_failures
+                        && obligations.take_client_blocked_lazy_repair());
+                let preserve_lazy = if is_commit && !has_eager_failures {
+                    obligations.publication_retention(recovery_commit)
+                } else {
+                    // A blocked event is not a boundary and must not consume
+                    // either ordinary lazy retention or the handoff from a
+                    // completed request repair to its client-only commit.
+                    obligations.retain_lazy_dependencies()
+                };
+                (has_document_failures, has_client_failures, preserve_lazy)
             };
             let has_eager_failures = has_document_failures || has_client_failures;
             let committed = match event {
@@ -10743,9 +10762,12 @@ mod tests {
 
     #[test]
     fn request_document_repair_then_exact_client_repair_recovers_entry_only() {
-        let mut publication = zfb_server::DevPublicationState::from_islands_url(None);
+        let mut publication = zfb_server::DevPublicationState::from_islands_url(Some(
+            "/assets/islands-old.js".to_string(),
+        ));
         let ready_generation = publication.generation;
         publication.begin_document_update();
+        publication.stage_islands(Vec::new());
         publication.leave_document_update_pending();
 
         let source = PageId::new(PathBuf::from("pages/lazy.tsx"));
@@ -10761,6 +10783,7 @@ mod tests {
         );
         assert!(!obligations.has_document_failures());
         assert!(obligations.has_client_publication_failures());
+        assert!(obligations.retain_lazy_dependencies());
         leave_publication_pending_for_failures(
             &mut publication,
             false,
@@ -10772,13 +10795,28 @@ mod tests {
         publication.stage_client_scripts(vec!["/assets/client/alpha.js".to_string()]);
         obligations.record_client_publication_success(&HashSet::from(["alpha.js".to_string()]));
         assert!(!obligations.has_eager_failures());
-        assert!(publication.commit_entry_update_with_retention(true));
+        let completes_lazy_repair = obligations.take_client_blocked_lazy_repair();
+        assert!(completes_lazy_repair);
+        let preserve_lazy = obligations.publication_retention(completes_lazy_repair);
+        assert!(preserve_lazy);
+        assert!(publication.commit_entry_update_with_retention(preserve_lazy));
         assert_eq!(
             publication.documents,
             zfb_server::DocumentSlot::ReadyOnRequest
         );
+        assert_eq!(
+            publication.islands_urls_for_response(true),
+            &["/assets/islands-old.js".to_string()],
+            "the client-only half of the recovery boundary must retain the old lazy fallback",
+        );
         assert_eq!(publication.generation, ready_generation + 1);
         assert!(publication.is_ready());
+
+        publication.begin_document_update();
+        let preserve_lazy = obligations.publication_retention(false);
+        assert!(!preserve_lazy);
+        assert!(publication.commit_entry_update_with_retention(preserve_lazy));
+        assert!(publication.islands_urls_for_response(true).is_empty());
     }
 
     #[cfg(feature = "embed_v8")]
