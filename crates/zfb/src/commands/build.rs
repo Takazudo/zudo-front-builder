@@ -5858,10 +5858,13 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
 ///
 /// ## Stale-file pruning
 ///
-/// `prev_output_filenames` is the set of flat entry/worker filenames written
-/// by the *previous* call. Any previous filename absent from the new output
-/// set is deleted, including workers whose constructor import disappeared.
-/// Pass an empty set on boot and retain the returned set for the next call.
+/// `prev_output_filenames` is the set of flat entry/worker filenames declared
+/// by the *previous* successful call. Those files are retained for this call
+/// even when absent from the new output set, so HTML from the previous active
+/// generation remains servable until the caller publishes replacement HTML.
+/// Files retained from an older generation are pruned after all current
+/// outputs have been written successfully. Pass an empty set on boot and
+/// retain the returned (current-only) set for the next call.
 ///
 /// ## Return value
 ///
@@ -5885,17 +5888,45 @@ fn write_dev_client_script_output_if_changed(path: &Path, bytes: &[u8]) -> Resul
     Ok(true)
 }
 
-fn prune_dev_client_script_outputs(
+fn prune_unretained_dev_client_script_outputs(
     client_dir: &Path,
     previous: &std::collections::HashSet<String>,
     current: &std::collections::HashSet<String>,
 ) -> bool {
     let mut changed = false;
-    for stale_filename in previous.difference(current) {
-        let stale_path = client_dir.join(stale_filename);
-        if !stale_path.exists() {
+    let entries = match std::fs::read_dir(client_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(error) => {
+            output::warn(format!(
+                "client-scripts dev: failed to inspect output directory {}: {error}",
+                client_dir.display()
+            ));
+            return false;
+        }
+    };
+    for entry in entries.flatten() {
+        if !entry
+            .file_type()
+            .map(|file_type| file_type.is_file())
+            .unwrap_or(false)
+        {
             continue;
         }
+        let filename = entry.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        // This directory is framework-owned and dev client outputs are flat
+        // JavaScript files. Leave directories and any unrelated file type
+        // alone rather than broadening the prune boundary.
+        if Path::new(filename).extension().and_then(|ext| ext.to_str()) != Some("js")
+            || previous.contains(filename)
+            || current.contains(filename)
+        {
+            continue;
+        }
+        let stale_path = entry.path();
         if let Err(error) = std::fs::remove_file(&stale_path) {
             output::warn(format!(
                 "client-scripts dev: failed to prune stale file {}: {error}",
@@ -6040,16 +6071,15 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         );
     }
 
-    // Prune stale entry and worker outputs before writing. Because the set is
-    // filename-based, removing a Worker constructor prunes its stable
-    // companion even while the owning client entry remains present.
-    let mut any_changed = prune_dev_client_script_outputs(
-        &client_dir,
-        prev_output_filenames,
-        &current_output_filenames,
-    );
-
     if entries.is_empty() {
+        // Keep the immediately previous active set for one generation. Any
+        // older retained extras can be removed now because already-published
+        // HTML can name only `prev_output_filenames`.
+        let any_changed = prune_unretained_dev_client_script_outputs(
+            &client_dir,
+            prev_output_filenames,
+            &current_output_filenames,
+        );
         return Ok(DevClientScriptsOutcome {
             changed: any_changed,
             output_filenames: current_output_filenames,
@@ -6203,6 +6233,7 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
         .unwrap_or(&empty_workers);
     let mut emitted_companions: std::collections::BTreeMap<String, Vec<u8>> =
         std::collections::BTreeMap::new();
+    let mut any_changed = false;
     for entry in bundle_entries {
         let workers = workers_by_entry
             .get(&entry.entry_name)
@@ -6250,6 +6281,18 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
             emitted_companions.insert(companion.filename, companion.bytes);
         }
     }
+
+    // Publish current entry and worker files before pruning. The immediately
+    // previous active set remains servable through the page-write boundary;
+    // only files that are absent from both the previous and current active
+    // sets are older retained extras and safe to remove. Delaying this until
+    // every bundle/write succeeds also leaves the previous generation intact
+    // when a rebuild errors partway through.
+    any_changed |= prune_unretained_dev_client_script_outputs(
+        &client_dir,
+        prev_output_filenames,
+        &current_output_filenames,
+    );
 
     Ok(DevClientScriptsOutcome {
         changed: any_changed,
@@ -14361,7 +14404,71 @@ mod tests {
     }
 
     #[test]
-    fn client_script_worker_importer_removal_plans_rebuild_and_prunes_on_second_tick() {
+    fn removed_client_entry_is_retained_for_one_generation_then_pruned() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        let entry_source = root.join("pages/widget.client.ts");
+        std::fs::write(&entry_source, "console.log('widget');\n").unwrap();
+        let assets_root = root.join("dev-assets");
+        let registered = zfb_build::ClientEntryList::new();
+
+        let first = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &std::collections::HashSet::new(),
+            &registered,
+        )
+        .unwrap();
+        let client_dir = assets_root
+            .join(zfb_types::DIST_ASSETS_DIR)
+            .join(zfb_types::DIST_CLIENT_SCRIPTS_DIR);
+        let entry_output = client_dir.join("widget.js");
+        assert!(first.output_filenames.contains("widget.js"));
+        assert!(entry_output.exists());
+
+        std::fs::remove_file(entry_source).unwrap();
+        let second = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &first.output_filenames,
+            &registered,
+        )
+        .unwrap();
+        assert!(
+            second.output_filenames.is_empty(),
+            "publication state reports only the current declared set"
+        );
+        assert!(
+            entry_output.exists(),
+            "the removed entry remains servable through the transition generation"
+        );
+
+        let third = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &second.output_filenames,
+            &registered,
+        )
+        .unwrap();
+        assert!(
+            third.changed,
+            "pruning the retained entry is an asset change"
+        );
+        assert!(
+            !entry_output.exists(),
+            "the entry is pruned once no served generation can declare it"
+        );
+    }
+
+    #[test]
+    fn client_script_worker_importer_removal_retains_then_prunes_companion() {
         struct PlanOnlyPipeline;
 
         impl zfb_build::AssetPipeline for PlanOnlyPipeline {
@@ -14458,13 +14565,16 @@ mod tests {
         let second_outputs = second_outcome.output_filenames;
         let second_raw = second_outcome.raw_targets;
         let second_worker_targets = second_outcome.worker_targets;
-        assert!(second_changed, "stale worker pruning is an asset change");
+        assert!(
+            second_changed,
+            "removing the constructor changes the current entry bundle bytes"
+        );
         assert!(second_raw.is_empty());
         assert!(second_worker_targets.is_empty());
         assert!(!second_outputs.contains(&worker_filename));
         assert!(
-            !worker_output.exists(),
-            "stale worker companion must be pruned"
+            worker_output.exists(),
+            "stale worker companion must remain servable for the transition generation"
         );
 
         // Replacing the registry after the successful second tick prevents
@@ -14472,6 +14582,24 @@ mod tests {
         invalidation.replace_client_script_workers(second_worker_targets);
         let settled = orchestrator.plan_for_changes([importer]);
         assert!(!settled.rerun_client_scripts);
+
+        let third_outcome = build_dev_client_scripts_to_disk(
+            root,
+            &assets_root,
+            crate::config::Framework::Preact,
+            None,
+            &second_outputs,
+            &registered,
+        )
+        .unwrap();
+        assert!(
+            third_outcome.changed,
+            "pruning the retained worker companion is an asset change"
+        );
+        assert!(
+            !worker_output.exists(),
+            "worker companion is pruned after its one-generation retention"
+        );
     }
 
     #[cfg(unix)]
