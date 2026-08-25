@@ -62,6 +62,10 @@ use crate::plan::{PageSelection, RebuildPlan};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DocumentPublicationEvent {
     Begin,
+    /// Register every currently stale document that still has an on-disk
+    /// fallback before an ordinary publication commit decides retention.
+    /// The pipeline emits this while holding the tick/request exclusion.
+    SnapshotLazyFallbacks(Vec<PathBuf>),
     DocumentMutationStarted,
     DocumentWriteStarted(PathBuf),
     DocumentWriteCompleted(PathBuf),
@@ -80,6 +84,10 @@ pub enum DocumentPublicationEvent {
 
 /// Command-layer bridge for the server-owned publication state.
 pub type DocumentPublicationHook = Arc<dyn Fn(DocumentPublicationEvent) + Send + Sync>;
+
+/// Snapshot of the render session's complete stale map, already mapped to
+/// exact absolute on-disk fallback document paths.
+pub type LazyFallbackProbe = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 
 /// Ensures every begun publication transaction reaches either its explicit
 /// hydration boundary or the conservative failure phase on early return.
@@ -552,6 +560,7 @@ pub struct DevAssetPipeline {
     /// flag into [`BuildOutcome::dynamic_injected_restaled`]. `None`
     /// (tests, production-shaped callers) leaves the field `false`.
     dynamic_injected_probe: Option<DynamicInjectedProbe>,
+    lazy_fallback_probe: Option<LazyFallbackProbe>,
     document_publication_hook: Option<DocumentPublicationHook>,
 }
 
@@ -570,6 +579,10 @@ impl std::fmt::Debug for DevAssetPipeline {
             .field(
                 "dynamic_injected_probe",
                 &self.dynamic_injected_probe.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "lazy_fallback_probe",
+                &self.lazy_fallback_probe.as_ref().map(|_| "<callback>"),
             )
             .field(
                 "document_publication_hook",
@@ -596,6 +609,7 @@ impl DevAssetPipeline {
             stale_probe: Some(probe),
             ssr_publish_probe: None,
             dynamic_injected_probe: None,
+            lazy_fallback_probe: None,
             document_publication_hook: None,
         }
     }
@@ -618,6 +632,14 @@ impl DevAssetPipeline {
     /// independent signals drained side by side.
     pub fn with_dynamic_injected_probe(mut self, probe: DynamicInjectedProbe) -> Self {
         self.dynamic_injected_probe = Some(probe);
+        self
+    }
+
+    /// Attach the complete stale-document snapshot used immediately before
+    /// an ordinary hydration publication commit. The probe runs under the
+    /// same tick/request exclusion as the commit and request finalizers.
+    pub fn with_lazy_fallback_probe(mut self, probe: LazyFallbackProbe) -> Self {
+        self.lazy_fallback_probe = Some(probe);
         self
     }
 
@@ -1190,6 +1212,11 @@ impl AssetPipeline for DevAssetPipeline {
         // outcome probes have not started. A later CSS/probe failure must not
         // roll back a document/entry generation that is already observable.
         if publication_relevant {
+            if let (Some(probe), Some(hook)) =
+                (&self.lazy_fallback_probe, &self.document_publication_hook)
+            {
+                hook(DocumentPublicationEvent::SnapshotLazyFallbacks(probe()));
+            }
             let event = if has_document_writes {
                 DocumentPublicationEvent::CommitPublished
             } else {
@@ -1408,6 +1435,7 @@ mod tests {
             DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
                 hook_events.lock().unwrap().push(match event {
                     DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::SnapshotLazyFallbacks(_) => "snapshot",
                     DocumentPublicationEvent::DocumentMutationStarted => "mutation",
                     DocumentPublicationEvent::DocumentWriteStarted(_) => "write-start",
                     DocumentPublicationEvent::DocumentWriteCompleted(_) => "write-complete",
@@ -1468,6 +1496,50 @@ mod tests {
                 "commit",
                 "css"
             ]
+        );
+    }
+
+    #[test]
+    fn complete_lazy_fallback_snapshot_precedes_ordinary_commit() {
+        let dir = tempdir().unwrap();
+        let fallback = dir.path().join("injected/existing.html");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let probe_events = Arc::clone(&events);
+        let hook_events = Arc::clone(&events);
+        let fallback_for_probe = fallback.clone();
+        let pipeline = DevAssetPipeline::new()
+            .with_lazy_fallback_probe(Arc::new(move || {
+                probe_events.lock().unwrap().push("probe");
+                vec![fallback_for_probe.clone()]
+            }))
+            .with_document_publication_hook(Arc::new(move |event| {
+                let label = match event {
+                    DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::SnapshotLazyFallbacks(paths) => {
+                        assert_eq!(paths, vec![fallback.clone()]);
+                        "snapshot"
+                    }
+                    DocumentPublicationEvent::CommitEntriesOnly => "commit",
+                    _ => "unexpected",
+                };
+                hook_events.lock().unwrap().push(label);
+            }));
+        let mut plan = RebuildPlan::empty();
+        plan.rerun_client_scripts = true;
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(|_, _| Ok(Vec::new())),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+
+        pipeline.apply(&plan, &ctx).unwrap();
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["begin", "probe", "snapshot", "commit"]
         );
     }
 

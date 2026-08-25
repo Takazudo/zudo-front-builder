@@ -1620,6 +1620,13 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         .begin_document_update();
                     return;
                 }
+                DocumentPublicationEvent::SnapshotLazyFallbacks(paths) => {
+                    obligations
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .record_lazy_outputs(paths.iter().cloned());
+                    return;
+                }
                 DocumentPublicationEvent::DocumentMutationStarted => return,
                 DocumentPublicationEvent::DocumentWriteStarted(path) => {
                     obligations
@@ -1794,6 +1801,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     return;
                 }
                 DocumentPublicationEvent::Begin
+                | DocumentPublicationEvent::SnapshotLazyFallbacks(_)
                 | DocumentPublicationEvent::DocumentMutationStarted
                 | DocumentPublicationEvent::DocumentWriteStarted(_)
                 | DocumentPublicationEvent::DocumentWriteCompleted(_)
@@ -1895,6 +1903,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             let probe_session = session.clone();
             let ssr_probe_session = session.clone();
             let dynamic_injected_probe_session = session.clone();
+            let lazy_fallback_probe_session = session.clone();
+            let lazy_fallback_root = dev_html_root.clone();
             // Issue #1826 — the SSR-publication signal rides the same
             // per-tick drain discipline as `pages_stale`, on its own
             // probe because SSR routes have no output path to report.
@@ -1919,6 +1929,11 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 dynamic_injected_probe_session
                     .inner
                     .take_dynamic_injected_restaled()
+            }))
+            .with_lazy_fallback_probe(Arc::new(move || {
+                lazy_fallback_probe_session
+                    .inner
+                    .existing_stale_documents(&lazy_fallback_root)
             }))
             .with_document_publication_hook(Arc::clone(&document_publication_hook))
         }
@@ -3938,7 +3953,7 @@ fn rebundle_islands(
             &payload.companions,
         )
         .context("dev islands: invalid entry/companion filename set")?;
-        write_prepared_dev_companions("islands", companion_writes)
+        write_tracked_islands_companions(unresolved_companion_names, &names, companion_writes)
             .context("dev islands: failed to write companion files")?;
         atomic_write(&islands_out_path, &payload.bytes).with_context(|| {
             format!(
@@ -3966,10 +3981,6 @@ fn rebundle_islands(
     *staged_companion_names
         .lock()
         .unwrap_or_else(|p| p.into_inner()) = Some(names.clone());
-    unresolved_companion_names
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .extend(names);
     url_handle
         .write()
         .unwrap_or_else(|p| p.into_inner())
@@ -4604,6 +4615,22 @@ fn write_prepared_dev_companions(
         })?;
     }
     Ok(())
+}
+
+/// Register the complete islands candidate generation before its first disk
+/// write. If a later companion or stable-entry write fails, the publication
+/// abort path can therefore remove every partially emitted hashed file;
+/// deleting a registered name that was never written is harmless.
+fn write_tracked_islands_companions(
+    unresolved_companion_names: &Mutex<HashSet<String>>,
+    names: &HashSet<String>,
+    companion_writes: Vec<PreparedDevCompanion<'_>>,
+) -> anyhow::Result<()> {
+    unresolved_companion_names
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .extend(names.iter().cloned());
+    write_prepared_dev_companions("islands", companion_writes)
 }
 
 /// Prune only stale names from the prior successful generation. A deletion
@@ -5264,6 +5291,30 @@ impl DevRenderInner {
         drained.sort();
         drained.dedup();
         drained
+    }
+
+    /// Snapshot every stale route that still has an observable on-disk
+    /// fallback document. Unlike the per-tick stale buffer this covers all
+    /// producers, including static/dynamic injected routes and future
+    /// out-of-band stale channels. The caller runs this under the pipeline's
+    /// tick/request exclusion immediately before publication commit.
+    fn existing_stale_documents(&self, html_root: &Path) -> Vec<PathBuf> {
+        let relative_paths: Vec<PathBuf> = self
+            .stale
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entries
+            .keys()
+            .cloned()
+            .collect();
+        let mut existing: Vec<PathBuf> = relative_paths
+            .into_iter()
+            .map(|path| html_root.join(path))
+            .filter(|path| path.is_file())
+            .collect();
+        existing.sort();
+        existing.dedup();
+        existing
     }
 
     /// Claim a stale route for a request-time render (issue #1025).
@@ -9980,12 +10031,6 @@ fn lazy_render_tick(
     // eager-rendered routes are cleared last — fresh output supersedes
     // any staling from earlier ticks; the two sets are disjoint within
     // this tick.
-    if let Some(obligations) = obligations {
-        obligations
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .record_lazy_outputs(stale.iter().map(|path| dist_dir.join(path)));
-    }
     session.inner.mark_stale(stale);
     session.inner.clear_stale(&rendered_paths);
 
@@ -10502,6 +10547,60 @@ mod tests {
         assert!(obligations.retain_lazy_dependencies());
         assert!(!obligations.publication_retention(false));
         assert!(!obligations.retain_lazy_dependencies());
+    }
+
+    #[cfg(feature = "embed_v8")]
+    #[test]
+    fn complete_stale_snapshot_registers_only_existing_fallbacks_and_drains_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        let html_root = dir.path().join("dev-pages");
+        let dynamic = PathBuf::from("preset/dynamic.html");
+        let static_injected = PathBuf::from("preset/static.html");
+        let external = PathBuf::from("external/channel.html");
+        let first_render = PathBuf::from("new/no-fallback.html");
+        for relative in [&dynamic, &static_injected, &external] {
+            let path = html_root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"old fallback").unwrap();
+        }
+        let inner = stub_dev_inner(HashMap::new(), Vec::new());
+        // Exercise the dynamic-injected channel, which deliberately never
+        // enters the per-tick stale buffer.
+        inner.note_dynamic_injected(&dynamic);
+        inner.restale_dynamic_injected();
+        // Static injected seeds use the ordinary tick-side marker.
+        inner.mark_stale([static_injected.clone(), first_render.clone()]);
+        // Model a future/out-of-band producer that writes only the canonical
+        // stale map: the snapshot must not depend on today's producer list.
+        {
+            let mut stale = inner.stale.lock().unwrap();
+            let generation = stale.generation;
+            stale.entries.insert(external.clone(), generation);
+        }
+
+        let snapshot = inner.existing_stale_documents(&html_root);
+
+        assert_eq!(
+            snapshot,
+            vec![
+                html_root.join(&external),
+                html_root.join(&dynamic),
+                html_root.join(&static_injected),
+            ],
+            "the complete stale map is authoritative, independent of which channel marked it",
+        );
+        assert!(
+            !snapshot.contains(&html_root.join(first_render)),
+            "a first-render route without fallback bytes must not retain old dependencies",
+        );
+
+        let mut obligations = DocumentObligations::default();
+        obligations.record_lazy_outputs(snapshot.clone());
+        assert!(obligations.publication_retention(false));
+        assert!(!obligations.resolve_lazy_request_path(&snapshot[0]));
+        assert!(!obligations.resolve_lazy_request_path(&snapshot[1]));
+        assert!(obligations.resolve_lazy_request_path(&snapshot[2]));
+        assert!(obligations.publication_retention(true));
     }
 
     // -----------------------------------------------------------------
@@ -15739,6 +15838,50 @@ mod tests {
             std::fs::read_dir(&assets).unwrap().count(),
             0,
             "the complete filename set must validate before any companion write"
+        );
+    }
+
+    #[test]
+    fn failed_islands_companion_generation_is_tracked_before_writes_and_abort_prunes_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let assets = dir.path().to_path_buf();
+        let live_name = "islands-chunk-LIVE0000.js";
+        let first_name = "islands-chunk-CAND0001.js";
+        let failing_name = "islands-chunk-CAND0002.js";
+        std::fs::write(assets.join(live_name), b"live generation").unwrap();
+        // Validation accepts this contained destination, but atomic replacement
+        // of a directory fails after the preceding companion has landed.
+        std::fs::create_dir(assets.join(failing_name)).unwrap();
+        let companions = vec![
+            make_companion(first_name, b"partial candidate"),
+            make_companion(failing_name, b"must fail"),
+        ];
+        let (names, writes) = prepare_dev_companion_writes(
+            "islands",
+            &assets,
+            zfb_types::STABLE_ISLANDS_FILENAME,
+            &companions,
+        )
+        .unwrap();
+        let unresolved = Mutex::new(HashSet::new());
+
+        assert!(write_tracked_islands_companions(&unresolved, &names, writes).is_err());
+        assert_eq!(*unresolved.lock().unwrap(), names);
+        assert_eq!(
+            std::fs::read(assets.join(first_name)).unwrap(),
+            b"partial candidate",
+            "the seam must fail after at least one candidate write",
+        );
+
+        let live = HashSet::from([live_name.to_string()]);
+        let candidates = std::mem::take(&mut *unresolved.lock().unwrap());
+        prune_dev_companions("islands", &assets, &candidates, &live);
+
+        assert!(!assets.join(first_name).exists());
+        assert_eq!(
+            std::fs::read(assets.join(live_name)).unwrap(),
+            b"live generation",
+            "abort cleanup must never delete the committed generation",
         );
     }
 
