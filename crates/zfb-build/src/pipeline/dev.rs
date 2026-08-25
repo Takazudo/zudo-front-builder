@@ -58,6 +58,65 @@ use crate::pipeline::{
 };
 use crate::plan::{PageSelection, RebuildPlan};
 
+/// One coherent Dev document/entry publication transaction boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DocumentPublicationEvent {
+    Begin,
+    CommitPublished,
+    CommitReadyOnRequest,
+    CommitNotExpected,
+    CommitEntriesOnly,
+    AbortBeforeDocumentWrite,
+    LeavePending,
+}
+
+/// Command-layer bridge for the server-owned publication state.
+pub type DocumentPublicationHook = Arc<dyn Fn(DocumentPublicationEvent) + Send + Sync>;
+
+/// Ensures every begun publication transaction reaches either its explicit
+/// hydration boundary or the conservative failure phase on early return.
+struct DocumentPublicationTransaction<'a> {
+    hook: Option<&'a DocumentPublicationHook>,
+    fallback: Option<DocumentPublicationEvent>,
+}
+
+impl<'a> DocumentPublicationTransaction<'a> {
+    fn begin(
+        hook: Option<&'a DocumentPublicationHook>,
+        publication_relevant: bool,
+        has_document_writes: bool,
+    ) -> Self {
+        if publication_relevant {
+            if let Some(hook) = hook {
+                hook(DocumentPublicationEvent::Begin);
+            }
+        }
+        Self {
+            hook,
+            fallback: publication_relevant.then_some(if has_document_writes {
+                DocumentPublicationEvent::LeavePending
+            } else {
+                DocumentPublicationEvent::AbortBeforeDocumentWrite
+            }),
+        }
+    }
+
+    fn commit(&mut self, event: DocumentPublicationEvent) {
+        self.fallback = None;
+        if let Some(hook) = self.hook {
+            hook(event);
+        }
+    }
+}
+
+impl Drop for DocumentPublicationTransaction<'_> {
+    fn drop(&mut self) {
+        if let (Some(hook), Some(event)) = (self.hook, self.fallback) {
+            hook(event);
+        }
+    }
+}
+
 // ── Internal write/dedup component ──────────────────────────────────────────
 
 /// Result of a single [`WriteCache::write_page`] call.
@@ -440,6 +499,7 @@ pub struct DevAssetPipeline {
     /// flag into [`BuildOutcome::dynamic_injected_restaled`]. `None`
     /// (tests, production-shaped callers) leaves the field `false`.
     dynamic_injected_probe: Option<DynamicInjectedProbe>,
+    document_publication_hook: Option<DocumentPublicationHook>,
 }
 
 impl std::fmt::Debug for DevAssetPipeline {
@@ -457,6 +517,13 @@ impl std::fmt::Debug for DevAssetPipeline {
             .field(
                 "dynamic_injected_probe",
                 &self.dynamic_injected_probe.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "document_publication_hook",
+                &self
+                    .document_publication_hook
+                    .as_ref()
+                    .map(|_| "<callback>"),
             )
             .finish()
     }
@@ -476,6 +543,7 @@ impl DevAssetPipeline {
             stale_probe: Some(probe),
             ssr_publish_probe: None,
             dynamic_injected_probe: None,
+            document_publication_hook: None,
         }
     }
 
@@ -497,6 +565,12 @@ impl DevAssetPipeline {
     /// independent signals drained side by side.
     pub fn with_dynamic_injected_probe(mut self, probe: DynamicInjectedProbe) -> Self {
         self.dynamic_injected_probe = Some(probe);
+        self
+    }
+
+    /// Attach the one-lock document/entry publication transaction bridge.
+    pub fn with_document_publication_hook(mut self, hook: DocumentPublicationHook) -> Self {
+        self.document_publication_hook = Some(hook);
         self
     }
 
@@ -639,6 +713,19 @@ impl RequestWriter {
 
 impl AssetPipeline for DevAssetPipeline {
     fn apply(&self, plan: &RebuildPlan, ctx: &BuildContext) -> Result<BuildOutcome> {
+        let has_document_writes = match &plan.pages {
+            PageSelection::Specific(pages) => !pages.is_empty(),
+            PageSelection::All => true,
+        };
+        let publication_relevant = has_document_writes
+            || plan.rerun_islands
+            || plan.rerun_client_scripts
+            || plan.ssr_reload_needed;
+        let mut publication = DocumentPublicationTransaction::begin(
+            self.document_publication_hook.as_ref(),
+            publication_relevant,
+            has_document_writes,
+        );
         // Tick-vs-request exclusion (#727 / #804 / #1024): hold the
         // pipeline-wide lock for the WHOLE tick so no request-time write
         // can interleave with the render fan-out or the deferred-prune
@@ -677,6 +764,25 @@ impl AssetPipeline for DevAssetPipeline {
                 outcome.client_scripts_changed = run()?;
                 if dev_timing_enabled() {
                     eprintln!("{}", format_tick_client_scripts_published_line());
+                }
+            }
+        }
+
+        // Islands publish before renderer refresh and page writes for the same
+        // addition-side reason as client scripts. The command-layer publisher
+        // stages the already-written entry in the one-lock state, so a page
+        // request racing the later write loop can inject the candidate entry
+        // while readiness remains false. Removal keeps the committed entry and
+        // companions until the document transaction commits.
+        if plan.rerun_islands {
+            outcome.islands_rerun = true;
+            if let Some(run) = &ctx.run_islands {
+                if let Some(info) = run()? {
+                    outcome.islands_changed = info.changed;
+                    outcome.islands_bundle = Some(info);
+                    if dev_timing_enabled() {
+                        eprintln!("{}", format_tick_islands_published_line());
+                    }
                 }
             }
         }
@@ -963,6 +1069,19 @@ impl AssetPipeline for DevAssetPipeline {
             }
         }
 
+        // This is the hydration publication boundary: all selected document
+        // writes and both prune halves have completed, while unrelated CSS and
+        // outcome probes have not started. A later CSS/probe failure must not
+        // roll back a document/entry generation that is already observable.
+        if publication_relevant {
+            let event = if has_document_writes {
+                DocumentPublicationEvent::CommitPublished
+            } else {
+                DocumentPublicationEvent::CommitEntriesOnly
+            };
+            publication.commit(event);
+        }
+
         // 2. CSS.
         if plan.rerun_css {
             outcome.css_rerun = true;
@@ -971,21 +1090,7 @@ impl AssetPipeline for DevAssetPipeline {
             }
         }
 
-        // 3. Islands.
-        if plan.rerun_islands {
-            outcome.islands_rerun = true;
-            if let Some(run) = &ctx.run_islands {
-                if let Some(info) = run()? {
-                    outcome.islands_changed = info.changed;
-                    outcome.islands_bundle = Some(info);
-                    if dev_timing_enabled() {
-                        eprintln!("{}", format_tick_islands_published_line());
-                    }
-                }
-            }
-        }
-
-        // 4. Stale routes (issue #1025 — lazy dev render). Drain the
+        // 3. Stale routes (issue #1025 — lazy dev render). Drain the
         // renderer's per-tick stale buffer into the outcome. The render
         // callback (and the reloader's route-table/stale-state updates)
         // completed above, so by construction the staleness map already
@@ -995,7 +1100,7 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.pages_stale = probe();
         }
 
-        // 5. SSR route publication (issue #1826 — Dev Self Heal epic
+        // 4. SSR route publication (issue #1826 — Dev Self Heal epic
         // #1999). Drained beside the stale buffer for the same reason and
         // at the same point: an SSR route has no `dist/` output path, so
         // it can never show up in `pages_stale`, and without this bit an
@@ -1006,7 +1111,7 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.ssr_routes_published = probe();
         }
 
-        // 6. Dynamic injected route re-staling (issue #2097 — MDX Reload
+        // 5. Dynamic injected route re-staling (issue #2097 — MDX Reload
         // Fix epic #2092). Drained beside the two probes above, for the
         // same structural reason: a dynamic injected route is re-staled
         // through a channel that performs no `tick_stale` push, so it can
@@ -1172,6 +1277,134 @@ mod tests {
             *events.lock().unwrap(),
             vec!["client-published", "page-rendered"]
         );
+    }
+
+    #[test]
+    fn islands_and_clients_precede_pages_and_commit_precedes_css_failure() {
+        let dir = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_events = Arc::clone(&events);
+        let client_events = Arc::clone(&events);
+        let islands_events = Arc::clone(&events);
+        let render_events = Arc::clone(&events);
+        let css_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(match event {
+                    DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::CommitPublished => "commit",
+                    DocumentPublicationEvent::CommitReadyOnRequest
+                    | DocumentPublicationEvent::CommitNotExpected
+                    | DocumentPublicationEvent::CommitEntriesOnly => "other-commit",
+                    DocumentPublicationEvent::AbortBeforeDocumentWrite => "abort",
+                    DocumentPublicationEvent::LeavePending => "pending",
+                });
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            run_client_scripts: Some(Arc::new(move || {
+                client_events.lock().unwrap().push("client");
+                Ok(true)
+            })),
+            run_islands: Some(Arc::new(move || {
+                islands_events.lock().unwrap().push("islands");
+                Ok(Some(crate::pipeline::IslandsBundleInfo {
+                    changed: true,
+                    bundle_url: "/assets/islands.js".into(),
+                    components: Vec::new(),
+                }))
+            })),
+            render_pages: Arc::new(move |_, _| {
+                render_events.lock().unwrap().push("render");
+                Ok(vec![RenderedPage {
+                    page: pid("/pages/index.tsx"),
+                    output_path: RelDistPath::new("index.html").unwrap(),
+                    html: "<main>ready</main>".into(),
+                    content_type: None,
+                }])
+            }),
+            run_css: Some(Arc::new(move || {
+                css_events.lock().unwrap().push("css");
+                anyhow::bail!("css failed after document publication")
+            })),
+            reload_renderer: None,
+        };
+        let mut plan = client_script_page_plan();
+        plan.rerun_islands = true;
+        plan.rerun_css = true;
+
+        assert!(pipeline.apply(&plan, &ctx).is_err());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["begin", "client", "islands", "render", "commit", "css"]
+        );
+    }
+
+    #[test]
+    fn render_failure_leaves_document_transaction_pending() {
+        let dir = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let hook_events = Arc::clone(&events);
+        let render_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(match event {
+                    DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::LeavePending => "pending",
+                    _ => "unexpected",
+                });
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_, _| {
+                render_events.lock().unwrap().push("render");
+                anyhow::bail!("render failed")
+            }),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+
+        assert!(pipeline.apply(&client_script_page_plan(), &ctx).is_err());
+        assert_eq!(*events.lock().unwrap(), vec!["begin", "render", "pending"]);
+    }
+
+    #[test]
+    fn islands_failure_prevents_document_render_and_leaves_transaction_pending() {
+        let dir = tempdir().unwrap();
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let hook_events = Arc::clone(&events);
+        let islands_events = Arc::clone(&events);
+        let render_events = Arc::clone(&events);
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                hook_events.lock().unwrap().push(match event {
+                    DocumentPublicationEvent::Begin => "begin",
+                    DocumentPublicationEvent::LeavePending => "pending",
+                    _ => "unexpected",
+                });
+            }));
+        let ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_, _| {
+                render_events.lock().unwrap().push("render");
+                Ok(Vec::new())
+            }),
+            run_css: None,
+            run_islands: Some(Arc::new(move || {
+                islands_events.lock().unwrap().push("islands");
+                anyhow::bail!("islands failed")
+            })),
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+        let mut plan = client_script_page_plan();
+        plan.rerun_client_scripts = false;
+        plan.rerun_islands = true;
+
+        assert!(pipeline.apply(&plan, &ctx).is_err());
+        assert_eq!(*events.lock().unwrap(), vec!["begin", "islands", "pending"]);
     }
 
     #[test]
