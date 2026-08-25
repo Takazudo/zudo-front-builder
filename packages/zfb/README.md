@@ -198,6 +198,32 @@ schedules before a swap, and `unmountIslands(root, incomingBody)` runs
 framework cleanup for discarded islands while preserving matching
 `data-zfb-transition-persist` islands.
 
+### Post-mount marker
+
+The runtime writes `data-zfb-island-mounted` after the generated `mount()` function
+returns. It applies to both hydrated `data-zfb-island` markers and SSR-skip
+`data-zfb-island-skip-ssr` markers. Consumers can gate pre-hydration styling before the
+runtime's mount function returns, with the practical CSS selector:
+
+```css
+[data-zfb-island]:not([data-zfb-island-mounted]) {
+  opacity: 0.7;
+}
+```
+
+This means **"the runtime called the mount function and it returned"**, not **"the
+component is interactive"**. React's `hydrateRoot` is internally concurrent, and the
+generated `mount()` can silently no-op, so the attribute is a lifecycle signal rather
+than proof that interaction is ready.
+
+The marker is removed when an island is unmounted. During a body swap, an unchanged
+`data-zfb-transition-persist` island keeps its mounted instance and marker when the
+same id exists in the incoming body; a discarded island has its marker cleared and is
+mounted again from the incoming markup. A props-changed persisted island loses the
+marker while its old instance is torn down and receives it again after the forced
+remount returns. A fresh runtime module strips stale markers from elements it has not
+mounted before, then writes its own marker after mounting.
+
 ## Markdown / GFM config
 
 `ZfbConfig.markdown.gfm` controls which GitHub-Flavored-Markdown

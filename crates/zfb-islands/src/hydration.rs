@@ -267,6 +267,9 @@ pub enum IslandSkeletonRewriteError {
 /// [`HtmlTree::parse`] once before the render pipeline and pass the same
 /// handle to all subsequent helpers.
 ///
+/// **Dormant emitter note:** This is not the live SSR path. The live SSR island
+/// emitter is `packages/zfb/src/island.ts`.
+///
 /// ## Implementation note — single-pass strategy
 ///
 /// Island markers are HTML comments (`<!--zfb-island:KEY-->`). The old
@@ -489,6 +492,9 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// inserted. The existing `data-when` attribute (set by the wrapper) is
 /// preserved.
 ///
+/// **Dormant emitter note:** This is not the live SSR path. The live SSR island
+/// emitter is `packages/zfb/src/island.ts`.
+///
 /// # Errors
 ///
 /// - [`IslandSkeletonRewriteError::CountMismatch`] if the parser finds a
@@ -676,6 +682,9 @@ pub fn inject_runtime_script_into_head(tree: &mut HtmlTree, runtime_url: &str) -
 
 /// Build the `<div data-zfb-island="…" …>…</div>` wrapper for a single
 /// island. Internal helper; tests cover the attribute-escaping rules.
+///
+/// **Dormant emitter note:** This is not the live SSR path. The live SSR island
+/// emitter is `packages/zfb/src/island.ts`.
 ///
 /// The `props` field is serialised to a JSON string here; this is the
 /// single point where the `serde_json::Value` is converted to a string

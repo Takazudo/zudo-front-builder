@@ -320,6 +320,38 @@ const PERSIST_ATTR = "data-zfb-transition-persist";
 // string). Consumed by clearMountedForRemount(). See #1389.
 const ISLAND_REMOUNT_ATTR = "data-zfb-island-remount";
 
+/**
+ * Public DOM signal written after an island's mount function returns.
+ *
+ * State table (the marker is observational only and is never a mount guard):
+ *
+ * - initial: absent; `mountIslands` / `mountNewIslands` strip a marker that is
+ *   stale relative to this module instance's `mounted` map before scheduling.
+ * - deferred idle / visible / media: absent while the scheduler is waiting.
+ * - importing: absent while the URL module is in `pending`.
+ * - mounted via URL: `scheduleMount`'s URL success handler writes it only after
+ *   `fn(propsForMount, element, mode)` returns, alongside the `mounted` entry.
+ * - mounted via inline module: `fireInlineMount` writes it only after
+ *   `fn(props, element, mode)` returns, alongside the `mounted` entry.
+ * - missing manifest entry: absent; `scheduleMount` returns without writing.
+ * - no `mount` export: absent; both manifest paths return without writing.
+ * - synchronous mount throw: absent; the `mounted` entry is not written, so a
+ *   later walk can retry the element.
+ * - rejected import: absent; the URL rejection handler clears `pending` and
+ *   any defensive `mounted` entry.
+ * - detached during import: absent; the URL success handler clears `pending`
+ *   and returns before calling mount.
+ * - unmounted (discarded): `unmountIslands` clears the marker and `mounted`
+ *   entry in `finally`, even when the unmount thunk throws.
+ * - unmounted (persisted-lifted): retained together with the `mounted` entry;
+ *   `unmountIslands` skips elements whose persist id exists in the incoming body.
+ * - props-changed remount: `clearMountedForRemount` clears the marker and map
+ *   entry in `finally`, then the forced mount writes it again after mount returns.
+ * - dev hot-swap over a marked DOM: a fresh module's `mountIslands` strips the
+ *   stale marker before scheduling, then writes it after its own mount returns.
+ */
+export const ISLAND_MOUNTED_ATTR = "data-zfb-island-mounted";
+
 // WeakMap<Element, unmount thunk> — replaces the old WeakSet.
 // Value is a per-element function that calls the bundle's unmount(element)
 // (or a noop if the bundle does not expose one). Used by unmountIslands()
@@ -371,6 +403,7 @@ export function mountIslands(manifest: IslandManifest): void {
 
   const ssrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island]");
   for (const el of Array.from(ssrIslands)) {
+    stripStaleMountedMarker(el);
     // Skip the empty-skeleton case left behind when the server-side
     // rewriter has not run yet (data-zfb-island="" with no component
     // name). The hydration emit step is expected to fill this in
@@ -384,6 +417,7 @@ export function mountIslands(manifest: IslandManifest): void {
 
   const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
   for (const el of Array.from(skipSsrIslands)) {
+    stripStaleMountedMarker(el);
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
     warnIfNestedIsland(el, name);
@@ -410,6 +444,7 @@ export function mountNewIslands(): void {
 
   const ssrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island]");
   for (const el of Array.from(ssrIslands)) {
+    stripStaleMountedMarker(el);
     const name = el.getAttribute("data-zfb-island");
     if (!name) continue;
     // A persisted island whose props changed across the body swap is flagged
@@ -423,6 +458,7 @@ export function mountNewIslands(): void {
 
   const skipSsrIslands = document.querySelectorAll<HTMLElement>("[data-zfb-island-skip-ssr]");
   for (const el of Array.from(skipSsrIslands)) {
+    stripStaleMountedMarker(el);
     const name = el.getAttribute("data-zfb-island-skip-ssr");
     if (!name) continue;
     warnIfNestedIsland(el, name);
@@ -465,13 +501,22 @@ function clearMountedForRemount(el: Element): boolean {
 
   const thunk = mounted.get(el);
   if (thunk) {
-    thunk();
-    mounted.delete(el);
-    el.removeAttribute(ISLAND_REMOUNT_ATTR);
+    try {
+      thunk();
+    } finally {
+      mounted.delete(el);
+      el.removeAttribute(ISLAND_MOUNTED_ATTR);
+      el.removeAttribute(ISLAND_REMOUNT_ATTR);
+    }
     return true;
   }
+  el.removeAttribute(ISLAND_MOUNTED_ATTR);
   el.removeAttribute(ISLAND_REMOUNT_ATTR);
   return false;
+}
+
+function stripStaleMountedMarker(el: Element): void {
+  if (!mounted.has(el)) el.removeAttribute(ISLAND_MOUNTED_ATTR);
 }
 
 /**
@@ -635,9 +680,13 @@ function scheduleMount(
           : () => {
               // noop — bundle does not expose unmount
             };
-        mounted.set(element, unmountThunk);
-        pending.delete(element);
-        fn(propsForMount, element, mode);
+        try {
+          fn(propsForMount, element, mode);
+          mounted.set(element, unmountThunk);
+          element.setAttribute(ISLAND_MOUNTED_ATTR, "");
+        } finally {
+          pending.delete(element);
+        }
       },
       (err: unknown) => {
         // Surface the error in dev so the user notices, then clear
@@ -718,8 +767,9 @@ function fireInlineMount(
       : () => {
           // noop — inline module does not expose unmount
         };
-    mounted.set(element, unmountThunk);
     fn(props, element, mode);
+    mounted.set(element, unmountThunk);
+    element.setAttribute(ISLAND_MOUNTED_ATTR, "");
   };
 
   if (mode === "render") {
@@ -789,9 +839,11 @@ export function unmountIslands(
     const persistId = el.getAttribute(PERSIST_ATTR);
     if (persistId !== null && preservedPersistIds.has(persistId)) continue;
     const thunk = mounted.get(el);
-    if (thunk) {
-      thunk();
+    try {
+      thunk?.();
+    } finally {
       mounted.delete(el);
+      el.removeAttribute(ISLAND_MOUNTED_ATTR);
     }
   }
 }

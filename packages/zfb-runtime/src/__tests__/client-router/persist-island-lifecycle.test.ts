@@ -20,7 +20,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // island map (mounted/pending/capturedManifest) is a module-level singleton
 // shared with router.ts, so importing it here exercises the same state the
 // client-router mutates in production.
-import { mountIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";
+import {
+  ISLAND_MOUNTED_ATTR,
+  mountIslands,
+  mountNewIslands,
+  unmountIslands,
+} from "@takazudo/zfb/runtime";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
 
@@ -44,6 +49,7 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
       <div data-zfb-island="Toc" data-props='{"p":1}' data-when="load"></div>
     `;
     const sidebarEl = document.querySelector(`[${PERSIST}="sidebar"]`)!;
+    const tocEl = document.querySelector('[data-zfb-island="Toc"]')!;
     const sidebarMount = vi.fn();
     const sidebarUnmount = vi.fn();
     const tocMount = vi.fn();
@@ -55,6 +61,8 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     });
     expect(sidebarMount).toHaveBeenCalledTimes(1);
     expect(tocMount).toHaveBeenCalledTimes(1);
+    expect(sidebarEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
+    expect(tocEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
 
     // Same persist id + identical props for the sidebar; the Toc props differ but
     // Toc is not persisted, so it is discarded and remounted fresh.
@@ -65,6 +73,10 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
 
     // The exact router sequence.
     unmountIslands(document.body, newBody);
+    // The discarded island is cleaned up immediately, while the matching
+    // persisted island keeps both its mounted entry and its public marker.
+    expect(tocEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(false);
+    expect(sidebarEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
     swapBodyElement(newBody, document.body);
     mountNewIslands();
 
@@ -72,6 +84,7 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     // original element, so all internal Preact/React state rode along with it.
     const sidebarAfter = document.querySelector(`[${PERSIST}="sidebar"]`)!;
     expect(sidebarAfter).toBe(sidebarEl);
+    expect(sidebarAfter.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
     // Its instance was never torn down and never cold-remounted.
     expect(sidebarUnmount).not.toHaveBeenCalled();
     expect(sidebarMount).toHaveBeenCalledTimes(1);
@@ -79,6 +92,9 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     // fresh instance mounted from the incoming markup.
     expect(tocUnmount).toHaveBeenCalledTimes(1);
     expect(tocMount).toHaveBeenCalledTimes(2);
+    expect(
+      document.querySelector('[data-zfb-island="Toc"]')?.hasAttribute(ISLAND_MOUNTED_ATTR),
+    ).toBe(true);
     // Surrounding DOM is the new page.
     expect(document.querySelector('[data-zfb-island="Toc"]')?.getAttribute("data-props")).toBe(
       '{"p":2}',
@@ -90,18 +106,29 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
       <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":1}' data-when="load"></div>
     `;
     const panelEl = document.querySelector(`[${PERSIST}="panel"]`)!;
-    const mount = vi.fn();
-    const unmount = vi.fn();
+    const markerAtMount: boolean[] = [];
+    const mount = vi.fn((_props: Record<string, unknown>, element: Element) => {
+      markerAtMount.push(element.hasAttribute(ISLAND_MOUNTED_ATTR));
+    });
+    const markerAtUnmount: boolean[] = [];
+    const unmount = vi.fn((element: Element) => {
+      markerAtUnmount.push(element.hasAttribute(ISLAND_MOUNTED_ATTR));
+    });
 
     mountIslands({ Panel: { mount, unmount } });
     expect(mount).toHaveBeenCalledTimes(1);
     expect(mount.mock.calls[0]![0]).toEqual({ v: 1 });
+    expect(markerAtMount).toEqual([false]);
+    expect(panelEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
 
     const newBody = incomingBody(`
       <div ${PERSIST}="panel" data-zfb-island="Panel" data-props='{"v":2}' data-when="load"></div>
     `);
 
     unmountIslands(document.body, newBody);
+    // The persisted node remains mounted until mountNewIslands consumes the
+    // swap-functions remount flag.
+    expect(panelEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
     swapBodyElement(newBody, document.body);
 
     // swapBodyElement itself flagged the surviving node for remount and refreshed
@@ -115,6 +142,11 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     expect(unmount).toHaveBeenCalledTimes(1);
     expect(mount).toHaveBeenCalledTimes(2);
     expect(mount.mock.calls[1]![0]).toEqual({ v: 2 });
+    expect(markerAtUnmount).toEqual([true]);
+    // clearMountedForRemount removed the marker before the forced callback;
+    // fireInlineMount re-applied it after the replacement mount returned.
+    expect(markerAtMount).toEqual([false, false]);
+    expect(panelEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
     // Flag consumed → remount fires exactly once; node identity still preserved.
     expect(panelEl.hasAttribute("data-zfb-island-remount")).toBe(false);
     expect(document.querySelector(`[${PERSIST}="panel"]`)).toBe(panelEl);
@@ -150,5 +182,31 @@ describe("persist island lifecycle end-to-end (#1389)", () => {
     // Instance fully preserved: no unmount, no remount.
     expect(unmount).not.toHaveBeenCalled();
     expect(mount).toHaveBeenCalledTimes(1);
+  });
+
+  it("strips a stale mounted marker from incoming markup before mounting the island", () => {
+    // Capture the manifest without mounting anything, so the incoming element
+    // is genuinely unknown to this module instance's mounted map.
+    document.body.innerHTML = "<p>old page</p>";
+    const markerAtMount: boolean[] = [];
+    const mount = vi.fn((_props: Record<string, unknown>, element: Element) => {
+      markerAtMount.push(element.hasAttribute(ISLAND_MOUNTED_ATTR));
+    });
+    mountIslands({ Fresh: { mount } });
+
+    const newBody = incomingBody(
+      `<div data-zfb-island="Fresh" data-zfb-island-mounted data-props='{"fresh":true}'></div>`,
+    );
+    unmountIslands(document.body, newBody);
+    swapBodyElement(newBody, document.body);
+
+    const freshEl = document.querySelector('[data-zfb-island="Fresh"]')!;
+    expect(freshEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
+
+    mountNewIslands();
+
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(markerAtMount).toEqual([false]);
+    expect(freshEl.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
   });
 });

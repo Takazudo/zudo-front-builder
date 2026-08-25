@@ -133,6 +133,34 @@ On builds that include at least one island, **one `<script>` tag** is injected p
 
 The shared islands bundle (`islands-<hash>.js`) contains all island components. It registers each one by the static marker name the scanner discovered (`data-zfb-island` attribute value), then calls `mountIslands()`, which walks every `[data-zfb-island]` element on the page, reads the serialised `data-props`, and calls `hydrate()` on the existing server-rendered DOM.
 
+### Observing mount state
+
+The runtime exposes a post-mount marker, `data-zfb-island-mounted`, on both kinds of island
+element: the hydrated `data-zfb-island` marker and the SSR-skip
+`data-zfb-island-skip-ssr` marker. It appears only after the generated `mount()` function
+returns. A delayed island therefore has no mounted marker while its `data-when` condition is
+waiting, so a consumer can gate its pre-hydration styling with the selector it would write in
+CSS:
+
+```css
+[data-zfb-island]:not([data-zfb-island-mounted]) {
+  opacity: 0.7;
+}
+```
+
+The marker means **"the runtime called the mount function and it returned"**, not **"the
+component is interactive"**. React's `hydrateRoot` is internally concurrent, and the generated
+`mount()` can silently no-op, so this attribute is a runtime lifecycle signal rather than proof
+that event handlers or other interaction are ready.
+
+The marker is removed when an island is unmounted. During the real client-router body-swap
+sequence, an unchanged persisted island keeps its marker and mounted instance when its
+`data-zfb-transition-persist` id is present in the incoming body; a discarded island loses its
+marker and is mounted again from the incoming markup. If a persisted island's props change, the
+runtime removes the marker while it tears down the old instance and adds it again after the
+forced remount returns. A fresh runtime module also strips a stale marker from an element that
+it has not mounted before, then writes its own marker after mounting.
+
 ## Consequences of the shared-bundle model
 
 Because all islands are bundled together into a single file:

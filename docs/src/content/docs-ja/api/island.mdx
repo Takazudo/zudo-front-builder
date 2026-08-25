@@ -24,7 +24,7 @@ export default function Page() {
 }
 ```
 
-SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="visible">` マーカーを発行し、その内側にサーバーレンダリングされた子要素を配置します。生成されるハイドレーション bootstrap は `"@takazudo/zfb/runtime"` から `mountIslands` をインポートし、これらのマーカーを問い合わせ、`when` 条件が発火したときにコンポーネントをマウントします。
+SSR 時、`<Island>` ラッパーは `<div data-zfb-island="Counter" data-when="visible">` マーカーを発行し、その内側にサーバーレンダリングされた子要素を配置します。生成されるハイドレーション bootstrap は `"@takazudo/zfb/runtime"` から `mountIslands` をインポートし、これらのマーカーを問い合わせ、`when` 条件が発火したときにコンポーネントをマウントします。生成された `mount()` 関数が返ると、ランタイムは `data-zfb-island-mounted` マーカーを追加します。
 
 ## IslandProps
 
@@ -77,7 +77,21 @@ export default function Page() {
 }
 ```
 
-サーバーは `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>` を発行します。ハイドレーション時にクライアントランタイムがプレースホルダーへ `HeavyChart` をレンダリングします。
+サーバーは `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>` を発行します。ハイドレーション時にクライアントランタイムがプレースホルダーへ `HeavyChart` をレンダリングし、生成された `mount()` 関数が返った後に、同じ `data-zfb-island-mounted` マーカーを追加します。
+
+## マウント後のマーカー
+
+`data-zfb-island-mounted` は、ハイドレートされるマーカー（`data-zfb-island`）と SSR スキップのマーカー（`data-zfb-island-skip-ssr`）の両方に、ランタイムの `mount()` 関数が返った後にだけ追加されます。このマーカーが意味するのは **「ランタイムがマウント関数を呼び出し、その関数が返った」** ことであり、**「コンポーネントがインタラクティブになった」** ことではありません。React の `hydrateRoot` は内部的に並行処理を行い、生成された `mount()` が何もせず静かに終了する場合もあります。この属性はライフサイクルを示すシグナルとして扱い、インタラクションの準備が整ったことの証明には使わないでください。
+
+利用者は、次のセレクターでハイドレーション前のスタイルを切り替えられます。
+
+```css
+[data-zfb-island]:not([data-zfb-island-mounted]) {
+  opacity: 0.7;
+}
+```
+
+島がアンマウントされると、ランタイムはマーカーを削除します。クライアントルーターのボディスワップでは、変更のない永続化された島は、受信側の `<body>` に同じ `data-zfb-transition-persist` ID があれば、マーカーとマウント済みインスタンスを維持します。破棄される島はマーカーが削除され、受信したマークアップから再びマウントされます。永続化された島の props が変わった場合は、古いインスタンスを破棄する間マーカーが削除され、強制再マウントの `mount()` が返った後に再度追加されます。また、新しいランタイムモジュールは、自身がまだマウントしていない要素に残った古いマーカーを取り除き、自身のマウント後に新しいマーカーを書き込みます。
 
 ## VNode 型のエクスポート
 
@@ -139,6 +153,7 @@ import type { VNode as ZfbVNode } from "@takazudo/zfb";
 
 - `HYDRATE_MARKER_ATTR` — `data-zfb-island` 属性名。
 - `SKIP_SSR_MARKER_ATTR` — `data-zfb-island-skip-ssr` 属性名。
+- `ISLAND_MOUNTED_ATTR` — ランタイムの `mount()` 関数が返った後に書き込まれる `data-zfb-island-mounted` 属性名。
 - `ANONYMOUS_COMPONENT_NAME` — ラップした子要素の素性を特定できないときに使われるフォールバック名。
 - `DEFAULT_WHEN` — デフォルトのハイドレーション戦略（`"load"`）。
 - `WHEN_VALUES` — 有効なハイドレーション戦略の readonly リスト: `"visible"`、`"idle"`、`"load"`、`"media"`。
