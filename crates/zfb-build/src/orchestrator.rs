@@ -1477,7 +1477,8 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
             if self.config.policy.is_islands_dependency(path) {
                 plan.mark_islands();
             }
-            if self.config.policy.is_client_script_raw_target(path)
+            if self.config.policy.is_client_script_candidate(path)
+                || self.config.policy.is_client_script_raw_target(path)
                 || self.config.policy.is_client_script_worker_target(path)
                 || self.config.policy.is_client_script_sibling_target(path)
             {
@@ -3105,6 +3106,36 @@ mod tests {
         assert!(
             !plan.rerun_islands,
             "pages/ file must NOT trigger islands rerun"
+        );
+    }
+
+    /// A removed `pages/*.client.ts` entry is excluded from the ordinary
+    /// change fold because deletion must not trigger the unknown-path
+    /// All-fallback. The explicit Removed fold must nevertheless rerun the
+    /// client-script pass so the vanished entry is removed from the next
+    /// publication generation.
+    #[test]
+    fn removed_client_script_under_pages_sets_rerun_client_scripts() {
+        use zfb_watcher::ChangeKind;
+
+        let pipeline = CountingPipeline::default();
+        let applies = pipeline.applies.clone();
+        let orch = make_orch(pipeline);
+        let dist = tempfile::tempdir().unwrap();
+        let removed = PathBuf::from("/proj/pages/analytics.client.ts");
+
+        orch.tick_with_kinds(
+            vec![(removed, ChangeKind::Removed)],
+            &noop_ctx(dist.path()),
+            None,
+        )
+        .unwrap();
+
+        let plans = applies.lock().unwrap();
+        assert_eq!(plans.len(), 1);
+        assert!(
+            plans[0].rerun_client_scripts,
+            "removing a pages/*.client.ts entry must rerun client scripts"
         );
     }
 
