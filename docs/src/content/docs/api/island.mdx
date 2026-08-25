@@ -24,7 +24,7 @@ export default function Page() {
 }
 ```
 
-At SSR time the `<Island>` wrapper emits a `<div data-zfb-island="Counter" data-when="visible">` marker with the server-rendered child inside. The generated hydration bootstrap imports `mountIslands` from `"@takazudo/zfb/runtime"`, queries these markers, and mounts the component when the `when` condition fires.
+At SSR time the `<Island>` wrapper emits a `<div data-zfb-island="Counter" data-when="visible">` marker with the server-rendered child inside. The generated hydration bootstrap imports `mountIslands` from `"@takazudo/zfb/runtime"`, queries these markers, and mounts the component when the `when` condition fires. After the generated `mount()` function returns, the runtime adds the `data-zfb-island-mounted` marker.
 
 ## IslandProps
 
@@ -77,7 +77,32 @@ export default function Page() {
 }
 ```
 
-The server emits `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>`. On hydration the client runtime renders `HeavyChart` into the placeholder.
+The server emits `<div data-zfb-island-skip-ssr="HeavyChart" data-when="load">…fallback…</div>`. On hydration the client runtime renders `HeavyChart` into the placeholder and adds the same `data-zfb-island-mounted` marker after its generated `mount()` function returns.
+
+## Post-mount marker
+
+`data-zfb-island-mounted` appears on both hydrated (`data-zfb-island`) and SSR-skip
+(`data-zfb-island-skip-ssr`) markers only after the runtime's `mount()` function returns. It
+means **"the runtime called the mount function and it returned"**, not **"the component is
+interactive"**. React's `hydrateRoot` is internally concurrent, and the generated `mount()` can
+silently no-op, so treat this attribute as a lifecycle signal rather than proof that interaction
+is ready.
+
+Use the marker to gate pre-hydration styling with the selector a consumer would write:
+
+```css
+[data-zfb-island]:not([data-zfb-island-mounted]) {
+  opacity: 0.7;
+}
+```
+
+The runtime removes the marker when an island is unmounted. In a client-router body swap, an
+unchanged persisted island keeps its marker and mounted instance when its
+`data-zfb-transition-persist` id is present in the incoming body, while a discarded island has
+its marker cleared and is mounted again from the incoming markup. A props-changed persisted
+island has its marker cleared while the old instance is torn down and gets it back after the
+forced remount returns. A fresh runtime module strips a stale marker from an element it has not
+mounted before, then writes its own marker after mounting.
 
 ## VNode type export
 
@@ -139,6 +164,7 @@ The following are exported from `"@takazudo/zfb"` alongside `Island`:
 
 - `HYDRATE_MARKER_ATTR` — the `data-zfb-island` attribute name.
 - `SKIP_SSR_MARKER_ATTR` — the `data-zfb-island-skip-ssr` attribute name.
+- `ISLAND_MOUNTED_ATTR` — the `data-zfb-island-mounted` attribute name written after the runtime's `mount()` function returns.
 - `ANONYMOUS_COMPONENT_NAME` — fallback name used when a wrapped child's identity cannot be determined.
 - `DEFAULT_WHEN` — the default hydration strategy (`"load"`).
 - `WHEN_VALUES` — the readonly list of valid hydration strategies: `"visible"`, `"idle"`, `"load"`, and `"media"`.
