@@ -123,6 +123,16 @@ impl<'a> DocumentPublicationTransaction<'a> {
         self.fallback = Some(DocumentPublicationEvent::LeavePending);
     }
 
+    /// Record that a framework entry generation has become observable on
+    /// disk. From this point onward, restoring the previous ready snapshot on
+    /// a later cross-kind failure would be dishonest: stable entry bytes may
+    /// already name companions from the staged generation. The command-layer
+    /// hook therefore has to retain that complete generation and leave
+    /// readiness pending until a later document transaction commits it.
+    fn entry_publication_completed(&mut self) {
+        self.document_mutation_started();
+    }
+
     fn document_write_started(&mut self, path: PathBuf) {
         self.document_mutation_started();
         if let Some(hook) = self.hook {
@@ -858,6 +868,9 @@ impl AssetPipeline for DevAssetPipeline {
             outcome.client_scripts_rerun = true;
             if let Some(run) = &ctx.run_client_scripts {
                 outcome.client_scripts_changed = run()?;
+                if outcome.client_scripts_changed {
+                    publication.entry_publication_completed();
+                }
                 if dev_timing_enabled() {
                     eprintln!("{}", format_tick_client_scripts_published_line());
                 }
@@ -875,6 +888,9 @@ impl AssetPipeline for DevAssetPipeline {
             if let Some(run) = &ctx.run_islands {
                 if let Some(info) = run()? {
                     outcome.islands_changed = info.changed;
+                    if info.changed {
+                        publication.entry_publication_completed();
+                    }
                     outcome.islands_bundle = Some(info);
                     if dev_timing_enabled() {
                         eprintln!("{}", format_tick_islands_published_line());
@@ -1277,7 +1293,7 @@ mod tests {
     use crate::pipeline::{RelDistPath, RenderedPage};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -1488,8 +1504,8 @@ mod tests {
             vec![
                 "begin",
                 "client",
-                "islands",
                 "mutation",
+                "islands",
                 "render",
                 "write-start",
                 "write-complete",
@@ -1759,6 +1775,140 @@ mod tests {
 
         assert!(pipeline.apply(&plan, &ctx).is_err());
         assert_eq!(*events.lock().unwrap(), vec!["begin", "islands", "abort"]);
+    }
+
+    #[test]
+    fn client_publication_followed_by_islands_failure_stays_pending_until_repair_commit() {
+        let dir = tempdir().unwrap();
+        let client_dir = dir.path().join("assets/client");
+        let entry = client_dir.join("app.js");
+        let worker = client_dir.join("worker-app.js");
+        std::fs::create_dir_all(&client_dir).unwrap();
+        std::fs::write(&entry, "console.log('old entry');\n").unwrap();
+
+        let ready = Arc::new(AtomicBool::new(true));
+        let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let hook_ready = Arc::clone(&ready);
+        let hook_events = Arc::clone(&events);
+        let abort_worker = worker.clone();
+        let pipeline =
+            DevAssetPipeline::new().with_document_publication_hook(Arc::new(move |event| {
+                let label = match event {
+                    DocumentPublicationEvent::Begin => {
+                        hook_ready.store(false, Ordering::SeqCst);
+                        "begin"
+                    }
+                    DocumentPublicationEvent::DocumentMutationStarted => "mutation",
+                    DocumentPublicationEvent::LeavePending => {
+                        hook_ready.store(false, Ordering::SeqCst);
+                        "pending"
+                    }
+                    DocumentPublicationEvent::AbortBeforeDocumentWrite => {
+                        // Model the command-layer abort cleanup: restoring the
+                        // old ready snapshot also removes newly registered
+                        // companions. Receiving this event after the entry
+                        // write would recreate the broken served generation.
+                        hook_ready.store(true, Ordering::SeqCst);
+                        let _ = std::fs::remove_file(&abort_worker);
+                        "abort"
+                    }
+                    DocumentPublicationEvent::CommitPublished => {
+                        hook_ready.store(true, Ordering::SeqCst);
+                        "commit"
+                    }
+                    DocumentPublicationEvent::SnapshotLazyFallbacks(_) => "snapshot",
+                    DocumentPublicationEvent::DocumentWriteStarted(_) => "write-start",
+                    DocumentPublicationEvent::DocumentWriteCompleted(_) => "write-complete",
+                    DocumentPublicationEvent::DocumentPathsRemoved(_) => "paths-removed",
+                    DocumentPublicationEvent::CommitReadyOnRequest
+                    | DocumentPublicationEvent::CommitLazyRepair
+                    | DocumentPublicationEvent::CommitNotExpected
+                    | DocumentPublicationEvent::CommitEntriesOnly => "other-commit",
+                };
+                hook_events.lock().unwrap().push(label);
+            }));
+
+        let client_events = Arc::clone(&events);
+        let published_entry = entry.clone();
+        let published_worker = worker.clone();
+        let islands_events = Arc::clone(&events);
+        let failed_ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            run_client_scripts: Some(Arc::new(move || {
+                std::fs::write(&published_worker, "self.postMessage('new worker');\n")?;
+                std::fs::write(
+                    &published_entry,
+                    "new Worker(new URL('./worker-app.js', import.meta.url));\n",
+                )?;
+                client_events.lock().unwrap().push("client");
+                Ok(true)
+            })),
+            run_islands: Some(Arc::new(move || {
+                islands_events.lock().unwrap().push("islands");
+                anyhow::bail!("islands failed after client publication")
+            })),
+            render_pages: Arc::new(|_, _| panic!("render must not run after islands failure")),
+            run_css: None,
+            reload_renderer: None,
+        };
+        let mut failed_plan = client_script_page_plan();
+        failed_plan.rerun_islands = true;
+
+        assert!(pipeline.apply(&failed_plan, &failed_ctx).is_err());
+        assert!(
+            !ready.load(Ordering::SeqCst),
+            "a visible client generation must keep readiness pending after a later failure"
+        );
+        assert!(worker.is_file(), "the staged worker must remain servable");
+        assert!(
+            std::fs::read_to_string(&entry)
+                .unwrap()
+                .contains("worker-app.js"),
+            "the staged stable entry and its companion must be retained together"
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["begin", "client", "mutation", "islands", "pending"]
+        );
+
+        events.lock().unwrap().clear();
+        let recovery_events = Arc::clone(&events);
+        let recovery_ctx = BuildContext {
+            dist_root: dir.path().to_path_buf(),
+            render_pages: Arc::new(move |_, _| {
+                recovery_events.lock().unwrap().push("render");
+                Ok(vec![RenderedPage {
+                    page: pid("/pages/index.tsx"),
+                    output_path: RelDistPath::new("index.html").unwrap(),
+                    html: r#"<script src="/assets/client/app.js"></script>"#.into(),
+                    content_type: None,
+                }])
+            }),
+            run_css: None,
+            run_islands: None,
+            run_client_scripts: None,
+            reload_renderer: None,
+        };
+        let mut recovery_plan = client_script_page_plan();
+        recovery_plan.rerun_client_scripts = false;
+
+        pipeline.apply(&recovery_plan, &recovery_ctx).unwrap();
+        assert!(
+            ready.load(Ordering::SeqCst),
+            "the later successful document transaction commits the retained entry generation"
+        );
+        assert!(entry.is_file() && worker.is_file());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                "begin",
+                "mutation",
+                "render",
+                "write-start",
+                "write-complete",
+                "commit"
+            ]
+        );
     }
 
     #[test]

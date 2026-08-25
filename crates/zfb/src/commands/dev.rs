@@ -1075,11 +1075,21 @@ struct DocumentObligations {
     failed_outputs: HashSet<PathBuf>,
     lazy_outputs: HashSet<PathBuf>,
     drained_lazy_retention: bool,
+    /// A client-script commit whose own reverse rollback failed. Unlike an
+    /// ordinary bundle/write error, this can leave stable entry bytes from an
+    /// incomplete generation on disk, so unrelated document successes must
+    /// not restore readiness. Only a later complete client-script publish can
+    /// discharge each exact output obligation. If a later generation removes
+    /// an unsafe output, keep readiness pending: one-generation retention can
+    /// still serve those corrupt bytes to the previously published document.
+    client_publication_uncertain_outputs: HashSet<String>,
 }
 
 impl DocumentObligations {
     fn has_eager_failures(&self) -> bool {
-        !self.failed_sources.is_empty() || !self.failed_outputs.is_empty()
+        !self.failed_sources.is_empty()
+            || !self.failed_outputs.is_empty()
+            || !self.client_publication_uncertain_outputs.is_empty()
     }
 
     fn retain_lazy_dependencies(&self) -> bool {
@@ -1171,6 +1181,18 @@ impl DocumentObligations {
 
     fn start_document_write(&mut self, output: PathBuf) {
         self.failed_outputs.insert(output);
+    }
+
+    fn record_client_publication_rollback_failure(
+        &mut self,
+        outputs: impl IntoIterator<Item = String>,
+    ) {
+        self.client_publication_uncertain_outputs.extend(outputs);
+    }
+
+    fn record_client_publication_success(&mut self, outputs: &HashSet<String>) {
+        self.client_publication_uncertain_outputs
+            .retain(|filename| !outputs.contains(filename));
     }
 }
 
@@ -1742,6 +1764,15 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     publication.commit_entry_update_with_retention(preserve_lazy)
                 }
                 DocumentPublicationEvent::AbortBeforeDocumentWrite => {
+                    if has_eager_failures {
+                        // In particular, an incomplete client-script rollback
+                        // may already have changed a served stable entry. Do
+                        // not restore the prior ready snapshot or delete its
+                        // newly emitted companions; a later successful client
+                        // publish must repair the complete generation first.
+                        publication.leave_document_update_pending();
+                        return;
+                    }
                     publication.abort_document_update_before_write();
                     let restored_previous =
                         !matches!(publication.documents, zfb_server::DocumentSlot::Pending);
@@ -2397,6 +2428,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         &islands_plugin_config,
     ) {
         Ok(outcome) => {
+            document_obligations
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record_client_publication_success(&outcome.output_filenames);
             let published_urls =
                 dev_client_script_urls(&dev_islands_url_prefix, &outcome.output_filenames);
             if let Ok(mut guard) = staged_client_script_outputs.lock() {
@@ -2421,6 +2456,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .stage_client_scripts(published_urls);
         }
         Err(err) => {
+            if let Some(rollback) =
+                err.downcast_ref::<crate::commands::build::DevClientScriptRollbackError>()
+            {
+                document_obligations
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .record_client_publication_rollback_failure(
+                        rollback.uncertain_output_filenames().map(str::to_owned),
+                    );
+            }
             output::warn(format!(
                 "initial client-scripts bundle failed (no client scripts will be served \
                  until the next successful rebuild): {err:#}"
@@ -2452,6 +2497,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let plugin_virtual_module_store_for_cs = plugin_refresh.store().clone();
         let raw_invalidation = raw_import_invalidation.clone();
         let publication_state = Arc::clone(&islands_bundle_url_handle);
+        let obligations = Arc::clone(&document_obligations);
         let url_prefix = dev_islands_url_prefix.clone();
         Some(Arc::new(move || -> Result<bool> {
             let mut prev = output_filenames
@@ -2476,7 +2522,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 virtual_modules: plugin_virtual_module_store_for_cs.snapshot_pairs(),
             };
             let outcome =
-                crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
+                match crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
                     &project_root_for_cs,
                     &dev_assets_root_for_cs,
                     framework,
@@ -2484,7 +2530,28 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     &prev,
                     &registered_for_cs,
                     &plugin_config_for_cs,
-                )?;
+                ) {
+                    Ok(outcome) => {
+                        obligations
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .record_client_publication_success(&outcome.output_filenames);
+                        outcome
+                    }
+                    Err(error) => {
+                        if let Some(rollback) = error
+                            .downcast_ref::<crate::commands::build::DevClientScriptRollbackError>(
+                        ) {
+                            obligations
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .record_client_publication_rollback_failure(
+                                    rollback.uncertain_output_filenames().map(str::to_owned),
+                                );
+                        }
+                        return Err(error);
+                    }
+                };
             let published_urls = dev_client_script_urls(&url_prefix, &outcome.output_filenames);
             let mut guard = staged_output_filenames.lock().unwrap_or_else(|p| {
                 tracing::warn!(
@@ -10547,6 +10614,34 @@ mod tests {
         assert!(obligations.retain_lazy_dependencies());
         assert!(!obligations.publication_retention(false));
         assert!(!obligations.retain_lazy_dependencies());
+    }
+
+    #[test]
+    fn incomplete_client_rollback_requires_a_successful_client_repair() {
+        let mut obligations = DocumentObligations::default();
+        let unrelated = PageId::new(PathBuf::from("pages/unrelated.tsx"));
+        let unrelated_output = PathBuf::from("/dev-pages/unrelated/index.html");
+
+        obligations.record_client_publication_rollback_failure(["alpha.js".to_string()]);
+        assert!(obligations.has_eager_failures());
+
+        obligations.record_source_success(&unrelated, [unrelated_output]);
+        assert!(
+            obligations.has_eager_failures(),
+            "an unrelated document success must not bless a partially rolled-back client generation"
+        );
+
+        obligations.record_client_publication_success(&HashSet::from(["beta.js".to_string()]));
+        assert!(
+            obligations.has_eager_failures(),
+            "a successful generation that omits the unsafe retained output cannot repair it"
+        );
+
+        obligations.record_client_publication_success(&HashSet::from(["alpha.js".to_string()]));
+        assert!(
+            !obligations.has_eager_failures(),
+            "only a complete later publication of the exact unsafe output discharges the obligation"
+        );
     }
 
     #[cfg(feature = "embed_v8")]
