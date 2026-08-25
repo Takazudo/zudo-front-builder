@@ -225,6 +225,22 @@ mod tests {
         assert!(names.contains("AiChat"), "got: {names:?}");
     }
 
+    /// The runtime's post-mount state attribute is not an island marker.
+    /// Keep both near-prefix spellings here so loosening either exact-name
+    /// selector would make this regression test fail.
+    #[test]
+    fn collect_ignores_data_zfb_island_mounted_attributes() {
+        let html = r#"
+            <div data-zfb-island-mounted="MountedOnly"></div>
+            <div data-zfb-island-skip-ssr-mounted="SkipMountedOnly"></div>
+        "#;
+        let names = collect_marker_names_in_page(html);
+        assert!(
+            names.is_empty(),
+            "post-mount state attributes must not be collected; got: {names:?}"
+        );
+    }
+
     #[test]
     fn collect_skips_empty_value() {
         // Empty data-zfb-island is the unfilled skeleton; runtime skips it too.

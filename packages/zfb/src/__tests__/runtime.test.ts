@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import {
   __hasPendingCancelForTests,
   __setIslandImporterForTests,
+  ISLAND_MOUNTED_ATTR,
   mountIslands,
   mountNewIslands,
   scheduleHydrate,
@@ -1303,5 +1304,396 @@ describe("scheduleHydrate", () => {
         }
       }
     });
+  });
+});
+
+describe("island mounted marker state contract (#2541)", () => {
+  type Mount = (
+    props: Record<string, unknown>,
+    element: Element,
+    mode: "hydrate" | "render",
+  ) => void;
+  type Module = {
+    mount?: Mount;
+    default?: Mount;
+    unmount?: (element: Element) => void;
+  };
+  type Importer = (url: string) => Promise<Module>;
+
+  let restoreImporter: Importer | undefined;
+
+  function stubImporter(importer: Importer): void {
+    restoreImporter = __setIslandImporterForTests(importer);
+  }
+
+  async function flushImport(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  // Deliberately controlled thenable: capturing the runtime's fulfillment
+  // callback lets the test observe a synchronous mount throw directly and
+  // retry without creating an unhandled child rejection.
+  function controlledImport(module: Module): {
+    promise: Promise<Module>;
+    fulfill: () => unknown;
+  } {
+    let onFulfilled: ((value: Module) => unknown) | undefined;
+    const promise = {
+      then(fulfillment: (value: Module) => unknown): Promise<void> {
+        onFulfilled = fulfillment;
+        return Promise.resolve();
+      },
+    } as unknown as Promise<Module>;
+
+    return {
+      promise,
+      fulfill: () => {
+        if (!onFulfilled) throw new Error("import fulfillment callback was not registered");
+        return onFulfilled(module);
+      },
+    };
+  }
+
+  function island(selector = "[data-zfb-island]"): HTMLElement {
+    const el = document.querySelector<HTMLElement>(selector);
+    if (!el) throw new Error(`expected island ${selector}`);
+    return el;
+  }
+
+  function isMounted(el: Element): boolean {
+    return el.hasAttribute(ISLAND_MOUNTED_ATTR);
+  }
+
+  afterEach(() => {
+    if (restoreImporter) {
+      __setIslandImporterForTests(restoreImporter);
+      restoreImporter = undefined;
+    }
+    document.body.innerHTML = "";
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("initially has no mounted marker", () => {
+    document.body.innerHTML = `<div data-zfb-island="Probe" data-when="load"></div>`;
+
+    expect(isMounted(island())).toBe(false);
+  });
+
+  it("source issue repro: mounts Probe with when=load and writes the marker", () => {
+    document.body.innerHTML = `<div data-zfb-island="Probe" data-when="load"></div>`;
+    const mount = vi.fn();
+
+    mountIslands({ Probe: { mount } });
+
+    const probe = island('[data-zfb-island="Probe"]');
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(probe.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
+  });
+
+  it("keeps the marker absent while an idle URL island is deferred", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("requestIdleCallback", undefined);
+    document.body.innerHTML = `
+      <div data-zfb-island="Idle" data-when="idle"></div>
+    `;
+    const el = island();
+    const mount = vi.fn();
+    stubImporter(async () => ({ mount }));
+
+    mountIslands({ Idle: "/islands/Idle.js" });
+
+    expect(isMounted(el)).toBe(false);
+    expect(mount).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(0);
+    await flushImport();
+
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(true);
+  });
+
+  it("keeps the marker absent until a visible island intersects", () => {
+    document.body.innerHTML = `
+      <div data-zfb-island="Visible" data-when="visible"></div>
+    `;
+    const el = island();
+    const mount = vi.fn();
+    const observer = { disconnect: vi.fn(), observe: vi.fn() };
+    let trigger: ((isIntersecting: boolean) => void) | undefined;
+    const Observer = vi.fn((callback: IntersectionCallback) => {
+      trigger = (isIntersecting) => {
+        callback([{ isIntersecting, target: el }], observer);
+      };
+      return observer;
+    });
+    vi.stubGlobal("IntersectionObserver", Observer);
+
+    mountIslands({ Visible: { mount } });
+
+    expect(isMounted(el)).toBe(false);
+    expect(mount).not.toHaveBeenCalled();
+
+    trigger!(false);
+    expect(isMounted(el)).toBe(false);
+    trigger!(true);
+
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(true);
+  });
+
+  it("keeps the marker absent until a media island first matches", () => {
+    document.body.innerHTML = `
+      <div
+        data-zfb-island="Media"
+        data-when="media"
+        data-media="(max-width: 768px)"
+      ></div>
+    `;
+    const el = island();
+    const listeners: Array<(event: MediaQueryListEvent) => void> = [];
+    const mql = {
+      matches: false,
+      addEventListener: vi.fn((_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        listeners.push(listener);
+      }),
+      removeEventListener: vi.fn(
+        (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+          const index = listeners.indexOf(listener);
+          if (index !== -1) listeners.splice(index, 1);
+        },
+      ),
+    };
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mql),
+    );
+    const mount = vi.fn();
+
+    mountIslands({ Media: { mount } });
+
+    expect(isMounted(el)).toBe(false);
+    expect(mount).not.toHaveBeenCalled();
+
+    listeners[0]?.({ matches: false } as MediaQueryListEvent);
+    expect(isMounted(el)).toBe(false);
+    listeners[0]?.({ matches: true } as MediaQueryListEvent);
+
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(true);
+  });
+
+  it("writes the marker for a URL island only after mount returns", async () => {
+    document.body.innerHTML = `
+      <div data-zfb-island="Counter" data-when="load"></div>
+    `;
+    const el = island();
+    const mount = vi.fn(() => {
+      expect(isMounted(el)).toBe(false);
+    });
+    let resolveImport: ((module: Module) => void) | undefined;
+    stubImporter(
+      () =>
+        new Promise((resolve) => {
+          resolveImport = resolve;
+        }),
+    );
+
+    mountIslands({ Counter: "/islands/Counter.js" });
+    expect(isMounted(el)).toBe(false);
+    expect(mount).not.toHaveBeenCalled();
+
+    resolveImport!({ mount });
+    await flushImport();
+
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(true);
+  });
+
+  it("writes the marker for an inline SSR-skip island after mount returns", () => {
+    document.body.innerHTML = `
+      <div data-zfb-island-skip-ssr="Modal" data-when="visible"></div>
+    `;
+    const el = island('[data-zfb-island-skip-ssr="Modal"]');
+    const mount = vi.fn(() => {
+      expect(isMounted(el)).toBe(false);
+    });
+
+    mountIslands({ Modal: { mount } });
+
+    expect(mount).toHaveBeenCalledTimes(1);
+    expect(mount.mock.calls[0]![2]).toBe("render");
+    expect(el.hasAttribute(ISLAND_MOUNTED_ATTR)).toBe(true);
+  });
+
+  it("leaves the marker absent for a missing manifest entry", () => {
+    document.body.innerHTML = `<div data-zfb-island="Missing" data-when="load"></div>`;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    mountIslands({});
+
+    expect(isMounted(island())).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("leaves the marker absent when a URL module has no mount export", async () => {
+    document.body.innerHTML = `<div data-zfb-island="NoMount" data-when="load"></div>`;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubImporter(async () => ({}));
+
+    mountIslands({ NoMount: "/islands/NoMount.js" });
+    await flushImport();
+
+    expect(isMounted(island())).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("leaves the marker absent when an inline module has no mount export", () => {
+    document.body.innerHTML = `<div data-zfb-island="NoMount" data-when="load"></div>`;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    mountIslands({ NoMount: {} });
+
+    expect(isMounted(island())).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
+  it("clears the marker after a URL mount throws and allows a successful retry", async () => {
+    document.body.innerHTML = `<div data-zfb-island="Throws" data-when="load"></div>`;
+    const el = island();
+    const throwingMount = vi.fn(() => {
+      throw new Error("URL mount failed");
+    });
+    const successfulMount = vi.fn(() => {
+      expect(isMounted(el)).toBe(false);
+    });
+    const firstImport = controlledImport({ mount: throwingMount });
+    let importerCalls = 0;
+    stubImporter(() => {
+      importerCalls += 1;
+      return importerCalls === 1
+        ? firstImport.promise
+        : Promise.resolve({ mount: successfulMount });
+    });
+
+    mountIslands({ Throws: "/islands/Throws.js" });
+    expect(() => firstImport.fulfill()).toThrow("URL mount failed");
+
+    expect(throwingMount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(false);
+
+    mountIslands({ Throws: "/islands/Throws.js" });
+    await flushImport();
+
+    expect(importerCalls).toBe(2);
+    expect(successfulMount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(true);
+  });
+
+  it("clears the marker after an inline mount throws and allows a successful retry", () => {
+    document.body.innerHTML = `<div data-zfb-island="Throws" data-when="load"></div>`;
+    const el = island();
+    let shouldThrow = true;
+    const mount = vi.fn(() => {
+      expect(isMounted(el)).toBe(false);
+      if (shouldThrow) throw new Error("inline mount failed");
+    });
+
+    expect(() => mountIslands({ Throws: { mount } })).toThrow("inline mount failed");
+    expect(isMounted(el)).toBe(false);
+
+    shouldThrow = false;
+    mountIslands({ Throws: { mount } });
+
+    expect(mount).toHaveBeenCalledTimes(2);
+    expect(isMounted(el)).toBe(true);
+  });
+
+  it("leaves the marker absent when a URL import is rejected", async () => {
+    document.body.innerHTML = `<div data-zfb-island="Rejected" data-when="load"></div>`;
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubImporter(async () => {
+      throw new Error("import failed");
+    });
+
+    mountIslands({ Rejected: "/islands/Rejected.js" });
+    await flushImport();
+
+    expect(isMounted(island())).toBe(false);
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it("leaves the marker absent when a URL island detaches during import", async () => {
+    document.body.innerHTML = `<div data-zfb-island="Detached" data-when="load"></div>`;
+    const el = island();
+    const mount = vi.fn();
+    let resolveImport: ((module: Module) => void) | undefined;
+    stubImporter(
+      () =>
+        new Promise((resolve) => {
+          resolveImport = resolve;
+        }),
+    );
+
+    mountIslands({ Detached: "/islands/Detached.js" });
+    el.remove();
+    expect(isMounted(el)).toBe(false);
+
+    resolveImport!({ mount });
+    await flushImport();
+
+    expect(mount).not.toHaveBeenCalled();
+    expect(isMounted(el)).toBe(false);
+  });
+
+  it("clears the marker when an island is unmounted", () => {
+    document.body.innerHTML = `<div data-zfb-island="Counter" data-when="load"></div>`;
+    const el = island();
+    const unmount = vi.fn();
+
+    mountIslands({ Counter: { mount: vi.fn(), unmount } });
+    expect(isMounted(el)).toBe(true);
+
+    unmountIslands(document.body);
+
+    expect(unmount).toHaveBeenCalledWith(el);
+    expect(isMounted(el)).toBe(false);
+  });
+
+  it("clears the marker even when unmount throws", () => {
+    document.body.innerHTML = `<div data-zfb-island="Counter" data-when="load"></div>`;
+    const el = island();
+    const unmount = vi.fn(() => {
+      throw new Error("unmount failed");
+    });
+    mountIslands({ Counter: { mount: vi.fn(), unmount } });
+    expect(isMounted(el)).toBe(true);
+
+    expect(() => unmountIslands(document.body)).toThrow("unmount failed");
+    expect(isMounted(el)).toBe(false);
+  });
+
+  it("strips a stale marker when a fresh runtime module hot-swaps over the DOM", async () => {
+    document.body.innerHTML = `<div data-zfb-island="Probe" data-when="load"></div>`;
+    const el = island();
+    const previousMount = vi.fn();
+    mountIslands({ Probe: { mount: previousMount } });
+    expect(isMounted(el)).toBe(true);
+
+    vi.resetModules();
+    const freshRuntime = await import("../runtime.js");
+    const freshMount = vi.fn(() => {
+      // mountIslands() must strip the old module's marker before scheduling
+      // this fresh module's mount.
+      expect(isMounted(el)).toBe(false);
+    });
+
+    freshRuntime.mountIslands({ Probe: { mount: freshMount } });
+
+    expect(freshMount).toHaveBeenCalledTimes(1);
+    expect(isMounted(el)).toBe(true);
   });
 });
