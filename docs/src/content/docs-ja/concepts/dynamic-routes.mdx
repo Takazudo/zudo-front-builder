@@ -192,6 +192,15 @@ export default function DocsPage({ params }) {
   オプショナルキャッチオールが同じ位置で別のルートと重なる場合には
   `RouterError::OptionalCatchallConflict` を発生させます。ルーターが黙って
   勝者を選ぶことは決してありません。
+- 先頭のルートセグメントが `__paths__` で、さらに後続セグメントがあると、
+  スキャン時に `RouterError::ReservedRoutePrefix` が発生します。zfb は
+  `paths()` export を評価する内部エンドポイント `/__paths__/<route-key>` を
+  すべてのユーザーページより先に登録するため、このプレフィックス配下の
+  ページでは GET / HEAD リクエストを配信できません。ちょうど `/__paths__`
+  になるルート、途中に `__paths__` を含むルート、ルートの catchall は有効です。
+  このエラーがあると `zfb build` と `zfb check` は失敗します。`zfb dev` は警告を
+  出し、起動時なら空のページキャッシュで、セッション中の編集後なら直前の
+  renderer を維持して配信を続けます。
 
 ## 関連項目
 

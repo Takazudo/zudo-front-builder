@@ -343,6 +343,8 @@ export type ZfbSetupContext = {
    * Register a synthetic / package-owned page route. `pattern` uses the
    * same grammar as `pages/` filenames (`/blog/[slug]`, `/api/dev/x`,
    * `/docs/[...rest]`).
+   * Patterns below `/__paths__/` are reserved for zfb's internal `paths()`
+   * endpoint and raise `ReservedRoutePrefix` with this plugin's name.
    *
    * - In **build** (package-owned routes), the route is materialised
    *   into a per-build overlay pages root and **prerendered** through
