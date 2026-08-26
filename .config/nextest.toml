@@ -278,7 +278,7 @@ max-threads = 1
 #
 # Issue #2600 (2026-08, CSS Entrypoint epic #2594, Wave 3) added the
 # `css_command` binary to the BUILD-ONLY bucket, bringing the total to **41**
-# (24 flock-adopting, 17 build-only). Its ten ignored tests spawn the real
+# (24 flock-adopting, 17 build-only). Its eleven ignored tests spawn the real
 # Tailwind v4 command for deterministic, highlight-mode, explicit-source,
 # failure/atomicity, and build-parity checks; the parity test also spawns a
 # real `zfb build`, so this binary relies on the test-group as its sole

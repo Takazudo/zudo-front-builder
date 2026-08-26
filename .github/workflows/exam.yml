@@ -201,7 +201,7 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # The reconciled manifest, env-gate + heavy tags only (54 exact-name
+      # The reconciled manifest, env-gate + heavy tags only (55 exact-name
       # entries after issue #2600 — see crates/CLAUDE.md's manifest table for
       # the authoritative list; this filterset's own count has drifted from
       # that table's total before, so re-measure both rather than trusting
@@ -281,6 +281,7 @@ jobs:
               | test(=css_command_output_is_deterministic_and_matches_committed_golden)
               | test(=css_command_highlight_class_default_and_inline_modes)
               | test(=css_command_explicit_sources_isolate_ambient_decoy)
+              | test(=css_command_replays_consumer_entrypoint_with_explicit_sources)
               | test(=css_command_missing_input_exits_nonzero)
               | test(=css_command_zero_match_source_glob_exits_nonzero)
               | test(=css_command_same_canonical_input_output_exits_nonzero)

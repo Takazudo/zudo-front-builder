@@ -410,6 +410,109 @@ fn css_command_explicit_sources_isolate_ambient_decoy() {
 
 #[test]
 #[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
+fn css_command_replays_consumer_entrypoint_with_explicit_sources() {
+    let Some(tailwind) = skip_without_tailwind("css_command_consumer_replay") else {
+        return;
+    };
+    let temp = copied_fixture("css-consumer-replay");
+    let sources = ["src/**/*.{tsx,ts,jsx,js}"];
+
+    let first = run_css(
+        temp.path(),
+        &tailwind,
+        "entry.css",
+        "first.css",
+        Some("."),
+        &sources,
+        &["--no-auto-source"],
+    );
+    assert_success(&first, "first consumer CSS replay");
+    let first_bytes =
+        fs::read(temp.path().join("first.css")).expect("read first consumer CSS replay output");
+
+    let second = run_css(
+        temp.path(),
+        &tailwind,
+        "entry.css",
+        "second.css",
+        Some("."),
+        &sources,
+        &["--no-auto-source"],
+    );
+    assert_success(&second, "second consumer CSS replay");
+    let second_bytes =
+        fs::read(temp.path().join("second.css")).expect("read second consumer CSS replay output");
+
+    assert_eq!(
+        first_bytes, second_bytes,
+        "two real `zfb css --no-auto-source --source ...` runs must be byte-identical"
+    );
+    assert_deterministic_css(&first_bytes, temp.path());
+
+    let css = String::from_utf8(first_bytes).expect("consumer CSS output must be UTF-8");
+    for (selector, declaration) in [
+        (".flex", "display: flex"),
+        (".grid", "display: grid"),
+        (".bg-surface", "background-color: var(--color-surface)"),
+        (".text-fg", "color: var(--color-fg)"),
+    ] {
+        assert!(
+            css.contains(selector) && css.contains(declaration),
+            "consumer source utility {selector:?} with {declaration:?} is missing:\n{css}"
+        );
+    }
+    assert!(
+        css.contains("--zfb-hi-"),
+        "class mode must emit zfb-hi variables"
+    );
+    assert!(
+        css.contains(".hi-root")
+            && css.contains("var(--zfb-hi-fg)")
+            && css.contains("var(--zfb-hi-bg)"),
+        "class mode must emit the zfb-hi root role rule:\n{css}"
+    );
+
+    for (marker, next_marker) in [
+        (
+            "--consumer-import-order-theme",
+            "--consumer-import-order-safelist",
+        ),
+        (
+            "--consumer-import-order-safelist",
+            "--consumer-import-order-content",
+        ),
+        (
+            "--consumer-import-order-content",
+            "--consumer-import-order-page-loading",
+        ),
+        (
+            "--consumer-import-order-page-loading",
+            "--consumer-import-order-features",
+        ),
+    ] {
+        assert!(
+            css.find(marker).expect("ordered CSS marker present")
+                < css
+                    .find(next_marker)
+                    .expect("next ordered CSS marker present"),
+            "ordered package imports must retain {marker:?} before {next_marker:?}"
+        );
+    }
+
+    assert!(
+        !css.contains("#d34db7") && !css.contains("bg-\\[\\#d34db7\\]"),
+        "@source not catalog.js exclusion leaked its decoy utility:\n{css}"
+    );
+    for unresolved in ["@tailwind", "@apply", "@source", "@import"] {
+        assert!(
+            !css.contains(unresolved),
+            "consumer CSS output must not retain unresolved {unresolved} directives:\n{css}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "env-gate: tailwindcss v4 — requires ZFB_TAILWIND_BIN or the staged binary"]
 fn css_command_missing_input_exits_nonzero() {
     let Some(tailwind) = skip_without_tailwind("css_command_missing_input") else {
         return;
