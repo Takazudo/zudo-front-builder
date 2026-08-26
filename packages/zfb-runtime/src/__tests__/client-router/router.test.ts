@@ -487,8 +487,17 @@ describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branc
     document.addEventListener("zfb:navigation-aborted", aborted);
     document.addEventListener("zfb:after-swap", afterSwap);
 
+    const pushedURLs: string[] = [];
+    const originalPush = History.prototype.pushState.bind(history);
+    vi.spyOn(history, "pushState").mockImplementation(
+      (...args: Parameters<History["pushState"]>) => {
+        pushedURLs.push(String(args[2]));
+        return originalPush(...args);
+      },
+    );
+    const supersededHref = `${location.pathname}#abort-listener-b`;
     const firstNavigation = navigate("/abort-listener-a");
-    const supersededNavigation = navigate("/abort-listener-b");
+    const supersededNavigation = navigate(supersededHref);
     releaseFirst(htmlResponse(pageHtml("A", "content for /abort-listener-a")));
     await firstNavigation;
     await supersededNavigation;
@@ -500,6 +509,7 @@ describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branc
 
     expect(aborted).toHaveBeenCalledTimes(2);
     expect(afterSwap).toHaveBeenCalledOnce();
+    expect(pushedURLs.some((url) => url.endsWith("#abort-listener-b"))).toBe(false);
     expect(document.querySelector("main")?.textContent).toBe("content for /abort-listener-c");
   });
 });

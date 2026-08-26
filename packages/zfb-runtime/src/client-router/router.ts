@@ -706,6 +706,10 @@ async function transition(
 
   const currentNavigation = abortAndRecreateMostRecentNavigation();
 
+  // Emitting the previous navigation's abort event is synchronous. A listener
+  // may have started an even newer navigation before this call resumes.
+  if (currentNavigation.controller.signal.aborted) return;
+
   // not ours
   if (!transitionEnabledOnThisPage() || location.origin !== to.origin) {
     if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
