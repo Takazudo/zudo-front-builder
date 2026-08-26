@@ -8,14 +8,41 @@
 //! each `commands/<name>.rs` handler.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
+use zfb_toolchain_pins::{EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION};
+
+/// The detailed version report shown by `zfb --version`.
+///
+/// Keep the short `version` value on [`Cli`] unchanged: clap renders it for
+/// `-V`, while this report adds the versions of the external binaries bundled
+/// with the executable.
+fn long_version() -> &'static str {
+    // clap's `Str` stores a static string, so build this report once and keep
+    // it for the process lifetime instead of allocating on every command.
+    static REPORT: OnceLock<String> = OnceLock::new();
+    REPORT
+        .get_or_init(|| {
+            let release_version =
+                option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+            format!(
+                "{release_version}\nembedded Tailwind CSS: {EXPECTED_TAILWIND_VERSION}\nembedded esbuild: {EXPECTED_ESBUILD_VERSION}"
+            )
+        })
+        .as_str()
+}
 
 /// Top-level CLI for the `zfb` binary.
 #[derive(Debug, Parser)]
 // ZFB_RELEASE_VERSION is set by the release CI (= packages/zfb/package.json version).
 // Local builds without the env var fall back to CARGO_PKG_VERSION (0.0.0 placeholder).
-#[command(name = "zfb", version = option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")), about = "zudo-front-builder")]
+#[command(
+    name = "zfb",
+    version = option_env!("ZFB_RELEASE_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+    long_version = long_version(),
+    about = "zudo-front-builder"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
