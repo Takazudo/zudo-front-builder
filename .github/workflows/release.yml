@@ -158,9 +158,11 @@ jobs:
             CHECKOUT_REF="$RELEASE_TAG"
           fi
 
-          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
-          echo "is_recovery=$IS_RECOVERY" >> "$GITHUB_OUTPUT"
+          {
+            echo "release_tag=$RELEASE_TAG"
+            echo "checkout_ref=$CHECKOUT_REF"
+            echo "is_recovery=$IS_RECOVERY"
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved source ref: ${CHECKOUT_REF}${RELEASE_TAG:+ (release ${RELEASE_TAG})}"
 
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
