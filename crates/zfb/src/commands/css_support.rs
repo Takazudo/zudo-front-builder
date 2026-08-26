@@ -45,12 +45,29 @@ pub(crate) fn default_content_globs(project_root: &Path) -> Vec<String> {
 /// prefix, rewrite only the selector prefix; the `--zfb-hi-*` custom
 /// properties remain independently namespaced.
 pub(crate) fn resolve_framework_css(config: &Config) -> Option<String> {
-    let code_highlight = config.code_highlight.as_ref()?;
-    if code_highlight.mode != CodeHighlightMode::Class || !code_highlight.default_stylesheet {
+    resolve_framework_css_with_options(config, None, false)
+}
+
+/// Resolve framework CSS while applying the standalone command's CLI
+/// overrides. The class prefix and role configuration always remain owned by
+/// `zfb.config`; only mode and default-stylesheet selection are overridden.
+pub(crate) fn resolve_framework_css_with_options(
+    config: &Config,
+    mode_override: Option<CodeHighlightMode>,
+    no_default_stylesheet: bool,
+) -> Option<String> {
+    let code_highlight = config.code_highlight.as_ref();
+    let mode = mode_override.or_else(|| code_highlight.map(|value| value.mode))?;
+    let default_stylesheet = code_highlight
+        .map(|value| value.default_stylesheet)
+        .unwrap_or(true);
+    if mode != CodeHighlightMode::Class || no_default_stylesheet || !default_stylesheet {
         return None;
     }
     let css = zfb_css::default_hi_css();
-    let prefix = code_highlight.class_prefix.as_str();
+    let prefix = code_highlight
+        .map(|value| value.class_prefix.as_str())
+        .unwrap_or(zfb_content::syntect_highlight::DEFAULT_CLASS_HIGHLIGHT_PREFIX);
     if prefix == "hi-" {
         Some(css.to_string())
     } else {
@@ -113,6 +130,45 @@ pub(crate) fn run_css_emitter<E: CssEngine>(
     explicit_css_modules: Vec<PathBuf>,
     framework_css: Option<String>,
 ) -> Result<CssEmitterOutput> {
+    run_css_emitter_with_module_policy(
+        engine,
+        project_root,
+        outdir,
+        sources,
+        explicit_css_modules,
+        framework_css,
+        true,
+    )
+}
+
+/// Standalone-command variant that enforces the CSS Modules v1 exclusion:
+/// no explicit modules and no source scan for implicit `.module.css` imports.
+pub(crate) fn run_css_emitter_without_modules<E: CssEngine>(
+    engine: E,
+    project_root: &Path,
+    outdir: &Path,
+    framework_css: Option<String>,
+) -> Result<CssEmitterOutput> {
+    run_css_emitter_with_module_policy(
+        engine,
+        project_root,
+        outdir,
+        Vec::new(),
+        Vec::new(),
+        framework_css,
+        false,
+    )
+}
+
+fn run_css_emitter_with_module_policy<E: CssEngine>(
+    engine: E,
+    project_root: &Path,
+    outdir: &Path,
+    sources: Vec<PathBuf>,
+    explicit_css_modules: Vec<PathBuf>,
+    framework_css: Option<String>,
+    auto_discover_modules: bool,
+) -> Result<CssEmitterOutput> {
     let pipe_cfg = CssPipelineConfig {
         sources,
         css_modules: explicit_css_modules,
@@ -127,6 +183,7 @@ pub(crate) fn run_css_emitter<E: CssEngine>(
             project_root,
             &zfb_types::first_party_root_for(project_root),
         ),
+        auto_discover_modules,
         framework_css,
         ..CssPipelineConfig::default()
     };

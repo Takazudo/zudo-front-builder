@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 /// Top-level CLI for the `zfb` binary.
 #[derive(Debug, Parser)]
@@ -31,11 +31,55 @@ pub enum Command {
     Dev(DevArgs),
     /// Build the project for production.
     Build(BuildArgs),
+    /// Compile a CSS entrypoint without building or rendering the site.
+    Css(CssArgs),
     /// Preview a previously built project.
     Preview(PreviewArgs),
     /// Typecheck the project and validate content collections against
     /// their schemas. Equivalent in spirit to Astro's `astro check`.
     Check(CheckArgs),
+}
+
+/// Arguments for `zfb css`.
+#[derive(Debug, Args)]
+#[command(
+    after_help = "The CSS command always runs Tailwind, even when zfb.config sets tailwind.enabled=false.\nAutomatic sources are limited to pages, components, layouts, content, and src under --project-root."
+)]
+pub struct CssArgs {
+    /// CSS entrypoint. Relative paths are resolved from the current directory.
+    #[arg(long, required = true)]
+    pub input: PathBuf,
+
+    /// Destination CSS file. Relative paths are resolved from the current directory.
+    #[arg(long, required = true)]
+    pub output: PathBuf,
+
+    /// Project root used for config loading and source-glob resolution.
+    /// Defaults to the current directory.
+    #[arg(long)]
+    pub project_root: Option<PathBuf>,
+
+    /// Explicit Tailwind content glob, relative to the project root. Repeatable.
+    #[arg(long)]
+    pub source: Vec<String>,
+
+    /// Omit the five default content roots; explicit --source values remain active.
+    #[arg(long)]
+    pub no_auto_source: bool,
+
+    /// Override zfb.config's codeHighlight.mode for framework CSS emission.
+    #[arg(long, value_enum)]
+    pub code_highlight_mode: Option<CssCodeHighlightMode>,
+
+    /// Suppress zfb's built-in class-mode highlight stylesheet.
+    #[arg(long)]
+    pub no_default_highlight_styles: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CssCodeHighlightMode {
+    Class,
+    Inline,
 }
 
 /// Arguments for `zfb new`.
@@ -791,5 +835,132 @@ mod tests {
             help.contains("ZFB_DEV_DEFER_BUNDLE=0"),
             "dev help must document the ZFB_DEV_DEFER_BUNDLE opt-out:\n{help}"
         );
+    }
+
+    fn css_args(argv: &[&str]) -> CssArgs {
+        match Cli::try_parse_from(argv)
+            .expect("parse css command")
+            .command
+        {
+            Command::Css(args) => args,
+            other => panic!("expected css subcommand, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn css_requires_input_and_output() {
+        let error = Cli::try_parse_from(["zfb", "css"]).expect_err("css must require both paths");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn css_parses_all_paths_and_preserves_repeated_source_order() {
+        let args = css_args(&[
+            "zfb",
+            "css",
+            "--input",
+            "entry.css",
+            "--output",
+            "dist/out.css",
+            "--project-root",
+            "project",
+            "--source",
+            "src/**/*.tsx",
+            "--source",
+            "../shared/**/*.mdx",
+            "--source",
+            "src/**/*.tsx",
+        ]);
+        assert_eq!(args.input, PathBuf::from("entry.css"));
+        assert_eq!(args.output, PathBuf::from("dist/out.css"));
+        assert_eq!(args.project_root, Some(PathBuf::from("project")));
+        assert_eq!(
+            args.source,
+            ["src/**/*.tsx", "../shared/**/*.mdx", "src/**/*.tsx"]
+        );
+    }
+
+    #[test]
+    fn css_boolean_flags_default_off_and_parse_on() {
+        let base = css_args(&["zfb", "css", "--input", "in.css", "--output", "out.css"]);
+        assert!(!base.no_auto_source);
+        assert!(!base.no_default_highlight_styles);
+        assert_eq!(base.code_highlight_mode, None);
+
+        let enabled = css_args(&[
+            "zfb",
+            "css",
+            "--input",
+            "in.css",
+            "--output",
+            "out.css",
+            "--no-auto-source",
+            "--no-default-highlight-styles",
+            "--code-highlight-mode",
+            "class",
+        ]);
+        assert!(enabled.no_auto_source);
+        assert!(enabled.no_default_highlight_styles);
+        assert_eq!(
+            enabled.code_highlight_mode,
+            Some(CssCodeHighlightMode::Class)
+        );
+    }
+
+    #[test]
+    fn css_accepts_both_highlight_modes_and_rejects_unknown_values() {
+        assert_eq!(
+            css_args(&[
+                "zfb",
+                "css",
+                "--input",
+                "in.css",
+                "--output",
+                "out.css",
+                "--code-highlight-mode",
+                "inline",
+            ])
+            .code_highlight_mode,
+            Some(CssCodeHighlightMode::Inline)
+        );
+        let error = Cli::try_parse_from([
+            "zfb",
+            "css",
+            "--input",
+            "in.css",
+            "--output",
+            "out.css",
+            "--code-highlight-mode",
+            "invalid",
+        ])
+        .expect_err("unknown highlight mode must fail");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn css_help_documents_tailwind_and_source_scope() {
+        use clap::CommandFactory;
+        let mut command = Cli::command();
+        let css = command.find_subcommand_mut("css").expect("css exists");
+        let help = css.render_long_help().to_string();
+        for expected in [
+            "--input",
+            "--output",
+            "--project-root",
+            "--source",
+            "--no-auto-source",
+            "--code-highlight-mode",
+            "--no-default-highlight-styles",
+            "tailwind.enabled=false",
+            "pages, components, layouts, content, and src",
+        ] {
+            assert!(
+                help.contains(expected),
+                "missing {expected:?} from:\n{help}"
+            );
+        }
     }
 }
