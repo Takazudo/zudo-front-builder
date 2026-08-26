@@ -52,10 +52,12 @@
 
 name: Release
 
-# Queue releases on the same ref; never cancel — a mid-publish run would leave
-# a partial npm publish that is worse than the storage cost.
+# Queue releases for the same effective tag; never cancel — a mid-publish run
+# would leave a partial npm publish that is worse than the storage cost. Manual
+# recovery runs execute the fixed workflow from main while building an existing
+# published tag, so github.ref alone is not sufficient for this key.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
   cancel-in-progress: false
 
 on:
@@ -81,14 +83,162 @@ on:
         description: "Manual override: treat the macOS-x64 archive as already present (forces mac_local_present=true)"
         type: boolean
         default: false
+      release_tag:
+        # Recovery mode runs this workflow definition from main, but checks out
+        # and publishes the immutable commit behind an existing published
+        # Release tag. Real manual publishes from a branch remain forbidden.
+        description: "Recovery only: existing published v* tag to build/publish (run workflow from main)"
+        type: string
+        required: false
+        default: ""
 
 jobs:
+  # Resolve every trigger to one immutable source commit before any build starts.
+  # Normal release:published runs resolve the event tag. Manual recovery runs
+  # must execute the reviewed workflow from main and provide release_tag; this
+  # avoids the GitHub Actions behavior where dispatching a tag would load that
+  # tag's older (possibly broken) workflow definition. Branch dry-runs remain
+  # supported without a tag.
+  release-context:
+    name: Resolve and verify release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      checkout_sha: ${{ steps.verify.outputs.checkout_sha }}
+      is_recovery: ${{ steps.resolve.outputs.is_recovery }}
+    steps:
+      - name: Resolve requested release context
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TRIGGER_REF: ${{ github.ref }}
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          RELEASE_TAG=""
+          CHECKOUT_REF="$TRIGGER_SHA"
+          IS_RECOVERY=false
+
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            RELEASE_TAG="$EVENT_RELEASE_TAG"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ -n "$REQUESTED_TAG" ]]; then
+              if [[ "$TRIGGER_REF" != "refs/heads/main" ]]; then
+                echo "::error::Tag recovery must run the reviewed workflow from refs/heads/main; got '${TRIGGER_REF}'."
+                exit 1
+              fi
+              RELEASE_TAG="$REQUESTED_TAG"
+              IS_RECOVERY=true
+            elif [[ "$TRIGGER_REF" =~ ^refs/tags/v ]]; then
+              # Backward-compatible manual dispatch for tags containing this
+              # recovery implementation. Existing broken tags should instead
+              # dispatch main with release_tag set explicitly.
+              RELEASE_TAG="${TRIGGER_REF#refs/tags/}"
+            elif [[ "$DRY_RUN" != "true" ]]; then
+              echo "::error::A real manual release requires release_tag=vX.Y.Z and must be dispatched from main."
+              echo "::error::Branch smoke tests must use dry_run=true."
+              exit 1
+            fi
+          else
+            echo "::error::Unsupported release trigger: '${EVENT_NAME}'."
+            exit 1
+          fi
+
+          if [[ -n "$RELEASE_TAG" ]]; then
+            if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(next|beta|rc)\.(0|[1-9][0-9]*))?$ ]]; then
+              echo "::error::Release tag '${RELEASE_TAG}' is not an allowed v* semver tag."
+              exit 1
+            fi
+            CHECKOUT_REF="$RELEASE_TAG"
+          fi
+
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "is_recovery=$IS_RECOVERY" >> "$GITHUB_OUTPUT"
+          echo "Resolved source ref: ${CHECKOUT_REF}${RELEASE_TAG:+ (release ${RELEASE_TAG})}"
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.checkout_ref }}
+          # The tag ref and its peeled commit must both be available for the
+          # immutable-source assertion below.
+          fetch-depth: 0
+
+      - name: Verify immutable source and published Release
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
+        run: |
+          CHECKOUT_SHA=$(git rev-parse HEAD)
+
+          # A tag-less context is permitted only for the branch dry-run already
+          # admitted by the resolver above.
+          if [[ -z "$RELEASE_TAG" ]]; then
+            echo "checkout_sha=$CHECKOUT_SHA" >> "$GITHUB_OUTPUT"
+            echo "Verified dry-run source commit: $CHECKOUT_SHA"
+            exit 0
+          fi
+
+          if ! git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            echo "::error::Tag ref refs/tags/${RELEASE_TAG} was not fetched."
+            exit 1
+          fi
+          TAG_SHA=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          if [[ "$CHECKOUT_SHA" != "$TAG_SHA" ]]; then
+            echo "::error::Checked-out commit ${CHECKOUT_SHA} does not match ${RELEASE_TAG} (${TAG_SHA})."
+            exit 1
+          fi
+
+          EXPECTED_VERSION="${RELEASE_TAG#v}"
+          ACTUAL_VERSION=$(node -p "require('./packages/zfb/package.json').version")
+          if [[ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::packages/zfb version '${ACTUAL_VERSION}' does not match tag '${RELEASE_TAG}'."
+            exit 1
+          fi
+
+          if ! RELEASE_JSON=$(gh release view "$RELEASE_TAG" \
+            --json tagName,isDraft,publishedAt,targetCommitish,url); then
+            echo "::error::No GitHub Release exists for ${RELEASE_TAG}."
+            exit 1
+          fi
+          ACTUAL_TAG=$(jq -r '.tagName' <<<"$RELEASE_JSON")
+          IS_DRAFT=$(jq -r '.isDraft' <<<"$RELEASE_JSON")
+          PUBLISHED_AT=$(jq -r '.publishedAt // empty' <<<"$RELEASE_JSON")
+          TARGET_COMMITISH=$(jq -r '.targetCommitish // empty' <<<"$RELEASE_JSON")
+          RELEASE_URL=$(jq -r '.url' <<<"$RELEASE_JSON")
+          if [[ "$ACTUAL_TAG" != "$RELEASE_TAG" || "$IS_DRAFT" != "false" || -z "$PUBLISHED_AT" ]]; then
+            echo "::error::${RELEASE_TAG} must identify an existing published, non-draft GitHub Release."
+            exit 1
+          fi
+
+          # When the Release records an exact commit rather than a branch name,
+          # require it to resolve to the same commit as the tag.
+          if [[ "$TARGET_COMMITISH" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            TARGET_SHA=$(git rev-parse "${TARGET_COMMITISH}^{commit}")
+            if [[ "$TARGET_SHA" != "$TAG_SHA" ]]; then
+              echo "::error::Release target ${TARGET_COMMITISH} (${TARGET_SHA}) does not match tag ${RELEASE_TAG} (${TAG_SHA})."
+              exit 1
+            fi
+          fi
+
+          echo "checkout_sha=$CHECKOUT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Verified ${RELEASE_TAG} -> ${CHECKOUT_SHA} | version ${ACTUAL_VERSION} | ${RELEASE_URL}"
+
   # A2: detect whether a locally-built macOS-x64 archive has been pre-uploaded
   # to the GH Release. Runs before prepare-matrix so the result can gate the
   # darwin-x64 build leg. On workflow_dispatch with skip_macos_x64=true the
   # manual override short-circuits the query and outputs true directly.
   detect-mac-local:
     name: Detect pre-uploaded macOS-x64 archive
+    needs: release-context
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -97,6 +247,8 @@ jobs:
       mac_local_present: ${{ steps.detect.outputs.mac_local_present }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.release-context.outputs.checkout_sha }}
 
       - id: detect
         shell: bash
@@ -104,8 +256,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           SKIP_MACOS_X64: ${{ inputs.skip_macos_x64 }}
-          # For release events, prefer the event payload tag name over GITHUB_REF parsing.
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
           # Manual override: workflow_dispatch with skip_macos_x64=true always
           # reports present so no Release query is needed.
@@ -115,9 +266,10 @@ jobs:
             exit 0
           fi
 
-          # Non-release events without the manual override: no Release to query.
-          if [[ "$EVENT_NAME" != "release" ]]; then
-            echo "Event is '${EVENT_NAME}', not 'release' — reporting mac_local_present=false"
+          # Tag-less branch dry-runs have no Release to query. Recovery dispatches
+          # do have a verified tag and follow the same detection path as release events.
+          if [[ -z "$TAG" ]]; then
+            echo "No release tag in this context — reporting mac_local_present=false"
             echo "mac_local_present=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -195,7 +347,7 @@ jobs:
           echo "settings=$SETTINGS" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: prepare-matrix
+    needs: [prepare-matrix, release-context]
     name: Build ${{ matrix.settings.target }}
     strategy:
       fail-fast: false
@@ -207,6 +359,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.release-context.outputs.checkout_sha }}
 
       # pnpm version is read from package.json's "packageManager" field
       # (pnpm@11.3.0). action-setup@v4 errors out if BOTH "version:" here
@@ -246,8 +400,8 @@ jobs:
         shell: bash
         run: |
           # Derive semver from packages/zfb/package.json (no leading "v").
-          # For real tag pushes this matches the tag; for dry-run workflow_dispatch
-          # on a branch it is the current dev version string.
+          # For release/recovery contexts this matches the verified tag; for a
+          # tag-less dry-run it is the selected branch commit's dev version.
           ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
           echo "ZFB_SEMVER=$ZFB_SEMVER" >> "$GITHUB_ENV"
           echo "Resolved semver: $ZFB_SEMVER"
@@ -290,54 +444,54 @@ jobs:
             debian:stable-slim \
             ./target/aarch64-unknown-linux-gnu/release/zfb --version
 
-      # Per-platform version guard (Unix — all non-Windows platforms).
-      # Runs the freshly-built binary and asserts its --version output matches
-      # the release semver. Catches a missed ZFB_RELEASE_VERSION injection on
-      # any single platform instead of silently shipping a 0.0.0 binary.
-      - name: Assert --version equals release semver (Unix)
+      # Per-platform short-version guard (Unix — all non-Windows platforms).
+      # `--version` intentionally includes embedded dependency versions; `-V`
+      # is the stable one-line CLI version contract used for exact comparison.
+      # This catches a missed ZFB_RELEASE_VERSION injection on any platform.
+      - name: Assert -V equals release semver (Unix)
         if: ${{ matrix.settings.archive_ext == 'tar.gz' && matrix.settings.use_cross != true }}
         shell: bash
         run: |
           BINARY="target/${{ matrix.settings.target }}/release/zfb"
-          ACTUAL=$("$BINARY" --version)
+          ACTUAL=$("$BINARY" -V)
           EXPECTED="zfb $ZFB_SEMVER"
           echo "Expected: $EXPECTED"
           echo "Actual:   $ACTUAL"
           if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-            echo "::error::--version mismatch on ${{ matrix.settings.platform }}: got '$ACTUAL', want '$EXPECTED'"
+            echo "::error::-V mismatch on ${{ matrix.settings.platform }}: got '$ACTUAL', want '$EXPECTED'"
             exit 1
           fi
 
       # Per-platform version guard for linux-arm64 (QEMU): runs the arm64
       # binary inside the same QEMU-enabled container used for the smoke test.
-      - name: Assert --version equals release semver (linux-arm64 QEMU)
+      - name: Assert -V equals release semver (linux-arm64 QEMU)
         if: ${{ matrix.settings.use_cross == true }}
         shell: bash
         run: |
           ACTUAL=$(docker run --rm --platform linux/arm64 \
             -v "$PWD:/w" -w /w \
             debian:stable-slim \
-            ./target/aarch64-unknown-linux-gnu/release/zfb --version)
+            ./target/aarch64-unknown-linux-gnu/release/zfb -V)
           EXPECTED="zfb $ZFB_SEMVER"
           echo "Expected: $EXPECTED"
           echo "Actual:   $ACTUAL"
           if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-            echo "::error::--version mismatch on linux-arm64: got '$ACTUAL', want '$EXPECTED'"
+            echo "::error::-V mismatch on linux-arm64: got '$ACTUAL', want '$EXPECTED'"
             exit 1
           fi
 
       # Per-platform version guard (Windows).
-      - name: Assert --version equals release semver (Windows)
+      - name: Assert -V equals release semver (Windows)
         if: ${{ matrix.settings.archive_ext == 'zip' }}
         shell: pwsh
         run: |
           $Binary = "target/${{ matrix.settings.target }}/release/zfb.exe"
-          $Actual = & $Binary --version
+          $Actual = & $Binary -V
           $Expected = "zfb $env:ZFB_SEMVER"
           Write-Host "Expected: $Expected"
           Write-Host "Actual:   $Actual"
           if ($Actual -ne $Expected) {
-            Write-Host "::error::--version mismatch on ${{ matrix.settings.platform }}: got '$Actual', want '$Expected'"
+            Write-Host "::error::-V mismatch on ${{ matrix.settings.platform }}: got '$Actual', want '$Expected'"
             exit 1
           }
 
@@ -436,12 +590,15 @@ jobs:
   # package by publish below, which publishes it with --ignore-scripts.
   build-wasm-md:
     name: Build @takazudo/zfb-md-wasm npm package
+    needs: release-context
     runs-on: ubuntu-latest
     # Keep this exact timeout to match health.yml: four wasm-release passes,
     # package tests, pack, and a from-source wasm-bindgen-cli install fit here.
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.release-context.outputs.checkout_sha }}
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
@@ -468,8 +625,8 @@ jobs:
         shell: bash
         run: |
           # Derive semver from packages/zfb/package.json (no leading "v").
-          # For real tag pushes this matches the tag; for dry-run workflow_dispatch
-          # on a branch it is the current dev version string.
+          # For release/recovery contexts this matches the verified tag; for a
+          # tag-less dry-run it is the selected branch commit's dev version.
           ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
           echo "ZFB_SEMVER=$ZFB_SEMVER" >> "$GITHUB_ENV"
           echo "Resolved semver: $ZFB_SEMVER"
@@ -559,23 +716,28 @@ jobs:
   release-assets:
     # Attaches all 5 archives + 5 sha256 files to the GitHub Release.
     # Runs after all platform builds complete to avoid first-vs-append GH Release
-    # race conditions.  Skipped on dry_run and non-tag refs.
+    # race conditions. Skipped on dry_run; release-context guarantees that a
+    # real run has a verified existing published tag even during main recovery.
     name: Upload GitHub Release assets
-    needs: build
+    needs: [build, release-context]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.release-context.outputs.checkout_sha }}
 
       - name: Resolve version and channel
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
           ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
           echo "ZFB_SEMVER=$ZFB_SEMVER" >> "$GITHUB_ENV"
           # Determine prerelease flag from the tag name.
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="$RELEASE_TAG"
           if [[ "$TAG" =~ -next\. ]] || [[ "$TAG" =~ -beta\. ]] || [[ "$TAG" =~ -rc\. ]]; then
             IS_PRERELEASE=true
           else
@@ -601,24 +763,26 @@ jobs:
         run: |
           echo "DRY RUN — would have uploaded the following assets to GH Release:"
           ls release-assets/
-          echo "Set dry_run=false on a real v* tag push to create the release."
+          echo "Set dry_run=false with a verified release context to upload these assets."
 
-      # Guard: a manual workflow_dispatch on a branch (not a v* tag) must not
-      # accidentally create a GH Release.
-      - name: Guard — tag ref required for real release upload
+      # Defense in depth: release-context already verifies the tag and published
+      # Release, but keep upload fail-closed if its output is ever disconnected.
+      - name: Guard — verified release tag required for real release upload
         if: ${{ inputs.dry_run != true }}
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
-          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
-            echo "::error::GH Release upload requires a v* tag ref. Got: $GITHUB_REF."
-            echo "::error::For manual smoke tests, re-run workflow_dispatch with dry_run=true."
+          if [[ ! "$RELEASE_TAG" =~ ^v ]]; then
+            echo "::error::GH Release upload requires a verified v* release tag."
             exit 1
           fi
 
       - name: Upload archives and checksums to GitHub Release
-        if: ${{ inputs.dry_run != true && startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ inputs.dry_run != true }}
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
+          tag_name: ${{ needs.release-context.outputs.release_tag }}
           prerelease: ${{ env.IS_PRERELEASE == 'true' }}
           files: release-assets/*
           fail_on_unmatched_files: true
@@ -632,7 +796,7 @@ jobs:
     # dependency graph (crates/zfb-md-wasm/npm) — it's just published
     # alongside the rest, see the "Download @takazudo/zfb-md-wasm dist
     # artifact" step below.
-    needs: [build, detect-mac-local, build-wasm-md]
+    needs: [build, detect-mac-local, build-wasm-md, release-context]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -644,6 +808,19 @@ jobs:
       dist_tag: ${{ steps.dist-tag.outputs.dist_tag }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ needs.release-context.outputs.checkout_sha }}
+
+      # The verified source checkout above intentionally contains the release
+      # tag's old helper scripts. Recovery needs the newly-fixed publish helper
+      # from the workflow commit on main, so check that immutable control commit
+      # out separately without replacing the tag source tree.
+      - name: Checkout recovery control scripts
+        if: ${{ needs.release-context.outputs.is_recovery == 'true' }}
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-control
 
       # pnpm version is read from package.json's "packageManager" field
       # (pnpm@11.3.0). action-setup@v4 errors out if BOTH "version:" here
@@ -673,13 +850,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
-          # For release events prefer the event payload tag; fall back to GITHUB_REF
-          # for workflow_dispatch (skip_macos_x64=true path has no event payload tag).
-          TAG="${{ github.event.release.tag_name }}"
-          if [[ -z "$TAG" ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
+          TAG="$RELEASE_TAG"
           ZFB_SEMVER=$(node -p "require('./packages/zfb/package.json').version")
           ARCHIVE="zfb-${ZFB_SEMVER}-x86_64-apple-darwin.tar.gz"
           echo "Fetching pre-built macOS-x64 asset from GH Release ${TAG}: ${ARCHIVE} (+ .sha256)"
@@ -760,8 +933,10 @@ jobs:
       - name: Determine dist-tag
         id: dist-tag
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="$RELEASE_TAG"
           if [[ "$TAG" =~ -next\. ]] || [[ "$TAG" =~ -beta\. ]] || [[ "$TAG" =~ -rc\. ]]; then
             DIST_TAG="next"
           else
@@ -813,16 +988,16 @@ jobs:
           echo "DRY RUN — would have published all workspace packages with tag $DIST_TAG"
           echo "Set dry_run=false to perform an actual publish."
 
-      # Guard: a manual workflow_dispatch on a branch (not a v* tag) must not
-      # accidentally publish a branch head to the registry. dry_run=true is the
-      # only safe way to exercise this workflow from a branch.
-      - name: Verify publish context (tag ref required)
+      # Defense in depth: release-context already verifies the exact tag commit,
+      # published Release, and package version before any build starts.
+      - name: Verify publish context (verified release tag required)
         if: ${{ inputs.dry_run != true }}
         shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-context.outputs.release_tag }}
         run: |
-          if [[ ! "$GITHUB_REF" =~ ^refs/tags/v ]]; then
-            echo "::error::Publish requires a v* tag ref. Got: $GITHUB_REF."
-            echo "::error::For manual smoke tests, re-run workflow_dispatch with dry_run=true."
+          if [[ ! "$RELEASE_TAG" =~ ^v ]]; then
+            echo "::error::Publish requires a verified v* release tag."
             exit 1
           fi
 
@@ -875,7 +1050,7 @@ jobs:
 
       # Normal path: every package published with OIDC-attested --provenance.
       - name: Publish to npm
-        if: ${{ inputs.dry_run != true && needs.detect-mac-local.outputs.mac_local_present != 'true' }}
+        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery != 'true' && needs.detect-mac-local.outputs.mac_local_present != 'true' }}
         shell: bash
         run: bash scripts/publish-npm-packages.sh all-provenance
         env:
@@ -886,9 +1061,20 @@ jobs:
       # zfb-darwin-x64 WITHOUT --provenance and every other package WITH it
       # (option B). See RELEASE_DAY_CHECKLIST.md and the script header.
       - name: Publish to npm (mixed provenance — local macOS-x64)
-        if: ${{ inputs.dry_run != true && needs.detect-mac-local.outputs.mac_local_present == 'true' }}
+        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery != 'true' && needs.detect-mac-local.outputs.mac_local_present == 'true' }}
         shell: bash
         run: bash scripts/publish-npm-packages.sh mac-local
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Main-based recovery deliberately omits provenance for every package.
+      # GitHub's OIDC subject identifies github.sha (the main commit containing
+      # this fixed workflow), while the artifacts were built from checkout_sha
+      # (the older release tag). Attesting them as main would be misleading.
+      - name: Publish to npm (recovery — no provenance)
+        if: ${{ inputs.dry_run != true && needs.release-context.outputs.is_recovery == 'true' }}
+        shell: bash
+        run: bash .release-control/scripts/publish-npm-packages.sh recovery-no-provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -954,6 +1140,7 @@ jobs:
     # docs-deploy.yml's notify job (status-computed, reuses IFTTT_PROD_NOTIFY).
     needs:
       [
+        release-context,
         detect-mac-local,
         prepare-matrix,
         build,
@@ -971,6 +1158,7 @@ jobs:
       - name: Notify via IFTTT on failure
         if: env.IFTTT_PROD_NOTIFY != ''
         env:
+          RELEASE_CONTEXT_RESULT: ${{ needs.release-context.result }}
           DETECT_MAC_LOCAL_RESULT: ${{ needs.detect-mac-local.result }}
           PREPARE_MATRIX_RESULT: ${{ needs.prepare-matrix.result }}
           BUILD_RESULT: ${{ needs.build.result }}
@@ -978,14 +1166,16 @@ jobs:
           RELEASE_ASSETS_RESULT: ${{ needs.release-assets.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           SMOKE_CLEAN_ROOM_RESULT: ${{ needs.smoke-clean-room.result }}
-          RAW_TAG: ${{ github.event.release.tag_name }}
-          GITHUB_SHA_VAL: ${{ github.sha }}
+          RAW_TAG: ${{ needs.release-context.outputs.release_tag || github.event.release.tag_name || inputs.release_tag }}
+          GITHUB_SHA_VAL: ${{ needs.release-context.outputs.checkout_sha || github.sha }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
           FAILED_JOB=""
-          if [ "$DETECT_MAC_LOCAL_RESULT" = "failure" ]; then
+          if [ "$RELEASE_CONTEXT_RESULT" = "failure" ]; then
+            FAILED_JOB="release-context"
+          elif [ "$DETECT_MAC_LOCAL_RESULT" = "failure" ]; then
             FAILED_JOB="detect-mac-local"
           elif [ "$PREPARE_MATRIX_RESULT" = "failure" ]; then
             FAILED_JOB="prepare-matrix"
@@ -1002,7 +1192,7 @@ jobs:
           fi
 
           if [ -z "$FAILED_JOB" ]; then
-            echo "No failed job among detect-mac-local/prepare-matrix/build/build-wasm-md/release-assets/publish/smoke-clean-room — skipping notification."
+            echo "No failed job among release-context/detect-mac-local/prepare-matrix/build/build-wasm-md/release-assets/publish/smoke-clean-room — skipping notification."
             exit 0
           fi
 

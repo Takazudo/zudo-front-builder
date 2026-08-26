@@ -102,7 +102,7 @@ assert_exit 'classify: real error AND version NOT on registry → fail (1)' 1 \
 
 # Build a throwaway PATH dir holding mock `npm` and `pnpm` executables.
 MOCK_BIN=$(mktemp -d)
-trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}"' EXIT
+trap 'rm -rf "$MOCK_BIN" "${PUB_LOG:-}" "${DISTTAG_LOG:-}" "${ARGS_LOG:-}"' EXIT
 
 cat >"$MOCK_BIN/npm" <<'MOCK_NPM'
 #!/bin/sh
@@ -122,6 +122,7 @@ case "$1" in
     name=$(node -p "require('./package.json').name")
     version=$(node -p "require('./package.json').version")
     printf '%s@%s\n' "$name" "$version" >>"$MOCK_PUBLISH_LOG"
+    printf 'npm %s\n' "$*" >>"${MOCK_ARGS_LOG:-/dev/null}"
     exit 0
     ;;
   dist-tag)
@@ -135,6 +136,7 @@ MOCK_NPM
 cat >"$MOCK_BIN/pnpm" <<'MOCK_PNPM'
 #!/bin/sh
 # Mock pnpm: record the --filter target of a `publish` invocation.
+original_args="$*"
 filter=""
 is_publish=0
 while [ $# -gt 0 ]; do
@@ -146,6 +148,7 @@ while [ $# -gt 0 ]; do
 done
 if [ "$is_publish" -eq 1 ]; then
   printf '%s\n' "$filter" >>"$MOCK_PUBLISH_LOG"
+  printf 'pnpm %s\n' "$original_args" >>"${MOCK_ARGS_LOG:-/dev/null}"
 fi
 exit 0
 MOCK_PNPM
@@ -237,6 +240,29 @@ else
   else
     fail "integration: bad mode argument exit $RC (want 2)"
   fi
+fi
+
+# Case 5 — main-based tag recovery publishes every package without a misleading
+# provenance flag (the workflow OIDC SHA is main, while artifacts come from the
+# verified release tag SHA).
+PUB_LOG=$(mktemp)
+ARGS_LOG=$(mktemp)
+: >"$PUB_LOG"
+: >"$ARGS_LOG"
+if PATH="$MOCK_BIN:$PATH" \
+   DIST_TAG=latest \
+   MOCK_PUBLISH_LOG="$PUB_LOG" \
+   MOCK_ARGS_LOG="$ARGS_LOG" \
+   MOCK_EXISTING="" \
+   bash "$SCRIPT" recovery-no-provenance >/dev/null 2>&1; then
+  COUNT=$(grep -c . "$PUB_LOG" || true)
+  if [ "$COUNT" -eq 10 ] && ! grep -q -- '--provenance' "$ARGS_LOG"; then
+    pass "integration: recovery publishes all 10 packages without --provenance"
+  else
+    fail "integration: recovery count=$COUNT or found --provenance: $(tr '\n' ' ' <"$ARGS_LOG")"
+  fi
+else
+  fail "integration: recovery-no-provenance run exited non-zero"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

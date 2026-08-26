@@ -142,15 +142,39 @@ so no manual re-dispatch is needed.
    `detect-mac-local` emits a warning and falls back to `mac_local_present=false`
    (full CI build). Upload both files to use the fast-Mac path.
 
-### Manual escape-hatch override (`workflow_dispatch`)
+### Published-release recovery (`workflow_dispatch`)
 
-If you need to invoke the workflow manually (e.g. for debugging) and have already
-uploaded the macOS-x64 files:
+If the `release: published` event is lost or the release workflow needs a fix
+after the GitHub Release is already public, do **not** move the tag, delete the
+Release, or publish npm packages by hand. Commit the workflow fix to `main`, then
+dispatch the reviewed workflow from `main` while pointing it at the existing tag:
 
-- Actions → Release → "Run workflow"
-- **Use workflow from:** select the **tag** `vX.Y.Z`
-- `dry_run`: `false`
-- `skip_macos_x64`: `true` (forces `mac_local_present=true` without querying the Release)
+```sh
+gh workflow run release.yml --ref main \
+  -f dry_run=false \
+  -f skip_macos_x64=false \
+  -f release_tag=vX.Y.Z
+```
+
+The `release-context` job fails closed unless `release_tag` is a valid existing
+published Release whose tag commit and `packages/zfb` version agree. Every build
+job checks out that exact verified commit SHA, while the workflow definition
+comes from `main`. This distinction matters: selecting an older tag in the
+"Use workflow from" control also selects that tag's old workflow file, so it
+cannot recover a bug in that workflow.
+
+`detect-mac-local` queries the specified Release during recovery, so leave
+`skip_macos_x64=false` normally. Set it to `true` only as an escape-hatch when
+both macOS-x64 assets are already attached; the publish job still downloads and
+verifies the checksum before using them.
+
+Recovery packages are published without npm provenance. A workflow dispatched
+from `main` has an OIDC identity for the `main` workflow commit, not the older
+tag commit that was actually checked out and built; attaching that attestation
+would misidentify the source. The publish job loads its recovery helper from a
+separate checkout of the exact `main` workflow commit while keeping all package
+source and binaries pinned to the verified tag commit. Normal
+`release: published` runs retain the full or mixed-provenance behavior below.
 
 ### Provenance trade-off (option B — mixed provenance)
 

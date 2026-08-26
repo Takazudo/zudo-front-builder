@@ -767,6 +767,19 @@ Stop and report the failure. Do not proceed with the commit. Fix the issue and r
 
 Fix the issue, commit the fix, push, then re-invoke `/watch-ci`. Do not proceed to the draft Release until CI is green.
 
+### Release workflow is missing or fails after the Release is published
+
+Never unpublish/delete the published Release, move its tag, or publish npm packages directly. If the cause is in `release.yml`, fix it on `main`, commit + push the fix, and wait for main CI to pass. Then run the fixed workflow definition from `main` against the existing published tag:
+
+```bash
+gh workflow run release.yml --ref main \
+  -f dry_run=false \
+  -f skip_macos_x64=false \
+  -f release_tag=v<version>
+```
+
+Do not select `v<version>` as `--ref`: GitHub would load the old workflow definition from that tag. The workflow's `release-context` job verifies the published Release, tag commit, and package version, then pins every source checkout to that exact commit. Because GitHub OIDC still identifies the `main` workflow commit, this recovery path publishes all packages without npm provenance rather than attaching a misleading source attestation. Watch this recovery run to completion using the same Step 11 procedure. Once it succeeds, perform the normal stable Homebrew update exactly once.
+
 ### Existing draft Release for the version (Step 8)
 
 Default (autonomous): draft → delete and recreate; published → stop with an error (never delete a published Release). With `--confirm`: prompt reuse / delete-and-recreate / abort and wait for user choice before acting.

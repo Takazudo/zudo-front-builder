@@ -40,12 +40,17 @@
 # a mid-list conflict cannot abort the rest.
 #
 # Usage:
-#   scripts/publish-npm-packages.sh <all-provenance|mac-local>
+#   scripts/publish-npm-packages.sh <all-provenance|mac-local|recovery-no-provenance>
 #     all-provenance — every package (incl. zfb-darwin-x64) was built in CI, so
 #                      all carry OIDC-attested --provenance.
 #     mac-local      — zfb-darwin-x64 was built locally (outside this GHA job) and
 #                      cannot carry OIDC provenance, so it is published WITHOUT
 #                      --provenance; every other package keeps --provenance.
+#     recovery-no-provenance
+#                    — a fixed workflow running from main built an older verified
+#                      release tag. GitHub OIDC identifies the main workflow SHA,
+#                      not that tag SHA, so every package is published WITHOUT a
+#                      misleading provenance attestation.
 #
 # Required env:
 #   DIST_TAG          npm dist-tag to publish under (next | latest).
@@ -61,6 +66,11 @@
 # Must be run from the repository root (it `cd`s into packages/* and calls
 # scripts/advance-latest-dist-tag.sh by relative path).
 set -euo pipefail
+
+# Resolve companion control scripts relative to this file. During a main-based
+# recovery this helper is invoked from a separate `.release-control` checkout
+# while package manifests/binaries remain in the verified tag checkout.
+PUBLISH_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Platform packages — npm publish, order irrelevant (no workspace:* deps).
 PLATFORM_DIRS=(
@@ -201,7 +211,10 @@ publish_platform_packages() {
       continue
     fi
     prov="--provenance"
-    if [[ "$mode" == "mac-local" && "$dir" == "packages/zfb-darwin-x64" ]]; then
+    if [[ "$mode" == "recovery-no-provenance" ]]; then
+      prov=""
+      echo "→ ${name}: main-based tag recovery — publishing WITHOUT --provenance."
+    elif [[ "$mode" == "mac-local" && "$dir" == "packages/zfb-darwin-x64" ]]; then
       # Locally-built macOS-x64 binary: no GHA OIDC context → omit --provenance.
       prov=""
       echo "→ ${name}: locally-built macOS-x64 binary (no OIDC) — publishing WITHOUT --provenance."
@@ -211,7 +224,7 @@ publish_platform_packages() {
 }
 
 publish_nonplatform_packages() {
-  local dir name version extra_flags
+  local mode="$1" dir name version extra_flags provenance_flags
   for dir in "${NONPLATFORM_DIRS[@]}"; do
     name="$(manifest_field "$dir" name)"
     version="$(manifest_field "$dir" version)"
@@ -219,6 +232,11 @@ publish_nonplatform_packages() {
       continue
     fi
     extra_flags=()
+    provenance_flags=(--provenance)
+    if [[ "$mode" == "recovery-no-provenance" ]]; then
+      provenance_flags=()
+      echo "→ ${name}: main-based tag recovery — publishing WITHOUT --provenance."
+    fi
     if [[ "$dir" == "crates/zfb-md-wasm/npm" ]]; then
       # @takazudo/zfb-md-wasm's `prepublishOnly` hook runs `pnpm build && pnpm
       # test`, and `build` needs the Rust wasm32 toolchain + a pinned
@@ -237,7 +255,8 @@ publish_nonplatform_packages() {
     # no workspace package a loud failure, never a silent no-op.
     _run_and_classify "$name" "$version" \
       pnpm -r --filter "$name" --fail-if-no-match publish \
-      --tag "$DIST_TAG" --no-git-checks --access public --provenance "${extra_flags[@]}"
+      --tag "$DIST_TAG" --no-git-checks --access public \
+      "${provenance_flags[@]}" "${extra_flags[@]}"
   done
 }
 
@@ -252,15 +271,15 @@ maybe_advance_latest() {
   local zfb_semver
   zfb_semver="$(manifest_field packages/zfb version)"
   echo "== Prerelease dual-tag: advancing 'latest' to ${zfb_semver} =="
-  bash scripts/advance-latest-dist-tag.sh "$zfb_semver"
+  bash "${PUBLISH_SCRIPT_DIR}/advance-latest-dist-tag.sh" "$zfb_semver"
 }
 
 main() {
   local mode="${1:-}"
   case "$mode" in
-    all-provenance | mac-local) ;;
+    all-provenance | mac-local | recovery-no-provenance) ;;
     *)
-      echo "::error::usage: $0 <all-provenance|mac-local> (got: '${mode}')"
+      echo "::error::usage: $0 <all-provenance|mac-local|recovery-no-provenance> (got: '${mode}')"
       return 2
       ;;
   esac
@@ -272,7 +291,7 @@ main() {
 
   echo "== Publishing all workspace packages (mode=${mode}, dist-tag=${DIST_TAG}) =="
   publish_platform_packages "$mode"
-  publish_nonplatform_packages
+  publish_nonplatform_packages "$mode"
   maybe_advance_latest
   echo "== Publish complete: every package is on the registry (newly published or already present). =="
 }

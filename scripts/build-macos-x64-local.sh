@@ -203,8 +203,8 @@ if [[ ! -f "$built_binary" ]]; then
   exit 1
 fi
 
-# ── Assert --version equals release semver (mirrors release.yml:284-296) ──────
-# Rosetta path: run the binary and assert `--version` output equals
+# ── Assert -V equals release semver (mirrors release.yml) ─────────────────────
+# Rosetta path: run the binary and assert short `-V` output equals
 # "zfb $semver" — the only STRONG check this script performs. It catches a
 # missed ZFB_RELEASE_VERSION injection before the binary is archived.
 # Fix (b): on Apple Silicon without Rosetta 2 the x86_64 binary cannot execute
@@ -228,11 +228,11 @@ fi
 expected_version="zfb $semver"
 if arch -x86_64 /usr/bin/true 2>/dev/null; then
   # Rosetta present — execute the binary directly (original assertion).
-  actual_version="$("$built_binary" --version)"
+  actual_version="$("$built_binary" -V)"
   echo "Expected: $expected_version"
   echo "Actual:   $actual_version"
   if [[ "$actual_version" != "$expected_version" ]]; then
-    echo "ERROR: built binary --version mismatch: got '$actual_version', want '$expected_version'" >&2
+    echo "ERROR: built binary -V mismatch: got '$actual_version', want '$expected_version'" >&2
     echo "       (ZFB_RELEASE_VERSION injection likely missing)" >&2
     exit 1
   fi
@@ -250,7 +250,7 @@ else
   echo "         match cannot distinguish the injected version stamp from vendored" >&2
   echo "         package metadata, nor '0.1.0' from '0.1.0-next.N' (issue #748)." >&2
   echo "         For a real check: install Rosetta 2 (softwareupdate --install-rosetta)" >&2
-  echo "         and re-run, or rely on release CI's --version assertions" >&2
+  echo "         and re-run, or rely on release CI's -V assertions" >&2
   echo "         (.github/workflows/release.yml) for published artifacts." >&2
 fi
 
