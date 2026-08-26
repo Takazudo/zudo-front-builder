@@ -637,19 +637,7 @@ fn mask_css_comments(text: &str) -> String {
     while i < bytes.len() {
         let b = bytes[i];
         if b == b'"' || b == b'\'' || b == b'`' {
-            let quote = b;
-            i += 1;
-            while i < bytes.len() {
-                if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                    i += 2;
-                } else {
-                    let closes = bytes[i] == quote;
-                    i += 1;
-                    if closes {
-                        break;
-                    }
-                }
-            }
+            i = skip_css_string(bytes, i);
         } else if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             masked[i] = b' ';
             masked[i + 1] = b' ';
@@ -688,20 +676,41 @@ struct TailwindImportTokens {
     /// Byte offset immediately after the closing specifier quote.
     modifier_insert_at: usize,
     utilities_bearing: bool,
-    has_source_modifier: bool,
+    source_modifier_at: Option<usize>,
 }
 
-/// Parse the token shape relevant to Tailwind import sourcing. The caller
-/// supplies comment-masked text so offsets still address the original line.
-fn parse_tailwind_import_tokens(line: &str) -> Option<TailwindImportTokens> {
-    let bytes = line.as_bytes();
-    let mut i = bytes.iter().position(|b| !b.is_ascii_whitespace())?;
+fn skip_css_string(bytes: &[u8], mut i: usize) -> usize {
+    let quote = bytes[i];
+    i += 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 2;
+        } else {
+            let closes = bytes[i] == quote || bytes[i] == b'\n' || bytes[i] == b'\r';
+            i += 1;
+            if closes {
+                break;
+            }
+        }
+    }
+    i
+}
+
+/// Parse one import starting at `@import`. The caller supplies whole,
+/// comment-masked CSS so whitespace, modifiers, and multiple imports may span
+/// arbitrary lines while all returned offsets still address the original.
+fn parse_tailwind_import_at(text: &str, start: usize) -> Option<(TailwindImportTokens, usize)> {
+    let bytes = text.as_bytes();
+    let mut i = start;
     let import = b"@import";
-    if !bytes.get(i..)?.starts_with(import) {
+    if !bytes.get(i..i + import.len())?.eq_ignore_ascii_case(import) {
         return None;
     }
     i += import.len();
-    if !bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+    if bytes
+        .get(i)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
+    {
         return None;
     }
     while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
@@ -726,7 +735,7 @@ fn parse_tailwind_import_tokens(line: &str) -> Option<TailwindImportTokens> {
     if i >= bytes.len() {
         return None;
     }
-    let specifier = line.get(specifier_start..i)?;
+    let specifier = text.get(specifier_start..i)?;
     if specifier != "tailwindcss" && !specifier.starts_with("tailwindcss/") {
         return None;
     }
@@ -734,25 +743,14 @@ fn parse_tailwind_import_tokens(line: &str) -> Option<TailwindImportTokens> {
     let suffix = &bytes[modifier_insert_at..];
     let mut cursor = 0;
     let mut parentheses_depth: usize = 0;
-    let mut has_source_modifier = false;
+    let mut source_modifier_at = None;
     while cursor < suffix.len() {
         if suffix[cursor] == b';' && parentheses_depth == 0 {
+            cursor += 1;
             break;
         }
         if suffix[cursor] == b'"' || suffix[cursor] == b'\'' {
-            let quote = suffix[cursor];
-            cursor += 1;
-            while cursor < suffix.len() {
-                if suffix[cursor] == b'\\' && cursor + 1 < suffix.len() {
-                    cursor += 2;
-                } else {
-                    let closes = suffix[cursor] == quote;
-                    cursor += 1;
-                    if closes {
-                        break;
-                    }
-                }
-            }
+            cursor = skip_css_string(suffix, cursor);
             continue;
         }
         if suffix[cursor] == b'(' {
@@ -767,7 +765,7 @@ fn parse_tailwind_import_tokens(line: &str) -> Option<TailwindImportTokens> {
         }
         if suffix[cursor].is_ascii_alphabetic() || suffix[cursor] == b'_' || suffix[cursor] == b'-'
         {
-            let start = cursor;
+            let identifier_start = cursor;
             cursor += 1;
             while cursor < suffix.len()
                 && (suffix[cursor].is_ascii_alphanumeric()
@@ -776,65 +774,88 @@ fn parse_tailwind_import_tokens(line: &str) -> Option<TailwindImportTokens> {
             {
                 cursor += 1;
             }
-            if parentheses_depth == 0 && &suffix[start..cursor] == b"source" {
+            if parentheses_depth == 0 && &suffix[identifier_start..cursor] == b"source" {
                 while cursor < suffix.len() && suffix[cursor].is_ascii_whitespace() {
                     cursor += 1;
                 }
                 if suffix.get(cursor) == Some(&b'(') {
-                    has_source_modifier = true;
-                    break;
+                    source_modifier_at = Some(modifier_insert_at + identifier_start);
                 }
             }
         } else {
             cursor += 1;
         }
     }
-    Some(TailwindImportTokens {
-        modifier_insert_at,
-        utilities_bearing: specifier == "tailwindcss" || specifier == "tailwindcss/utilities",
-        has_source_modifier,
-    })
+    Some((
+        TailwindImportTokens {
+            modifier_insert_at,
+            utilities_bearing: specifier == "tailwindcss" || specifier == "tailwindcss/utilities",
+            source_modifier_at,
+        },
+        modifier_insert_at + cursor,
+    ))
+}
+
+fn collect_active_tailwind_imports(text: &str) -> Vec<TailwindImportTokens> {
+    let masked = mask_css_comments(text);
+    let bytes = masked.as_bytes();
+    let mut imports = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' || bytes[i] == b'\'' || bytes[i] == b'`' {
+            i = skip_css_string(bytes, i);
+            continue;
+        }
+        let has_identifier_prefix = i > 0
+            && (bytes[i - 1].is_ascii_alphanumeric()
+                || bytes[i - 1] == b'_'
+                || bytes[i - 1] == b'-');
+        if bytes[i] == b'@' && !has_identifier_prefix {
+            if let Some((tokens, next)) = parse_tailwind_import_at(&masked, i) {
+                imports.push(tokens);
+                i = next;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    imports
 }
 
 /// Apply explicit sourcing to active user-authored Tailwind imports without
 /// touching comments or adding a duplicate umbrella import.
 fn rewrite_tailwind_imports_for_explicit_sourcing(text: &str) -> Result<String> {
-    let masked = mask_css_comments(text);
-    let mut out = String::with_capacity(text.len() + 16);
-    let mut original_offset = 0;
-
-    for (line_index, masked_line) in masked.split_inclusive('\n').enumerate() {
-        let original_line = &text[original_offset..original_offset + masked_line.len()];
-        if let Some(tokens) = parse_tailwind_import_tokens(masked_line) {
-            if tokens.has_source_modifier {
-                return Err(anyhow!(
-                    "explicit Tailwind sourcing rejects a pre-existing source(...) modifier on line {}: {}",
-                    line_index + 1,
-                    original_line.trim_end()
-                ));
-            }
-            if tokens.utilities_bearing {
-                out.push_str(&original_line[..tokens.modifier_insert_at]);
-                out.push_str(" source(none)");
-                out.push_str(&original_line[tokens.modifier_insert_at..]);
-            } else {
-                out.push_str(original_line);
-            }
-        } else {
-            out.push_str(original_line);
-        }
-        original_offset += masked_line.len();
+    let imports = collect_active_tailwind_imports(text);
+    if let Some(offset) = imports.iter().find_map(|tokens| tokens.source_modifier_at) {
+        let line_number = text.as_bytes()[..offset]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count()
+            + 1;
+        let offending_line = text.lines().nth(line_number - 1).unwrap_or("");
+        return Err(anyhow!(
+            "explicit Tailwind sourcing rejects a pre-existing source(...) modifier on line {line_number}: {}",
+            offending_line.trim_end()
+        ));
     }
-    // `split_inclusive` covers a non-empty final unterminated line. It has
-    // no items only for the empty string.
-    debug_assert_eq!(original_offset, text.len());
+
+    let insertion_count = imports
+        .iter()
+        .filter(|tokens| tokens.utilities_bearing)
+        .count();
+    let mut out = String::with_capacity(text.len() + insertion_count * " source(none)".len());
+    let mut copied_through = 0;
+    for tokens in imports.iter().filter(|tokens| tokens.utilities_bearing) {
+        out.push_str(&text[copied_through..tokens.modifier_insert_at]);
+        out.push_str(" source(none)");
+        copied_through = tokens.modifier_insert_at;
+    }
+    out.push_str(&text[copied_through..]);
     Ok(out)
 }
 
 fn has_active_tailwind_import(text: &str) -> bool {
-    mask_css_comments(text)
-        .lines()
-        .any(|line| parse_tailwind_import_tokens(line).is_some())
+    !collect_active_tailwind_imports(text).is_empty()
 }
 
 /// Whether a single CSS line is an `@import "tailwindcss"` directive.
@@ -844,8 +865,8 @@ fn has_active_tailwind_import(text: &str) -> bool {
 /// either quote style, after trimming surrounding whitespace. This is the
 /// single predicate shared by:
 ///
-/// - [`build_synthesised_entry_css`]'s `user_has_import` detection (the
-///   Tailwind-enabled path), and
+/// - [`build_synthesised_entry_css`]'s default-mode `user_has_import`
+///   detection (explicit mode uses its whole-text token scanner), and
 /// - the `zfb` build command's authored-CSS import stripper (the
 ///   `tailwind.enabled = false` path, issue #824),
 ///
@@ -864,7 +885,10 @@ pub fn is_tailwind_import_line(line: &str) -> bool {
 ///
 /// The output, in order, is:
 ///
-/// 1. `@import "tailwindcss";` — required for v4 utility generation.
+/// 1. `@import "tailwindcss";` — required for v4 utility generation. In
+///    explicit-sourcing mode this is emitted as
+///    `@import "tailwindcss" source(none);`, or the equivalent active user
+///    import is rewritten in place.
 /// 2. `@source "<glob>";` directives for every entry in
 ///    `content_globs` (the user project). Globs are emitted **before**
 ///    framework globs so user-project overrides win in cascade order.
@@ -2452,6 +2476,19 @@ mod tests {
     }
 
     #[test]
+    fn explicit_sourcing_rewrites_multiline_and_same_line_imports() {
+        let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
+        let input = concat!(
+            "@import\n  \"tailwindcss/preflight\"; @import\n",
+            "  'tailwindcss/utilities' layer(utilities);\n",
+        );
+        let css = build_synthesised_entry_css(&cfg, Some(input));
+        assert!(css.contains("\"tailwindcss/preflight\"; @import\n"));
+        assert!(css.contains("'tailwindcss/utilities' source(none) layer(utilities);"));
+        assert_eq!(css.matches("source(none)").count(), 1, "got:\n{css}");
+    }
+
+    #[test]
     fn explicit_sourcing_rejects_existing_source_modifier_with_line() {
         let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
         let input = concat!(
@@ -2465,6 +2502,17 @@ mod tests {
             message.contains("@import \"tailwindcss/utilities\" source(\"../app\");"),
             "got: {message}"
         );
+    }
+
+    #[test]
+    fn explicit_sourcing_reports_multiline_source_modifier_line() {
+        let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
+        let input = "@import \"tailwindcss\"\n  source(\"../app\");\n";
+        let message = try_build_synthesised_entry_css(&cfg, Some(input))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("line 2"), "got: {message}");
+        assert!(message.contains("source(\"../app\");"), "got: {message}");
     }
 
     #[test]
