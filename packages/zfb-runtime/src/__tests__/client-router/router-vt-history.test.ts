@@ -397,6 +397,7 @@ describe("Back wins after the early history commit but before swap (#2603)", () 
     expect(cancelPendingIslands).not.toHaveBeenCalled();
     expect(unmountIslands).not.toHaveBeenCalled();
     expect(mountNewIslands).not.toHaveBeenCalled();
+    expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
 
     // A subsequent push must reuse A+1. If popstate failed to re-adopt A's
     // index, the aborted B commit would leave the counter one step too high.

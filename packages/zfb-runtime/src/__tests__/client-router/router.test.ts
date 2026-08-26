@@ -368,6 +368,7 @@ describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branc
     expect(unmountIslands).toHaveBeenCalledOnce();
     expect(mountNewIslands).toHaveBeenCalledOnce();
     expect(document.querySelector("main")?.textContent).toBe("content for /entry-abort-b");
+    expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
   });
 
   it("aborts the first navigation after the old-page animation await and lets the second win", async () => {
@@ -421,6 +422,7 @@ describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branc
     expect(unmountIslands).toHaveBeenCalledOnce();
     expect(mountNewIslands).toHaveBeenCalledOnce();
     expect(document.querySelector("main")?.textContent).toBe("content for /animation-abort-b");
+    expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
   });
 
   it("finishes a committed navigation when its swap callback synchronously starts a newer one", async () => {
