@@ -201,8 +201,8 @@ jobs:
           "$ESBUILD_SLOT" --version
           "$TAILWIND_SLOT" --version
 
-      # The reconciled manifest, env-gate + heavy tags only (43 tests as of
-      # issue #2020 — see crates/CLAUDE.md's manifest table for
+      # The reconciled manifest, env-gate + heavy tags only (55 exact-name
+      # entries after issue #2600 — see crates/CLAUDE.md's manifest table for
       # the authoritative list; this filterset's own count has drifted from
       # that table's total before, so re-measure both rather than trusting
       # either — scripts/check-exam-ignore-parity.sh (issue #2072) now does
@@ -278,6 +278,17 @@ jobs:
               | test(=ssr_only_cold_bootstrap_recovery_reloads_open_tab)
               | test(=embedded_host_matches_real_workerd_for_supported_rows_and_documented_divergences)
               | test(=e2e_poll_backend_content_edit_and_new_entry_discovery)
+              | test(=css_command_output_is_deterministic_and_matches_committed_golden)
+              | test(=css_command_highlight_class_default_and_inline_modes)
+              | test(=css_command_explicit_sources_isolate_ambient_decoy)
+              | test(=css_command_replays_consumer_entrypoint_with_explicit_sources)
+              | test(=css_command_missing_input_exits_nonzero)
+              | test(=css_command_zero_match_source_glob_exits_nonzero)
+              | test(=css_command_same_canonical_input_output_exits_nonzero)
+              | test(=css_command_missing_relative_import_exits_nonzero)
+              | test(=css_command_real_unresolved_apply_exits_nonzero)
+              | test(=css_command_atomic_success_replaces_and_failure_preserves_output)
+              | test(=css_command_matches_build_stylesheet_for_equivalent_explicit_source_plan)
           ' 2>&1 | tee target/nextest-logs/exam-quarantine.log
           rc=${PIPESTATUS[0]}
           set -e

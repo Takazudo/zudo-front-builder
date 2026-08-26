@@ -6,12 +6,13 @@ sidebar_position: 6
 
 ## 概要
 
-`zfb` バイナリは、開発ライフサイクル全体をカバーする 5 つのサブコマンドを提供します。
+`zfb` バイナリは、開発ライフサイクル全体をカバーする 6 つのサブコマンドを提供します。
 
 ```
 zfb new    — テンプレートから新しいプロジェクトをスキャフォールドする
 zfb dev    — ライブリロード付きのローカル開発サーバー
 zfb build  — プロダクションビルド
+zfb css    — サイトをビルドせずに CSS エントリポイントをコンパイルする
 zfb preview — ビルド済みサイトを配信する
 zfb check  — 型チェックとコンテンツコレクションのスキーマ検証
 ```
@@ -131,6 +132,68 @@ zfb build --no-minify-html
 zfb build --strict-broken
 zfb build --no-strict-broken
 ```
+
+## `zfb css`
+
+ルートの探索、ページのレンダリング、アプリケーションコードのバンドル、プラグインホストの起動を行わずに、1 つの CSS エントリポイントを zfb 内蔵の Tailwind CSS v4 エンジンでコンパイルします。
+
+```sh
+zfb css --input <entry.css> --output <compiled.css>
+        [--project-root <dir>]
+        [--source <glob> ...]
+        [--no-auto-source]
+        [--code-highlight-mode <class|inline>]
+        [--no-default-highlight-styles]
+```
+
+### フラグ
+
+| フラグ | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `--input` | path | 必須 | CSS エントリポイント。相対パスは現在の作業ディレクトリを基準に解決されます。 |
+| `--output` | path | 必須 | CSS の出力先。相対パスは現在の作業ディレクトリを基準に解決されます。入力と同じファイルに解決されるパスは指定できません。 |
+| `--project-root` | path | 現在の作業ディレクトリ | `zfb.config` の読み込みと `--source` glob の解決に使うルート。このパス自体が相対パスの場合は、現在の作業ディレクトリを基準に解決されます。 |
+| `--source` | glob（複数指定可） | なし | Tailwind がクラス名を検出する明示的なコンテンツソース。`--project-root` を基準に解決され、各 glob は 1 つ以上のファイルに一致する必要があります。指定順は保たれ、同じ文字列を重ねて指定した場合は最初のものだけが使われます。 |
+| `--no-auto-source` | boolean flag | `false` | 5 つのデフォルトコンテンツルート（`pages`、`components`、`layouts`、`content`、`src`）を除外します。明示した `--source` と、シンタックスハイライトのロールクラスから作られる safelist は引き続き有効です。 |
+| `--code-highlight-mode` | `class` または `inline` | config/default | zfb のシンタックスハイライト用フレームワーク CSS を含めるかどうかを決める際に、`codeHighlight.mode` を上書きします。`classPrefix` や `roleClasses` など、その他の `codeHighlight` 設定は引き続き config から読み込まれます。 |
+| `--no-default-highlight-styles` | boolean flag | `false` | class モード用の組み込み `zfb-hi.css` スタイルシートを出力しません。`codeHighlight.defaultStylesheet: true` よりも優先されます。 |
+
+### 例
+
+ライブラリパッケージでは、たとえば `packages/zudo-doc/src/compiled.entry.css` に次のような順序付きエントリを用意できます。
+
+```css
+@layer zd-preflight, zd-flow;
+@import "tailwindcss/preflight" layer(zd-preflight);
+@import "tailwindcss/utilities";
+
+@import "@takazudo/zudo-doc/theme.css";
+@import "@takazudo/zudo-doc/safelist.css";
+@import "@takazudo/zudo-doc/content.css";
+@import "@takazudo/zudo-doc/page-loading.css";
+@import "@takazudo/zudo-doc/features.css";
+```
+
+リポジトリのルートから実行し、パッケージ自身が持つソースだけをコンパイル対象にします。
+
+```sh
+zfb css \
+  --input packages/zudo-doc/src/compiled.entry.css \
+  --output packages/zudo-doc/dist/compiled.css \
+  --project-root packages/zudo-doc \
+  --source 'src/**/*.{tsx,ts,jsx,js}' \
+  --source 'dist/**/*.{tsx,ts,jsx,js}' \
+  --no-auto-source
+```
+
+この例では、`--input`、`--output`、`--project-root` は作業ディレクトリであるリポジトリルートを基準に解決されます。一方、2 つの `--source` glob は `packages/zudo-doc` を基準に解決されます。
+
+### 補足
+
+- **ソース指定は常に明示的です。** `zfb css` は、有効な `@import "tailwindcss"` または分割形式の `@import "tailwindcss/utilities"` に `source(none)` を付け、Tailwind の Git 情報を使った暗黙のソース検出を無効にします。有効な Tailwind import にすでに `source(...)` が付いている場合は、黙って上書きせずエラーにします。デフォルトでは、そのうえで `--project-root` 以下の 5 つのルートを明示的な `@source` ディレクティブとして追加します。例のように `--no-auto-source` を指定するとデフォルトルートだけが省かれ、繰り返し指定した `--source` と `codeHighlight.roleClasses` から作られる inline safelist は残ります。この方針は意図的に `zfb build` と異なります。
+- **出力は決定的で、アトミックに置き換えられます。** エントリ、config、ソース一式とその指定順が同じなら、タイムスタンプ、ソースマップ、一時パスを含まない同一のバイト列が生成されます。コンパイルに成功したときだけ `--output` がアトミックに置き換えられ、失敗時には既存の出力がそのまま保たれます。
+- **グローバル CSS のみが対象です。** CSS Modules の探索や処理は行いません。パッケージ由来の `url()` によって別ファイルの出力が必要になる場合、v1 では付随アセット（companion asset）をスタイルシートの隣に書き出さず、非ゼロ終了で拒否します。
+- **config の利用範囲は限定的です。** `zfb.config.json` または `zfb.config.ts` があれば、`classPrefix` や `roleClasses` などのシンタックスハイライト設定を読み込み、CLI のハイライト関連フラグは対応するモード／スタイルシートの選択を上書きします。config に `tailwind.enabled: false` が設定されていても、`zfb css` を実行すると Tailwind は必ず動作します。
 
 ## `zfb preview`
 

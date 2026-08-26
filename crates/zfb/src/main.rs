@@ -10,6 +10,7 @@ async fn main() {
         Command::New(args) => commands::new::run(args).await,
         Command::Dev(args) => commands::dev::run(args).await,
         Command::Build(args) => commands::build::run(args).await,
+        Command::Css(args) => commands::css::run(args).await,
         Command::Preview(args) => commands::preview::run(args).await,
         Command::Check(args) => commands::check::run(args).await,
     };

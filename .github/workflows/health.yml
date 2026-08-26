@@ -400,8 +400,8 @@ jobs:
       # green run proves nothing about these. Same ABSOLUTE-path requirement
       # as ZFB_ESBUILD_BIN above: `cargo test` runs each test binary with its
       # CWD set to the owning package directory, not the workspace root.
-      # Three crate-scoped steps keep failures attributable; the zfb step runs
-      # all three command-layer env-gates with both binary paths pinned,
+      # Four crate-scoped steps keep failures attributable; the zfb command
+      # steps run their real-engine env-gates with both binary paths pinned,
       # mirroring the `#[ignore]` manifest table in crates/CLAUDE.md.
       - name: Run zfb-css tailwindcss-v4 env-gate integration test
         env:
@@ -422,13 +422,25 @@ jobs:
         # as a key/value separator to a strict parser).
         run: "cargo test -p zfb --lib commands::build:: -- --ignored"
 
+      # Standalone CSS command integration coverage (issue #2600): these are
+      # Level-3 emitted-byte/process checks against the staged real Tailwind
+      # binary. The parity test also spawns a real `zfb build`, so pin esbuild
+      # here as well; this named scope keeps failures attributable instead of
+      # hiding them in the broad nextest run (which intentionally excludes
+      # ignored tests).
+      - name: Run zfb css command real-engine integration tests
+        env:
+          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
+          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
+        run: cargo test -p zfb --test css_command -- --ignored
+
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
       # previously only *compiled* the test code (the cargo build --all-targets
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
       # budget (retries = 1, pass-on-retry RECORDED not hidden — #1341 consumes
       # it), per-test timeouts, and JUnit output. The `ci` profile
-      # (.config/nextest.toml) also serializes all 16 heavy V8/esbuild e2e
-      # binaries via a `max-threads = 1` test-group; 8 of those also adopt
+      # (.config/nextest.toml) also serializes all 41 heavy V8/esbuild e2e
+      # binaries via a `max-threads = 1` test-group; 24 of those also adopt
       # #1339's cross-binary flock. Per-binary inventory was reconciled against
       # `cargo test --workspace -- --list`: identical apart from doctests, which
       # nextest does not run — hence the separate doc-test step below.

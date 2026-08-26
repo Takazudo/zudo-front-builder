@@ -62,8 +62,8 @@ use zfb_build::pipeline::{
 };
 use zfb_build::renderer::{render_all, Backend, RendererInput, RendererOutput};
 use zfb_css::{
-    css_relative_path, is_tailwind_import_line, AuthoredCssEngine, CssEngine, CssPipeline,
-    CssPipelineConfig, TailwindSubprocessConfig, TailwindSubprocessEngine,
+    css_relative_path, is_tailwind_import_line, AuthoredCssEngine, CssEngine,
+    TailwindSubprocessConfig, TailwindSubprocessEngine,
 };
 #[cfg(test)]
 use zfb_islands::scan_islands_with_meta;
@@ -82,15 +82,18 @@ use crate::cli::{
     BuildArgs, BuildEmitRenderArtifacts, BuildMinifyHtml, BuildStrictBrokenLinks,
     BuildStrictContentBridge,
 };
+use crate::commands::css_support::{resolve_framework_css, role_classes_inline_sources};
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
-use crate::config::{CodeHighlightMode, Config, OutputMode};
+#[cfg(test)]
+use crate::config::CodeHighlightMode;
+use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
-    build_prerender_map, build_route_universe, check_runtime_installed, embedded_binary,
-    embedded_node_modules, eval_deferred_paths_via_worker, expand_dynamic_routes, is_ssr_route,
-    DeferredDynamicRoute, DynamicResolvedEntry, RouteUniversePlan, WorkerDispatch,
+    build_prerender_map, build_route_universe, check_runtime_installed, embedded_node_modules,
+    eval_deferred_paths_via_worker, expand_dynamic_routes, is_ssr_route, DeferredDynamicRoute,
+    DynamicResolvedEntry, RouteUniversePlan, WorkerDispatch,
 };
 
 /// Entry point for `zfb build`.
@@ -1120,10 +1123,7 @@ pub(crate) fn build_default_css_payload_with_source_plan(
     // onto the project root absolute path so the synthesised entry
     // CSS picks up sources regardless of where the user invoked
     // `zfb build`.
-    let default_content_globs = zfb_css::engine::DEFAULT_CONTENT_ROOTS
-        .iter()
-        .map(|root| project_root.join(root).to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
+    let default_content_globs = crate::commands::css_support::default_content_globs(project_root);
 
     // `sibling_mirror_roots` is computed once above, BEFORE the
     // Tailwind-enabled branch, so the issue #1802 seam can publish it on
@@ -1147,7 +1147,7 @@ pub(crate) fn build_default_css_payload_with_source_plan(
         &sibling_mirror_roots,
     );
 
-    let mut tw_cfg = TailwindSubprocessConfig::default()
+    let tw_cfg = TailwindSubprocessConfig::default()
         .with_working_dir(project_root.to_path_buf())
         .with_content_globs(content_globs)
         .with_negative_source_globs(negative_source_globs)
@@ -1158,14 +1158,7 @@ pub(crate) fn build_default_css_payload_with_source_plan(
     // `crates/zfb/binaries/` workspace dir still resolve a working tailwind
     // CLI. The TempDir handle rides on the config (and hence the engine)
     // so the extracted file outlives every `produce_utility_css` call.
-    // Skip when `ZFB_TAILWIND_BIN` is set — `with_embedded_binary` is also
-    // a no-op in that case, but skipping the extract avoids the disk + tar
-    // work entirely.
-    if std::env::var_os("ZFB_TAILWIND_BIN").is_none() {
-        if let Ok((handle, path)) = embedded_binary("tailwindcss-v4") {
-            tw_cfg = tw_cfg.with_embedded_binary(handle, path);
-        }
-    }
+    let mut tw_cfg = crate::commands::css_support::with_embedded_tailwind_binary(tw_cfg);
 
     // Honour an authored global stylesheet at the conventional
     // location. Tailwind v4's entry CSS prepends our `@source`
@@ -1254,85 +1247,13 @@ fn assemble_css_content_globs(
     (content_globs, negative_source_globs)
 }
 
-/// Resolve the `framework_css` block ([`CssPipelineConfig::framework_css`])
-/// for the current build (Highlight Tokens epic sub #1533).
+/// Build-only adapter around the shared CSS emitter core.
 ///
-/// Ships `zfb_css::default_hi_css()` — the framework's default
-/// `--zfb-hi-*` token stylesheet for class-mode syntax highlighting — iff
-/// the resolved config has `codeHighlight.mode == "class"` AND the user
-/// has not opted out via `codeHighlight.defaultStylesheet: false`. `None`
-/// in every other case (including the default `mode: "inline"`), so
-/// inline-mode and pre-epic projects see byte-identical `combine()`/
-/// `hash_8()` output.
-///
-/// **classPrefix-aware:** `default_hi_css()` hardcodes `.hi-*` role
-/// selectors, matching the default `codeHighlight.classPrefix` of `"hi-"`.
-/// A project with a custom `classPrefix` (e.g. `"syn-"`) emits
-/// `{classPrefix}{role}` spans, so shipping the `.hi-*` sheet unchanged
-/// would style nothing. When `classPrefix != "hi-"` the `.hi-` SELECTOR
-/// prefix is rewritten to the configured one. The `--zfb-hi-*` custom
-/// properties are namespaced independently of `classPrefix` and stay
-/// `--zfb-hi-*` — the `.replace(".hi-", …)` leaves them untouched because
-/// they carry no leading dot (`--zfb-hi-` does not contain `.hi-`).
-fn resolve_framework_css(config: &Config) -> Option<String> {
-    let code_highlight = config.code_highlight.as_ref()?;
-    if code_highlight.mode != CodeHighlightMode::Class || !code_highlight.default_stylesheet {
-        return None;
-    }
-    let css = zfb_css::default_hi_css();
-    let prefix = code_highlight.class_prefix.as_str();
-    if prefix == "hi-" {
-        Some(css.to_string())
-    } else {
-        Some(css.replace(".hi-", &format!(".{prefix}")))
-    }
-}
-
-/// zfb#1534: compute the Tailwind `@source inline("...")` safelist for
-/// `codeHighlight.roleClasses`.
-///
-/// `roleClasses` values live in `zfb.config.ts` (not a Tailwind-scanned
-/// content root) and are emitted only into rendered `dist/*.html`
-/// (never scanned, and itself an output of this same build) — without
-/// safelisting, the mapped utilities are silently never generated
-/// (green build, unstyled tokens). Every value is split on whitespace
-/// (a mapping may hold multiple space-separated classes, e.g.
-/// `"text-violet-600 dark:text-violet-400"`), deduped, and sorted: the
-/// result feeds the synthesised entry CSS, which feeds the CSS
-/// `hash_8` input, so unstable ordering would churn the asset hash for
-/// an unchanged config.
-///
-/// Returns empty when `codeHighlight.roleClasses` is absent — the
-/// common case. Callers only reach this on the `tailwind.enabled`
-/// path; the authored-CSS path (`tailwind.enabled = false`) returns
-/// early in [`build_default_css_payload`] before ever calling this, and
-/// instead relies on the build warning emitted at config-load time
-/// (`crates/zfb/src/config.rs`, issue #1530).
-fn role_classes_inline_sources(config: &Config) -> Vec<String> {
-    let mut classes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    if let Some(role_classes) = config
-        .code_highlight
-        .as_ref()
-        .and_then(|ch| ch.role_classes.as_ref())
-    {
-        for value in role_classes.values() {
-            classes.extend(value.split_whitespace().map(str::to_string));
-        }
-    }
-    classes.into_iter().collect()
-}
-
-/// Shared tail of the two CSS-emitter paths
-/// ([`build_default_css_payload`] and [`build_authored_only_css_payload`]).
-///
-/// Given an already-configured [`CssEngine`] (Tailwind subprocess or
-/// authored-verbatim), builds the [`CssPipelineConfig`], runs
-/// [`CssPipeline::build_emitter`], and packages the result as an
-/// [`AssetEmitterPayload`]. Both call sites feed the same `project_root`
-/// and `outdir`, so the CSS Modules hash root is identical across them and
-/// matches [`compute_css_module_class_maps`] (issue #825). The per-call-site
-/// differences (the authored path's whitespace-only `None` guard vs the
-/// Tailwind path's always-emit) stay at the call sites, not in this helper.
+/// [`crate::commands::css_support::run_css_emitter`] returns the
+/// engine-agnostic [`zfb_css::CssEmitterOutput`] so the standalone `zfb css`
+/// command can consume it without depending on production asset-graph types.
+/// `zfb build` adapts that output here into its [`AssetEmitterPayload`], at the
+/// boundary where CSS companions become `zfb-build` companion files.
 fn run_css_emitter<E: CssEngine>(
     engine: E,
     project_root: &Path,
@@ -1348,44 +1269,14 @@ fn run_css_emitter<E: CssEngine>(
     explicit_css_modules: Vec<PathBuf>,
     framework_css: Option<String>,
 ) -> Result<AssetEmitterPayload> {
-    let pipe_cfg = CssPipelineConfig {
+    let emitter_out = crate::commands::css_support::run_css_emitter(
+        engine,
+        project_root,
+        outdir,
         sources,
-        css_modules: explicit_css_modules,
-        // The on-disk class-map JSON writer is not used: the build-time
-        // CSS Modules rewrite consumes the maps in-memory instead.
-        // `compute_css_module_class_maps` runs `CssModulesProcessor`
-        // directly (same config this emitter uses, so scoped names agree)
-        // and feeds `BundlerInput::css_module_class_maps`, which the
-        // bundler applies in the shadow tree. No JSON channel is needed,
-        // so `class_map_dir` stays `None`.
-        class_map_dir: None,
-        // `output_root` is unused by `build_emitter` (it does not
-        // write the hashed asset itself) but is read by the
-        // class-map writer when `class_map_dir` is `Some`. Pin it to
-        // the configured outdir for forward-compat.
-        output_root: outdir.to_path_buf(),
-        // Hash root shared with `compute_css_module_class_maps` via the
-        // workspace-aware `for_project_and_first_party_roots` constructor
-        // (issues #825/#1694) — a claimed sibling `.module.css` (issue
-        // #1696) hashes off its `first_party_root`-relative path here too,
-        // so its scoped `[hash]` prefix agrees with the class map.
-        // `first_party_root == project_root` outside a workspace, so this
-        // is byte-identical to the old `for_project_root` call there.
-        modules_config: zfb_css::modules::CssModulesConfig::for_project_and_first_party_roots(
-            project_root,
-            &zfb_types::first_party_root_for(project_root),
-        ),
-        // zfb-hi.css default token stylesheet, class-mode only (#1533).
-        // Computed once by the caller (`build_default_css_payload`) and
-        // threaded down as a plain `Option<String>`, so both the Tailwind
-        // and authored-only paths — the two callers of this helper — carry
-        // the same block without re-resolving config here.
+        explicit_css_modules,
         framework_css,
-        ..CssPipelineConfig::default()
-    };
-
-    let pipeline = CssPipeline::new(engine, pipe_cfg);
-    let emitter_out = pipeline.build_emitter()?;
+    )?;
 
     // Package-attributed `url()` references the engine resolved and
     // rewrote `emitter_out.bytes` to point at (issue #2316) become CSS
@@ -1424,7 +1315,7 @@ fn run_css_emitter<E: CssEngine>(
 /// authored bytes verbatim as the "engine half" of the combined
 /// stylesheet. CSS Modules processing, concatenation, hashing, and
 /// asset emission are engine-agnostic and run unchanged via
-/// [`CssPipeline::build_emitter`].
+/// [`zfb_css::CssPipeline::build_emitter`].
 ///
 /// Returns `Ok(None)` when the project has neither an authored global
 /// stylesheet nor any CSS Modules — the combined output would be

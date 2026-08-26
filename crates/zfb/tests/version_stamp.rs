@@ -13,6 +13,8 @@
 
 use std::process::Command;
 
+use zfb_toolchain_pins::{EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION};
+
 /// Compile and run `zfb --version` with `ZFB_RELEASE_VERSION` set to a
 /// well-known test value and assert the output reflects that value.
 ///
@@ -72,6 +74,16 @@ fn version_stamp_from_env() {
     assert!(
         stdout.trim().contains(&expected),
         "expected --version to contain '{expected}', got: '{}'",
+        stdout.trim()
+    );
+    assert!(
+        stdout.contains(EXPECTED_TAILWIND_VERSION),
+        "expected --version to report embedded Tailwind CSS {EXPECTED_TAILWIND_VERSION}, got: '{}'",
+        stdout.trim()
+    );
+    assert!(
+        stdout.contains(EXPECTED_ESBUILD_VERSION),
+        "expected --version to report embedded esbuild {EXPECTED_ESBUILD_VERSION}, got: '{}'",
         stdout.trim()
     );
 }
