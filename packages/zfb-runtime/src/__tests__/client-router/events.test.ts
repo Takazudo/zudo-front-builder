@@ -177,7 +177,10 @@ describe("doSwap — lifecycle ordering", () => {
   it("dispatches zfb:before-swap, awaits afterDispatch, then calls swap()", async () => {
     const order: string[] = [];
     const beforeHandler = (e: Event) => {
-      if (isTransitionBeforeSwapEvent(e)) order.push("before-swap");
+      if (isTransitionBeforeSwapEvent(e)) {
+        order.push("before-swap");
+        e.swap = () => order.push("swap");
+      }
     };
     document.addEventListener("zfb:before-swap", beforeHandler);
 
@@ -200,20 +203,13 @@ describe("doSwap — lifecycle ordering", () => {
       order.push("afterDispatch");
     };
 
-    const ev = await doSwap(fakePrepEvent, fakeViewTransition, afterDispatch);
-    // `swap()` is overridable on the event — by default it calls swap(newDoc),
-    // which mutates the live DOM. We replace it with a sentinel so we can
-    // assert the dispatch order without exercising swap-functions internals.
-    // (The default impl is covered by swap-functions.test.ts.)
-    void ev;
-    // After doSwap completes, swap() has been invoked internally on the event.
-    // We don't observe swap() here directly; ordering is verified by
-    // before-swap → afterDispatch.
+    const result = await doSwap(fakePrepEvent, fakeViewTransition, afterDispatch);
     document.removeEventListener("zfb:before-swap", beforeHandler);
-    expect(order).toEqual(["before-swap", "afterDispatch"]);
+    expect(result.swapped).toBe(true);
+    expect(order).toEqual(["before-swap", "afterDispatch", "swap"]);
   });
 
-  it("returns a TransitionBeforeSwapEvent with viewTransition + a swap() function", async () => {
+  it("returns a swapped outcome carrying the TransitionBeforeSwapEvent", async () => {
     const fakeViewTransition = { skipTransition: () => {} } as unknown as ViewTransition;
     const fakePrepEvent = new TransitionBeforePreparationEvent(
       new URL("http://test.local/a"),
@@ -227,10 +223,78 @@ describe("doSwap — lifecycle ordering", () => {
       undefined,
       async () => {},
     );
-    const ev = await doSwap(fakePrepEvent, fakeViewTransition);
-    expect(ev).toBeInstanceOf(TransitionBeforeSwapEvent);
-    expect(ev.viewTransition).toBe(fakeViewTransition);
-    expect(typeof ev.swap).toBe("function");
+    const result = await doSwap(fakePrepEvent, fakeViewTransition);
+    expect(result.swapped).toBe(true);
+    expect(result.event).toBeInstanceOf(TransitionBeforeSwapEvent);
+    expect(result.event.viewTransition).toBe(fakeViewTransition);
+    expect(typeof result.event.swap).toBe("function");
+  });
+
+  it("returns not-swapped when the signal aborts during afterDispatch", async () => {
+    const controller = new AbortController();
+    const fakePrepEvent = new TransitionBeforePreparationEvent(
+      new URL("http://test.local/a"),
+      new URL("http://test.local/b"),
+      "forward",
+      "push",
+      undefined,
+      undefined,
+      window.document,
+      controller.signal,
+      undefined,
+      async () => {},
+    );
+    const swap = vi.fn();
+    const beforeSwap = vi.fn();
+    const beforeHandler = (event: Event) => {
+      if (isTransitionBeforeSwapEvent(event)) event.swap = swap;
+    };
+    document.addEventListener("zfb:before-swap", beforeHandler);
+
+    const result = await doSwap(
+      fakePrepEvent,
+      { skipTransition: () => {} } as unknown as ViewTransition,
+      async () => controller.abort(),
+      beforeSwap,
+    );
+
+    document.removeEventListener("zfb:before-swap", beforeHandler);
+    expect(result.swapped).toBe(false);
+    expect(beforeSwap).not.toHaveBeenCalled();
+    expect(swap).not.toHaveBeenCalled();
+  });
+
+  it("stays swapped when an overridden swap aborts synchronously", async () => {
+    const controller = new AbortController();
+    const fakePrepEvent = new TransitionBeforePreparationEvent(
+      new URL("http://test.local/a"),
+      new URL("http://test.local/b"),
+      "forward",
+      "push",
+      undefined,
+      undefined,
+      window.document,
+      controller.signal,
+      undefined,
+      async () => {},
+    );
+    const beforeSwap = vi.fn();
+    const beforeHandler = (event: Event) => {
+      if (isTransitionBeforeSwapEvent(event)) event.swap = () => controller.abort();
+    };
+    document.addEventListener("zfb:before-swap", beforeHandler);
+
+    const result = await doSwap(
+      fakePrepEvent,
+      { skipTransition: () => {} } as unknown as ViewTransition,
+      undefined,
+      beforeSwap,
+    );
+
+    document.removeEventListener("zfb:before-swap", beforeHandler);
+    expect(controller.signal.aborted).toBe(true);
+    expect(result.swapped).toBe(true);
+    expect(beforeSwap).toHaveBeenCalledOnce();
   });
 
   it("isTransitionBeforeSwapEvent guards correctly", () => {

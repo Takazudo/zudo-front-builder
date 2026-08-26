@@ -317,6 +317,150 @@ describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branc
     expect(seenNavigationAborted).toHaveBeenCalledTimes(1);
     expect(seenAfterSwap).toHaveBeenCalledTimes(1);
   });
+
+  it("aborts cleanly when a second navigation wins before updateDOM starts", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) =>
+        htmlResponse(pageHtml("Page", `content for ${new URL(String(url)).pathname}`)),
+      ),
+    );
+    vi.mocked(cancelPendingIslands).mockClear();
+    vi.mocked(unmountIslands).mockClear();
+    vi.mocked(mountNewIslands).mockClear();
+
+    const seen = { beforeSwap: vi.fn(), afterSwap: vi.fn(), aborted: vi.fn(), pageLoad: vi.fn() };
+    document.addEventListener("zfb:before-swap", seen.beforeSwap);
+    document.addEventListener("zfb:after-swap", seen.afterSwap);
+    document.addEventListener("zfb:navigation-aborted", seen.aborted);
+    document.addEventListener("zfb:page-load", seen.pageLoad);
+
+    let secondNavigation: Promise<void> | undefined;
+    let queuedSecond = false;
+    const originalPush = History.prototype.pushState.bind(history);
+    vi.spyOn(history, "pushState").mockImplementation(
+      (...args: Parameters<History["pushState"]>) => {
+        const result = originalPush(...args);
+        if (!queuedSecond && String(args[2]).includes("/entry-abort-a")) {
+          queuedSecond = true;
+          queueMicrotask(() => {
+            secondNavigation = navigate("/entry-abort-b");
+          });
+        }
+        return result;
+      },
+    );
+
+    await navigate("/entry-abort-a");
+    while (!secondNavigation) await Promise.resolve();
+    await secondNavigation;
+
+    document.removeEventListener("zfb:before-swap", seen.beforeSwap);
+    document.removeEventListener("zfb:after-swap", seen.afterSwap);
+    document.removeEventListener("zfb:navigation-aborted", seen.aborted);
+    document.removeEventListener("zfb:page-load", seen.pageLoad);
+
+    expect(seen.aborted).toHaveBeenCalledOnce();
+    expect(seen.beforeSwap).toHaveBeenCalledOnce();
+    expect(seen.afterSwap).toHaveBeenCalledOnce();
+    expect(seen.pageLoad).toHaveBeenCalledOnce();
+    expect(cancelPendingIslands).toHaveBeenCalledOnce();
+    expect(unmountIslands).toHaveBeenCalledOnce();
+    expect(mountNewIslands).toHaveBeenCalledOnce();
+    expect(document.querySelector("main")?.textContent).toBe("content for /entry-abort-b");
+    expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
+  });
+
+  it("aborts the first navigation after the old-page animation await and lets the second win", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) =>
+        htmlResponse(pageHtml("Page", `content for ${new URL(String(url)).pathname}`)),
+      ),
+    );
+    vi.mocked(cancelPendingIslands).mockClear();
+    vi.mocked(unmountIslands).mockClear();
+    vi.mocked(mountNewIslands).mockClear();
+
+    let finishOldAnimation!: () => void;
+    const oldAnimationFinished = new Promise<void>((resolve) => {
+      finishOldAnimation = resolve;
+    });
+    const oldAnimation = { effect: null, finished: oldAnimationFinished } as unknown as Animation;
+    vi.spyOn(document, "getAnimations").mockImplementation(() =>
+      document.documentElement.getAttribute("data-zfb-transition-fallback") === "old"
+        ? [oldAnimation]
+        : [],
+    );
+
+    let reachedBeforeSwap!: () => void;
+    const beforeSwapReached = new Promise<void>((resolve) => {
+      reachedBeforeSwap = resolve;
+    });
+    const seen = { afterSwap: vi.fn(), aborted: vi.fn(), pageLoad: vi.fn() };
+    const onBeforeSwap = () => reachedBeforeSwap();
+    document.addEventListener("zfb:before-swap", onBeforeSwap, { once: true });
+    document.addEventListener("zfb:after-swap", seen.afterSwap);
+    document.addEventListener("zfb:navigation-aborted", seen.aborted);
+    document.addEventListener("zfb:page-load", seen.pageLoad);
+
+    const firstNavigation = navigate("/animation-abort-a");
+    await beforeSwapReached;
+    const secondNavigation = navigate("/animation-abort-b");
+    finishOldAnimation();
+    await firstNavigation;
+    await secondNavigation;
+
+    document.removeEventListener("zfb:after-swap", seen.afterSwap);
+    document.removeEventListener("zfb:navigation-aborted", seen.aborted);
+    document.removeEventListener("zfb:page-load", seen.pageLoad);
+
+    expect(seen.aborted).toHaveBeenCalledOnce();
+    expect(seen.afterSwap).toHaveBeenCalledOnce();
+    expect(seen.pageLoad).toHaveBeenCalledOnce();
+    expect(cancelPendingIslands).toHaveBeenCalledOnce();
+    expect(unmountIslands).toHaveBeenCalledOnce();
+    expect(mountNewIslands).toHaveBeenCalledOnce();
+    expect(document.querySelector("main")?.textContent).toBe("content for /animation-abort-b");
+    expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
+  });
+
+  it("finishes a committed navigation when its swap callback synchronously starts a newer one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) =>
+        htmlResponse(pageHtml("Page", `content for ${new URL(String(url)).pathname}`)),
+      ),
+    );
+
+    let secondNavigation: Promise<void> | undefined;
+    const afterSwap = vi.fn();
+    const aborted = vi.fn();
+    const onBeforeSwap = (event: Event) => {
+      const swapEvent = event as Event & { to: URL; swap: () => void };
+      if (!swapEvent.to.pathname.endsWith("/inside-swap-a")) return;
+      const originalSwap = swapEvent.swap;
+      swapEvent.swap = () => {
+        originalSwap();
+        secondNavigation = navigate("/inside-swap-b");
+      };
+    };
+    document.addEventListener("zfb:before-swap", onBeforeSwap);
+    document.addEventListener("zfb:after-swap", afterSwap);
+    document.addEventListener("zfb:navigation-aborted", aborted);
+
+    await navigate("/inside-swap-a");
+    expect(secondNavigation).toBeDefined();
+    await secondNavigation;
+
+    document.removeEventListener("zfb:before-swap", onBeforeSwap);
+    document.removeEventListener("zfb:after-swap", afterSwap);
+    document.removeEventListener("zfb:navigation-aborted", aborted);
+
+    expect(aborted).not.toHaveBeenCalled();
+    expect(afterSwap).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("main")?.textContent).toBe("content for /inside-swap-b");
+  });
 });
 
 describe("hash-only same-page navigation", () => {
