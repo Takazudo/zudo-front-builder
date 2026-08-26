@@ -195,6 +195,18 @@ pub struct TailwindSubprocessConfig {
     /// an explicit safelist appendix.
     pub inline_sources: Vec<String>,
 
+    /// Disable Tailwind v4's ambient content auto-detection by attaching
+    /// `source(none)` to the active utilities-bearing Tailwind import.
+    ///
+    /// This is opt-in so existing `zfb build` callers retain their current
+    /// behavior. In this mode, user-authored umbrella imports and split
+    /// `tailwindcss/utilities` imports are rewritten in place; explicit
+    /// `@source` directives continue to control the content set. A
+    /// user-authored Tailwind import that already has any `source(...)`
+    /// modifier is rejected because its sourcing policy would otherwise
+    /// conflict with the caller-owned explicit plan.
+    pub explicit_sourcing: bool,
+
     /// Optional inline `@theme { ... }` block to append to the
     /// synthesised entry CSS. Used by callers that ship a
     /// programmatically-built design-token block (e.g. derived from
@@ -263,6 +275,7 @@ impl Default for TailwindSubprocessConfig {
             negative_source_globs: Vec::new(),
             framework_package_globs: Vec::new(),
             inline_sources: Vec::new(),
+            explicit_sourcing: false,
             theme_block: None,
             mock_subprocess: false,
             mock_output: String::new(),
@@ -343,6 +356,13 @@ impl TailwindSubprocessConfig {
         S: Into<String>,
     {
         self.inline_sources = sources.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Opt into caller-owned explicit sourcing (`source(none)` plus the
+    /// configured/user-authored `@source` directives).
+    pub fn with_explicit_sourcing(mut self, enabled: bool) -> Self {
+        self.explicit_sourcing = enabled;
         self
     }
 
@@ -606,6 +626,217 @@ fn strip_css_comments(text: &str) -> String {
     out
 }
 
+/// Replace comment bytes with spaces while preserving byte offsets and line
+/// breaks. Unlike [`strip_css_comments`], this scratch copy can be used to
+/// locate a token in the original text safely, including when a comment
+/// precedes an active import on the same line.
+fn mask_css_comments(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'"' || b == b'\'' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                } else {
+                    let closes = bytes[i] == quote;
+                    i += 1;
+                    if closes {
+                        break;
+                    }
+                }
+            }
+        } else if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            masked[i] = b' ';
+            masked[i + 1] = b' ';
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                masked[i] = b' ';
+                i += 1;
+            }
+        } else if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            masked[i] = b' ';
+            masked[i + 1] = b' ';
+            i += 2;
+            while i < bytes.len() {
+                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    masked[i] = b' ';
+                    masked[i + 1] = b' ';
+                    i += 2;
+                    break;
+                }
+                if bytes[i] != b'\n' && bytes[i] != b'\r' {
+                    masked[i] = b' ';
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    // Every non-ASCII byte inside a comment was replaced by an ASCII space;
+    // all remaining non-ASCII byte sequences came from the valid input.
+    String::from_utf8(masked).expect("comment masking must preserve valid UTF-8")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TailwindImportTokens {
+    /// Byte offset immediately after the closing specifier quote.
+    modifier_insert_at: usize,
+    utilities_bearing: bool,
+    has_source_modifier: bool,
+}
+
+/// Parse the token shape relevant to Tailwind import sourcing. The caller
+/// supplies comment-masked text so offsets still address the original line.
+fn parse_tailwind_import_tokens(line: &str) -> Option<TailwindImportTokens> {
+    let bytes = line.as_bytes();
+    let mut i = bytes.iter().position(|b| !b.is_ascii_whitespace())?;
+    let import = b"@import";
+    if !bytes.get(i..)?.starts_with(import) {
+        return None;
+    }
+    i += import.len();
+    if !bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        return None;
+    }
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    let quote = *bytes.get(i)?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    i += 1;
+    let specifier_start = i;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i = i.saturating_add(2);
+            continue;
+        }
+        if bytes[i] == quote {
+            break;
+        }
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let specifier = line.get(specifier_start..i)?;
+    if specifier != "tailwindcss" && !specifier.starts_with("tailwindcss/") {
+        return None;
+    }
+    let modifier_insert_at = i + 1;
+    let suffix = &bytes[modifier_insert_at..];
+    let mut cursor = 0;
+    let mut parentheses_depth: usize = 0;
+    let mut has_source_modifier = false;
+    while cursor < suffix.len() {
+        if suffix[cursor] == b';' && parentheses_depth == 0 {
+            break;
+        }
+        if suffix[cursor] == b'"' || suffix[cursor] == b'\'' {
+            let quote = suffix[cursor];
+            cursor += 1;
+            while cursor < suffix.len() {
+                if suffix[cursor] == b'\\' && cursor + 1 < suffix.len() {
+                    cursor += 2;
+                } else {
+                    let closes = suffix[cursor] == quote;
+                    cursor += 1;
+                    if closes {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if suffix[cursor] == b'(' {
+            parentheses_depth += 1;
+            cursor += 1;
+            continue;
+        }
+        if suffix[cursor] == b')' {
+            parentheses_depth = parentheses_depth.saturating_sub(1);
+            cursor += 1;
+            continue;
+        }
+        if suffix[cursor].is_ascii_alphabetic() || suffix[cursor] == b'_' || suffix[cursor] == b'-'
+        {
+            let start = cursor;
+            cursor += 1;
+            while cursor < suffix.len()
+                && (suffix[cursor].is_ascii_alphanumeric()
+                    || suffix[cursor] == b'_'
+                    || suffix[cursor] == b'-')
+            {
+                cursor += 1;
+            }
+            if parentheses_depth == 0 && &suffix[start..cursor] == b"source" {
+                while cursor < suffix.len() && suffix[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                if suffix.get(cursor) == Some(&b'(') {
+                    has_source_modifier = true;
+                    break;
+                }
+            }
+        } else {
+            cursor += 1;
+        }
+    }
+    Some(TailwindImportTokens {
+        modifier_insert_at,
+        utilities_bearing: specifier == "tailwindcss" || specifier == "tailwindcss/utilities",
+        has_source_modifier,
+    })
+}
+
+/// Apply explicit sourcing to active user-authored Tailwind imports without
+/// touching comments or adding a duplicate umbrella import.
+fn rewrite_tailwind_imports_for_explicit_sourcing(text: &str) -> Result<String> {
+    let masked = mask_css_comments(text);
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut original_offset = 0;
+
+    for (line_index, masked_line) in masked.split_inclusive('\n').enumerate() {
+        let original_line = &text[original_offset..original_offset + masked_line.len()];
+        if let Some(tokens) = parse_tailwind_import_tokens(masked_line) {
+            if tokens.has_source_modifier {
+                return Err(anyhow!(
+                    "explicit Tailwind sourcing rejects a pre-existing source(...) modifier on line {}: {}",
+                    line_index + 1,
+                    original_line.trim_end()
+                ));
+            }
+            if tokens.utilities_bearing {
+                out.push_str(&original_line[..tokens.modifier_insert_at]);
+                out.push_str(" source(none)");
+                out.push_str(&original_line[tokens.modifier_insert_at..]);
+            } else {
+                out.push_str(original_line);
+            }
+        } else {
+            out.push_str(original_line);
+        }
+        original_offset += masked_line.len();
+    }
+    // `split_inclusive` covers a non-empty final unterminated line. It has
+    // no items only for the empty string.
+    debug_assert_eq!(original_offset, text.len());
+    Ok(out)
+}
+
+fn has_active_tailwind_import(text: &str) -> bool {
+    mask_css_comments(text)
+        .lines()
+        .any(|line| parse_tailwind_import_tokens(line).is_some())
+}
+
 /// Whether a single CSS line is an `@import "tailwindcss"` directive.
 ///
 /// Matches the v4 umbrella import (`@import "tailwindcss"`) and the split
@@ -663,12 +894,36 @@ pub fn is_tailwind_import_line(line: &str) -> bool {
 /// passes to `tailwindcss -i <tmp>`. It is also stashed on
 /// [`TailwindSubprocessEngine::last_entry_css`] so tests can inspect it
 /// without spawning the binary.
+///
+/// # Panics
+///
+/// In explicit-sourcing mode, panics if active user CSS already contains a
+/// Tailwind `source(...)` import modifier. The subprocess engine uses the
+/// fallible helper directly and returns this as a normal build error; this
+/// compatibility wrapper remains infallible for existing text-only callers.
 pub fn build_synthesised_entry_css(
     cfg: &TailwindSubprocessConfig,
     input_css_text: Option<&str>,
 ) -> String {
+    try_build_synthesised_entry_css(cfg, input_css_text)
+        .unwrap_or_else(|error| panic!("failed to build synthesised Tailwind entry CSS: {error:#}"))
+}
+
+fn try_build_synthesised_entry_css(
+    cfg: &TailwindSubprocessConfig,
+    input_css_text: Option<&str>,
+) -> Result<String> {
     let mut out = String::new();
     let mut emitted_import = false;
+
+    let rewritten_input = if cfg.explicit_sourcing {
+        input_css_text
+            .map(rewrite_tailwind_imports_for_explicit_sourcing)
+            .transpose()?
+    } else {
+        None
+    };
+    let input_css_text = rewritten_input.as_deref().or(input_css_text);
 
     // Strip block/line comments before scanning for the tailwind import so
     // that a commented-out `@import "tailwindcss";` inside a `/* … */`
@@ -677,13 +932,21 @@ pub fn build_synthesised_entry_css(
     // output unchanged.
     let user_has_import = input_css_text
         .map(|t| {
-            let stripped = strip_css_comments(t);
-            stripped.lines().any(is_tailwind_import_line)
+            if cfg.explicit_sourcing {
+                has_active_tailwind_import(t)
+            } else {
+                let stripped = strip_css_comments(t);
+                stripped.lines().any(is_tailwind_import_line)
+            }
         })
         .unwrap_or(false);
 
     if !user_has_import {
-        out.push_str("@import \"tailwindcss\";\n");
+        if cfg.explicit_sourcing {
+            out.push_str("@import \"tailwindcss\" source(none);\n");
+        } else {
+            out.push_str("@import \"tailwindcss\";\n");
+        }
         emitted_import = true;
     }
 
@@ -734,7 +997,7 @@ pub fn build_synthesised_entry_css(
         }
     }
 
-    out
+    Ok(out)
 }
 
 /// The default [`CssEngine`]: shells out to the `tailwindcss` v4 CLI binary.
@@ -1030,7 +1293,7 @@ impl CssEngine for TailwindSubprocessEngine {
             ),
             None => None,
         };
-        let entry_css = build_synthesised_entry_css(&self.config, user_text.as_deref());
+        let entry_css = try_build_synthesised_entry_css(&self.config, user_text.as_deref())?;
 
         // Stash for test introspection. Lock-poison is non-fatal — at
         // worst we lose the snapshot.
@@ -2134,6 +2397,107 @@ mod tests {
         assert!(
             out.contains(r#"@source "/pro\"ject/"#),
             "quote in project root not escaped; got:\n{out}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #2596 — explicit Tailwind source policy
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn explicit_sourcing_marks_synthesised_umbrella_import_without_adding_roots() {
+        let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert_eq!(css, "@import \"tailwindcss\" source(none);\n\n");
+        assert!(
+            !css.contains("@source "),
+            "explicit mode must not invent content roots; got:\n{css}"
+        );
+    }
+
+    #[test]
+    fn explicit_sourcing_emits_only_caller_supplied_roots() {
+        let cfg = TailwindSubprocessConfig::default()
+            .with_explicit_sourcing(true)
+            .with_content_globs(["pages/**/*.tsx"]);
+        let css = build_synthesised_entry_css(&cfg, None);
+        assert!(css.starts_with("@import \"tailwindcss\" source(none);\n"));
+        assert_eq!(css.matches("@source \"").count(), 1, "got:\n{css}");
+        assert!(css.contains("@source \"pages/**/*.tsx\";"));
+    }
+
+    #[test]
+    fn explicit_sourcing_rewrites_user_umbrella_import_in_place() {
+        let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
+        let input = "@import 'tailwindcss' layer(utilities);\n@source inline(\"prose\");\n";
+        let css = build_synthesised_entry_css(&cfg, Some(input));
+        assert!(css.starts_with("@import 'tailwindcss' source(none) layer(utilities);\n"));
+        assert_eq!(css.matches("tailwindcss").count(), 1, "got:\n{css}");
+        assert!(css.contains("@source inline(\"prose\");"));
+    }
+
+    #[test]
+    fn explicit_sourcing_rewrites_only_split_utilities_import() {
+        let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
+        let input = concat!(
+            "@import \"tailwindcss/preflight\" layer(base);\n",
+            "@import \"tailwindcss/utilities\" layer(utilities);\n",
+        );
+        let css = build_synthesised_entry_css(&cfg, Some(input));
+        assert!(css.contains("@import \"tailwindcss/preflight\" layer(base);"));
+        assert!(css.contains("@import \"tailwindcss/utilities\" source(none) layer(utilities);"));
+        assert!(!css
+            .lines()
+            .any(|line| line == "@import \"tailwindcss\" source(none);"));
+    }
+
+    #[test]
+    fn explicit_sourcing_rejects_existing_source_modifier_with_line() {
+        let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
+        let input = concat!(
+            "@import \"tailwindcss/preflight\";\n",
+            "@import \"tailwindcss/utilities\" source(\"../app\");\n",
+        );
+        let error = try_build_synthesised_entry_css(&cfg, Some(input)).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("line 2"), "got: {message}");
+        assert!(
+            message.contains("@import \"tailwindcss/utilities\" source(\"../app\");"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
+    fn explicit_sourcing_conflict_is_a_normal_subprocess_engine_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let input_path = dir.path().join("entry.css");
+        std::fs::write(
+            &input_path,
+            "@import \"tailwindcss\" source(\"../caller-owned\");\n",
+        )
+        .unwrap();
+        let cfg = TailwindSubprocessConfig::default()
+            .with_input_css(input_path)
+            .with_explicit_sourcing(true)
+            .with_mock_output("unused");
+        let engine = TailwindSubprocessEngine::new(cfg);
+        let error = engine.produce_utility_css(&[]).unwrap_err().to_string();
+        assert!(error.contains("line 1"), "got: {error}");
+        assert!(error.contains("caller-owned"), "got: {error}");
+    }
+
+    #[test]
+    fn explicit_sourcing_ignores_commented_import_decoy() {
+        let cfg = TailwindSubprocessConfig::default().with_explicit_sourcing(true);
+        let input = "/* @import \"tailwindcss\" source(\"../decoy\"); */\nbody {}\n";
+        let css = build_synthesised_entry_css(&cfg, Some(input));
+        assert!(
+            css.starts_with("@import \"tailwindcss\" source(none);\n"),
+            "commented decoy must not suppress the safe synthesised import; got:\n{css}"
+        );
+        assert!(
+            css.contains(input),
+            "commented user text must survive verbatim"
         );
     }
 
