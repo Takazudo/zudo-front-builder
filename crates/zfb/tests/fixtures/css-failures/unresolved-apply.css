@@ -1,0 +1,2 @@
+@import "tailwindcss";
+.broken { @apply totally-not-a-real-utility; }
