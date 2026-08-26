@@ -86,7 +86,9 @@ use crate::commands::css_support::{resolve_framework_css, role_classes_inline_so
 use crate::commands::resolve::{
     resolve_outdir, resolve_outdir_arg, validate_outdir_safety, wipe_outdir_contents,
 };
-use crate::config::{CodeHighlightMode, Config, OutputMode};
+#[cfg(test)]
+use crate::config::CodeHighlightMode;
+use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
     build_prerender_map, build_route_universe, check_runtime_installed, embedded_node_modules,
