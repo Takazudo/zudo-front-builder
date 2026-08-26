@@ -6,12 +6,13 @@ sidebar_position: 6
 
 ## Overview
 
-The `zfb` binary exposes five subcommands for the full development lifecycle:
+The `zfb` binary exposes six subcommands for the full development lifecycle:
 
 ```
 zfb new    — scaffold a new project from a template
 zfb dev    — local development server with live reload
 zfb build  — production build
+zfb css    — compile a CSS entrypoint without building the site
 zfb preview — serve a previously built site
 zfb check  — typecheck and validate content-collection schemas
 ```
@@ -138,6 +139,68 @@ zfb build --no-strict-broken
 zfb build --emit-render-artifacts
 zfb build --no-emit-render-artifacts
 ```
+
+## `zfb css`
+
+Compile one CSS entrypoint with zfb's embedded Tailwind CSS v4 engine, without discovering routes, rendering pages, bundling application code, or starting the plugin host.
+
+```sh
+zfb css --input <entry.css> --output <compiled.css>
+        [--project-root <dir>]
+        [--source <glob> ...]
+        [--no-auto-source]
+        [--code-highlight-mode <class|inline>]
+        [--no-default-highlight-styles]
+```
+
+### Flags
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--input` | path | required | CSS entrypoint. Relative paths resolve from the current working directory. |
+| `--output` | path | required | Destination CSS file. Relative paths resolve from the current working directory. It must not resolve to the same file as the input. |
+| `--project-root` | path | current working directory | Root used to load `zfb.config` and resolve `--source` globs. A relative path itself resolves from the current working directory. |
+| `--source` | glob, repeatable | none | Explicit Tailwind content source, resolved from `--project-root`. Each glob must match at least one file. Caller order is preserved; exact duplicates use their first occurrence. |
+| `--no-auto-source` | boolean flag | `false` | Omit the five default content roots (`pages`, `components`, `layouts`, `content`, and `src`). Explicit `--source` values and the configured syntax-highlight role-class safelist remain active. |
+| `--code-highlight-mode` | `class` or `inline` | config/default | Override `codeHighlight.mode` when deciding whether to include zfb's framework syntax-highlight CSS. Other `codeHighlight` settings, including `classPrefix` and `roleClasses`, still come from config. |
+| `--no-default-highlight-styles` | boolean flag | `false` | Suppress zfb's built-in class-mode `zfb-hi.css` stylesheet. This also overrides `codeHighlight.defaultStylesheet: true`. |
+
+### Example
+
+A library package can keep an ordered entry such as `packages/zudo-doc/src/compiled.entry.css`:
+
+```css
+@layer zd-preflight, zd-flow;
+@import "tailwindcss/preflight" layer(zd-preflight);
+@import "tailwindcss/utilities";
+
+@import "@takazudo/zudo-doc/theme.css";
+@import "@takazudo/zudo-doc/safelist.css";
+@import "@takazudo/zudo-doc/content.css";
+@import "@takazudo/zudo-doc/page-loading.css";
+@import "@takazudo/zudo-doc/features.css";
+```
+
+From the repository root, compile only against the package-owned sources:
+
+```sh
+zfb css \
+  --input packages/zudo-doc/src/compiled.entry.css \
+  --output packages/zudo-doc/dist/compiled.css \
+  --project-root packages/zudo-doc \
+  --source 'src/**/*.{tsx,ts,jsx,js}' \
+  --source 'dist/**/*.{tsx,ts,jsx,js}' \
+  --no-auto-source
+```
+
+Here, `--input`, `--output`, and `--project-root` are anchored to the repository-root working directory. Both `--source` globs are instead anchored to `packages/zudo-doc`.
+
+### Notes
+
+- **Sourcing is always explicit.** `zfb css` rewrites the active `@import "tailwindcss"` or split `@import "tailwindcss/utilities"` to carry `source(none)`, disabling Tailwind's ambient git-aware source detection. An active Tailwind import that already has a `source(...)` modifier is rejected rather than silently overridden. By default the command emits the five roots under `--project-root` as explicit `@source` directives. `--no-auto-source` omits those defaults, as in the example, while retaining repeated `--source` values and the inline safelist derived from `codeHighlight.roleClasses`. This policy deliberately differs from `zfb build`.
+- **Output is deterministic and replaced atomically.** The same entry, config, and ordered source set produce timestamp-, sourcemap-, and temporary-path-free bytes. A successful compile atomically replaces `--output`; a failed compile leaves any existing output untouched.
+- **This is a global-CSS-only command.** CSS Modules are not discovered or processed. Package-attributed `url()` assets that would require companion files are rejected in v1 with a non-zero exit instead of being emitted beside the stylesheet.
+- **Config use is narrow.** When present, `zfb.config.json` or `zfb.config.ts` supplies syntax-highlighting settings such as `classPrefix` and `roleClasses`; CLI highlight flags override the corresponding mode/stylesheet choice. Invoking `zfb css` always runs Tailwind even when config sets `tailwind.enabled: false`.
 
 ## `zfb preview`
 
