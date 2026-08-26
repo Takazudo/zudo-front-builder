@@ -65,8 +65,8 @@ import { detectScriptExecuted } from "./swap-functions.js";
 import type { Direction, Fallback, Options, SyncHistoryEntryOptions } from "./types.js";
 // Island re-bootstrap and deferred-cancel after body swap (W1B §12.2, §12.5).
 // mountNewIslands() is called after runScripts() and before onPageLoad().
-// cancelPendingIslands() is called before doSwap() so deferred callbacks
-// (rIC/IntersectionObserver) do not fire against orphan elements.
+// cancelPendingIslands() and unmountIslands() run inside doSwap()'s synchronous
+// commit section so deferred callbacks cannot fire against orphan elements.
 import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";
 
 type State = {
@@ -83,6 +83,8 @@ type Transition = {
   // Simulation: The resolve function of the finished promise
   viewTransitionFinished?: () => void;
 };
+
+type DOMUpdateOutcome = "swapped" | "aborted";
 
 // Adapter-specific internal fetch headers. zfb adapters do not currently expose this
 // contract — the empty object preserves the call-shape so the loop in fetchHTML is a
@@ -567,7 +569,7 @@ async function updateDOM(
   fallback?: Fallback,
   // Forwarded to moveToLocation() — see its parameter doc. #1398.
   historyCommittedEarly = false,
-) {
+): Promise<DOMUpdateOutcome> {
   async function animate(phase: string) {
     function isInfinite(animation: Animation) {
       const effect = animation.effect;
@@ -602,27 +604,37 @@ async function updateDOM(
     }
   };
 
+  const finishAbortedUpdate = (): DOMUpdateOutcome => {
+    triggerEvent("zfb:navigation-aborted");
+    // Simulation owns its `finished` promise explicitly. Resolve it on the
+    // no-swap path so transition cleanup still runs.
+    currentTransition.viewTransitionFinished?.();
+    return "aborted";
+  };
+
+  // A newer navigation or popstate may have won after preparation/history
+  // commit but before the update callback started.
+  if (preparationEvent.signal.aborted) return finishAbortedUpdate();
+
   const pageTitleForBrowserHistory = document.title; // document.title will be overridden by swap()
-  // Cancel deferred-hydration callbacks for old-body islands before the swap
-  // so rIC / IntersectionObserver fires do not run against orphan elements.
-  // Called before doSwap() which dispatches `zfb:before-swap` then mutates the DOM.
-  cancelPendingIslands();
-  // Unmount mounted islands on the OLD body before the swap so Preact/React
-  // trees receive render(null, element) / root.unmount() and their useEffect
-  // cleanups fire. Must happen after cancelPendingIslands() and before doSwap()
-  // so document.body still points to the old body.
-  //
-  // Pass the incoming body so unmountIslands can SKIP islands that swapBodyElement
-  // will lift into the new body (a persisted marker matched on both sides). Those
-  // nodes are physically moved, not discarded, so their component instance and
-  // state must survive the swap — unmounting them here would empty the container
-  // before the lift and defeat data-zfb-transition-persist entirely (issue #1389).
-  unmountIslands(document.body, preparationEvent.newDocument.body);
-  const swapEvent = await doSwap(
+  const swapResult = await doSwap(
     preparationEvent,
     currentTransition.viewTransition!,
     animateFallbackOld,
+    () => {
+      // Teardown and swap are a synchronous point-of-no-return. doSwap checks
+      // the signal after the animation await and invokes this callback only for
+      // a navigation that still owns the commit.
+      cancelPendingIslands();
+      // Unmount mounted islands on the OLD body before the swap so Preact/React
+      // trees receive render(null, element) / root.unmount() and their useEffect
+      // cleanups fire. Pass the incoming body so persisted islands are kept.
+      unmountIslands(document.body, preparationEvent.newDocument.body);
+    },
   );
+  if (!swapResult.swapped) return finishAbortedUpdate();
+
+  const swapEvent = swapResult.event;
   moveToLocation(
     swapEvent.to,
     swapEvent.from,
@@ -636,11 +648,12 @@ async function updateDOM(
   // Resolve the finished promise of the simulation's ViewTransition.
   // For 'animate', wait for the new-page animation to complete first.
   // For other fallback modes (e.g. 'swap'), resolve immediately — no animation needed.
-  if (fallback === "animate" && !currentTransition.transitionSkipped && !swapEvent.signal.aborted) {
+  if (fallback === "animate" && !currentTransition.transitionSkipped) {
     animate("new").finally(() => currentTransition.viewTransitionFinished!());
   } else {
     currentTransition.viewTransitionFinished?.();
   }
+  return "swapped";
 }
 
 function abortAndRecreateMostRecentNavigation(): Navigation {
@@ -882,20 +895,21 @@ async function transition(
     }
   }
 
+  let domUpdateOutcome: DOMUpdateOutcome | undefined;
+
   if (supportsViewTransitions && !hasUAVisualTransition) {
     // This automatically cancels any previous transition
     // We also already took care that the earlier update callback got through
-    currentTransition.viewTransition = document.startViewTransition(
-      async () =>
-        await updateDOM(
-          prepEvent,
-          options,
-          currentTransition,
-          historyState,
-          undefined,
-          historyCommittedEarly,
-        ),
-    );
+    currentTransition.viewTransition = document.startViewTransition(async () => {
+      domUpdateOutcome = await updateDOM(
+        prepEvent,
+        options,
+        currentTransition,
+        historyState,
+        undefined,
+        historyCommittedEarly,
+      );
+    });
   } else {
     // Simulation mode requires a bit more manual work.
     // Also used when PopStateEvent.hasUAVisualTransition indicates the browser already
@@ -904,7 +918,7 @@ async function transition(
     const updateDone = (async () => {
       // Immediately paused to set up the ViewTransition object for Fallback mode
       await Promise.resolve(); // hop through the micro task queue
-      await updateDOM(
+      domUpdateOutcome = await updateDOM(
         prepEvent,
         options,
         currentTransition,
@@ -944,6 +958,7 @@ async function transition(
   // In earlier versions was then'ed on viewTransition.ready which would not execute
   // if the visual part of the transition has errors or was skipped
   currentTransition.viewTransition?.updateCallbackDone.finally(async () => {
+    if (domUpdateOutcome !== "swapped") return;
     await runScripts();
     // Mount new island markers introduced by the body swap. Fire-and-forget;
     // each island's scheduleHydrate call is async (idle / visible). Called after

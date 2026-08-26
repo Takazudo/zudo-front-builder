@@ -18,6 +18,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { drainHappyDom, installHappyDomShim, resetDocument } from "./_helpers.js";
+import { cancelPendingIslands, mountNewIslands, unmountIslands } from "@takazudo/zfb/runtime";
 
 vi.mock("@takazudo/zfb/runtime", () => ({
   mountNewIslands: vi.fn(),
@@ -93,7 +94,7 @@ function makeFakeStartViewTransition(onCall?: () => void) {
 }
 
 // Late import after vi.hoisted has primed document.startViewTransition.
-import { navigate, supportsViewTransitions } from "../../client-router/router.js";
+import { init, navigate, supportsViewTransitions } from "../../client-router/router.js";
 
 beforeEach(() => {
   resetDocument();
@@ -317,5 +318,90 @@ describe("zfb:before-swap `to` mutation does not double-push the history entry (
     expect(correctingReplace!.index).toBe(pushCalls[0]!.index);
 
     expect(location.pathname).toBe("/page-b-redirected");
+  });
+});
+
+describe("Back wins after the early history commit but before swap (#2603)", () => {
+  it("keeps page A and re-adopts its history index without teardown or post-swap lifecycle", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) =>
+        htmlResponse(pageHtml("Page", `content for ${new URL(String(url)).pathname}`)),
+      ),
+    );
+
+    // Establish the real outgoing page and then activate popstate handling at
+    // that URL so originalLocation and currentHistoryIndex both describe A.
+    await navigate("/race-page-a");
+    init();
+    const pageAIndex = (history.state as { index: number }).index;
+    vi.mocked(cancelPendingIslands).mockClear();
+    vi.mocked(unmountIslands).mockClear();
+    vi.mocked(mountNewIslands).mockClear();
+
+    const replaceCalls: string[] = [];
+    const originalReplace = History.prototype.replaceState.bind(history);
+    vi.spyOn(history, "replaceState").mockImplementation(
+      (...args: Parameters<History["replaceState"]>) => {
+        if (args[2] != null) replaceCalls.push(String(args[2]));
+        return originalReplace(...args);
+      },
+    );
+    const pushedIndexes: Array<{ index: number; url: string }> = [];
+    const originalPush = History.prototype.pushState.bind(history);
+    vi.spyOn(history, "pushState").mockImplementation(
+      (...args: Parameters<History["pushState"]>) => {
+        pushedIndexes.push({
+          index: (args[0] as { index: number }).index,
+          url: String(args[2]),
+        });
+        return originalPush(...args);
+      },
+    );
+
+    const afterSwap = vi.fn();
+    const pageLoad = vi.fn();
+    const aborted = vi.fn();
+    const onBeforeSwap = (event: Event) => {
+      const swapEvent = event as Event & { to: URL };
+      if (!swapEvent.to.pathname.endsWith("/race-page-b")) return;
+
+      // Model the browser having already traversed Back to A while B's
+      // old-page animation is yielding. onPopState aborts B synchronously and
+      // the same-page fast path re-adopts A's finite index.
+      history.replaceState({ index: pageAIndex, scrollX: 0, scrollY: 0 }, "", "/race-page-a");
+      window.dispatchEvent(
+        new PopStateEvent("popstate", {
+          state: { index: pageAIndex, scrollX: 0, scrollY: 0 },
+        }),
+      );
+    };
+    document.addEventListener("zfb:before-swap", onBeforeSwap);
+    document.addEventListener("zfb:after-swap", afterSwap);
+    document.addEventListener("zfb:page-load", pageLoad);
+    document.addEventListener("zfb:navigation-aborted", aborted);
+
+    await navigate("/race-page-b");
+
+    document.removeEventListener("zfb:before-swap", onBeforeSwap);
+    document.removeEventListener("zfb:after-swap", afterSwap);
+    document.removeEventListener("zfb:page-load", pageLoad);
+    document.removeEventListener("zfb:navigation-aborted", aborted);
+
+    expect(location.pathname).toBe("/race-page-a");
+    expect(document.querySelector("main")?.textContent).toBe("content for /race-page-a");
+    expect(replaceCalls.some((url) => url.includes("/race-page-b"))).toBe(false);
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(afterSwap).not.toHaveBeenCalled();
+    expect(pageLoad).not.toHaveBeenCalled();
+    expect(cancelPendingIslands).not.toHaveBeenCalled();
+    expect(unmountIslands).not.toHaveBeenCalled();
+    expect(mountNewIslands).not.toHaveBeenCalled();
+
+    // A subsequent push must reuse A+1. If popstate failed to re-adopt A's
+    // index, the aborted B commit would leave the counter one step too high.
+    await navigate("/race-page-c");
+    const pageCPush = pushedIndexes.find((entry) => entry.url.includes("/race-page-c"));
+    expect(pageCPush?.index).toBe(pageAIndex + 1);
   });
 });
