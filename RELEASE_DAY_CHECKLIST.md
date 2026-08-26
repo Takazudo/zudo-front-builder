@@ -163,6 +163,10 @@ comes from `main`. This distinction matters: selecting an older tag in the
 "Use workflow from" control also selects that tag's old workflow file, so it
 cannot recover a bug in that workflow.
 
+Release assets use `gh release upload --clobber` against that verified tag. The
+upload is intentionally asset-only: recovery must not PATCH the existing
+Release's metadata based on the workflow's `refs/heads/main` trigger context.
+
 `detect-mac-local` queries the specified Release during recovery, so leave
 `skip_macos_x64=false` normally. Set it to `true` only as an escape-hatch when
 both macOS-x64 assets are already attached; the publish job still downloads and
