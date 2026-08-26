@@ -47,6 +47,12 @@ pub const EXPECTED_WORKERD_VERSION: &str = "1.20260424.1";
 /// `crates/zfb/binaries/esbuild/esbuild`.
 pub const EXPECTED_ESBUILD_VERSION: &str = "0.25.12";
 
+/// Pinned `tailwindcss` v4 standalone CLI version. `crates/zfb/build.rs`
+/// consumes this string to construct the GitHub release download URL for the
+/// embedded binary; the fetch script and CSS README parity test keep their
+/// user-facing mirrors in sync with this source of truth.
+pub const EXPECTED_TAILWIND_VERSION: &str = "4.2.0";
+
 // ---------------------------------------------------------------------------
 // Vendor binary override policy (issue #1772)
 // ---------------------------------------------------------------------------
