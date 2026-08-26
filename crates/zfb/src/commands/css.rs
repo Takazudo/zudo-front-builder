@@ -47,11 +47,10 @@ pub async fn run(args: &CssArgs) -> Result<()> {
 }
 
 async fn run_from(args: &CssArgs, cwd: &Path, emitter: &dyn Emitter) -> Result<()> {
-    let cwd = absolute_lexical(cwd, cwd);
-    let input = absolute_lexical(&cwd, &args.input);
-    let output = absolute_lexical(&cwd, &args.output);
-    let project_root =
-        absolute_lexical(&cwd, args.project_root.as_deref().unwrap_or(Path::new(".")));
+    let cwd = absolute_path(cwd, cwd);
+    let input = absolute_path(&cwd, &args.input);
+    let output = absolute_path(&cwd, &args.output);
+    let project_root = absolute_path(&cwd, args.project_root.as_deref().unwrap_or(Path::new(".")));
 
     let mut validation_errors = Vec::new();
     if let Err(error) = std::fs::read(&input) {
@@ -188,7 +187,9 @@ fn bail_collected(errors: Vec<String>) -> Result<()> {
     }
 }
 
-fn absolute_lexical(base: &Path, path: &Path) -> PathBuf {
+/// Anchor a path without collapsing `..`: a parent component after a symlink
+/// must be resolved by the filesystem, not against the symlink's lexical path.
+fn absolute_path(base: &Path, path: &Path) -> PathBuf {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -196,12 +197,8 @@ fn absolute_lexical(base: &Path, path: &Path) -> PathBuf {
     };
     let mut normalized = PathBuf::new();
     for component in joined.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
+        if component != Component::CurDir {
+            normalized.push(component.as_os_str());
         }
     }
     normalized
@@ -215,7 +212,7 @@ fn resolve_explicit_sources(project_root: &Path, sources: &[String]) -> Vec<(Str
         .map(|source| {
             (
                 source.clone(),
-                absolute_lexical(project_root, Path::new(source)),
+                absolute_path(project_root, Path::new(source)),
             )
         })
         .collect()
@@ -648,6 +645,31 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("same path"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn parent_components_after_symlinks_keep_filesystem_resolution_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("real/nested")).unwrap();
+        std::fs::write(
+            dir.path().join("real/entry.css"),
+            "@import \"tailwindcss\";\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("real/nested", dir.path().join("alias")).unwrap();
+
+        let mut command = args();
+        command.input = PathBuf::from("alias/../entry.css");
+        let emitter = MockEmitter(|request: CompileRequest| {
+            assert_eq!(
+                request.tailwind.input_css,
+                Some(dir.path().join("alias/../entry.css"))
+            );
+            mock_output(request, "body {}")
+        });
+
+        run_from(&command, dir.path(), &emitter).await.unwrap();
     }
 
     #[tokio::test]

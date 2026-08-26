@@ -5,3 +5,7 @@
 *.js text eol=lf
 *.ts text eol=lf
 *.sh text eol=lf
+
+# This fixture is an exact byte-for-byte Tailwind output golden. The CSS
+# pipeline deliberately emits two trailing LF bytes at its combine boundary.
+crates/zfb/tests/fixtures/css-determinism/golden.css whitespace=-blank-at-eof
