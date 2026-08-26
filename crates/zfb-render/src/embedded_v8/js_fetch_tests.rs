@@ -1370,13 +1370,7 @@ async fn a_floating_unauthorised_dispatch_cannot_republish_a_stale_mode() {
     );
 }
 
-/// The mode nonce is CSPRNG-derived and per host.
-///
-/// It used to be `pid | wall-clock nanos | counter` — a value bundle
-/// code could RECONSTRUCT rather than having to guess — justified by a
-/// comment claiming no `getrandom` edge existed in this crate. Wave 5
-/// wired `getrandom::fill` in `crypto.rs`, so that rationale was stale
-/// as well as wrong.
+/// The mode nonce has the expected 256-bit hex format and differs per host.
 #[test]
 fn the_mode_nonce_is_256_csprng_bits_and_differs_per_host() {
     let a = EmbeddedV8RenderHost::new().expect("host boot");
@@ -1399,11 +1393,40 @@ fn the_mode_nonce_is_256_csprng_bits_and_differs_per_host() {
         a.mode_nonce, b.mode_nonce,
         "two hosts must not share a nonce"
     );
+}
+
+/// The mode nonce is read from the OS CSPRNG, not derived from process state.
+///
+/// Looking for a pid substring in random output is probabilistic and caused
+/// issue #2613. This source check guards against the historical pid, wall-clock,
+/// and counter construction; it is not proof against every syntactically
+/// possible process-state derivation.
+#[test]
+fn the_mode_nonce_is_read_from_the_os_csprng_not_derived_from_process_state() {
+    // Comments stripped first, so prose describing the historical construction
+    // cannot satisfy or trip the source checks.
+    let src: String = include_str!("mod.rs")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let generator = src
+        .split_once("fn generate_mode_nonce(")
+        .expect("the mode nonce generator is declared in this file")
+        .1
+        .split_once("pub const DEFAULT_MAIN_SPECIFIER")
+        .expect("the default main specifier follows the mode nonce generator")
+        .0;
     assert!(
-        !a.mode_nonce.contains(&format!("{:x}", std::process::id())),
-        "the pid must not be recoverable from the nonce: {}",
-        a.mode_nonce
+        generator.contains("getrandom::fill"),
+        "generate_mode_nonce must read entropy from the OS CSPRNG"
     );
+    for forbidden in ["process::id", "SystemTime", "Instant", "UNIX_EPOCH"] {
+        assert!(
+            !generator.contains(forbidden),
+            "generate_mode_nonce must not derive entropy from process state ({forbidden})"
+        );
+    }
 }
 
 /// The nonce comparison is constant-time, and nothing reintroduces the
