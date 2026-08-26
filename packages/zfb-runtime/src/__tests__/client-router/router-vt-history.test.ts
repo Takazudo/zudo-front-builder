@@ -405,4 +405,84 @@ describe("Back wins after the early history commit but before swap (#2603)", () 
     const pageCPush = pushedIndexes.find((entry) => entry.url.includes("/race-page-c"));
     expect(pageCPush?.index).toBe(pageAIndex + 1);
   });
+
+  it("emits navigation-aborted when native VT skips the update callback entirely", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) =>
+        htmlResponse(pageHtml("Page", `content for ${new URL(String(url)).pathname}`)),
+      ),
+    );
+
+    await navigate("/skipped-callback-a");
+    init();
+    const pageAIndex = (history.state as { index: number }).index;
+    vi.mocked(cancelPendingIslands).mockClear();
+    vi.mocked(unmountIslands).mockClear();
+    vi.mocked(mountNewIslands).mockClear();
+
+    let settleUpdate!: () => void;
+    const updateCallbackDone = new Promise<void>((resolve) => {
+      settleUpdate = resolve;
+    });
+    const updateCallback = vi.fn();
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    (document as unknown as { startViewTransition: unknown }).startViewTransition = (
+      callback: VTCallback,
+    ): FakeViewTransition => {
+      updateCallback.mockImplementation(callback);
+      markStarted();
+      return {
+        updateCallbackDone,
+        ready: updateCallbackDone,
+        finished: updateCallbackDone,
+        skipTransition: settleUpdate,
+        types: new Set<string>(),
+      };
+    };
+
+    const beforeSwap = vi.fn();
+    const afterSwap = vi.fn();
+    const pageLoad = vi.fn();
+    const aborted = vi.fn();
+    document.addEventListener("zfb:before-swap", beforeSwap);
+    document.addEventListener("zfb:after-swap", afterSwap);
+    document.addEventListener("zfb:page-load", pageLoad);
+    document.addEventListener("zfb:navigation-aborted", aborted);
+
+    const pageBNavigation = navigate("/skipped-callback-b");
+    await started;
+    expect(location.pathname).toBe("/skipped-callback-b");
+
+    // Model a real Back traversal restoring A and Chromium canceling the
+    // pending native transition without invoking its update callback.
+    history.replaceState({ index: pageAIndex, scrollX: 0, scrollY: 0 }, "", "/skipped-callback-a");
+    window.dispatchEvent(
+      new PopStateEvent("popstate", {
+        state: { index: pageAIndex, scrollX: 0, scrollY: 0 },
+      }),
+    );
+    settleUpdate();
+    await pageBNavigation;
+
+    document.removeEventListener("zfb:before-swap", beforeSwap);
+    document.removeEventListener("zfb:after-swap", afterSwap);
+    document.removeEventListener("zfb:page-load", pageLoad);
+    document.removeEventListener("zfb:navigation-aborted", aborted);
+
+    expect(updateCallback).not.toHaveBeenCalled();
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(beforeSwap).not.toHaveBeenCalled();
+    expect(afterSwap).not.toHaveBeenCalled();
+    expect(pageLoad).not.toHaveBeenCalled();
+    expect(cancelPendingIslands).not.toHaveBeenCalled();
+    expect(unmountIslands).not.toHaveBeenCalled();
+    expect(mountNewIslands).not.toHaveBeenCalled();
+    expect(location.pathname).toBe("/skipped-callback-a");
+    expect(document.querySelector("main")?.textContent).toBe("content for /skipped-callback-a");
+    expect(document.documentElement.hasAttribute("data-zfb-transition")).toBe(false);
+  });
 });
