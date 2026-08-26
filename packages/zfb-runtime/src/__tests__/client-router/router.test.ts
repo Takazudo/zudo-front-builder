@@ -461,6 +461,57 @@ describe("zfb:navigation-aborted — rapid-navigation race (signal-aborted branc
     expect(afterSwap).toHaveBeenCalledTimes(2);
     expect(document.querySelector("main")?.textContent).toBe("content for /inside-swap-b");
   });
+
+  it("keeps a navigation started by an abort-event listener as the newest owner", async () => {
+    let releaseFirst!: (response: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      releaseFirst = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: RequestInfo) => {
+        const pathname = new URL(String(url)).pathname;
+        if (pathname === "/abort-listener-a") return firstResponse;
+        return htmlResponse(pageHtml("Page", `content for ${pathname}`));
+      }),
+    );
+
+    let listenerStartedNavigation: Promise<void> | undefined;
+    let listenerHasStarted = false;
+    const aborted = vi.fn(() => {
+      if (listenerHasStarted) return;
+      listenerHasStarted = true;
+      listenerStartedNavigation = navigate("/abort-listener-c");
+    });
+    const afterSwap = vi.fn();
+    document.addEventListener("zfb:navigation-aborted", aborted);
+    document.addEventListener("zfb:after-swap", afterSwap);
+
+    const pushedURLs: string[] = [];
+    const originalPush = History.prototype.pushState.bind(history);
+    vi.spyOn(history, "pushState").mockImplementation(
+      (...args: Parameters<History["pushState"]>) => {
+        pushedURLs.push(String(args[2]));
+        return originalPush(...args);
+      },
+    );
+    const supersededHref = `${location.pathname}#abort-listener-b`;
+    const firstNavigation = navigate("/abort-listener-a");
+    const supersededNavigation = navigate(supersededHref);
+    releaseFirst(htmlResponse(pageHtml("A", "content for /abort-listener-a")));
+    await firstNavigation;
+    await supersededNavigation;
+    expect(listenerStartedNavigation).toBeDefined();
+    await listenerStartedNavigation;
+
+    document.removeEventListener("zfb:navigation-aborted", aborted);
+    document.removeEventListener("zfb:after-swap", afterSwap);
+
+    expect(aborted).toHaveBeenCalledTimes(2);
+    expect(afterSwap).toHaveBeenCalledOnce();
+    expect(pushedURLs.some((url) => url.endsWith("#abort-listener-b"))).toBe(false);
+    expect(document.querySelector("main")?.textContent).toBe("content for /abort-listener-c");
+  });
 });
 
 describe("hash-only same-page navigation", () => {

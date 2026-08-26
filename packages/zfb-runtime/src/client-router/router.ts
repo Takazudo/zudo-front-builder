@@ -74,7 +74,11 @@ type State = {
   scrollX: number;
   scrollY: number;
 };
-type Navigation = { controller: AbortController };
+type Navigation = {
+  controller: AbortController;
+  domCommitStarted: boolean;
+  abortEventEmitted: boolean;
+};
 type Transition = {
   // The view transitions object (API and simulation)
   viewTransition?: ViewTransition;
@@ -564,6 +568,7 @@ function preloadStyleLinks(newDocument: Document) {
 async function updateDOM(
   preparationEvent: TransitionBeforePreparationEvent,
   options: Options,
+  currentNavigation: Navigation,
   currentTransition: Transition,
   historyState?: State,
   fallback?: Fallback,
@@ -605,7 +610,7 @@ async function updateDOM(
   };
 
   const finishAbortedUpdate = (): DOMUpdateOutcome => {
-    triggerEvent("zfb:navigation-aborted");
+    notifyNavigationAborted(currentNavigation);
     // Simulation owns its `finished` promise explicitly. Resolve it on the
     // no-swap path so transition cleanup still runs.
     currentTransition.viewTransitionFinished?.();
@@ -625,6 +630,7 @@ async function updateDOM(
       // Teardown and swap are a synchronous point-of-no-return. doSwap checks
       // the signal after the animation await and invokes this callback only for
       // a navigation that still owns the commit.
+      currentNavigation.domCommitStarted = true;
       cancelPendingIslands();
       // Unmount mounted islands on the OLD body before the swap so Preact/React
       // trees receive render(null, element) / root.unmount() and their useEffect
@@ -656,11 +662,32 @@ async function updateDOM(
   return "swapped";
 }
 
+function notifyNavigationAborted(navigation: Navigation): void {
+  // From island teardown onward the navigation is committed and must finish,
+  // even if an overridden event.swap() synchronously starts a newer one.
+  if (navigation.domCommitStarted || navigation.abortEventEmitted) return;
+  navigation.abortEventEmitted = true;
+  triggerEvent("zfb:navigation-aborted");
+}
+
 function abortAndRecreateMostRecentNavigation(): Navigation {
-  mostRecentNavigation?.controller.abort();
-  return (mostRecentNavigation = {
+  const previousNavigation = mostRecentNavigation;
+  const nextNavigation: Navigation = {
     controller: new AbortController(),
-  });
+    domCommitStarted: false,
+    abortEventEmitted: false,
+  };
+  // Install the new owner before abort/event dispatch. Either operation can
+  // synchronously re-enter navigate(); that newer call must remain the winner.
+  mostRecentNavigation = nextNavigation;
+  if (previousNavigation) {
+    previousNavigation.controller.abort();
+    // Native View Transitions may settle updateCallbackDone without ever
+    // invoking the skipped update callback. Emit here so updateDOM is not the
+    // only observer of a real pre-commit abort.
+    notifyNavigationAborted(previousNavigation);
+  }
+  return nextNavigation;
 }
 
 async function transition(
@@ -678,6 +705,10 @@ async function transition(
   // Invariant: all but the most recent navigation are already aborted.
 
   const currentNavigation = abortAndRecreateMostRecentNavigation();
+
+  // Emitting the previous navigation's abort event is synchronous. A listener
+  // may have started an even newer navigation before this call resumes.
+  if (currentNavigation.controller.signal.aborted) return;
 
   // not ours
   if (!transitionEnabledOnThisPage() || location.origin !== to.origin) {
@@ -722,7 +753,7 @@ async function transition(
   );
   if (prepEvent.defaultPrevented || prepEvent.signal.aborted) {
     if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
-    triggerEvent("zfb:navigation-aborted");
+    notifyNavigationAborted(currentNavigation);
     if (!prepEvent.signal.aborted) {
       // not aborted -> delegate to browser
       location.href = to.href;
@@ -834,6 +865,7 @@ async function transition(
 
   if (prepEvent.signal.aborted) {
     if (currentNavigation === mostRecentNavigation) mostRecentNavigation = undefined;
+    notifyNavigationAborted(currentNavigation);
     return;
   }
 
@@ -904,6 +936,7 @@ async function transition(
       domUpdateOutcome = await updateDOM(
         prepEvent,
         options,
+        currentNavigation,
         currentTransition,
         historyState,
         undefined,
@@ -921,6 +954,7 @@ async function transition(
       domUpdateOutcome = await updateDOM(
         prepEvent,
         options,
+        currentNavigation,
         currentTransition,
         historyState,
         hasUAVisualTransition ? "swap" : getFallback(),
