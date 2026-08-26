@@ -1,0 +1,8 @@
+/*! tailwindcss v4.2.0 | MIT License | https://tailwindcss.com */
+.flex {
+  display: flex;
+}
+.bg-\[\#123456\] {
+  background-color: #123456;
+}
+
