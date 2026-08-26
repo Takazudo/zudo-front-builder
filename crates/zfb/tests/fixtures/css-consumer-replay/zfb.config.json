@@ -1,0 +1,7 @@
+{
+  "framework": "preact",
+  "codeHighlight": {
+    "mode": "class",
+    "defaultStylesheet": true
+  }
+}

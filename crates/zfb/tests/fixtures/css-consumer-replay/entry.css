@@ -1,0 +1,13 @@
+@layer zd-preflight, zd-flow;
+@import "tailwindcss/preflight" layer(zd-preflight);
+@import "tailwindcss/utilities";
+
+@import "@takazudo/zudo-doc/theme.css";
+@import "@takazudo/zudo-doc/safelist.css";
+@import "@takazudo/zudo-doc/content.css";
+@import "@takazudo/zudo-doc/page-loading.css";
+@import "@takazudo/zudo-doc/features.css";
+
+@source "./src/**/*.{tsx,ts,jsx,js}";
+@source "./node_modules/@takazudo/zudo-doc/dist/**/*.{tsx,ts,jsx,js}";
+@source not "./node_modules/@takazudo/zudo-doc/dist/catalog.js";
