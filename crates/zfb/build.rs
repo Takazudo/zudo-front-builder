@@ -31,12 +31,14 @@
 //! esbuild version : single source of truth is `crates/zfb-toolchain-pins/src/lib.rs`
 //!                   (`EXPECTED_ESBUILD_VERSION`). Consumed here via the
 //!                   `zfb-toolchain-pins` build-dependency — no local copy.
-//! tailwindcss ver : pinned in `scripts/fetch-tailwind.mjs` (`TAILWIND_VERSION`).
-//!                   **Must be kept in sync with the constants in this file.**
+//! tailwindcss ver : single source of truth is `crates/zfb-toolchain-pins/src/lib.rs`
+//!                   (`EXPECTED_TAILWIND_VERSION`). Consumed here via the
+//!                   `zfb-toolchain-pins` build-dependency; the fetch script
+//!                   and CSS README remain parity-checked mirrors.
 //!
-//! When bumping the esbuild pin, update `crates/zfb-toolchain-pins/src/lib.rs`
-//! and the SHA-256 table below in the same commit. For tailwindcss, update the
-//! source-of-truth file and the SHA-256 table below in the same commit.
+//! When bumping either pin, update `crates/zfb-toolchain-pins/src/lib.rs` and
+//! the corresponding SHA-256 table below in the same commit. Tailwind's fetch
+//! script and CSS README mirror are guarded by the zfb parity test.
 
 use std::fs;
 use std::io::{self, Read};
@@ -46,17 +48,18 @@ use std::path::{Path, PathBuf};
 // Version pins
 // ---------------------------------------------------------------------------
 
-/// Pinned esbuild version. Imported from `zfb-toolchain-pins`, the single
-/// source of truth for all external tool version pins. To bump, update
-/// `crates/zfb-toolchain-pins/src/lib.rs` and the SHA-256 table below.
+/// Pinned esbuild and tailwindcss versions imported from `zfb-toolchain-pins`,
+/// the single source of truth for all external tool version pins. To bump,
+/// update `crates/zfb-toolchain-pins/src/lib.rs` and the SHA-256 table below.
 use zfb_toolchain_pins::{
     exe_suffix_for_target, resolve_binary_source, BinarySource, VendorPlatform,
-    EXPECTED_ESBUILD_VERSION,
+    EXPECTED_ESBUILD_VERSION, EXPECTED_TAILWIND_VERSION,
 };
 
-/// Pinned tailwindcss v4 version.  Mirror of `TAILWIND_VERSION` in
-/// `scripts/fetch-tailwind.mjs` — must be kept in sync.
-const TAILWIND_VERSION: &str = "4.2.0";
+/// Pinned tailwindcss v4 version imported from `zfb-toolchain-pins`, the
+/// single source of truth. The parity test checks the script and README
+/// mirrors.
+const TAILWIND_VERSION: &str = EXPECTED_TAILWIND_VERSION;
 
 // ---------------------------------------------------------------------------
 // Framework package version pins (sub #209 — embed framework runtimes)
@@ -111,10 +114,11 @@ const ESBUILD_SHA256_WIN_X64: &str =
     "cae1bbc86f4df800b01d99e28aea0a154b02243de6797e98f48a9b88a64a7be0";
 
 // ---------------------------------------------------------------------------
-// SHA-256 constants — tailwindcss 4.2.0 (from GitHub release sha256sums.txt)
+// SHA-256 constants — pinned tailwindcss release (from GitHub release
+// sha256sums.txt)
 //
 // Source:
-//   https://github.com/tailwindlabs/tailwindcss/releases/download/v4.2.0/sha256sums.txt
+//   https://github.com/tailwindlabs/tailwindcss/releases/download/v<version>/sha256sums.txt
 //
 // Verified on 2026-05-05.
 // ---------------------------------------------------------------------------

@@ -39,8 +39,11 @@ pub fn report_error(err: &anyhow::Error) {
 
 #[cfg(test)]
 mod tailwind_version_parity {
-    /// Assert that the three Tailwind version pins — `build.rs`, `scripts/fetch-tailwind.mjs`,
-    /// and `crates/zfb-css/README.md` — all carry the same version string.
+    use zfb_toolchain_pins::EXPECTED_TAILWIND_VERSION;
+
+    /// Assert that the three Tailwind version pins — the shared Rust const,
+    /// `scripts/fetch-tailwind.mjs`, and `crates/zfb-css/README.md` — all carry
+    /// the same version string.
     ///
     /// When bumping the pin, update all three in the same commit.  If this test
     /// fails after a single-file bump it is a reminder that the other two still
@@ -51,11 +54,8 @@ mod tailwind_version_parity {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir.parent().unwrap().parent().unwrap();
 
-        // 1. Extract version from build.rs: `const TAILWIND_VERSION: &str = "x.y.z";`
-        let build_rs =
-            std::fs::read_to_string(manifest_dir.join("build.rs")).expect("read build.rs");
-        let build_ver = extract_quoted_value(&build_rs, "const TAILWIND_VERSION: &str = ")
-            .expect("TAILWIND_VERSION not found in build.rs");
+        // 1. Read the canonical Rust-side pin from zfb-toolchain-pins.
+        let pinned_ver = EXPECTED_TAILWIND_VERSION;
 
         // 2. Extract version from scripts/fetch-tailwind.mjs: `const TAILWIND_VERSION = "x.y.z";`
         let mjs = std::fs::read_to_string(workspace_root.join("scripts/fetch-tailwind.mjs"))
@@ -80,12 +80,12 @@ mod tailwind_version_parity {
             .expect("Pinned version not found in crates/zfb-css/README.md");
 
         assert_eq!(
-            build_ver, mjs_ver,
-            "Tailwind version in build.rs ({build_ver}) differs from scripts/fetch-tailwind.mjs ({mjs_ver})"
+            pinned_ver, mjs_ver,
+            "Tailwind version in zfb-toolchain-pins ({pinned_ver}) differs from scripts/fetch-tailwind.mjs ({mjs_ver})"
         );
         assert_eq!(
-            build_ver, readme_ver,
-            "Tailwind version in build.rs ({build_ver}) differs from crates/zfb-css/README.md ({readme_ver})"
+            pinned_ver, readme_ver,
+            "Tailwind version in zfb-toolchain-pins ({pinned_ver}) differs from crates/zfb-css/README.md ({readme_ver})"
         );
     }
 
