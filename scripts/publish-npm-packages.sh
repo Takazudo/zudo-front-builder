@@ -52,6 +52,9 @@
 #                      not that tag SHA, so every package is published WITHOUT a
 #                      misleading provenance attestation.
 #
+# The two provenance-omitting modes additionally emit a one-shot trust-downgrade
+# advisory (::warning + job summary) — see emit_trust_downgrade_advisory below.
+#
 # Required env:
 #   DIST_TAG          npm dist-tag to publish under (next | latest).
 #   NODE_AUTH_TOKEN   npm auth token (set by the calling workflow step's env).
@@ -260,6 +263,47 @@ publish_nonplatform_packages() {
   done
 }
 
+# Trust-downgrade advisory (issue #2623).
+# npm records a provenance attestation per PUBLISHED VERSION, and versions are
+# immutable. So a package published WITHOUT --provenance after earlier versions
+# carried it is a permanent *trust downgrade* for that package: pnpm >= 10.30
+# with `trust-policy=no-downgrade` refuses to resolve it at all, with
+# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover"). Existing lockfiles keep
+# installing because pnpm enforces the policy during resolution, so the breakage
+# only shows up on a fresh/forced resolve — which is exactly why it went
+# unnoticed for v2.12.0 until a consumer hit it.
+#
+# The two provenance-omitting modes cannot avoid this (that is the point: neither
+# has an OIDC identity that would truthfully describe the artifacts). What they
+# CAN do is say so loudly, once, so the release operator schedules the only
+# remedy that exists — a subsequent normally-attested release.
+emit_trust_downgrade_advisory() {
+  local mode="$1" scope
+  case "$mode" in
+    recovery-no-provenance) scope="EVERY package in this release" ;;
+    mac-local) scope="@takazudo/zfb-darwin-x64" ;;
+    *) return 0 ;;
+  esac
+
+  echo "::warning title=npm provenance trust downgrade::${scope} is being published WITHOUT npm provenance. Consumers on pnpm >=10.30 with trust-policy=no-downgrade will fail to resolve this version (ERR_PNPM_TRUST_DOWNGRADE). npm versions are immutable, so the ONLY remedy is a follow-up release published through the normal tag/release path with provenance restored. See RELEASE_DAY_CHECKLIST.md and issue #2623."
+
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "### :warning: npm provenance trust downgrade"
+      echo
+      echo "**${scope}** is published **without** npm provenance in this run (mode \`${mode}\`)."
+      echo
+      echo "Consumers using pnpm >= 10.30 with \`trust-policy=no-downgrade\` will get"
+      echo "\`ERR_PNPM_TRUST_DOWNGRADE\` on a fresh resolve, because earlier versions of the same"
+      echo "package carried a provenance attestation. Frozen-lockfile installs are unaffected."
+      echo
+      echo "npm versions are immutable. **Required follow-up:** ship the next patch through the"
+      echo "normal tag/release path so provenance is restored, or publish explicit consumer"
+      echo "guidance. See \`RELEASE_DAY_CHECKLIST.md\` and issue #2623."
+    } >>"$GITHUB_STEP_SUMMARY"
+  fi
+}
+
 # Prerelease dual-tag (#481): advance `latest` alongside `next` while still in
 # the prerelease phase. Runs only after every package is published (idempotently),
 # so a partial publish never clobbers `latest`. advance-latest-dist-tag.sh has its
@@ -290,6 +334,7 @@ main() {
   fi
 
   echo "== Publishing all workspace packages (mode=${mode}, dist-tag=${DIST_TAG}) =="
+  emit_trust_downgrade_advisory "$mode"
   publish_platform_packages "$mode"
   publish_nonplatform_packages "$mode"
   maybe_advance_latest
