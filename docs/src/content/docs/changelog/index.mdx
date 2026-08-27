@@ -17,8 +17,9 @@ Maintainers use the `/l-make-release` Claude Code skill to bump versions and wri
 appropriate lane. See the skill's `SKILL.md` for the full flow.
 
 By default, `release.yml` builds the Mac x86_64 binary on the `macos-15-intel` runner, so all
-ten packages publish with npm provenance. The `/l-make-mac-release-binary` skill plus
-`/l-make-release --fast-mac` is an explicit opt-in: pre-uploading the archive skips that CI leg
-and publishes the Mac package without provenance.
+ten packages publish with npm provenance. `/l-make-release --fast-mac` is the autonomous opt-in;
+after a manual `/l-make-release --confirm` run, `/l-make-mac-release-binary` is the separate-Mac
+equivalent. Both pre-upload the archive, skip that CI leg, and publish the Mac package without
+provenance.
 
 <CategoryNav category="changelog" />

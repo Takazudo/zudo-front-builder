@@ -8,11 +8,15 @@ argument-description: "Required: the tag (e.g. v0.1.0-next.5)"
 
 Mac-only escape-hatch skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. The normal `/l-make-release` path leaves the archive absent so `release.yml` builds it on `macos-15-intel` with provenance. Use this entry point only for the explicit `--fast-mac` choice, which makes `zfb-darwin-x64` publish unattested; once an attestation exists, the weekly drift guard will correctly fail on it (that is intended supervision, not a bug).
 
-## Explicit `--fast-mac` escape-hatch flow
+## When to use this standalone escape hatch
 
-1. Deliberately choose the fast lane: invoke `/l-make-release --fast-mac` on a Mac, or invoke `/l-make-release --confirm` and then explicitly use this standalone entry point when it must run on a separate Mac.
-2. Run `/l-make-mac-release-binary v<ver>` on your Mac — builds + uploads the archive to the existing draft Release.
-3. Publish the draft Release (from any host): `gh release edit v<ver> --draft=false` (or via web UI). Fires `release: published` → `release.yml` runs → detects the pre-uploaded binary → fast publish.
+If `/l-make-release` itself runs on a Mac, prefer `/l-make-release --fast-mac`. That autonomous flow creates the draft, builds and uploads the archive, publishes the Release, and watches CI; **do not invoke this standalone skill afterward**.
+
+Use this skill when the local Mac build must happen separately from a manual/confirmed release flow:
+
+1. Run `/l-make-release --confirm` on any host. It creates the draft Release and stops without publishing or pre-uploading the Mac archive.
+2. On a Mac, run `/l-make-mac-release-binary v<ver>` — this builds and uploads the archive to that existing draft Release.
+3. Publish the draft Release (from any host): `gh release edit v<ver> --draft=false` (or use the web UI). The `release: published` event starts `release.yml`, which detects the pre-uploaded binary and takes the fast publish path.
 
 If the provenance-first default is desired, do not use this skill: publish the draft without a pre-uploaded Mac archive and let the `macos-15-intel` CI leg build it.
 

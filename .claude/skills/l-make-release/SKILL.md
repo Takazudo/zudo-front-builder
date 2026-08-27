@@ -20,7 +20,7 @@ This skill is **model-invocable**: a rough natural-language request like "bump v
 
 **`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), ask before acting on the Step 1 / Step 8 edge cases, and **stop at Step 11 with the draft unpublished** — the user publishes manually. Use this when the version strategy or release notes need vetting. Without this flag, do NOT pause anywhere.
 
-**Argument parsing.** Parse `--confirm` and `--fast-mac` independently alongside the optional version argument; either flag may appear in any order. `--fast-mac` changes only the Mac asset choice in Step 10. Without it, leave the Mac archive absent so the CI leg runs with provenance. With it, use the local Mac build escape hatch described in Step 10; `zfb-darwin-x64` then publishes unattested, and once an attestation exists the weekly drift guard will correctly fail on it (that is intended supervision, not a bug).
+**Argument parsing.** Parse `--confirm` and `--fast-mac` independently alongside the optional version argument; either flag may appear in any order. `--fast-mac` changes only the Mac asset choice in Step 10 and requires this release session to run on macOS; Step 1 checks that before any mutation. For a separate-Mac flow, use `/l-make-release --confirm` without `--fast-mac`, then run `/l-make-mac-release-binary` on the Mac. Without `--fast-mac`, leave the Mac archive absent so the CI leg runs with provenance. With it, use the local Mac build escape hatch described in Step 10; `zfb-darwin-x64` then publishes unattested, and once an attestation exists the weekly drift guard will correctly fail on it (that is intended supervision, not a bug).
 
 **Cancel mode.** Invoking `/l-make-release cancel` — or a request like "cancel the release", "abort the release", "remove the draft" — does NOT bump anything. It jumps straight to ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) below to tear down a leftover draft GH Release. This is the documented escape hatch for the failure mode where a prior run created a draft (Step 9) and stopped before publishing (Step 11), but the release was then abandoned — leaving the draft orphaned on GitHub. Orphaned drafts never fire the `release: published` webhook so they are harmless to CI, but they accumulate and skew the partial-state detection of the next run.
 
@@ -60,7 +60,15 @@ Before doing anything else, verify ALL of the following. If any check fails, sto
 2. Working tree is clean (`git status --porcelain` returns empty)
 3. `gh` CLI is authenticated (`gh auth status`)
 4. At least one `v*` tag exists (`git tag -l 'v*'`). If no tag exists, tell the user to create the initial tag first (e.g. `git tag v0.1.0 && git push --tags`).
-5. **No orphaned draft GH Release is silently lingering.** A draft from an abandoned prior run never publishes, but it accumulates and skews Step 8's partial-state detection. List drafts:
+5. **`--fast-mac` has a macOS host before any mutation.** If `--fast-mac` was passed, run `uname -s` now and require `Darwin`. Abort if it is anything else:
+
+   ```text
+   ERROR: --fast-mac requires this /l-make-release session to run on macOS (Darwin).
+   Current platform: <result of uname -s>
+   Run without --fast-mac for the provenance-first CI path. For a separate-Mac flow,
+   run /l-make-release --confirm, then /l-make-mac-release-binary on the Mac.
+   ```
+6. **No orphaned draft GH Release is silently lingering.** A draft from an abandoned prior run never publishes, but it accumulates and skews Step 8's partial-state detection. List drafts:
 
    ```bash
    gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagName'
@@ -530,16 +538,17 @@ The default path deliberately does **not** build or pre-upload the Mac binary, e
 
 ### If `--fast-mac` was passed
 
-This opt-in path requires a macOS host. Detect the host OS and abort if it is not `Darwin`:
+Step 1 already required a macOS host before any release mutation. Re-check defensively before starting the local build:
 
 ```bash
 uname -s
 ```
 
 ```text
-ERROR: --fast-mac requires a macOS (Darwin) host.
+ERROR: --fast-mac requires this /l-make-release session to run on macOS (Darwin).
 Current platform: <result of uname -s>
-Run without --fast-mac to use the provenance-first CI path, or run /l-make-mac-release-binary on a Mac.
+This should have been caught in Step 1 before mutation. Stop and inspect the partial state;
+use /l-make-release cancel if a draft was somehow created.
 ```
 
 On `Darwin`, build and upload directly via the locked-contract script. The orchestrator is already on `main` at the bump commit with a clean tree, so re-running the `/l-make-mac-release-binary` preconditions would be redundant — **call the script directly**:

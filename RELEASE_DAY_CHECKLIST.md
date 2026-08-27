@@ -9,16 +9,19 @@ If the release touches `packages/zfb-runtime` router code (client router, view t
 ### Release trigger (X9)
 
 The release workflow (`release.yml`) triggers on **`release: published`** — NOT
-on a tag push. The flow is:
+on a tag push. Choose one complete flow:
 
-1. Run `/l-make-release` (creates a **draft** GitHub Release for the current
-   version tag). Draft Releases do NOT trigger the workflow.
-2. Optionally: on a Mac, run `./scripts/build-macos-x64-local.sh --upload vX.Y.Z`
-   to pre-upload the macOS-x64 archive + `.sha256` to the draft Release (the
-   explicit fast-Mac opt-in — it skips the `macos-15-intel` runner).
-3. **Publish the draft Release** (`gh release edit vX.Y.Z --draft=false` or the
-   web UI) to trigger `release.yml`. Publishing fires the `release: published`
-   event; the draft state does NOT.
+1. **Default autonomous:** run `/l-make-release`. It creates a draft with no
+   pre-uploaded Mac archive, publishes it, and watches the provenance-first CI
+   path. Draft creation itself does NOT trigger the workflow; publishing does.
+2. **Autonomous fast-Mac opt-in:** on a Mac, run
+   `/l-make-release --fast-mac`. The skill creates the draft, builds + uploads
+   the macOS-x64 archive and `.sha256`, publishes, and watches the mixed-provenance
+   path. Do not upload or publish a second time afterward.
+3. **Manual/confirmed:** run `/l-make-release --confirm`. It stops at the
+   unpublished draft. Optionally run `/l-make-mac-release-binary vX.Y.Z` on a
+   Mac for the explicit fast path, then publish with
+   `gh release edit vX.Y.Z --draft=false` (or the web UI).
 
 ### Tagging and channel policy
 
@@ -92,10 +95,9 @@ This escape hatch was built because the former Intel macOS runner
 (`macos-13`) was chronically queue-starved. That image has since been **retired
 outright** (2025-12-04); the x86_64 leg now targets **`macos-15-intel`**, the
 migration label. GitHub's current runner table also lists **`macos-26-intel`**;
-check the supported runner labels when planning beyond `macos-15-intel`, which
-retires in **Fall 2027**. At that point this leg must become a cross-compile
-(which is exactly what `build-macos-x64-local.sh` already does on an Apple
-Silicon host).
+re-evaluate the selected label when `macos-15-intel` retires in **Fall 2027**.
+The cross-compile in `build-macos-x64-local.sh` remains the fallback if no
+suitable Intel runner is offered then.
 
 Because the local-build path has been used for every recent release, the dead
 `macos-13` label sat unnoticed in the matrix for 8+ releases. It only affects
@@ -116,12 +118,18 @@ so no manual re-dispatch is needed.
 
 ### Fast-Mac path (`--fast-mac` opt-in; mixed provenance)
 
-1. Run `/l-make-release --fast-mac` to create the draft Release and build + upload
-   the macOS-x64 asset. For a `--confirm` flow where the upload happens on a
-   separate Mac, run `/l-make-release --confirm`, then
-   `/l-make-mac-release-binary vX.Y.Z`.
-2. If you are managing the upload manually, on a Mac, build + upload the
-   macOS-x64 asset to the **draft** Release:
+For an autonomous release on a Mac, run `/l-make-release --fast-mac`. It creates
+the draft, builds + uploads the macOS-x64 assets, publishes, and watches the
+workflow end to end. Do not repeat the upload or publish steps afterward.
+
+For a manual/confirmed flow where the upload happens separately:
+
+1. Run `/l-make-release --confirm` to create the unpublished draft.
+2. On a Mac, choose exactly one way to build + upload the macOS-x64 asset to the
+   **draft** Release:
+
+   - Run `/l-make-mac-release-binary vX.Y.Z`, or
+   - manage the equivalent upload manually with:
 
    ```sh
    ./scripts/build-macos-x64-local.sh --upload vX.Y.Z
