@@ -2,10 +2,11 @@
 # build-macos-x64-local.sh
 #
 # Escape hatch for the Intel macOS CI runner (issue #437), originally written
-# because `macos-13` was chronically queue-starved. That image was retired
-# 2025-12-04; the CI leg now targets `macos-15-intel`, which itself retires in
-# Fall 2027 — after which Actions has no x86_64 macOS runner and this script's
-# cross-compile-from-arm64 approach becomes the only way to produce the archive.
+# because the former Intel image was chronically queue-starved. That image was
+# retired 2025-12-04; the CI leg now targets `macos-15-intel`. GitHub also lists
+# `macos-26-intel`, so revisit the selected label when `macos-15-intel` retires
+# in Fall 2027. The cross-compile-from-arm64 approach remains available if no
+# suitable Intel runner is offered then.
 # Builds the macOS-x64 (`x86_64-apple-darwin`) release
 # binary locally on a Mac and produces the GH Release archive + sha256 in the
 # EXACT format release.yml would have produced on the runner.

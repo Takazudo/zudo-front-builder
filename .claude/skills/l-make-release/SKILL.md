@@ -1,12 +1,12 @@
 ---
-description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, build the macOS x86_64 binary locally (when on a Mac), publish the Release, watch release.yml to completion, and push the updated Homebrew formula to the tap on a stable release. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
+description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, let release.yml build the macOS x86_64 binary with provenance by default (or use --fast-mac for the explicit local escape hatch), publish the Release, watch release.yml to completion, and push the updated Homebrew formula to the tap on a stable release. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
+argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. --fast-mac — opt into the local Mac build + pre-upload; `zfb-darwin-x64` publishes unattested, and once an attestation exists the weekly drift guard will correctly fail on it (that is intended supervision, not a bug). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
 
-Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes five package-specific changelog docs, commits + pushes, waits for CI, pre-creates a draft GitHub Release, builds + uploads the macOS x86_64 binary locally (when run on a Mac; otherwise the macos-15-intel CI leg builds it at publish time), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
+Orchestrator for releasing `@takazudo/zfb` and its lockstep workspace packages. Bumps the version, writes five package-specific changelog docs, commits + pushes, waits for CI, pre-creates a draft GitHub Release, lets the `macos-15-intel` CI leg build the macOS x86_64 binary with provenance by default (or uses the explicit `--fast-mac` escape hatch to build + upload locally), then **publishes the Release** — triggering `release.yml` (remaining platform binaries + npm publish) — watches that run to completion, and on a **stable** release pushes the updated Homebrew formula to the tap. With `--confirm`, it instead stops at the unpublished draft and the user decides when to publish (and runs Homebrew by hand).
 
 ## Invocation & autonomy
 
@@ -19,6 +19,8 @@ This skill is **model-invocable**: a rough natural-language request like "bump v
 **The single exception: a no-argument MAJOR.** When Step 2's no-argument judgment lands on **major** (the commit range contains a breaking change), stop and ask whether to land it stable or soak it on `next` first — see [Step 2's no-argument rule](#no-argument--judge-the-level-land-stable-unless-it-is-a-major). This is a *version-strategy* question, not a "go?" confirmation, and it is the only one. Once the user answers, the rest of the run is autonomous again as normal. A no-argument **patch** or **minor** never pauses: it lands stable on `latest` without asking.
 
 **`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), ask before acting on the Step 1 / Step 8 edge cases, and **stop at Step 11 with the draft unpublished** — the user publishes manually. Use this when the version strategy or release notes need vetting. Without this flag, do NOT pause anywhere.
+
+**Argument parsing.** Parse `--confirm` and `--fast-mac` independently alongside the optional version argument; either flag may appear in any order. `--fast-mac` changes only the Mac asset choice in Step 10 and requires this release session to run on macOS; Step 1 checks that before any mutation. For a separate-Mac flow, use `/l-make-release --confirm` without `--fast-mac`, then run `/l-make-mac-release-binary` on the Mac. Without `--fast-mac`, leave the Mac archive absent so the CI leg runs with provenance. With it, use the local Mac build escape hatch described in Step 10; `zfb-darwin-x64` then publishes unattested, and once an attestation exists the weekly drift guard will correctly fail on it (that is intended supervision, not a bug).
 
 **Cancel mode.** Invoking `/l-make-release cancel` — or a request like "cancel the release", "abort the release", "remove the draft" — does NOT bump anything. It jumps straight to ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) below to tear down a leftover draft GH Release. This is the documented escape hatch for the failure mode where a prior run created a draft (Step 9) and stopped before publishing (Step 11), but the release was then abandoned — leaving the draft orphaned on GitHub. Orphaned drafts never fire the `release: published` webhook so they are harmless to CI, but they accumulate and skew the partial-state detection of the next run.
 
@@ -41,7 +43,7 @@ The Rust CLI binary is built by `.github/workflows/release.yml`, not by this ski
 
 ## Boundaries
 
-- **Default**: this skill publishes the Release itself at Step 11 (`gh release edit v<version> --draft=false`) once the Mac asset situation is settled, then watches the triggered `release.yml` run to completion. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
+- **Default**: this skill leaves the Mac archive for the `macos-15-intel` CI leg (so the default publish carries provenance for all ten packages), publishes the Release itself at Step 11 (`gh release edit v<version> --draft=false`), then watches the triggered `release.yml` run to completion. With `--fast-mac`, it pre-uploads the local Mac archive and the workflow uses the fast, unattested Mac lane. With `--confirm`, it stops at the unpublished draft and the user publishes manually.
 - This skill **never** pushes a tag separately. The draft Release creation (`gh release create --draft`) creates the tag remotely.
 - This skill **never** publishes to npm directly. `release.yml` does that when the Release is published.
 - **Homebrew is automatic on the default path, for stable releases only.** Once `release.yml`
@@ -58,7 +60,15 @@ Before doing anything else, verify ALL of the following. If any check fails, sto
 2. Working tree is clean (`git status --porcelain` returns empty)
 3. `gh` CLI is authenticated (`gh auth status`)
 4. At least one `v*` tag exists (`git tag -l 'v*'`). If no tag exists, tell the user to create the initial tag first (e.g. `git tag v0.1.0 && git push --tags`).
-5. **No orphaned draft GH Release is silently lingering.** A draft from an abandoned prior run never publishes, but it accumulates and skews Step 8's partial-state detection. List drafts:
+5. **`--fast-mac` has a macOS host before any mutation.** If `--fast-mac` was passed, run `uname -s` now and require `Darwin`. Abort if it is anything else:
+
+   ```text
+   ERROR: --fast-mac requires this /l-make-release session to run on macOS (Darwin).
+   Current platform: <result of uname -s>
+   Run without --fast-mac for the provenance-first CI path. For a separate-Mac flow,
+   run /l-make-release --confirm, then /l-make-mac-release-binary on the Mac.
+   ```
+6. **No orphaned draft GH Release is silently lingering.** A draft from an abandoned prior run never publishes, but it accumulates and skews Step 8's partial-state detection. List drafts:
 
    ```bash
    gh release list --json name,isDraft,tagName --jq '.[] | select(.isDraft) | .tagName'
@@ -475,8 +485,18 @@ If it exists:
 - **Default (autonomous)**:
   - Existing release is a **draft** (`gh release view v<version> --json isDraft --jq '.isDraft'` is `true`) → delete and recreate: `gh release delete v<version> --yes` (no `--cleanup-tag` — a never-published draft has no tag ref), then proceed to Step 9. Report what was deleted.
   - Existing release is **published** → STOP with an error. The version is already live; never delete a published Release. Re-run `/l-make-release` so Step 2 bumps past it.
-- **With `--confirm`**: present the user with three options and wait for their choice:
-  - **Reuse**: skip the `gh release create` step and proceed to the notify message.
+- **With `--confirm`**: present the user with three options and wait for their choice. These choices apply only when the existing release is a draft; if it is published, STOP as above and never mutate its assets.
+  - **Reuse**: if `--fast-mac` was **not** passed, first check the existing draft's assets and remove any pre-uploaded `zfb-*-x86_64-apple-darwin.tar.gz` and its `.sha256` companion so the draft cannot silently select the local, unattested Mac lane:
+
+    ```bash
+    gh release view v<version> --json assets --jq \
+      '.assets[].name | select(test("^zfb-.*-x86_64-apple-darwin\\.tar\\.gz(\\.sha256)?$"))' |
+    while IFS= read -r asset; do
+      [[ -z "$asset" ]] || gh release delete-asset v<version> "$asset" --yes
+    done
+    ```
+
+    Then skip the `gh release create` step and proceed to the notify message. If `--fast-mac` was passed, retain the existing assets for the explicit fast path.
   - **Delete and recreate**: `gh release delete v<version> --yes` then re-create (only for drafts — never delete a published Release).
   - **Abort**: stop.
 
@@ -510,19 +530,28 @@ Homebrew flow; only its notes are assembled from the five package sources.
 
 The tag is created remotely as a draft. The `release: published` webhook event does NOT fire on draft creation (by design).
 
-## Step 10: Build the macOS x86_64 Binary Locally (default)
+## Step 10: Build the macOS x86_64 Binary (CI default; `--fast-mac` escape hatch)
 
-GitHub's `macos-15-intel` runners are slow and frequently queue-starved, so this skill builds the Mac binary **locally by default** and pre-uploads it to the draft Release. `release.yml`'s detect-mac-local job then skips the `macos-15-intel` leg at publish time.
+The default path deliberately does **not** build or pre-upload the Mac binary, even on a Mac. Leave both Mac assets absent so publishing the draft runs `release.yml`'s `macos-15-intel` leg; that CI-built binary lets all ten packages publish with `--provenance`.
 
-Detect the host OS:
+`--fast-mac` is an explicit escape hatch for a release where avoiding the CI leg is worth the provenance tradeoff. Its local build + pre-upload makes `release.yml` select `mac-local`, so `zfb-darwin-x64` publishes unattested. Once an attestation exists, the weekly drift guard will correctly fail on that package; that is intended supervision, not a bug.
+
+### If `--fast-mac` was passed
+
+Step 1 already required a macOS host before any release mutation. Re-check defensively before starting the local build:
 
 ```bash
 uname -s
 ```
 
-### If `Darwin` (macOS)
+```text
+ERROR: --fast-mac requires this /l-make-release session to run on macOS (Darwin).
+Current platform: <result of uname -s>
+This should have been caught in Step 1 before mutation. Stop and inspect the partial state;
+use /l-make-release cancel if a draft was somehow created.
+```
 
-Build and upload directly via the locked-contract script. The orchestrator is already on `main` at the bump commit with a clean tree, so re-running the `/l-make-mac-release-binary` preconditions would be redundant — **call the script directly**:
+On `Darwin`, build and upload directly via the locked-contract script. The orchestrator is already on `main` at the bump commit with a clean tree, so re-running the `/l-make-mac-release-binary` preconditions would be redundant — **call the script directly**:
 
 ```bash
 ./scripts/build-macos-x64-local.sh --upload v<version>
@@ -537,19 +566,9 @@ awk '{print $1}' "zfb-<version>-x86_64-apple-darwin.tar.gz.sha256"
 
 Both `zfb-<version>-x86_64-apple-darwin.tar.gz` and its `.sha256` companion must appear. If either is missing, stop and surface what was found vs. expected. The draft Release already exists at this point — if the user chooses to abandon this release rather than retry the upload, tear it down via ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) so the next run starts clean.
 
-### If NOT `Darwin`
+### If `--fast-mac` was not passed (default)
 
-Do not attempt the build (the cross-target needs an Apple host). **Print this note**, then continue to Step 11. (Default: Step 11 publishes anyway and `release.yml`'s macos-15-intel leg builds the Mac binary on CI — slower but autonomous. With `--confirm`: the user can run `/l-make-mac-release-binary` on a Mac before publishing manually.)
-
-```
-⚠️  Not a macOS host (uname = <result>). Skipping the local Mac build.
-    To build the Mac binary locally (recommended — saves the slow macos-15-intel CI leg),
-    run on a Mac before publishing:
-
-      /l-make-mac-release-binary v<version>
-
-    Otherwise, publishing the draft will let CI build the macos-15-intel leg (slower).
-```
+Do not run `uname` or the local build. Continue to Step 11 with no Mac archive attached; publishing the draft will let the `macos-15-intel` CI leg build the binary and preserve provenance for every package.
 
 ## Step 11: Publish + Watch (default) / Notify + STOP (`--confirm`)
 
@@ -571,7 +590,7 @@ Do NOT ask "publish?", "go?", or wait for any signal — publish immediately:
    gh run list --workflow release.yml --limit 3 --json databaseId,displayTitle,status
    ```
 
-3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows; the macos-15-intel leg is skipped when the Mac archive was pre-uploaded in Step 10, built on CI otherwise) and publishes all 10 npm packages.
+3. **Watch the run to completion** with a background poll (same pattern as `/watch-ci` — `gh run view <id> --json status,conclusion` every 30s until `completed`; do NOT poll in the foreground). The run builds the remaining platform archives (linux + windows, plus macos-15-intel on the default path; that leg is skipped only when `--fast-mac` pre-uploaded both Mac assets) and publishes all 10 npm packages.
 4. **On success — update Homebrew (stable only), then report.**
 
    **a. Homebrew.** If `<version>` is **stable** (no `-next.` / `-beta.` / `-rc.`), run it now — do
@@ -620,14 +639,16 @@ prereleases no longer touch `latest`** — this is history, not current behavior
 `-next.N` publish to move `latest`. See RELEASE_DAY_CHECKLIST.md "Prerelease dual-tag policy" for
 the manual remediation commands if the workflow's `dist-tag add` retries ever exhaust.
 
-### If the Mac binary was built + uploaded (Step 10 on macOS)
+### If the Mac binary was built + uploaded (`--fast-mac` opt-in)
 
 ````
 ============================================================
 Release bump committed and pushed.
 CI on the bump commit: PASSED.
 Draft GH Release created: v<version> (tag exists remotely as a draft).
-macOS x86_64 binary: built locally and uploaded to the draft Release.
+macOS x86_64 binary: built locally and uploaded to the draft Release because --fast-mac was passed.
+Provenance consequence: zfb-darwin-x64 publishes unattested; once an attestation exists, the weekly
+drift guard will correctly fail on it. That is intended supervision, not a bug.
 
 NEXT STEP — publish the draft to trigger release.yml (from any host):
 
@@ -635,7 +656,8 @@ NEXT STEP — publish the draft to trigger release.yml (from any host):
   # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
 release.yml's detect-mac-local job will see the pre-uploaded archive,
-skip the slow macos-15-intel leg, and publish all 10 packages.
+skip the macos-15-intel leg, and publish all 10 packages (with the Mac package on the explicit
+unattested fast lane).
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
 remaining platform archives (linux + windows) and their .sha256 files, then publishes the
@@ -655,38 +677,26 @@ path runs the tap push itself. See RELEASE_DAY_CHECKLIST.md for the Homebrew flo
 ============================================================
 ````
 
-### If the Mac build was skipped (Step 10 not on macOS)
+### If the Mac build was skipped (default; `--fast-mac` not passed)
 
 ````
 ============================================================
 Release bump committed and pushed.
 CI on the bump commit: PASSED.
 Draft GH Release created: v<version> (tag exists remotely as a draft).
-macOS x86_64 binary: NOT built (host is not macOS).
+macOS x86_64 binary: NOT pre-built on this run (the provenance-first default; --fast-mac was not passed).
 
-NEXT STEP — pick one:
+NEXT STEP — publish the draft to trigger release.yml (from any host):
 
-Option A (recommended): build the Mac binary on a Mac first, then publish
+  gh release edit v<version> --draft=false
+  # or via the web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
-  On a Mac (zfb checkout, on main at the bump commit):
-
-    /l-make-mac-release-binary v<version>
-
-  Then publish (from any host):
-
-    gh release edit v<version> --draft=false
-
-Option B: publish now and let CI build the macos-15-intel leg (slower)
-
-    gh release edit v<version> --draft=false
-    # or via the web UI
-
-Either way, release.yml auto-detects whether the Mac archive is on the Release at
-publish time. If present → skip macos-15-intel (fast). If absent → build on CI.
+release.yml will build the Mac binary on macos-15-intel and publish all 10 packages with
+--provenance. The archive is intentionally absent here so detect-mac-local keeps that CI leg.
 
 After publishing, WAIT for the Release workflow run to finish — it builds and uploads the
-remaining platform archives (linux + windows, and the macos-15-intel leg under Option B) and their
-.sha256 files, then publishes the npm packages:
+remaining platform archives (linux + windows, and the macos-15-intel leg) and their .sha256 files,
+then publishes the npm packages:
 
   gh run watch
 
@@ -777,6 +787,10 @@ gh workflow run release.yml --ref main \
   -f skip_macos_x64=false \
   -f release_tag=v<version>
 ```
+
+Keep `skip_macos_x64=false` so the recovery uses the `macos-15-intel` CI build rather than a
+pre-uploaded local archive; this preserves the intended recovery behavior and makes the Mac lane
+explicitly observable. Do not use `--fast-mac` as a recovery shortcut.
 
 Do not select `v<version>` as `--ref`: GitHub would load the old workflow definition from that tag. The workflow's `release-context` job verifies the published Release, tag commit, and package version, then pins every source checkout to that exact commit. Because GitHub OIDC still identifies the `main` workflow commit, this recovery path publishes all packages without npm provenance rather than attaching a misleading source attestation. Watch this recovery run to completion using the same Step 11 procedure. Once it succeeds, perform the normal stable Homebrew update exactly once.
 
