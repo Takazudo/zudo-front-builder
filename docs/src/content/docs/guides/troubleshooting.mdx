@@ -48,6 +48,30 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **Fix:** use a glibc-based Linux base image (Debian, Ubuntu) instead of Alpine — in a Dockerfile, a CI runner, or any container image. There is no workaround that runs zfb natively on musl today; see [Installation](../getting-started/installation.mdx#supported-platforms) and [Install without Node](../install/node-free.mdx#supported-platforms) for the supported platform matrix.
 
+## `ERR_PNPM_TRUST_DOWNGRADE` installing 2.12.0
+
+**Symptom:** upgrading any `@takazudo/zfb*` package to `2.12.0` fails to resolve under pnpm 10.30+ when `.npmrc` sets `trust-policy=no-downgrade`:
+
+```text
+ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb@2.12.0" (possible package takeover)
+
+Trust checks are based solely on publish date, not semver. A package cannot be
+installed if any earlier-published version had stronger trust evidence. Earlier
+versions had provenance attestation, but this version has no trust evidence.
+```
+
+An install from an already-generated lockfile still works, because pnpm applies the trust policy during **resolution** — only a fresh or forced resolve is blocked.
+
+**Cause:** the `2.12.0` packages carry no npm provenance attestation, while `2.11.0` does. This is not a package takeover — `2.12.0` was published through zfb's [published-release recovery path](https://github.com/Takazudo/zudo-front-builder/blob/main/RELEASE_DAY_CHECKLIST.md), a `workflow_dispatch` run from `main` that rebuilds an already-published tag. GitHub's OIDC identity in that run describes the `main` workflow commit, not the older tag commit the artifacts were actually built from, so the release deliberately publishes without an attestation rather than attaching one that misidentifies the source. Every package in the `2.12.0` family is affected. Tracked as [issue #2623](https://github.com/Takazudo/zudo-front-builder/issues/2623).
+
+**Fix:** npm versions are immutable, so `2.12.0` itself can never gain an attestation. Prefer, in order:
+
+1. **Upgrade past it.** The next patch is published through the normal tag/release path with provenance restored, which clears the downgrade. This is the real fix.
+2. **Stay on `2.11.0`** until that patch lands — it is fully attested and satisfies `no-downgrade`.
+3. **Install from your existing lockfile** (`pnpm install --frozen-lockfile`), which is unaffected. Useful for CI while you wait.
+
+Only if none of those fit, drop the `trust-policy=no-downgrade` line from `.npmrc` for the one resolve that needs it, then restore it. That disables the guard for *every* dependency, not just zfb, so treat it as a last resort rather than a standing setting.
+
 ## `import.meta.glob(...)` build error
 
 **Symptom**, from `zfb build` (or a warning + skipped rebundle from `zfb dev`):

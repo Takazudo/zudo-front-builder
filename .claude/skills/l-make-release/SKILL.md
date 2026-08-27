@@ -780,6 +780,8 @@ gh workflow run release.yml --ref main \
 
 Do not select `v<version>` as `--ref`: GitHub would load the old workflow definition from that tag. The workflow's `release-context` job verifies the published Release, tag commit, and package version, then pins every source checkout to that exact commit. Because GitHub OIDC still identifies the `main` workflow commit, this recovery path publishes all packages without npm provenance rather than attaching a misleading source attestation. Watch this recovery run to completion using the same Step 11 procedure. Once it succeeds, perform the normal stable Homebrew update exactly once.
 
+**A recovery run leaves a trust downgrade behind — schedule the follow-up (issue #2623).** Publishing without provenance after earlier versions carried it is permanent (npm versions are immutable), and pnpm 10.30+ with `trust-policy=no-downgrade` then refuses to resolve that version with `ERR_PNPM_TRUST_DOWNGRADE`. Frozen-lockfile installs keep working, so the breakage only appears on a fresh resolve — which is how v2.12.0 shipped it unnoticed. The publish job now emits a `::warning` and job-summary block saying so; do not dismiss it. After the recovery succeeds, ship the next patch through the normal tag/release path so provenance is restored, and point affected consumers at the `ERR_PNPM_TRUST_DOWNGRADE` entry in `docs/src/content/docs/guides/troubleshooting.mdx` in the meantime. See `RELEASE_DAY_CHECKLIST.md` for the full rationale.
+
 ### Existing draft Release for the version (Step 8)
 
 Default (autonomous): draft → delete and recreate; published → stop with an error (never delete a published Release). With `--confirm`: prompt reuse / delete-and-recreate / abort and wait for user choice before acting.

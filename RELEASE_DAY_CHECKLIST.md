@@ -180,6 +180,31 @@ separate checkout of the exact `main` workflow commit while keeping all package
 source and binaries pinned to the verified tag commit. Normal
 `release: published` runs retain the full or mixed-provenance behavior below.
 
+#### Recovery creates a trust downgrade — plan the follow-up release (issue #2623)
+
+**A recovery run is not consequence-free for consumers.** npm records provenance
+per published version and versions are immutable, so publishing a version without
+an attestation *after* earlier versions had one is a permanent **trust downgrade**
+for every affected package. pnpm 10.30+ with `trust-policy=no-downgrade` refuses
+to resolve such a version outright:
+
+```text
+ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb@X.Y.Z" (possible package takeover)
+```
+
+This is easy to miss on release day, and v2.12.0 shipped it unnoticed: pnpm
+enforces the policy **during resolution**, so existing lockfiles keep installing
+fine and only a fresh or forced resolve breaks. The publish job now emits a
+`::warning` and a job-summary block on every provenance-omitting run so the
+downgrade cannot ship silently again — do not dismiss it.
+
+**Required follow-up after any recovery run:** ship the next patch through the
+normal tag/release path so provenance is restored. That is the only remedy — the
+recovered version itself can never be repaired. Until that patch is out, affected
+consumers need explicit guidance; the user-facing workaround is documented in
+[the docs troubleshooting page](docs/src/content/docs/guides/troubleshooting.mdx)
+under `ERR_PNPM_TRUST_DOWNGRADE`.
+
 ### Provenance trade-off (option B — mixed provenance)
 
 npm `--provenance` (added in #425 / PR #436) requires OIDC attestation from the
@@ -193,6 +218,13 @@ the publish step therefore splits:
 This is the "mixed-provenance" option B from issue #437. Prefer the default path
 (option C: only use the escape hatch when `macos-15-intel` is actually stuck) so most
 releases keep full provenance across every package.
+
+The fast-Mac path carries the same trust-downgrade hazard as recovery, narrowed to
+one package: `@takazudo/zfb-darwin-x64` loses its attestation for that version, so
+a `no-downgrade` consumer resolving on macOS-x64 is blocked even though the other
+nine packages are fully attested. The publish job warns about this too. Prefer the
+default path; if you do use the escape hatch, restore full provenance on the next
+release rather than making it habitual.
 
 ## Homebrew tap update (added by issue #383)
 
