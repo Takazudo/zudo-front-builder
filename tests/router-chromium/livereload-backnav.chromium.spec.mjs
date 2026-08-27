@@ -13,6 +13,8 @@ const CONNECTION_SETTLE_TIMEOUT_MS = 5000;
 const MAX_LIVE_CONNECTIONS = 2;
 
 test.use({
+  // Playwright's default headless shell disables bfcache via its delegate.
+  channel: "chromium",
   launchOptions: {
     ignoreDefaultArgs: ["--disable-back-forward-cache"],
   },
