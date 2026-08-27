@@ -66,8 +66,8 @@
 //!   `run_boot_render`'s Cold branch right after the deferred publish
 //!   attempt concludes, success or failure) is the deterministic signal
 //!   that the publish has already happened.
-//! - **Cold-bootstrap recovery**: the fixture's page starts with a genuine
-//!   JSX syntax error, so the boot's deferred bundle fails for real (proven
+//! - **Cold-bootstrap recovery**: a module imported by the fixture's valid
+//!   page starts with a genuine syntax error, so the boot's deferred bundle fails for real (proven
 //!   by waiting for the exact `deferred_bundle_failure_message` Cold wording
 //!   in stderr — not merely assumed). The SSE stream is subscribed AFTER
 //!   that failure (simulating a tab that has been sitting on the dev 404
@@ -107,7 +107,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{
+    locate_esbuild, next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock,
+};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(60);
@@ -117,6 +119,10 @@ const CONTENT_DEADLINE: Duration = Duration::from_secs(60);
 // returns the instant an event arrives and only uses this as its deadline.
 const RELOAD_DEADLINE: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+// `flock` serializes separate test binaries but is process-scoped on macOS,
+// so both tests in this binary also need a local async guard. Always acquire
+// the cross-binary lock first, matching the shared harness contract.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const HEALTHY_MARKER: &str = "SSR_HEALTHY_SELF_HEAL_MARKER";
 const RECOVERY_MARKER: &str = "SSR_RECOVERY_SELF_HEAL_MARKER";
@@ -211,23 +217,12 @@ fn healthy_page_source() -> String {
     )
 }
 
-/// Genuinely broken JSX (an unclosed `<body>` tag) so the boot's deferred
-/// bundle fails for real at the esbuild parse step, arming cold-bootstrap
-/// recovery — not a simulated/assumed failure.
-fn recovery_broken_page_source() -> String {
-    format!(
-        "export const prerender = false;\n\n\
-         export default function HomePage() {{\n  \
-         return (\n    <html lang=\"en\">\n      <body>{RECOVERY_MARKER}\n    </html>\n  );\n\
-         }}\n"
-    )
-}
-
 fn recovery_fixed_page_source() -> String {
     format!(
-        "export const prerender = false;\n\n\
+        "import {{ trigger }} from \"../src/recovery-trigger\";\n\n\
+         export const prerender = false;\n\n\
          export default function HomePage() {{\n  \
-         return (\n    <html lang=\"en\">\n      <body>{RECOVERY_MARKER}</body>\n    </html>\n  );\n\
+         return (\n    <html lang=\"en\">\n      <body>{RECOVERY_MARKER}{{trigger}}</body>\n    </html>\n  );\n\
          }}\n"
     )
 }
@@ -325,30 +320,12 @@ async fn wait_for_log_line(session: &DevSession, needle: &str, phase: &str) {
     );
 }
 
-/// A dedicated client for the SSE subscription with NO overall request
-/// timeout (only `connect_timeout`). The shared `client` used for ordinary
-/// GETs sets a 10s total-request timeout, which reqwest applies across the
-/// whole streamed response body — fatal for a connection meant to stay open
-/// across a `RELOAD_DEADLINE`-sized wait (it would sever the stream
-/// mid-observation and surface as a spurious `Err`, not the `Ok(None)` a
-/// genuinely quiet stream produces).
-fn sse_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .expect("build reqwest SSE client")
-}
-
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = open_sse(base).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "SSE endpoint /__zfb/reload must answer 200"
+        "SSE live-reload endpoint must answer 200"
     );
     resp
 }
@@ -438,6 +415,7 @@ async fn poll_until_contains(
             of issue #2002 — see epic #1999 / issue #1826."]
 async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[ssr_reload_self_heal] no esbuild binary available; skipping. \
@@ -478,8 +456,8 @@ async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
     // Subscribe to the livereload stream INSIDE the slow-bundle window —
     // this simulates a tab that is already open (and would be sitting on
     // the dev 404 body) the instant the deferred bundle publishes. Uses the
-    // dedicated no-total-timeout client — see `sse_client`.
-    let sse = subscribe_sse(&sse_client(), &base).await;
+    // shared no-total-timeout SSE opener.
+    let sse = subscribe_sse(&base).await;
 
     // Sanity: while the deferred bundle is still in flight, the SSR route
     // must not yet serve the marker (proves we really are inside the
@@ -569,6 +547,7 @@ async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
             of issue #2002 — see epic #1999 / issue #1826 / issue #1809."]
 async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
     let _e2e_lock = CrossBinaryE2eLock::acquire();
+    let _serial = SERIAL.lock().await;
     let Some(esbuild) = locate_esbuild() else {
         eprintln!(
             "[ssr_reload_self_heal] no esbuild binary available; skipping. \
@@ -582,9 +561,12 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
         .path()
         .canonicalize()
         .expect("canonicalize fixture root");
-    // Genuinely broken JSX so the boot's deferred bundle fails for real.
-    write_ssr_only_fixture(&root, &recovery_broken_page_source());
-    let page_path = root.join("pages/index.tsx");
+    // The page is valid from the start; its imported module is genuinely
+    // syntax-broken so the deferred boot bundle still fails for real.
+    write_ssr_only_fixture(&root, &recovery_fixed_page_source());
+    let trigger_path = root.join("src/recovery-trigger.ts");
+    fs::create_dir_all(trigger_path.parent().expect("trigger parent")).expect("create src/");
+    fs::write(&trigger_path, "export const trigger = ;\n").expect("write recovery trigger module");
 
     let mut session = spawn_dev(&root, &esbuild, &[("ZFB_DEV_BOOT_LAZY", "cold")]);
     let Some(port) = wait_for_ready(&mut session).await else {
@@ -599,7 +581,7 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
         .expect("build reqwest client");
 
     // Proof of a REAL failure: `deferred_bundle_failure_message`'s exact
-    // Cold wording, not an assumption that the broken JSX did anything.
+    // Cold wording, not an assumption that the broken module did anything.
     wait_for_log_line(
         &session,
         "deferred dev bundle failed — cold-lazy (ZFB_DEV_BOOT_LAZY=cold) has no",
@@ -616,8 +598,8 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
     // Subscribe to the livereload stream AFTER the failure — this
     // simulates a tab that has been sitting on the dev 404 body since
     // boot, the whole time the project was broken. Uses the dedicated
-    // no-total-timeout client — see `sse_client`.
-    let sse = subscribe_sse(&sse_client(), &base).await;
+    // no-total-timeout SSE opener.
+    let sse = subscribe_sse(&base).await;
 
     // Sanity: the route must not yet serve the marker (still broken).
     let (pre_status, pre_body) = poll_get(&client, &index_url).await;
@@ -628,9 +610,13 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
         session.logs(),
     );
 
-    // THE FIX — a renderer-relevant edit (the page module itself) retries
-    // the bundle via the watcher's `reload_renderer` closure.
-    fs::write(&page_path, recovery_fixed_page_source()).expect("fix pages/index.tsx");
+    // THE FIX — a renderer-relevant edit of the imported module retries the
+    // bundle via the watcher's `reload_renderer` closure. macOS may report
+    // this edit as Created or Modified; either classification reloads the
+    // renderer, but neither can enter page discovery and eagerly publish
+    // this SSR-only route before the readiness boundary is observed.
+    fs::write(&trigger_path, "export const trigger = 'fixed';\n")
+        .expect("edit recovery trigger module");
 
     // Deterministic recovery signal: `recover_cold_bootstrap_after_publish`
     // is the ONLY caller of this exact info line
@@ -644,8 +630,10 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
 
     let recovered_readiness = wait_for_publication_ready(&client, &base, &session).await;
     assert_eq!(
-        recovered_readiness["documents"], "ready_on_request",
-        "a complete SSR-only route-table refresh is the repaired document boundary"
+        recovered_readiness["documents"],
+        "ready_on_request",
+        "a complete SSR-only route-table refresh is the repaired document boundary\n{}",
+        session.logs(),
     );
     assert!(
         recovered_readiness["generation"].as_u64().unwrap_or(0) > 0,

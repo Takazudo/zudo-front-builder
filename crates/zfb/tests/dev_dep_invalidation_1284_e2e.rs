@@ -320,17 +320,9 @@ async fn poll_until_contains(
 
 /// Subscribe to the dev server's SSE live-reload endpoint. Must be called
 /// BEFORE the edit whose tick it is meant to observe.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
-    assert_eq!(
-        resp.status().as_u16(),
-        200,
-        "SSE endpoint /__zfb/reload must answer 200"
-    );
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = zfb_test_utils::open_sse(base).await;
+    assert_eq!(resp.status().as_u16(), 200, "SSE endpoint must answer 200");
     resp
 }
 
@@ -349,20 +341,17 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
 /// harness workaround is tracked in #1301). Draining to quiescence before each
 /// edit removes that race (mirrors the effective settle `dev_serve_e2e.rs` gets
 /// from its earlier scenarios before its component-edit scenario).
-async fn drain_ticks_until_quiescent(
-    client: &reqwest::Client,
-    base: &str,
-    quiet_gap: Duration,
-    cap: Duration,
-) {
+async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Duration) {
     let start = Instant::now();
     while start.elapsed() < cap {
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, quiet_gap).await {
             // A tick fired within the gap — the watcher is still busy; keep draining.
             Ok(Some(_)) => continue,
-            // No event for `quiet_gap` (or the stream ended) — quiescent.
-            _ => break,
+            // No event for `quiet_gap` (or the stream ended) — quiescent. The
+            // served-HTML/CSS polls after each edit remain authoritative.
+            Ok(None) => break,
+            Err(error) => panic!("SSE read failed while draining watcher ticks: {error:#}"),
         }
     }
 }
@@ -448,7 +437,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
     // until the first SSE event arrives — proving the watch stream is past its
     // startup dead window. Mirrors dev_serve_e2e.rs.
     {
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         let stop = Arc::new(AtomicBool::new(false));
         let writer = {
             let root = session.root.to_path_buf();
@@ -598,15 +587,10 @@ export default function HomePage({ posts }: Props) {
         // ── THE EDIT ──────────────────────────────────────────────────────
         // Drain any trailing warmup-handshake ticks first so the edit tick is
         // not raced into a skip-key short-circuit (see drain fn docs).
-        drain_ticks_until_quiescent(
-            &client,
-            &base,
-            Duration::from_millis(1500),
-            Duration::from_secs(20),
-        )
-        .await;
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
         // Subscribe to SSE BEFORE the edit so we catch the watcher tick.
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("src/components/Widget.tsx"),
             "export function Widget() {\n  \
@@ -616,11 +600,11 @@ export default function HomePage({ posts }: Props) {
 
         // Secondary signal (D3): the tick SHOULD broadcast an SSE `page` event
         // via the pages_stale gate. This is consumed best-effort, NOT hard-
-        // asserted: the reqwest client's request timeout can be shorter than a
-        // cold V8-host reload + broadcast, so a slow-but-correct tick would time
-        // out here. When an event DOES arrive we still assert it is `page` (a
-        // wrong event type is a real regression); a timeout falls through to the
-        // authoritative served-HTML poll below.
+        // asserted: the dedicated SSE client has no whole-response timeout, so
+        // a slow-but-correct tick can still reach this read. When an event DOES
+        // arrive we still assert it is `page` (a wrong event type is a real
+        // regression); a clean deadline falls through to the authoritative
+        // served-HTML poll below. A transport error is a harness failure.
         match next_sse_event_name(sse, SSE_DEADLINE).await {
             Ok(Some(name)) => assert_eq!(
                 name.as_str(),
@@ -629,9 +613,13 @@ export default function HomePage({ posts }: Props) {
                  (expected `page`).\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[symptom-A] no SSE `page` event observed within the window; \
                  relying on the authoritative served-HTML poll (D3)."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after src/components/Widget.tsx edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -825,14 +813,9 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
         //
         // Drain trailing warmup-handshake ticks first so the edit's tick is not
         // raced into a skip-key short-circuit (see drain fn docs).
-        drain_ticks_until_quiescent(
-            &client,
-            &base,
-            Duration::from_millis(1500),
-            Duration::from_secs(20),
-        )
-        .await;
-        let sse = subscribe_sse(&client, &base).await;
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             &pkg_css_path,
             "/* @scope/design-system v2 */\n.ds-marker-v2 { color: #101010; }\n",
@@ -842,7 +825,18 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
         // A Style tick does not mark pages stale (no SSE `page` event) but it
         // does refresh the CSS asset bytes. The event type may be anything or
         // nothing here — the served CSS body below is the authoritative gate.
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        // A transport error is still a harness failure.
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            Ok(None) => eprintln!(
+                "[symptom-B] no SSE event observed for the style edit; relying on the \
+                 authoritative served CSS-body poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after @scope/design-system CSS edit: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
 
         // The new V2 marker must appear in the served stylesheet.
         //
@@ -1061,14 +1055,9 @@ export default function HomePage({ posts }: Props) {
         //
         // Drain trailing warmup ticks first so the component edit's tick is not
         // raced into a skip-key short-circuit (see drain fn docs).
-        drain_ticks_until_quiescent(
-            &client,
-            &base,
-            Duration::from_millis(1500),
-            Duration::from_secs(20),
-        )
-        .await;
-        let sse = subscribe_sse(&client, &base).await;
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("src/components/CardWidget.tsx"),
             "export function CardWidget() {\n  \
@@ -1077,9 +1066,19 @@ export default function HomePage({ posts }: Props) {
         .expect("edit src/components/CardWidget.tsx to add gap-x-hgap-2xs");
 
         // Wait for any SSE event from the tick (page or css — either signals
-        // the tick completed). Ignore timeout: the CSS poll below is the
-        // authoritative gate.
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        // the tick completed). Ignore only a clean timeout: the CSS poll
+        // below is the authoritative gate; transport errors fail the harness.
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            Ok(None) => eprintln!(
+                "[symptom-C] no SSE event observed for the component edit; relying on the \
+                 authoritative served CSS-body poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after src/components/CardWidget.tsx edit: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
 
         // The authoritative assertion (D3): GET /assets/styles.css on the next
         // request must contain a CSS rule for `gap-x-hgap-2xs`. Tailwind v4

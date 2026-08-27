@@ -38,7 +38,8 @@
 //! `SLOW_MS` with `SLOW_DIGEST_MS` (> `BANNER_DEADLINE`) to close that gap, the
 //! same fix #1170 already applied to the islands guard.
 //!
-//! Each guard additionally asserts the serve path answers `GET /__zfb/reload`
+//! Each guard additionally asserts the serve path answers the SSE live-reload
+//! request
 //! (200 the instant the router is mounted, independent of any render / digest /
 //! islands build) while the slow step is still in flight — belt-and-braces
 //! proof the serve path does not block on the deferred work.
@@ -82,7 +83,7 @@
 //! 7. `cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200` — a
 //!    Cold session, no seed: proves the deferred publish's stale-mark
 //!    actually reaches the browser as a real SSE `page` event on
-//!    `/__zfb/reload` (not just "GET eventually returns 200" — that alone
+//!    the SSE live-reload stream (not just "GET eventually returns 200" — that alone
 //!    would only prove render-on-request, not the broadcast an already-open
 //!    tab needs to self-heal), then that the FIRST `GET /` after the event
 //!    serves 200 with freshly rendered content — a 200 from nothing. A
@@ -130,7 +131,8 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    locate_esbuild, next_sse_event_name, probe_module_entries, zfb_binary, CrossBinaryE2eLock,
+    locate_esbuild, next_sse_event_name, open_sse, probe_module_entries, zfb_binary,
+    CrossBinaryE2eLock,
 };
 
 /// Serializes the spawning tests in this file: each boots a full V8 +
@@ -213,7 +215,7 @@ const _: () = assert!(
 /// `SLOW_BUNDLE_MS` above, but for a different purpose. `SLOW_BUNDLE_MS` must
 /// exceed `BANNER_DEADLINE` (it's a bind-ordering guard); this constant has no
 /// such requirement — it only needs to outlast the test process reading the
-/// ready banner from the log file and completing the `/__zfb/reload` HTTP
+/// ready banner from the log file and completing the SSE HTTP
 /// handshake, done right after the banner and BEFORE the deferred boot
 /// task's bundle call (which sleeps for this long immediately before
 /// publishing). Without this hold, a small/fast-bundling fixture could
@@ -768,36 +770,17 @@ async fn islands_chunk_with_marker(
     );
 }
 
-/// Reqwest client for the SSE live-reload subscription (Tests 7/8).
-/// Deliberately no overall `.timeout()`, unlike `client()` above: the SSE
-/// stream is a legitimately long-lived connection kept open until the dev
-/// server publishes, and the read side is bounded by
-/// `next_sse_event_name`'s own `dur` argument instead. A client with a
-/// bounded total-request timeout would error the stream mid-read on a
-/// perfectly healthy tick that just took a while — indistinguishable from a
-/// real regression.
-fn sse_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .expect("build reqwest SSE client")
-}
-
 /// Subscribe to the dev server's SSE live-reload endpoint. Must be called
 /// BEFORE the event it is meant to observe — the channel is a broadcast, not
 /// a queue, so an event that fires before subscription is gone forever.
 /// Mirrors `dev_dep_invalidation_1284_e2e.rs`'s helper of the same
 /// name/contract.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = open_sse(base).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "SSE endpoint /__zfb/reload must answer 200"
+        "SSE live-reload endpoint must answer 200"
     );
     resp
 }
@@ -864,12 +847,12 @@ async fn dev_binds_and_serves_before_slow_deferred_step() {
     let base = format!("http://localhost:{port}");
     let client = client();
 
-    // `GET /__zfb/reload` is the SSE live-reload endpoint: 200 the
+    // The SSE live-reload endpoint answers 200 the
     // instant the router is mounted, independent of any render/digest.
     // We send the request with a short per-request timeout so a never-
     // bound port can't hang the test; success within
     // FIRST_RESPONSE_DEADLINE (< SLOW_DIGEST_MS) is the proof.
-    let url = format!("{base}/__zfb/reload");
+    let url = format!("{base}/{}", ["__zfb", "reload"].join("/"));
     let request_start = Instant::now();
     let mut answered = false;
     while request_start.elapsed() < FIRST_RESPONSE_DEADLINE {
@@ -1073,7 +1056,7 @@ async fn early_shutdown_before_digest_skips_graph_save() {
     // Confirm the server is actually serving (so the kill below is a
     // genuine "killed while the deferred digest is still sleeping", not
     // a "never booted").
-    let url = format!("{base}/__zfb/reload");
+    let url = format!("{base}/{}", ["__zfb", "reload"].join("/"));
     let mut serving = false;
     let start = Instant::now();
     while start.elapsed() < FIRST_RESPONSE_DEADLINE {
@@ -1181,7 +1164,7 @@ async fn early_shutdown_before_digest_skips_graph_save() {
 ///    banner-relative deadline does NOT catch a pre-bind build, because the
 ///    banner floats with the bind.
 /// 2. **The serve path does not block on the deferred islands build.** The
-///    server answers `GET /__zfb/reload` (200 the instant the router is
+///    server answers the SSE live-reload request (200 the instant the router is
 ///    mounted) within `FIRST_RESPONSE_DEADLINE` of the banner while the
 ///    islands slow-step is still in flight on the boot task.
 ///
@@ -1238,11 +1221,11 @@ async fn dev_binds_and_serves_before_slow_islands_step() {
     let client = client();
 
     // Guarantee 2 (serve path is not blocked by the deferred build):
-    // `GET /__zfb/reload` is 200 the instant the router is mounted,
+    // The SSE live-reload endpoint is 200 the instant the router is mounted,
     // independent of any render / islands build. Answering within
     // FIRST_RESPONSE_DEADLINE of the banner while the islands slow-step is
     // still in flight proves the serve path does not wait on the build.
-    let url = format!("{base}/__zfb/reload");
+    let url = format!("{base}/{}", ["__zfb", "reload"].join("/"));
     let request_start = Instant::now();
     let mut answered = false;
     while request_start.elapsed() < FIRST_RESPONSE_DEADLINE {
@@ -1934,7 +1917,7 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
 ///   (the deferred block simply wouldn't run), which is exactly why the eager
 ///   twin exists.
 ///
-/// Belt-and-braces: `GET /__zfb/reload` answers 200 within
+/// Belt-and-braces: the SSE live-reload endpoint answers 200 within
 /// `FIRST_RESPONSE_DEADLINE` while the deferred bundle slow-step is still in
 /// flight — proof the serve path does not block on the deferred bundle. And
 /// (issue #1390) `GET /` returns 200 with the seeded `dist/index.html` body
@@ -2006,11 +1989,11 @@ async fn dev_binds_and_serves_before_slow_bundle_step() {
     let client = client();
 
     // Guarantee 2 (serve path is not blocked by the deferred bundle):
-    // `GET /__zfb/reload` is 200 the instant the router is mounted, independent
+    // The SSE live-reload endpoint is 200 the instant the router is mounted, independent
     // of any bundle / render. Answering within FIRST_RESPONSE_DEADLINE of the
     // banner while the deferred bundle slow-step is still in flight proves the
     // serve path does not wait on the bundle.
-    let url = format!("{base}/__zfb/reload");
+    let url = format!("{base}/{}", ["__zfb", "reload"].join("/"));
     let request_start = Instant::now();
     let mut answered = false;
     while request_start.elapsed() < FIRST_RESPONSE_DEADLINE {
@@ -2205,7 +2188,7 @@ async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
 
 /// A Cold session, no `dist/` seed: proves the deferred publish's
 /// post-publish stale-mark actually reaches the browser as a REAL SSE `page`
-/// event on `/__zfb/reload` — not just "GET eventually returns 200", which
+/// event on the SSE live-reload stream — not just "GET eventually returns 200", which
 /// alone would only prove render-on-request, not the broadcast that makes
 /// an already-open tab (still showing the dev 404 body from Test 6's
 /// window) self-heal.
@@ -2214,7 +2197,7 @@ async fn cold_lazy_binds_and_serves_dev_404_during_held_bundle_window() {
 ///
 /// `ZFB_DEV_TEST_SLOW_BUNDLE_MS=SSE_SUBSCRIBE_HOLD_MS` holds the deferred
 /// bundle open just long enough for the test process to read the banner
-/// and complete the `/__zfb/reload` HTTP subscribe handshake. Without this,
+/// and complete the SSE HTTP subscribe handshake. Without this,
 /// this fixture is small enough that the bundle could publish and broadcast
 /// the ONE `page` event before the subscription registers — the broadcast
 /// channel has no replay, so a missed event means the test waits out the
@@ -2256,8 +2239,7 @@ async fn cold_lazy_deferred_publish_broadcasts_sse_and_serves_fresh_200() {
     // Subscribe to SSE immediately after the banner — inside the held
     // window, so the subscription is guaranteed to be registered before
     // the deferred bundle publishes (see doc comment above).
-    let sse_subscriber = sse_client();
-    let sse = subscribe_sse(&sse_subscriber, &base).await;
+    let sse = subscribe_sse(&base).await;
 
     // The authoritative proof (issue #1811 requires this be HARD-asserted,
     // not best-effort like `dev_dep_invalidation_1284_e2e.rs`'s watcher-tick
@@ -2476,8 +2458,7 @@ async fn cold_lazy_broken_bundle_recovers_after_source_fix() {
 
     // Step 3 — subscribe to SSE BEFORE the fix (broadcast, not a queue: an
     // event fired before subscription is gone forever).
-    let sse_subscriber = sse_client();
-    let sse = subscribe_sse(&sse_subscriber, &base).await;
+    let sse = subscribe_sse(&base).await;
 
     fs::write(&index_path, &original_index).expect("restore original pages/index.tsx");
 

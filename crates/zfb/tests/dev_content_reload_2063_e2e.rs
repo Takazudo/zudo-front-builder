@@ -113,7 +113,8 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    decode_utf8_incremental, locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock,
+    decode_utf8_incremental, locate_esbuild, next_sse_event_name, open_sse, zfb_binary,
+    CrossBinaryE2eLock,
 };
 
 // Sub #2094 (variant matrix) additions below use these directly rather
@@ -278,37 +279,8 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, boot_lazy: Option<&str>) -> DevSessi
     }
 }
 
-/// Dedicated client for `/__zfb/reload` subscriptions, deliberately built
-/// WITHOUT a total-response timeout.
-///
-/// `build_reqwest_client`'s `.timeout(...)` bounds the whole response, not
-/// just its headers. For an SSE stream the response body never completes,
-/// so that setting silently caps how long ANY subscription can observe —
-/// no matter what `SSE_FIRST_EVENT_DEADLINE`, `SSE_QUIET_WINDOW`, or
-/// `OVERALL_DEADLINE` say. A tick that takes longer than the cap surfaces
-/// as a reqwest transport error ("operation timed out") from inside
-/// `next_sse_event_name`/`collect_tick_events`, which reads as a broken
-/// harness rather than as the zero-`page`-events outcome this file exists
-/// to be able to observe. Measured (sub #2094): the injected-route
-/// fixture's first tick restages injected-route bundles and crosses 10s,
-/// while the baseline fixture's cheap MDX warmup lands well under it — so
-/// the cap was invisible until a slower fixture arrived.
-///
-/// The connect timeout is kept: failing to CONNECT is a real error, and
-/// bounding it does not truncate a healthy stream.
-static SSE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .expect("build SSE reqwest client")
-});
-
 async fn subscribe_sse(base: &str) -> reqwest::Response {
-    let response = SSE_CLIENT
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+    let response = open_sse(base).await;
     assert_eq!(
         response.status().as_u16(),
         200,
@@ -361,10 +333,17 @@ async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
     let mut last_len = read_log(&session.stderr_path).len();
     while start.elapsed() < DRAIN_DEADLINE {
         let sse = subscribe_sse(base).await;
-        let observed_event = matches!(
-            next_sse_event_name(sse, DRAIN_QUIET_WINDOW).await,
-            Ok(Some(_))
-        );
+        let observed_event = match next_sse_event_name(sse, DRAIN_QUIET_WINDOW).await {
+            Ok(Some(_)) => true,
+            // A quiet window is only a settling aid; each scenario's
+            // subsequent HTTP freshness and SSE contract assertions remain
+            // authoritative.
+            Ok(None) => false,
+            Err(error) => panic!(
+                "SSE read failed while draining watcher ticks: {error:#}\n{}",
+                session.logs(),
+            ),
+        };
         let cur_len = read_log(&session.stderr_path).len();
         let stderr_grew = cur_len != last_len;
         last_len = cur_len;
@@ -407,7 +386,7 @@ async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
 ///
 /// Both windows are tracked as absolute `Instant` deadlines, advanced
 /// only when a genuine `event:` line is parsed — never merely on chunk
-/// arrival. `/__zfb/reload` is an axum `Sse` stream with a 15s
+/// arrival. The dev-server SSE stream is an axum `Sse` stream with a 15s
 /// `KeepAlive` (`crates/zfb-server/src/livereload.rs`), which periodically
 /// sends a `: `-comment chunk carrying no `event:` line at all. A
 /// per-chunk-relative timeout (reset on every chunk, keepalives
@@ -421,12 +400,13 @@ async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
 /// `zfb_test_utils::decode_utf8_incremental` for the same incremental
 /// UTF-8 handling `next_sse_event_name` relies on (a multibyte character
 /// split across a chunk boundary must not corrupt or drop an already-
-/// decoded `event:` line).
+/// decoded `event:` line). A transport error is returned to the scenario as a
+/// harness failure; only a clean deadline or EOF is treated as no more events.
 async fn collect_tick_events(
     mut resp: reqwest::Response,
     first_event_deadline: Duration,
     quiet_window: Duration,
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
     let mut buf = Vec::<u8>::new();
     let mut decoded_up_to = 0usize;
     let mut pending_line = String::new();
@@ -441,9 +421,16 @@ async fn collect_tick_events(
         }
         let chunk = match tokio::time::timeout(remaining, resp.chunk()).await {
             Ok(Ok(Some(bytes))) => bytes,
-            Ok(Ok(None)) => break, // SSE connection closed.
-            Ok(Err(_)) => break,   // Transport error — treat as end of stream.
-            Err(_) => break,       // Deadline elapsed with no new real event.
+            // EOF is no more SSE traffic; the caller's freshness and
+            // exactly-one-`page` assertions remain authoritative.
+            Ok(Ok(None)) => break,
+            Ok(Err(error)) => {
+                return Err(anyhow::Error::new(error).context("read SSE stream"));
+            }
+            // A clean deadline is the bounded no-more-events window; the
+            // caller's freshness and exactly-one-`page` assertions remain
+            // authoritative.
+            Err(_elapsed) => break,
         };
         buf.extend_from_slice(&chunk);
 
@@ -482,7 +469,7 @@ async fn collect_tick_events(
             }
         }
     }
-    events
+    Ok(events)
 }
 
 /// Wait until a `[zfb-timing] tick(): kinds=[...]` line whose `kinds` list
@@ -766,7 +753,9 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         )
         .expect("edit the alpha content entry");
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
+        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
+            .await
+            .expect("read SSE stream after content edit");
         // The deliverable: the observed SSE sequence is printed regardless
         // of pass/fail so a healthy-baseline PASS is still recorded data
         // for sub #2094's variant hunt.
@@ -1005,7 +994,14 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
         let sse = subscribe_sse(&base).await;
         fs::write(&entry_path, fixture.edit_contents).expect("edit the matrix fixture entry");
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
+        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
+                    session.logs(),
+                )
+            });
         // The deliverable for every matrix cell: the observed SSE sequence
         // is printed regardless of pass/fail, so a red cell's exact
         // symptom (and a healthy cell's confirmation) both become
@@ -1243,7 +1239,14 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
             session.logs(),
         );
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
+        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
+                    session.logs(),
+                )
+            });
         eprintln!(
             "[dev_content_reload_2063_e2e] [{label}] observed SSE event sequence after the \
              content edit: {events:?}"

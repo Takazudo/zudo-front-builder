@@ -279,12 +279,8 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
     }
 }
 
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let response = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let response = zfb_test_utils::open_sse(base).await;
     assert_eq!(
         response.status().as_u16(),
         200,
@@ -313,13 +309,8 @@ fn home_page_source(revision: u32) -> String {
 /// `confirm_watcher_live` in `dev_content_aggregate_cold_boot_e2e.rs`:
 /// keep writing on a short interval until an SSE event arrives or the
 /// deadline elapses, rather than a single write-then-wait.
-async fn confirm_unrelated_tick(
-    session: &DevSession,
-    base: &str,
-    client: &reqwest::Client,
-    revision_base: u32,
-) {
-    let sse = subscribe_sse(client, base).await;
+async fn confirm_unrelated_tick(session: &DevSession, base: &str, revision_base: u32) {
+    let sse = subscribe_sse(base).await;
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let root = session.root.clone();
@@ -339,14 +330,13 @@ async fn confirm_unrelated_tick(
     stop.store(true, Ordering::SeqCst);
     let _ = writer.await;
 
-    let event = event.unwrap_or_else(|_| {
-        panic!(
-            "no SSE event observed within {}s of repeatedly editing the unrelated home page — \
-             the watcher tick this test relies on as its timekeeping mechanism never happened.\n{}",
-            SSE_DEADLINE.as_secs(),
+    let event = match event {
+        Ok(event) => event,
+        Err(error) => panic!(
+            "SSE read failed while confirming the unrelated home-page watcher tick: {error:#}\n{}",
             session.logs(),
-        )
-    });
+        ),
+    };
     assert_eq!(
         event.as_deref(),
         Some("page"),
@@ -453,7 +443,7 @@ async fn cold_redirects_rewrite_target_is_prewarmed_and_resolves() {
 
         // Establish the watcher is live before the first assertion, using
         // the same unrelated-tick mechanism the rest of the test relies on.
-        confirm_unrelated_tick(&session, &base, &client, 1).await;
+        confirm_unrelated_tick(&session, &base, 1).await;
 
         // `/alias` must resolve the rewrite target. It polls repeatedly,
         // interleaving each poll with a genuine, SSE-confirmed unrelated
@@ -478,7 +468,7 @@ async fn cold_redirects_rewrite_target_is_prewarmed_and_resolves() {
             if resolved {
                 break;
             }
-            confirm_unrelated_tick(&session, &base, &client, tick + 2).await;
+            confirm_unrelated_tick(&session, &base, tick + 2).await;
             let observation = observe_alias(&client, &base).await;
             resolved = alias_resolved(&observation);
             observations.push((tick + 2, observation));

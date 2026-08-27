@@ -96,7 +96,8 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    assert_frame_has_data, locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock,
+    assert_frame_has_data, locate_esbuild, next_sse_event_name, open_sse, zfb_binary,
+    CrossBinaryE2eLock,
 };
 
 /// Serializes the spawning tests in this file (each boots a full V8 +
@@ -421,16 +422,12 @@ fn assert_file_lacks(path: &Path, needle: &str, phase: &str, session: &DevSessio
 /// Subscribe to the dev server's SSE live-reload endpoint. Must be
 /// called BEFORE the edit whose tick it is meant to observe: the
 /// broadcast channel only delivers events sent after subscription.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = open_sse(base).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "SSE endpoint /__zfb/reload must answer 200"
+        "SSE live-reload endpoint must answer 200"
     );
     resp
 }
@@ -843,7 +840,7 @@ async fn dev_e2e_decoy_export_syntax_strings_in_ssr_body_do_not_confuse_wrapper(
         // serving: a frontmatter edit must still reach the index listing
         // (the same invalidation path scenario 3 in run_shared_scenarios
         // exercises), with the decoy bundle in play the whole time.
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/a.md"),
             "---\ntitle: DECOY-CONFIRM-TITLE-A\ndate: 2026-01-01\n---\n\n\
@@ -992,7 +989,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
     // the whole test fast.
     // ------------------------------------------------------------------
     {
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         let stop = Arc::new(AtomicBool::new(false));
         let writer = {
             let root = session.root.to_path_buf();
@@ -1090,7 +1087,7 @@ async fn run_shared_scenarios(
     // because the request itself would trigger the render.
     // ------------------------------------------------------------------
     {
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         fs::write(
             session.root.join("content/posts/a.md"),
             "---\ntitle: Alpha\ndate: 2026-01-01\n---\n\nV2-MARKER-A body for the alpha post.\n",
@@ -1146,7 +1143,7 @@ async fn run_shared_scenarios(
     // and the HTTP poll's own GET triggers the request-time render.
     // ------------------------------------------------------------------
     {
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         fs::write(
             session.root.join("content/posts/a.md"),
             "---\ntitle: V3-TITLE-MARKER-A\ndate: 2026-01-01\n---\n\n\
@@ -1193,7 +1190,7 @@ async fn run_shared_scenarios(
     // ------------------------------------------------------------------
     {
         let sibling_file = session.html_root().join("posts/b/index.html");
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         fs::write(
             session.root.join("components/shared-note.tsx"),
             "export function SharedNote() {\n  \
@@ -1316,7 +1313,7 @@ async fn run_lazy_scenarios(session: &DevSession, base: &str, client: &reqwest::
     // ------------------------------------------------------------------
     {
         let index_file = html_root.join("index.html");
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         fs::write(
             session.root.join("content/posts/a.md"),
             "---\ntitle: V5-LAZY-TITLE-A\ndate: 2026-01-01\n---\n\n\
@@ -1440,7 +1437,7 @@ async fn run_lazy_scenarios(session: &DevSession, base: &str, client: &reqwest::
         )
         .await;
 
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         fs::remove_file(&doomed_src).expect("delete doomed.md");
         // The deletion tick stales the listing routes (index/feed lose
         // the doomed entry), so the SSE `page` gate fires via
@@ -1520,7 +1517,7 @@ async fn run_lazy_scenarios(session: &DevSession, base: &str, client: &reqwest::
     // ------------------------------------------------------------------
     {
         let a_file = html_root.join("posts/a/index.html");
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         fs::write(
             session.root.join("components/shared-note.tsx"),
             "export function SharedNote() {\n  \

@@ -2,6 +2,7 @@ mod cross_binary_lock;
 mod html_normalize;
 mod module_entry_probe;
 mod sse;
+mod sse_client;
 mod watcher_handshake;
 pub use cross_binary_lock::CrossBinaryE2eLock;
 pub use html_normalize::normalize_html;
@@ -10,6 +11,7 @@ pub use sse::{
     assert_frame_has_data, decode_utf8_incremental, next_sse_event_name, next_sse_frame,
     wait_for_subscribers, wait_for_subscribers_polled, SseFrame,
 };
+pub use sse_client::{open_sse, sse_client};
 pub use watcher_handshake::{watcher_live_handshake, HandshakeOpts, HandshakeResult};
 
 use std::path::{Path, PathBuf};

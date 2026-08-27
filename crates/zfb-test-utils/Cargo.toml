@@ -35,3 +35,5 @@ tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "m
 # `locate_esbuild_self.rs` builds a throwaway nested-worktree topology on
 # disk (issue #2178) instead of mutating process cwd.
 tempfile = { workspace = true }
+# Raw-TCP SSE fixtures need sockets and async reads/writes only in tests.
+tokio = { version = "1", features = ["net", "io-util"] }

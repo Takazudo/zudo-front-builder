@@ -463,12 +463,8 @@ fn assert_snapshot_unchanged(
     );
 }
 
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let response = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let response = zfb_test_utils::open_sse(base).await;
     assert_eq!(
         response.status().as_u16(),
         200,
@@ -477,13 +473,16 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
     response
 }
 
-async fn drain_ticks_until_quiescent(client: &reqwest::Client, base: &str) {
+async fn drain_ticks_until_quiescent(base: &str) {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(20) {
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, Duration::from_millis(1500)).await {
             Ok(Some(_)) => continue,
-            _ => break,
+            // A quiet window is the only purpose of this helper; the file
+            // polls after each caller's edit remain the authoritative gates.
+            Ok(None) => break,
+            Err(error) => panic!("SSE read failed while draining watcher ticks: {error:#}"),
         }
     }
 }
@@ -533,8 +532,8 @@ async fn wait_for_ready_port(session: &mut DevSession) -> Option<u16> {
 /// already-existing entry prove the watch stream is live without adding or
 /// requesting a route that could race the caller's own post-edit
 /// assertions.
-async fn confirm_watcher_live(session: &DevSession, base: &str, client: &reqwest::Client) {
-    let sse = subscribe_sse(client, base).await;
+async fn confirm_watcher_live(session: &DevSession, base: &str) {
+    let sse = subscribe_sse(base).await;
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let warmup = session.root.join("content/posts/__warmup.md");
@@ -583,13 +582,8 @@ async fn confirm_watcher_live(session: &DevSession, base: &str, client: &reqwest
 /// (create it before spawning) — a watch target that doesn't exist yet at
 /// boot is never registered (this fixture's own boot log warns exactly that
 /// for the unused `data`/`components`/etc. roots).
-async fn confirm_watcher_live_via_data_probe(
-    session: &DevSession,
-    base: &str,
-    client: &reqwest::Client,
-    probe_path: &Path,
-) {
-    let sse = subscribe_sse(client, base).await;
+async fn confirm_watcher_live_via_data_probe(session: &DevSession, base: &str, probe_path: &Path) {
+    let sse = subscribe_sse(base).await;
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let probe_path = probe_path.to_path_buf();
@@ -647,7 +641,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 
-    confirm_watcher_live(session, &base, &client).await;
+    confirm_watcher_live(session, &base).await;
 
     Some((base, client))
 }
@@ -655,9 +649,9 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
 /// Banner-only variant for tests that must prove behavior under ZERO prior
 /// page requests AND zero prior renders (issue #1812). Waits for the ready
 /// banner and for the watcher to come live WITHOUT ever requesting a page
-/// route or rendering any content: readiness is polled via the
-/// `/__zfb/reload` SSE control endpoint instead of `GET /` (that endpoint is
-/// registered independently of `page_root`/`page_handler` — see
+/// route or rendering any content: readiness is polled via the SSE control
+/// endpoint instead of `GET /` (that endpoint is registered independently of
+/// `page_root`/`page_handler` — see
 /// `crates/zfb-server/src/routes.rs`), and the watcher-live handshake edits
 /// `data_probe_path` (a `data/`-rooted, Data-classified file the caller must
 /// pre-create) rather than a content-collection entry — see
@@ -673,22 +667,19 @@ async fn boot_and_handshake_banner_only(
 
     let ready_start = Instant::now();
     loop {
-        if matches!(
-            client.get(format!("{base}/__zfb/reload")).send().await,
-            Ok(response) if response.status().as_u16() == 200
-        ) {
+        if zfb_test_utils::open_sse(&base).await.status().as_u16() == 200 {
             break;
         }
         assert!(
             ready_start.elapsed() < BOOT_DEADLINE,
-            "GET /__zfb/reload never answered 200 within {}s after the ready banner.\n{}",
+            "SSE readiness endpoint never answered 200 within {}s after the ready banner.\n{}",
             BOOT_DEADLINE.as_secs(),
             session.logs(),
         );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 
-    confirm_watcher_live_via_data_probe(session, &base, &client, data_probe_path).await;
+    confirm_watcher_live_via_data_probe(session, &base, data_probe_path).await;
 
     Some((base, client))
 }
@@ -729,7 +720,7 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
     let mut session = spawn_dev(root, &esbuild, DevMode::Eager, None);
     let pgid = session.guard.pgid;
     let body = async {
-        let Some((base, client)) = boot_and_handshake(&mut session).await else {
+        let Some((base, _client)) = boot_and_handshake(&mut session).await else {
             return ScenarioOutcome::Skipped;
         };
 
@@ -761,9 +752,9 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
 
         // A handshake can leave its final tick in flight. Settle before the
         // frontmatter edit this test evaluates first.
-        drain_ticks_until_quiescent(&client, &base).await;
+        drain_ticks_until_quiescent(&base).await;
 
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/alpha.md"),
             "---\ntitle: Alpha V2 Frontmatter\ndate: 2026-01-02\ntags:\n  - guide\n---\n\nV2-BODY-ALPHA updated markdown body.\n",
@@ -777,9 +768,13 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
                 "alpha content edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed; relying on the \
                  authoritative eager on-disk output checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after alpha content edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -817,9 +812,9 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         // gate conservative. After its aggregate regression is proven above,
         // hold frontmatter stable and make a body-only edit: this is the
         // precise graph-narrowing case where beta must remain untouched.
-        drain_ticks_until_quiescent(&client, &base).await;
+        drain_ticks_until_quiescent(&base).await;
         let sibling_before = snapshot_file(&sibling_entry);
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/alpha.md"),
             "---\ntitle: Alpha V2 Frontmatter\ndate: 2026-01-02\ntags:\n  - guide\n---\n\nV3-BODY-ALPHA body-only narrowed markdown edit.\n",
@@ -833,9 +828,13 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
                 "alpha body-only edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed for the \
                  body-only edit; relying on the authoritative eager on-disk output checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after alpha body-only edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -870,14 +869,26 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         // both its dynamic entry route and all aggregate readers. The first
         // subsequent body edit intentionally primes the existing frontmatter
         // gate; the second is the narrow-after-discovery assertion.
-        drain_ticks_until_quiescent(&client, &base).await;
-        let sse = subscribe_sse(&client, &base).await;
+        drain_ticks_until_quiescent(&base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/gamma.md"),
             "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV1-BODY-GAMMA discovered markdown body.\n",
         )
         .expect("create a new gamma entry mid-session");
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            // The discovered entry and aggregate output-file polls below are
+            // the authoritative gates; this read only observes the tick.
+            Ok(None) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE event after gamma discovery; \
+                 relying on authoritative output-file polls."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after gamma discovery: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
         poll_until_file_contains(
             &discovered_entry,
             "V1-BODY-GAMMA",
@@ -893,14 +904,26 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
             poll_until_file_contains(path, "V1-BODY-GAMMA", phase, &session).await;
         }
 
-        drain_ticks_until_quiescent(&client, &base).await;
-        let sse = subscribe_sse(&client, &base).await;
+        drain_ticks_until_quiescent(&base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/gamma.md"),
             "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV2-BODY-GAMMA first body-only edit seeds the frontmatter gate.\n",
         )
         .expect("prime the gamma frontmatter gate after discovery");
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            // The discovered entry file poll below is the authoritative gate;
+            // this read only observes the edit tick.
+            Ok(None) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE event after gamma frontmatter \
+                 priming edit; relying on the authoritative output-file poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after gamma frontmatter priming edit: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
         poll_until_file_contains(
             &discovered_entry,
             "V2-BODY-GAMMA",
@@ -909,10 +932,10 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
         )
         .await;
 
-        drain_ticks_until_quiescent(&client, &base).await;
+        drain_ticks_until_quiescent(&base).await;
         let entry_before_gamma_edit = snapshot_file(&entry);
         let sibling_before_gamma_edit = snapshot_file(&sibling_entry);
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/gamma.md"),
             "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV3-BODY-GAMMA second body-only edit narrows after discovery.\n",
@@ -925,10 +948,14 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
                 "gamma body-only edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed for the \
                  post-discovery body-only edit; relying on the authoritative eager on-disk \
                  output checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after post-discovery gamma body-only edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
         poll_until_file_contains(
@@ -1110,7 +1137,7 @@ async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregat
         // renders, no `DepKind::Content` edge for alpha exists anywhere in
         // the graph, so this edit can only be handled by the conservative
         // `PageSelection::All` fallback.
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             session.root.join("content/posts/alpha.md"),
             "---\ntitle: Alpha Cold Zero Frontmatter\ndate: 2026-01-02\ntags:\n  - guide\n---\n\nCOLD-ZERO-BODY-ALPHA edited before any request.\n",
@@ -1124,10 +1151,14 @@ async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregat
                 "cold zero-prior-requests alpha edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed for the cold \
                  zero-prior-requests edit; relying on the authoritative first-request response \
                  checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after cold zero-prior-requests alpha edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -1218,8 +1249,8 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         // Create gamma before persistence. Requesting the new direct route and
         // each aggregate makes the first session's cache contain a complete
         // post-create provenance snapshot before the deliberate corruption.
-        drain_ticks_until_quiescent(&first_client, &first_base).await;
-        let sse = subscribe_sse(&first_client, &first_base).await;
+        drain_ticks_until_quiescent(&first_base).await;
+        let sse = subscribe_sse(&first_base).await;
         fs::write(
             root.join("content/posts/gamma.md"),
             "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV1-BODY-GAMMA created before restart.\n",
@@ -1255,7 +1286,7 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
             )
             .await;
         }
-        drain_ticks_until_quiescent(&first_client, &first_base).await;
+        drain_ticks_until_quiescent(&first_base).await;
 
         first.stop_gracefully().await;
         let first_cache = first.graph_cache_path();
@@ -1283,7 +1314,7 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         let Some((second_base, second_client)) = boot_and_handshake(&mut second).await else {
             return ScenarioOutcome::Skipped;
         };
-        drain_ticks_until_quiescent(&second_client, &second_base).await;
+        drain_ticks_until_quiescent(&second_base).await;
 
         let html_root = second.html_root();
         let home = html_root.join("index.html");
@@ -1298,7 +1329,7 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         // Data edge selects only home. A cache miss would choose All, mark beta
         // stale, and the beta request below would rewrite its file.
         let beta_before_data = snapshot_file(&beta);
-        let sse = subscribe_sse(&second_client, &second_base).await;
+        let sse = subscribe_sse(&second_base).await;
         fs::write(root.join("data/restart-probe.json"), "{\"revision\":2}\n")
             .expect("edit persisted data cache probe");
         let event = next_sse_event_name(sse, SSE_DEADLINE)
@@ -1335,10 +1366,10 @@ async fn warm_restart_reseeds_content_provenance_for_lazy_aggregate_requests() {
         )
         .await;
 
-        drain_ticks_until_quiescent(&second_client, &second_base).await;
+        drain_ticks_until_quiescent(&second_base).await;
         let home_before_gamma = snapshot_file(&home);
         let beta_before_gamma = snapshot_file(&beta);
-        let sse = subscribe_sse(&second_client, &second_base).await;
+        let sse = subscribe_sse(&second_base).await;
         fs::write(
             root.join("content/posts/gamma.md"),
             "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV2-BODY-GAMMA body edit after warm restart.\n",

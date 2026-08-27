@@ -775,19 +775,12 @@ async fn poll_body(
     );
 }
 
-async fn subscribe_reload(
-    client: &reqwest::Client,
-    origin: &str,
-    session: &DevSession,
-) -> reqwest::Response {
-    let url = format!("{origin}/__zfb/reload");
-    let response = client.get(&url).send().await.unwrap_or_else(|error| {
-        panic!("subscribe to {url}: {error}\n{}", session.logs());
-    });
+async fn subscribe_reload(origin: &str, session: &DevSession) -> reqwest::Response {
+    let response = zfb_test_utils::open_sse(origin).await;
     assert_eq!(
         response.status().as_u16(),
         200,
-        "SSE endpoint {url} must answer 200\n{}",
+        "SSE endpoint must answer 200\n{}",
         session.logs(),
     );
     response
@@ -801,7 +794,7 @@ async fn assert_alias_raw_dev_invalidation(
 ) {
     let old_alias = read_text(&root.join(CLIENT_ALIAS_RAW_PATH));
     let client_url = format!("{origin}/assets/client/cross-pipeline.js");
-    let sse = subscribe_reload(client, origin, session).await;
+    let sse = subscribe_reload(origin, session).await;
     fs::write(root.join(CLIENT_ALIAS_RAW_PATH), UPDATED_ALIAS_RAW_TEXT)
         .expect("edit aliased raw target while zfb dev is running");
 

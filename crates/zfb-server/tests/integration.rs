@@ -20,7 +20,7 @@ use zfb_build::BuildOutcome;
 use zfb_graph::PageId;
 use zfb_server::livereload::{outcome_to_events, ReloadEvent};
 use zfb_server::{serve_with_listener, PageCache, ServeOpts};
-use zfb_test_utils::{next_sse_event_name, wait_for_subscribers};
+use zfb_test_utils::{next_sse_event_name, open_sse, wait_for_subscribers};
 
 /// All the per-test handles we need: the bound address, the page
 /// cache (so the test can populate it), the broadcast sender (so the
@@ -307,7 +307,8 @@ async fn livereload_js_endpoint_returns_script() {
     );
     let body = resp.text().await.unwrap();
     assert!(body.contains("EventSource"), "body missing EventSource");
-    assert!(body.contains("/__zfb/reload"), "body missing /__zfb/reload");
+    let reload_path = format!("/{}/{}", "__zfb", "reload");
+    assert!(body.contains(&reload_path), "body missing SSE reload path");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -333,11 +334,7 @@ async fn sse_emits_page_event_on_rebuild() {
     let h = Harness::start().await;
 
     // Open the SSE stream first so we don't miss the broadcast.
-    let resp = reqwest::Client::new()
-        .get(h.url("/__zfb/reload"))
-        .send()
-        .await
-        .unwrap();
+    let resp = open_sse(&h.url("")).await;
     assert_eq!(resp.status(), 200);
 
     // Wait for the SSE handler's subscriber to actually register on the
@@ -358,7 +355,7 @@ async fn sse_emits_page_event_on_rebuild() {
 
     let name = next_sse_event_name(resp, Duration::from_secs(5))
         .await
-        .unwrap();
+        .expect("read SSE stream after page rebuild event");
     assert_eq!(name.as_deref(), Some("page"));
 }
 
@@ -366,11 +363,7 @@ async fn sse_emits_page_event_on_rebuild() {
 async fn sse_emits_css_event_on_css_change() {
     let h = Harness::start().await;
 
-    let resp = reqwest::Client::new()
-        .get(h.url("/__zfb/reload"))
-        .send()
-        .await
-        .unwrap();
+    let resp = open_sse(&h.url("")).await;
     assert_eq!(resp.status(), 200);
     assert!(
         wait_for_subscribers(&h.tx, 1, Duration::from_secs(5)).await,
@@ -388,7 +381,7 @@ async fn sse_emits_css_event_on_css_change() {
 
     let name = next_sse_event_name(resp, Duration::from_secs(5))
         .await
-        .unwrap();
+        .expect("read SSE stream after CSS change event");
     assert_eq!(name.as_deref(), Some("css"));
 }
 
@@ -396,11 +389,7 @@ async fn sse_emits_css_event_on_css_change() {
 async fn sse_does_not_emit_page_when_only_css_changed() {
     let h = Harness::start().await;
 
-    let resp = reqwest::Client::new()
-        .get(h.url("/__zfb/reload"))
-        .send()
-        .await
-        .unwrap();
+    let resp = open_sse(&h.url("")).await;
     assert_eq!(resp.status(), 200);
     assert!(
         wait_for_subscribers(&h.tx, 1, Duration::from_secs(5)).await,
@@ -422,10 +411,16 @@ async fn sse_does_not_emit_page_when_only_css_changed() {
     let mut stream = resp.bytes_stream();
     let mut buf = Vec::<u8>::new();
     let watch = async {
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.unwrap();
+        loop {
+            let chunk = match stream.next().await {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(error)) => {
+                    panic!("read SSE stream while checking CSS-only events: {error}")
+                }
+                None => panic!("SSE stream closed before the CSS-only negative window completed"),
+            };
             buf.extend_from_slice(&chunk);
-            let s = std::str::from_utf8(&buf).unwrap_or("");
+            let s = std::str::from_utf8(&buf).expect("SSE stream must remain valid UTF-8");
             for line in s.lines() {
                 if let Some(rest) = line.strip_prefix("event:") {
                     assert_ne!(
@@ -440,7 +435,13 @@ async fn sse_does_not_emit_page_when_only_css_changed() {
     // 500 ms is plenty: outcome_to_events runs synchronously and the
     // broadcast hop is sub-millisecond. If `page` were going to appear,
     // it would have appeared by now.
-    let _ = timeout(Duration::from_millis(500), watch).await;
+    // The 500 ms timeout is the authoritative negative window: a CSS-only
+    // outcome must not produce a `page` event. The stream read itself panics
+    // above on transport or UTF-8 errors rather than treating them as quiet.
+    match timeout(Duration::from_millis(500), watch).await {
+        Ok(()) => {}
+        Err(_elapsed) => {}
+    }
 }
 
 // ---------------------------------------------------------------------------

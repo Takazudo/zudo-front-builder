@@ -369,17 +369,9 @@ fn assert_snapshot_unchanged(
 
 /// Subscribe to the dev server's SSE live-reload endpoint. Must be called
 /// BEFORE the edit whose tick it is meant to observe.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
-    assert_eq!(
-        resp.status().as_u16(),
-        200,
-        "SSE endpoint /__zfb/reload must answer 200"
-    );
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = zfb_test_utils::open_sse(base).await;
+    assert_eq!(resp.status().as_u16(), 200, "SSE endpoint must answer 200");
     resp
 }
 
@@ -388,18 +380,16 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
 /// `dev_dep_invalidation_1284_e2e.rs::drain_ticks_until_quiescent` for the
 /// full rationale (a trailing warmup-handshake tick can otherwise race a
 /// scenario's own edit and alias its skip-key short-circuit, #1301).
-async fn drain_ticks_until_quiescent(
-    client: &reqwest::Client,
-    base: &str,
-    quiet_gap: Duration,
-    cap: Duration,
-) {
+async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Duration) {
     let start = Instant::now();
     while start.elapsed() < cap {
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, quiet_gap).await {
             Ok(Some(_)) => continue,
-            _ => break,
+            // The quiet gap is only a settling aid; the file/HTTP polls in
+            // each scenario remain the authoritative gates.
+            Ok(None) => break,
+            Err(error) => panic!("SSE read failed while draining watcher ticks: {error:#}"),
         }
     }
 }
@@ -514,7 +504,7 @@ async fn boot_and_handshake(
     // Holding the frontmatter constant keeps the G4 gate from tripping too.
     {
         let warmup_entry = shared_content_posts.join("__warmup.mdx");
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         let stop = Arc::new(AtomicBool::new(false));
         let writer = {
             let warmup_entry = warmup_entry.clone();
@@ -660,19 +650,14 @@ async fn e2e_out_of_root_edit_narrows_rerender_and_discovers_new_entry() {
 
         // Drain trailing warmup-handshake ticks first so the edit's tick is
         // not raced into a skip-key short-circuit (see drain fn docs).
-        drain_ticks_until_quiescent(
-            &client,
-            &base,
-            Duration::from_millis(1500),
-            Duration::from_secs(20),
-        )
-        .await;
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
 
         // Snapshot the sibling's disk output BEFORE the edit. This is the
         // authoritative "narrowing engaged" proof (see module doc).
         let beta_before = snapshot_file(&beta_file);
 
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             shared_content_posts.join("alpha.mdx"),
             "---\ntitle: Alpha Out Of Root\n---\n\nV2-MARKER-ALPHA body for the alpha post.\n",
@@ -690,9 +675,13 @@ async fn e2e_out_of_root_edit_narrows_rerender_and_discovers_new_entry() {
                  event (expected `page`).\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[out_of_root_e2e scenario-a] no SSE `page` event observed within \
                  the window; relying on the authoritative disk poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after out-of-root alpha edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -748,22 +737,28 @@ async fn e2e_out_of_root_edit_narrows_rerender_and_discovers_new_entry() {
         // Scenario (b) — discovery: a brand-new out-of-root entry is served
         // without a dev-server restart.
         // ------------------------------------------------------------------
-        drain_ticks_until_quiescent(
-            &client,
-            &base,
-            Duration::from_millis(1500),
-            Duration::from_secs(20),
-        )
-        .await;
-        let sse = subscribe_sse(&client, &base).await;
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
+        let sse = subscribe_sse(&base).await;
         fs::write(
             shared_content_posts.join("gamma.mdx"),
             "---\ntitle: Gamma Out Of Root\n---\n\nV1-MARKER-GAMMA body for the gamma post.\n",
         )
         .expect("create out-of-root gamma.mdx");
 
-        // Best-effort SSE observation; the discovery poll below is authoritative.
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        // Best-effort SSE observation; the discovery HTTP poll below is
+        // authoritative.
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            Ok(None) => eprintln!(
+                "[out_of_root_e2e scenario-b] no SSE event observed after gamma \
+                 discovery; relying on the authoritative HTTP poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after out-of-root gamma discovery: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
 
         poll_until_contains(
             &client,
