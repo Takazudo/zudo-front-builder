@@ -266,12 +266,21 @@ publish_nonplatform_packages() {
 # Trust-downgrade advisory (issue #2623).
 # npm records a provenance attestation per PUBLISHED VERSION, and versions are
 # immutable. So a package published WITHOUT --provenance after earlier versions
-# carried it is a permanent *trust downgrade* for that package: pnpm >= 10.30
-# with `trust-policy=no-downgrade` refuses to resolve it at all, with
-# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover"). Existing lockfiles keep
-# installing because pnpm enforces the policy during resolution, so the breakage
-# only shows up on a fresh/forced resolve — which is exactly why it went
-# unnoticed for v2.12.0 until a consumer hit it.
+# carried it is a permanent *trust downgrade* for that package: a consumer with
+# pnpm's opt-in `trustPolicy: no-downgrade` cannot install it at all, and gets
+# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover").
+#
+# The setting is opt-in (default `off`), added in pnpm 10.21. Measured against the
+# live registry on 2026-08-27 (pnpm 10.25.0, 11.1.0, 11.2.0, 11.3.0), the blast
+# radius differs by version, which is why v2.12.0 went unnoticed:
+#   - fresh resolve  — fails on every version that has the setting.
+#   - --frozen-lockfile — SUCCEEDS up to pnpm 11.1 ("resolution step is skipped"),
+#     FAILS from pnpm 11.2, which re-applies the active supply-chain policies to
+#     every entry of an already-resolved lockfile. So an older CI job keeps going
+#     green while an 11.2+ one breaks on the same committed lockfile.
+# Note a package that never had provenance cannot "downgrade" — the check needs an
+# earlier attested version to compare against. That is why only 5 of the 6 v2.12.0
+# entries were flagged: zfb-darwin-x64 has been unattested since <=2.8.0.
 #
 # The two provenance-omitting modes cannot avoid this (that is the point: neither
 # has an OIDC identity that would truthfully describe the artifacts). What they
@@ -285,7 +294,7 @@ emit_trust_downgrade_advisory() {
     *) return 0 ;;
   esac
 
-  echo "::warning title=npm provenance trust downgrade::${scope} is being published WITHOUT npm provenance. Consumers on pnpm >=10.30 with trust-policy=no-downgrade will fail to resolve this version (ERR_PNPM_TRUST_DOWNGRADE). npm versions are immutable, so the ONLY remedy is a follow-up release published through the normal tag/release path with provenance restored. See RELEASE_DAY_CHECKLIST.md and issue #2623."
+  echo "::warning title=npm provenance trust downgrade::${scope} is being published WITHOUT npm provenance. Consumers who enable pnpm's trustPolicy=no-downgrade will fail to install this version (ERR_PNPM_TRUST_DOWNGRADE) on a fresh resolve, and on pnpm 11.2+ even with --frozen-lockfile. npm versions are immutable, so the ONLY remedy is a follow-up release published through the normal tag/release path with provenance restored. See RELEASE_DAY_CHECKLIST.md and issue #2623."
 
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
@@ -293,14 +302,16 @@ emit_trust_downgrade_advisory() {
       echo
       echo "**${scope}** is published **without** npm provenance in this run (mode \`${mode}\`)."
       echo
-      echo "Consumers using pnpm >= 10.30 with \`trust-policy=no-downgrade\` will get"
-      echo "\`ERR_PNPM_TRUST_DOWNGRADE\` on a fresh resolve, because earlier versions of the same"
-      echo "package carried a provenance attestation. Frozen-lockfile installs are unaffected."
+      echo "Consumers who enable pnpm's \`trustPolicy: no-downgrade\` will get"
+      echo "\`ERR_PNPM_TRUST_DOWNGRADE\`, because earlier versions of the same package carried a"
+      echo "provenance attestation. This blocks a fresh resolve on every pnpm version, and on"
+      echo "pnpm 11.2+ it also blocks \`--frozen-lockfile\` (11.2 added a verification pass"
+      echo "over already-resolved lockfile entries; earlier versions skip them)."
       echo
       echo "npm versions are immutable. **Required follow-up:** ship the next patch through the"
       echo "normal tag/release path so provenance is restored, or publish explicit consumer"
       echo "guidance. See \`RELEASE_DAY_CHECKLIST.md\` and issue #2623."
-    } >>"$GITHUB_STEP_SUMMARY"
+    } >>"$GITHUB_STEP_SUMMARY" || true # an advisory must never fail the publish job
   fi
 }
 

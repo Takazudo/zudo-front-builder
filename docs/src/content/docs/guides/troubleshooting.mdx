@@ -50,7 +50,7 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 ## `ERR_PNPM_TRUST_DOWNGRADE` installing 2.12.0
 
-**Symptom:** upgrading any `@takazudo/zfb*` package to `2.12.0` fails to resolve under pnpm 10.30+ when `.npmrc` sets `trust-policy=no-downgrade`:
+**Symptom:** installing or upgrading any `@takazudo/zfb*` package at `2.12.0` fails under pnpm's opt-in [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) set to `no-downgrade`:
 
 ```text
 ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb@2.12.0" (possible package takeover)
@@ -60,17 +60,38 @@ installed if any earlier-published version had stronger trust evidence. Earlier
 versions had provenance attestation, but this version has no trust evidence.
 ```
 
-An install from an already-generated lockfile still works, because pnpm applies the trust policy during **resolution** — only a fresh or forced resolve is blocked.
+`trustPolicy` is opt-in (default `off`) and available since pnpm 10.21. Whether an existing lockfile saves you depends on your exact version:
 
-**Cause:** the `2.12.0` packages carry no npm provenance attestation, while `2.11.0` does. This is not a package takeover — `2.12.0` was published through zfb's [published-release recovery path](https://github.com/Takazudo/zudo-front-builder/blob/main/RELEASE_DAY_CHECKLIST.md), a `workflow_dispatch` run from `main` that rebuilds an already-published tag. GitHub's OIDC identity in that run describes the `main` workflow commit, not the older tag commit the artifacts were actually built from, so the release deliberately publishes without an attestation rather than attaching one that misidentifies the source. Every package in the `2.12.0` family is affected. Tracked as [issue #2623](https://github.com/Takazudo/zudo-front-builder/issues/2623).
+| Install | pnpm 10.21 – 11.1 | pnpm 11.2+ |
+| --- | --- | --- |
+| fresh / forced resolve | fails | fails |
+| `pnpm install --frozen-lockfile` | succeeds | fails |
+
+pnpm 11.2 added a verification pass that re-applies the active supply-chain policies to every entry in an already-resolved lockfile, so a committed lockfile pinning `2.12.0` installs fine on 11.1 and breaks on 11.2.
+
+**Cause:** the `2.12.0` packages carry no npm provenance attestation, while `2.11.0` does. This is not a package takeover. `2.12.0` was published through zfb's [published-release recovery path](https://github.com/Takazudo/zudo-front-builder/blob/main/RELEASE_DAY_CHECKLIST.md) — a `workflow_dispatch` run from `main` that rebuilds an already-published tag. GitHub's OIDC identity in that run describes the `main` workflow commit, not the older tag commit the artifacts were built from, so the release deliberately publishes with no attestation rather than one that misidentifies the source. Tracked as [issue #2623](https://github.com/Takazudo/zudo-front-builder/issues/2623).
+
+Five of the six packages a default install pulls are affected. `@takazudo/zfb-darwin-x64` is not flagged only because it has had no attestation since well before `2.12.0`, so there is nothing for pnpm to compare against.
 
 **Fix:** npm versions are immutable, so `2.12.0` itself can never gain an attestation. Prefer, in order:
 
 1. **Upgrade past it** once the next patch ships. That release goes out through the normal tag/release path with provenance restored, which clears the downgrade. This is the real fix.
-2. **Stay on `2.11.0`** until that patch lands — it is fully attested and satisfies `no-downgrade`.
-3. **Install from your existing lockfile** (`pnpm install --frozen-lockfile`), which is unaffected. Useful for CI while you wait.
+2. **Stay on `2.11.0`** until that patch lands — it satisfies `no-downgrade`.
+3. **Exempt just these packages**, if you need `2.12.0` now, with [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) in `pnpm-workspace.yaml` — it keeps the policy active for every other dependency:
 
-Only if none of those fit, drop the `trust-policy=no-downgrade` line from `.npmrc` for the one resolve that needs it, then restore it. That disables the guard for *every* dependency, not just zfb, so treat it as a last resort rather than a standing setting.
+   ```yaml
+   trustPolicy: no-downgrade
+   trustPolicyExclude:
+     - "@takazudo/zfb@2.12.0"
+     - "@takazudo/zfb-darwin-arm64@2.12.0"
+     - "@takazudo/zfb-linux-arm64-gnu@2.12.0"
+     - "@takazudo/zfb-linux-x64-gnu@2.12.0"
+     - "@takazudo/zfb-win32-x64-msvc@2.12.0"
+   ```
+
+   Pin the version in each entry so the exemption expires on its own when you upgrade. A name pattern **cannot** be combined with a version (`"@takazudo/zfb*@2.12.0"` is rejected with `ERR_PNPM_INVALID_TRUST_POLICY_EXCLUDE`); use exact `name@version` entries as above, or an unversioned glob such as `"@takazudo/zfb*"` if you accept exempting all versions.
+
+Disabling `trustPolicy` outright also works, but drops the guard for **every** dependency rather than these five — prefer the scoped exemption.
 
 ## `import.meta.glob(...)` build error
 
