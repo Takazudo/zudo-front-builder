@@ -198,6 +198,15 @@ jobs:
       - name: Assert md-wasm documentation matches shipped sizes
         run: node scripts/assert-md-wasm-size-docs.mjs
 
+      # SSE endpoint literal guard (issue #2644): reqwest's `.timeout()` bounds
+      # the whole streaming response while the server keep-alive is 15s, so a
+      # hand-written `/__zfb/reload` subscriber can time out. Keep the literal
+      # confined to its route/helper source homes and the one bounded Embed
+      # probe; tests must use zfb_test_utils::open_sse(). This is an offline
+      # source scan and mirrors scripts/run-b4push.sh's cheap guard step.
+      - name: Check SSE endpoint literal ownership
+        run: node scripts/check-sse-endpoint.mjs
+
       # Compiles every target (incl. benches/examples) AND triggers crates/zfb's
       # build.rs to download + SHA-verify + stage the pinned esbuild 0.25.12 into
       # crates/zfb/binaries/esbuild/esbuild — the slot that
