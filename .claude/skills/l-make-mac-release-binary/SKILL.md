@@ -1,18 +1,20 @@
 ---
-description: "Build the x86_64-apple-darwin zfb binary locally on a Mac and upload it to the draft GH Release for the tag, saving the slow macos-15-intel CI leg. Triggers on \"make mac binary\", \"build mac release binary\", \"upload mac binary\". Standalone entry for building on a separate Mac — /l-make-release builds the Mac binary inline when it already runs on macOS."
+description: "Explicit --fast-mac escape hatch: build the x86_64-apple-darwin zfb binary locally on a Mac and upload it to the draft GH Release for the tag when the macos-15-intel CI leg must be avoided. Triggers on \"make mac binary\", \"build mac release binary\", \"upload mac binary\". Standalone entry for building on a separate Mac; the normal /l-make-release path delegates to CI for provenance."
 user-invocable: true
 argument-description: "Required: the tag (e.g. v0.1.0-next.5)"
 ---
 
 # /l-make-mac-release-binary
 
-Mac-only skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. Works with the `/l-make-release` (X9) flow to pre-upload the Mac archive so the `release.yml` publish step can skip the slow `macos-15-intel` CI leg.
+Mac-only escape-hatch skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. The normal `/l-make-release` path leaves the archive absent so `release.yml` builds it on `macos-15-intel` with provenance. Use this entry point only for the explicit `--fast-mac` choice, which makes `zfb-darwin-x64` publish unattested; once an attestation exists, the weekly drift guard will correctly fail on it (that is intended supervision, not a bug).
 
-## Pair with /l-make-release (X9 workflow)
+## Explicit `--fast-mac` escape-hatch flow
 
-1. Run `/l-make-release` on any host — bumps version, commits, pre-creates draft Release.
+1. Deliberately choose the fast lane: invoke `/l-make-release --fast-mac` on a Mac, or invoke `/l-make-release --confirm` and then explicitly use this standalone entry point when it must run on a separate Mac.
 2. Run `/l-make-mac-release-binary v<ver>` on your Mac — builds + uploads the archive to the existing draft Release.
 3. Publish the draft Release (from any host): `gh release edit v<ver> --draft=false` (or via web UI). Fires `release: published` → `release.yml` runs → detects the pre-uploaded binary → fast publish.
+
+If the provenance-first default is desired, do not use this skill: publish the draft without a pre-uploaded Mac archive and let the `macos-15-intel` CI leg build it.
 
 ## Preconditions
 
@@ -120,7 +122,9 @@ Next: publish the draft Release (from any host) to trigger CI publish:
   # or via web UI: https://github.com/Takazudo/zudo-front-builder/releases
 
 release.yml will auto-detect the pre-uploaded archive,
-skip the macos-15-intel build leg, and publish all 9 packages.
+skip the macos-15-intel build leg, and publish all 10 packages. Because this is the explicit
+`--fast-mac` escape hatch, `zfb-darwin-x64` publishes unattested; once an attestation exists, the
+weekly drift guard will correctly fail on it. That is intended supervision, not a bug.
 
 After publishing, WAIT for the Release workflow run to finish (gh run watch) — it uploads the
 remaining platform archives (linux + windows) and their .sha256 files.
@@ -137,7 +141,7 @@ the stable channel; testers use `npm i -g @takazudo/zfb@next` or ZFB_VERSION=lat
 
 - This skill does NOT publish the draft Release. The user publishes it afterward via `gh release edit v<ver> --draft=false` or the web UI.
 - The archive name is LOCKED — must be exactly `zfb-{semver}-x86_64-apple-darwin.tar.gz` (no leading `v` in semver). `release.yml`'s A2 detection greps for this exact name plus the `.sha256` companion.
-- The build script has a fallback that creates a GH Release if none exists. With the X9 flow, `/l-make-release` creates the draft first, so the fallback does not fire — precondition 5 above ensures the draft exists before invoking the script.
+- The build script has a fallback that creates a GH Release if none exists. In the explicit `--fast-mac` flow, precondition 5 ensures the intended draft exists before invoking the script, so the fallback does not fire.
 - The build script reads the semver from `packages/zfb/package.json` — the tag argument is used only for the `gh release upload` target. The semver in the archive name comes from the package.json, not the tag string.
 - **Abandoning the draft.** This skill uploads to an existing draft Release; it never tears one down. If the release is abandoned (problem found, or never published), clean up the orphaned draft via `/l-make-release cancel` (see its "Cancelling a release / cleaning up an orphaned draft" section) — it deletes the draft + the uploaded archive/`.sha256` assets and decides whether to revert the bump.
 - **Apple Silicon + no Rosetta 2: the script's `--version` assertion fails.** `build-macos-x64-local.sh` runs `"$built_binary" --version` to verify the `ZFB_RELEASE_VERSION` stamp. On an Apple Silicon host **without Rosetta 2** the x86_64 binary cannot execute and the step dies with `Bad CPU type in executable` (verify Rosetta with `arch -x86_64 /usr/bin/true`). The cross-compile itself has already succeeded by then. Two ways forward:
