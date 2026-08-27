@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 //
-// check-provenance-drift.mjs — catch a published package that LOST its npm
-// provenance attestation, without going red over one that never had it.
+// check-provenance-drift.mjs — catch published packages that lose their npm
+// provenance attestation, or never acquire one under the all-published policy.
 //
 // WHY THIS EXISTS (incident: v2.12.0, issue #2623)
 // ---------------------------------------------------------------------------
@@ -18,22 +18,21 @@
 // even a frozen-lockfile install keeps working. This check is the missing
 // registry-side guard; it would have caught v2.12.0 within a week.
 //
-// THE CENTRAL DESIGN DECISION: regression fails, standing absence warns
+// THE CENTRAL DESIGN DECISION: regressions and standing absence fail; one
+// sunset grandfather warning remains
 // ---------------------------------------------------------------------------
-// `@takazudo/zfb-darwin-x64` has never carried an attestation on any recent
-// release (issue #2625) — it is built locally on the fast-Mac path, which has no
-// GHA OIDC context. Failing on "no attestation" would make this job red EVERY
-// week over a known, tracked, undecided situation, which is precisely the
-// failure mode drift-net.yml's own header argues against for the `next` channel:
-// a scheduled leg that manufactures a tracking issue and an alert out of a
-// non-event trains everyone to ignore it.
+// The all-published policy now makes a package that never carried an attestation
+// a failure too. There is one narrowly-scoped, self-expiring exception for the
+// known legacy state from issue #2625: `@takazudo/zfb-darwin-x64` while its exact
+// `latest` dist-tag is still `2.12.0`. Once an attested release moves `latest`
+// forward, this warning disappears without another edit.
 //
-// So this mirrors pnpm's actual semantics instead:
+// The resulting policy is:
 //   REGRESSION  — latest has no attestation, but an EARLIER-PUBLISHED version
 //                 did. This is a real trust downgrade for consumers. FAIL.
 //   NEVER       — latest has no attestation and no earlier version did either.
-//                 No downgrade can fire (pnpm needs an earlier attested version
-//                 to compare against), so this is a weaker standing gap. WARN.
+//                 This violates the all-published policy. FAIL, except for the
+//                 exact legacy package/version above, which WARNs temporarily.
 //   OK          — latest carries an attestation.
 //
 // Two details copied from pnpm so the verdict matches what a consumer sees:
@@ -50,6 +49,8 @@ import { pathToFileURL } from "node:url";
 import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
 
 const REGISTRY = "https://registry.npmjs.org";
+const GRANDFATHERED_NEVER_PACKAGE = "@takazudo/zfb-darwin-x64";
+const GRANDFATHERED_NEVER_LATEST = "2.12.0";
 
 /** True when this packument version record carries a provenance attestation. */
 function hasAttestation(versionRecord) {
@@ -120,6 +121,18 @@ export function classifyPackage(name, packument) {
   return { name, status: "never", latest };
 }
 
+/**
+ * The one known legacy never-attested package is warning-only until its exact
+ * legacy latest version is replaced by an attested release.
+ */
+function isGrandfatheredNever(result) {
+  return (
+    result.status === "never" &&
+    result.name === GRANDFATHERED_NEVER_PACKAGE &&
+    result.latest === GRANDFATHERED_NEVER_LATEST
+  );
+}
+
 const FETCH_ATTEMPTS = 3;
 
 /**
@@ -183,14 +196,19 @@ export function report(results, { log = console.log } = {}) {
   const regressions = results.filter((r) => r.status === "regression");
   const errors = results.filter((r) => r.status === "error");
   const never = results.filter((r) => r.status === "never");
+  const grandfatheredNever = never.filter(isGrandfatheredNever);
+  const neverViolations = never.filter((r) => !isGrandfatheredNever(r));
   const ok = results.filter((r) => r.status === "ok");
 
   log(`== npm provenance drift check: ${results.length} package(s) ==`);
   for (const r of [...ok].sort((a, b) => a.name.localeCompare(b.name))) {
     log(`  ok         ${r.name}@${r.latest}`);
   }
-  for (const r of never) {
-    log(`  no-attest  ${r.name}@${r.latest} (never attested — standing gap, not a downgrade)`);
+  for (const r of grandfatheredNever) {
+    log(`  no-attest  ${r.name}@${r.latest} (grandfathered legacy gap — warning only)`);
+  }
+  for (const r of neverViolations) {
+    log(`  NEVER      ${r.name}@${r.latest} (never attested — policy violation)`);
   }
   for (const r of regressions) {
     log(`  REGRESSION ${r.name}@${r.latest} lost provenance (${r.priorAttested} had it)`);
@@ -199,13 +217,18 @@ export function report(results, { log = console.log } = {}) {
     log(`  ERROR      ${r.name}: ${r.detail}`);
   }
 
-  if (never.length > 0) {
+  if (grandfatheredNever.length > 0) {
     log(
-      `::warning title=npm provenance absent::${never.length} package(s) have never carried a provenance attestation: ${never
+      `::warning title=npm provenance absent (grandfathered)::${grandfatheredNever.length} package(s) have never carried a provenance attestation: ${grandfatheredNever
         .map((r) => r.name)
         .join(
           ", ",
-        )}. Not a trust downgrade (pnpm needs an earlier attested version to compare against), so this does not fail the check — see issue #2625.`,
+        )}. This warning is limited to ${GRANDFATHERED_NEVER_PACKAGE}@${GRANDFATHERED_NEVER_LATEST} and self-expires when latest advances — see issue #2625.`,
+    );
+  }
+  for (const r of neverViolations) {
+    log(
+      `::error title=npm provenance absent::${r.name}@${r.latest} has never carried a provenance attestation. Every published package must be attested; this is a policy violation. See issue #2627.`,
     );
   }
   for (const r of regressions) {
@@ -217,11 +240,13 @@ export function report(results, { log = console.log } = {}) {
     log(`::error title=provenance check error::${r.name}: ${r.detail}`);
   }
 
-  if (regressions.length > 0 || errors.length > 0) {
-    log(`== FAIL: ${regressions.length} regression(s), ${errors.length} error(s) ==`);
+  if (regressions.length > 0 || neverViolations.length > 0 || errors.length > 0) {
+    log(
+      `== FAIL: ${regressions.length} regression(s), ${neverViolations.length} never-attested violation(s), ${errors.length} error(s) ==`,
+    );
     return 1;
   }
-  log(`== PASS: no package lost an attestation it previously had ==`);
+  log(`== PASS: no unapproved provenance drift ==`);
   return 0;
 }
 
