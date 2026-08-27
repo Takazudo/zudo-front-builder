@@ -13,6 +13,22 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 
+const SSE_TOTAL_TIMEOUT_HINT: &str = "the SSE body read timed out; this usually means the client \
+    was built with a total `.timeout(...)`, which bounds the whole streaming response. Open the \
+    stream with `zfb_test_utils::open_sse()`.";
+
+fn diagnose_sse_body_error(error: anyhow::Error) -> anyhow::Error {
+    if error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<reqwest::Error>())
+        .any(reqwest::Error::is_timeout)
+    {
+        error.context(SSE_TOTAL_TIMEOUT_HINT)
+    } else {
+        error
+    }
+}
+
 /// Wait until the broadcast channel has at least `min` live receivers,
 /// or until `dur` elapses. Returns `true` if the count was reached.
 ///
@@ -203,7 +219,7 @@ pub async fn next_sse_event_name(
     };
 
     match tokio::time::timeout(dur, task).await {
-        Ok(res) => res,
+        Ok(res) => res.map_err(diagnose_sse_body_error),
         Err(_) => Ok(None),
     }
 }
@@ -366,7 +382,7 @@ pub async fn next_sse_frame(
     };
 
     match tokio::time::timeout(dur, task).await {
-        Ok(res) => res,
+        Ok(res) => res.map_err(diagnose_sse_body_error),
         Err(_) => Ok(None),
     }
 }
@@ -412,6 +428,19 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn non_timeout_errors_do_not_get_total_timeout_hint() {
+        let error = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "fixture connection reset",
+        ));
+
+        let diagnosed = diagnose_sse_body_error(error);
+        let message = format!("{diagnosed:#}");
+        assert!(message.contains("fixture connection reset"));
+        assert!(!message.contains(SSE_TOTAL_TIMEOUT_HINT));
     }
 
     // ── decode_utf8_incremental ──────────────────────────────────────────
