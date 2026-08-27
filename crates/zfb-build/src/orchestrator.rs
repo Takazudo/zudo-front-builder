@@ -39,6 +39,7 @@
 //! coalescing inside the orchestrator; if the watcher decides "this is
 //! one logical save", we treat it as one.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -51,6 +52,48 @@ use zfb_watcher::{Change, ChangeKind, WatchBackend, WatchOptions, Watcher};
 use crate::pipeline::{AssetPipeline, BuildContext, BuildOutcome};
 use crate::plan::{PageSelection, RebuildPlan};
 use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathClass};
+
+trait DynamicWatchRegistrar: Send + 'static {
+    fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf>;
+
+    fn sync_recursive_dir_watches(
+        &mut self,
+        desired_roots: BTreeSet<PathBuf>,
+        skip_dir_names: &[String],
+    ) -> Vec<PathBuf>;
+}
+
+impl DynamicWatchRegistrar for Watcher {
+    fn watch_additional_files(&mut self, paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+        Watcher::watch_additional_files(self, paths)
+    }
+
+    fn sync_recursive_dir_watches(
+        &mut self,
+        desired_roots: BTreeSet<PathBuf>,
+        skip_dir_names: &[String],
+    ) -> Vec<PathBuf> {
+        Watcher::sync_recursive_dir_watches(self, desired_roots, skip_dir_names)
+    }
+}
+
+#[cfg(test)]
+struct NoopDynamicWatchRegistrar;
+
+#[cfg(test)]
+impl DynamicWatchRegistrar for NoopDynamicWatchRegistrar {
+    fn watch_additional_files(&mut self, _paths: BTreeSet<PathBuf>) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    fn sync_recursive_dir_watches(
+        &mut self,
+        _desired_roots: BTreeSet<PathBuf>,
+        _skip_dir_names: &[String],
+    ) -> Vec<PathBuf> {
+        Vec::new()
+    }
+}
 
 /// Register non-recursive parent watches for browser dependency closures
 /// discovered outside the configured recursive source roots, AND reconcile
@@ -81,8 +124,8 @@ use crate::policy::{classify_change_with_content_roots, GranularityPolicy, PathC
 /// Returns the union of both newly-watched sets — every path this call
 /// caused to become watched for the first time — for callers (and tests)
 /// that want the signal without depending on the `ZFB_DEV_TIMING` env gate.
-fn register_dynamic_dependency_watches(
-    watcher: &mut Watcher,
+fn register_dynamic_dependency_watches<R: DynamicWatchRegistrar>(
+    watcher: &mut R,
     policy: &GranularityPolicy,
     css_mirror_skip_dir_names: &[String],
 ) -> Vec<PathBuf> {
@@ -1778,19 +1821,20 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
     /// `watcher` and `rx` are already constructed — `run_with_boot` is the
     /// only production caller, and it always pairs a freshly booted
     /// `Watcher::start_with_options` with its own receiver.
-    async fn run_drain_loop<F, B>(
+    async fn run_drain_loop<F, B, R>(
         self,
         ctx: BuildContext,
         discover: Option<DiscoveryHook>,
         mut on_outcome: F,
         boot: Option<B>,
-        mut watcher: Watcher,
+        mut watcher: R,
         mut rx: tokio::sync::mpsc::Receiver<Change>,
     ) -> Result<()>
     where
         F: FnMut(&BuildOutcome) + Send + 'static,
         B: FnOnce(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>,
         P: 'static,
+        R: DynamicWatchRegistrar,
     {
         // Boot hook — runs with the watch already registered (so any edit
         // saved during it is buffered by notify and drained by the loop
@@ -5027,14 +5071,11 @@ mod tests {
     /// Spawn [`BuildOrchestrator::run_drain_loop`] (private — accessible
     /// here because `tests` is a descendant module) wired to a
     /// test-owned, synthetic `Change` channel instead of a real
-    /// `Watcher`'s own receiver (issue #2253). A real `Watcher` is still
-    /// constructed from `orch`'s own config, mirroring exactly what
-    /// `run_with_boot` does — `register_dynamic_dependency_watches` needs
-    /// a genuine handle, though it is a no-op for the
-    /// `policy_with_plugin_watch_files` policies these tests use. The
-    /// watcher's own receiver is discarded; only the returned `Sender`
-    /// feeds the loop, so event DELIVERY is synthetic while the fixture
-    /// files a caller writes are still real disk state the tick reads.
+    /// `Watcher`'s own receiver (issue #2253). Dynamic watch registration
+    /// uses a no-op registrar here so these control-flow tests perform no
+    /// native watcher work. Only the returned `Sender` feeds the loop, so
+    /// event delivery is synthetic while the fixture files a caller writes
+    /// are still real disk state the tick reads.
     fn spawn_drain_loop<P: AssetPipeline + 'static>(
         orch: BuildOrchestrator<P>,
         ctx: BuildContext,
@@ -5042,20 +5083,13 @@ mod tests {
         tokio::task::JoinHandle<Result<()>>,
         tokio::sync::mpsc::Sender<Change>,
     ) {
-        let (watcher, _real_rx) = Watcher::start_with_options(
-            &orch.config.project_root,
-            orch.config.watch_roots.iter().map(|p| p.as_path()),
-            orch.config.extra_watch_paths.iter().map(|p| p.as_path()),
-            watch_options_for(&orch.config),
-        )
-        .expect("start test watcher");
         let (tx, rx) = tokio::sync::mpsc::channel::<Change>(16);
         let handle = tokio::spawn(orch.run_drain_loop(
             ctx,
             None,
             |_: &BuildOutcome| {},
             None::<fn(&BuildOrchestrator<P>, &BuildContext) -> Option<BuildOutcome>>,
-            watcher,
+            NoopDynamicWatchRegistrar,
             rx,
         ));
         (handle, tx)
