@@ -355,7 +355,7 @@ async fn sse_emits_page_event_on_rebuild() {
 
     let name = next_sse_event_name(resp, Duration::from_secs(5))
         .await
-        .unwrap();
+        .expect("read SSE stream after page rebuild event");
     assert_eq!(name.as_deref(), Some("page"));
 }
 
@@ -381,7 +381,7 @@ async fn sse_emits_css_event_on_css_change() {
 
     let name = next_sse_event_name(resp, Duration::from_secs(5))
         .await
-        .unwrap();
+        .expect("read SSE stream after CSS change event");
     assert_eq!(name.as_deref(), Some("css"));
 }
 
@@ -411,10 +411,16 @@ async fn sse_does_not_emit_page_when_only_css_changed() {
     let mut stream = resp.bytes_stream();
     let mut buf = Vec::<u8>::new();
     let watch = async {
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.unwrap();
+        loop {
+            let chunk = match stream.next().await {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(error)) => {
+                    panic!("read SSE stream while checking CSS-only events: {error}")
+                }
+                None => panic!("SSE stream closed before the CSS-only negative window completed"),
+            };
             buf.extend_from_slice(&chunk);
-            let s = std::str::from_utf8(&buf).unwrap_or("");
+            let s = std::str::from_utf8(&buf).expect("SSE stream must remain valid UTF-8");
             for line in s.lines() {
                 if let Some(rest) = line.strip_prefix("event:") {
                     assert_ne!(
@@ -429,7 +435,13 @@ async fn sse_does_not_emit_page_when_only_css_changed() {
     // 500 ms is plenty: outcome_to_events runs synchronously and the
     // broadcast hop is sub-millisecond. If `page` were going to appear,
     // it would have appeared by now.
-    let _ = timeout(Duration::from_millis(500), watch).await;
+    // The 500 ms timeout is the authoritative negative window: a CSS-only
+    // outcome must not produce a `page` event. The stream read itself panics
+    // above on transport or UTF-8 errors rather than treating them as quiet.
+    match timeout(Duration::from_millis(500), watch).await {
+        Ok(()) => {}
+        Err(_elapsed) => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
