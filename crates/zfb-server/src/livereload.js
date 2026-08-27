@@ -33,70 +33,86 @@
       streamUrl = m[1] + "/__zfb/reload";
     }
   }
-  var src = new EventSource(streamUrl);
-  src.addEventListener("page", function () {
-    window.location.reload();
-  });
-  src.addEventListener("css", function () {
-    var ts = String(Date.now());
-    var links = document.querySelectorAll('link[rel="stylesheet"]');
-    for (var i = 0; i < links.length; i++) {
-      var link = links[i];
-      var href = link.getAttribute("href");
-      if (!href) continue;
-      var base = href.split("?")[0];
-      link.setAttribute("href", base + "?v=" + ts);
-    }
-  });
-  // Wire contract: component="" means "bundle changed, unknown components;
-  // reload the whole bundle by re-importing bundleUrl". Must NOT short-circuit on empty component.
-  src.addEventListener("islands", function (ev) {
-    var payload;
-    try {
-      payload = JSON.parse(ev.data || "{}");
-    } catch (e) {
-      if (typeof console !== "undefined" && console.warn) {
-        console.warn("[zfb] livereload: invalid islands payload", ev.data);
-      }
-      return;
-    }
-    var url = payload && payload.bundleUrl;
-    if (!url) return;
-    // Bust any module cache by appending a timestamp; the host page's
-    // hydration runtime (zfb_islands::hydration_script_tag) re-runs
-    // on import so re-importing the bundle re-hydrates the component
-    // without a full page reload.
-    var ts = String(Date.now());
-    var swapUrl = url + (url.indexOf("?") >= 0 ? "&" : "?") + "v=" + ts;
-    if (typeof window.__zfbIslandsReload === "function") {
-      // Test/host hook so the runtime can intercept the swap-import
-      // (e.g. to coordinate state preservation). When absent we fall
-      // back to a plain dynamic import which re-runs the bundle's
-      // top-level hydration calls.
-      try {
-        window.__zfbIslandsReload(payload.component, swapUrl);
-        return;
-      } catch (e) {
-        if (typeof console !== "undefined" && console.warn) {
-          console.warn("[zfb] livereload: islands hook threw", e);
-        }
-      }
-    }
-    // Dynamic import — valid in classic scripts in all evergreen browsers
-    // (ES2020). No new Function wrapper needed; this file is served as-is
-    // via include_str! with no bundler or parser pass that would reject it.
-    // import() failures arrive as a rejected promise, not a sync throw —
-    // a .catch() is required or the warning below would never fire.
-    import(swapUrl).catch(function (e) {
-      if (typeof console !== "undefined" && console.warn) {
-        console.warn("[zfb] livereload: dynamic import failed", e);
+  var src = null;
+  function connect() {
+    src = new EventSource(streamUrl);
+    src.addEventListener("page", function () {
+      window.location.reload();
+    });
+    src.addEventListener("css", function () {
+      var ts = String(Date.now());
+      var links = document.querySelectorAll('link[rel="stylesheet"]');
+      for (var i = 0; i < links.length; i++) {
+        var link = links[i];
+        var href = link.getAttribute("href");
+        if (!href) continue;
+        var base = href.split("?")[0];
+        link.setAttribute("href", base + "?v=" + ts);
       }
     });
+    // Wire contract: component="" means "bundle changed, unknown components;
+    // reload the whole bundle by re-importing bundleUrl". Must NOT short-circuit on empty component.
+    src.addEventListener("islands", function (ev) {
+      var payload;
+      try {
+        payload = JSON.parse(ev.data || "{}");
+      } catch (e) {
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[zfb] livereload: invalid islands payload", ev.data);
+        }
+        return;
+      }
+      var url = payload && payload.bundleUrl;
+      if (!url) return;
+      // Bust any module cache by appending a timestamp; the host page's
+      // hydration runtime (zfb_islands::hydration_script_tag) re-runs
+      // on import so re-importing the bundle re-hydrates the component
+      // without a full page reload.
+      var ts = String(Date.now());
+      var swapUrl = url + (url.indexOf("?") >= 0 ? "&" : "?") + "v=" + ts;
+      if (typeof window.__zfbIslandsReload === "function") {
+        // Test/host hook so the runtime can intercept the swap-import
+        // (e.g. to coordinate state preservation). When absent we fall
+        // back to a plain dynamic import which re-runs the bundle's
+        // top-level hydration calls.
+        try {
+          window.__zfbIslandsReload(payload.component, swapUrl);
+          return;
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[zfb] livereload: islands hook threw", e);
+          }
+        }
+      }
+      // Dynamic import — valid in classic scripts in all evergreen browsers
+      // (ES2020). No new Function wrapper needed; this file is served as-is
+      // via include_str! with no bundler or parser pass that would reject it.
+      // import() failures arrive as a rejected promise, not a sync throw —
+      // a .catch() is required or the warning below would never fire.
+      import(swapUrl).catch(function (e) {
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[zfb] livereload: dynamic import failed", e);
+        }
+      });
+    });
+    src.addEventListener("error", function (ev) {
+      // EventSource auto-reconnects; surface the event for visibility.
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[zfb] livereload: connection error", ev);
+      }
+    });
+  }
+
+  connect();
+  window.addEventListener("pagehide", function () {
+    if (src) {
+      src.close();
+      src = null;
+    }
   });
-  src.addEventListener("error", function (ev) {
-    // EventSource auto-reconnects; surface the event for visibility.
-    if (typeof console !== "undefined" && console.warn) {
-      console.warn("[zfb] livereload: connection error", ev);
+  window.addEventListener("pageshow", function (ev) {
+    if (ev.persisted && !src) {
+      connect();
     }
   });
 })();
