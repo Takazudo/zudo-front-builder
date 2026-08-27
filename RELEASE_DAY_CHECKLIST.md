@@ -14,8 +14,8 @@ on a tag push. The flow is:
 1. Run `/l-make-release` (creates a **draft** GitHub Release for the current
    version tag). Draft Releases do NOT trigger the workflow.
 2. Optionally: on a Mac, run `./scripts/build-macos-x64-local.sh --upload vX.Y.Z`
-   to pre-upload the macOS-x64 archive + `.sha256` to the draft Release (fast-Mac
-   path — skips the chronically slow `macos-15-intel` runner).
+   to pre-upload the macOS-x64 archive + `.sha256` to the draft Release (the
+   explicit fast-Mac opt-in — it skips the `macos-15-intel` runner).
 3. **Publish the draft Release** (`gh release edit vX.Y.Z --draft=false` or the
    web UI) to trigger `release.yml`. Publishing fires the `release: published`
    event; the draft state does NOT.
@@ -39,7 +39,7 @@ track the latest prerelease and are never left pointing at a stale release.
 **Self-disabling condition**: the `publish` job probes `npm view @takazudo/zfb
 dist-tags.latest` before each `*-next.*` publish. If `latest` is empty (first
 ever publish) or is itself a prerelease (version string contains `"-"`), the
-workflow advances `latest` alongside `next` for all 9 workspace packages. Once
+workflow advances `latest` alongside `next` for all 10 workspace packages. Once
 a real stable version holds `latest` the condition is false and prereleases no
 longer touch it — a prerelease can never clobber a real stable `latest` after
 launch.
@@ -53,7 +53,7 @@ npm dist-tag add @takazudo/zfb@0.1.0-next.6 latest
 npm dist-tag add create-zfb@0.1.0-next.6 latest
 ```
 
-Run the equivalent commands for the remaining 7 packages if the workflow log
+Run the equivalent commands for the remaining 8 packages if the workflow log
 shows failures across all of them (substitute the actual version for
 `0.1.0-next.6`).
 
@@ -88,13 +88,14 @@ The `release-assets` job will list the collected files instead of uploading.
 
 ## macOS-x64 local-build escape hatch (added by issue #437, updated by issue #455)
 
-This escape hatch was built because the Intel macOS runner was chronically
-queue-starved. That runner (`macos-13`) has since been **retired outright**
-(2025-12-04); the x86_64 leg now targets **`macos-15-intel`**, the migration
-label, whose throughput here is not yet characterised. Note the deadline: that
-image retires in **Fall 2027**, and Actions offers no x86_64 macOS runner after
-it — at which point this leg must become a cross-compile (which is exactly what
-`build-macos-x64-local.sh` already does on an Apple Silicon host).
+This escape hatch was built because the former Intel macOS runner
+(`macos-13`) was chronically queue-starved. That image has since been **retired
+outright** (2025-12-04); the x86_64 leg now targets **`macos-15-intel`**, the
+migration label. GitHub's current runner table also lists **`macos-26-intel`**;
+check the supported runner labels when planning beyond `macos-15-intel`, which
+retires in **Fall 2027**. At that point this leg must become a cross-compile
+(which is exactly what `build-macos-x64-local.sh` already does on an Apple
+Silicon host).
 
 Because the local-build path has been used for every recent release, the dead
 `macos-13` label sat unnoticed in the matrix for 8+ releases. It only affects
@@ -105,18 +106,22 @@ The `detect-mac-local` job (A2) auto-detects whether a locally-built macOS-x64
 archive has been pre-uploaded to the draft Release before it was published,
 so no manual re-dispatch is needed.
 
-### Default path (no pre-upload)
+### Default path (CI-built, fully attested; no pre-upload)
 
 1. Run `/l-make-release` to create the draft Release.
 2. Publish the draft (`gh release edit vX.Y.Z --draft=false` or web UI) with
    NO Mac archive attached.
-3. The workflow builds all 5 platforms on CI and publishes all packages with
-   full npm `--provenance`. Use this path whenever `macos-15-intel` is behaving.
+3. The workflow builds all 5 platforms on CI and publishes all 10 packages with
+   full npm `--provenance` (option C).
 
-### Fast-Mac path (when `macos-15-intel` is slow or you want to skip it)
+### Fast-Mac path (`--fast-mac` opt-in; mixed provenance)
 
-1. Run `/l-make-release` to create the draft Release.
-2. On a Mac, build + upload the macOS-x64 asset to the **draft** Release:
+1. Run `/l-make-release --fast-mac` to create the draft Release and build + upload
+   the macOS-x64 asset. For a `--confirm` flow where the upload happens on a
+   separate Mac, run `/l-make-release --confirm`, then
+   `/l-make-mac-release-binary vX.Y.Z`.
+2. If you are managing the upload manually, on a Mac, build + upload the
+   macOS-x64 asset to the **draft** Release:
 
    ```sh
    ./scripts/build-macos-x64-local.sh --upload vX.Y.Z
@@ -232,21 +237,25 @@ the publish step therefore splits:
 - `@takazudo/zfb-darwin-x64` → published **without** `--provenance`
 - all other packages → published **with** `--provenance`
 
-This is the "mixed-provenance" option B from issue #437. Prefer the default path
-(option C: only use the escape hatch when `macos-15-intel` is actually stuck) so most
-releases keep full provenance across every package.
+This is the "mixed-provenance" option B from issue #437. The default is now option C:
+the CI-built, fully attested path. `/l-make-release` takes that path by default;
+use `--fast-mac` only as an explicit opt-in when you deliberately accept mixed
+provenance.
 
-**In practice this path has been the norm, not the escape hatch.**
+The local-build path was the norm because `/l-make-release` previously defaulted
+to it, not because it was intended as the escape hatch. That default is now
+inverted: normal releases use option C, while `--fast-mac` selects option B.
 `@takazudo/zfb-darwin-x64` has carried no attestation since at least `2.8.0`,
 while `zfb-linux-x64-gnu` carried one on every release through `2.11.0`.
 
 That standing gap is *not* itself a trust downgrade — pnpm's check needs an
 earlier attested version to compare against, and this package has none, which is
 why only 5 of the 6 `2.12.0` entries were flagged. It is the weaker problem of
-macOS-x64 users getting no supply-chain evidence at all. But it is also a loaded
-gun: the first release that restores provenance for that package makes every
-later fast-Mac release a real downgrade for it. The publish job warns on this
-path too. Prefer the default path so the gap closes rather than widens.
+macOS-x64 users getting no supply-chain evidence at all. The next default release
+restores provenance for this package; after that, any later `--fast-mac` release
+is correctly a `regression` and the weekly provenance guard fails. That is
+intended supervision of a deliberate opt-in, not a hazard. The publish job warns
+on this path too.
 
 ## Homebrew tap update (added by issue #383)
 
