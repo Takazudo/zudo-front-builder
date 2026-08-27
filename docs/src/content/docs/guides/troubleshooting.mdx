@@ -66,7 +66,7 @@ An install from an already-generated lockfile still works, because pnpm applies 
 
 **Fix:** npm versions are immutable, so `2.12.0` itself can never gain an attestation. Prefer, in order:
 
-1. **Upgrade past it.** The next patch is published through the normal tag/release path with provenance restored, which clears the downgrade. This is the real fix.
+1. **Upgrade past it** once the next patch ships. That release goes out through the normal tag/release path with provenance restored, which clears the downgrade. This is the real fix.
 2. **Stay on `2.11.0`** until that patch lands — it is fully attested and satisfies `no-downgrade`.
 3. **Install from your existing lockfile** (`pnpm install --frozen-lockfile`), which is unaffected. Useful for CI while you wait.
 
