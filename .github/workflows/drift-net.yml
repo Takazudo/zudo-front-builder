@@ -32,12 +32,27 @@
 # tracking issue and an IFTTT alert out of a non-event. While a soak IS active,
 # release.yml smokes `next` on every publish, which is the tighter loop anyway.
 #
-# Two legs:
+# Three legs:
 #   - latest / ubuntu-latest — matches what release.yml runs every release.
 #   - latest / macos-15 (PINNED, not macos-latest — that label drifts
 #     unpredictably across major OS versions without notice) — darwin-arm64 is
 #     what users actually install on and nothing else exercises it between
 #     releases.
+#   - provenance-latest — registry-side supply-chain drift rather than install
+#     drift (issue #2623). The smoke legs above prove the packages INSTALL; they
+#     say nothing about whether they still carry an npm provenance attestation.
+#     v2.12.0 published with none (the main-based recovery path cannot attach
+#     one), which permanently blocks every consumer running pnpm's
+#     `trustPolicy: no-downgrade` — and no CI leg noticed, because the packages
+#     install fine and the release went green. It surfaced only when a consumer
+#     reported it. This leg closes that gap on the same weekly cadence.
+#
+# The provenance leg fails ONLY on a regression — latest lost an attestation an
+# earlier version had. A package that never had one (zfb-darwin-x64, issue #2625)
+# is reported as a warning, not a failure, for the same reason the `next` leg was
+# removed below: a scheduled leg that goes red every week over a known, tracked,
+# correctly-unchanged situation manufactures a tracking issue and an alert out of
+# a non-event, and trains everyone to ignore both.
 #
 # On failure, files/comments on a single deduped tracking issue per workflow
 # (scripts/file-exam-issue.sh) and sends an IFTTT notification, reusing the
@@ -83,13 +98,33 @@ jobs:
       dist_tag: latest
       runner: macos-15
 
+  provenance-latest:
+    # Registry-side supply-chain drift: does every published package at the
+    # `latest` dist-tag still carry the npm provenance attestation its
+    # predecessors had? Needs no pnpm install — the script and its one import
+    # are dependency-free ESM over node builtins + fetch.
+    name: Provenance drift (latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+
+      - name: Check npm provenance for regressions
+        run: node scripts/check-provenance-drift.mjs
+
   file-or-close-issue:
     # Single deduped tracking issue per workflow (not per run): stays open
     # while the workflow is red, gets a comment on each subsequent red run,
     # and is closed automatically on the next green run. See
     # scripts/file-exam-issue.sh and the zudo-test-wisdom T3 exam pattern.
     name: File/close exam tracking issue
-    needs: [smoke-latest-ubuntu, smoke-latest-macos]
+    needs: [smoke-latest-ubuntu, smoke-latest-macos, provenance-latest]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -102,11 +137,12 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: File or comment on tracking issue (failure)
-        if: ${{ needs.smoke-latest-ubuntu.result == 'failure' || needs.smoke-latest-macos.result == 'failure' }}
+        if: ${{ needs.smoke-latest-ubuntu.result == 'failure' || needs.smoke-latest-macos.result == 'failure' || needs.provenance-latest.result == 'failure' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LATEST_UBUNTU_RESULT: ${{ needs.smoke-latest-ubuntu.result }}
           LATEST_MACOS_RESULT: ${{ needs.smoke-latest-macos.result }}
+          PROVENANCE_RESULT: ${{ needs.provenance-latest.result }}
         # LEG is computed in shell rather than by a nested GHA ternary: even at
         # two legs the ternary form had to special-case "both failed" to avoid
         # mislabelling, and it stops being reviewable the moment a leg is added.
@@ -120,11 +156,12 @@ jobs:
           # own exit status and would fail the step.
           if [ "$LATEST_UBUNTU_RESULT" = "failure" ]; then append_leg "latest/ubuntu-latest"; fi
           if [ "$LATEST_MACOS_RESULT" = "failure" ]; then append_leg "latest/macos-15"; fi
+          if [ "$PROVENANCE_RESULT" = "failure" ]; then append_leg "provenance/latest"; fi
           export LEG
           bash scripts/file-exam-issue.sh "Drift net"
 
       - name: Close tracking issue (green)
-        if: ${{ needs.smoke-latest-ubuntu.result == 'success' && needs.smoke-latest-macos.result == 'success' }}
+        if: ${{ needs.smoke-latest-ubuntu.result == 'success' && needs.smoke-latest-macos.result == 'success' && needs.provenance-latest.result == 'success' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/file-exam-issue.sh "Drift net" --green
@@ -136,7 +173,7 @@ jobs:
     # job (status-computed via needs.*.result, reuses IFTTT_PROD_NOTIFY) —
     # established in issue #1335.
     name: Notify via IFTTT on failure
-    needs: [smoke-latest-ubuntu, smoke-latest-macos]
+    needs: [smoke-latest-ubuntu, smoke-latest-macos, provenance-latest]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -148,6 +185,7 @@ jobs:
         env:
           LATEST_UBUNTU_RESULT: ${{ needs.smoke-latest-ubuntu.result }}
           LATEST_MACOS_RESULT: ${{ needs.smoke-latest-macos.result }}
+          PROVENANCE_RESULT: ${{ needs.provenance-latest.result }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
@@ -158,9 +196,10 @@ jobs:
           }
           if [ "$LATEST_UBUNTU_RESULT" = "failure" ]; then append_job "smoke-latest-ubuntu"; fi
           if [ "$LATEST_MACOS_RESULT" = "failure" ]; then append_job "smoke-latest-macos"; fi
+          if [ "$PROVENANCE_RESULT" = "failure" ]; then append_job "provenance-latest"; fi
 
           if [ -z "$FAILED_JOB" ]; then
-            echo "No failed smoke leg — skipping notification."
+            echo "No failed leg — skipping notification."
             exit 0
           fi
 
@@ -170,6 +209,6 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "{
               \"value1\": \"Drift net failed (${FAILED_JOB})\",
-              \"value2\": \"channels: latest (ubuntu+macos)\",
+              \"value2\": \"channels: latest (ubuntu+macos+provenance)\",
               \"value3\": \"${RUN_URL}\"
             }" || echo "::warning::IFTTT notification failed"
