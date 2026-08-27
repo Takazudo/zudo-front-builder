@@ -224,7 +224,7 @@ describe("livereload.js page lifecycle", () => {
   });
 
   it("keeps the source open on visibilitychange", () => {
-    window.dispatchEvent(new Event("visibilitychange"));
+    document.dispatchEvent(new Event("visibilitychange"));
 
     expect(harness.instances).toHaveLength(1);
     expect(harness.instances[0].closeCalls).toBe(0);
