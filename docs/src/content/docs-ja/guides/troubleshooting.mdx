@@ -45,6 +45,30 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **対処:** Alpine の代わりに glibc ベースの Linux ベースイメージ（Debian、Ubuntu）を使ってください。Dockerfile でも、CI ランナーでも、任意のコンテナイメージでも同様です。今日、musl 上でネイティブに zfb を動かす回避策はありません。サポートされるプラットフォームのマトリクスは [インストール](../getting-started/installation.mdx#サポートされているプラットフォーム) と [Node なしでインストール](../install/node-free.mdx#サポートされているプラットフォーム) を参照してください。
 
+## 2.12.0 のインストールで `ERR_PNPM_TRUST_DOWNGRADE`
+
+**症状:** `.npmrc` で `trust-policy=no-downgrade` を設定した pnpm 10.30 以降で、`@takazudo/zfb*` のいずれかを `2.12.0` に上げると解決に失敗します。
+
+```text
+ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb@2.12.0" (possible package takeover)
+
+Trust checks are based solely on publish date, not semver. A package cannot be
+installed if any earlier-published version had stronger trust evidence. Earlier
+versions had provenance attestation, but this version has no trust evidence.
+```
+
+すでに生成済みのロックファイルからのインストールは成功します。pnpm はこのトラストポリシーを**解決（resolution）時**に適用するため、ブロックされるのは新規または強制的な解決だけです。
+
+**原因:** `2.12.0` のパッケージには npm の provenance attestation が付いていない一方、`2.11.0` には付いています。これはパッケージの乗っ取りではありません。`2.12.0` は zfb の [published-release recovery パス](https://github.com/Takazudo/zudo-front-builder/blob/main/RELEASE_DAY_CHECKLIST.md) — すでに公開済みのタグを再ビルドする、`main` からの `workflow_dispatch` 実行 — を通じて公開されました。その実行における GitHub OIDC のアイデンティティは、成果物が実際にビルドされた古いタグのコミットではなく `main` のワークフローコミットを指すため、リリースは出所を誤って示す attestation を付けるくらいならと、意図的に attestation なしで公開します。`2.12.0` ファミリーの全パッケージが対象です。[issue #2623](https://github.com/Takazudo/zudo-front-builder/issues/2623) で追跡しています。
+
+**対処:** npm のバージョンはイミュータブルなので、`2.12.0` 自体が後から attestation を得ることはありません。次の順で検討してください。
+
+1. 次のパッチがリリースされたら**それ以降に上げる**。そのリリースは通常のタグ/リリースパスを通り provenance が復活するため、ダウングレード判定が解消されます。これが本来の修正です。
+2. そのパッチが出るまでは **`2.11.0` に留まる**。こちらは完全に attestation 付きで、`no-downgrade` を満たします。
+3. **既存のロックファイルからインストールする**（`pnpm install --frozen-lockfile`）。こちらは影響を受けません。待っている間の CI に有効です。
+
+いずれも当てはまらない場合に限り、必要な解決の時だけ `.npmrc` から `trust-policy=no-downgrade` の行を外し、その後で戻してください。これは zfb だけでなく**すべての**依存関係についてガードを無効にするため、常設の設定ではなく最終手段として扱ってください。
+
 ## `import.meta.glob(...)` のビルドエラー
 
 **症状**（`zfb build` から。または `zfb dev` からは警告 + リバンドルのスキップ）:
