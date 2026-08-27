@@ -78,7 +78,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{
+    locate_esbuild, next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock,
+};
 
 /// Serialises this binary's single spawning test against itself (a no-op
 /// today, kept for parity with every sibling e2e file) and, via
@@ -320,16 +322,12 @@ async fn poll_until_contains(
 
 /// Subscribe to the dev server's SSE live-reload endpoint. Must be called
 /// BEFORE the edit whose tick it is meant to observe.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = open_sse(base).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "SSE endpoint /__zfb/reload must answer 200"
+        "SSE live-reload endpoint must answer 200"
     );
     resp
 }
@@ -340,15 +338,10 @@ async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Respons
 /// watcher-live handshake's trailing warmup write can leave a tick in flight
 /// after `boot_and_handshake` returns, which would otherwise race the next
 /// real edit's own tick.
-async fn drain_ticks_until_quiescent(
-    client: &reqwest::Client,
-    base: &str,
-    quiet_gap: Duration,
-    cap: Duration,
-) {
+async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Duration) {
     let start = Instant::now();
     while start.elapsed() < cap {
-        let sse = subscribe_sse(client, base).await;
+        let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, quiet_gap).await {
             Ok(Some(_)) => continue,
             _ => break,
@@ -432,7 +425,7 @@ async fn boot_and_handshake(session: &mut DevSession) -> Option<(String, reqwest
     // Phase C: watcher-live handshake — subscribe to SSE FIRST, then write
     // fresh-named warmup content files until the first SSE event arrives.
     {
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         let stop = Arc::new(AtomicBool::new(false));
         let writer = {
             let root = session.root.to_path_buf();
@@ -561,15 +554,10 @@ async fn e2e_poll_backend_content_edit_and_new_entry_discovery() {
         // ------------------------------------------------------------------
         // Scenario (a) — in-place content edit reaches the served HTML.
         // ------------------------------------------------------------------
-        drain_ticks_until_quiescent(
-            &client,
-            &base,
-            Duration::from_millis(1500),
-            Duration::from_secs(20),
-        )
-        .await;
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
         {
-            let sse = subscribe_sse(&client, &base).await;
+            let sse = subscribe_sse(&base).await;
             fs::write(
                 session.root.join("content/posts/a.md"),
                 "---\ntitle: Alpha\ndate: 2026-01-01\n---\n\n\
@@ -612,15 +600,10 @@ async fn e2e_poll_backend_content_edit_and_new_entry_discovery() {
         // merely servable: proven via its OWN dynamic route AND a SEPARATE
         // aggregate page's `getCollection` listing (module doc).
         // ------------------------------------------------------------------
-        drain_ticks_until_quiescent(
-            &client,
-            &base,
-            Duration::from_millis(1500),
-            Duration::from_secs(20),
-        )
-        .await;
+        drain_ticks_until_quiescent(&base, Duration::from_millis(1500), Duration::from_secs(20))
+            .await;
         {
-            let sse = subscribe_sse(&client, &base).await;
+            let sse = subscribe_sse(&base).await;
             fs::write(
                 session.root.join("content/posts/gamma.md"),
                 "---\ntitle: POLL-GAMMA-DISCOVERY-TITLE\ndate: 2026-01-03\n---\n\n\

@@ -113,7 +113,8 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    decode_utf8_incremental, locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock,
+    decode_utf8_incremental, locate_esbuild, next_sse_event_name, open_sse, zfb_binary,
+    CrossBinaryE2eLock,
 };
 
 // Sub #2094 (variant matrix) additions below use these directly rather
@@ -278,37 +279,8 @@ fn spawn_dev(root: PathBuf, esbuild: &Path, boot_lazy: Option<&str>) -> DevSessi
     }
 }
 
-/// Dedicated client for `/__zfb/reload` subscriptions, deliberately built
-/// WITHOUT a total-response timeout.
-///
-/// `build_reqwest_client`'s `.timeout(...)` bounds the whole response, not
-/// just its headers. For an SSE stream the response body never completes,
-/// so that setting silently caps how long ANY subscription can observe —
-/// no matter what `SSE_FIRST_EVENT_DEADLINE`, `SSE_QUIET_WINDOW`, or
-/// `OVERALL_DEADLINE` say. A tick that takes longer than the cap surfaces
-/// as a reqwest transport error ("operation timed out") from inside
-/// `next_sse_event_name`/`collect_tick_events`, which reads as a broken
-/// harness rather than as the zero-`page`-events outcome this file exists
-/// to be able to observe. Measured (sub #2094): the injected-route
-/// fixture's first tick restages injected-route bundles and crosses 10s,
-/// while the baseline fixture's cheap MDX warmup lands well under it — so
-/// the cap was invisible until a slower fixture arrived.
-///
-/// The connect timeout is kept: failing to CONNECT is a real error, and
-/// bounding it does not truncate a healthy stream.
-static SSE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .expect("build SSE reqwest client")
-});
-
 async fn subscribe_sse(base: &str) -> reqwest::Response {
-    let response = SSE_CLIENT
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+    let response = open_sse(base).await;
     assert_eq!(
         response.status().as_u16(),
         200,
@@ -407,7 +379,7 @@ async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
 ///
 /// Both windows are tracked as absolute `Instant` deadlines, advanced
 /// only when a genuine `event:` line is parsed — never merely on chunk
-/// arrival. `/__zfb/reload` is an axum `Sse` stream with a 15s
+/// arrival. The dev-server SSE stream is an axum `Sse` stream with a 15s
 /// `KeepAlive` (`crates/zfb-server/src/livereload.rs`), which periodically
 /// sends a `: `-comment chunk carrying no `event:` line at all. A
 /// per-chunk-relative timeout (reset on every chunk, keepalives
