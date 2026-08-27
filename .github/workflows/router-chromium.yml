@@ -6,7 +6,8 @@
 
 name: router-chromium
 
-# Level-4 (real Chromium) smoke suite for the client router (issue #1346). It
+# Level-4 (real Chromium) smoke suite for the client router (issue #1346) and
+# browser-side livereload lifecycle. The router coverage
 # closes the happy-dom blind spots the L2 vitest suite documents in-file — real
 # View Transitions, real scroll restoration, real popstate direction, the
 # aria-live route announcer, and real <link rel=prefetch> insertion. Since
@@ -17,8 +18,8 @@ name: router-chromium
 # router runtime.
 #
 # Path-filtered: this only runs when the router runtime, the islands runtime,
-# or its L4 suite changes, so pure-Rust / docs PRs never pay for it. Like
-# docs-checks.yml, that means this workflow is NOT — and must not become — a
+# livereload.js, or the L4 suite changes, so unrelated Rust / docs PRs never pay
+# for it. Like docs-checks.yml, that means this workflow is NOT — and must not become — a
 # required status check: a required check that legitimately does not run on
 # unrelated PRs would hang them forever (see the #1333 branch-ruleset note in
 # CLAUDE.md). `base/**` covers the long-lived integration branches used by
@@ -33,6 +34,7 @@ on:
       - synchronize
       - reopened
     paths:
+      - "crates/zfb-server/src/livereload.js"
       - "packages/zfb-runtime/**"
       - "packages/zfb/src/runtime.ts"
       - "tests/router-chromium/**"
@@ -44,6 +46,7 @@ on:
       - main
       - "base/**"
     paths:
+      - "crates/zfb-server/src/livereload.js"
       - "packages/zfb-runtime/**"
       - "packages/zfb/src/runtime.ts"
       - "tests/router-chromium/**"
