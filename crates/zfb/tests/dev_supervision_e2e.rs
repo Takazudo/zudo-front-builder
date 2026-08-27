@@ -378,17 +378,9 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path, extra_env: &[(&str, &str)]
 
 /// Subscribe to the dev server's SSE live-reload endpoint. Must be called
 /// BEFORE the edit whose tick it is meant to observe.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
-    assert_eq!(
-        resp.status().as_u16(),
-        200,
-        "SSE endpoint /__zfb/reload must answer 200"
-    );
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = zfb_test_utils::open_sse(base).await;
+    assert_eq!(resp.status().as_u16(), 200, "SSE endpoint must answer 200");
     resp
 }
 
@@ -441,7 +433,7 @@ async fn boot_and_wait_ready(session: &mut DevSession) -> Option<(String, reqwes
     let base = format!("http://localhost:{port}");
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        // Whole-request timeout (codex review, #2101): without this, a
+        // Whole-request timeout for page requests (codex review, #2101): without this, a
         // connection that accepts but never finishes sending headers/body
         // (e.g. a hung dev process mid-panic) can leave a `.send()`/`.text()`
         // call parked indefinitely — none of `OVERALL_DEADLINE`'s elapsed
@@ -742,7 +734,7 @@ async fn orch_stop_ms_takes_the_whole_process_down() {
     // C: subscribe to SSE first, then write fresh-named warmup files on a
     // background timer until the first SSE event arrives.
     {
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer = {
             let root = session.root.clone();
@@ -883,7 +875,7 @@ async fn graceful_sigint_exits_zero_and_persists_the_graph() {
     // post-exit `graph.bin` freshness check below cannot be satisfied by
     // an empty/never-touched graph.
     {
-        let sse = subscribe_sse(&client, &base).await;
+        let sse = subscribe_sse(&base).await;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer = {
             let root = session.root.clone();

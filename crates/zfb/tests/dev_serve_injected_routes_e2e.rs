@@ -1105,17 +1105,9 @@ export default {
 
 /// Subscribe to the dev server's SSE live-reload endpoint.
 /// Must be called BEFORE the edit whose tick it is meant to observe.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
-    assert_eq!(
-        resp.status().as_u16(),
-        200,
-        "SSE endpoint /__zfb/reload must answer 200"
-    );
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = zfb_test_utils::open_sse(base).await;
+    assert_eq!(resp.status().as_u16(), 200, "SSE endpoint must answer 200");
     resp
 }
 
@@ -1267,7 +1259,7 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
         //
         // Warmup slugs (`__warmup-N`) never collide with the asserted article.
         {
-            let sse = subscribe_sse(&client, &base).await;
+            let sse = subscribe_sse(&base).await;
             let stop = Arc::new(AtomicBool::new(false));
             let articles_dir = root.join("content").join("articles");
             let writer = {
@@ -1342,7 +1334,7 @@ async fn dev_e2e_injected_route_hmr_content_edit_refreshes() {
         // create/warmup aliasing the signal — the V2 marker asserts the edit
         // actually reached the renderer).
         {
-            let sse = subscribe_sse(&client, &base).await;
+            let sse = subscribe_sse(&base).await;
             fs::write(
                 &edit_target,
                 "---\ntitle: V2-HMR-ARTICLE-TITLE\n---\n\nFeature body updated.\n",
