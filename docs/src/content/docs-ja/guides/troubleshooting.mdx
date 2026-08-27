@@ -45,6 +45,51 @@ error: could not resolve the latest prerelease tag from GitHub API (no prereleas
 
 **対処:** Alpine の代わりに glibc ベースの Linux ベースイメージ（Debian、Ubuntu）を使ってください。Dockerfile でも、CI ランナーでも、任意のコンテナイメージでも同様です。今日、musl 上でネイティブに zfb を動かす回避策はありません。サポートされるプラットフォームのマトリクスは [インストール](../getting-started/installation.mdx#サポートされているプラットフォーム) と [Node なしでインストール](../install/node-free.mdx#サポートされているプラットフォーム) を参照してください。
 
+## 2.12.0 のインストールで `ERR_PNPM_TRUST_DOWNGRADE`
+
+**症状:** pnpm のオプトイン設定 [`trustPolicy`](https://pnpm.io/settings/dependency-resolution#trustpolicy) を `no-downgrade` にしていると、`@takazudo/zfb*` のいずれかを `2.12.0` でインストール／アップグレードする際に失敗します。
+
+```text
+ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb@2.12.0" (possible package takeover)
+
+Trust checks are based solely on publish date, not semver. A package cannot be
+installed if any earlier-published version had stronger trust evidence. Earlier
+versions had provenance attestation, but this version has no trust evidence.
+```
+
+`trustPolicy` はオプトイン（デフォルトは `off`）で、pnpm 10.21 以降で利用できます。既存のロックファイルで回避できるかどうかは、使っているバージョンによって異なります。
+
+| インストール方法 | pnpm 10.21 – 11.1 | pnpm 11.2 以降 |
+| --- | --- | --- |
+| 新規／強制的な解決 | 失敗 | 失敗 |
+| `pnpm install --frozen-lockfile` | 成功 | 失敗 |
+
+pnpm 11.2 で、解決済みロックファイルの各エントリに対して有効なサプライチェーンポリシーを再適用する検証パスが追加されました。そのため、すでに `2.12.0` を固定しているロックファイルをコミットしていても、11.1 では通り、11.2 では失敗します。
+
+**原因:** `2.12.0` のパッケージには npm の provenance attestation が付いていない一方、`2.11.0` には付いています。これはパッケージの乗っ取りではありません。`2.12.0` は zfb の [published-release recovery パス](https://github.com/Takazudo/zudo-front-builder/blob/main/RELEASE_DAY_CHECKLIST.md) — すでに公開済みのタグを再ビルドする、`main` からの `workflow_dispatch` 実行 — を通じて公開されました。その実行における GitHub OIDC のアイデンティティは、成果物が実際にビルドされた古いタグのコミットではなく `main` のワークフローコミットを指すため、出所を誤って示す attestation を付けるくらいならと、意図的に attestation なしで公開しています。[issue #2623](https://github.com/Takazudo/zudo-front-builder/issues/2623) で追跡しています。
+
+通常のインストールで取得される 6 つのうち 5 つのパッケージが影響を受けます。`@takazudo/zfb-darwin-x64` が検出されないのは、`2.12.0` よりずっと前から attestation が付いておらず、pnpm が比較する対象を持たないからです。
+
+**対処:** npm のバージョンはイミュータブルなので、`2.12.0` 自体が後から attestation を得ることはありません。次の順で検討してください。
+
+1. 次のパッチがリリースされたら**それ以降に上げる**。そのリリースは通常のタグ/リリースパスを通り provenance が復活するため、ダウングレード判定が解消されます。これが本来の修正です。
+2. そのパッチが出るまでは **`2.11.0` に留まる**。こちらは `no-downgrade` を満たします。
+3. どうしても今 `2.12.0` が必要な場合は、`pnpm-workspace.yaml` の [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) で**該当パッケージだけを除外する**。他のすべての依存関係についてはポリシーが有効なままになります。
+
+   ```yaml
+   trustPolicy: no-downgrade
+   trustPolicyExclude:
+     - "@takazudo/zfb@2.12.0"
+     - "@takazudo/zfb-darwin-arm64@2.12.0"
+     - "@takazudo/zfb-linux-arm64-gnu@2.12.0"
+     - "@takazudo/zfb-linux-x64-gnu@2.12.0"
+     - "@takazudo/zfb-win32-x64-msvc@2.12.0"
+   ```
+
+   各エントリでバージョンを固定しておくと、アップグレード時に除外が自動的に失効します。なお、名前のパターンとバージョンを組み合わせることは**できません**（`"@takazudo/zfb*@2.12.0"` は `ERR_PNPM_INVALID_TRUST_POLICY_EXCLUDE` で拒否されます）。上記のように厳密な `name@version` を列挙するか、全バージョンの除外を許容できる場合は `"@takazudo/zfb*"` のようなバージョンなしの glob を使ってください。
+
+`trustPolicy` 自体を無効化しても回避できますが、これら 5 つではなく**すべての**依存関係についてガードが外れます。範囲を限定した除外を優先してください。
+
 ## `import.meta.glob(...)` のビルドエラー
 
 **症状**（`zfb build` から。または `zfb dev` からは警告 + リバンドルのスキップ）:

@@ -265,6 +265,56 @@ else
   fail "integration: recovery-no-provenance run exited non-zero"
 fi
 
+# Case 6 — trust-downgrade advisory (#2623). Both provenance-omitting modes must
+# announce the downgrade loudly ONCE (::warning + job summary) so the release
+# operator schedules the follow-up attested release; the fully-attested mode must
+# stay silent, or the warning trains operators to ignore it.
+# assert_advisory <desc> <mode> <want: yes|no> <scope-substring>
+assert_advisory() {
+  AD_DESC="$1"; AD_MODE="$2"; AD_WANT="$3"; AD_SCOPE="$4"
+  AD_OUT=$(mktemp)
+  AD_SUMMARY=$(mktemp)
+  : >"$AD_SUMMARY"
+  PATH="$MOCK_BIN:$PATH" \
+  DIST_TAG=latest \
+  MOCK_PUBLISH_LOG=/dev/null \
+  MOCK_EXISTING="$ALL_SPECS" \
+  GITHUB_STEP_SUMMARY="$AD_SUMMARY" \
+    bash "$SCRIPT" "$AD_MODE" >"$AD_OUT" 2>&1 || true
+
+  if grep -q '::warning title=npm provenance trust downgrade::' "$AD_OUT"; then
+    AD_GOT=yes
+  else
+    AD_GOT=no
+  fi
+
+  if [ "$AD_GOT" != "$AD_WANT" ]; then
+    fail "$AD_DESC (advisory emitted=$AD_GOT, want=$AD_WANT)"
+  elif [ "$AD_WANT" = no ]; then
+    if [ -s "$AD_SUMMARY" ]; then
+      fail "$AD_DESC (no advisory expected, but the job summary was written)"
+    else
+      pass "$AD_DESC"
+    fi
+  elif ! grep -Fq "$AD_SCOPE" "$AD_OUT"; then
+    fail "$AD_DESC (advisory did not name scope '$AD_SCOPE')"
+  elif [ "$(grep -c '::warning title=npm provenance trust downgrade::' "$AD_OUT")" -ne 1 ]; then
+    fail "$AD_DESC (advisory emitted more than once — it must be one-shot, not per-package)"
+  elif ! grep -Fq 'ERR_PNPM_TRUST_DOWNGRADE' "$AD_SUMMARY"; then
+    fail "$AD_DESC (job summary missing the consumer-facing error name)"
+  else
+    pass "$AD_DESC"
+  fi
+  rm -f "$AD_OUT" "$AD_SUMMARY"
+}
+
+assert_advisory "advisory: recovery-no-provenance warns for every package" \
+  recovery-no-provenance yes "EVERY package in this release"
+assert_advisory "advisory: mac-local warns, scoped to zfb-darwin-x64" \
+  mac-local yes "@takazudo/zfb-darwin-x64"
+assert_advisory "advisory: all-provenance stays silent" \
+  all-provenance no ""
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

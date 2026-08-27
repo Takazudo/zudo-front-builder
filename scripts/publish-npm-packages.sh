@@ -52,6 +52,9 @@
 #                      not that tag SHA, so every package is published WITHOUT a
 #                      misleading provenance attestation.
 #
+# The two provenance-omitting modes additionally emit a one-shot trust-downgrade
+# advisory (::warning + job summary) — see emit_trust_downgrade_advisory below.
+#
 # Required env:
 #   DIST_TAG          npm dist-tag to publish under (next | latest).
 #   NODE_AUTH_TOKEN   npm auth token (set by the calling workflow step's env).
@@ -260,6 +263,58 @@ publish_nonplatform_packages() {
   done
 }
 
+# Trust-downgrade advisory (issue #2623).
+# npm records a provenance attestation per PUBLISHED VERSION, and versions are
+# immutable. So a package published WITHOUT --provenance after earlier versions
+# carried it is a permanent *trust downgrade* for that package: a consumer with
+# pnpm's opt-in `trustPolicy: no-downgrade` cannot install it at all, and gets
+# ERR_PNPM_TRUST_DOWNGRADE ("possible package takeover").
+#
+# The setting is opt-in (default `off`), added in pnpm 10.21. Measured against the
+# live registry on 2026-08-27 (pnpm 10.25.0, 11.1.0, 11.2.0, 11.3.0), the blast
+# radius differs by version, which is why v2.12.0 went unnoticed:
+#   - fresh resolve  — fails on every version that has the setting.
+#   - --frozen-lockfile — SUCCEEDS up to pnpm 11.1 ("resolution step is skipped"),
+#     FAILS from pnpm 11.2, which re-applies the active supply-chain policies to
+#     every entry of an already-resolved lockfile. So an older CI job keeps going
+#     green while an 11.2+ one breaks on the same committed lockfile.
+# Note a package that never had provenance cannot "downgrade" — the check needs an
+# earlier attested version to compare against. That is why only 5 of the 6 v2.12.0
+# entries were flagged: zfb-darwin-x64 has been unattested since <=2.8.0.
+#
+# The two provenance-omitting modes cannot avoid this (that is the point: neither
+# has an OIDC identity that would truthfully describe the artifacts). What they
+# CAN do is say so loudly, once, so the release operator schedules the only
+# remedy that exists — a subsequent normally-attested release.
+emit_trust_downgrade_advisory() {
+  local mode="$1" scope
+  case "$mode" in
+    recovery-no-provenance) scope="EVERY package in this release" ;;
+    mac-local) scope="@takazudo/zfb-darwin-x64" ;;
+    *) return 0 ;;
+  esac
+
+  echo "::warning title=npm provenance trust downgrade::${scope} is being published WITHOUT npm provenance. Consumers who enable pnpm's trustPolicy=no-downgrade will fail to install this version (ERR_PNPM_TRUST_DOWNGRADE) on a fresh resolve, and on pnpm 11.2+ even with --frozen-lockfile. npm versions are immutable, so the ONLY remedy is a follow-up release published through the normal tag/release path with provenance restored. See RELEASE_DAY_CHECKLIST.md and issue #2623."
+
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "### :warning: npm provenance trust downgrade"
+      echo
+      echo "**${scope}** is published **without** npm provenance in this run (mode \`${mode}\`)."
+      echo
+      echo "Consumers who enable pnpm's \`trustPolicy: no-downgrade\` will get"
+      echo "\`ERR_PNPM_TRUST_DOWNGRADE\`, because earlier versions of the same package carried a"
+      echo "provenance attestation. This blocks a fresh resolve on every pnpm version, and on"
+      echo "pnpm 11.2+ it also blocks \`--frozen-lockfile\` (11.2 added a verification pass"
+      echo "over already-resolved lockfile entries; earlier versions skip them)."
+      echo
+      echo "npm versions are immutable. **Required follow-up:** ship the next patch through the"
+      echo "normal tag/release path so provenance is restored, or publish explicit consumer"
+      echo "guidance. See \`RELEASE_DAY_CHECKLIST.md\` and issue #2623."
+    } >>"$GITHUB_STEP_SUMMARY" || true # an advisory must never fail the publish job
+  fi
+}
+
 # Prerelease dual-tag (#481): advance `latest` alongside `next` while still in
 # the prerelease phase. Runs only after every package is published (idempotently),
 # so a partial publish never clobbers `latest`. advance-latest-dist-tag.sh has its
@@ -290,6 +345,7 @@ main() {
   fi
 
   echo "== Publishing all workspace packages (mode=${mode}, dist-tag=${DIST_TAG}) =="
+  emit_trust_downgrade_advisory "$mode"
   publish_platform_packages "$mode"
   publish_nonplatform_packages "$mode"
   maybe_advance_latest

@@ -180,6 +180,48 @@ separate checkout of the exact `main` workflow commit while keeping all package
 source and binaries pinned to the verified tag commit. Normal
 `release: published` runs retain the full or mixed-provenance behavior below.
 
+#### Recovery creates a trust downgrade — plan the follow-up release (issue #2623)
+
+**A recovery run is not consequence-free for consumers.** npm records provenance
+per published version and versions are immutable, so publishing a version without
+an attestation *after* earlier versions had one is a permanent **trust downgrade**
+for every affected package. A consumer who has enabled pnpm's `trustPolicy:
+no-downgrade` cannot install such a version at all:
+
+```text
+ERR_PNPM_TRUST_DOWNGRADE High-risk trust downgrade for "@takazudo/zfb@X.Y.Z" (possible package takeover)
+```
+
+This is easy to miss on release day, and v2.12.0 shipped it unnoticed. Measured
+against the live registry on 2026-08-27, the blast radius depends on the
+consumer's pnpm major:
+
+| Install | pnpm 10.21 – 11.1 | pnpm 11.2+ |
+| --- | --- | --- |
+| fresh / forced resolve | fails | fails |
+| `pnpm install --frozen-lockfile` | **succeeds** (resolution skipped) | **fails** |
+
+pnpm 11.2 added a verification pass that re-applies the active supply-chain
+policies to every entry of an already-resolved lockfile, so a committed lockfile
+pinning the bad version breaks there while the same lockfile keeps an older CI
+job green. That split is why nothing went red on release day.
+
+The publish job now emits a `::warning` and a job-summary block on every
+provenance-omitting run so the downgrade cannot ship silently again — do not
+dismiss it.
+
+The setting is opt-in (default `off`) and available since pnpm 10.21. It is
+`trustPolicy: no-downgrade` in `pnpm-workspace.yaml` (honored by both majors);
+pnpm 10 also accepts the older `trust-policy=no-downgrade` in `.npmrc`, which
+**pnpm 11 ignores** — pnpm 11 reads only auth/registry settings from `.npmrc`.
+
+**Required follow-up after any recovery run:** ship the next patch through the
+normal tag/release path so provenance is restored. That is the only remedy — the
+recovered version itself can never be repaired. Until that patch is out, affected
+consumers need explicit guidance; the user-facing workaround is documented in
+[the docs troubleshooting page](docs/src/content/docs/guides/troubleshooting.mdx)
+under `ERR_PNPM_TRUST_DOWNGRADE`.
+
 ### Provenance trade-off (option B — mixed provenance)
 
 npm `--provenance` (added in #425 / PR #436) requires OIDC attestation from the
@@ -193,6 +235,18 @@ the publish step therefore splits:
 This is the "mixed-provenance" option B from issue #437. Prefer the default path
 (option C: only use the escape hatch when `macos-15-intel` is actually stuck) so most
 releases keep full provenance across every package.
+
+**In practice this path has been the norm, not the escape hatch.**
+`@takazudo/zfb-darwin-x64` has carried no attestation since at least `2.8.0`,
+while `zfb-linux-x64-gnu` carried one on every release through `2.11.0`.
+
+That standing gap is *not* itself a trust downgrade — pnpm's check needs an
+earlier attested version to compare against, and this package has none, which is
+why only 5 of the 6 `2.12.0` entries were flagged. It is the weaker problem of
+macOS-x64 users getting no supply-chain evidence at all. But it is also a loaded
+gun: the first release that restores provenance for that package makes every
+later fast-Mac release a real downgrade for it. The publish job warns on this
+path too. Prefer the default path so the gap closes rather than widens.
 
 ## Homebrew tap update (added by issue #383)
 
