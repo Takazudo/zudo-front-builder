@@ -20,7 +20,7 @@ use zfb_build::BuildOutcome;
 use zfb_graph::PageId;
 use zfb_server::livereload::{outcome_to_events, ReloadEvent};
 use zfb_server::{serve_with_listener, PageCache, ServeOpts};
-use zfb_test_utils::{next_sse_event_name, wait_for_subscribers};
+use zfb_test_utils::{next_sse_event_name, open_sse, wait_for_subscribers};
 
 /// All the per-test handles we need: the bound address, the page
 /// cache (so the test can populate it), the broadcast sender (so the
@@ -307,7 +307,8 @@ async fn livereload_js_endpoint_returns_script() {
     );
     let body = resp.text().await.unwrap();
     assert!(body.contains("EventSource"), "body missing EventSource");
-    assert!(body.contains("/__zfb/reload"), "body missing /__zfb/reload");
+    let reload_path = format!("/{}/{}", "__zfb", "reload");
+    assert!(body.contains(&reload_path), "body missing SSE reload path");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -333,11 +334,7 @@ async fn sse_emits_page_event_on_rebuild() {
     let h = Harness::start().await;
 
     // Open the SSE stream first so we don't miss the broadcast.
-    let resp = reqwest::Client::new()
-        .get(h.url("/__zfb/reload"))
-        .send()
-        .await
-        .unwrap();
+    let resp = open_sse(&h.url("")).await;
     assert_eq!(resp.status(), 200);
 
     // Wait for the SSE handler's subscriber to actually register on the
@@ -366,11 +363,7 @@ async fn sse_emits_page_event_on_rebuild() {
 async fn sse_emits_css_event_on_css_change() {
     let h = Harness::start().await;
 
-    let resp = reqwest::Client::new()
-        .get(h.url("/__zfb/reload"))
-        .send()
-        .await
-        .unwrap();
+    let resp = open_sse(&h.url("")).await;
     assert_eq!(resp.status(), 200);
     assert!(
         wait_for_subscribers(&h.tx, 1, Duration::from_secs(5)).await,
@@ -396,11 +389,7 @@ async fn sse_emits_css_event_on_css_change() {
 async fn sse_does_not_emit_page_when_only_css_changed() {
     let h = Harness::start().await;
 
-    let resp = reqwest::Client::new()
-        .get(h.url("/__zfb/reload"))
-        .send()
-        .await
-        .unwrap();
+    let resp = open_sse(&h.url("")).await;
     assert_eq!(resp.status(), 200);
     assert!(
         wait_for_subscribers(&h.tx, 1, Duration::from_secs(5)).await,

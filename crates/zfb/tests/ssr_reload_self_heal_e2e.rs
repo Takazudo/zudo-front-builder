@@ -107,7 +107,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use zfb_test_utils::{locate_esbuild, next_sse_event_name, zfb_binary, CrossBinaryE2eLock};
+use zfb_test_utils::{
+    locate_esbuild, next_sse_event_name, open_sse, zfb_binary, CrossBinaryE2eLock,
+};
 
 const BOOT_DEADLINE: Duration = Duration::from_secs(90);
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(60);
@@ -325,30 +327,12 @@ async fn wait_for_log_line(session: &DevSession, needle: &str, phase: &str) {
     );
 }
 
-/// A dedicated client for the SSE subscription with NO overall request
-/// timeout (only `connect_timeout`). The shared `client` used for ordinary
-/// GETs sets a 10s total-request timeout, which reqwest applies across the
-/// whole streamed response body — fatal for a connection meant to stay open
-/// across a `RELOAD_DEADLINE`-sized wait (it would sever the stream
-/// mid-observation and surface as a spurious `Err`, not the `Ok(None)` a
-/// genuinely quiet stream produces).
-fn sse_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .expect("build reqwest SSE client")
-}
-
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = open_sse(base).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "SSE endpoint /__zfb/reload must answer 200"
+        "SSE live-reload endpoint must answer 200"
     );
     resp
 }
@@ -478,8 +462,8 @@ async fn ssr_only_healthy_deferred_publish_reloads_open_tab() {
     // Subscribe to the livereload stream INSIDE the slow-bundle window —
     // this simulates a tab that is already open (and would be sitting on
     // the dev 404 body) the instant the deferred bundle publishes. Uses the
-    // dedicated no-total-timeout client — see `sse_client`.
-    let sse = subscribe_sse(&sse_client(), &base).await;
+    // shared no-total-timeout SSE opener.
+    let sse = subscribe_sse(&base).await;
 
     // Sanity: while the deferred bundle is still in flight, the SSR route
     // must not yet serve the marker (proves we really are inside the
@@ -616,8 +600,8 @@ async fn ssr_only_cold_bootstrap_recovery_reloads_open_tab() {
     // Subscribe to the livereload stream AFTER the failure — this
     // simulates a tab that has been sitting on the dev 404 body since
     // boot, the whole time the project was broken. Uses the dedicated
-    // no-total-timeout client — see `sse_client`.
-    let sse = subscribe_sse(&sse_client(), &base).await;
+    // no-total-timeout SSE opener.
+    let sse = subscribe_sse(&base).await;
 
     // Sanity: the route must not yet serve the marker (still broken).
     let (pre_status, pre_body) = poll_get(&client, &index_url).await;

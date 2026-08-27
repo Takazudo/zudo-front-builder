@@ -221,8 +221,8 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use zfb_test_utils::{
-    locate_esbuild, next_sse_event_name, watcher_live_handshake, zfb_binary, CrossBinaryE2eLock,
-    HandshakeOpts,
+    locate_esbuild, next_sse_event_name, open_sse, watcher_live_handshake, zfb_binary,
+    CrossBinaryE2eLock, HandshakeOpts,
 };
 
 /// Serializes the spawning test in this file against any other test in the
@@ -401,16 +401,12 @@ fn spawn_dev(tmp: &tempfile::TempDir, esbuild: &Path) -> DevSession {
 
 /// Subscribe to the dev server's SSE live-reload endpoint. Must be called
 /// BEFORE the edit whose tick it is meant to observe.
-async fn subscribe_sse(client: &reqwest::Client, base: &str) -> reqwest::Response {
-    let resp = client
-        .get(format!("{base}/__zfb/reload"))
-        .send()
-        .await
-        .expect("subscribe to /__zfb/reload");
+async fn subscribe_sse(base: &str) -> reqwest::Response {
+    let resp = open_sse(base).await;
     assert_eq!(
         resp.status().as_u16(),
         200,
-        "SSE endpoint /__zfb/reload must answer 200"
+        "SSE live-reload endpoint must answer 200"
     );
     resp
 }
@@ -611,7 +607,7 @@ async fn run_scenario() -> ScenarioOutcome {
     // watchFiles })` registration (#2167) put it in
     // `GranularityPolicy::plugin_watch_files`.
     // ------------------------------------------------------------------
-    let sse = subscribe_sse(&client, &base).await;
+    let sse = subscribe_sse(&base).await;
     fs::write(
         session.root.join("plugin-watched/note.txt"),
         "V2-NOTE-CONTENT-FRESH\n",
@@ -749,7 +745,7 @@ async fn run_scenario() -> ScenarioOutcome {
     const FAILURE_MARKER: &str = "plugin \"plugin-watch-hook-confirm-preset\" failed to reload \
                                    virtual module \"virtual:note\"";
 
-    let sse_before_failure = subscribe_sse(&client, &base).await;
+    let sse_before_failure = subscribe_sse(&base).await;
     fs::write(
         session.root.join("plugin-watched/note.txt"),
         "THROW-ON-REINVOKE\n",
@@ -821,7 +817,7 @@ async fn run_scenario() -> ScenarioOutcome {
     // paths touch a registered plugin watch file, and this fixture
     // registers exactly one (note.txt itself), which this edit is the
     // first to touch again since the failure above.
-    let sse_recovery = subscribe_sse(&client, &base).await;
+    let sse_recovery = subscribe_sse(&base).await;
     fs::write(
         session.root.join("plugin-watched/note.txt"),
         "V3-NOTE-CONTENT-RECOVERED\n",
