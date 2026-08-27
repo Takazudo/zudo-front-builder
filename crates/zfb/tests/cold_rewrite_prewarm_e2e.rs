@@ -330,14 +330,13 @@ async fn confirm_unrelated_tick(session: &DevSession, base: &str, revision_base:
     stop.store(true, Ordering::SeqCst);
     let _ = writer.await;
 
-    let event = event.unwrap_or_else(|_| {
-        panic!(
-            "no SSE event observed within {}s of repeatedly editing the unrelated home page — \
-             the watcher tick this test relies on as its timekeeping mechanism never happened.\n{}",
-            SSE_DEADLINE.as_secs(),
+    let event = match event {
+        Ok(event) => event,
+        Err(error) => panic!(
+            "SSE read failed while confirming the unrelated home-page watcher tick: {error:#}\n{}",
             session.logs(),
-        )
-    });
+        ),
+    };
     assert_eq!(
         event.as_deref(),
         Some("page"),

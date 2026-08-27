@@ -348,8 +348,10 @@ async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Durat
         match next_sse_event_name(sse, quiet_gap).await {
             // A tick fired within the gap — the watcher is still busy; keep draining.
             Ok(Some(_)) => continue,
-            // No event for `quiet_gap` (or the stream ended) — quiescent.
-            _ => break,
+            // No event for `quiet_gap` (or the stream ended) — quiescent. The
+            // served-HTML/CSS polls after each edit remain authoritative.
+            Ok(None) => break,
+            Err(error) => panic!("SSE read failed while draining watcher ticks: {error:#}"),
         }
     }
 }
@@ -601,8 +603,8 @@ export default function HomePage({ posts }: Props) {
         // asserted: the dedicated SSE client has no whole-response timeout, so
         // a slow-but-correct tick can still reach this read. When an event DOES
         // arrive we still assert it is `page` (a wrong event type is a real
-        // regression); a clean deadline or transport error falls through to
-        // the authoritative served-HTML poll below.
+        // regression); a clean deadline falls through to the authoritative
+        // served-HTML poll below. A transport error is a harness failure.
         match next_sse_event_name(sse, SSE_DEADLINE).await {
             Ok(Some(name)) => assert_eq!(
                 name.as_str(),
@@ -611,9 +613,13 @@ export default function HomePage({ posts }: Props) {
                  (expected `page`).\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[symptom-A] no SSE `page` event observed within the window; \
                  relying on the authoritative served-HTML poll (D3)."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after src/components/Widget.tsx edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -819,7 +825,18 @@ async fn e2e_transitive_css_import_refreshes_stylesheet() {
         // A Style tick does not mark pages stale (no SSE `page` event) but it
         // does refresh the CSS asset bytes. The event type may be anything or
         // nothing here — the served CSS body below is the authoritative gate.
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        // A transport error is still a harness failure.
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            Ok(None) => eprintln!(
+                "[symptom-B] no SSE event observed for the style edit; relying on the \
+                 authoritative served CSS-body poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after @scope/design-system CSS edit: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
 
         // The new V2 marker must appear in the served stylesheet.
         //
@@ -1049,9 +1066,19 @@ export default function HomePage({ posts }: Props) {
         .expect("edit src/components/CardWidget.tsx to add gap-x-hgap-2xs");
 
         // Wait for any SSE event from the tick (page or css — either signals
-        // the tick completed). Ignore timeout: the CSS poll below is the
-        // authoritative gate.
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        // the tick completed). Ignore only a clean timeout: the CSS poll
+        // below is the authoritative gate; transport errors fail the harness.
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            Ok(None) => eprintln!(
+                "[symptom-C] no SSE event observed for the component edit; relying on the \
+                 authoritative served CSS-body poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after src/components/CardWidget.tsx edit: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
 
         // The authoritative assertion (D3): GET /assets/styles.css on the next
         // request must contain a CSS rule for `gap-x-hgap-2xs`. Tailwind v4

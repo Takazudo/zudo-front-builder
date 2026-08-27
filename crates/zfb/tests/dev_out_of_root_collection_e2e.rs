@@ -386,7 +386,10 @@ async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Durat
         let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, quiet_gap).await {
             Ok(Some(_)) => continue,
-            _ => break,
+            // The quiet gap is only a settling aid; the file/HTTP polls in
+            // each scenario remain the authoritative gates.
+            Ok(None) => break,
+            Err(error) => panic!("SSE read failed while draining watcher ticks: {error:#}"),
         }
     }
 }
@@ -672,9 +675,13 @@ async fn e2e_out_of_root_edit_narrows_rerender_and_discovers_new_entry() {
                  event (expected `page`).\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[out_of_root_e2e scenario-a] no SSE `page` event observed within \
                  the window; relying on the authoritative disk poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after out-of-root alpha edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -739,8 +746,19 @@ async fn e2e_out_of_root_edit_narrows_rerender_and_discovers_new_entry() {
         )
         .expect("create out-of-root gamma.mdx");
 
-        // Best-effort SSE observation; the discovery poll below is authoritative.
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        // Best-effort SSE observation; the discovery HTTP poll below is
+        // authoritative.
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            Ok(None) => eprintln!(
+                "[out_of_root_e2e scenario-b] no SSE event observed after gamma \
+                 discovery; relying on the authoritative HTTP poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after out-of-root gamma discovery: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
 
         poll_until_contains(
             &client,

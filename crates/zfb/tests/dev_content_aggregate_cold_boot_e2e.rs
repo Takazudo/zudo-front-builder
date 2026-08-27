@@ -479,7 +479,10 @@ async fn drain_ticks_until_quiescent(base: &str) {
         let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, Duration::from_millis(1500)).await {
             Ok(Some(_)) => continue,
-            _ => break,
+            // A quiet window is the only purpose of this helper; the file
+            // polls after each caller's edit remain the authoritative gates.
+            Ok(None) => break,
+            Err(error) => panic!("SSE read failed while draining watcher ticks: {error:#}"),
         }
     }
 }
@@ -765,9 +768,13 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
                 "alpha content edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed; relying on the \
                  authoritative eager on-disk output checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after alpha content edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -821,9 +828,13 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
                 "alpha body-only edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed for the \
                  body-only edit; relying on the authoritative eager on-disk output checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after alpha body-only edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 
@@ -865,7 +876,19 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
             "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV1-BODY-GAMMA discovered markdown body.\n",
         )
         .expect("create a new gamma entry mid-session");
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            // The discovered entry and aggregate output-file polls below are
+            // the authoritative gates; this read only observes the tick.
+            Ok(None) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE event after gamma discovery; \
+                 relying on authoritative output-file polls."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after gamma discovery: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
         poll_until_file_contains(
             &discovered_entry,
             "V1-BODY-GAMMA",
@@ -888,7 +911,19 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
             "---\ntitle: Gamma Frontmatter\ndate: 2026-01-03\ntags:\n  - guide\n---\n\nV2-BODY-GAMMA first body-only edit seeds the frontmatter gate.\n",
         )
         .expect("prime the gamma frontmatter gate after discovery");
-        let _ = next_sse_event_name(sse, SSE_DEADLINE).await;
+        match next_sse_event_name(sse, SSE_DEADLINE).await {
+            Ok(Some(_)) => {}
+            // The discovered entry file poll below is the authoritative gate;
+            // this read only observes the edit tick.
+            Ok(None) => eprintln!(
+                "[content_aggregate_cold_boot_e2e] no SSE event after gamma frontmatter \
+                 priming edit; relying on the authoritative output-file poll."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after gamma frontmatter priming edit: {error:#}\n{}",
+                session.logs(),
+            ),
+        }
         poll_until_file_contains(
             &discovered_entry,
             "V2-BODY-GAMMA",
@@ -913,10 +948,14 @@ async fn cold_boot_content_edit_rerenders_entry_and_all_aggregates() {
                 "gamma body-only edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed for the \
                  post-discovery body-only edit; relying on the authoritative eager on-disk \
                  output checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after post-discovery gamma body-only edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
         poll_until_file_contains(
@@ -1112,10 +1151,14 @@ async fn cold_boot_zero_prior_requests_content_edit_refreshes_entry_and_aggregat
                 "cold zero-prior-requests alpha edit broadcast an unexpected SSE event.\n{}",
                 session.logs(),
             ),
-            Ok(None) | Err(_) => eprintln!(
+            Ok(None) => eprintln!(
                 "[content_aggregate_cold_boot_e2e] no SSE page event observed for the cold \
                  zero-prior-requests edit; relying on the authoritative first-request response \
                  checks."
+            ),
+            Err(error) => panic!(
+                "SSE read failed after cold zero-prior-requests alpha edit: {error:#}\n{}",
+                session.logs(),
             ),
         }
 

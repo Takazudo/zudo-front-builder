@@ -333,10 +333,17 @@ async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
     let mut last_len = read_log(&session.stderr_path).len();
     while start.elapsed() < DRAIN_DEADLINE {
         let sse = subscribe_sse(base).await;
-        let observed_event = matches!(
-            next_sse_event_name(sse, DRAIN_QUIET_WINDOW).await,
-            Ok(Some(_))
-        );
+        let observed_event = match next_sse_event_name(sse, DRAIN_QUIET_WINDOW).await {
+            Ok(Some(_)) => true,
+            // A quiet window is only a settling aid; each scenario's
+            // subsequent HTTP freshness and SSE contract assertions remain
+            // authoritative.
+            Ok(None) => false,
+            Err(error) => panic!(
+                "SSE read failed while draining watcher ticks: {error:#}\n{}",
+                session.logs(),
+            ),
+        };
         let cur_len = read_log(&session.stderr_path).len();
         let stderr_grew = cur_len != last_len;
         last_len = cur_len;
@@ -393,12 +400,13 @@ async fn drain_ticks_until_quiescent(session: &DevSession, base: &str) {
 /// `zfb_test_utils::decode_utf8_incremental` for the same incremental
 /// UTF-8 handling `next_sse_event_name` relies on (a multibyte character
 /// split across a chunk boundary must not corrupt or drop an already-
-/// decoded `event:` line).
+/// decoded `event:` line). A transport error is returned to the scenario as a
+/// harness failure; only a clean deadline or EOF is treated as no more events.
 async fn collect_tick_events(
     mut resp: reqwest::Response,
     first_event_deadline: Duration,
     quiet_window: Duration,
-) -> Vec<String> {
+) -> anyhow::Result<Vec<String>> {
     let mut buf = Vec::<u8>::new();
     let mut decoded_up_to = 0usize;
     let mut pending_line = String::new();
@@ -413,9 +421,16 @@ async fn collect_tick_events(
         }
         let chunk = match tokio::time::timeout(remaining, resp.chunk()).await {
             Ok(Ok(Some(bytes))) => bytes,
-            Ok(Ok(None)) => break, // SSE connection closed.
-            Ok(Err(_)) => break,   // Transport error — treat as end of stream.
-            Err(_) => break,       // Deadline elapsed with no new real event.
+            // EOF is no more SSE traffic; the caller's freshness and
+            // exactly-one-`page` assertions remain authoritative.
+            Ok(Ok(None)) => break,
+            Ok(Err(error)) => {
+                return Err(anyhow::Error::new(error).context("read SSE stream"));
+            }
+            // A clean deadline is the bounded no-more-events window; the
+            // caller's freshness and exactly-one-`page` assertions remain
+            // authoritative.
+            Err(_elapsed) => break,
         };
         buf.extend_from_slice(&chunk);
 
@@ -454,7 +469,7 @@ async fn collect_tick_events(
             }
         }
     }
-    events
+    Ok(events)
 }
 
 /// Wait until a `[zfb-timing] tick(): kinds=[...]` line whose `kinds` list
@@ -738,7 +753,9 @@ async fn run_scenario(boot_lazy: Option<&str>, label: &str) {
         )
         .expect("edit the alpha content entry");
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
+        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
+            .await
+            .expect("read SSE stream after content edit");
         // The deliverable: the observed SSE sequence is printed regardless
         // of pass/fail so a healthy-baseline PASS is still recorded data
         // for sub #2094's variant hunt.
@@ -977,7 +994,14 @@ async fn run_matrix_scenario(fixture: &MatrixFixture, boot_lazy: Option<&str>, l
         let sse = subscribe_sse(&base).await;
         fs::write(&entry_path, fixture.edit_contents).expect("edit the matrix fixture entry");
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
+        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
+                    session.logs(),
+                )
+            });
         // The deliverable for every matrix cell: the observed SSE sequence
         // is printed regardless of pass/fail, so a red cell's exact
         // symptom (and a healthy cell's confirmation) both become
@@ -1215,7 +1239,14 @@ async fn run_injected_matrix_scenario(boot_lazy: Option<&str>, label: &str) {
             session.logs(),
         );
 
-        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW).await;
+        let events = collect_tick_events(sse, SSE_FIRST_EVENT_DEADLINE, SSE_QUIET_WINDOW)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "[{label}] reading the SSE stream after the content edit failed: {error:#}\n{}",
+                    session.logs(),
+                )
+            });
         eprintln!(
             "[dev_content_reload_2063_e2e] [{label}] observed SSE event sequence after the \
              content edit: {events:?}"

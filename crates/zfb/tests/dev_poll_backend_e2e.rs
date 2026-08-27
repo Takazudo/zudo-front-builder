@@ -344,7 +344,10 @@ async fn drain_ticks_until_quiescent(base: &str, quiet_gap: Duration, cap: Durat
         let sse = subscribe_sse(base).await;
         match next_sse_event_name(sse, quiet_gap).await {
             Ok(Some(_)) => continue,
-            _ => break,
+            // The quiet gap is only a settling aid; the HTTP polls in each
+            // scenario remain the authoritative gates.
+            Ok(None) => break,
+            Err(error) => panic!("SSE read failed while draining watcher ticks: {error:#}"),
         }
     }
 }
@@ -577,9 +580,13 @@ async fn e2e_poll_backend_content_edit_and_new_entry_discovery() {
                      (expected `page`).\n{}",
                     session.logs(),
                 ),
-                Ok(None) | Err(_) => eprintln!(
+                Ok(None) => eprintln!(
                     "[poll_backend_e2e scenario-a] no SSE `page` event observed \
                      within the window; relying on the authoritative HTTP poll."
+                ),
+                Err(error) => panic!(
+                    "SSE read failed after poll-backend content edit: {error:#}\n{}",
+                    session.logs(),
                 ),
             }
 
@@ -619,9 +626,13 @@ async fn e2e_poll_backend_content_edit_and_new_entry_discovery() {
                      event (expected `page`).\n{}",
                     session.logs(),
                 ),
-                Ok(None) | Err(_) => eprintln!(
+                Ok(None) => eprintln!(
                     "[poll_backend_e2e scenario-b] no SSE `page` event observed \
                      within the window; relying on the authoritative HTTP polls."
+                ),
+                Err(error) => panic!(
+                    "SSE read failed after poll-backend gamma discovery: {error:#}\n{}",
+                    session.logs(),
                 ),
             }
 
