@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { checkAll, classifyPackage, report } from "../check-provenance-drift.mjs";
+import { checkAll, classifyPackage, fetchPackument, report } from "../check-provenance-drift.mjs";
 
 /** Build a packument. `versions` maps version → {attested, time}. */
 function packument(latest, versions) {
@@ -178,6 +178,67 @@ describe("checkAll", () => {
       { name: "good", status: "ok", latest: "1.0.0" },
       { name: "bad", status: "error", detail: "registry responded 500" },
     ]);
+  });
+});
+
+describe("fetchPackument retry", () => {
+  // The retry exists so one dropped packet on a weekly scheduled leg doesn't
+  // file a tracking issue and page IFTTT. That makes "which failures retry"
+  // load-bearing: retry a 404 and a genuinely-gone package wastes the budget
+  // and still fails; don't retry a 503 and the blip becomes a false alarm.
+  const ok = { ok: true, json: async () => ({ marker: "packument" }) };
+  const status = (code) => ({ ok: false, status: code, statusText: "x" });
+
+  /** Records sleeps instead of taking them, so the tests stay instant. */
+  const harness = (responses) => {
+    const calls = [];
+    const sleeps = [];
+    const fetchImpl = async () => {
+      const next = responses[calls.length];
+      calls.push(next);
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    return { calls, sleeps, fetchImpl, sleepImpl: async (n) => void sleeps.push(n) };
+  };
+
+  it("returns the packument without sleeping when the first attempt succeeds", async () => {
+    const h = harness([ok]);
+    await expect(fetchPackument("pkg", h)).resolves.toEqual({ marker: "packument" });
+    expect(h.calls).toHaveLength(1);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it("retries a network error and succeeds on a later attempt", async () => {
+    const h = harness([new Error("ECONNRESET"), ok]);
+    await expect(fetchPackument("pkg", h)).resolves.toEqual({ marker: "packument" });
+    expect(h.calls).toHaveLength(2);
+    expect(h.sleeps).toEqual([1]);
+  });
+
+  it("retries a 5xx and a 429", async () => {
+    const h5 = harness([status(503), ok]);
+    await expect(fetchPackument("pkg", h5)).resolves.toBeTruthy();
+    expect(h5.calls).toHaveLength(2);
+
+    const h429 = harness([status(429), ok]);
+    await expect(fetchPackument("pkg", h429)).resolves.toBeTruthy();
+    expect(h429.calls).toHaveLength(2);
+  });
+
+  it("does NOT retry a 404 — that is a real answer, not a blip", async () => {
+    const h = harness([status(404), ok]);
+    await expect(fetchPackument("pkg", h)).rejects.toThrow(/404/);
+    expect(h.calls).toHaveLength(1);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  it("gives up after the attempt budget and reports the last failure", async () => {
+    const h = harness([status(500), status(500), status(500)]);
+    await expect(fetchPackument("pkg", h)).rejects.toThrow(/registry responded 500/);
+    expect(h.calls).toHaveLength(3);
+    // Backs off between attempts, but never sleeps after the final one.
+    expect(h.sleeps).toEqual([1, 2]);
   });
 });
 

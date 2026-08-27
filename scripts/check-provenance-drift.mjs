@@ -45,6 +45,8 @@
 //     attested would raise a downgrade against a stable release that pnpm
 //     itself would not flag.
 
+import { pathToFileURL } from "node:url";
+
 import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
 
 const REGISTRY = "https://registry.npmjs.org";
@@ -118,16 +120,42 @@ export function classifyPackage(name, packument) {
   return { name, status: "never", latest };
 }
 
-/** Fetch one packument. Separated so tests can inject a fake. */
-async function fetchPackument(name) {
+const FETCH_ATTEMPTS = 3;
+
+/**
+ * Fetch one packument. Separated so tests can inject a fake.
+ *
+ * Retries transient failures (network errors and 5xx/429) before giving up: an
+ * `error` verdict fails the job, files a tracking issue and pages IFTTT, and a
+ * one-off registry blip on a weekly scheduled leg is exactly the manufactured
+ * non-event drift-net.yml's header argues against. A 4xx other than 429 is a
+ * real answer from the registry and is not retried.
+ */
+export async function fetchPackument(
+  name,
+  { fetchImpl = fetch, sleepImpl = sleep, attempts = FETCH_ATTEMPTS } = {},
+) {
   const url = `${REGISTRY}/${name.replace("/", "%2f")}`;
-  const response = await fetch(url, {
-    headers: { accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new Error(`${name}: registry responded ${response.status} ${response.statusText}`);
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let response;
+    try {
+      response = await fetchImpl(url, { headers: { accept: "application/json" } });
+    } catch (error) {
+      lastError = new Error(`${name}: ${error.message}`);
+      if (attempt < attempts) await sleepImpl(attempt);
+      continue;
+    }
+    if (response.ok) return response.json();
+    lastError = new Error(`${name}: registry responded ${response.status} ${response.statusText}`);
+    if (response.status < 500 && response.status !== 429) break;
+    if (attempt < attempts) await sleepImpl(attempt);
   }
-  return response.json();
+  throw lastError;
+}
+
+function sleep(attempt) {
+  return new Promise((resolve) => setTimeout(resolve, attempt * 1000));
 }
 
 /**
@@ -198,7 +226,9 @@ export function report(results, { log = console.log } = {}) {
 }
 
 // Only run when executed directly, so the test suite can import the pure parts.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const results = await checkAll();
-  process.exit(report(results));
+  // process.exitCode, not process.exit(): stdout is a pipe under GitHub Actions,
+  // and an immediate exit can truncate the ::error:: annotations just written.
+  process.exitCode = report(results);
 }
