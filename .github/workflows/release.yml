@@ -336,8 +336,9 @@ jobs:
           # rather than failing fast — which would hang `publish` (it needs `build`)
           # and silently block the npm release. This leg only runs when the Mac
           # archive was NOT pre-uploaded, so the dead label went unnoticed for 8+
-          # releases. macos-15-intel is the last x86_64 macOS image Actions offers;
-          # it retires Fall 2027, after which this leg needs a cross-compile.
+          # releases. macos-15-intel is the x86_64 image selected here; GitHub also
+          # lists macos-26-intel, so revisit this leg when the selected image retires
+          # in Fall 2027.
           if [[ "$MAC_LOCAL_PRESENT" == "true" ]]; then
             SETTINGS="$(echo "$ALL" | jq -c '[.[] | select(.target != "x86_64-apple-darwin")]')"
             echo "mac_local_present=true → dropping the x86_64-apple-darwin (macos-15-intel) build leg"
