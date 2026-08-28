@@ -192,7 +192,9 @@ immediately awaiting it and await the returned promise only after the abort sign
 call-through deadlock while preserving real Chromium, native View Transitions, and history traversal.
 
 The implementation burn-in is exactly 50 zero-retry repetitions:
-`pnpm test:router-chromium -- back-race.chromium.spec.mjs --repeat-each=50 --retries=0`.
+`pnpm test:router-chromium back-race.chromium.spec.mjs --repeat-each=50 --retries=0`.
+The extra pnpm `--` delimiter is intentionally absent: it reaches Playwright and ends option
+parsing, which was measured to run the full 18-spec suite once instead of repeating this spec.
 Reject the weaker final-state invariant because it loses Level-4 early-supersession coverage; reject
 existing router-event triggers because neither orders real traversal before `domCommitStarted` and a
 new event would contaminate the product API; reject a product boundary change because Verdict A
