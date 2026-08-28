@@ -30,8 +30,11 @@
 //! So site 1 (the hast-bridge) is **not reachable through `zfb build`/`zfb
 //! dev` at all** — it is exclusively a `zfb-md-wasm` surface, and is already
 //! confirmed there by `crates/zfb-md-wasm/npm/test/gfm-parity.test.ts`'s
-//! `renderHtml`-tier fixtures (`task-list`, `footnotes`), which check 2 of
-//! this confirm pass (`pnpm -r test`) re-runs on every pass. This test
+//! `renderHtml`-tier fixtures (`task-list`, `footnotes`). Those fixtures run
+//! in the package's dedicated build-then-test lane, not every ordinary
+//! workspace pass. The ordinary `pnpm test:workspace` lane intentionally
+//! excludes md-wasm because its generated wasm artifacts require a separate
+//! toolchain build. This test
 //! covers what a real `zfb build` CAN reach: sites 2 and 3, through both the
 //! `.md` and `.mdx` file extensions.
 //!

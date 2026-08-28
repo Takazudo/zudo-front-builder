@@ -21,8 +21,8 @@ set -uo pipefail
 #   4. pnpm format:check (prettier + mdx)         — fast
 #   5. node scripts/assert-md-wasm-size-docs.mjs — fast
 #   6. node scripts/check-sse-endpoint.mjs — fast, offline source guard
-#   7. pnpm typecheck (TS, --if-present, excluding examples) — fast
-#   8. pnpm -r test (vitest)                      — fast
+#   7. pnpm typecheck:workspace (excluding examples + zfb-md-wasm) — fast
+#   8. pnpm test:workspace (vitest; excluding zfb-md-wasm) — fast
 #   9. cargo clippy -D warnings                   — fast on a WARM tree
 #  10. Regenerate + diff syntect syntax-set.packdump       — opt-in (B4PUSH_FULL=1)
 #  11. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
@@ -196,12 +196,13 @@ else
 fi
 
 # ── TypeScript typecheck ───────────────────────────────
-# @takazudo/zfb-md-wasm is excluded to match health.yml's own typecheck step:
+# The canonical `pnpm typecheck:workspace` lane excludes @takazudo/zfb-md-wasm
+# to match health.yml's own typecheck step:
 # its src/index.ts type-imports the wasm-bindgen-generated glue, which does not
 # exist until the crate is compiled for wasm32-unknown-unknown. Its own build
 # runs `tsc`, so coverage is relocated rather than lost.
-step "TypeScript typecheck (pnpm -r typecheck, excluding examples + zfb-md-wasm)"
-if pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' --if-present typecheck; then
+step "TypeScript typecheck (pnpm typecheck:workspace)"
+if pnpm typecheck:workspace; then
   pass "typecheck"
 else
   fail "typecheck"
@@ -211,15 +212,13 @@ fi
 # Same @takazudo/zfb-md-wasm exclusion as health.yml's test step: its tests
 # import the built dist/index.js, which needs a wasm build b4push never runs.
 # Without this, b4push fails on a fresh checkout (issue #2043).
-step "JS test suites (pnpm -r test, excluding zfb-md-wasm)"
+step "JS test suites (pnpm test:workspace)"
 if [ "${B4PUSH_SKIP_JS_TEST:-}" = "1" ]; then
   skip "JS tests (B4PUSH_SKIP_JS_TEST=1)"
 else
-  # --include-workspace-root: `pnpm -r` alone SKIPS the workspace root, so the
-  # root vitest suite covering scripts/** would never run here. Same flag as
-  # health.yml's step — keeping both surfaces identical is what stops the local
-  # gate and the PR gate from drifting.
-  if pnpm -r --include-workspace-root --filter '!@takazudo/zfb-md-wasm' test; then
+  # `pnpm test:workspace` owns --include-workspace-root, so the root vitest
+  # suite covering scripts/** runs here exactly as it does in health.yml.
+  if pnpm test:workspace; then
     pass "JS tests"
   else
     fail "JS tests"

@@ -87,6 +87,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "pretest": "node scripts/assert-consumer-artifacts.mjs",
     "prepublishOnly": "pnpm build && pnpm test",
     "test": "pnpm typecheck:consumer && vitest run",
     "test:watch": "vitest",
