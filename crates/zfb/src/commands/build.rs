@@ -16902,6 +16902,7 @@ mod tests {
         let cfg = Config::default(); // tailwind defaults to enabled
         let outdir = project_root.join("dist");
         let runner = DefaultRunner {
+            timing_enabled: false,
             islands_plugin_config: IslandsPluginConfig::default(),
             v8_plugin_hooks: zfb_render::PluginRegistryHooks::default(),
             registered_client_entries: zfb_build::ClientEntryList::new(),
