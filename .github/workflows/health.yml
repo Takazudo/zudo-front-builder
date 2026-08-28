@@ -222,8 +222,14 @@ jobs:
       # bytes independent of the checkout location that ran this step.
       - name: Verify syntect syntax-set.packdump is fresh
         run: |
+          DUMP=crates/zfb-content/assets/syntax-set.packdump
+          # The generator writes unconditionally, and the dump is an include_bytes! input of
+          # src/syntect_highlight.rs — a fresh mtime dirties zfb-content and its dependents,
+          # costing ~195s of relink in the nextest step that follows.
+          touch -r "$DUMP" "$RUNNER_TEMP/packdump.mtime"
           cargo run -p zfb-content --bin generate_syntax_dump --features generate-syntax-dump
-          git diff --exit-code -- crates/zfb-content/assets/syntax-set.packdump
+          git diff --exit-code -- "$DUMP"
+          touch -r "$RUNNER_TEMP/packdump.mtime" "$DUMP"
 
       # Lint gate (issue #646): runs after the warmed incremental compile so
       # no extra compile cost. Placed before cargo test so a lint failure
