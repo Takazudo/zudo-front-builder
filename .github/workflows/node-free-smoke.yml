@@ -130,7 +130,6 @@ on:
   push:
     branches:
       - main
-      - "base/**"
   workflow_run:
     # Trigger the released-mode smoke after release.yml finishes on a tag.
     # release.yml only runs on v* tags, so this job only fires on real releases.

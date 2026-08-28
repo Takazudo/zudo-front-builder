@@ -8,7 +8,7 @@ name: PR Preview (Cloudflare Workers)
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "base/**"]
     paths:
       - "docs/**"
       - ".github/workflows/docs-pr-preview.yml"
