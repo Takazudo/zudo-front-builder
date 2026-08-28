@@ -104,6 +104,7 @@ use crate::render_pipeline::{
 #[cfg(feature = "embed_v8")]
 pub async fn run(args: &BuildArgs) -> Result<()> {
     let started = Instant::now();
+    let timing_enabled = build_timing_enabled();
 
     let project_root = env::current_dir().context("failed to read current working directory")?;
 
@@ -114,9 +115,11 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // routes were registered.
     let pages_dir = project_root.join("pages");
 
+    let phase_started = build_phase_start(timing_enabled);
     let mut config = crate::config::load_from_dir(&project_root)
         .await
         .context("failed to load project configuration")?;
+    emit_build_phase_timing("config-load", phase_started);
     let minify_html = resolve_minify_html(args.minify_html(), &config);
 
     // #2117 — strict-broken-links override. Mutates the OWNED config in
@@ -176,7 +179,9 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // work so `preBuild` can prepare files the bundler will see (e.g.
     // claude-resources index emission). If no plugins are declared, we
     // skip the spawn entirely so a config-less project pays nothing.
+    let phase_started = build_phase_start(timing_enabled);
     let plugin_host = crate::commands::plugins::maybe_spawn_host(&config).await?;
+    emit_build_phase_timing("plugin-host-spawn", phase_started);
 
     // #255 / #260 / #261 / #268 — shared plugin setup phase:
     // setup → virtual-module prefetch → alias/virtual-module derivation.
@@ -186,6 +191,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     // during a build — a registered route becomes a package-owned build
     // route the overlay materialiser prerenders (see below) — rather than
     // the pre-#1193 dev-only hard error.
+    let phase_started = build_phase_start(timing_enabled);
     let plugin_setup = crate::commands::plugins::run_plugin_setup(
         &plugin_host,
         &project_root,
@@ -193,6 +199,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
         zfb_build::SetupCommand::Build,
     )
     .await?;
+    emit_build_phase_timing("plugin-setup", phase_started);
 
     // Destructure all outputs from the shared setup phase before any
     // moves so the borrow checker is happy.
@@ -307,6 +314,7 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
             config: &config,
             routes,
             runner: &DefaultRunner {
+                timing_enabled,
                 islands_plugin_config,
                 v8_plugin_hooks,
                 registered_client_entries: setup_registries.client_entries.clone(),
@@ -358,6 +366,38 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     output::success(format!("{pages_built} pages built in {elapsed:.2}s"));
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ZFB_BUILD_TIMING — one-shot build phase timing (issue #2687)
+// ---------------------------------------------------------------------------
+
+/// Read `ZFB_BUILD_TIMING` once per build. Truthy values are `1` and `true`
+/// (case-insensitive); every other value is off. Each phase gates its
+/// `Instant::now()` and stderr formatting on this result, so the default path
+/// does not allocate timing state or change the command's output.
+fn build_timing_enabled() -> bool {
+    std::env::var("ZFB_BUILD_TIMING")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let value = raw.trim();
+            value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+fn build_phase_start(enabled: bool) -> Option<Instant> {
+    enabled.then(Instant::now)
+}
+
+fn emit_build_phase_timing(phase: &str, started: Option<Instant>) {
+    if let Some(started) = started {
+        eprintln!(
+            "[zfb-build-timing] phase={phase} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    }
 }
 
 /// V8-off stub for `zfb build` (issue #371, sub-task 4.1a).
@@ -620,6 +660,10 @@ struct BuildArgsResolved<'a, R: BuildRunner, A: AdapterRunner> {
 /// tests plug in fakes that record the arguments and return canned
 /// outputs without spawning any subprocesses.
 trait BuildRunner {
+    fn timing_enabled(&self) -> bool {
+        false
+    }
+
     /// Run the bundler. The renderer needs the resulting `bundle_path`
     /// + `sourcemap_path`. We return them through
     ///   [`zfb_build::bundler::BundlerOutput`] so production retains the
@@ -745,6 +789,7 @@ pub(crate) struct IslandsPluginConfig {
 /// path.
 #[cfg(feature = "embed_v8")]
 struct DefaultRunner {
+    timing_enabled: bool,
     /// Pre-fetched plugin setup registries to wire into the islands bundler.
     islands_plugin_config: IslandsPluginConfig,
     /// Plugin-registry hooks for the embedded V8 host (sub-issue #260).
@@ -759,8 +804,15 @@ struct DefaultRunner {
 }
 #[cfg(feature = "embed_v8")]
 impl BuildRunner for DefaultRunner {
+    fn timing_enabled(&self) -> bool {
+        self.timing_enabled
+    }
+
     fn bundle(&self, input: BundlerInput) -> Result<BundlerOutput> {
-        bundle(input)
+        let started = build_phase_start(self.timing_enabled);
+        let result = bundle(input);
+        emit_build_phase_timing("main-esbuild-bundle", started);
+        result
     }
 
     fn eval_deferred_paths(
@@ -773,18 +825,21 @@ impl BuildRunner for DefaultRunner {
         Backend,
         WorkerHandle,
     )> {
+        let started = build_phase_start(self.timing_enabled);
         let factory =
             crate::v8_host_adapter::make_v8_host_factory_with_hooks(self.v8_plugin_hooks.clone());
         if deferred.is_empty() {
             // No deferred routes: skip host construction entirely. Return the
             // factory so `render_all` can still boot the host for SSG.
-            return Ok((
+            let result = Ok((
                 crate::render_pipeline::DynamicExpansion::default(),
                 Backend::EmbeddedV8 {
                     host_factory: factory,
                 },
                 WorkerHandle(None),
             ));
+            emit_build_phase_timing("v8-paths-eval", started);
+            return result;
         }
         // Start the embedded V8 host against the bundle to evaluate runtime
         // paths(). The host is dispatched in-process via
@@ -817,17 +872,22 @@ impl BuildRunner for DefaultRunner {
         // down after render_all finishes — this is belt-and-braces: the
         // state is only kept alive through the WorkerHandle drop, which runs
         // after render_all.
-        Ok((
+        let result = Ok((
             expansion,
             Backend::EmbeddedV8 {
                 host_factory: factory,
             },
             WorkerHandle(Some(state)),
-        ))
+        ));
+        emit_build_phase_timing("v8-paths-eval", started);
+        result
     }
 
     fn render_all(&self, input: RendererInput) -> Result<RendererOutput> {
-        render_all(input).map_err(anyhow::Error::from)
+        let started = build_phase_start(self.timing_enabled);
+        let result = render_all(input).map_err(anyhow::Error::from);
+        emit_build_phase_timing("v8-boot-and-render", started);
+        result
     }
 
     fn emit_prod_assets(
@@ -838,6 +898,7 @@ impl BuildRunner for DefaultRunner {
         outdir: &Path,
         config: &Config,
     ) -> Result<(ProdAssetEmitterInputs, std::collections::BTreeSet<String>)> {
+        let started = build_phase_start(self.timing_enabled);
         // Run `CssPipeline::build_emitter` and
         // `build_production_islands_asset` eagerly (before render) so
         // head injection knows which stable URLs are backed by
@@ -875,14 +936,16 @@ impl BuildRunner for DefaultRunner {
             &self.islands_plugin_config,
         )
         .context("client-script emitters (DefaultRunner) failed")?;
-        Ok((
+        let result = Ok((
             ProdAssetEmitterInputs {
                 css,
                 islands,
                 client_scripts,
             },
             registered_marker_names,
-        ))
+        ));
+        emit_build_phase_timing("production-assets", started);
+        result
     }
 }
 
@@ -6678,6 +6741,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
     // per-command differences passed here:
     //   • BundleMode::Production  (dev uses Development)
     //   • CssModuleFailMode::HardFail  (dev uses WarnAndEmpty)
+    let phase_started = build_phase_start(runner.timing_enabled());
     let crate::commands::bundler_input::AssembledBundlerInput {
         bundler_input,
         _node_modules_handle: _embedded_nm_handle,
@@ -6703,6 +6767,7 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         // `build_pages_root`); build passes `None`.
         None,
     )?;
+    emit_build_phase_timing("vendor-extraction-and-bundler-input", phase_started);
 
     // Snapshot the bundler input before consuming it so the runtime-only
     // bundle pass (zfb#283) can run later in this function with the same

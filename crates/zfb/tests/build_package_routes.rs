@@ -8,8 +8,8 @@
 //!
 //! These tests drive the real `zfb` binary against on-disk fixtures — the
 //! exact path a downstream consumer (zudo-doc's preset) hits. They mirror
-//! the fixture/node_modules wiring of `client_router_autoinclude_build.rs`
-//! and `build_cleans_outdir.rs`: `node_modules/` is symlinked to the
+//! the fixture/node_modules wiring of `client_router_autoinclude_build.rs`:
+//! `node_modules/` is symlinked to the
 //! binary-embedded `@takazudo` tree, and a local `.mjs` preset is referenced
 //! via `{"plugins":[{"name":"./preset.mjs"}]}`.
 //!
