@@ -18,9 +18,9 @@ which Playwright requested Back:
 - Four of those seven failures are especially strong counterexamples to using the command timestamp:
   Playwright requested Back 0.5-2.8 ms before `domCommitStarted`, but Chromium delivered the router's
   `popstate` 6.1-10.6 ms after it. The command was early; the traversal was not.
-- The other four failures completed Page B's swap before the test's old-body assertion could observe
-  the window. The assertion saw `Page B` throughout its five-second retry period, so those runs never
-  issued Back.
+- Separately, four old-body failures completed Page B's swap before the test's assertion could
+  observe the window. The assertion saw `Page B` throughout its five-second retry period, so those
+  runs never issued Back.
 
 No run reached the router before `domCommitStarted` and then omitted the abort event. That is the
 counter-evidence required for verdict (B), and it did not occur.
@@ -136,6 +136,13 @@ after-swap → page-load`. The test never recorded a Back request because its pr
 assertion observed Page B for the full retry window.
 
 ## Ranked remediation: gate the native callback in the test
+
+| Rank | Candidate | Cost | Level-4 coverage preserved | Level-4 coverage lost | Decision |
+| ---: | --- | --- | --- | --- | --- |
+| 1 | Test-only native callback gate | Medium harness complexity | Real Chromium, native VT call-through, early history commit, real Back, abort boundary | No material behavior; adds a test scheduling seam | Recommend |
+| 2 | Weaker final-state invariant | Low | Real Chromium, native VT, real Back, final URL/DOM | Early supersession and abort boundary | Use only if split-level coverage is accepted |
+| 3 | Existing router-event trigger | Low as written; medium-high if a new product event is added | Real browser/history mechanics | Deterministic ordering with existing events; a new event contaminates the product surface | Rule out |
+| 4 | Product boundary change | High semantic risk | Real browser mechanics | Correct point-of-no-return and abort semantics | Rule out under verdict A |
 
 1. **Use a condition-keyed, test-only call-through wrapper around
    `document.startViewTransition` — recommended.** Install it with `addInitScript`, retain the bound
