@@ -70,6 +70,33 @@ const HARNESS_INIT = () => {
       });
     });
   }
+
+  const nativeStartViewTransition =
+    typeof document.startViewTransition === "function"
+      ? document.startViewTransition.bind(document)
+      : null;
+  const pageBUpdateGate = { entered: false };
+  // @ts-expect-error - test-only global
+  window.__zfbPageBUpdateGate = pageBUpdateGate;
+  if (nativeStartViewTransition) {
+    // @ts-expect-error - test-only call-through wrapper
+    document.startViewTransition = function (updateCallback) {
+      return nativeStartViewTransition(async () => {
+        if (location.pathname === "/page-b.html" && !pageBUpdateGate.entered) {
+          await new Promise((release) => {
+            const releaseOnPageAPopstate = () => {
+              if (location.pathname !== "/page-a.html") return;
+              window.removeEventListener("popstate", releaseOnPageAPopstate);
+              release();
+            };
+            window.addEventListener("popstate", releaseOnPageAPopstate);
+            pageBUpdateGate.entered = true;
+          });
+        }
+        return updateCallback();
+      });
+    };
+  }
 };
 
 test.beforeEach(async ({ page }) => {
@@ -102,6 +129,11 @@ async function waitForInitialLoad(page) {
   );
 }
 
+/** Wait until Chromium has entered the gated Page B native update callback. */
+async function waitForPageBUpdateGate(page) {
+  await page.waitForFunction(() => /** @type {any} */ (window).__zfbPageBUpdateGate?.entered);
+}
+
 /** Names (in sequence order) of lifecycle events recorded with seq > `after`. */
 async function eventNamesSince(page, after) {
   return page.evaluate((after) => {
@@ -124,21 +156,22 @@ test("Back wins during the early-commit/pre-swap window", async ({ page }) => {
   const beforeClick = await seqNow(page);
   await page.click("#to-page-b");
 
-  // The router commits B's history entry before the View Transition update
-  // callback runs. waitForURL therefore resolves while the old A body is still
-  // live — the precise window in which a real Back can supersede the forward.
-  await page.waitForURL(/\/page-b\.html$/);
+  // The router commits B's history entry before Chromium enters the native
+  // update callback. The page-side gate holds that callback before the swap.
+  await waitForPageBUpdateGate(page);
+  await expect(page).toHaveURL(/\/page-b\.html$/);
   await expect(page.locator("h1")).toHaveText("Page A");
 
   // Capture the post-commit/pre-swap baseline immediately before Back. The
   // aborted event below is emitted by the superseded forward update callback;
   // its after-swap/page-load events must never appear after this baseline.
   const beforeBack = await seqNow(page);
-  await page.goBack();
+  const backNavigation = page.goBack();
 
   // Back takes the same-page traverse fast path, while the forward update
   // callback observes its aborted signal and emits the router's settle signal.
   await waitForZfbEvent(page, "zfb:navigation-aborted", beforeBack);
+  await backNavigation;
   await page.waitForFunction(
     () => !document.documentElement.hasAttribute("data-zfb-transition"),
     undefined,
