@@ -21,10 +21,9 @@
  */
 
 import { createServer } from "node:http";
-import { createReadStream, readFileSync, statSync } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
 import { join, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { instrumentBackRaceRouter } from "./back-race-diagnostics.mjs";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -68,20 +67,6 @@ function tryServe(res, filepath) {
   }
 }
 
-function tryServeInstrumentedRouter(res, filepath) {
-  try {
-    const source = readFileSync(filepath, "utf8");
-    res.writeHead(200, { "Content-Type": MIME[".js"] });
-    res.end(instrumentBackRaceRouter(source));
-    return true;
-  } catch (error) {
-    console.error(error);
-    res.writeHead(500, { "Content-Type": "text/plain" });
-    res.end("Back-race diagnostic instrumentation failed");
-    return true;
-  }
-}
-
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   let pathname = decodeURIComponent(url.pathname);
@@ -89,13 +74,6 @@ const server = createServer((req, res) => {
   // /dist/* -> packages/zfb-runtime/dist/*
   if (pathname.startsWith("/dist/")) {
     const target = safeJoin(DIST_DIR, pathname.slice("/dist/".length));
-    if (
-      process.env.ZFB_BACK_RACE_DIAGNOSTICS === "1" &&
-      pathname === "/dist/client-router/router.js" &&
-      target
-    ) {
-      return tryServeInstrumentedRouter(res, target);
-    }
     if (target && tryServe(res, target)) return;
   }
 
