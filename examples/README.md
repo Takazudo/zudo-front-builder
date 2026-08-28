@@ -87,8 +87,8 @@ The `predev` script should remove the build and output directories used by that
 example. Adjust the directory list only when the example uses different output
 paths.
 
-Do not add a `test` script. The repository-wide `pnpm -r test` lane should skip
-examples because they do not provide tests.
+Do not add a `test` script. The repository-wide `pnpm test:workspace` lane leaves
+examples out because they do not provide tests.
 
 ## Per-Example README
 
@@ -130,13 +130,13 @@ Examples are intentionally skipped by T1 package typecheck and release build
 filters:
 
 ```bash
-pnpm -r --filter '!./examples/*' --if-present typecheck
+pnpm typecheck:workspace
 pnpm -r --filter '!./examples/*' build
 ```
 
-Examples are also skipped by `pnpm -r test` because they must not define `test`
-scripts. Root `pnpm format:check` deliberately covers examples, so example
-source, JSON, YAML, Markdown, and MDX must stay formatted.
+Examples are also skipped by `pnpm test:workspace` because they must not define
+`test` scripts. Root `pnpm format:check` deliberately covers examples, so
+example source, JSON, YAML, Markdown, and MDX must stay formatted.
 
 Do not add per-example deploy workflows. An example README can document deploy
 commands, but GitHub Actions deployment stays out of each example directory.

@@ -164,7 +164,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # TypeScript typecheck gate (issue #1332): b4push has run this since its
-      # inception, but CI never did — `pnpm -r test` below only runs vitest,
+      # inception, but CI never did — the `pnpm test:workspace` lane below only runs vitest,
       # which transpiles (via esbuild/swc) without type-checking, so a type
       # error could merge green. `--if-present` mirrors b4push's invocation:
       # packages without a `typecheck` script are skipped rather than failing.
@@ -174,7 +174,7 @@ jobs:
       # this job never installs that target. The wasm-md job below builds
       # the package (which runs `tsc` as its own final step, catching the
       # same type errors) so coverage isn't lost, just relocated.
-      - run: pnpm -r --filter '!./examples/*' --filter '!@takazudo/zfb-md-wasm' --if-present typecheck
+      - run: pnpm typecheck:workspace
 
       # Run the JS/TS test suites across all packages (@takazudo/zfb and
       # @takazudo/zfb-runtime). Includes the slugify parity tests that
@@ -185,10 +185,11 @@ jobs:
       # typecheck step above — its tests import the built `dist/index.js`,
       # which needs the wasm32 toolchain this job doesn't have. Covered by
       # the wasm-md job below instead.
-      # --include-workspace-root: `pnpm -r` alone SKIPS the workspace root, so
-      # the root vitest suite covering scripts/** (vitest.config.mjs, scoped to
-      # scripts/**/__tests__) would silently never run here.
-      - run: pnpm -r --include-workspace-root --filter '!@takazudo/zfb-md-wasm' test
+      # The canonical `pnpm test:workspace` script passes --include-workspace-root;
+      # a plain recursive invocation skips the root, so the scripts/** vitest
+      # suite (vitest.config.mjs, scoped to scripts/**/__tests__) would silently
+      # never run here.
+      - run: pnpm test:workspace
 
       - run: pnpm format:check
 

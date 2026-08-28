@@ -1,7 +1,7 @@
 ---
 description: "Release @takazudo/zfb — bump the version, write the changelog, push, wait for CI, pre-create the draft GH Release, let release.yml build the macOS x86_64 binary with provenance by default (or use --fast-mac for the explicit local escape hatch), publish the Release, watch release.yml to completion, and push the updated Homebrew formula to the tap on a stable release. STABLE-BY-DEFAULT: with no argument it judges the level from the commits and lands a patch or minor straight on the npm `latest` tag, fully autonomously in one cycle; it stops to ask only when the commits contain a breaking change (major), offering stable-now vs a `next` soak. Pass --confirm to vet the proposal interactively and stop at the unpublished draft. Triggers on rough requests like \"bump version\", \"cut a release\", \"release zfb\", \"make a release\"."
 user-invocable: true
-argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. --fast-mac — opt into the local Mac build + pre-upload; `zfb-darwin-x64` publishes unattested, and once an attestation exists the weekly drift guard will correctly fail on it (that is intended supervision, not a bug). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
+argument-description: "Optional — with NO argument the level is judged from the commits and a patch/minor lands stable on `latest` automatically (a major stops and asks). next — force a prerelease instead (publishes to the npm `next` tag): from a stable it starts a -next.1 at the judged level, from a prerelease it continues the line (-next.N+1). major|minor|patch — force a prerelease on that specific component. stable — promote the current prerelease by stripping its suffix. stable major|minor|patch — force a specific stable bump. --confirm — interactive mode: present the bump proposal and wait, and stop at the unpublished draft instead of publishing. --fast-mac — opt into the local Mac build + pre-upload; `zfb-darwin-x64` publishes unattested, and because `2.13.0` established its attestation the weekly drift guard will correctly fail on any later fast-Mac release (that is intended supervision, not a bug). Or: cancel — abort/teardown, deletes an orphaned draft GH Release instead of bumping."
 ---
 
 # /l-make-release
@@ -20,7 +20,7 @@ This skill is **model-invocable**: a rough natural-language request like "bump v
 
 **`--confirm` option (opt-in interactive mode).** When the invocation includes `--confirm` (e.g. `/l-make-release --confirm`, `/l-make-release minor --confirm`), restore the interactive behavior: present the Step 3 proposal and **wait for explicit user confirmation** before the first mutation (Step 4), ask before acting on the Step 1 / Step 8 edge cases, and **stop at Step 11 with the draft unpublished** — the user publishes manually. Use this when the version strategy or release notes need vetting. Without this flag, do NOT pause anywhere.
 
-**Argument parsing.** Parse `--confirm` and `--fast-mac` independently alongside the optional version argument; either flag may appear in any order. `--fast-mac` changes only the Mac asset choice in Step 10 and requires this release session to run on macOS; Step 1 checks that before any mutation. For a separate-Mac flow, use `/l-make-release --confirm` without `--fast-mac`, then run `/l-make-mac-release-binary` on the Mac. Without `--fast-mac`, leave the Mac archive absent so the CI leg runs with provenance. With it, use the local Mac build escape hatch described in Step 10; `zfb-darwin-x64` then publishes unattested, and once an attestation exists the weekly drift guard will correctly fail on it (that is intended supervision, not a bug).
+**Argument parsing.** Parse `--confirm` and `--fast-mac` independently alongside the optional version argument; either flag may appear in any order. `--fast-mac` changes only the Mac asset choice in Step 10 and requires this release session to run on macOS; Step 1 checks that before any mutation. For a separate-Mac flow, use `/l-make-release --confirm` without `--fast-mac`, then run `/l-make-mac-release-binary` on the Mac. Without `--fast-mac`, leave the Mac archive absent so the CI leg runs with provenance. With it, use the local Mac build escape hatch described in Step 10; `zfb-darwin-x64` then publishes unattested, and because `2.13.0` established its attestation the weekly drift guard will correctly fail on any later fast-Mac release (that is intended supervision, not a bug).
 
 **Cancel mode.** Invoking `/l-make-release cancel` — or a request like "cancel the release", "abort the release", "remove the draft" — does NOT bump anything. It jumps straight to ["Cancelling a release / cleaning up an orphaned draft"](#cancelling-a-release--cleaning-up-an-orphaned-draft) below to tear down a leftover draft GH Release. This is the documented escape hatch for the failure mode where a prior run created a draft (Step 9) and stopped before publishing (Step 11), but the release was then abandoned — leaving the draft orphaned on GitHub. Orphaned drafts never fire the `release: published` webhook so they are harmless to CI, but they accumulate and skew the partial-state detection of the next run.
 
@@ -534,7 +534,7 @@ The tag is created remotely as a draft. The `release: published` webhook event d
 
 The default path deliberately does **not** build or pre-upload the Mac binary, even on a Mac. Leave both Mac assets absent so publishing the draft runs `release.yml`'s `macos-15-intel` leg; that CI-built binary lets all ten packages publish with `--provenance`.
 
-`--fast-mac` is an explicit escape hatch for a release where avoiding the CI leg is worth the provenance tradeoff. Its local build + pre-upload makes `release.yml` select `mac-local`, so `zfb-darwin-x64` publishes unattested. Once an attestation exists, the weekly drift guard will correctly fail on that package; that is intended supervision, not a bug.
+`--fast-mac` is an explicit escape hatch for a release where avoiding the CI leg is worth the provenance tradeoff. Its local build + pre-upload makes `release.yml` select `mac-local`, so `zfb-darwin-x64` publishes unattested. Because `2.13.0` established its attestation, the weekly drift guard will correctly fail on any later fast-Mac release; that is intended supervision, not a bug.
 
 ### If `--fast-mac` was passed
 
@@ -647,8 +647,9 @@ Release bump committed and pushed.
 CI on the bump commit: PASSED.
 Draft GH Release created: v<version> (tag exists remotely as a draft).
 macOS x86_64 binary: built locally and uploaded to the draft Release because --fast-mac was passed.
-Provenance consequence: zfb-darwin-x64 publishes unattested; once an attestation exists, the weekly
-drift guard will correctly fail on it. That is intended supervision, not a bug.
+Provenance consequence: zfb-darwin-x64 publishes unattested; because `2.13.0` established its
+attestation, the weekly drift guard will correctly fail on any later fast-Mac release. That is
+intended supervision, not a bug.
 
 NEXT STEP — publish the draft to trigger release.yml (from any host):
 

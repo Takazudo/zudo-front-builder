@@ -1,12 +1,11 @@
 // Tests for scripts/check-provenance-drift.mjs.
 //
 // The whole value of this check is the DISCRIMINATION it makes: a package that
-// LOST an attestation must fail, and one that never had it must fail too unless
-// it is the exact, self-expiring zfb-darwin-x64@2.12.0 grandfather clause.
+// LOST an attestation must fail, and one that never had it must fail too.
 // Collapse those cases and the check is worthless: it either misses the
 // v2.12.0 regression (#2623) or silently accepts a newly added package that
-// never gets attested. So the bulk of these tests pin that boundary and the
-// two pnpm-matching rules that decide which side of it a package falls on
+// never gets attested. So the bulk of these tests pin that policy boundary and
+// the two pnpm-matching rules that decide which side of it a package falls on
 // (publish-date ordering, prerelease exclusion).
 //
 // All of it runs offline against hand-built packuments — a real regression is
@@ -43,8 +42,8 @@ describe("classifyPackage", () => {
   });
 
   it("flags an unattested → attested → unattested history as a regression", () => {
-    // This is the loaded-gun transition from #2625 and the case the check
-    // exists to fail: the attested middle release is prior evidence.
+    // The attested middle release is prior evidence, so the latest release is
+    // a trust downgrade.
     const result = classifyPackage(
       "pkg",
       packument("2.12.0", {
@@ -61,58 +60,19 @@ describe("classifyPackage", () => {
     });
   });
 
-  it("grandfathers only zfb-darwin-x64 at latest 2.12.0 when never attested", () => {
-    // The exact package/version pair is the one known legacy state (#2625).
+  it("fails every never-attested package under the all-published policy", () => {
     const result = classifyPackage(
       "@takazudo/zfb-darwin-x64",
-      packument("2.12.0", {
-        "2.11.0": { attested: false, time: "2026-08-01T00:00:00.000Z" },
+      packument("2.13.0", {
         "2.12.0": { attested: false, time: "2026-08-26T00:00:00.000Z" },
+        "2.13.0": { attested: false, time: "2026-08-27T00:00:00.000Z" },
       }),
     );
     expect(result).toEqual({
       name: "@takazudo/zfb-darwin-x64",
       status: "never",
-      latest: "2.12.0",
+      latest: "2.13.0",
     });
-
-    const out = [];
-    const log = (message) => out.push(message);
-    expect(report([result], { log })).toBe(0);
-    expect(out.some((l) => l.startsWith("::warning"))).toBe(true);
-    expect(out.some((l) => l.startsWith("::error"))).toBe(false);
-  });
-
-  it("fails the same package when latest advances beyond the grandfathered version", () => {
-    const result = classifyPackage(
-      "@takazudo/zfb-darwin-x64",
-      packument("2.12.1", {
-        "2.12.0": { attested: false, time: "2026-08-26T00:00:00.000Z" },
-        "2.12.1": { attested: false, time: "2026-08-27T00:00:00.000Z" },
-      }),
-    );
-    expect(result).toEqual({
-      name: "@takazudo/zfb-darwin-x64",
-      status: "never",
-      latest: "2.12.1",
-    });
-
-    const out = [];
-    const log = (message) => out.push(message);
-    expect(report([result], { log })).toBe(1);
-    expect(out.some((l) => l.startsWith("::error"))).toBe(true);
-    expect(out.some((l) => l.startsWith("::warning"))).toBe(false);
-  });
-
-  it("fails a different package that has never been attested", () => {
-    const result = classifyPackage(
-      "@takazudo/zfb-linux-x64-gnu",
-      packument("2.12.0", {
-        "2.11.0": { attested: false, time: "2026-08-01T00:00:00.000Z" },
-        "2.12.0": { attested: false, time: "2026-08-26T00:00:00.000Z" },
-      }),
-    );
-    expect(result.status).toBe("never");
 
     const out = [];
     const log = (message) => out.push(message);
@@ -303,19 +263,11 @@ describe("report", () => {
     expect(out.some((l) => l.startsWith("::error"))).toBe(false);
   });
 
-  it("exits 0 for the grandfathered never-attested package, as a ::warning", () => {
-    const { out, log } = lines();
-    expect(
-      report([{ name: "@takazudo/zfb-darwin-x64", status: "never", latest: "2.12.0" }], { log }),
-    ).toBe(0);
-    expect(out.some((l) => l.startsWith("::warning"))).toBe(true);
-    expect(out.some((l) => l.startsWith("::error"))).toBe(false);
-  });
-
-  it("exits 1 for a never-attested package outside the grandfather clause", () => {
+  it("exits 1 and emits a ::error for a never-attested package", () => {
     const { out, log } = lines();
     expect(report([{ name: "a", status: "never", latest: "1.0.0" }], { log })).toBe(1);
     expect(out.some((l) => l.startsWith("::error"))).toBe(true);
+    expect(out.some((l) => l.startsWith("::warning"))).toBe(false);
   });
 
   it("exits 1 and emits a ::error naming both versions on a regression", () => {

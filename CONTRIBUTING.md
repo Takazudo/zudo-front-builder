@@ -83,7 +83,7 @@ cargo run -p zfb
 - Branch off `main` (or the relevant base branch for an in-flight epic).
 - Keep commits focused; conventional commit-style messages are appreciated but not strictly enforced.
 - `lefthook` runs the pre-commit pipeline: Prettier over JS/TS/JSON/YAML (no Rust) and `@takazudo/mdx-formatter` over MD/MDX. Rust formatting is not enforced automatically — run `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` manually before opening a PR.
-- Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline. The main PR gate includes `cargo fmt --all --check`, `pnpm -r --if-present typecheck`, `pnpm -r test`, `pnpm format:check`, `cargo build --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, the env-gated binary integration tests, `cargo nextest run --workspace --profile ci`, `cargo test --workspace --doc`, and actionlint.
+- Open a PR against `main` (or the relevant epic base branch). CI is a strict superset of the pre-commit pipeline. The main PR gate includes `cargo fmt --all --check`, `pnpm typecheck:workspace`, `pnpm test:workspace`, `pnpm format:check`, `cargo build --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, the env-gated binary integration tests, `cargo nextest run --workspace --profile ci`, `cargo test --workspace --doc`, and actionlint.
 
 ## Formatting
 

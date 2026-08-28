@@ -253,17 +253,17 @@ provenance.
 The local-build path was the norm because `/l-make-release` previously defaulted
 to it, not because it was intended as the escape hatch. That default is now
 inverted: normal releases use option C, while `--fast-mac` selects option B.
-`@takazudo/zfb-darwin-x64` has carried no attestation since at least `2.8.0`,
-while `zfb-linux-x64-gnu` carried one on every release through `2.11.0`.
+`@takazudo/zfb-darwin-x64` carried no attestation through `2.12.0`, while
+`zfb-linux-x64-gnu` carried one on every release through `2.11.0`.
 
 That standing gap is *not* itself a trust downgrade — pnpm's check needs an
 earlier attested version to compare against, and this package has none, which is
-why only 5 of the 6 `2.12.0` entries were flagged. It is the weaker problem of
-macOS-x64 users getting no supply-chain evidence at all. The next default release
-restores provenance for this package; after that, any later `--fast-mac` release
-is correctly a `regression` and the weekly provenance guard fails. That is
-intended supervision of a deliberate opt-in, not a hazard. The publish job warns
-on this path too.
+why only 5 of the 6 `2.12.0` entries were flagged. It was the weaker problem of
+macOS-x64 users getting no supply-chain evidence at all. The default `2.13.0`
+release restored provenance for this package and expired the temporary legacy
+exception; from `2.13.0` onward, any later `--fast-mac` release is correctly a
+`regression` and the weekly provenance guard fails. That is intended supervision
+of a deliberate opt-in, not a hazard. The publish job warns on this path too.
 
 ## Homebrew tap update (added by issue #383)
 

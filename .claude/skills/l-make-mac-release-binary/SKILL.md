@@ -6,7 +6,7 @@ argument-description: "Required: the tag (e.g. v0.1.0-next.5)"
 
 # /l-make-mac-release-binary
 
-Mac-only escape-hatch skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. The normal `/l-make-release` path leaves the archive absent so `release.yml` builds it on `macos-15-intel` with provenance. Use this entry point only for the explicit `--fast-mac` choice, which makes `zfb-darwin-x64` publish unattested; once an attestation exists, the weekly drift guard will correctly fail on it (that is intended supervision, not a bug).
+Mac-only escape-hatch skill that builds the `x86_64-apple-darwin` zfb binary locally and uploads it to an existing draft GitHub Release. The normal `/l-make-release` path leaves the archive absent so `release.yml` builds it on `macos-15-intel` with provenance. Use this entry point only for the explicit `--fast-mac` choice, which makes `zfb-darwin-x64` publish unattested; because `2.13.0` established its attestation, the weekly drift guard will correctly fail on any later fast-Mac release (that is intended supervision, not a bug).
 
 ## When to use this standalone escape hatch
 
@@ -127,8 +127,9 @@ Next: publish the draft Release (from any host) to trigger CI publish:
 
 release.yml will auto-detect the pre-uploaded archive,
 skip the macos-15-intel build leg, and publish all 10 packages. Because this is the explicit
-`--fast-mac` escape hatch, `zfb-darwin-x64` publishes unattested; once an attestation exists, the
-weekly drift guard will correctly fail on it. That is intended supervision, not a bug.
+`--fast-mac` escape hatch, `zfb-darwin-x64` publishes unattested; because `2.13.0` established its
+attestation, the weekly drift guard will correctly fail on any later fast-Mac release. That is
+intended supervision, not a bug.
 
 After publishing, WAIT for the Release workflow run to finish (gh run watch) — it uploads the
 remaining platform archives (linux + windows) and their .sha256 files.
