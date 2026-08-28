@@ -87,9 +87,10 @@ use std::time::{Duration, Instant};
 ///
 /// Generous on purpose: a single heavy e2e scenario can legitimately hold
 /// the lock for minutes (V8 + esbuild boot plus a dozen render ticks).
-/// This must comfortably exceed the slowest single scenario's own
-/// wall-clock watchdog (`dev_serve_e2e.rs`'s `OVERALL_DEADLINE_LAZY` is
-/// 280s) so that tripping this timeout is real evidence of a wedged
+/// This must comfortably exceed the slowest single scenario watchdogs
+/// (`dev_content_aggregate_cold_boot_e2e.rs` and
+/// `dev_dep_invalidation_1284_e2e.rs` each use 300s) so that tripping this
+/// timeout is real evidence of a wedged
 /// holder, not just a slow-but-healthy one running ahead of us.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(360);
 
@@ -159,12 +160,10 @@ impl CrossBinaryE2eLock {
                     if Instant::now() >= deadline {
                         panic!(
                             "cross-binary e2e lock: timed out after {timeout:?} waiting to \
-                             acquire {} — another heavy e2e test binary (dev_serve_e2e, \
-                             dev_bind_before_walk_e2e, dev_build_static_parity, \
-                             dev_serve_injected_routes_e2e, dev_public_large_tree_smoke_e2e, \
-                             dev_dep_invalidation_1284_e2e, build_terminates, or \
-                             client_bundling_cross_pipeline) is very likely \
-                             still holding it. Check for a wedged `zfb dev` / `zfb build` \
+                             acquire {} — one of the 24 flock-adopting heavy e2e test \
+                             binaries is very likely still holding it (see the \
+                             `e2e-heavy-locked` inventory in crates/CLAUDE.md). Check for a \
+                             wedged `zfb dev` / `zfb build` \
                              process (or a hung/killed prior test run that left a V8 host or \
                              esbuild child alive) with `ps aux | grep zfb` and kill it, or — if \
                              this is a legitimately slow machine — call \

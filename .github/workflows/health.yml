@@ -455,9 +455,10 @@ jobs:
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
       # budget (retries = 1, pass-on-retry RECORDED not hidden — #1341 consumes
       # it), per-test timeouts, and JUnit output. The `ci` profile
-      # (.config/nextest.toml) also serializes all 41 heavy V8/esbuild e2e
-      # binaries via a `max-threads = 1` test-group; 24 of those also adopt
-      # #1339's cross-binary flock. Per-binary inventory was reconciled against
+      # (.config/nextest.toml) splits the 41 heavy V8/esbuild e2e binaries into
+      # locked (24) and unlocked (17) `max-threads = 1` groups; the locked lane
+      # also adopts #1339's cross-binary flock. Per-binary inventory was
+      # reconciled against
       # `cargo test --workspace -- --list`: identical apart from doctests, which
       # nextest does not run — hence the separate doc-test step below.
       #
