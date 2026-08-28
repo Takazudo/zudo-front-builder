@@ -10,6 +10,8 @@
 # ref: main must be PROTECTED and the merged pull ref must be PRUNE.  A fake
 # gh executable supplies the cache page and PR states and records every
 # attempted DELETE, so the bare invocation proves that dry-run is read-only.
+# A race-mode mock later changes the candidate PR from MERGED to OPEN during
+# the live preflight/recheck sequence and proves that no DELETE is issued.
 #
 # Run:
 #   sh tests/unit/prune-actions-cache.sh
@@ -41,7 +43,7 @@ fi
 
 MOCK_BIN=$(mktemp -d)
 MOCK_LOG=$(mktemp)
-trap 'rm -rf "$MOCK_BIN" "$MOCK_LOG"; rm -f "${BROKEN_FIXTURE:-}"' EXIT
+trap 'rm -rf "$MOCK_BIN" "$MOCK_LOG"; rm -f "${BROKEN_FIXTURE:-}" "${RACE_PR_LOG:-}"' EXIT
 
 cat >"$MOCK_BIN/gh" <<'MOCK_GH'
 #!/bin/sh
@@ -72,6 +74,17 @@ case "${1:-}" in
     if [ "${2:-}" != view ]; then
       printf 'unexpected gh pr invocation: %s\n' "$*" >&2
       exit 1
+    fi
+    if [ "${MOCK_PR_STATE_MODE:-stable}" = race ] && [ "${3:-}" = 123 ]; then
+      PR_CALL_LOG=${MOCK_PR_CALL_LOG:?}
+      PR_CALLS=$(awk 'END { print NR + 1 }' "$PR_CALL_LOG")
+      printf '%s\n' "$3" >>"$PR_CALL_LOG"
+      if [ "$PR_CALLS" -ge 3 ]; then
+        printf 'OPEN\n'
+      else
+        printf 'MERGED\n'
+      fi
+      exit 0
     fi
     case "${3:-}" in
       123) printf 'MERGED\n' ;;
@@ -165,6 +178,36 @@ if [ ! -s "$MOCK_LOG" ]; then
   pass "classification failure prevents all deletion attempts"
 else
   fail "classification failure attempted a mutation: $(cat "$MOCK_LOG")"
+fi
+
+# In race mode, PR #123 is MERGED during initial classification and the full
+# live preflight, then becomes OPEN on the immediate pre-delete recheck.  The
+# script must fail closed for that candidate and issue no DELETE request.
+: >"$MOCK_LOG"
+RACE_PR_LOG=$(mktemp)
+set +e
+OUTPUT_RACE=$(MOCK_CACHE_FIXTURE="$REPO_ROOT/$FIXTURE" MOCK_GH_LOG="$MOCK_LOG" \
+  MOCK_PR_STATE_MODE=race MOCK_PR_CALL_LOG="$RACE_PR_LOG" REPO=owner/repo \
+  PATH="$MOCK_BIN:$PATH" "$REPO_ROOT/$SCRIPT" --yes 2>&1)
+RC_RACE=$?
+set -e
+
+if [ "$RC_RACE" -ne 0 ] && printf '%s\n' "$OUTPUT_RACE" | grep -q 'became OPEN on immediate recheck'; then
+  pass "live recheck detects a PR reopening and fails closed"
+else
+  fail "expected immediate recheck to reject reopened PR #123 (rc=$RC_RACE)"
+fi
+
+if [ "$(awk 'END { print NR }' "$RACE_PR_LOG")" -eq 3 ]; then
+  pass "race fixture exercised classification, preflight, and immediate recheck"
+else
+  fail "expected three PR #123 state reads in race fixture, got $(awk 'END { print NR }' "$RACE_PR_LOG")"
+fi
+
+if [ ! -s "$MOCK_LOG" ]; then
+  pass "reopened-PR candidate receives no DELETE request"
+else
+  fail "reopened-PR candidate attempted a mutation: $(cat "$MOCK_LOG")"
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

@@ -196,6 +196,7 @@ main() {
   local id ref key size verdict detail pull_number state
   local -a prune_ids=()
   local -a prune_sizes=()
+  local -a prune_pr_numbers=()
 
   while IFS=$'\t' read -r id ref key size; do
     row_count=$((row_count + 1))
@@ -229,6 +230,7 @@ main() {
             detail="PR #${pull_number} is ${state}; delete by cache id"
             prune_ids+=("$id")
             prune_sizes+=("$size")
+            prune_pr_numbers+=("$pull_number")
             candidate_total=$((candidate_total + size))
             ;;
           OPEN)
@@ -265,12 +267,67 @@ main() {
     return 0
   fi
 
+  # PR state is a separate, mutable API resource from the cache list.  Run a
+  # complete preflight immediately before any mutation so a PR that reopened
+  # after classification blocks the entire batch rather than allowing a
+  # partial prune.  A second per-entry check below narrows the remaining race
+  # window to the final state read immediately before that entry's DELETE.
+  local preflight_failures=0
+  local preflight_index preflight_pr preflight_state
+  for preflight_index in "${!prune_ids[@]}"; do
+    preflight_pr="${prune_pr_numbers[$preflight_index]}"
+    if preflight_state="$(get_pr_state "$preflight_pr")"; then
+      case "$preflight_state" in
+        CLOSED|MERGED)
+          printf 'Preflight: cache id=%s PR #%s is %s\n' \
+            "${prune_ids[$preflight_index]}" "$preflight_pr" "$preflight_state"
+          ;;
+        OPEN)
+          printf 'Preflight BLOCKED: cache id=%s PR #%s is OPEN; no deletions attempted\n' \
+            "${prune_ids[$preflight_index]}" "$preflight_pr"
+          preflight_failures=$((preflight_failures + 1))
+          ;;
+      esac
+    else
+      printf 'Preflight BLOCKED: cache id=%s PR #%s state query failed: %s\n' \
+        "${prune_ids[$preflight_index]}" "$preflight_pr" "$(one_line "$preflight_state")"
+      preflight_failures=$((preflight_failures + 1))
+    fi
+  done
+
+  if [[ "$preflight_failures" -gt 0 ]]; then
+    printf '::error::%s candidate PR state(s) changed or could not be verified; no deletions attempted\n' "$preflight_failures" >&2
+    printf 'Total after (no deletion): %s bytes\n' "$before_total"
+    return 1
+  fi
+
   local deleted_total=0
   local delete_failures=0
+  local recheck_failures=0
   local index cache_id cache_size
+  local fresh_pr fresh_state
   for index in "${!prune_ids[@]}"; do
     cache_id="${prune_ids[$index]}"
     cache_size="${prune_sizes[$index]}"
+    fresh_pr="${prune_pr_numbers[$index]}"
+    if ! fresh_state="$(get_pr_state "$fresh_pr")"; then
+      printf '::error::cache id=%s PR #%s state recheck failed: %s; not deleting this cache\n' \
+        "$cache_id" "$fresh_pr" "$(one_line "$fresh_state")" >&2
+      recheck_failures=$((recheck_failures + 1))
+      break
+    fi
+    case "$fresh_state" in
+      OPEN)
+        printf 'SKIP: cache id=%s PR #%s became OPEN on immediate recheck; not deleting\n' \
+          "$cache_id" "$fresh_pr"
+        recheck_failures=$((recheck_failures + 1))
+        break
+        ;;
+      CLOSED|MERGED)
+        printf 'Recheck: cache id=%s PR #%s is %s; deleting by cache id\n' \
+          "$cache_id" "$fresh_pr" "$fresh_state"
+        ;;
+    esac
     if gh api --method DELETE "repos/${REPO}/actions/caches/${cache_id}" --silent >/dev/null 2>&1; then
       printf 'Deleted cache id=%s (%s bytes)\n' "$cache_id" "$cache_size"
       deleted_total=$((deleted_total + cache_size))
@@ -281,6 +338,10 @@ main() {
   done
 
   printf 'Total after: %s bytes\n' "$((before_total - deleted_total))"
+  if [[ "$recheck_failures" -gt 0 ]]; then
+    printf '::error::%s candidate PR state recheck(s) failed; affected candidate(s) were not deleted\n' "$recheck_failures" >&2
+    return 1
+  fi
   if [[ "$delete_failures" -gt 0 ]]; then
     printf '::error::%s cache deletion(s) failed\n' "$delete_failures" >&2
     return 1
