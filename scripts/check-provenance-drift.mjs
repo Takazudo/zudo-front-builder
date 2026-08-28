@@ -18,21 +18,20 @@
 // even a frozen-lockfile install keeps working. This check is the missing
 // registry-side guard; it would have caught v2.12.0 within a week.
 //
-// THE CENTRAL DESIGN DECISION: regressions and standing absence fail; one
-// sunset grandfather warning remains
+// THE CENTRAL DESIGN DECISION: regressions and standing absence fail
 // ---------------------------------------------------------------------------
 // The all-published policy now makes a package that never carried an attestation
-// a failure too. There is one narrowly-scoped, self-expiring exception for the
-// known legacy state from issue #2625: `@takazudo/zfb-darwin-x64` while its exact
-// `latest` dist-tag is still `2.12.0`. Once an attested release moves `latest`
-// forward, this warning disappears without another edit.
+// a failure too. The temporary grandfather clause for the known legacy state
+// from issue #2625 — `@takazudo/zfb-darwin-x64` while its exact `latest` dist-tag
+// was `2.12.0` — expired at `2.13.0`: an attested release moved `latest` forward
+// and closed that gap. Keep this history so the policy transition remains
+// explicit; no exception remains.
 //
 // The resulting policy is:
 //   REGRESSION  — latest has no attestation, but an EARLIER-PUBLISHED version
 //                 did. This is a real trust downgrade for consumers. FAIL.
 //   NEVER       — latest has no attestation and no earlier version did either.
-//                 This violates the all-published policy. FAIL, except for the
-//                 exact legacy package/version above, which WARNs temporarily.
+//                 This violates the all-published policy. FAIL.
 //   OK          — latest carries an attestation.
 //
 // Two details copied from pnpm so the verdict matches what a consumer sees:
@@ -49,8 +48,6 @@ import { pathToFileURL } from "node:url";
 import { PUBLISHED_PACKAGES } from "./retire-next-dist-tag.mjs";
 
 const REGISTRY = "https://registry.npmjs.org";
-const GRANDFATHERED_NEVER_PACKAGE = "@takazudo/zfb-darwin-x64";
-const GRANDFATHERED_NEVER_LATEST = "2.12.0";
 
 /** True when this packument version record carries a provenance attestation. */
 function hasAttestation(versionRecord) {
@@ -121,18 +118,6 @@ export function classifyPackage(name, packument) {
   return { name, status: "never", latest };
 }
 
-/**
- * The one known legacy never-attested package is warning-only until its exact
- * legacy latest version is replaced by an attested release.
- */
-function isGrandfatheredNever(result) {
-  return (
-    result.status === "never" &&
-    result.name === GRANDFATHERED_NEVER_PACKAGE &&
-    result.latest === GRANDFATHERED_NEVER_LATEST
-  );
-}
-
 const FETCH_ATTEMPTS = 3;
 
 /**
@@ -195,17 +180,12 @@ export async function checkAll({ packages = PUBLISHED_PACKAGES, fetchOne = fetch
 export function report(results, { log = console.log } = {}) {
   const regressions = results.filter((r) => r.status === "regression");
   const errors = results.filter((r) => r.status === "error");
-  const never = results.filter((r) => r.status === "never");
-  const grandfatheredNever = never.filter(isGrandfatheredNever);
-  const neverViolations = never.filter((r) => !isGrandfatheredNever(r));
+  const neverViolations = results.filter((r) => r.status === "never");
   const ok = results.filter((r) => r.status === "ok");
 
   log(`== npm provenance drift check: ${results.length} package(s) ==`);
   for (const r of [...ok].sort((a, b) => a.name.localeCompare(b.name))) {
     log(`  ok         ${r.name}@${r.latest}`);
-  }
-  for (const r of grandfatheredNever) {
-    log(`  no-attest  ${r.name}@${r.latest} (grandfathered legacy gap — warning only)`);
   }
   for (const r of neverViolations) {
     log(`  NEVER      ${r.name}@${r.latest} (never attested — policy violation)`);
@@ -217,15 +197,6 @@ export function report(results, { log = console.log } = {}) {
     log(`  ERROR      ${r.name}: ${r.detail}`);
   }
 
-  if (grandfatheredNever.length > 0) {
-    log(
-      `::warning title=npm provenance absent (grandfathered)::${grandfatheredNever.length} package(s) have never carried a provenance attestation: ${grandfatheredNever
-        .map((r) => r.name)
-        .join(
-          ", ",
-        )}. This warning is limited to ${GRANDFATHERED_NEVER_PACKAGE}@${GRANDFATHERED_NEVER_LATEST} and self-expires when latest advances — see issue #2625.`,
-    );
-  }
   for (const r of neverViolations) {
     log(
       `::error title=npm provenance absent::${r.name}@${r.latest} has never carried a provenance attestation. Every published package must be attested; this is a policy violation. See issue #2627.`,

@@ -47,11 +47,10 @@
 #     install fine and the release went green. It surfaced only when a consumer
 #     reported it. This leg closes that gap on the same weekly cadence.
 #
-# The provenance leg fails on regressions and on packages that have never carried
-# an attestation. One narrowly-scoped grandfather warning remains for the known
-# legacy state `@takazudo/zfb-darwin-x64` at the exact `latest == 2.12.0`
-# (issue #2625); it self-expires as soon as an attested release advances latest.
-# Every other never-attested package is a policy violation under #2627.
+# The provenance leg fails on regressions and on every package that has never
+# carried an attestation. All ten published packages are subject to the
+# all-published policy from #2627; the temporary legacy exception expired when
+# the attested `2.13.0` release advanced `latest`.
 #
 # On failure, files/comments on a single deduped tracking issue per workflow
 # (scripts/file-exam-issue.sh) and sends an IFTTT notification, reusing the
