@@ -29,6 +29,8 @@
 
 // @ts-check
 import { test, expect } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Harness installed before every document, before any page script runs.
@@ -51,14 +53,26 @@ const HARNESS_INIT = () => {
     "zfb:page-load",
     "zfb:navigation-aborted",
   ];
-  const rec = { events: [], seq: 0 };
+  const rec = { events: [], timeline: [], seq: 0, timelineSeq: 0 };
   // @ts-expect-error
   window.__zfb = rec;
+  // @ts-expect-error
+  window.__zfbBackRaceMark = (name, detail = {}) => {
+    rec.timeline.push({
+      name,
+      seq: ++rec.timelineSeq,
+      at: performance.now(),
+      url: location.href,
+      heading: document.querySelector("h1")?.textContent ?? null,
+      ...detail,
+    });
+  };
   for (const name of NAMES) {
     document.addEventListener(name, (ev) => {
-      rec.events.push({
+      const entry = {
         name,
         seq: ++rec.seq,
+        at: performance.now(),
         direction:
           ev && typeof (/** @type {any} */ (ev).direction) === "string"
             ? /** @type {any} */ (ev).direction
@@ -67,13 +81,59 @@ const HARNESS_INIT = () => {
           ev && typeof (/** @type {any} */ (ev).navigationType) === "string"
             ? /** @type {any} */ (ev).navigationType
             : null,
+      };
+      rec.events.push(entry);
+      // @ts-expect-error
+      window.__zfbBackRaceMark(`event:${name}`, {
+        eventSeq: entry.seq,
+        direction: entry.direction,
+        navigationType: entry.navigationType,
       });
     });
   }
+  addEventListener("popstate", (event) => {
+    // @ts-expect-error
+    window.__zfbBackRaceMark("browser-popstate-dispatch", {
+      stateIndex: /** @type {any} */ (event.state)?.index ?? null,
+    });
+  });
 };
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(HARNESS_INIT);
+});
+
+test.afterEach(async ({ page }, testInfo) => {
+  const evidenceDir = process.env.ZFB_BACK_RACE_EVIDENCE_DIR;
+  if (!evidenceDir) return;
+
+  let pageEvidence;
+  try {
+    pageEvidence = await page.evaluate(() => {
+      const rec = /** @type {any} */ (window).__zfb;
+      return {
+        url: location.href,
+        heading: document.querySelector("h1")?.textContent ?? null,
+        events: rec?.events ?? [],
+        timeline: rec?.timeline ?? [],
+      };
+    });
+  } catch (error) {
+    pageEvidence = { captureError: error instanceof Error ? error.message : String(error) };
+  }
+
+  const evidence = {
+    title: testInfo.title,
+    repeatEachIndex: testInfo.repeatEachIndex,
+    status: testInfo.status,
+    expectedStatus: testInfo.expectedStatus,
+    durationMs: testInfo.duration,
+    error: testInfo.error?.message ?? null,
+    ...pageEvidence,
+  };
+  await mkdir(evidenceDir, { recursive: true });
+  const filename = `back-race-${String(testInfo.repeatEachIndex + 1).padStart(2, "0")}-${testInfo.status}.json`;
+  await writeFile(join(evidenceDir, filename), `${JSON.stringify(evidence, null, 2)}\n`, "utf8");
 });
 
 // ---------------------------------------------------------------------------
@@ -134,6 +194,10 @@ test("Back wins during the early-commit/pre-swap window", async ({ page }) => {
   // aborted event below is emitted by the superseded forward update callback;
   // its after-swap/page-load events must never appear after this baseline.
   const beforeBack = await seqNow(page);
+  await page.evaluate(() => {
+    // @ts-expect-error
+    window.__zfbBackRaceMark?.("playwright-go-back-dispatch");
+  });
   await page.goBack();
 
   // Back takes the same-page traverse fast path, while the forward update
