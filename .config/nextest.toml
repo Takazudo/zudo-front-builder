@@ -9,18 +9,18 @@
 # `cargo test --workspace --doc` step; this config governs everything EXCEPT
 # doctests. Do not assume a green nextest run covers doctest examples.
 
-# ── Cross-binary serialization of the heavy V8/esbuild e2e binaries ──────────
+# ── Two-lane admission control for heavy V8/esbuild e2e tests ────────────
 # These 41 integration-test binaries (all in package `zfb`) each spawn a real
 # `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
-# shells out to esbuild. Booting two at once starves CPU/memory and turns
+# shells out to esbuild. Unbounded concurrent boots starve CPU/memory and turn
 # their generous boot-deadline watchdogs flaky. `cargo test` serialized these
 # implicitly by running one binary at a time, but nextest schedules test
-# binaries concurrently by default — so without this group these heavy
-# processes race each other for CPU/memory. The group makes the serialization
-# explicit at the runner level: at most ONE test from this group runs at a
-# time across all 41 binaries.
+# binaries concurrently by default. Two independent max-threads=1 lanes admit
+# at most one flock adopter and one non-adopter concurrently: this preserves
+# serialization within each contention class while allowing genuine two-way
+# progress across the classes.
 #
-# The set is two sub-groups sharing one test-group:
+# The two lanes are:
 #   • 24 flock-adopting binaries (client_bundling_cross_pipeline,
 #     build_terminates, preview_cross_mode_e2e, the dev_*_e2e set,
 #     wasm_ssr_dev_smoke_e2e, page_extension_full_matrix_e2e,
@@ -31,8 +31,11 @@
 #     ssr_contract_dev_warning_e2e) — spawn
 #     `zfb dev` and/or `zfb build` and/or `zfb preview`. These ALSO hold
 #     #1339's OS advisory flock (crates/zfb-test-utils/src/cross_binary_lock.rs),
-#     so for them the test-group is defense in depth (runner-level) on top of
-#     the flock's OS-level guarantee. `preview_cross_mode_e2e` (issue #1547)
+#     so the OS flock is their process-level mutual-exclusion guarantee. The
+#     locked test-group is runner-level CPU/memory admission control and keeps
+#     two flock holders from being co-scheduled (and one spinning behind the
+#     other inside nextest's per-test timer). `preview_cross_mode_e2e`
+#     (issue #1547)
 #     runs a real `zfb build` THEN spawns both a real `zfb dev` and a real
 #     `zfb preview` (static) against the same build output, so it needs the
 #     same serialization as its dev/build siblings. `dev_out_of_root_collection_e2e`
@@ -91,7 +94,8 @@
 #     each runs `zfb build`,
 #     which likewise boots the embedded V8 host and shells out to esbuild.
 #     These are NOT
-#     part of #1339's dev-server flock, so the nextest test-group is their
+#     part of #1339's dev-server flock, so the unlocked nextest test-group is
+#     their
 #     ONLY serialization guard. Omitting them (as the original 7-binary
 #     filter did) let them run concurrently with the dev-server group and
 #     reintroduced the exact CPU/memory contention the group exists to
@@ -127,11 +131,14 @@
 # --skip-tsc`; no V8, no esbuild) and `framework_packages_no_pnpm` (calls
 # `zfb_build::bundle` in-process — shells to esbuild but never spawns the
 # `zfb` binary and never boots V8).
-[test-groups.e2e-heavy]
+[test-groups.e2e-heavy-locked]
 max-threads = 1
 
-# The override that assigns the 41 heavy binaries to the e2e-heavy group AND
-# grants them a long per-test timeout lives in the `default` profile so BOTH
+[test-groups.e2e-heavy-unlocked]
+max-threads = 1
+
+# The overrides that assign all 41 heavy binaries to the two lanes AND grant
+# them a long per-test timeout live in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
 # matches (`=name`) keep the set explicit; it is a SUPERSET of #1339's
@@ -167,7 +174,7 @@ max-threads = 1
 # `#[ignore]` attribute — like `dev_serve_e2e`/`embedded_host_request_time_e2e`
 # above, the binary self-skips via `locate_esbuild()` when esbuild isn't
 # staged, so it runs on T1 whenever esbuild is present rather than being
-# relegated to the weekly quarantine lane. Membership in this group is for
+# relegated to the weekly quarantine lane. Membership in the locked lane is for
 # CPU/memory serialization only. `plugin_watch_hook_confirm_2170_e2e`
 # (issue #2170, Plugin Watch Hook epic #2166 — the confirm pass over
 # #2167/#2168/#2169) is the newest flock-adopting member, bringing the
@@ -284,31 +291,31 @@ max-threads = 1
 # real `zfb build`, so this binary relies on the test-group as its sole
 # cross-binary serialization guard and pins both staged helper binaries.
 #
-# ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the same OR:
+# ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the unlocked lane:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
 # esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
 # manifest, tagged `heavy`) but is NOT its own binary — it lives inside the
 # `zfb` crate's shared lib-test target (`render_pipeline::tests`) alongside
 # hundreds of ordinary, non-heavy unit tests, so `binary(=...)` cannot target
 # it alone. `test(=...)` matches by qualified test name regardless of binary,
-# and composes into the same `package(zfb) & (...)` OR as the binary matches.
+# and composes into the unlocked lane's `package(zfb) & (...)` OR.
 # Without this, exam.yml's weekly quarantine-heavy job (the only place this
 # `#[ignore]`d test runs) could schedule it concurrently with the other
 # V8/esbuild-heavy entries in that job's filterset, reintroducing the exact
-# CPU/memory contention this group exists to prevent.
+# CPU/memory contention the unlocked lane exists to prevent.
 #
-# A SECOND `test(=...)` predicate (issue #1394) joins the same OR:
+# A SECOND `test(=...)` predicate (issue #1394) joins the unlocked lane:
 # `version_stamp_from_env` (crates/zfb/tests/version_stamp.rs, tagged `heavy`
 # in crates/CLAUDE.md's manifest) shells out to a fresh `cargo run` recompile and was
 # clocked at 134s in exam.yml's quarantine-heavy job — well within this
-# group's watchdog budget, and exactly the kind of CPU/memory-heavy process
-# this group exists to keep off the CPU at the same time as the rest of the
-# group. Unlike the render_pipeline case above it IS its own binary
+# lane's watchdog budget, and exactly the kind of CPU/memory-heavy process
+# this lane exists to serialize against its non-flock peers. Unlike the
+# render_pipeline case above it IS its own binary
 # (`binary(=version_stamp)` would also have worked), but `test(=...)` is used
 # for consistency with the render_pipeline entry and to stay exact-name-scoped
 # if the file ever grows a second test.
 #
-# A THIRD test-name predicate (epic #2008 review) joins the same OR, and is the
+# A THIRD test-name predicate (epic #2008 review) joins the unlocked lane and is the
 # one entry that is a PREFIX regex rather than an exact name:
 # `test(/^v8_host_adapter::tests::/)`. Sub-issue #2009 added ~14 tests to
 # `crates/zfb/src/v8_host_adapter.rs`'s test module, and all but the one pure
@@ -318,7 +325,7 @@ max-threads = 1
 # `render_pipeline` entry above, just a whole module of it. One of them
 # (`drop_closes_channel_and_joins_thread_promptly_on_both_constructors`) asserts
 # a 5s WALL-CLOCK bound on `Drop`'s thread join, which is exactly the
-# contention-sensitive shape this group exists to protect: the bound is the
+# contention-sensitive shape this lane exists to protect: the bound is the
 # only thing that test pins, so it is serialized rather than loosened. The
 # module prefix (not 15 exact names) is used deliberately — every test in this
 # module is V8-heavy by construction, and a prefix keeps a future addition
@@ -326,15 +333,22 @@ max-threads = 1
 # (`inner_bundle_specifier_percent_encodes_unsafe_bytes`) is swept in too; it
 # is microseconds long, so serializing it costs nothing.
 [[profile.default.overrides]]
- filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=client_router_autoinclude_build) | binary(=cold_rewrite_prewarm_e2e) | binary(=content_snapshot_no_deferred) | binary(=css_command) | binary(=css_modules_components_build) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=preview_cross_mode_e2e) | binary(=render_artifact_confirm_build) | binary(=render_artifact_determinism_build) | binary(=sibling_css_module_command_layer_build) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
-test-group = 'e2e-heavy'
-# The longest LEGITIMATE e2e watchdog is 280s (dev_serve_e2e's lazy scenario
-# and dev_serve_injected_routes_e2e), 300s for the #[ignore]d heavy
-# dev_dep_invalidation_1284_e2e tests (preview_cross_mode_e2e's own watchdog
+ filter = 'package(zfb) & (binary(=build_terminates) | binary(=client_bundling_cross_pipeline) | binary(=cold_rewrite_prewarm_e2e) | binary(=dev_bind_before_walk_e2e) | binary(=dev_build_static_parity) | binary(=dev_content_aggregate_cold_boot_e2e) | binary(=dev_content_reload_2063_e2e) | binary(=dev_dep_invalidation_1284_e2e) | binary(=dev_out_of_root_collection_e2e) | binary(=dev_poll_backend_e2e) | binary(=dev_public_large_tree_smoke_e2e) | binary(=dev_serve_e2e) | binary(=dev_serve_injected_routes_e2e) | binary(=dev_sibling_watch_1678_e2e) | binary(=dev_supervision_e2e) | binary(=embedded_host_request_time_e2e) | binary(=mirror_css_scan_mdx_e2e) | binary(=page_extension_full_matrix_e2e) | binary(=plugin_watch_hook_confirm_2170_e2e) | binary(=preview_cross_mode_e2e) | binary(=ssr_contract_dev_warning_e2e) | binary(=ssr_reload_self_heal_e2e) | binary(=wasm_ssr_dev_smoke_e2e) | binary(=workerd_parity_e2e))'
+test-group = 'e2e-heavy-locked'
+# The true longest in-test watchdog is 300s
+# (dev_content_aggregate_cold_boot_e2e and dev_dep_invalidation_1284_e2e;
+# preview_cross_mode_e2e's own watchdog
 # is 240s — see that file's OVERALL_DEADLINE). Warn at 120s but do NOT kill
 # until 600s (5 × 120s) so a healthy-but-slow e2e is never reaped —
-# comfortably above the ≥400s headroom the issue asks for, and above the
-# flock's own 360s acquire deadline.
+# above the flock's unchanged 360s acquire deadline.
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+[[profile.default.overrides]]
+ filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_command) | binary(=css_modules_components_build) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=render_artifact_confirm_build) | binary(=render_artifact_determinism_build) | binary(=sibling_css_module_command_layer_build) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
+test-group = 'e2e-heavy-unlocked'
+# The three shared-target predicate classes hold no flock, so they belong in
+# this lane deliberately. This lane is their CPU/memory admission control and
+# is the sole serialization guard for all 17 build-only binaries above.
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # ── CI profile: the authoritative T1 gate (health.yml) ───────────────────────
