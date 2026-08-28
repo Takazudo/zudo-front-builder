@@ -71,11 +71,11 @@ pnpm 11.2 added a verification pass that re-applies the active supply-chain poli
 
 **Cause:** the `2.12.0` packages carry no npm provenance attestation, while `2.11.0` does. This is not a package takeover. `2.12.0` was published through zfb's [published-release recovery path](https://github.com/Takazudo/zudo-front-builder/blob/main/RELEASE_DAY_CHECKLIST.md) — a `workflow_dispatch` run from `main` that rebuilds an already-published tag. GitHub's OIDC identity in that run describes the `main` workflow commit, not the older tag commit the artifacts were built from, so the release deliberately publishes with no attestation rather than one that misidentifies the source. Tracked as [issue #2623](https://github.com/Takazudo/zudo-front-builder/issues/2623).
 
-Five of the six packages a default install pulls are affected. `@takazudo/zfb-darwin-x64` is not flagged only because it has had no attestation since well before `2.12.0`, so there is nothing for pnpm to compare against. From the next release onward, it is attested like the rest.
+Five of the six packages a default install pulls are affected. `@takazudo/zfb-darwin-x64` was not flagged only because it had no attestation through `2.12.0`, so there was nothing for pnpm to compare against. Starting with `2.13.0`, it is attested like the rest.
 
 **Fix:** npm versions are immutable, so `2.12.0` itself can never gain an attestation. Prefer, in order:
 
-1. **Upgrade past it** once the next patch ships. That release goes out through the normal tag/release path with provenance restored, which clears the downgrade. This is the real fix.
+1. **Upgrade past it** to `2.13.0` or later. Those releases go out through the normal tag/release path with provenance restored, which clears the downgrade. This is the real fix.
 2. **Stay on `2.11.0`** until that patch lands — it satisfies `no-downgrade`.
 3. **Exempt just these packages**, if you need `2.12.0` now, with [`trustPolicyExclude`](https://pnpm.io/settings/dependency-resolution#trustpolicyexclude) in `pnpm-workspace.yaml` — it keeps the policy active for every other dependency:
 

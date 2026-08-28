@@ -280,7 +280,7 @@ publish_nonplatform_packages() {
 #     green while an 11.2+ one breaks on the same committed lockfile.
 # Note a package that never had provenance cannot "downgrade" — the check needs an
 # earlier attested version to compare against. That is why only 5 of the 6 v2.12.0
-# entries were flagged: zfb-darwin-x64 has been unattested since <=2.8.0.
+# entries were flagged: zfb-darwin-x64 had no attestation through 2.12.0.
 #
 # The two provenance-omitting modes cannot avoid this (that is the point: neither
 # has an OIDC identity that would truthfully describe the artifacts). What they
