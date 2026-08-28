@@ -180,3 +180,20 @@ The round used an environment-keyed fixture-server transform of the built router
 recorder. It changed neither `packages/zfb-runtime/**` nor the spec's assertions. After capturing all
 30 timelines, the transform, timestamp recorder, and JSON writer were removed; this findings file is
 the durable deliverable.
+
+## Locked remediation decision
+
+Implement the ranked test-only native callback gate in
+`tests/router-chromium/back-race.chromium.spec.mjs`. The `HARNESS_INIT` call-through wrapper must
+retain the bound native `document.startViewTransition`, hold only the Page B update callback after
+Chromium enters it, and expose that condition to the test. A page-side listener for the real
+`popstate` back to Page A must release the callback; the test must start `page.goBack()` without
+immediately awaiting it and await the returned promise only after the abort signal, avoiding the
+call-through deadlock while preserving real Chromium, native View Transitions, and history traversal.
+
+The implementation burn-in is exactly 50 zero-retry repetitions:
+`pnpm test:router-chromium -- back-race.chromium.spec.mjs --repeat-each=50 --retries=0`.
+Reject the weaker final-state invariant because it loses Level-4 early-supersession coverage; reject
+existing router-event triggers because neither orders real traversal before `domCommitStarted` and a
+new event would contaminate the product API; reject a product boundary change because Verdict A
+shows the current boundary is correct. No runtime or Level-2 change is warranted.
