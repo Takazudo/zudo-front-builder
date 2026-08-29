@@ -1251,16 +1251,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6033,7 +6023,6 @@ name = "zfb-build"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "fs2",
  "globset",
  "hex",
  "ignore",
@@ -6083,7 +6072,6 @@ dependencies = [
 name = "zfb-content"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "garde",
  "globset",
  "hex",
@@ -6111,14 +6099,12 @@ dependencies = [
  "base64",
  "hex",
  "lightningcss",
- "serde",
  "serde_json",
  "sha2",
  "sourcemap",
  "syntect",
  "tempfile",
  "thiserror",
- "walkdir",
  "zfb-content",
  "zfb-types",
 ]
@@ -6182,7 +6168,6 @@ dependencies = [
 name = "zfb-md-extras"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "imagesize",
  "markdown",
  "roxmltree",
@@ -6219,7 +6204,6 @@ dependencies = [
 name = "zfb-render"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "deno_core",
  "deno_error",
@@ -6243,12 +6227,10 @@ dependencies = [
 name = "zfb-router"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "serde",
  "tempfile",
  "thiserror",
  "tracing",
- "tracing-subscriber",
  "tracing-test",
  "walkdir",
  "zfb-types",
