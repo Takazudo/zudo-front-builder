@@ -1441,9 +1441,11 @@ async fn debouncer_task(
     });
 
     let mut pending: HashMap<PathBuf, Pending> = HashMap::new();
-    // Wall-clock of the last time we drained ready entries (via the `tick`
-    // arm or the recv-arm forced flush). Used by the recv arm to force a
-    // flush when the `tick` arm is being starved by a continuous stream.
+    // Wall-clock of the last real drain (via the `tick` arm or recv-arm
+    // forced flush). The first classified event after an empty interval
+    // re-anchors it to the new burst start so idle time cannot trigger an
+    // immediate flush. Empty timer polls never advance it; the recv arm can
+    // therefore still force progress during a moderately hot stream.
     let mut last_drain = Instant::now();
     // Wake at half the debounce window so worst-case extra latency is
     // ~debounce + debounce/2. With the default 50ms that's ~75ms.
@@ -1491,13 +1493,13 @@ async fn debouncer_task(
                             continue;
                         };
                         let now = Instant::now();
-                        for path in evt.paths {
-                            // Coalesce the incoming kind with any already-pending
-                            // kind for this path across the burst window. See
-                            // `merge_kind` for the full truth table and rationale.
-                            let merged_kind = merge_kind(pending.get(&path).map(|p| p.kind), kind);
-                            pending.insert(path, Pending { kind: merged_kind, last_seen: now });
-                        }
+                        record_pending_event(
+                            &mut pending,
+                            evt.paths,
+                            kind,
+                            now,
+                            &mut last_drain,
+                        );
                         // Starvation / livelock guard (see fn docs). The `biased`
                         // `select!` lets this arm fire forever under a continuous
                         // stream, so we cannot rely on the `tick` arm to drain. Force
@@ -1531,8 +1533,12 @@ async fn debouncer_task(
 
             _ = tick.tick() => {
                 let now = Instant::now();
-                let ready = drain_if_globally_quiet(&mut pending, now, debounce);
-                last_drain = now;
+                let ready = drain_if_globally_quiet(
+                    &mut pending,
+                    now,
+                    debounce,
+                    &mut last_drain,
+                );
                 match emit_ready_racing_shutdown(ready, &out_tx, &mut shutdown).await {
                     DrainOutcome::Drained => {}
                     // Receiver dropped or shutdown fired mid-drain; bail either way.
@@ -1549,6 +1555,36 @@ async fn debouncer_task(
     let _ = bridge.await;
 }
 
+/// Coalesce one classified raw event into the pending burst and anchor a new
+/// burst's elapsed-time forced boundary at its first real path. A classified
+/// pathless event must not consume that anchor: the next event carrying a path
+/// is still the burst start.
+fn record_pending_event(
+    pending: &mut HashMap<PathBuf, Pending>,
+    paths: impl IntoIterator<Item = PathBuf>,
+    kind: ChangeKind,
+    now: Instant,
+    last_drain: &mut Instant,
+) {
+    let pending_was_empty = pending.is_empty();
+    for path in paths {
+        // Coalesce the incoming kind with any already-pending kind for this
+        // path across the burst window. See `merge_kind` for the full truth
+        // table and rationale.
+        let merged_kind = merge_kind(pending.get(&path).map(|entry| entry.kind), kind);
+        pending.insert(
+            path,
+            Pending {
+                kind: merged_kind,
+                last_seen: now,
+            },
+        );
+    }
+    if pending_was_empty && !pending.is_empty() {
+        *last_drain = now;
+    }
+}
+
 /// Drain the whole pending burst only after its newest classified event has
 /// been quiet for `debounce`. Forced drains, bridge close, and shutdown bypass
 /// this ordinary trailing-edge decision at their explicit batch boundaries.
@@ -1556,6 +1592,7 @@ fn drain_if_globally_quiet(
     pending: &mut HashMap<PathBuf, Pending>,
     now: Instant,
     debounce: Duration,
+    last_drain: &mut Instant,
 ) -> Vec<(PathBuf, ChangeKind)> {
     if pending
         .values()
@@ -1564,10 +1601,14 @@ fn drain_if_globally_quiet(
         return Vec::new();
     }
 
-    pending
+    let ready: Vec<_> = pending
         .drain()
         .map(|(path, entry)| (path, entry.kind))
-        .collect()
+        .collect();
+    if !ready.is_empty() {
+        *last_drain = now;
+    }
+    ready
 }
 
 /// Outcome of an outbound-drain attempt that races the shutdown signal.
@@ -1683,6 +1724,8 @@ mod tests {
     fn global_quiet_waits_for_newest_pending_path() {
         let debounce = Duration::from_millis(50);
         let now = Instant::now();
+        let initial_last_drain = now - debounce;
+        let mut last_drain = initial_last_drain;
         let older = PathBuf::from("older.txt");
         let newer = PathBuf::from("newer.txt");
         let mut pending = HashMap::from([
@@ -1702,15 +1745,21 @@ mod tests {
             ),
         ]);
 
-        let before_global_quiet = drain_if_globally_quiet(&mut pending, now, debounce);
+        let before_global_quiet =
+            drain_if_globally_quiet(&mut pending, now, debounce, &mut last_drain);
         assert!(
             before_global_quiet.is_empty(),
             "an individually quiet path must wait for the newest path in the batch",
         );
         assert_eq!(pending.len(), 2, "the pending burst must remain intact");
+        assert_eq!(
+            last_drain, initial_last_drain,
+            "an empty timer poll must not postpone the elapsed forced-drain boundary",
+        );
 
+        let quiet_at = now + debounce;
         let mut after_global_quiet =
-            drain_if_globally_quiet(&mut pending, now + debounce, debounce);
+            drain_if_globally_quiet(&mut pending, quiet_at, debounce, &mut last_drain);
         after_global_quiet.sort_by(|(left, _), (right, _)| left.cmp(right));
         assert_eq!(
             after_global_quiet,
@@ -1718,6 +1767,83 @@ mod tests {
             "the entire burst must drain together after its newest path is quiet",
         );
         assert!(pending.is_empty());
+        assert_eq!(last_drain, quiet_at, "a real drain advances the boundary");
+    }
+
+    #[test]
+    fn empty_global_quiet_poll_does_not_livelock_a_moderately_hot_burst() {
+        let debounce = Duration::from_millis(50);
+        let burst_started = Instant::now();
+        let timer_poll = burst_started + Duration::from_millis(25);
+        let mut last_drain = burst_started;
+        let mut pending = HashMap::from([(
+            PathBuf::from("hot.txt"),
+            Pending {
+                kind: ChangeKind::Modified,
+                last_seen: timer_poll,
+            },
+        )]);
+
+        let ready = drain_if_globally_quiet(&mut pending, timer_poll, debounce, &mut last_drain);
+
+        assert!(ready.is_empty(), "the hot path is not globally quiet yet");
+        assert_eq!(
+            last_drain, burst_started,
+            "an empty poll must preserve the real burst/drain boundary",
+        );
+        let next_hot_event = burst_started + debounce;
+        assert!(
+            next_hot_event.duration_since(last_drain) >= debounce,
+            "the existing elapsed-time guard must be able to force a mid-stream drain",
+        );
+    }
+
+    #[test]
+    fn first_real_path_anchors_elapsed_force_boundary_after_idle() {
+        let debounce = Duration::from_millis(50);
+        let now = Instant::now();
+        let old_drain = now - debounce - debounce;
+        let mut last_drain = old_drain;
+        let mut pending = HashMap::new();
+
+        record_pending_event(
+            &mut pending,
+            std::iter::empty(),
+            ChangeKind::Modified,
+            now,
+            &mut last_drain,
+        );
+        assert!(pending.is_empty());
+        assert_eq!(
+            last_drain, old_drain,
+            "a pathless event must not consume the next burst's anchor",
+        );
+
+        record_pending_event(
+            &mut pending,
+            [PathBuf::from("first.txt")],
+            ChangeKind::Modified,
+            now,
+            &mut last_drain,
+        );
+        assert_eq!(last_drain, now, "the first real path starts the burst");
+        assert!(
+            now.duration_since(last_drain) < debounce,
+            "the first event after a long idle must not force an immediate drain",
+        );
+
+        let second_at = now + Duration::from_millis(10);
+        record_pending_event(
+            &mut pending,
+            [PathBuf::from("second.txt")],
+            ChangeKind::Created,
+            second_at,
+            &mut last_drain,
+        );
+        assert_eq!(
+            last_drain, now,
+            "later paths in the same pending burst must not move the forced boundary",
+        );
     }
 
     #[test]
