@@ -741,9 +741,13 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        if: ${{ matrix.label == 'default' }}
         with:
           # Own prefix: the wasm32 target dir isn't interchangeable with the
-          # native-target caches the other two jobs above key on.
+          # native-target caches the other two jobs above key on. Only the
+          # expensive default leg restores/saves this key: the other five
+          # feature checks are short and would otherwise race to save the
+          # same cache before default can persist its useful build artifacts.
           prefix-key: "v2-zfb-wasm-md"
 
       - run: pnpm install --frozen-lockfile
@@ -763,12 +767,14 @@ jobs:
       # wasm-bindgen requires an EXACT version match between this CLI and the
       # `wasm-bindgen` crate resolved in Cargo.lock (pinned in
       # crates/zfb-md-wasm/npm/scripts/build.mjs's
-      # EXPECTED_WASM_BINDGEN_VERSION constant — bump both together). No
-      # SHA-pinned prebuilt-binary action covers this exact version, so this
-      # installs from source like the rest of the toolchain.
+      # EXPECTED_WASM_BINDGEN_VERSION constant — bump both together). The
+      # taiki-e/install-action manifest contains this version and verifies its
+      # prebuilt download with a platform-specific SHA-256 checksum.
       - name: Install wasm-bindgen-cli (pinned to match Cargo.lock)
         if: ${{ matrix.label == 'default' }}
-        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: wasm-bindgen@0.2.121
 
       # wasm-opt (binaryen) comes from the package's own devDependency via
       # the `pnpm install` above — nothing extra to install for it here.
