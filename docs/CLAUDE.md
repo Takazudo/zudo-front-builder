@@ -16,6 +16,7 @@ Keep these direct docs declarations when auditing dependencies:
 
 - **zudo-doc peer feature packages:** `diff`, `katex`, `preact`, `zod`, `@takazudo/zdtp`, and `@takazudo/zudo-doc-history-server`. `@takazudo/zudo-doc` declares these as peers; the docs site installs them deliberately to satisfy the package contract and opt into its features.
 - **zudo-doc runtime imports:** `mermaid`, `minisearch`, and `remark-cjk-friendly`. They are imported by zudo-doc's generated runtime bundle without being declared by zudo-doc itself, so removing these direct declarations breaks module resolution or feature behavior.
+- **`npm-run-all2`:** Keep it for the `run-p` supervisors in `dev` and `dev:network`; any replacement must forward signals, propagate exit status, and clean up child processes on Ctrl-C. JSON cannot carry this rationale as a comment.
 
 This register is a keep-list, not a request to add dependencies. Re-check the installed zudo-doc package and the generated `docs/.zfb-build/bundle.mjs` before changing either list.
 
