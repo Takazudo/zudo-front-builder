@@ -1,0 +1,7 @@
+[{"conclusion":"success","headSha":"50445b02f47c2b46f7b50a87e07afd621a6ad2ea","workflowName":"health"},{"conclusion":"success","headSha":"50445b02f47c2b46f7b50a87e07afd621a6ad2ea","workflowName":"Production Deploy (Cloudflare Workers)"},{"conclusion":"success","headSha":"50445b02f47c2b46f7b50a87e07afd621a6ad2ea","workflowName":"Binary smoke, scaffold E2E & showcase"},{"conclusion":"success","headSha":"1bd4c01b490eb3288740c96c7081013b5e309ffd","workflowName":"exam"},{"conclusion":"success","headSha":"1bd4c01b490eb3288740c96c7081013b5e309ffd","workflowName":"Binary smoke, scaffold E2E & showcase"},{"conclusion":"success","headSha":"1bd4c01b490eb3288740c96c7081013b5e309ffd","workflowName":"actionlint"},{"conclusion":"success","headSha":"1bd4c01b490eb3288740c96c7081013b5e309ffd","workflowName":"health"},{"conclusion":"success","headSha":"caeb82f1f77a8bbfe9578763b5442aae915e958c","workflowName":"Production Deploy (Cloudflare Workers)"},{"conclusion":"success","headSha":"caeb82f1f77a8bbfe9578763b5442aae915e958c","workflowName":"Binary smoke, scaffold E2E & showcase"},{"conclusion":"success","headSha":"caeb82f1f77a8bbfe9578763b5442aae915e958c","workflowName":"health"}]
+
+Interpretation for baseline SHA 50445b02f47c2b46f7b50a87e07afd621a6ad2ea:
+- health: green (success)
+- Production Deploy (Cloudflare Workers): green (success)
+- Binary smoke, scaffold E2E & showcase: green (success)
+Already-red checks on this SHA: none; all three workflows for the baseline SHA are green.
