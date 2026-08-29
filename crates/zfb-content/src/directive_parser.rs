@@ -1362,8 +1362,8 @@ mod tests {
     }
 
     #[test]
-    fn cjk_directive_name_stops_at_ideographic_punctuation() {
-        let source = "::漢字[ok]\n\n::漢。字[not a directive]\n";
+    fn cjk_directive_name_stops_at_unicode_punctuation() {
+        let source = "::漢字[ok]\n\n::漢。字[not a directive]\n\n::漢؝字[also not]\n";
         let root = parse_directive_mdast(options(ParseDialect::Markdown), source).unwrap();
         let mut leaves = Vec::new();
         find(&root, "leafDirective", &mut leaves);
