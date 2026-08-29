@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use markdown::unist::{Point, Position};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use unicode_categories::UnicodeCategories;
+use unicode_general_category::{get_general_category, GeneralCategory};
 
 use crate::facade::{parse_mdast, ParseMdastOptions};
 use crate::pipeline::PipelineError;
@@ -558,7 +558,20 @@ fn decode_attribute(value: &str) -> String {
 }
 
 fn unicode_punctuation(ch: char) -> bool {
-    ch.is_punctuation() || ch.is_symbol()
+    matches!(
+        get_general_category(ch),
+        GeneralCategory::ClosePunctuation
+            | GeneralCategory::ConnectorPunctuation
+            | GeneralCategory::CurrencySymbol
+            | GeneralCategory::DashPunctuation
+            | GeneralCategory::FinalPunctuation
+            | GeneralCategory::InitialPunctuation
+            | GeneralCategory::MathSymbol
+            | GeneralCategory::ModifierSymbol
+            | GeneralCategory::OpenPunctuation
+            | GeneralCategory::OtherPunctuation
+            | GeneralCategory::OtherSymbol
+    )
 }
 
 fn label_children(
@@ -1346,6 +1359,16 @@ mod tests {
         find(&root, "leafDirective", &mut leaf);
         assert_eq!(leaf.len(), 1);
         validate_tree(&root, source).unwrap();
+    }
+
+    #[test]
+    fn cjk_directive_name_stops_at_ideographic_punctuation() {
+        let source = "::漢字[ok]\n\n::漢。字[not a directive]\n";
+        let root = parse_directive_mdast(options(ParseDialect::Markdown), source).unwrap();
+        let mut leaves = Vec::new();
+        find(&root, "leafDirective", &mut leaves);
+        assert_eq!(leaves.len(), 1);
+        assert_eq!(leaves[0].fields["name"], "漢字");
     }
 
     #[test]
