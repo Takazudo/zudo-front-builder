@@ -8,4 +8,8 @@ mod tests {
     #[test]
     #[ignore = "heavy: run with --ignored — fixture lib test"]
     fn lib_covered_test() {}
+
+    #[test]
+    #[ignore = "heavy: run with --ignored — fixture nextest exact test"]
+    fn nextest_exact_lib_test() {}
 }

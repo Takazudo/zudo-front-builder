@@ -20,13 +20,14 @@
 #      entry outside a YAML `#` comment line — the header comment's own
 #      `test(=NAME)` placeholder example is excluded this way, not by
 #      hard-coding "NAME" as a special case);
-#   3. health.yml's `-- --ignored` steps, by actually parsing each step's
+#   3. health.yml's ignored-test steps, by actually parsing both the legacy
 #      `cargo test -p <pkg> [--test <bin> | --tests | --lib <module>::]
-#      -- --ignored` invocation into a (package, scope-kind, scope-value)
-#      tuple — NOT by grepping for a similarly-named step. A step whose
-#      *name* happens to mention a test but whose `run:` line scopes a
-#      different package/binary/module must NOT count as covering it; see
-#      tests/unit/check-exam-ignore-parity.sh's decoy-step fixture.
+#      -- --ignored` scopes and workspace nextest `--run-ignored ignored-only`
+#      filtersets containing exact `package(...) & binary(=...)` or
+#      package-scoped `test(=...)` predicates — NOT by grepping for a similarly
+#      named step. A step whose *name* happens to mention a test but whose
+#      command scopes a different package/binary/module must NOT count as
+#      covering it; see tests/unit/check-exam-ignore-parity.sh's decoys.
 #
 # Every ignored test then falls into exactly one of four outcomes:
 #
@@ -118,7 +119,7 @@ exam_set_contains() {
   grep -qxF -- "$1" <<< "$EXAM_SET_LIST"
 }
 
-# ── 2. health.yml `-- --ignored` step scopes ────────────────────────────────
+# ── 2. health.yml ignored-test step scopes ──────────────────────────────────
 
 HEALTH_PKG=()
 HEALTH_KIND=()   # int_all | int_named | lib_all | lib_scoped
@@ -144,6 +145,73 @@ while IFS= read -r line; do
 done < <(grep -vE '^[[:space:]]*#' "$HEALTH_WORKFLOW" \
   | grep -E 'cargo test.*-- --ignored' || true)
 
+# Workspace-resolved health lanes use exact nextest filter predicates rather
+# than Cargo package scopes. Keep package identity attached to every predicate:
+# a same-named test or binary in another package is a decoy, not coverage.
+# Supported shapes deliberately match nextest's exact-name forms used here:
+#
+#   (package(pkg) & binary(=integration_target))
+#   package(pkg) & (
+#     test(=fully::qualified::name) | binary(=integration_target)
+#   )
+#
+# A predicate outside a package conjunction fails closed. This is a small
+# workflow parser, not a general nextest filter-expression evaluator.
+HEALTH_NEXTEST_BINARY_PKG=()
+HEALTH_NEXTEST_BINARY_TARGET=()
+HEALTH_NEXTEST_TEST_PKG=()
+HEALTH_NEXTEST_TEST_TARGET=()
+
+in_nextest_filter=0
+active_nextest_pkg=""
+while IFS= read -r line; do
+  if ((in_nextest_filter == 0)); then
+    if [[ "$line" == *"cargo nextest run --workspace"* \
+      && "$line" == *"--run-ignored ignored-only"* \
+      && "$line" == *"-E '"* ]]; then
+      in_nextest_filter=1
+      active_nextest_pkg=""
+    fi
+    continue
+  fi
+
+  # The workflow uses a single-quoted multiline filter expression. Its closing
+  # quote is on a line of its own before any tee/redirection suffix.
+  trimmed="${line#"${line%%[![:space:]]*}"}"
+  if [[ "$trimmed" == "'"* ]]; then
+    in_nextest_filter=0
+    active_nextest_pkg=""
+    continue
+  fi
+  [[ "$trimmed" == \#* ]] && continue
+
+  line_pkg=""
+  if [[ "$line" =~ package\(([A-Za-z0-9_-]+)\) ]]; then
+    line_pkg="${BASH_REMATCH[1]}"
+  fi
+
+  predicate_pkg="$line_pkg"
+  [[ -z "$predicate_pkg" ]] && predicate_pkg="$active_nextest_pkg"
+
+  if [[ -n "$predicate_pkg" && "$line" =~ binary\(=([A-Za-z0-9_-]+)\) ]]; then
+    HEALTH_NEXTEST_BINARY_PKG+=("$predicate_pkg")
+    HEALTH_NEXTEST_BINARY_TARGET+=("${BASH_REMATCH[1]}")
+  fi
+  if [[ -n "$predicate_pkg" && "$line" =~ test\(=([A-Za-z0-9_:]+)\) ]]; then
+    HEALTH_NEXTEST_TEST_PKG+=("$predicate_pkg")
+    HEALTH_NEXTEST_TEST_TARGET+=("${BASH_REMATCH[1]}")
+  fi
+
+  # Only a package conjunction that opens a following group establishes
+  # context for later predicate lines. A one-line package/binary conjunction
+  # must not leak its package into the next expression.
+  if [[ -n "$line_pkg" && "$line" =~ \&[[:space:]]*\([[:space:]]*$ ]]; then
+    active_nextest_pkg="$line_pkg"
+  elif [[ "$trimmed" == ")"* ]]; then
+    active_nextest_pkg=""
+  fi
+done < "$HEALTH_WORKFLOW"
+
 health_scope_covers() {
   local pkg="$1" kind="$2" binary="$3" qualified="$4"
   local idx
@@ -167,6 +235,22 @@ health_scope_covers() {
         [[ "$kind" == "lib" ]] && return 0
         ;;
     esac
+  done
+
+  if [[ "$kind" == "integration" ]]; then
+    for ((idx = 0; idx < ${#HEALTH_NEXTEST_BINARY_PKG[@]}; idx++)); do
+      if [[ "${HEALTH_NEXTEST_BINARY_PKG[$idx]}" == "$pkg" \
+        && "${HEALTH_NEXTEST_BINARY_TARGET[$idx]}" == "$binary" ]]; then
+        return 0
+      fi
+    done
+  fi
+
+  for ((idx = 0; idx < ${#HEALTH_NEXTEST_TEST_PKG[@]}; idx++)); do
+    if [[ "${HEALTH_NEXTEST_TEST_PKG[$idx]}" == "$pkg" \
+      && "${HEALTH_NEXTEST_TEST_TARGET[$idx]}" == "$qualified" ]]; then
+      return 0
+    fi
   done
   return 1
 }
