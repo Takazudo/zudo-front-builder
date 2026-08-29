@@ -19,6 +19,10 @@
 # at most one flock adopter and one non-adopter concurrently: this preserves
 # serialization within each contention class while allowing genuine two-way
 # progress across the classes.
+# The measured split is 41 = 24 flock-adopting + 17 build-only.
+# `scripts/__tests__/nextest-heavy-binary-drift.test.mjs` re-derives the exact
+# 41-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
+# gate if the two explicit filters collectively drift.
 #
 # The two lanes are:
 #   • 24 flock-adopting binaries (client_bundling_cross_pipeline,
