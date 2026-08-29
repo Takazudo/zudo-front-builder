@@ -206,8 +206,10 @@ candidate combines active releases with the proven compatibility surface.
 
 The heavier `zfb` diagnostic test trial encountered the host's known
 `Operation not permitted` archive/link failure while building `zfb-islands`;
-the md-wasm lane subsequently compiled the same frontmatter/diagnostic path and
-passed its pinned line/column assertion. No assertion was changed.
+the md-wasm lane subsequently compiled and exercised the wasm frontmatter path,
+while the direct differential probe established the exact pinned `(3,1)`
+source location. The Rust `api.rs` test was not reached after the preceding host
+failure. No assertion was changed.
 
 ## Required follow-up issue (must be filed before merge)
 
@@ -229,9 +231,10 @@ The #2750 evaluation retained `serde_yaml` 0.9.34+deprecated because none of
 the required candidates satisfied maintenance, diagnostic compatibility,
 Serde-to-JSON compatibility, wasm32, and cargo-deny at the same time.
 
-The closest candidate was `serde_yaml_ng` 0.10.0. It was mechanically drop-in:
-the existing error assertions passed unedited, malformed-YAML error strings and
-1-based `(line, column, index)` locations matched, representative
+The closest candidate was `serde_yaml_ng` 0.10.0. It was mechanically
+compatible in the evaluation: the focused `zfb-content` error test passed
+unedited, malformed-YAML error strings and 1-based `(line, column, index)`
+locations matched in the differential probe, representative
 `from_str::<serde_json::Value>` results matched, wasm32 and the complete
 md-wasm lane passed, its dependency subtree was identical, and wasm sizes stayed
 within the guard. However, its latest crate was published on 2024-05-26 and its
