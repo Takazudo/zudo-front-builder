@@ -37,11 +37,21 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use zfb::render_pipeline::embedded_node_modules;
 use zfb_build::{bundle, BundleMode, BundlerInput};
 use zfb_render::adapters::Framework;
-use zfb_test_utils::locate_esbuild;
+use zfb_test_utils::{locate_esbuild, zfb_binary};
+
+#[path = "../src/embedded_node_modules_cache.rs"]
+#[allow(dead_code)]
+mod embedded_node_modules_cache;
+
+static EMBEDDED_VENDOR: include_dir::Dir<'static> = include_dir::include_dir!("$OUT_DIR/vendor");
+
+const WORKER_RESULT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_RESULT";
+const WORKER_PROJECT_PARENT_ENV: &str = "ZFB_FRAMEWORK_CACHE_WORKER_PROJECT_PARENT";
 
 #[test]
 fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules() {
@@ -60,7 +70,13 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     // `preact-render-to-string`, and `hono` directly so esbuild MUST resolve
     // them somewhere — and the only "somewhere" available is the embedded
     // extraction we wire in below.
-    let project = tempfile::tempdir().expect("tempdir for project root");
+    let project = match std::env::var_os(WORKER_PROJECT_PARENT_ENV) {
+        Some(parent) => tempfile::Builder::new()
+            .prefix("project-")
+            .tempdir_in(parent)
+            .expect("tempdir for worker project root"),
+        None => tempfile::tempdir().expect("tempdir for project root"),
+    };
     let root = project.path().to_path_buf();
     for d in ["pages", "components", "layouts"] {
         fs::create_dir_all(root.join(d)).unwrap();
@@ -107,7 +123,13 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
     // tests covers this too; we re-assert here so a failure points the
     // operator at this file's exact import set rather than at a generic
     // unit-test layout assertion.)
-    let (nm_handle, nm_path) = embedded_node_modules().expect("embedded_node_modules must succeed");
+    let nm_lease = embedded_node_modules_cache::acquire_embedded_node_modules_if_enabled(
+        &root,
+        &EMBEDDED_VENDOR,
+        embedded_node_modules,
+    )
+    .expect("embedded node_modules lease must succeed");
+    let nm_path = nm_lease.node_modules().to_path_buf();
     for pkg in ["preact", "preact-render-to-string", "hono"] {
         let pkg_json = nm_path.join(pkg).join("package.json");
         assert!(
@@ -126,6 +148,7 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
         project_root: root.clone(),
+        authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
         content_dir: PathBuf::from("content"),
@@ -199,5 +222,172 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
         &body[..body.len().min(800)]
     );
 
-    drop(nm_handle); // explicit: tempdir is removed here
+    if let Some(result_path) = std::env::var_os(WORKER_RESULT_ENV) {
+        let lease_kind = match &nm_lease {
+            embedded_node_modules_cache::EmbeddedNodeModulesLease::Owned { .. } => "owned",
+            embedded_node_modules_cache::EmbeddedNodeModulesLease::Borrowed { .. } => "borrowed",
+        };
+        let result_path = PathBuf::from(result_path);
+        fs::write(result_path.with_extension("bundle"), body.as_bytes())
+            .expect("write worker bundle bytes");
+        fs::write(
+            result_path.with_extension("lease"),
+            format!("{lease_kind}\n{}\n", nm_path.display()),
+        )
+        .expect("write worker lease evidence");
+
+        let cli = Command::new(zfb_binary!())
+            .arg("build")
+            .current_dir(&root)
+            .output()
+            .expect("run real zfb build worker");
+        assert!(
+            cli.status.success(),
+            "zfb build failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&cli.stdout),
+            String::from_utf8_lossy(&cli.stderr)
+        );
+        fs::write(result_path.with_extension("cli-stderr"), &cli.stderr)
+            .expect("write CLI stderr evidence");
+        fs::write(
+            result_path.with_extension("dist"),
+            snapshot_tree(&root.join("dist")),
+        )
+        .expect("write CLI dist evidence");
+    }
+
+    drop(nm_lease); // explicit: owned tempdir or borrowed read lock ends here
+}
+
+#[test]
+fn cache_flag_preserves_build_bytes_and_default_stderr_across_processes() {
+    if locate_esbuild().is_none() {
+        eprintln!("[framework_packages_no_pnpm] no esbuild binary available; skipping");
+        return;
+    }
+    let owner = tempfile::tempdir().expect("cache wiring test root");
+    let cache_parent = owner.path().join("cache-parent");
+    let project_parent = owner.path().join("projects");
+    fs::create_dir_all(&cache_parent).unwrap();
+    fs::create_dir_all(&project_parent).unwrap();
+
+    let off = run_framework_worker(
+        owner.path().join("off"),
+        &cache_parent,
+        &project_parent,
+        None,
+    );
+    let cold = run_framework_worker(
+        owner.path().join("cold"),
+        &cache_parent,
+        &project_parent,
+        Some("1"),
+    );
+    let warm = run_framework_worker(
+        owner.path().join("warm"),
+        &cache_parent,
+        &project_parent,
+        Some("true"),
+    );
+
+    assert!(off.status.success(), "flag-off worker failed: {off:?}");
+    assert!(cold.status.success(), "cold cache worker failed: {cold:?}");
+    assert!(warm.status.success(), "warm cache worker failed: {warm:?}");
+    assert_eq!(off.stderr, cold.stderr, "flag-on changed default stderr");
+    assert_eq!(off.stderr, warm.stderr, "warm reuse changed default stderr");
+    assert_eq!(
+        fs::read(owner.path().join("off.bundle")).unwrap(),
+        fs::read(owner.path().join("cold.bundle")).unwrap(),
+        "flag-on changed emitted bundle bytes"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.bundle")).unwrap(),
+        fs::read(owner.path().join("warm.bundle")).unwrap(),
+        "warm cache reuse changed emitted bundle bytes"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.cli-stderr")).unwrap(),
+        fs::read(owner.path().join("cold.cli-stderr")).unwrap(),
+        "flag-on changed default zfb build stderr"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.cli-stderr")).unwrap(),
+        fs::read(owner.path().join("warm.cli-stderr")).unwrap(),
+        "warm cache reuse changed default zfb build stderr"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.dist")).unwrap(),
+        fs::read(owner.path().join("cold.dist")).unwrap(),
+        "flag-on changed zfb build output bytes"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.dist")).unwrap(),
+        fs::read(owner.path().join("warm.dist")).unwrap(),
+        "warm cache reuse changed zfb build output bytes"
+    );
+
+    let off_lease = fs::read_to_string(owner.path().join("off.lease")).unwrap();
+    let cold_lease = fs::read_to_string(owner.path().join("cold.lease")).unwrap();
+    let warm_lease = fs::read_to_string(owner.path().join("warm.lease")).unwrap();
+    assert!(off_lease.starts_with("owned\n"), "{off_lease}");
+    assert!(cold_lease.starts_with("borrowed\n"), "{cold_lease}");
+    assert!(warm_lease.starts_with("borrowed\n"), "{warm_lease}");
+    assert_eq!(
+        cold_lease.lines().nth(1),
+        warm_lease.lines().nth(1),
+        "separate flag-on processes did not reuse the same published tree"
+    );
+}
+
+fn run_framework_worker(
+    result_path: PathBuf,
+    cache_parent: &std::path::Path,
+    project_parent: &std::path::Path,
+    flag: Option<&str>,
+) -> std::process::Output {
+    let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+    command
+        .arg("--exact")
+        .arg("embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules")
+        .arg("--nocapture")
+        .env(WORKER_RESULT_ENV, result_path)
+        .env(WORKER_PROJECT_PARENT_ENV, project_parent)
+        .env("TMPDIR", cache_parent)
+        .env("XDG_CACHE_HOME", cache_parent)
+        .env_remove(embedded_node_modules_cache::ZFB_EMBEDDED_NODE_MODULES_CACHE);
+    if let Some(value) = flag {
+        command.env(
+            embedded_node_modules_cache::ZFB_EMBEDDED_NODE_MODULES_CACHE,
+            value,
+        );
+    }
+    command.output().expect("run framework cache worker")
+}
+
+fn snapshot_tree(root: &std::path::Path) -> Vec<u8> {
+    fn visit(root: &std::path::Path, current: &std::path::Path, files: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(current).expect("read dist directory") {
+            let entry = entry.expect("read dist entry");
+            let path = entry.path();
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.push(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    visit(root, root, &mut files);
+    files.sort();
+    let mut snapshot = Vec::new();
+    for relative in files {
+        let relative_bytes = relative.to_string_lossy();
+        let bytes = fs::read(root.join(&relative)).expect("read dist file");
+        snapshot.extend_from_slice(&(relative_bytes.len() as u64).to_le_bytes());
+        snapshot.extend_from_slice(relative_bytes.as_bytes());
+        snapshot.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        snapshot.extend_from_slice(&bytes);
+    }
+    snapshot
 }

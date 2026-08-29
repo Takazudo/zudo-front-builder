@@ -66,6 +66,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -178,6 +179,67 @@ pub enum ChangeKind {
 pub struct Change {
     pub path: PathBuf,
     pub kind: ChangeKind,
+    /// Timing-only identity of the watcher flush that emitted this change.
+    /// Zero means the `ZFB_DEV_TIMING` probe was disabled (or the change was
+    /// constructed synthetically by a downstream test).
+    #[doc(hidden)]
+    pub handoff_batch_id: u64,
+    /// Total number of changes emitted by that watcher flush. See
+    /// [`Change::handoff_batch_id`].
+    #[doc(hidden)]
+    pub handoff_batch_size: usize,
+}
+
+impl Change {
+    /// Construct a change without timing metadata. Production watcher
+    /// delivery adds the metadata only while `ZFB_DEV_TIMING` is enabled.
+    pub fn new(path: PathBuf, kind: ChangeKind) -> Self {
+        Self {
+            path,
+            kind,
+            handoff_batch_id: 0,
+            handoff_batch_size: 0,
+        }
+    }
+
+    fn with_handoff_batch(
+        path: PathBuf,
+        kind: ChangeKind,
+        handoff_batch_id: u64,
+        handoff_batch_size: usize,
+    ) -> Self {
+        Self {
+            path,
+            kind,
+            handoff_batch_id,
+            handoff_batch_size,
+        }
+    }
+}
+
+static NEXT_HANDOFF_BATCH_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Match the dev-server timing probes' tolerant boolean gate. Keeping the
+/// metadata at zero when disabled makes the watcher handoff probe inert by
+/// default, including the normal no-log path.
+fn dev_timing_enabled() -> bool {
+    std::env::var("ZFB_DEV_TIMING")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+fn next_handoff_batch(size: usize) -> (u64, usize) {
+    if size == 0 || !dev_timing_enabled() {
+        return (0, 0);
+    }
+    let batch_id = NEXT_HANDOFF_BATCH_ID.fetch_add(1, AtomicOrdering::Relaxed);
+    eprintln!("[zfb-timing] watcher handoff: batch_id={batch_id} batch_size={size}");
+    (batch_id, size)
 }
 
 /// The watcher handle.
@@ -1347,9 +1409,9 @@ const MAX_PENDING_BEFORE_FORCED_FLUSH: usize = 1024;
 ///
 /// Strategy: bridge the sync `notify` channel onto a tokio channel via
 /// `spawn_blocking`, then loop with a small "wake every debounce/2"
-/// timer that flushes any path whose last event is older than the
-/// debounce window. This avoids per-path timer tasks (cheap) and gives
-/// O(1) flush per tick.
+/// timer that flushes the pending set once every path has been quiet for
+/// the debounce window. This avoids per-path timer tasks and makes an
+/// ordinary finite burst one global trailing-edge batch.
 ///
 /// Starvation / livelock guard: the `select!` is `biased`, so under a
 /// continuous high-rate event stream the `recv` arm fires forever and the
@@ -1379,9 +1441,11 @@ async fn debouncer_task(
     });
 
     let mut pending: HashMap<PathBuf, Pending> = HashMap::new();
-    // Wall-clock of the last time we drained ready entries (via the `tick`
-    // arm or the recv-arm forced flush). Used by the recv arm to force a
-    // flush when the `tick` arm is being starved by a continuous stream.
+    // Wall-clock of the last real drain (via the `tick` arm or recv-arm
+    // forced flush). The first classified event after an empty interval
+    // re-anchors it to the new burst start so idle time cannot trigger an
+    // immediate flush. Empty timer polls never advance it; the recv arm can
+    // therefore still force progress during a moderately hot stream.
     let mut last_drain = Instant::now();
     // Wake at half the debounce window so worst-case extra latency is
     // ~debounce + debounce/2. With the default 50ms that's ~75ms.
@@ -1429,13 +1493,13 @@ async fn debouncer_task(
                             continue;
                         };
                         let now = Instant::now();
-                        for path in evt.paths {
-                            // Coalesce the incoming kind with any already-pending
-                            // kind for this path across the burst window. See
-                            // `merge_kind` for the full truth table and rationale.
-                            let merged_kind = merge_kind(pending.get(&path).map(|p| p.kind), kind);
-                            pending.insert(path, Pending { kind: merged_kind, last_seen: now });
-                        }
+                        record_pending_event(
+                            &mut pending,
+                            evt.paths,
+                            kind,
+                            now,
+                            &mut last_drain,
+                        );
                         // Starvation / livelock guard (see fn docs). The `biased`
                         // `select!` lets this arm fire forever under a continuous
                         // stream, so we cannot rely on the `tick` arm to drain. Force
@@ -1469,16 +1533,12 @@ async fn debouncer_task(
 
             _ = tick.tick() => {
                 let now = Instant::now();
-                // Drain entries whose last event is older than `debounce`.
-                let ready: Vec<(PathBuf, ChangeKind)> = pending
-                    .iter()
-                    .filter(|(_, p)| now.duration_since(p.last_seen) >= debounce)
-                    .map(|(k, p)| (k.clone(), p.kind))
-                    .collect();
-                for (path, _) in &ready {
-                    pending.remove(path);
-                }
-                last_drain = now;
+                let ready = drain_if_globally_quiet(
+                    &mut pending,
+                    now,
+                    debounce,
+                    &mut last_drain,
+                );
                 match emit_ready_racing_shutdown(ready, &out_tx, &mut shutdown).await {
                     DrainOutcome::Drained => {}
                     // Receiver dropped or shutdown fired mid-drain; bail either way.
@@ -1493,6 +1553,62 @@ async fn debouncer_task(
 
     // bridge task exits naturally when raw_rx closes.
     let _ = bridge.await;
+}
+
+/// Coalesce one classified raw event into the pending burst and anchor a new
+/// burst's elapsed-time forced boundary at its first real path. A classified
+/// pathless event must not consume that anchor: the next event carrying a path
+/// is still the burst start.
+fn record_pending_event(
+    pending: &mut HashMap<PathBuf, Pending>,
+    paths: impl IntoIterator<Item = PathBuf>,
+    kind: ChangeKind,
+    now: Instant,
+    last_drain: &mut Instant,
+) {
+    let pending_was_empty = pending.is_empty();
+    for path in paths {
+        // Coalesce the incoming kind with any already-pending kind for this
+        // path across the burst window. See `merge_kind` for the full truth
+        // table and rationale.
+        let merged_kind = merge_kind(pending.get(&path).map(|entry| entry.kind), kind);
+        pending.insert(
+            path,
+            Pending {
+                kind: merged_kind,
+                last_seen: now,
+            },
+        );
+    }
+    if pending_was_empty && !pending.is_empty() {
+        *last_drain = now;
+    }
+}
+
+/// Drain the whole pending burst only after its newest classified event has
+/// been quiet for `debounce`. Forced drains, bridge close, and shutdown bypass
+/// this ordinary trailing-edge decision at their explicit batch boundaries.
+fn drain_if_globally_quiet(
+    pending: &mut HashMap<PathBuf, Pending>,
+    now: Instant,
+    debounce: Duration,
+    last_drain: &mut Instant,
+) -> Vec<(PathBuf, ChangeKind)> {
+    if pending
+        .values()
+        .any(|entry| now.duration_since(entry.last_seen) < debounce)
+    {
+        return Vec::new();
+    }
+
+    let ready: Vec<_> = pending
+        .drain()
+        .map(|(path, entry)| (path, entry.kind))
+        .collect();
+    if !ready.is_empty() {
+        *last_drain = now;
+    }
+    ready
 }
 
 /// Outcome of an outbound-drain attempt that races the shutdown signal.
@@ -1545,10 +1661,11 @@ async fn emit_ready_racing_shutdown(
     out_tx: &mpsc::Sender<Change>,
     shutdown: &mut oneshot::Receiver<()>,
 ) -> DrainOutcome {
+    let (handoff_batch_id, handoff_batch_size) = next_handoff_batch(ready.len());
     let mut ready = std::collections::VecDeque::from(ready);
     while let Some((path, kind)) = ready.pop_front() {
         let kind = resolve_emit_kind(&path, kind);
-        let change = Change { path, kind };
+        let change = Change::with_handoff_batch(path, kind, handoff_batch_id, handoff_batch_size);
         tokio::select! {
             biased;
 
@@ -1559,7 +1676,12 @@ async fn emit_ready_racing_shutdown(
             _ = &mut *shutdown => {
                 for (path, kind) in ready.drain(..) {
                     let kind = resolve_emit_kind(&path, kind);
-                    let _ = out_tx.try_send(Change { path, kind });
+                    let _ = out_tx.try_send(Change::with_handoff_batch(
+                        path,
+                        kind,
+                        handoff_batch_id,
+                        handoff_batch_size,
+                    ));
                 }
                 return DrainOutcome::ShutdownRequested;
             }
@@ -1580,9 +1702,15 @@ async fn emit_ready_racing_shutdown(
 /// change the saturated (or closed) channel cannot accept immediately is
 /// dropped rather than awaited, so this can never park `Watcher::shutdown()`.
 fn drain_all_dropping(pending: &mut HashMap<PathBuf, Pending>, out_tx: &mpsc::Sender<Change>) {
+    let (handoff_batch_id, handoff_batch_size) = next_handoff_batch(pending.len());
     for (path, p) in pending.drain() {
         let kind = resolve_emit_kind(&path, p.kind);
-        let _ = out_tx.try_send(Change { path, kind });
+        let _ = out_tx.try_send(Change::with_handoff_batch(
+            path,
+            kind,
+            handoff_batch_id,
+            handoff_batch_size,
+        ));
     }
 }
 
@@ -1591,6 +1719,132 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn global_quiet_waits_for_newest_pending_path() {
+        let debounce = Duration::from_millis(50);
+        let now = Instant::now();
+        let initial_last_drain = now - debounce;
+        let mut last_drain = initial_last_drain;
+        let older = PathBuf::from("older.txt");
+        let newer = PathBuf::from("newer.txt");
+        let mut pending = HashMap::from([
+            (
+                older.clone(),
+                Pending {
+                    kind: ChangeKind::Modified,
+                    last_seen: now - debounce - debounce,
+                },
+            ),
+            (
+                newer.clone(),
+                Pending {
+                    kind: ChangeKind::Created,
+                    last_seen: now - debounce / 2,
+                },
+            ),
+        ]);
+
+        let before_global_quiet =
+            drain_if_globally_quiet(&mut pending, now, debounce, &mut last_drain);
+        assert!(
+            before_global_quiet.is_empty(),
+            "an individually quiet path must wait for the newest path in the batch",
+        );
+        assert_eq!(pending.len(), 2, "the pending burst must remain intact");
+        assert_eq!(
+            last_drain, initial_last_drain,
+            "an empty timer poll must not postpone the elapsed forced-drain boundary",
+        );
+
+        let quiet_at = now + debounce;
+        let mut after_global_quiet =
+            drain_if_globally_quiet(&mut pending, quiet_at, debounce, &mut last_drain);
+        after_global_quiet.sort_by(|(left, _), (right, _)| left.cmp(right));
+        assert_eq!(
+            after_global_quiet,
+            vec![(newer, ChangeKind::Created), (older, ChangeKind::Modified),],
+            "the entire burst must drain together after its newest path is quiet",
+        );
+        assert!(pending.is_empty());
+        assert_eq!(last_drain, quiet_at, "a real drain advances the boundary");
+    }
+
+    #[test]
+    fn empty_global_quiet_poll_does_not_livelock_a_moderately_hot_burst() {
+        let debounce = Duration::from_millis(50);
+        let burst_started = Instant::now();
+        let timer_poll = burst_started + Duration::from_millis(25);
+        let mut last_drain = burst_started;
+        let mut pending = HashMap::from([(
+            PathBuf::from("hot.txt"),
+            Pending {
+                kind: ChangeKind::Modified,
+                last_seen: timer_poll,
+            },
+        )]);
+
+        let ready = drain_if_globally_quiet(&mut pending, timer_poll, debounce, &mut last_drain);
+
+        assert!(ready.is_empty(), "the hot path is not globally quiet yet");
+        assert_eq!(
+            last_drain, burst_started,
+            "an empty poll must preserve the real burst/drain boundary",
+        );
+        let next_hot_event = burst_started + debounce;
+        assert!(
+            next_hot_event.duration_since(last_drain) >= debounce,
+            "the existing elapsed-time guard must be able to force a mid-stream drain",
+        );
+    }
+
+    #[test]
+    fn first_real_path_anchors_elapsed_force_boundary_after_idle() {
+        let debounce = Duration::from_millis(50);
+        let now = Instant::now();
+        let old_drain = now - debounce - debounce;
+        let mut last_drain = old_drain;
+        let mut pending = HashMap::new();
+
+        record_pending_event(
+            &mut pending,
+            std::iter::empty(),
+            ChangeKind::Modified,
+            now,
+            &mut last_drain,
+        );
+        assert!(pending.is_empty());
+        assert_eq!(
+            last_drain, old_drain,
+            "a pathless event must not consume the next burst's anchor",
+        );
+
+        record_pending_event(
+            &mut pending,
+            [PathBuf::from("first.txt")],
+            ChangeKind::Modified,
+            now,
+            &mut last_drain,
+        );
+        assert_eq!(last_drain, now, "the first real path starts the burst");
+        assert!(
+            now.duration_since(last_drain) < debounce,
+            "the first event after a long idle must not force an immediate drain",
+        );
+
+        let second_at = now + Duration::from_millis(10);
+        record_pending_event(
+            &mut pending,
+            [PathBuf::from("second.txt")],
+            ChangeKind::Created,
+            second_at,
+            &mut last_drain,
+        );
+        assert_eq!(
+            last_drain, now,
+            "later paths in the same pending burst must not move the forced boundary",
+        );
+    }
 
     #[test]
     fn classify_create_is_created() {
@@ -1926,10 +2180,10 @@ mod tests {
         let filler = out_tx.clone();
         let mut filled = 0usize;
         loop {
-            match filler.try_send(Change {
-                path: PathBuf::from(format!("/synthetic/fill_{filled}.txt")),
-                kind: ChangeKind::Modified,
-            }) {
+            match filler.try_send(Change::new(
+                PathBuf::from(format!("/synthetic/fill_{filled}.txt")),
+                ChangeKind::Modified,
+            )) {
                 Ok(()) => filled += 1,
                 Err(mpsc::error::TrySendError::Full(_)) => break,
                 Err(mpsc::error::TrySendError::Closed(_)) => {

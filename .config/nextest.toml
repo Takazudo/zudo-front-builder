@@ -10,7 +10,7 @@
 # doctests. Do not assume a green nextest run covers doctest examples.
 
 # ── Two-lane admission control for heavy V8/esbuild e2e tests ────────────
-# These 41 integration-test binaries (all in package `zfb`) each spawn a real
+# These 42 integration-test binaries (all in package `zfb`) each spawn a real
 # `zfb dev` / `zfb build` / `zfb preview` process that embeds a V8 host and/or
 # shells out to esbuild. Unbounded concurrent boots starve CPU/memory and turn
 # their generous boot-deadline watchdogs flaky. `cargo test` serialized these
@@ -19,9 +19,9 @@
 # at most one flock adopter and one non-adopter concurrently: this preserves
 # serialization within each contention class while allowing genuine two-way
 # progress across the classes.
-# The measured split is 41 = 24 flock-adopting + 17 build-only.
+# The measured split is 42 = 24 flock-adopting + 18 build-only.
 # `scripts/__tests__/nextest-heavy-binary-drift.test.mjs` re-derives the exact
-# 41-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
+# 42-member union from `crates/zfb/tests/*.rs` and fails the workspace Vitest
 # gate if the two explicit filters collectively drift.
 #
 # The two lanes are:
@@ -85,10 +85,11 @@
 #     byte-identical for supported contract rows, and exactly the
 #     documented D7/D8 divergences (legacy MD5 digest; key-bearing
 #     SubtleCrypto) where they are expected to differ.
-#   • 17 build-command binaries (build_cleans_outdir, build_package_routes,
+#   • 18 build-command binaries (build_cleans_outdir, build_package_routes,
 #     build_package_routes_consumer, client_router_autoinclude_build,
 #     content_snapshot_no_deferred, css_modules_components_build,
-#     end_to_end_basic_blog_build, gfm_footnotes_tasklists_confirm_build,
+#     end_to_end_basic_blog_build, framework_packages_no_pnpm,
+#     gfm_footnotes_tasklists_confirm_build,
 #     html_minify_build,
 #     page_extension_route_table_build, wasm_ssr_adapter_e2e,
 #     plugin_diagnostics_confirm_2375_e2e, render_artifact_confirm_build,
@@ -124,15 +125,16 @@
 #     and `--no-strict-broken` never downgrading an independently-configured
 #     nested `failOnBroken`) exits with the correct status and names the
 #     broken hrefs. The later additions are recorded in the chronological
-#     recount below; the drift guard keeps this 17-binary list authoritative.
+#     recount below; the drift guard keeps this 18-binary list authoritative.
 #
 # Completeness was re-verified by grepping crates/zfb/tests/*.rs for the real
 # `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
 # .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/embed_v8 usage. The
-# mechanical guard classifies every integration-test source: 41 heavy binaries,
-# five documented exclusions (`check_command`, `framework_packages_no_pnpm`,
-# `collections_outside_root_build_check_snapshot`, `diagnostics_fixtures`, and
-# `version_report`), plus `version_stamp`, whose single heavy test is assigned
+# mechanical guard classifies every integration-test source: 42 heavy binaries,
+# five documented exclusions (`check_command`,
+# `collections_outside_root_build_check_snapshot`, `diagnostics_fixtures`,
+# `embedded_node_modules_cache`, and `version_report`), plus `version_stamp`,
+# whose single heavy test is assigned
 # by the exact-name predicate documented below. Of the exclusions, only
 # `check_command` is an intentional source-heuristic false positive; it also
 # spells `.arg("build")` in cheap parity controls but invokes only `zfb check
@@ -143,7 +145,7 @@ max-threads = 1
 [test-groups.e2e-heavy-unlocked]
 max-threads = 1
 
-# The overrides that assign all 41 heavy binaries to the two lanes AND grant
+# The overrides that assign all 42 heavy binaries to the two lanes AND grant
 # them a long per-test timeout live in the `default` profile so BOTH
 # local (default profile) and CI (`ci` profile, which inherits default's
 # overrides) get identical serialization + timeout treatment. Exact binary
@@ -297,6 +299,14 @@ max-threads = 1
 # real `zfb build`, so this binary relies on the test-group as its sole
 # cross-binary serialization guard and pins both staged helper binaries.
 #
+# Issue #2726 (2026-08, Dev Tick CSS Vendor epic #2712, D2 drift repair)
+# moved `framework_packages_no_pnpm` from the exclusion set into the
+# BUILD-ONLY bucket after C4 added separate real `zfb build` CLI processes,
+# bringing the current total to **42** (24 flock-adopting, 18 build-only).
+# It also added `embedded_node_modules_cache` to the exclusions: that binary
+# is a self-spawned cache protocol/process-race harness with no zfb, V8, or
+# esbuild execution.
+#
 # ADDITIONALLY (issue #1363), one `test(=...)` predicate joins the unlocked lane:
 # `eval_deferred_paths_via_worker_embedded_v8_non_literal_paths` boots a real
 # esbuild subprocess + embedded V8 isolate (see crates/CLAUDE.md's `#[ignore]`
@@ -350,11 +360,11 @@ test-group = 'e2e-heavy-locked'
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 [[profile.default.overrides]]
- filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_command) | binary(=css_modules_components_build) | binary(=end_to_end_basic_blog_build) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=render_artifact_confirm_build) | binary(=render_artifact_determinism_build) | binary(=sibling_css_module_command_layer_build) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
+ filter = 'package(zfb) & (binary(=build_cleans_outdir) | binary(=build_package_routes) | binary(=build_package_routes_consumer) | binary(=client_router_autoinclude_build) | binary(=content_snapshot_no_deferred) | binary(=css_command) | binary(=css_modules_components_build) | binary(=end_to_end_basic_blog_build) | binary(=framework_packages_no_pnpm) | binary(=gfm_footnotes_tasklists_confirm_build) | binary(=html_minify_build) | binary(=page_extension_route_table_build) | binary(=plugin_diagnostics_confirm_2375_e2e) | binary(=render_artifact_confirm_build) | binary(=render_artifact_determinism_build) | binary(=sibling_css_module_command_layer_build) | binary(=strict_broken_links_e2e) | binary(=wasm_ssr_adapter_e2e) | test(=render_pipeline::tests::eval_deferred_paths_via_worker_embedded_v8_non_literal_paths) | test(=version_stamp_from_env) | test(/^v8_host_adapter::tests::/))'
 test-group = 'e2e-heavy-unlocked'
 # The three shared-target predicate classes hold no flock, so they belong in
 # this lane deliberately. This lane is their CPU/memory admission control and
-# is the sole serialization guard for all 17 build-only binaries above.
+# is the sole serialization guard for all 18 build-only binaries above.
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # ── CI profile: the authoritative T1 gate (health.yml) ───────────────────────

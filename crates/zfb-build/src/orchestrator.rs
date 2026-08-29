@@ -39,7 +39,7 @@
 //! coalescing inside the orchestrator; if the watcher decides "this is
 //! one logical save", we treat it as one.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -1904,10 +1904,32 @@ impl<P: AssetPipeline> BuildOrchestrator<P> {
         let mut this = self;
         let mut ctx = ctx;
         let mut discover = discover;
+        let mut handoff_intake_id = 0u64;
         while let Some(first) = recv_with_stop_deadline(&mut rx, stop_deadline).await {
             let mut batch: Vec<Change> = vec![first];
             while let Ok(c) = rx.try_recv() {
                 batch.push(c);
+            }
+
+            if dev_timing_enabled() {
+                handoff_intake_id = handoff_intake_id.wrapping_add(1);
+                let mut watcher_batches: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
+                for change in &batch {
+                    if change.handoff_batch_id != 0 {
+                        let entry = watcher_batches
+                            .entry(change.handoff_batch_id)
+                            .or_insert((change.handoff_batch_size, 0));
+                        entry.1 += 1;
+                    }
+                }
+                for (batch_id, (batch_size, received)) in watcher_batches {
+                    eprintln!(
+                        "[zfb-timing] orchestrator handoff: intake_id={handoff_intake_id} \
+                         batch_id={batch_id} batch_size={batch_size} received={received} \
+                         intake_size={}",
+                        batch.len()
+                    );
+                }
             }
 
             let changes: Vec<(PathBuf, ChangeKind)> =
@@ -4558,10 +4580,10 @@ mod tests {
     #[tokio::test]
     async fn recv_with_stop_deadline_none_is_plain_passthrough() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Change>(1);
-        tx.send(Change {
-            path: PathBuf::from("/proj/pages/a.tsx"),
-            kind: ChangeKind::Modified,
-        })
+        tx.send(Change::new(
+            PathBuf::from("/proj/pages/a.tsx"),
+            ChangeKind::Modified,
+        ))
         .await
         .expect("send");
         let got = recv_with_stop_deadline(&mut rx, None).await;
@@ -5160,12 +5182,9 @@ mod tests {
         // replaced by a direct send on the test-owned channel — no
         // real-watcher round trip to wait out.
         std::fs::write(&watched, "v1").expect("write watched file");
-        tx.send(Change {
-            path: watched.clone(),
-            kind: ChangeKind::Modified,
-        })
-        .await
-        .expect("send watched-file change");
+        tx.send(Change::new(watched.clone(), ChangeKind::Modified))
+            .await
+            .expect("send watched-file change");
         let log_probe = Arc::clone(&log);
         let reached_hook = wait_until(10, move || {
             log_probe.lock().unwrap().contains(&"refresh-start")
@@ -5285,12 +5304,9 @@ mod tests {
         // themselves kept dispatching.
         for idx in 1..=2u32 {
             std::fs::write(&watched, format!("v{idx}")).expect("write watched file");
-            tx.send(Change {
-                path: watched.clone(),
-                kind: ChangeKind::Modified,
-            })
-            .await
-            .expect("send watched-file change");
+            tx.send(Change::new(watched.clone(), ChangeKind::Modified))
+                .await
+                .expect("send watched-file change");
             let applies_probe = Arc::clone(&applies);
             let landed = wait_until(5, move || {
                 applies_probe.lock().unwrap().len() >= idx as usize
@@ -5362,12 +5378,9 @@ mod tests {
         // empty registry would make this pass trivially).
         let page_path = project_root.join("pages").join("probe-0.tsx");
         std::fs::write(&page_path, "export default () => null;\n").expect("write page file");
-        tx.send(Change {
-            path: page_path,
-            kind: ChangeKind::Created,
-        })
-        .await
-        .expect("send page-file change");
+        tx.send(Change::new(page_path, ChangeKind::Created))
+            .await
+            .expect("send page-file change");
 
         let applies_probe = Arc::clone(&applies);
         let landed = wait_until(10, move || !applies_probe.lock().unwrap().is_empty()).await;
@@ -5535,19 +5548,13 @@ mod tests {
             ChangeKind::Modified,
             ChangeKind::Removed,
         ] {
-            tx.send(Change {
-                path: temp_entry.clone(),
-                kind,
-            })
-            .await
-            .expect("send temp-entry change");
+            tx.send(Change::new(temp_entry.clone(), kind))
+                .await
+                .expect("send temp-entry change");
         }
-        tx.send(Change {
-            path: main_css.clone(),
-            kind: ChangeKind::Modified,
-        })
-        .await
-        .expect("send real css change");
+        tx.send(Change::new(main_css.clone(), ChangeKind::Modified))
+            .await
+            .expect("send real css change");
 
         let applies_probe = Arc::clone(&applies);
         let landed = wait_until(10, move || {

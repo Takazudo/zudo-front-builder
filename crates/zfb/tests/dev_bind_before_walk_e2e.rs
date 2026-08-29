@@ -1851,6 +1851,16 @@ async fn dev_tick_client_script_publication_add_remove_ordering() {
         ready_generation(&cleaned) > ready_generation(&removed),
         "cleanup client generation must advance publication generation"
     );
+    let cleanup_entry = client
+        .get(format!("{base}/assets/client/cleanup.js"))
+        .send()
+        .await
+        .expect("request cleanup client entry");
+    assert_eq!(
+        cleanup_entry.status().as_u16(),
+        200,
+        "the current cleanup entry must remain servable"
+    );
     let pruned_entry = client
         .get(&order_url)
         .send()

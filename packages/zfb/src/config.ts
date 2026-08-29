@@ -289,6 +289,18 @@ export type ZfbConfig = {
    */
   strictContentBridge?: boolean;
   /**
+   * Fail `zfb build` after warning when esbuild resolves a plain `.css`
+   * import from a JavaScript/TypeScript module, because those bytes are not
+   * included in emitted CSS. Default: `false`.
+   *
+   * Precedence: `--strict-plain-css-imports` /
+   * `--no-strict-plain-css-imports` > this config field > default `false`.
+   * Build-only: `zfb dev` always remains warning-only.
+   *
+   * Mirrors `Config::strict_plain_css_imports` in `crates/zfb/src/config.rs`.
+   */
+  strictPlainCssImports?: boolean;
+  /**
    * Whether `zfb build` writes a JSON render artifact for every
    * markdown/MDX-backed HTML route whose rendered page contains exactly
    * one top-level content region — the content-region HTML as shipped,

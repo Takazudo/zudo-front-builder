@@ -15,7 +15,7 @@
 //! The `bundle_mode` parameter is supplied by the caller.  The CSS-Modules
 //! failure policy is selected via [`CssModuleFailMode`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use zfb_build::bundler::{BundleMode, BundlerInput};
@@ -158,12 +158,12 @@ pub(crate) enum CssModuleFailMode {
     WarnAndEmpty,
 }
 
-/// Assembled [`BundlerInput`] plus the two optional temporary-directory
-/// handles that must stay alive as long as the bundler is running.
+/// Assembled [`BundlerInput`] plus the two optional resource handles that
+/// must stay alive as long as the bundler is running.
 ///
 /// * `node_modules_handle` — non-`None` when the embedded `@takazudo`
-///   packages were extracted into a temp dir (cargo-install scenario with no
-///   project-side `node_modules/`).
+///   packages are used from either an owned extraction or the shared cache
+///   (cargo-install scenario with no project-side `node_modules/`).
 /// * `esbuild_handle` — non-`None` when the embedded `esbuild` binary was
 ///   extracted into a temp dir.
 ///
@@ -172,8 +172,9 @@ pub(crate) enum CssModuleFailMode {
 /// deallocates the temp dirs while esbuild is still reading from them.
 pub(crate) struct AssembledBundlerInput {
     pub(crate) bundler_input: BundlerInput,
-    /// Keeps the extracted node_modules temp dir alive for the bundle step.
-    pub(crate) _node_modules_handle: Option<tempfile::TempDir>,
+    /// Keeps the owned extraction or shared-cache read lock alive for bundling.
+    pub(crate) _node_modules_handle:
+        Option<crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease>,
     /// Keeps the extracted esbuild binary temp dir alive for the bundle step.
     pub(crate) _esbuild_handle: Option<tempfile::TempDir>,
 }
@@ -245,6 +246,13 @@ pub(crate) fn assemble_bundler_input(
         content_snapshot_json,
     );
 
+    // The shared build/dev assembler records the canonical authored CSS set:
+    // the conventional entry plus its resolved `@import` closure. The SSR
+    // bundler subtracts this set from esbuild's plain-CSS metafile inputs so a
+    // stylesheet already shipped by the CSS engine is not reported as
+    // dropped. Resolution of JS/TS imports remains exclusively esbuild's job.
+    bundler_input.authored_css_paths = canonical_authored_css_paths(project_root);
+
     // #1193 — override the default `pages_dir` ("pages", joined against
     // project_root by the bundler's resolver) with the explicit build
     // pages root so the bundle's per-page imports include package-owned
@@ -278,24 +286,26 @@ pub(crate) fn assemble_bundler_input(
     // When the project has no node_modules at all (cargo-install scenario),
     // fall back to the binary-embedded @takazudo packages so esbuild can
     // still resolve `@takazudo/zfb` and `@takazudo/zfb-runtime`. The
-    // `_node_modules_handle` keeps the tempdir alive for the duration of
-    // the bundle step; it is dropped after `bundle(...)` returns.
-    let _node_modules_handle: Option<tempfile::TempDir>;
+    // `_node_modules_handle` keeps either the tempdir or the cache's shared
+    // read lock alive through every bundle pass that uses the returned paths.
+    let _node_modules_handle: Option<
+        crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease,
+    >;
     if let Some(nm) = crate::commands::build::detect_project_node_modules(project_root) {
         bundler_input.node_modules_dir = Some(nm);
         _node_modules_handle = None;
     } else {
-        match crate::render_pipeline::embedded_node_modules() {
-            Ok((handle, nm_path)) => {
-                bundler_input.node_modules_dir = Some(nm_path);
+        match crate::render_pipeline::embedded_node_modules_for_project(project_root) {
+            Ok(lease) => {
+                bundler_input.node_modules_dir = Some(lease.node_modules().to_path_buf());
                 // Vendored / cargo-install mode: the project has no
-                // `node_modules`, so the bundler extracted one into a
-                // tempdir.  esbuild must STAY at the shadow path during
+                // `node_modules`, so the bundler supplied the embedded tree.
+                // esbuild must STAY at the shadow path during
                 // resolution — see the `--preserve-symlinks` block in
                 // `run_esbuild` and `BundlerInput::node_modules_preserve_symlinks`
                 // for the full rationale (issues #443 / #450).
                 bundler_input.node_modules_preserve_symlinks = true;
-                _node_modules_handle = Some(handle);
+                _node_modules_handle = Some(lease);
             }
             Err(e) => {
                 // Non-fatal: log a warning and continue without injecting a
@@ -557,6 +567,17 @@ pub(crate) fn assemble_bundler_input(
     })
 }
 
+fn canonical_authored_css_paths(project_root: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(entry) = crate::commands::build::resolve_input_global_css(project_root) {
+        if let Ok(canonical_entry) = std::fs::canonicalize(&entry) {
+            paths.insert(canonical_entry);
+        }
+        paths.extend(zfb_css::resolve_css_imports(&entry, project_root));
+    }
+    paths
+}
+
 /// Decide whether this bundle arms the render-region sentinel markers
 /// (epic #2421).
 ///
@@ -610,5 +631,31 @@ mod tests {
             BundleMode::Development,
             &config_with(false)
         ));
+    }
+
+    #[test]
+    fn authored_css_paths_include_entry_and_transitive_import_closure() {
+        let project = tempfile::tempdir().unwrap();
+        let styles = project.path().join("styles");
+        std::fs::create_dir_all(&styles).unwrap();
+        std::fs::write(
+            styles.join("global.css"),
+            "@import \"./vendor.css\";\nbody {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            styles.join("vendor.css"),
+            "@import \"./tokens.css\";\n.vendor {}\n",
+        )
+        .unwrap();
+        std::fs::write(styles.join("tokens.css"), ":root {}\n").unwrap();
+
+        let paths = canonical_authored_css_paths(project.path());
+        let expected: std::collections::BTreeSet<PathBuf> =
+            ["global.css", "vendor.css", "tokens.css"]
+                .into_iter()
+                .map(|name| std::fs::canonicalize(styles.join(name)).unwrap())
+                .collect();
+        assert_eq!(paths, expected);
     }
 }
