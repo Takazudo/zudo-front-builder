@@ -139,7 +139,6 @@ swc_core = { workspace = true, features = [
 # Shared helpers.
 serde = { workspace = true }
 serde_json = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 # Canonical URL-segment codec for `paths()` resolution (issue #1767). Already

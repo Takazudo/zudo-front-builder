@@ -104,10 +104,6 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 # Rust port of Mozilla's source-map library and handles `.map` files
 # emitted by esbuild's `--sourcemap=linked`.
 sourcemap = { workspace = true }
-# Cross-process file lock for gated end-to-end tests so parallel
-# worktrees don't race for the same loopback port. Only used
-# in tests; pulled in via the main deps for simplicity.
-fs2 = "0.4"
 # Content-addressed asset hashing for the production asset pipeline
 # (see `pipeline::prod::ProductionAssetPipeline`). SHA-256 truncated to
 # 8 hex chars matches the existing convention used by `zfb-css` and
