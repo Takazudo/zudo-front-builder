@@ -91,7 +91,7 @@ use crate::config::CodeHighlightMode;
 use crate::config::{Config, OutputMode};
 use crate::output;
 use crate::render_pipeline::{
-    build_prerender_map, build_route_universe, check_runtime_installed, embedded_node_modules,
+    build_prerender_map, build_route_universe, check_runtime_installed,
     eval_deferred_paths_via_worker, expand_dynamic_routes, is_ssr_route, DeferredDynamicRoute,
     DynamicResolvedEntry, RouteUniversePlan, WorkerDispatch,
 };
@@ -4434,7 +4434,9 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     //    discovery and the entry-tempfile placement comment block in
     //    `zfb-islands/src/esbuild.rs::bundle_one_entry` still hold).
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
-    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<
+        crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease,
+    >;
     let islands_tsconfig_boundary = _islands_shadow
         .as_ref()
         .map(|shadow| shadow._tempdir.path().to_path_buf());
@@ -4472,10 +4474,11 @@ pub(crate) fn build_default_islands_payload_with_bundle_options(
     {
         _embedded_nm_handle = None;
     } else {
-        match embedded_node_modules() {
-            Ok((handle, nm_path)) => {
-                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
-                _embedded_nm_handle = Some(handle);
+        match crate::render_pipeline::embedded_node_modules_for_project(project_root) {
+            Ok(lease) => {
+                esbuild_cfg = esbuild_cfg
+                    .with_extra_env("NODE_PATH", lease.node_modules().as_os_str().to_owned());
+                _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
                 output::warn(format!(
@@ -5686,7 +5689,9 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     // `build_default_islands_payload`. Client scripts are plain TS/JS
     // files so the same NODE_PATH resolution strategy applies.
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
-    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<
+        crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease,
+    >;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
     // Issue #1707: arm the guard (b) stage-escape audit for the client-script
     // stage when it widened past project_root (a pnpm-workspace build). Same
@@ -5736,10 +5741,11 @@ pub(crate) fn build_default_client_scripts_payloads_with_plugin_config(
     {
         _embedded_nm_handle = None;
     } else {
-        match embedded_node_modules() {
-            Ok((handle, nm_path)) => {
-                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
-                _embedded_nm_handle = Some(handle);
+        match crate::render_pipeline::embedded_node_modules_for_project(project_root) {
+            Ok(lease) => {
+                esbuild_cfg = esbuild_cfg
+                    .with_extra_env("NODE_PATH", lease.node_modules().as_os_str().to_owned());
+                _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
                 output::warn(format!(
@@ -6370,7 +6376,9 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     // Set up the esbuild subprocess — same wiring as `build_default_client_scripts_payloads`
     // but using `BundleConfig::dev()` (no minification, sourcemaps on).
     let _embedded_esbuild_handle: Option<tempfile::TempDir>;
-    let _embedded_nm_handle: Option<tempfile::TempDir>;
+    let _embedded_nm_handle: Option<
+        crate::render_pipeline::embedded_node_modules_cache::EmbeddedNodeModulesLease,
+    >;
     let mut esbuild_cfg = EsbuildSubprocessConfig::default().with_working_dir(bundler_working_dir);
     // Issue #1707: arm the guard (b) stage-escape audit for the client-script
     // stage when it widened past project_root (a pnpm-workspace build). Same
@@ -6420,10 +6428,11 @@ pub(crate) fn build_dev_client_scripts_to_disk_with_plugin_config(
     {
         _embedded_nm_handle = None;
     } else {
-        match embedded_node_modules() {
-            Ok((handle, nm_path)) => {
-                esbuild_cfg = esbuild_cfg.with_extra_env("NODE_PATH", nm_path.into_os_string());
-                _embedded_nm_handle = Some(handle);
+        match crate::render_pipeline::embedded_node_modules_for_project(project_root) {
+            Ok(lease) => {
+                esbuild_cfg = esbuild_cfg
+                    .with_extra_env("NODE_PATH", lease.node_modules().as_os_str().to_owned());
+                _embedded_nm_handle = Some(lease);
             }
             Err(e) => {
                 output::warn(format!(
