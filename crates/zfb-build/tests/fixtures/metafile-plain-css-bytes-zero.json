@@ -1,0 +1,16 @@
+{
+  "inputs": {
+    "styles/zero.css": { "bytes": 0, "imports": [] },
+    "entry.js": {
+      "bytes": 20,
+      "imports": [
+        {
+          "path": "styles/zero.css",
+          "kind": "import-statement",
+          "original": "./styles/zero.css"
+        }
+      ]
+    }
+  },
+  "outputs": {}
+}

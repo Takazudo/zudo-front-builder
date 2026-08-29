@@ -1178,6 +1178,32 @@ fn resolve_metafile_inputs<'a>(
         .collect()
 }
 
+/// Return the real paths of plain CSS inputs esbuild recorded in its metafile.
+///
+/// esbuild's `inputs` keys are the resolution oracle. In particular, a CSS
+/// input remains present there when `--loader:.css=empty` reports its size as
+/// zero, so this reads keys rather than attempting to reconstruct imports.
+/// CSS Modules are excluded because their existing emission path owns them.
+/// The returned paths are canonicalised, deduplicated, and sorted.
+pub fn plain_css_inputs(
+    metafile_bytes: &[u8],
+    shadow_root: &Path,
+    project_root: &Path,
+) -> Vec<PathBuf> {
+    let meta: Metafile = match serde_json::from_slice(metafile_bytes) {
+        Ok(meta) => meta,
+        Err(_) => return Vec::new(),
+    };
+
+    resolve_metafile_inputs(&meta, project_root, &[project_root, shadow_root])
+        .into_iter()
+        .filter(|record| record.key.ends_with(".css") && !record.key.ends_with(".module.css"))
+        .filter_map(|record| record.canonical_path)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Fail-closed audit: prove that no `bundle.exclude`-matched source leaked
 /// into the bundle by cross-checking esbuild's `--metafile` `inputs` record
 /// (its authoritative resolution log) against the exclude predicate.
@@ -2019,6 +2045,11 @@ pub(crate) fn accepted_enrolment_set_at_path(
 mod tests {
     use super::*;
 
+    const PLAIN_CSS_INPUTS_METAFILE: &[u8] =
+        include_bytes!("../tests/fixtures/metafile-plain-css-inputs.json");
+    const ZERO_BYTE_CSS_INPUT_METAFILE: &[u8] =
+        include_bytes!("../tests/fixtures/metafile-plain-css-bytes-zero.json");
+
     fn write(dir: &Path, rel: &str, body: &str) -> PathBuf {
         let p = dir.join(rel);
         if let Some(parent) = p.parent() {
@@ -2026,6 +2057,36 @@ mod tests {
         }
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    #[test]
+    fn plain_css_inputs_are_canonical_deduplicated_sorted_and_exclude_modules() {
+        let project = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let project_alpha = write(project.path(), "styles/alpha.css", "alpha");
+        write(project.path(), "styles/component.module.css", "module");
+        let shadow_zeta = write(shadow.path(), "styles/zeta.css", "zeta");
+
+        let detected = plain_css_inputs(PLAIN_CSS_INPUTS_METAFILE, shadow.path(), project.path());
+
+        let mut expected = vec![
+            std::fs::canonicalize(project_alpha).unwrap(),
+            std::fs::canonicalize(shadow_zeta).unwrap(),
+        ];
+        expected.sort();
+        assert_eq!(detected, expected);
+    }
+
+    #[test]
+    fn plain_css_input_with_zero_metafile_bytes_is_detected() {
+        let project = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let zero = write(project.path(), "styles/zero.css", "not actually empty");
+
+        let detected =
+            plain_css_inputs(ZERO_BYTE_CSS_INPUT_METAFILE, shadow.path(), project.path());
+
+        assert_eq!(detected, vec![std::fs::canonicalize(zero).unwrap()]);
     }
 
     #[test]
