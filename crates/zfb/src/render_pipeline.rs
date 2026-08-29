@@ -56,6 +56,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[path = "embedded_node_modules_cache.rs"]
+pub(crate) mod embedded_node_modules_cache;
+
 use anyhow::{Context, Result};
 use include_dir::{include_dir, Dir};
 use zfb_build::renderer::RouteUniverseEntry;
@@ -136,6 +139,16 @@ pub fn embedded_node_modules() -> Result<(tempfile::TempDir, PathBuf)> {
     .context("failed to extract embedded packages")?;
     let nm_path = node_modules;
     Ok((dir, nm_path))
+}
+
+pub(crate) fn embedded_node_modules_for_project(
+    project_root: &Path,
+) -> Result<embedded_node_modules_cache::EmbeddedNodeModulesLease> {
+    embedded_node_modules_cache::acquire_embedded_node_modules_if_enabled(
+        project_root,
+        &EMBEDDED_VENDOR,
+        embedded_node_modules,
+    )
 }
 
 /// Extract a single embedded helper binary (esbuild, tailwindcss-v4, …) from
