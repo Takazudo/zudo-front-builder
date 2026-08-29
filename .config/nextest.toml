@@ -123,18 +123,20 @@
 #     with no linkValidation config at all, config-only `strictBrokenLinks`,
 #     and `--no-strict-broken` never downgrading an independently-configured
 #     nested `failOnBroken`) exits with the correct status and names the
-#     broken hrefs. This bucket is now 13 — Wave 4's
-#     new binary ALSO spawns `zfb dev`, so it joins the flock-adopting
-#     bucket above instead.
+#     broken hrefs. The later additions are recorded in the chronological
+#     recount below; the drift guard keeps this 17-binary list authoritative.
 #
 # Completeness was re-verified by grepping crates/zfb/tests/*.rs for the real
 # `zfb` binary spawn + a `build`/`dev`/`preview` subcommand (zfb_binary! +
-# .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/embed_v8 usage. Two
-# binaries that match a pattern but do NOT spawn a heavy `zfb build`/`zfb dev`
-# are deliberately excluded: `check_command` (runs only `zfb check
-# --skip-tsc`; no V8, no esbuild) and `framework_packages_no_pnpm` (calls
-# `zfb_build::bundle` in-process — shells to esbuild but never spawns the
-# `zfb` binary and never boots V8).
+# .arg("build")/.arg("dev")/.arg("preview")) plus esbuild/embed_v8 usage. The
+# mechanical guard classifies every integration-test source: 41 heavy binaries,
+# five documented exclusions (`check_command`, `framework_packages_no_pnpm`,
+# `collections_outside_root_build_check_snapshot`, `diagnostics_fixtures`, and
+# `version_report`), plus `version_stamp`, whose single heavy test is assigned
+# by the exact-name predicate documented below. Of the exclusions, only
+# `check_command` is an intentional source-heuristic false positive; it also
+# spells `.arg("build")` in cheap parity controls but invokes only `zfb check
+# --skip-tsc` in the tested command path.
 [test-groups.e2e-heavy-locked]
 max-threads = 1
 
