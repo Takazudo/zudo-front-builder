@@ -76,7 +76,7 @@ export default defineConfig({
 });
 ```
 
-With that flag set, zfb swaps its CSS engine for one that passes your authored `styles/global.css` through verbatim: no Tailwind `@import`, no content scan, no preflight, no subprocess. **CSS Modules compilation, class-name hashing, and asset emission all keep working unchanged** — only the Tailwind-specific steps are skipped. That is what makes this demo possible: opting out of Tailwind does not mean opting out of zfb's CSS pipeline.
+With that flag set, zfb uses an authored-CSS path with no Tailwind `@import`, content scan, preflight, or subprocess. It bundles resolvable local and package `@import`s with lightningcss, preserves and hoists external imports, and fails the build when a local or package import is missing. **CSS Modules compilation, class-name hashing, and asset emission all keep working unchanged** — only the Tailwind-specific steps are skipped. That is what makes this demo possible: opting out of Tailwind does not mean opting out of zfb's CSS pipeline.
 
 <Warning title="Version floor">
 

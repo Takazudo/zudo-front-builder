@@ -37,8 +37,13 @@
 //! - Returns canonicalised real paths, de-duplicated and sorted for stable
 //!   downstream ordering. The entry itself is **not** included.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use lightningcss::bundler::{Bundler, ResolveResult, SourceProvider};
+use lightningcss::rules::CssRule;
+use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
 
 /// Specifiers that name Tailwind's own virtual entry — never an on-disk file
 /// zfb should resolve or watch.
@@ -112,6 +117,232 @@ fn resolve_one(importer_real: &Path, spec: &str, project_root: &Path) -> Option<
 
     // Bare package specifier — walk up looking for node_modules.
     resolve_package_specifier(importer_dir, project_root, spec)
+}
+
+/// Bundle every resolvable local/package `@import` in authored CSS while
+/// preserving URL-like imports for the pipeline's external-import hoist.
+pub fn bundle_authored_css(
+    entry: &Path,
+    project_root: &Path,
+    authored_css: &str,
+) -> anyhow::Result<String> {
+    let entry_real = std::fs::canonicalize(entry).unwrap_or_else(|_| entry.to_path_buf());
+    let import_ordered = order_authored_imports(authored_css).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to prepare authored CSS imports at {}: {error}",
+            entry.display()
+        )
+    })?;
+    let provider = AuthoredCssSourceProvider::new(&entry_real, project_root, &import_ordered);
+    let mut bundler = Bundler::new(&provider, None, ParserOptions::default());
+    let stylesheet = bundler.bundle(&entry_real).map_err(|error| {
+        anyhow::anyhow!(
+            "failed to parse or bundle authored CSS at {}: {error}",
+            entry.display()
+        )
+    })?;
+    stylesheet
+        .to_css(PrinterOptions::default())
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "failed to print bundled authored CSS at {}: {error}",
+                entry.display()
+            )
+        })
+        .map(|result| result.code)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum AuthoredCssSourceError {
+    #[error("failed to resolve authored CSS import {specifier:?} from {origin}")]
+    Resolve { origin: PathBuf, specifier: String },
+    #[error(
+        "failed to canonicalize authored CSS import {specifier:?} from {origin} at {path}: {source}"
+    )]
+    Canonicalize {
+        origin: PathBuf,
+        specifier: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to read authored CSS import {specifier:?} from {origin} at {path}: {source}")]
+    Read {
+        origin: PathBuf,
+        specifier: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "failed to prepare authored CSS import {specifier:?} from {origin} at {path}: {message}"
+    )]
+    Prepare {
+        origin: PathBuf,
+        specifier: String,
+        path: PathBuf,
+        message: String,
+    },
+}
+
+struct AuthoredCssSourceProvider<'a> {
+    entry: PathBuf,
+    project_root: &'a Path,
+    authored_css: &'a str,
+    imported_sources: Mutex<Vec<*mut String>>,
+    import_contexts: Mutex<HashMap<PathBuf, (PathBuf, String)>>,
+}
+
+impl<'a> AuthoredCssSourceProvider<'a> {
+    fn new(entry: &Path, project_root: &'a Path, authored_css: &'a str) -> Self {
+        Self {
+            entry: entry.to_path_buf(),
+            project_root,
+            authored_css,
+            imported_sources: Mutex::new(Vec::new()),
+            import_contexts: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+// Imported strings are heap-allocated and retained until the provider is
+// dropped, matching lightningcss's FileProvider lifetime strategy.
+unsafe impl Send for AuthoredCssSourceProvider<'_> {}
+unsafe impl Sync for AuthoredCssSourceProvider<'_> {}
+
+impl SourceProvider for AuthoredCssSourceProvider<'_> {
+    type Error = AuthoredCssSourceError;
+
+    fn read<'a>(&'a self, file: &Path) -> Result<&'a str, Self::Error> {
+        if file == self.entry {
+            return Ok(self.authored_css);
+        }
+
+        let (origin, specifier) = self
+            .import_contexts
+            .lock()
+            .unwrap()
+            .get(file)
+            .cloned()
+            .unwrap_or_else(|| (file.to_path_buf(), file.display().to_string()));
+        let source =
+            std::fs::read_to_string(file).map_err(|source| AuthoredCssSourceError::Read {
+                origin: origin.clone(),
+                specifier: specifier.clone(),
+                path: file.to_path_buf(),
+                source,
+            })?;
+        let source =
+            order_authored_imports(&source).map_err(|message| AuthoredCssSourceError::Prepare {
+                origin,
+                specifier,
+                path: file.to_path_buf(),
+                message,
+            })?;
+        let ptr = Box::into_raw(Box::new(source));
+        self.imported_sources.lock().unwrap().push(ptr);
+        // SAFETY: `ptr` remains owned by `imported_sources` until this provider
+        // is dropped, after the bundler has released every returned reference.
+        Ok(unsafe { &*ptr })
+    }
+
+    fn resolve(
+        &self,
+        specifier: &str,
+        originating_file: &Path,
+    ) -> Result<ResolveResult, Self::Error> {
+        if is_external_import(specifier) {
+            return Ok(ResolveResult::External(specifier.to_string()));
+        }
+
+        let resolved =
+            resolve_one(originating_file, specifier, self.project_root).ok_or_else(|| {
+                AuthoredCssSourceError::Resolve {
+                    origin: originating_file.to_path_buf(),
+                    specifier: specifier.to_string(),
+                }
+            })?;
+        let real = std::fs::canonicalize(&resolved).map_err(|source| {
+            AuthoredCssSourceError::Canonicalize {
+                origin: originating_file.to_path_buf(),
+                specifier: specifier.to_string(),
+                path: resolved,
+                source,
+            }
+        })?;
+        self.import_contexts.lock().unwrap().insert(
+            real.clone(),
+            (originating_file.to_path_buf(), specifier.to_string()),
+        );
+        Ok(ResolveResult::File(real))
+    }
+}
+
+impl Drop for AuthoredCssSourceProvider<'_> {
+    fn drop(&mut self) {
+        for ptr in self.imported_sources.lock().unwrap().drain(..) {
+            // SAFETY: each pointer came from one `Box::into_raw` call in
+            // `read`, is stored exactly once, and is freed exactly here.
+            drop(unsafe { Box::from_raw(ptr) });
+        }
+    }
+}
+
+fn is_external_import(specifier: &str) -> bool {
+    if specifier.starts_with('/') {
+        return true;
+    }
+    let mut chars = specifier.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && chars
+            .take_while(|character| *character != ':')
+            .all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+            })
+        && specifier.find(':').is_some_and(|colon| {
+            colon > 0 && specifier[..colon].bytes().all(|byte| byte.is_ascii())
+        })
+}
+
+fn order_authored_imports(css: &str) -> Result<String, String> {
+    // lightningcss correctly rejects imports below style rules. The existing
+    // pipeline contract accepts top-level imports in any authored position,
+    // so establish its spec-valid hoisted order before parsing.
+    let hoisted = crate::pipeline::hoist_external_imports(css);
+    let mut stylesheet =
+        StyleSheet::parse(&hoisted, ParserOptions::default()).map_err(|error| error.to_string())?;
+
+    // Bundler requires preserved external imports to precede imports it will
+    // inline into rules. Reorder only the import nodes, retaining relative
+    // order within the external and local groups and leaving all other rules
+    // (including layer-order statements) in place.
+    let import_indices: Vec<usize> = stylesheet
+        .rules
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(index, rule)| matches!(rule, CssRule::Import(_)).then_some(index))
+        .collect();
+    let mut imports: Vec<CssRule<'_>> = import_indices
+        .iter()
+        .map(|&index| std::mem::replace(&mut stylesheet.rules.0[index], CssRule::Ignored))
+        .collect();
+    imports.sort_by_key(|rule| match rule {
+        CssRule::Import(import) if is_external_import(import.url.as_ref()) => 0,
+        CssRule::Import(_) => 1,
+        _ => unreachable!("only import rules were collected"),
+    });
+    for (index, rule) in import_indices.into_iter().zip(imports) {
+        stylesheet.rules.0[index] = rule;
+    }
+
+    stylesheet
+        .to_css(PrinterOptions::default())
+        .map(|result| result.code)
+        .map_err(|error| error.to_string())
 }
 
 /// A relative specifier resolves against the importing file's directory.
@@ -486,5 +717,171 @@ mod tests {
             vec![tokens_real],
             "workspace dep resolves through the node_modules symlink to its real path"
         );
+    }
+
+    #[test]
+    fn bundles_nested_local_imports_and_utf8_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entry = root.join("entry.css");
+        let authored = "@import \"./café.css\";\n.entry { content: \"日本語\"; }\n";
+        fs::write(&entry, authored).unwrap();
+        fs::write(
+            root.join("café.css"),
+            "@import \"./深い.css\";\n.café { color: red; }\n",
+        )
+        .unwrap();
+        fs::write(root.join("深い.css"), ".nested { color: blue; }\n").unwrap();
+
+        let bundled = bundle_authored_css(&entry, root, authored).unwrap();
+
+        assert_eq!(bundled.matches(".nested").count(), 1);
+        assert_eq!(bundled.matches(".café").count(), 1);
+        assert!(bundled.contains("日本語"));
+        assert!(!bundled.contains("café.css"));
+        assert!(!bundled.contains("深い.css"));
+    }
+
+    #[test]
+    fn bundles_cycle_without_duplicating_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entry = root.join("entry.css");
+        let authored = "@import \"./a.css\";\n.entry { color: black; }\n";
+        fs::write(&entry, authored).unwrap();
+        fs::write(
+            root.join("a.css"),
+            "@import \"./entry.css\";\n.a { color: red; }\n",
+        )
+        .unwrap();
+
+        let bundled = bundle_authored_css(&entry, root, authored).unwrap();
+
+        assert_eq!(bundled.matches(".entry").count(), 1);
+        assert_eq!(bundled.matches(".a {").count(), 1);
+        assert!(!bundled.contains("@import \"./"));
+    }
+
+    #[test]
+    fn unresolvable_local_import_reports_origin_and_specifier() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entry = root.join("entry.css");
+        let authored = "@import \"./a.css\";\n";
+        fs::write(&entry, authored).unwrap();
+        fs::write(root.join("a.css"), "@import \"./missing.css\";\n").unwrap();
+
+        let error = bundle_authored_css(&entry, root, authored)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("a.css"), "got: {error}");
+        assert!(error.contains("./missing.css"), "got: {error}");
+    }
+
+    #[test]
+    fn bundles_package_import_through_existing_resolver() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entry = root.join("entry.css");
+        let package = root.join("node_modules/@scope/design-system");
+        fs::create_dir_all(package.join("dist")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"style":"dist/tokens.css"}"#,
+        )
+        .unwrap();
+        fs::write(
+            package.join("dist/tokens.css"),
+            ".package-token { color: purple; }\n",
+        )
+        .unwrap();
+        let authored = "@import \"@scope/design-system\";\n";
+        fs::write(&entry, authored).unwrap();
+
+        let bundled = bundle_authored_css(&entry, root, authored).unwrap();
+
+        assert_eq!(bundled.matches(".package-token").count(), 1);
+        assert!(!bundled.contains("@scope/design-system"));
+    }
+
+    #[test]
+    fn preserves_external_forms_while_inlining_local_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entry = root.join("entry.css");
+        let authored = concat!(
+            "@import \"https://example.com/web.css\";\n",
+            "@import \"//example.com/protocol.css\";\n",
+            "@import \"data:text/css,.data%7Bcolor:red%7D\";\n",
+            "@import \"custom+v1.2:theme\";\n",
+            "@import \"/root.css\";\n",
+            "@import \"./local.css\";\n",
+            ".entry { color: black; }\n",
+        );
+        fs::write(&entry, authored).unwrap();
+        fs::write(root.join("local.css"), ".local { color: blue; }\n").unwrap();
+
+        let bundled = bundle_authored_css(&entry, root, authored).unwrap();
+
+        for external in [
+            "https://example.com/web.css",
+            "//example.com/protocol.css",
+            "data:text/css,.data%7Bcolor:red%7D",
+            "custom+v1.2:theme",
+            "/root.css",
+        ] {
+            assert!(bundled.contains(external), "missing {external}:\n{bundled}");
+        }
+        assert_eq!(bundled.matches(".local").count(), 1);
+        assert!(!bundled.contains("./local.css"));
+    }
+
+    #[test]
+    fn preserves_media_supports_and_layer_import_conditions() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let entry = root.join("entry.css");
+        let authored = concat!(
+            "@import \"./media.css\" screen and (min-width: 40rem);\n",
+            "@import \"./supports.css\" supports(display: grid);\n",
+            "@import \"./named.css\" layer(theme);\n",
+            "@import \"./anonymous.css\" layer;\n",
+        );
+        fs::write(&entry, authored).unwrap();
+        fs::write(root.join("media.css"), ".media-rule { color: red; }\n").unwrap();
+        fs::write(
+            root.join("supports.css"),
+            ".supports-rule { display: grid; }\n",
+        )
+        .unwrap();
+        fs::write(root.join("named.css"), ".named-rule { color: blue; }\n").unwrap();
+        fs::write(
+            root.join("anonymous.css"),
+            ".anonymous-rule { color: green; }\n",
+        )
+        .unwrap();
+
+        let bundled = bundle_authored_css(&entry, root, authored).unwrap();
+
+        for rule in [
+            ".media-rule",
+            ".supports-rule",
+            ".named-rule",
+            ".anonymous-rule",
+        ] {
+            assert_eq!(bundled.matches(rule).count(), 1, "got:\n{bundled}");
+        }
+        assert!(
+            bundled.contains("@media screen and (width >= 40rem)"),
+            "got:\n{bundled}"
+        );
+        assert!(
+            bundled.contains("@supports (display: grid)"),
+            "got:\n{bundled}"
+        );
+        assert!(bundled.contains("@layer theme"), "got:\n{bundled}");
+        assert!(bundled.contains("@layer {"), "got:\n{bundled}");
+        assert!(!bundled.contains(".css\""));
     }
 }
