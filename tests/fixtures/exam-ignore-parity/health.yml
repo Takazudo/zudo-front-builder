@@ -24,3 +24,17 @@ jobs:
       # must not be fooled by this.
       - name: Run fixture delta integration suite (decoy — scope does not match)
         run: cargo test -p fixture-pkg --test beta_integration -- --ignored
+
+      # Workspace-resolved nextest shape: an exact package/binary conjunction
+      # plus exact test predicates inside a package-scoped group.
+      - name: Run fixture ignored tests via workspace nextest
+        run: |
+          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
+            (package(fixture-pkg) & binary(=epsilon_integration))
+              | package(fixture-pkg) & (
+                  test(=covered_by_nextest_exact_test)
+                    | test(=mod_a::mod_b::tests::nextest_exact_lib_test)
+                )
+              | (package(decoy-pkg) & binary(=delta_integration))
+              | (package(decoy-pkg) & test(=uncovered_test))
+          '

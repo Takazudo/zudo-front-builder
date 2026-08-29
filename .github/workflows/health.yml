@@ -21,6 +21,99 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Keep this workflow unfiltered so the required `health` and
+  # `build (no-v8)` contexts always report. This detector feeds only the two
+  # optional md-wasm jobs below; a workflow-level `paths:` filter would leave
+  # the required contexts pending on an unrelated PR.
+  # Historical measurements put these six matrix legs plus browser at ~11.5
+  # billed runner-minutes per irrelevant PR; this saves runner cost without
+  # changing required-gate latency because `health` remains unfiltered.
+  changed-files:
+    name: changed-files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      wasm_md: ${{ steps.filter.outputs.wasm_md }}
+    steps:
+      # The push form of paths-filter compares the current long-lived branch
+      # with the previous push, so retain the history it needs. On PRs the
+      # action uses the API against the PR base (and needs pull-requests:read).
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect wasm-md and browser-related changes
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # For the main push, compare this push with its previous commit;
+          # pull_request events ignore this input and use the PR base SHA.
+          base: ${{ github.ref }}
+          filters: |
+            wasm_md:
+              # The six-crate cargo metadata closure across all six matrix
+              # feature configurations (zfb-md-wasm plus these five crates).
+              - 'crates/zfb-md-wasm/**'
+              - 'crates/zfb-content/**'
+              - 'crates/zfb-render/**'
+              - 'crates/zfb-md-ast/**'
+              - 'crates/zfb-md-extras/**'
+              - 'crates/zfb-types/**'
+              # Conservative dev/optional edges from that closure.
+              - 'crates/zfb-router/**'
+              - 'crates/zfb-test-utils/**'
+
+              # wasm-md-browser consumes the native zfb artifact uploaded by
+              # health. Include the complete workspace crate tree so changes
+              # to zfb or any native dependency cannot silently skip the
+              # browser check. This is intentionally broader than md-wasm's
+              # six-crate closure.
+              - 'crates/**'
+
+              # Every script, npm fixture, and browser surface invoked by the
+              # two jobs is explicit here, so CI-logic/test-fixture edits are
+              # exercised even when product sources are unchanged.
+              - 'scripts/assert-md-wasm-size-docs.mjs'
+              - 'scripts/install-git-hooks.sh'
+              - 'scripts/hooks/**'
+              - 'scripts/assert-zfb-md-wasm-graph.sh'
+              - 'scripts/run-zfb-md-wasm-build-timed.mjs'
+              - 'scripts/assert-zfb-md-wasm-exports.sh'
+              - 'scripts/assert-zfb-md-wasm-budgets.mjs'
+              - 'scripts/assert-zfb-md-wasm-release.mjs'
+              - 'crates/zfb-md-wasm/npm/scripts/**'
+              - 'crates/zfb-md-wasm/npm/test/**'
+              - 'tests/md-wasm-browser-smoke/**'
+              - 'packages/zfb/**'
+              - 'packages/zfb-runtime/**'
+
+              # Root Rust/Node/workspace manifests, locks, toolchain, and
+              # config affect compilation, package installation, or browser
+              # execution. Keep the workflow itself in the gate as well.
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - '.config/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
+              - 'pnpm-lock.yaml'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+              - 'vitest.config.mjs'
+              - '.prettierrc.json'
+              - '.prettierignore'
+              - '.editorconfig'
+              - '.gitignore'
+              - '.gitattributes'
+              - '.mdx-formatter.json'
+              - 'lefthook.yml'
+              - 'deny.toml'
+              - 'Cross.toml'
+              - '.github/workflows/health.yml'
+
   health:
     runs-on: ubuntu-latest
     # Job-level permissions override (issue #1341): the "Detect and report
@@ -60,29 +153,50 @@ jobs:
             sh "$t"
           done
 
-      # Free runner disk BEFORE the rust-cache restore + V8 first-compile (issue
-      # #687). rusty_v8 / deno_core produces a multi-GB target/; combined with the
-      # restored Swatinem cache it can exhaust the ~14 GB ubuntu-latest disk
-      # ("No space left on device", seen on 8a46936 during the #686 merge — infra
-      # flake, not a code regression). Reclaim ~15-20 GB by removing preinstalled
-      # toolchains this job never uses (Android SDK, .NET, Haskell, CodeQL) plus
-      # the Docker image cache. Done with plain `sudo rm -rf` rather than a
-      # third-party action to preserve this workflow's SHA-pinned-`uses` /
-      # least-privilege posture (see the pin-update header). Scoped to `health`
-      # only — the build-no-v8 job has no V8 to compile and stays light. Pure
-      # infra hardening: no build/test/lint behavior changes.
+      # Keep a cleanup fallback before the rust-cache restore + V8 first-compile
+      # (issue #687), but do not pay its 1m20s cost on a healthy runner. The
+      # ubuntu-latest image is ~145 GB; run 33177844413 observed ~86 GB free
+      # before this step, while the V8 build's measured peak is ~17 GB. The
+      # dtolnay/rust-toolchain setup also leaves CARGO_INCREMENTAL=0, so
+      # target/debug/incremental is never created. A concrete 40 GB threshold
+      # leaves more than twice that observed peak as a safety margin; only a
+      # runner below it removes preinstalled toolchains (Android SDK, .NET,
+      # Haskell, CodeQL) plus the Docker image cache. Cleanup uses plain sudo
+      # rm -rf rather than a third-party action to preserve this workflow's
+      # SHA-pinned-`uses` / least-privilege posture (see the pin-update header).
+      # Scoped to `health` only — the build-no-v8 job has no V8 to compile and
+      # stays light. Pure infra hardening: no build/test/lint behavior changes.
       - name: Free disk space for V8 build (issue #687)
         run: |
-          echo "Disk before cleanup:"
-          df -h /
+          set -euo pipefail
+          threshold_bytes=$((40 * 1000 * 1000 * 1000))
+          available_bytes="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          if [[ ! "$available_bytes" =~ ^[0-9]+$ ]]; then
+            echo "Unable to determine available disk space (got: $available_bytes)" >&2
+            exit 1
+          fi
+          available_gb="$(awk -v bytes="$available_bytes" 'BEGIN { printf "%.1f", bytes / 1000000000 }')"
+          echo "Disk available: ${available_bytes} bytes (${available_gb} GB); cleanup threshold: ${threshold_bytes} bytes (40.0 GB)."
+
+          if (( available_bytes >= threshold_bytes )); then
+            echo "Skipping disk cleanup: available space is at or above the 40 GB threshold."
+            exit 0
+          fi
+
+          echo "Available space is below the 40 GB threshold; running fallback cleanup."
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /opt/ghc /usr/local/.ghcup || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
           sudo docker image prune --all --force || true
           sudo apt-get clean || true
-          echo "Disk after cleanup:"
-          df -h /
+          available_after_bytes="$(df --output=avail -B1 / | awk 'NR == 2 { print $1 }')"
+          if [[ ! "$available_after_bytes" =~ ^[0-9]+$ ]]; then
+            echo "Unable to determine available disk space after cleanup (got: $available_after_bytes)" >&2
+            exit 1
+          fi
+          available_after_gb="$(awk -v bytes="$available_after_bytes" 'BEGIN { printf "%.1f", bytes / 1000000000 }')"
+          echo "Disk available after fallback cleanup: ${available_after_bytes} bytes (${available_after_gb} GB); threshold: ${threshold_bytes} bytes (40.0 GB)."
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
@@ -104,7 +218,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
         with:
-          tool: nextest
+          tool: nextest@0.9.138
 
       # Fmt gate (issue #988): near-free fail-fast check before the expensive
       # rust-cache restore + V8 build. Note: cargo fmt --check on the stable
@@ -222,8 +336,14 @@ jobs:
       # bytes independent of the checkout location that ran this step.
       - name: Verify syntect syntax-set.packdump is fresh
         run: |
+          DUMP=crates/zfb-content/assets/syntax-set.packdump
+          # The generator writes unconditionally, and the dump is an include_bytes! input of
+          # src/syntect_highlight.rs — a fresh mtime dirties zfb-content and its dependents,
+          # costing ~195s of relink in the nextest step that follows.
+          touch -r "$DUMP" "$RUNNER_TEMP/packdump.mtime"
           cargo run -p zfb-content --bin generate_syntax_dump --features generate-syntax-dump
-          git diff --exit-code -- crates/zfb-content/assets/syntax-set.packdump
+          git diff --exit-code -- "$DUMP"
+          touch -r "$RUNNER_TEMP/packdump.mtime" "$DUMP"
 
       # Lint gate (issue #646): runs after the warmed incremental compile so
       # no extra compile cost. Placed before cargo test so a lint failure
@@ -280,21 +400,12 @@ jobs:
       # zfb-islands` form also compiles+runs the crate's doctests, and 3 of
       # those are pre-existing broken/illustrative examples never meant to
       # run (issue found while wiring this step; see #1337 follow-up).
-      - name: Run zfb-islands esbuild-gated integration suite
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-islands --tests -- --ignored
-
       # Wave-4 client-bundling acceptance gate (#1504): unlike the focused
       # zfb-islands tests above, this drives the real zfb binary through both
       # production build and dev --port 0 over one cross-pipeline fixture.
-      # Keep it in its own attributable step because it boots V8, exercises
-      # SSR, and verifies both islands and *.client.ts worker namespaces.
-      - name: Run zfb client-bundling cross-pipeline acceptance test
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored
-
+      # Keep it as its own attributable exact binary predicate because it boots
+      # V8, exercises SSR, and verifies both islands and *.client.ts worker
+      # namespaces.
       # Real-esbuild stage-escape-audit confirmation for the first-party
       # dot-path staging allowlist (issue #1841, epic #1836): the
       # `bundler_dot_path_staging.rs` mock suite (#1840) drives every fixture
@@ -304,11 +415,6 @@ jobs:
       # esbuild resolves both allowlisted dot-path spellings (`.zudo-doc/
       # routes-src/**`, `.zfb/*.json`) out of the shadow and that the audit
       # passes them.
-      - name: Run zfb-build dot-path staging esbuild regression test
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-build --test bundler_dot_path_staging_esbuild_regression -- --ignored
-
       # Workspace-root alias regression (issue #1885, epic #1883): this is a
       # separate real-esbuild binary because its positive fixture proves the
       # #1884 staging claim composes with root-package TS/TSX/CSS/JSON, a
@@ -318,13 +424,8 @@ jobs:
       # leaves), while the separate negatives retain parent-relative rejection
       # and guard (b)'s fail-closed metafile audit. The provisioning assertion above is
       # deliberately shared, but this named target is not: `--ignored` is the
-      # only way these env-gated tests execute, so an explicit step prevents a
-      # future edit from silently dropping the binary from CI.
-      - name: Run zfb-build workspace-root alias esbuild regression test
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-build --test bundler_workspace_root_alias_esbuild_regression -- --ignored
-
+      # only way these env-gated tests execute, so an explicit exact predicate
+      # prevents a future edit from silently dropping the binary from CI.
       # Consume-from-source workspace idiom (issues #2039/#2040, epic #1982):
       # a first-party sibling package whose `exports` point straight at
       # `./src/*` with no `dist` is imported by bare package name through the
@@ -335,23 +436,13 @@ jobs:
       # key twin (issue #2047, landed by sub #2086 of epic #2078) — an
       # unwired binary would let any of these regress unnoticed. Same
       # ABSOLUTE-path requirement for ZFB_ESBUILD_BIN as the steps above.
-      - name: Run zfb-build consume-from-source esbuild regression test
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-build --test bundler_consume_from_source_esbuild_regression -- --ignored
-
       # Root-claimed-workspace stage-escape audit, SSR leg (issues
       # #1984/#1988, epic #1982): when `project_root` is itself claimed by
       # `pnpm-workspace.yaml`, guard (b) used to be skipped and SSR has no
       # scan-time guard (a) at all — a completely silent stage escape. This
       # env-gated test is the only proof the audit is ARMED there, so it needs
-      # its own step for the same reason as the two above: `--ignored` is the
-      # only way it ever executes.
-      - name: Run zfb-build root-workspace stage-escape audit armed regression test
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_armed_regression -- --ignored
-
+      # its own exact predicate for the same reason as the two above: `--ignored`
+      # is the only way it ever executes.
       # Root-claimed-workspace stage-escape audit DISARM pin (issues
       # #2050/#2081, epic #2078): the sibling armed-regression step above
       # proves guard (b) rejects an escape when the live node_modules
@@ -380,11 +471,6 @@ jobs:
       # named — a workspace package staged as an exact target with an empty
       # `bundle.exclude` — is not actually reachable at a root-claimed
       # workspace. See the file's own header for the investigation.
-      - name: Run zfb-build root-workspace stage-escape audit disarm pin
-        env:
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-build --test bundler_root_workspace_stage_escape_audit_disarm_pin -- --ignored
-
       # Root-claimed-workspace LOOSE-FILE staging regression (issue #2208,
       # epic #2205): the ACCEPT complement of the armed-regression step
       # above. Arming guard (b) at root-claimed workspaces (#1988) exposed
@@ -397,10 +483,35 @@ jobs:
       # esbuild's shadow-first resolution now records the STAGED spelling,
       # and its negative control proves the widened staging did not loosen
       # the audit (an undeclared bare-package-name escape stays rejected).
-      - name: Run zfb-build root-workspace loose-file alias esbuild regression test
+      # Folded into a shared workspace resolution (issue #2690): the exact
+      # binary predicates preserve all eight former esbuild-only package scopes
+      # while the three env-specific invocations eliminate exactly four extra
+      # `-p` feature resolutions (zfb-islands, zfb, zfb-build, and zfb-css) —
+      # not twelve. Keep this lane esbuild-only so no test observes a newly
+      # staged Tailwind binary.
+      - name: Run ignored env gates (esbuild-only, workspace resolution)
+        shell: bash
         env:
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb-build --test bundler_root_workspace_loose_file_alias_esbuild_regression -- --ignored
+        run: |
+          mkdir -p target/nextest-logs
+          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
+            (package(zfb-islands) & binary(=integration))
+              | (package(zfb) & binary(=client_bundling_cross_pipeline))
+              | (package(zfb-build) & binary(=bundler_dot_path_staging_esbuild_regression))
+              | (package(zfb-build) & binary(=bundler_workspace_root_alias_esbuild_regression))
+              | (package(zfb-build) & binary(=bundler_consume_from_source_esbuild_regression))
+              | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_armed_regression))
+              | (package(zfb-build) & binary(=bundler_root_workspace_stage_escape_audit_disarm_pin))
+              | (package(zfb-build) & binary(=bundler_root_workspace_loose_file_alias_esbuild_regression))
+          ' 2>&1 | tee target/nextest-logs/env-esbuild-only.log
+
+      - name: Stash esbuild-only env-gate JUnit
+        if: always()
+        run: |
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-only.xml
+          fi
 
       # Run the tailwindcss-v4 env-gate tests (issue #1393) plus both
       # command-layer preprocessing-shadow esbuild regressions: the binaries are
@@ -408,29 +519,30 @@ jobs:
       # #1337 fixed it, was never actually executed by any T1 step —
       # `cargo nextest run --workspace` below does not pass `--ignored`, so a
       # green run proves nothing about these. Same ABSOLUTE-path requirement
-      # as ZFB_ESBUILD_BIN above: `cargo test` runs each test binary with its
-      # CWD set to the owning package directory, not the workspace root.
-      # Four crate-scoped steps keep failures attributable; the zfb command
-      # steps run their real-engine env-gates with both binary paths pinned,
-      # mirroring the `#[ignore]` manifest table in crates/CLAUDE.md.
-      - name: Run zfb-css tailwindcss-v4 env-gate integration test
+      # as ZFB_ESBUILD_BIN above: nextest, like `cargo test`, runs each test
+      # binary with its CWD set to the owning package directory, not the
+      # workspace root.
+      # Three environment-specific workspace invocations keep failures
+      # attributable; the zfb command lane runs its real-engine env-gates with
+      # both binary paths pinned, mirroring the `#[ignore]` manifest table in
+      # crates/CLAUDE.md. The two predicates below preserve the original
+      # Tailwind-only environment exactly.
+      - name: Run ignored env gates (tailwind-only, workspace resolution)
+        shell: bash
         env:
           ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
-        run: cargo test -p zfb-css --test integration -- --ignored
+        run: |
+          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
+            (package(zfb-css) & binary(=integration))
+              | (package(zfb-build) & binary(=prod_asset_graph_e2e))
+          ' 2>&1 | tee target/nextest-logs/env-tailwind-only.log
 
-      - name: Run zfb-build tailwindcss-v4 env-gate integration test
-        env:
-          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
-        run: cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored
-
-      - name: Run zfb command-layer env-gate unit tests (commands::build)
-        env:
-          ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
-          ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        # Quoted: a bare `commands::build:: -- --ignored` plain scalar trips
-        # YAML's colon-space mapping-indicator rule (the trailing `:: ` reads
-        # as a key/value separator to a strict parser).
-        run: "cargo test -p zfb --lib commands::build:: -- --ignored"
+      - name: Stash tailwind-only env-gate JUnit
+        if: always()
+        run: |
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-tailwind-only.xml
+          fi
 
       # Standalone CSS command integration coverage (issue #2600): these are
       # Level-3 emitted-byte/process checks against the staged real Tailwind
@@ -438,20 +550,46 @@ jobs:
       # here as well; this named scope keeps failures attributable instead of
       # hiding them in the broad nextest run (which intentionally excludes
       # ignored tests).
-      - name: Run zfb css command real-engine integration tests
+      # Quoted: a bare `commands::build:: -- --ignored` plain scalar trips
+      # YAML's colon-space mapping-indicator rule (the trailing `:: ` reads
+      # as a key/value separator to a strict parser). The exact predicates
+      # below now live inside a block scalar and preserve that command's scope.
+      # Exact test predicates replace the former commands::build:: prefix while
+      # the exact css_command binary predicate preserves all eleven ignored
+      # integration tests. Both original scopes supplied both engine paths.
+      - name: Run ignored env gates (esbuild + tailwind, workspace resolution)
+        shell: bash
         env:
           ZFB_TAILWIND_BIN: ${{ github.workspace }}/crates/zfb/binaries/tailwindcss-v4
           ZFB_ESBUILD_BIN: ${{ github.workspace }}/crates/zfb/binaries/esbuild/esbuild
-        run: cargo test -p zfb --test css_command -- --ignored
+        run: |
+          cargo nextest run --workspace --profile ci --run-ignored ignored-only -E '
+            package(zfb) & (
+              test(=commands::build::tests::bare_package_consume_from_source_sibling_glob_macro_reaches_islands_bundle_unexpanded)
+                | test(=commands::build::tests::default_runner_emit_prod_assets_returns_non_empty_css_for_real_project)
+                | test(=commands::build::tests::plugin_alias_only_client_preprocessing_triggers_shadow_with_real_esbuild)
+                | test(=commands::build::tests::preprocessing_shadows_bundle_nested_alias_raw_and_workers_with_real_esbuild)
+                | test(=commands::build::tests::root_workspace_islands_stage_escape_audit_is_now_armed_and_undeclared_child_escape_is_rejected)
+                | binary(=css_command)
+            )
+          ' 2>&1 | tee target/nextest-logs/env-esbuild-tailwind.log
+
+      - name: Stash esbuild + tailwind env-gate JUnit
+        if: always()
+        run: |
+          if [ -f target/nextest/ci/junit.xml ]; then
+            mv target/nextest/ci/junit.xml target/nextest/ci/junit-env-esbuild-tailwind.xml
+          fi
 
       # Run the workspace test suite under cargo-nextest (issue #1340). CI
       # previously only *compiled* the test code (the cargo build --all-targets
       # step above) then ran it under plain `cargo test`; nextest adds a CI retry
       # budget (retries = 1, pass-on-retry RECORDED not hidden — #1341 consumes
       # it), per-test timeouts, and JUnit output. The `ci` profile
-      # (.config/nextest.toml) also serializes all 41 heavy V8/esbuild e2e
-      # binaries via a `max-threads = 1` test-group; 24 of those also adopt
-      # #1339's cross-binary flock. Per-binary inventory was reconciled against
+      # (.config/nextest.toml) splits the 41 heavy V8/esbuild e2e binaries into
+      # locked (24) and unlocked (17) `max-threads = 1` groups; the locked lane
+      # also adopts #1339's cross-binary flock. Per-binary inventory was
+      # reconciled against
       # `cargo test --workspace -- --list`: identical apart from doctests, which
       # nextest does not run — hence the separate doc-test step below.
       #
@@ -509,16 +647,14 @@ jobs:
       # clippy step above for the same reason as cargo test).
       - run: cargo clippy -p zfb-md-extras --features test-utils --all-targets -- -D warnings
 
-      - name: actionlint
-        uses: docker://rhysd/actionlint:1.7.12
-
       # Upload nextest JUnit reports (issue #1340) so retry/flaky telemetry
       # survives the run — the machine-readable feed issue #1341 consumes
       # below. `if: always()` uploads on EVERY run, not just failures (nextest
       # emits JUnit on failure too) — this is deliberately trend data, not
       # just failure diagnostics: a pass-on-retry only shows up in a run that
       # otherwise went green. junit-workspace.xml is the stashed
-      # full-workspace run; junit.xml is the last writer (the zfb-md-extras
+      # full-workspace run; the three junit-env-*.xml files are the immediately
+      # stashed env-gate lanes; junit.xml is the last writer (the zfb-md-extras
       # lane). `if-no-files-found: warn` tolerates an early failure (e.g. a
       # compile error) that produced no report. `retention-days: 7` — short
       # retention is fine since #1341's flaky-detection step below consumes
@@ -530,13 +666,16 @@ jobs:
         with:
           name: nextest-junit-ci
           path: |
+            target/nextest/ci/junit-env-esbuild-only.xml
+            target/nextest/ci/junit-env-tailwind-only.xml
+            target/nextest/ci/junit-env-esbuild-tailwind.xml
             target/nextest/ci/junit-workspace.xml
             target/nextest/ci/junit.xml
           if-no-files-found: warn
           retention-days: 7
 
       # Failure-only diagnostics (issue #1341): the raw nextest stdout (teed
-      # by the two nextest run steps above) — per-test TRY/PASS/FAIL lines and
+      # by the five nextest run steps above) — per-test TRY/PASS/FAIL lines and
       # panic messages that the JUnit report's structured fields don't fully
       # carry. Only uploaded `if: failure()` — a healthy run has nothing
       # worth attaching beyond the JUnit trend data already uploaded above.
@@ -546,6 +685,9 @@ jobs:
         with:
           name: nextest-diagnostics
           path: |
+            target/nextest-logs/env-esbuild-only.log
+            target/nextest-logs/env-tailwind-only.log
+            target/nextest-logs/env-esbuild-tailwind.log
             target/nextest-logs/workspace.log
             target/nextest-logs/md-extras.log
           if-no-files-found: warn
@@ -567,7 +709,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: scripts/report-flaky-tests.sh target/nextest/ci/junit-workspace.xml target/nextest/ci/junit.xml
+        run: >-
+          scripts/report-flaky-tests.sh
+          target/nextest/ci/junit-env-esbuild-only.xml
+          target/nextest/ci/junit-env-tailwind-only.xml
+          target/nextest/ci/junit-env-esbuild-tailwind.xml
+          target/nextest/ci/junit-workspace.xml
+          target/nextest/ci/junit.xml
 
       # The md-wasm browser confirmation consumes this exact V8-enabled
       # production binary. Keeping it an artifact avoids a second expensive
@@ -684,10 +832,13 @@ jobs:
   # rust-toolchain.toml's `targets`; install it only in this job.
   #
   # NOT added to the `main` branch ruleset's required-status-checks (see
-  # CLAUDE.md "Branch ruleset on main"): this job runs on every PR
-  # unconditionally, same as build-no-v8.
+  # CLAUDE.md "Branch ruleset on main"): the changed-files detector above
+  # gates this optional job at job level. Keep the gate here, never on the
+  # workflow trigger, so required contexts continue to report on every PR.
   wasm-md:
     name: wasm-md
+    needs: changed-files
+    if: ${{ needs.changed-files.outputs.wasm_md == 'true' }}
     runs-on: ubuntu-latest
     # Keep this exact timeout: the four clean production passes plus setup,
     # package tests, and pack have ample headroom under the locked 35 minutes.
@@ -734,9 +885,13 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        if: ${{ matrix.label == 'default' }}
         with:
           # Own prefix: the wasm32 target dir isn't interchangeable with the
-          # native-target caches the other two jobs above key on.
+          # native-target caches the other two jobs above key on. Only the
+          # expensive default leg restores/saves this key: the other five
+          # feature checks are short and would otherwise race to save the
+          # same cache before default can persist its useful build artifacts.
           prefix-key: "v2-zfb-wasm-md"
 
       - run: pnpm install --frozen-lockfile
@@ -756,12 +911,14 @@ jobs:
       # wasm-bindgen requires an EXACT version match between this CLI and the
       # `wasm-bindgen` crate resolved in Cargo.lock (pinned in
       # crates/zfb-md-wasm/npm/scripts/build.mjs's
-      # EXPECTED_WASM_BINDGEN_VERSION constant — bump both together). No
-      # SHA-pinned prebuilt-binary action covers this exact version, so this
-      # installs from source like the rest of the toolchain.
+      # EXPECTED_WASM_BINDGEN_VERSION constant — bump both together). The
+      # taiki-e/install-action manifest contains this version and verifies its
+      # prebuilt download with a platform-specific SHA-256 checksum.
       - name: Install wasm-bindgen-cli (pinned to match Cargo.lock)
         if: ${{ matrix.label == 'default' }}
-        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: wasm-bindgen@0.2.121
 
       # wasm-opt (binaryen) comes from the package's own devDependency via
       # the `pnpm install` above — nothing extra to install for it here.
@@ -872,7 +1029,13 @@ jobs:
   # consuming the packed md-wasm browser entry through a real zfb build.
   wasm-md-browser:
     name: wasm-md browser
-    needs: [health, wasm-md]
+    # Retain both artifact-producing dependencies. The detector is also a
+    # direct need so this job uses the same job-level path gate; when the
+    # matrix is skipped, its normal needs semantics skip this job before any
+    # artifact download, rather than waiting for or failing on a missing
+    # zfb-md-wasm tarball.
+    needs: [health, wasm-md, changed-files]
+    if: ${{ needs.changed-files.outputs.wasm_md == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

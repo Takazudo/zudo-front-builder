@@ -21,6 +21,16 @@
 #   - lib_covered_test       (crates/fixture-pkg/src/mod_a/mod_b.rs)
 #     -> COVERED-BY-HEALTH-SCOPE via a `--lib mod_a::mod_b::` module-prefix
 #        health.yml step scope (the lib-test counterpart to the case above).
+#   - covered_by_nextest_binary_test
+#     (crates/fixture-pkg/tests/epsilon_integration.rs)
+#     -> COVERED-BY-HEALTH-SCOPE via an exact package/binary conjunction in a
+#        workspace nextest ignored-only filterset.
+#   - covered_by_nextest_exact_test
+#     (crates/fixture-pkg/tests/zeta_integration.rs)
+#     -> COVERED-BY-HEALTH-SCOPE via a package-scoped exact test predicate.
+#   - nextest_exact_lib_test (crates/fixture-pkg/src/mod_a/mod_b.rs)
+#     -> COVERED-BY-HEALTH-SCOPE via the same exact-test predicate shape,
+#        proving it applies to qualified lib tests as well as integrations.
 #   - verification_helper_test (crates/fixture-pkg/tests/gamma_integration.rs)
 #     -> EXCEPTION(verification): exempted by tag alone, not by test name.
 #   - uncovered_test         (crates/fixture-pkg/tests/delta_integration.rs)
@@ -28,8 +38,9 @@
 #        *scope* actually reaches it. The fixture health.yml also carries a
 #        DECOY step named to mention "delta" whose `run:` line actually
 #        scopes beta_integration again — proving the guard performs real
-#        scope parsing rather than a loose name-similarity grep (a grep
-#        against step *names* would wrongly call this "covered").
+#        scope parsing rather than a loose name-similarity grep. The nextest
+#        filter also includes delta's binary/test names under `decoy-pkg`,
+#        proving package identity is required for exact predicates too.
 #
 # Run:
 #   sh tests/unit/check-exam-ignore-parity.sh
@@ -107,6 +118,37 @@ case "$FIXTURE_OUTPUT" in
     ;;
 esac
 
+# Outcome 2c: covered-by-health-scope, via a package/binary conjunction in a
+# workspace nextest ignored-only filterset.
+case "$FIXTURE_OUTPUT" in
+  *"COVERED-BY-HEALTH-SCOPE: covered_by_nextest_binary_test "*)
+    pass "fixture run: covered_by_nextest_binary_test reported COVERED-BY-HEALTH-SCOPE (nextest binary predicate)"
+    ;;
+  *)
+    fail "fixture run: expected COVERED-BY-HEALTH-SCOPE for covered_by_nextest_binary_test"
+    ;;
+esac
+
+# Outcome 2d: package-scoped exact nextest test predicates cover both an
+# integration test and a fully qualified lib test.
+case "$FIXTURE_OUTPUT" in
+  *"COVERED-BY-HEALTH-SCOPE: covered_by_nextest_exact_test "*)
+    pass "fixture run: covered_by_nextest_exact_test reported COVERED-BY-HEALTH-SCOPE (nextest test predicate)"
+    ;;
+  *)
+    fail "fixture run: expected COVERED-BY-HEALTH-SCOPE for covered_by_nextest_exact_test"
+    ;;
+esac
+
+case "$FIXTURE_OUTPUT" in
+  *"COVERED-BY-HEALTH-SCOPE: mod_a::mod_b::tests::nextest_exact_lib_test "*)
+    pass "fixture run: nextest_exact_lib_test reported COVERED-BY-HEALTH-SCOPE (qualified nextest test predicate)"
+    ;;
+  *)
+    fail "fixture run: expected COVERED-BY-HEALTH-SCOPE for mod_a::mod_b::tests::nextest_exact_lib_test"
+    ;;
+esac
+
 # Outcome 3: legitimate exception by tag
 case "$FIXTURE_OUTPUT" in
   *"EXCEPTION(verification): verification_helper_test "*)
@@ -129,8 +171,8 @@ case "$FIXTURE_OUTPUT" in
 esac
 
 case "$FIXTURE_OUTPUT" in
-  *"5 tests checked: 1 covered-by-exam, 2 covered-by-health-scope, 1 legitimate exceptions, 1 UNCOVERED"*)
-    pass "fixture run: summary line matches the expected 1/2/1/1 split"
+  *"8 tests checked: 1 covered-by-exam, 5 covered-by-health-scope, 1 legitimate exceptions, 1 UNCOVERED"*)
+    pass "fixture run: summary line matches the expected 1/5/1/1 split"
     ;;
   *)
     fail "fixture run: unexpected summary line: $FIXTURE_OUTPUT"

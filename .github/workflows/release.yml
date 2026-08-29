@@ -596,7 +596,8 @@ jobs:
     needs: release-context
     runs-on: ubuntu-latest
     # Keep this exact timeout to match health.yml: four wasm-release passes,
-    # package tests, pack, and a from-source wasm-bindgen-cli install fit here.
+    # package tests, pack, and the checksum-verified prebuilt wasm-bindgen
+    # install fit here.
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -636,9 +637,13 @@ jobs:
 
       # Must exactly match the wasm-bindgen crate version resolved in
       # Cargo.lock (pinned in crates/zfb-md-wasm/npm/scripts/build.mjs's
-      # EXPECTED_WASM_BINDGEN_VERSION constant) — same pin as health.yml.
+      # EXPECTED_WASM_BINDGEN_VERSION constant) — same pin as health.yml. The
+      # taiki-e/install-action manifest verifies the prebuilt download with a
+      # platform-specific SHA-256 checksum.
       - name: Install wasm-bindgen-cli (pinned to match Cargo.lock)
-        run: cargo install wasm-bindgen-cli --version 0.2.121 --locked
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: wasm-bindgen@0.2.121
 
       - name: Build four @takazudo/zfb-md-wasm artifacts (timed)
         shell: bash
