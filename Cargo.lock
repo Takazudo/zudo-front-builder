@@ -6244,7 +6244,6 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
- "futures",
  "futures-util",
  "http-body-util",
  "lol_html",

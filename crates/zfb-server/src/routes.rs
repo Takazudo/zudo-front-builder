@@ -1291,7 +1291,7 @@ async fn serve_page(
                 // call; AssertUnwindSafe is correct here because we
                 // never use `hook` again after a panic — this is a
                 // fire-and-forget best-effort call.
-                use futures::FutureExt as _;
+                use futures_util::FutureExt as _;
                 let result = std::panic::AssertUnwindSafe(hook.render_if_stale(&url_path))
                     .catch_unwind()
                     .await;
