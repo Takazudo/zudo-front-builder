@@ -21,6 +21,99 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Keep this workflow unfiltered so the required `health` and
+  # `build (no-v8)` contexts always report. This detector feeds only the two
+  # optional md-wasm jobs below; a workflow-level `paths:` filter would leave
+  # the required contexts pending on an unrelated PR.
+  # Historical measurements put these six matrix legs plus browser at ~11.5
+  # billed runner-minutes per irrelevant PR; this saves runner cost without
+  # changing required-gate latency because `health` remains unfiltered.
+  changed-files:
+    name: changed-files
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      wasm_md: ${{ steps.filter.outputs.wasm_md }}
+    steps:
+      # The push form of paths-filter compares the current long-lived branch
+      # with the previous push, so retain the history it needs. On PRs the
+      # action uses the API against the PR base (and needs pull-requests:read).
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Detect wasm-md and browser-related changes
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          # For the main push, compare this push with its previous commit;
+          # pull_request events ignore this input and use the PR base SHA.
+          base: ${{ github.ref }}
+          filters: |
+            wasm_md:
+              # The six-crate cargo metadata closure across all six matrix
+              # feature configurations (zfb-md-wasm plus these five crates).
+              - 'crates/zfb-md-wasm/**'
+              - 'crates/zfb-content/**'
+              - 'crates/zfb-render/**'
+              - 'crates/zfb-md-ast/**'
+              - 'crates/zfb-md-extras/**'
+              - 'crates/zfb-types/**'
+              # Conservative dev/optional edges from that closure.
+              - 'crates/zfb-router/**'
+              - 'crates/zfb-test-utils/**'
+
+              # wasm-md-browser consumes the native zfb artifact uploaded by
+              # health. Include the complete workspace crate tree so changes
+              # to zfb or any native dependency cannot silently skip the
+              # browser check. This is intentionally broader than md-wasm's
+              # six-crate closure.
+              - 'crates/**'
+
+              # Every script, npm fixture, and browser surface invoked by the
+              # two jobs is explicit here, so CI-logic/test-fixture edits are
+              # exercised even when product sources are unchanged.
+              - 'scripts/assert-md-wasm-size-docs.mjs'
+              - 'scripts/install-git-hooks.sh'
+              - 'scripts/hooks/**'
+              - 'scripts/assert-zfb-md-wasm-graph.sh'
+              - 'scripts/run-zfb-md-wasm-build-timed.mjs'
+              - 'scripts/assert-zfb-md-wasm-exports.sh'
+              - 'scripts/assert-zfb-md-wasm-budgets.mjs'
+              - 'scripts/assert-zfb-md-wasm-release.mjs'
+              - 'crates/zfb-md-wasm/npm/scripts/**'
+              - 'crates/zfb-md-wasm/npm/test/**'
+              - 'tests/md-wasm-browser-smoke/**'
+              - 'packages/zfb/**'
+              - 'packages/zfb-runtime/**'
+
+              # Root Rust/Node/workspace manifests, locks, toolchain, and
+              # config affect compilation, package installation, or browser
+              # execution. Keep the workflow itself in the gate as well.
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/**'
+              - '.config/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
+              - 'pnpm-lock.yaml'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+              - 'vitest.config.mjs'
+              - '.prettierrc.json'
+              - '.prettierignore'
+              - '.editorconfig'
+              - '.gitignore'
+              - '.gitattributes'
+              - '.mdx-formatter.json'
+              - 'lefthook.yml'
+              - 'deny.toml'
+              - 'Cross.toml'
+              - '.github/workflows/health.yml'
+
   health:
     runs-on: ubuntu-latest
     # Job-level permissions override (issue #1341): the "Detect and report
@@ -691,10 +784,13 @@ jobs:
   # rust-toolchain.toml's `targets`; install it only in this job.
   #
   # NOT added to the `main` branch ruleset's required-status-checks (see
-  # CLAUDE.md "Branch ruleset on main"): this job runs on every PR
-  # unconditionally, same as build-no-v8.
+  # CLAUDE.md "Branch ruleset on main"): the changed-files detector above
+  # gates this optional job at job level. Keep the gate here, never on the
+  # workflow trigger, so required contexts continue to report on every PR.
   wasm-md:
     name: wasm-md
+    needs: changed-files
+    if: ${{ needs.changed-files.outputs.wasm_md == 'true' }}
     runs-on: ubuntu-latest
     # Keep this exact timeout: the four clean production passes plus setup,
     # package tests, and pack have ample headroom under the locked 35 minutes.
@@ -885,7 +981,13 @@ jobs:
   # consuming the packed md-wasm browser entry through a real zfb build.
   wasm-md-browser:
     name: wasm-md browser
-    needs: [health, wasm-md]
+    # Retain both artifact-producing dependencies. The detector is also a
+    # direct need so this job uses the same job-level path gate; when the
+    # matrix is skipped, its normal needs semantics skip this job before any
+    # artifact download, rather than waiting for or failing on a missing
+    # zfb-md-wasm tarball.
+    needs: [health, wasm-md, changed-files]
+    if: ${{ needs.changed-files.outputs.wasm_md == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
