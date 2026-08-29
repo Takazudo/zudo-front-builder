@@ -26,14 +26,14 @@ const EXCLUSIONS = new Set([
   // controls also spell `.arg("build")`, making this the one expected false
   // positive from the intentionally straightforward source heuristic.
   "check_command",
-  // "calls `zfb_build::bundle` in-process — never spawns `zfb`, never boots
-  // V8" (although it can shell out to esbuild).
-  "framework_packages_no_pnpm",
   // Drives check/snapshot/build materialisation in-process with mocked
   // subprocess output; its header explicitly says no V8 or esbuild runs.
   "collections_outside_root_build_check_snapshot",
   // Pure framed-diagnostic rendering fixtures; never starts the zfb CLI.
   "diagnostics_fixtures",
+  // Self-spawned cache protocol/process-race harness; never spawns zfb,
+  // boots V8, or runs esbuild.
+  "embedded_node_modules_cache",
   // Spawns only the cheap already-built `zfb --version` / `zfb -V` paths.
   "version_report",
 ]);
