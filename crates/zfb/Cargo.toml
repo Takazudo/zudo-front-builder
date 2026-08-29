@@ -125,9 +125,7 @@ zfb-watcher = { path = "../zfb-watcher" }
 # already used as a build-dependency (binary verification in build.rs) and by
 # zfb-graph for its ManifestDigest; adding it here avoids pulling a new crate.
 sha2 = "0.10"
-# IP-enumeration for the dev ready-banner (#487/#499): when the user binds to
-# an unspecified address (0.0.0.0), we list non-loopback IPv4 interfaces so
-# the banner shows actual reachable URLs instead of the literal `0.0.0.0`.
+# KEEP: bind-all ready URLs enumerate every non-loopback IPv4 interface; UDP connect selects only one egress address (#487/#499).
 local-ip-address = "0.6"
 
 [build-dependencies]
