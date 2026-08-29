@@ -88,7 +88,7 @@ pub mod url_attribution;
 pub mod url_scanner;
 
 pub use authored_engine::AuthoredCssEngine;
-pub use css_imports::resolve_css_imports;
+pub use css_imports::{bundle_authored_css, resolve_css_imports};
 pub use emitter::{css_relative_path, CssEmitterOutput, CssProductionEmitter};
 pub use engine::{
     build_synthesised_entry_css, is_tailwind_entry_tmp, is_tailwind_import_line, CssEngine,

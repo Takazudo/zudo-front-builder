@@ -88,11 +88,12 @@ If you drop `tailwindcss` from `package.json` and the emitted stylesheet comes o
 
 Tailwind's `@source` content scan covers five default roots, resolved against the project root: `pages/`, `components/`, `layouts/`, `content/`, and `src/`. A utility class has to actually appear in a file under one of these directories to be picked up — a class used only in a file outside all five is not scanned, so it silently never reaches the emitted stylesheet (a green build, but the class has no styles).
 
-Setting `tailwind: { enabled: false }` switches to an `AuthoredCssEngine` that passes
-your authored `styles/global.css` through verbatim — no Tailwind `@import`, no utility
-scan, no preflight reset, no subprocess. CSS Modules compilation, class-name hashing,
-and asset emission all keep working unchanged; only the Tailwind-specific steps are
-skipped.
+Setting `tailwind: { enabled: false }` switches to an authored-CSS path with no
+Tailwind `@import`, utility scan, preflight reset, or subprocess. zfb bundles
+resolvable local and package `@import`s with lightningcss, preserves and hoists
+external imports, and fails the build when a local or package import is missing.
+CSS Modules compilation, class-name hashing, and asset emission all keep working
+unchanged; only the Tailwind-specific steps are skipped.
 
 While Tailwind is enabled, the build pipeline synthesises a temp entry file named
 `zfb-tailwind-entry-*.css` next to your CSS entry (inside the tracked source tree) and

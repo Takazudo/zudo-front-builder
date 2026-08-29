@@ -1413,7 +1413,8 @@ fn build_authored_only_css_payload(
             // Tailwind subprocess to resolve them, emitting those lines
             // verbatim would make the browser request a non-existent
             // stylesheet, so we drop them here (issue #824).
-            strip_tailwind_imports(&raw)
+            let stripped = strip_tailwind_imports(&raw);
+            zfb_css::bundle_authored_css(&path, project_root, &stripped)?
         }
         None => String::new(),
     };
@@ -10762,6 +10763,63 @@ mod tests {
         );
     }
 
+    /// Locked authored-import contract (#2721): the real Tailwind-disabled
+    /// build seam bundles local imports and leaves external imports for the
+    /// pipeline's final hoist.
+    #[test]
+    fn css_payload_bundles_authored_imports_when_tailwind_disabled() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        std::fs::create_dir_all(project_root.join("styles")).unwrap();
+        std::fs::write(
+            project_root.join("styles/global.css"),
+            concat!(
+                "@import \"./vendor.css\";\n",
+                ".authored { color: rebeccapurple; }\n",
+                "@import url(\"https://fonts.googleapis.com/css2?family=Noto+Sans+JP\");\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            project_root.join("styles/vendor.css"),
+            ".vendor { display: grid; }\n",
+        )
+        .unwrap();
+
+        let cfg = Config {
+            tailwind: Some(crate::config::TailwindConfig { enabled: false }),
+            ..Config::default()
+        };
+        let payload = build_default_css_payload(
+            project_root,
+            &project_root.join("dist"),
+            &cfg,
+            &[],
+            &[],
+            &[],
+        )
+        .expect("should not error")
+        .expect("authored CSS must ship");
+        let css = String::from_utf8(payload.bytes).unwrap();
+
+        assert!(
+            css.contains(".vendor"),
+            "vendor rules must be inlined:\n{css}"
+        );
+        assert!(
+            !css.contains("./vendor.css"),
+            "resolvable local import must be absent:\n{css}"
+        );
+        let font_import = css
+            .find("https://fonts.googleapis.com/css2?family=Noto+Sans+JP")
+            .expect("external font import preserved");
+        let first_rule = css.find(".vendor").expect("vendor rule emitted");
+        assert!(
+            font_import < first_rule,
+            "external font import must be hoisted before rules:\n{css}"
+        );
+    }
+
     /// `tailwind.enabled = false` AND no authored CSS AND no CSS Modules
     /// => no stylesheet to ship, so the emitter slot stays `None` (avoids
     /// a `<link>` to an empty stylesheet).
@@ -11822,10 +11880,6 @@ mod tests {
         assert!(
             !out.contains("tailwindcss"),
             "all tailwind imports gone; got:\n{out}"
-        );
-        assert!(
-            out.contains("@import \"./vendor.css\""),
-            "vendor import kept"
         );
         assert!(out.contains(".keep"), "authored rule kept");
     }
