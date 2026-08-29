@@ -86,6 +86,7 @@ fn make_bundle_input(project: &Path, outdir_name: &str) -> BundlerInput {
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
         project_root: project.to_path_buf(),
+        authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
         content_dir: PathBuf::from("content"),

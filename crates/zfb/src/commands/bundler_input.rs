@@ -15,7 +15,7 @@
 //! The `bundle_mode` parameter is supplied by the caller.  The CSS-Modules
 //! failure policy is selected via [`CssModuleFailMode`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use zfb_build::bundler::{BundleMode, BundlerInput};
@@ -244,6 +244,13 @@ pub(crate) fn assemble_bundler_input(
         project_root.join(".zfb-build"),
         content_snapshot_json,
     );
+
+    // The shared build/dev assembler records the canonical authored CSS set:
+    // the conventional entry plus its resolved `@import` closure. The SSR
+    // bundler subtracts this set from esbuild's plain-CSS metafile inputs so a
+    // stylesheet already shipped by the CSS engine is not reported as
+    // dropped. Resolution of JS/TS imports remains exclusively esbuild's job.
+    bundler_input.authored_css_paths = canonical_authored_css_paths(project_root);
 
     // #1193 — override the default `pages_dir` ("pages", joined against
     // project_root by the bundler's resolver) with the explicit build
@@ -557,6 +564,17 @@ pub(crate) fn assemble_bundler_input(
     })
 }
 
+fn canonical_authored_css_paths(project_root: &Path) -> std::collections::BTreeSet<PathBuf> {
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(entry) = crate::commands::build::resolve_input_global_css(project_root) {
+        if let Ok(canonical_entry) = std::fs::canonicalize(&entry) {
+            paths.insert(canonical_entry);
+        }
+        paths.extend(zfb_css::resolve_css_imports(&entry, project_root));
+    }
+    paths
+}
+
 /// Decide whether this bundle arms the render-region sentinel markers
 /// (epic #2421).
 ///
@@ -610,5 +628,31 @@ mod tests {
             BundleMode::Development,
             &config_with(false)
         ));
+    }
+
+    #[test]
+    fn authored_css_paths_include_entry_and_transitive_import_closure() {
+        let project = tempfile::tempdir().unwrap();
+        let styles = project.path().join("styles");
+        std::fs::create_dir_all(&styles).unwrap();
+        std::fs::write(
+            styles.join("global.css"),
+            "@import \"./vendor.css\";\nbody {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            styles.join("vendor.css"),
+            "@import \"./tokens.css\";\n.vendor {}\n",
+        )
+        .unwrap();
+        std::fs::write(styles.join("tokens.css"), ":root {}\n").unwrap();
+
+        let paths = canonical_authored_css_paths(project.path());
+        let expected: std::collections::BTreeSet<PathBuf> =
+            ["global.css", "vendor.css", "tokens.css"]
+                .into_iter()
+                .map(|name| std::fs::canonicalize(styles.join(name)).unwrap())
+                .collect();
+        assert_eq!(paths, expected);
     }
 }

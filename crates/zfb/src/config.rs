@@ -345,6 +345,16 @@ pub struct Config {
     #[serde(default)]
     pub strict_content_bridge: bool,
 
+    /// Whether plain `.css` imports resolved from JavaScript/TypeScript should
+    /// fail `zfb build` after the bundler warns that their bytes are not
+    /// emitted. Default: `false`. The paired build CLI flags override this
+    /// value for one production build; `zfb dev` remains warning-only.
+    ///
+    /// Mirrors `ZfbConfig::strictPlainCssImports` in
+    /// `packages/zfb/src/config.ts`.
+    #[serde(default)]
+    pub strict_plain_css_imports: bool,
+
     /// Whether `zfb build` writes a JSON render artifact for every
     /// markdown/MDX-backed HTML route whose rendered page contains
     /// exactly one top-level content region — the content-region HTML as
@@ -724,6 +734,7 @@ impl Default for Config {
             minify_html: false,
             strict_broken_links: false,
             strict_content_bridge: false,
+            strict_plain_css_imports: false,
             emit_render_artifacts: false,
             bundle: None,
             plugins: Vec::new(),
@@ -3579,6 +3590,10 @@ mod tests {
             "omitted strictContentBridge must default to compatibility-off"
         );
         assert!(
+            !cfg.strict_plain_css_imports,
+            "omitted strictPlainCssImports must default to compatibility-off"
+        );
+        assert!(
             !cfg.emit_render_artifacts,
             "omitted emitRenderArtifacts must default to false (explicit opt-in)"
         );
@@ -3660,6 +3675,19 @@ mod tests {
         .unwrap();
         let cfg = load_from_dir(tmp.path()).await.expect("load ok");
         assert!(!cfg.strict_content_bridge);
+    }
+
+    #[tokio::test]
+    async fn loads_strict_plain_css_imports_from_camelcase_json() {
+        let tmp = TempDir::new().unwrap();
+        tokio::fs::write(
+            tmp.path().join("zfb.config.json"),
+            r#"{ "strictPlainCssImports": true }"#,
+        )
+        .await
+        .unwrap();
+        let cfg = load_from_dir(tmp.path()).await.expect("load ok");
+        assert!(cfg.strict_plain_css_imports);
     }
 
     #[tokio::test]

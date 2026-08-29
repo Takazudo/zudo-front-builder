@@ -262,6 +262,24 @@ pub struct BuildArgs {
     )]
     no_strict_content_bridge: bool,
 
+    /// Fail the build when esbuild resolves a plain `.css` import from a
+    /// JavaScript/TypeScript module, because those bytes are not emitted.
+    #[arg(
+        long = "strict-plain-css-imports",
+        action = ArgAction::SetTrue,
+        conflicts_with = "no_strict_plain_css_imports"
+    )]
+    strict_plain_css_imports: bool,
+
+    /// Continue with warnings for dropped plain CSS imports, even if
+    /// `strictPlainCssImports` is enabled in `zfb.config.*`.
+    #[arg(
+        long = "no-strict-plain-css-imports",
+        action = ArgAction::SetTrue,
+        conflicts_with = "strict_plain_css_imports"
+    )]
+    no_strict_plain_css_imports: bool,
+
     /// Write a JSON render artifact for every markdown/MDX-backed HTML
     /// route whose page renders exactly one top-level content region. See
     /// the config `emitRenderArtifacts` field for the full contract
@@ -332,6 +350,19 @@ impl BuildArgs {
         }
     }
 
+    /// The user-facing strict-plain-CSS-imports CLI state.
+    pub fn strict_plain_css_imports(&self) -> BuildStrictPlainCssImports {
+        match (
+            self.strict_plain_css_imports,
+            self.no_strict_plain_css_imports,
+        ) {
+            (true, false) => BuildStrictPlainCssImports::Enabled,
+            (false, true) => BuildStrictPlainCssImports::Disabled,
+            (false, false) => BuildStrictPlainCssImports::Unspecified,
+            (true, true) => BuildStrictPlainCssImports::Disabled,
+        }
+    }
+
     /// The user-facing emit-render-artifacts CLI state.
     ///
     /// Kept as a tri-state so command orchestration can layer
@@ -391,6 +422,23 @@ pub enum BuildStrictContentBridge {
 }
 
 impl BuildStrictContentBridge {
+    pub fn as_option(self) -> Option<bool> {
+        match self {
+            Self::Unspecified => None,
+            Self::Enabled => Some(true),
+            Self::Disabled => Some(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildStrictPlainCssImports {
+    Unspecified,
+    Enabled,
+    Disabled,
+}
+
+impl BuildStrictPlainCssImports {
     pub fn as_option(self) -> Option<bool> {
         match self {
             Self::Unspecified => None,
@@ -518,6 +566,13 @@ mod tests {
     fn build_strict_content_bridge(argv: &[&str]) -> BuildStrictContentBridge {
         match Cli::try_parse_from(argv).expect("parse").command {
             Command::Build(args) => args.strict_content_bridge(),
+            other => panic!("expected build subcommand, got {other:?}"),
+        }
+    }
+
+    fn build_strict_plain_css_imports(argv: &[&str]) -> BuildStrictPlainCssImports {
+        match Cli::try_parse_from(argv).expect("parse").command {
+            Command::Build(args) => args.strict_plain_css_imports(),
             other => panic!("expected build subcommand, got {other:?}"),
         }
     }
@@ -747,6 +802,54 @@ mod tests {
             help.contains("--no-strict-content-bridge"),
             "build help must document --no-strict-content-bridge:\n{help}"
         );
+    }
+
+    #[test]
+    fn build_strict_plain_css_imports_absent_is_unspecified() {
+        assert_eq!(
+            build_strict_plain_css_imports(&["zfb", "build"]),
+            BuildStrictPlainCssImports::Unspecified
+        );
+    }
+
+    #[test]
+    fn build_strict_plain_css_imports_flag_enables() {
+        assert_eq!(
+            build_strict_plain_css_imports(&["zfb", "build", "--strict-plain-css-imports"]),
+            BuildStrictPlainCssImports::Enabled
+        );
+    }
+
+    #[test]
+    fn build_no_strict_plain_css_imports_flag_disables() {
+        assert_eq!(
+            build_strict_plain_css_imports(&["zfb", "build", "--no-strict-plain-css-imports"]),
+            BuildStrictPlainCssImports::Disabled
+        );
+    }
+
+    #[test]
+    fn build_strict_plain_css_imports_flags_conflict() {
+        let err = Cli::try_parse_from([
+            "zfb",
+            "build",
+            "--strict-plain-css-imports",
+            "--no-strict-plain-css-imports",
+        ])
+        .expect_err("conflicting strict-plain-css-imports flags must be rejected");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn build_help_documents_strict_plain_css_imports_flags() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let build = cmd
+            .find_subcommand_mut("build")
+            .expect("build subcommand exists");
+        let help = build.render_long_help().to_string();
+        assert!(help.contains("--strict-plain-css-imports"), "{help}");
+        assert!(help.contains("--no-strict-plain-css-imports"), "{help}");
     }
 
     #[test]

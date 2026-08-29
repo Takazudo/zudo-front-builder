@@ -80,7 +80,7 @@ use zfb_render::paths::PathsCache;
 
 use crate::cli::{
     BuildArgs, BuildEmitRenderArtifacts, BuildMinifyHtml, BuildStrictBrokenLinks,
-    BuildStrictContentBridge,
+    BuildStrictContentBridge, BuildStrictPlainCssImports,
 };
 use crate::commands::css_support::{resolve_framework_css, role_classes_inline_sources};
 use crate::commands::resolve::{
@@ -160,6 +160,12 @@ pub async fn run(args: &BuildArgs) -> Result<()> {
     let strict_content_bridge =
         resolve_strict_content_bridge(args.strict_content_bridge(), &config);
     config.strict_content_bridge = strict_content_bridge;
+
+    // Build-only strict plain-CSS override. The effective value is written
+    // back before plugin serialization, while the shared bundler itself only
+    // records and warns so dev can never become fatal through this setting.
+    config.strict_plain_css_imports =
+        resolve_strict_plain_css_imports(args.strict_plain_css_imports(), &config);
 
     // Epic #2421 — emit-render-artifacts override. Same write-back
     // discipline as `strict_broken_links`/`strict_content_bridge` above:
@@ -577,6 +583,25 @@ pub(crate) fn resolve_strict_content_bridge(
     config: &Config,
 ) -> bool {
     cli.as_option().unwrap_or(config.strict_content_bridge)
+}
+
+/// Resolve the build-only plain-CSS strictness tri-state. Explicit CLI flags
+/// beat the config value, whose serde default is `false`.
+pub(crate) fn resolve_strict_plain_css_imports(
+    cli: BuildStrictPlainCssImports,
+    config: &Config,
+) -> bool {
+    cli.as_option().unwrap_or(config.strict_plain_css_imports)
+}
+
+fn strict_plain_css_display_path(path: &Path, project_root: &Path) -> String {
+    let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical_root =
+        std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    canonical_path
+        .strip_prefix(canonical_root)
+        .map(zfb_types::path_to_posix_string)
+        .unwrap_or_else(|_| canonical_path.display().to_string())
 }
 
 /// Resolve the effective emit-render-artifacts override (Render Artifact
@@ -6810,6 +6835,21 @@ fn run_build<R: BuildRunner, A: AdapterRunner>(
         anyhow::bail!(msg.trim_end().to_string());
     }
 
+    if config.strict_plain_css_imports && !bundler_out.dropped_plain_css_inputs.is_empty() {
+        let mut msg = format!(
+            "{} plain CSS import(s) were dropped:\n",
+            bundler_out.dropped_plain_css_inputs.len()
+        );
+        for path in &bundler_out.dropped_plain_css_inputs {
+            let display = strict_plain_css_display_path(path, project_root);
+            msg.push_str(&format!("  {display}\n"));
+        }
+        msg.push_str(
+            "Move the styles into styles/global.css (or its @import closure), use CSS Modules, or set strictPlainCssImports: false (or pass --no-strict-plain-css-imports) to continue with warnings.",
+        );
+        anyhow::bail!(msg.trim_end().to_string());
+    }
+
     // 2. Phase 3 — runtime paths() evaluation.
     //
     // For any dynamic routes whose `paths()` couldn't be statically
@@ -8119,6 +8159,7 @@ mod tests {
         /// on a project with no fallback); tests can preload entries to
         /// exercise `run_build`'s `strictContentBridge` bail check.
         content_bridge_fallback_pages: RefCell<Vec<String>>,
+        dropped_plain_css_inputs: RefCell<Vec<PathBuf>>,
     }
 
     impl FakeRunner {
@@ -8133,6 +8174,7 @@ mod tests {
                 static_html_output_paths: RefCell::new(Vec::new()),
                 emitted_wasm_assets: RefCell::new(Vec::new()),
                 content_bridge_fallback_pages: RefCell::new(Vec::new()),
+                dropped_plain_css_inputs: RefCell::new(Vec::new()),
             }
         }
 
@@ -8169,6 +8211,11 @@ mod tests {
         /// more `.md`/`.mdx` entries failed to bridge.
         fn with_content_bridge_fallback_pages(self, pages: Vec<String>) -> Self {
             *self.content_bridge_fallback_pages.borrow_mut() = pages;
+            self
+        }
+
+        fn with_dropped_plain_css_inputs(self, paths: Vec<PathBuf>) -> Self {
+            *self.dropped_plain_css_inputs.borrow_mut() = paths;
             self
         }
     }
@@ -8209,6 +8256,7 @@ mod tests {
                 route_module_deps: Vec::new(),
                 emitted_wasm_assets,
                 content_bridge_fallback_pages: self.content_bridge_fallback_pages.borrow().clone(),
+                dropped_plain_css_inputs: self.dropped_plain_css_inputs.borrow().clone(),
             })
         }
         fn eval_deferred_paths(
@@ -8551,6 +8599,62 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn resolve_strict_plain_css_imports_defaults_false() {
+        assert!(!resolve_strict_plain_css_imports(
+            BuildStrictPlainCssImports::Unspecified,
+            &Config::default()
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_plain_css_imports_uses_config() {
+        let cfg = Config {
+            strict_plain_css_imports: true,
+            ..Config::default()
+        };
+        assert!(resolve_strict_plain_css_imports(
+            BuildStrictPlainCssImports::Unspecified,
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_plain_css_imports_cli_enable_beats_config_false() {
+        assert!(resolve_strict_plain_css_imports(
+            BuildStrictPlainCssImports::Enabled,
+            &Config::default()
+        ));
+    }
+
+    #[test]
+    fn resolve_strict_plain_css_imports_cli_disable_beats_config_true() {
+        let cfg = Config {
+            strict_plain_css_imports: true,
+            ..Config::default()
+        };
+        assert!(!resolve_strict_plain_css_imports(
+            BuildStrictPlainCssImports::Disabled,
+            &cfg
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_plain_css_display_is_relative_through_project_root_symlink_alias() {
+        let tmp = tempdir().unwrap();
+        let real_root = tmp.path().join("real");
+        std::fs::create_dir_all(real_root.join("components")).unwrap();
+        let css = real_root.join("components/alpha.css");
+        std::fs::write(&css, "alpha").unwrap();
+        let alias = tmp.path().join("alias");
+        std::os::unix::fs::symlink(&real_root, &alias).unwrap();
+        assert_eq!(
+            strict_plain_css_display_path(&std::fs::canonicalize(css).unwrap(), &alias),
+            "components/alpha.css"
+        );
+    }
+
     // --- resolve_emit_render_artifacts tri-state cases (epic #2421) ---
 
     #[test]
@@ -8873,6 +8977,78 @@ mod tests {
             runner.render_calls.borrow().is_empty(),
             "render must not run once the strict-content-bridge bail fires"
         );
+    }
+
+    #[test]
+    fn run_build_dropped_plain_css_continues_when_strict_is_off() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let dropped = project_root.join("components/alpha.css");
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_dropped_plain_css_inputs(vec![dropped]);
+        let fake_adapter = FakeAdapterRunner::new();
+
+        let result = run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &Config::default(),
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        });
+        assert!(result.is_ok());
+        assert_eq!(runner.render_calls.borrow().len(), 1);
+    }
+
+    #[test]
+    fn run_build_dropped_plain_css_strict_error_is_sorted_and_pre_render() {
+        let tmp = tempdir().unwrap();
+        let project_root = tmp.path();
+        let outdir = project_root.join("dist");
+        make_runtime(project_root);
+        let routes = vec![static_route(vec![], "pages/index.tsx")];
+        let runner = FakeRunner::new(project_root.join(".zfb-build/bundle.mjs"))
+            .with_dropped_plain_css_inputs(vec![
+                project_root.join("components/alpha.css"),
+                project_root.join("components/zeta.css"),
+            ]);
+        let cfg = Config {
+            strict_plain_css_imports: true,
+            ..Config::default()
+        };
+        let fake_adapter = FakeAdapterRunner::new();
+
+        let err = run_build(BuildArgsResolved {
+            project_root,
+            build_pages_root: project_root,
+            user_pages_dir: project_root,
+            package_route_entrypoints: &[],
+            outdir: &outdir,
+            config: &cfg,
+            routes: &routes,
+            runner: &runner,
+            adapter_runner: &fake_adapter,
+            plugin_alias_entries: Vec::new(),
+            plugin_virtual_modules: Vec::new(),
+            minify_html: false,
+        })
+        .expect_err("strict plain-CSS policy must fail after bundling");
+        let msg = format!("{err:#}");
+        let alpha = msg.find("components/alpha.css").unwrap();
+        let zeta = msg.find("components/zeta.css").unwrap();
+        assert!(alpha < zeta, "paths must remain sorted: {msg}");
+        assert!(msg.ends_with("Move the styles into styles/global.css (or its @import closure), use CSS Modules, or set strictPlainCssImports: false (or pass --no-strict-plain-css-imports) to continue with warnings."), "{msg}");
+        assert!(runner.render_calls.borrow().is_empty());
+        assert_eq!(runner.eval_deferred_paths_calls.borrow().to_owned(), 0);
     }
 
     #[test]
@@ -9281,6 +9457,7 @@ mod tests {
                     route_module_deps: Vec::new(),
                     emitted_wasm_assets: Vec::new(),
                     content_bridge_fallback_pages: Vec::new(),
+                    dropped_plain_css_inputs: Vec::new(),
                 })
             }
             fn eval_deferred_paths(
@@ -10446,6 +10623,15 @@ mod tests {
         let tmp = tempdir().unwrap();
         let project_root = tmp.path();
         assert_eq!(resolve_input_global_css(project_root), None);
+    }
+
+    #[test]
+    fn basic_blog_scaffold_does_not_import_conventional_global_css_from_tsx() {
+        let layout = include_str!("../../templates/basic-blog/layouts/default.tsx");
+        assert!(
+            !layout.contains("import \"~/styles/global.css\";"),
+            "the conventional authored CSS entry must not also trigger the plain-CSS warning"
+        );
     }
 
     // -----------------------------------------------------------------------

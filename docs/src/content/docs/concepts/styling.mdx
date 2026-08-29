@@ -147,7 +147,7 @@ How it works:
 
 - `import styles from "./x.module.css"` must be a **default import**. `styles` is a plain object mapping your original class names to the scoped ones.
 - Access a class with member access — `styles.card` or `styles["card"]`. Both work; computed access with a dynamic key does not, because the rewrite happens at build time.
-- Plain `.css` imports (a file *not* ending in `.module.css`) are still treated as global CSS — only the `.module.css` suffix opts a file into scoping.
+- Plain `.css` imports from JavaScript/TypeScript modules are not emitted. zfb warns when esbuild resolves one; `strictPlainCssImports: true` (or `zfb build --strict-plain-css-imports`) turns the warning into a build error. Put global CSS in `styles/global.css` (and use `@import` there), or use a default-imported `.module.css` file for scoped component CSS.
 - The `.module.css` file is discovered when it is imported from a `.tsx`/`.ts`/`.jsx`/`.js` file under `pages/`, `components/`, `layouts/`, or `content/`.
 
 Limitations:
