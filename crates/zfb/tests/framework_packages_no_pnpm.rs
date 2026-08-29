@@ -42,7 +42,7 @@ use std::process::Command;
 use zfb::render_pipeline::embedded_node_modules;
 use zfb_build::{bundle, BundleMode, BundlerInput};
 use zfb_render::adapters::Framework;
-use zfb_test_utils::locate_esbuild;
+use zfb_test_utils::{locate_esbuild, zfb_binary};
 
 #[path = "../src/embedded_node_modules_cache.rs"]
 #[allow(dead_code)]
@@ -235,6 +235,25 @@ fn embedded_extraction_resolves_framework_imports_with_no_consumer_node_modules(
             format!("{lease_kind}\n{}\n", nm_path.display()),
         )
         .expect("write worker lease evidence");
+
+        let cli = Command::new(zfb_binary!())
+            .arg("build")
+            .current_dir(&root)
+            .output()
+            .expect("run real zfb build worker");
+        assert!(
+            cli.status.success(),
+            "zfb build failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&cli.stdout),
+            String::from_utf8_lossy(&cli.stderr)
+        );
+        fs::write(result_path.with_extension("cli-stderr"), &cli.stderr)
+            .expect("write CLI stderr evidence");
+        fs::write(
+            result_path.with_extension("dist"),
+            snapshot_tree(&root.join("dist")),
+        )
+        .expect("write CLI dist evidence");
     }
 
     drop(nm_lease); // explicit: owned tempdir or borrowed read lock ends here
@@ -286,6 +305,26 @@ fn cache_flag_preserves_build_bytes_and_default_stderr_across_processes() {
         fs::read(owner.path().join("warm.bundle")).unwrap(),
         "warm cache reuse changed emitted bundle bytes"
     );
+    assert_eq!(
+        fs::read(owner.path().join("off.cli-stderr")).unwrap(),
+        fs::read(owner.path().join("cold.cli-stderr")).unwrap(),
+        "flag-on changed default zfb build stderr"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.cli-stderr")).unwrap(),
+        fs::read(owner.path().join("warm.cli-stderr")).unwrap(),
+        "warm cache reuse changed default zfb build stderr"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.dist")).unwrap(),
+        fs::read(owner.path().join("cold.dist")).unwrap(),
+        "flag-on changed zfb build output bytes"
+    );
+    assert_eq!(
+        fs::read(owner.path().join("off.dist")).unwrap(),
+        fs::read(owner.path().join("warm.dist")).unwrap(),
+        "warm cache reuse changed zfb build output bytes"
+    );
 
     let off_lease = fs::read_to_string(owner.path().join("off.lease")).unwrap();
     let cold_lease = fs::read_to_string(owner.path().join("cold.lease")).unwrap();
@@ -323,4 +362,32 @@ fn run_framework_worker(
         );
     }
     command.output().expect("run framework cache worker")
+}
+
+fn snapshot_tree(root: &std::path::Path) -> Vec<u8> {
+    fn visit(root: &std::path::Path, current: &std::path::Path, files: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(current).expect("read dist directory") {
+            let entry = entry.expect("read dist entry");
+            let path = entry.path();
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.push(path.strip_prefix(root).unwrap().to_path_buf());
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    visit(root, root, &mut files);
+    files.sort();
+    let mut snapshot = Vec::new();
+    for relative in files {
+        let relative_bytes = relative.to_string_lossy();
+        let bytes = fs::read(root.join(&relative)).expect("read dist file");
+        snapshot.extend_from_slice(&(relative_bytes.len() as u64).to_le_bytes());
+        snapshot.extend_from_slice(relative_bytes.as_bytes());
+        snapshot.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        snapshot.extend_from_slice(&bytes);
+    }
+    snapshot
 }
