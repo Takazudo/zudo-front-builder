@@ -1,0 +1,4 @@
+default: gzip -9 (final):                       1,467,589 bytes (1.40 MB)
+highlight-only: gzip -9 (final):                       763,804 bytes (0.73 MB)
+render-only: gzip -9 (final):                       1,016,073 bytes (0.97 MB)
+parse-only: gzip -9 (final):                       275,195 bytes (0.26 MB)
