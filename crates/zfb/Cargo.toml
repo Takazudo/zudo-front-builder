@@ -54,7 +54,6 @@ axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 include_dir = "0.7"
-indicatif = "0.18"
 # Gitignore-aware directory walker (issue #1696): wholesale-walks a
 # claimed sibling mirror root for CSS Modules scan sources, mirroring
 # `zfb-build`'s own `enumerate_mirror_root_files` (same crate, same
