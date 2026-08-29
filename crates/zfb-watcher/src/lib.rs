@@ -1409,9 +1409,9 @@ const MAX_PENDING_BEFORE_FORCED_FLUSH: usize = 1024;
 ///
 /// Strategy: bridge the sync `notify` channel onto a tokio channel via
 /// `spawn_blocking`, then loop with a small "wake every debounce/2"
-/// timer that flushes any path whose last event is older than the
-/// debounce window. This avoids per-path timer tasks (cheap) and gives
-/// O(1) flush per tick.
+/// timer that flushes the pending set once every path has been quiet for
+/// the debounce window. This avoids per-path timer tasks and makes an
+/// ordinary finite burst one global trailing-edge batch.
 ///
 /// Starvation / livelock guard: the `select!` is `biased`, so under a
 /// continuous high-rate event stream the `recv` arm fires forever and the
@@ -1531,15 +1531,7 @@ async fn debouncer_task(
 
             _ = tick.tick() => {
                 let now = Instant::now();
-                // Drain entries whose last event is older than `debounce`.
-                let ready: Vec<(PathBuf, ChangeKind)> = pending
-                    .iter()
-                    .filter(|(_, p)| now.duration_since(p.last_seen) >= debounce)
-                    .map(|(k, p)| (k.clone(), p.kind))
-                    .collect();
-                for (path, _) in &ready {
-                    pending.remove(path);
-                }
+                let ready = drain_if_globally_quiet(&mut pending, now, debounce);
                 last_drain = now;
                 match emit_ready_racing_shutdown(ready, &out_tx, &mut shutdown).await {
                     DrainOutcome::Drained => {}
@@ -1555,6 +1547,27 @@ async fn debouncer_task(
 
     // bridge task exits naturally when raw_rx closes.
     let _ = bridge.await;
+}
+
+/// Drain the whole pending burst only after its newest classified event has
+/// been quiet for `debounce`. Forced drains, bridge close, and shutdown bypass
+/// this ordinary trailing-edge decision at their explicit batch boundaries.
+fn drain_if_globally_quiet(
+    pending: &mut HashMap<PathBuf, Pending>,
+    now: Instant,
+    debounce: Duration,
+) -> Vec<(PathBuf, ChangeKind)> {
+    if pending
+        .values()
+        .any(|entry| now.duration_since(entry.last_seen) < debounce)
+    {
+        return Vec::new();
+    }
+
+    pending
+        .drain()
+        .map(|(path, entry)| (path, entry.kind))
+        .collect()
 }
 
 /// Outcome of an outbound-drain attempt that races the shutdown signal.
@@ -1665,6 +1678,47 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn global_quiet_waits_for_newest_pending_path() {
+        let debounce = Duration::from_millis(50);
+        let now = Instant::now();
+        let older = PathBuf::from("older.txt");
+        let newer = PathBuf::from("newer.txt");
+        let mut pending = HashMap::from([
+            (
+                older.clone(),
+                Pending {
+                    kind: ChangeKind::Modified,
+                    last_seen: now - debounce - debounce,
+                },
+            ),
+            (
+                newer.clone(),
+                Pending {
+                    kind: ChangeKind::Created,
+                    last_seen: now - debounce / 2,
+                },
+            ),
+        ]);
+
+        let before_global_quiet = drain_if_globally_quiet(&mut pending, now, debounce);
+        assert!(
+            before_global_quiet.is_empty(),
+            "an individually quiet path must wait for the newest path in the batch",
+        );
+        assert_eq!(pending.len(), 2, "the pending burst must remain intact");
+
+        let mut after_global_quiet =
+            drain_if_globally_quiet(&mut pending, now + debounce, debounce);
+        after_global_quiet.sort_by(|(left, _), (right, _)| left.cmp(right));
+        assert_eq!(
+            after_global_quiet,
+            vec![(newer, ChangeKind::Created), (older, ChangeKind::Modified),],
+            "the entire burst must drain together after its newest path is quiet",
+        );
+        assert!(pending.is_empty());
+    }
 
     #[test]
     fn classify_create_is_created() {
