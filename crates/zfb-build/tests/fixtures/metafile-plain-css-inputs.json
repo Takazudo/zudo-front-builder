@@ -1,6 +1,7 @@
 {
   "inputs": {
     "styles/zeta.css": { "bytes": 4, "imports": [] },
+    "./styles/alpha.css": { "bytes": 5, "imports": [] },
     "styles/component.module.css": { "bytes": 6, "imports": [] },
     "styles/missing.css": { "bytes": 7, "imports": [] },
     ".zfb-generated.css": { "bytes": 9, "imports": [] },
