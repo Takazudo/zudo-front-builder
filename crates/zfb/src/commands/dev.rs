@@ -101,7 +101,7 @@ use zfb_server::{
 };
 
 use crate::cli::DevArgs;
-use crate::commands::dev_companion_ledger::IslandsCompanionLedger;
+use crate::commands::dev_companion_ledger::{ClientScriptCompanionLedger, IslandsCompanionLedger};
 use crate::commands::resolve::{resolve_addr, resolve_host, resolve_port, resolve_under_root};
 use crate::commands::watcher_liveness_probe::spawn_watcher_liveness_probe;
 use crate::config;
@@ -1655,14 +1655,8 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         zfb_server::DevPublicationState::pending(),
     ));
     let islands_companion_ledger = Arc::new(Mutex::new(IslandsCompanionLedger::default()));
-    let live_client_script_outputs: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
-    let staged_client_script_outputs: Arc<Mutex<Option<HashSet<String>>>> =
-        Arc::new(Mutex::new(None));
-    let unresolved_client_script_outputs: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
-    let baseline_unresolved_client_script_outputs: Arc<Mutex<HashSet<String>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+    let client_script_companion_ledger =
+        Arc::new(Mutex::new(ClientScriptCompanionLedger::default()));
     let document_obligations = Arc::new(Mutex::new(DocumentObligations::default()));
 
     // The pipeline's initial-build completion is validated by
@@ -1674,10 +1668,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let boot_guard = Arc::clone(&boot_publication_guard);
         let obligations = Arc::clone(&document_obligations);
         let islands_ledger = Arc::clone(&islands_companion_ledger);
-        let live_clients = Arc::clone(&live_client_script_outputs);
-        let staged_clients = Arc::clone(&staged_client_script_outputs);
-        let unresolved_clients = Arc::clone(&unresolved_client_script_outputs);
-        let baseline_clients = Arc::clone(&baseline_unresolved_client_script_outputs);
+        let client_ledger = Arc::clone(&client_script_companion_ledger);
         let assets_dir = dev_assets_root.join(zfb_types::DIST_ASSETS_DIR);
         let stale_session = dev_session.clone();
         let stale_root = dev_html_root.clone();
@@ -1690,11 +1681,10 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .begin();
-                    *baseline_clients.lock().unwrap_or_else(|p| p.into_inner()) =
-                        unresolved_clients
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .clone();
+                    client_ledger
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .begin();
                     state
                         .write()
                         .unwrap_or_else(|p| p.into_inner())
@@ -1920,35 +1910,22 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         !matches!(publication.documents, zfb_server::DocumentSlot::Pending);
                     drop(publication);
                     if restored_previous {
-                        *staged_clients.lock().unwrap_or_else(|p| p.into_inner()) = None;
                         let aborted = islands_ledger
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
                             .abort_candidate();
                         prune_dev_companions("islands", &assets_dir, &aborted, &HashSet::new());
 
-                        let live = live_clients
+                        let aborted = client_ledger
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .clone();
-                        let baseline = baseline_clients
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .clone();
-                        let mut unresolved =
-                            unresolved_clients.lock().unwrap_or_else(|p| p.into_inner());
-                        let candidates: HashSet<String> = unresolved
-                            .difference(&baseline)
-                            .filter(|name| !live.contains(*name))
-                            .cloned()
-                            .collect();
+                            .abort_candidate();
                         prune_dev_companions(
                             "client scripts",
                             &assets_dir.join(zfb_types::DIST_CLIENT_SCRIPTS_DIR),
-                            &candidates,
+                            &aborted,
                             &HashSet::new(),
                         );
-                        *unresolved = baseline;
                     }
                     return;
                 }
@@ -1988,35 +1965,16 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             }
             drop(publication);
 
-            if let Some(next) = staged_clients
+            let client_plan = client_ledger
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .take()
-            {
-                let mut live = live_clients.lock().unwrap_or_else(|p| p.into_inner());
-                if preserve_lazy {
-                    unresolved_clients
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .extend(live.iter().cloned());
-                }
-                *live = next;
-            }
-            if !preserve_lazy {
-                let live = live_clients
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone();
-                let candidates = std::mem::take(
-                    &mut *unresolved_clients.lock().unwrap_or_else(|p| p.into_inner()),
-                );
-                prune_dev_companions(
-                    "client scripts",
-                    &assets_dir.join(zfb_types::DIST_CLIENT_SCRIPTS_DIR),
-                    &candidates,
-                    &live,
-                );
-            }
+                .commit();
+            prune_dev_companions(
+                "client scripts",
+                &assets_dir.join(zfb_types::DIST_CLIENT_SCRIPTS_DIR),
+                &client_plan.candidates,
+                &client_plan.keep,
+            );
 
             let plan = islands_ledger
                 .lock()
@@ -2587,13 +2545,17 @@ pub async fn run(args: &DevArgs) -> Result<()> {
     // Tracks every entry/worker basename written by the most recent bundle so
     // the next rebuild can prune removed/renamed entries and stale workers.
     // Eager boot bundle — non-fatal, mirrors islands / CSS.
+    let protected_client_script_outputs = client_script_companion_ledger
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .protected_filenames();
     match crate::commands::build::build_dev_client_scripts_to_disk_with_plugin_config(
         &project_root,
         // Issue #1189: client scripts go to the isolated dev-assets root.
         &dev_assets_root,
         cfg.framework,
         cfg.bundle.as_ref(),
-        &std::collections::HashSet::new(),
+        &protected_client_script_outputs,
         &registered_client_entries,
         &islands_plugin_config,
     ) {
@@ -2604,13 +2566,12 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                 .record_client_publication_success(&outcome.output_filenames);
             let published_urls =
                 dev_client_script_urls(&dev_islands_url_prefix, &outcome.output_filenames);
-            if let Ok(mut guard) = staged_client_script_outputs.lock() {
-                *guard = Some(outcome.output_filenames.clone());
-            }
-            unresolved_client_script_outputs
+            let mut ledger = client_script_companion_ledger
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .extend(outcome.output_filenames);
+                .unwrap_or_else(|p| p.into_inner());
+            ledger.track_candidate(&outcome.output_filenames);
+            ledger.stage(outcome.output_filenames.clone(), outcome.changed);
+            drop(ledger);
             raw_import_invalidation.replace_client_scripts(outcome.raw_targets);
             raw_import_invalidation.replace_client_script_workers(outcome.worker_targets);
             raw_import_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
@@ -2629,12 +2590,18 @@ pub async fn run(args: &DevArgs) -> Result<()> {
             if let Some(rollback) =
                 err.downcast_ref::<crate::commands::build::DevClientScriptRollbackError>()
             {
+                let uncertain: HashSet<String> = rollback
+                    .uncertain_output_filenames()
+                    .map(str::to_owned)
+                    .collect();
+                client_script_companion_ledger
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .track_candidate(&uncertain);
                 document_obligations
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .record_client_publication_rollback_failure(
-                        rollback.uncertain_output_filenames().map(str::to_owned),
-                    );
+                    .record_client_publication_rollback_failure(uncertain);
             }
             output::warn(format!(
                 "initial client-scripts bundle failed (no client scripts will be served \
@@ -2650,9 +2617,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let dev_assets_root_for_cs = dev_assets_root.clone();
         let framework = cfg.framework;
         let bundle_config = cfg.bundle.clone();
-        let output_filenames = Arc::clone(&live_client_script_outputs);
-        let staged_output_filenames = Arc::clone(&staged_client_script_outputs);
-        let unresolved_output_filenames = Arc::clone(&unresolved_client_script_outputs);
+        let client_ledger = Arc::clone(&client_script_companion_ledger);
         // #1196 — capture registered entries for the watcher closure.
         let registered_for_cs = registered_client_entries.clone();
         // Aliases never change after setup — capture those once (mirrors
@@ -2670,7 +2635,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
         let obligations = Arc::clone(&document_obligations);
         let url_prefix = dev_islands_url_prefix.clone();
         Some(Arc::new(move || -> Result<bool> {
-            let mut prev = output_filenames
+            let prev = client_ledger
                 .lock()
                 .unwrap_or_else(|p| {
                     tracing::warn!(
@@ -2679,14 +2644,7 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                     );
                     p.into_inner()
                 })
-                .clone();
-            prev.extend(
-                unresolved_output_filenames
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .iter()
-                    .cloned(),
-            );
+                .protected_filenames();
             let plugin_config_for_cs = crate::commands::build::IslandsPluginConfig {
                 alias_entries: plugin_alias_entries_for_cs.clone(),
                 virtual_modules: plugin_virtual_module_store_for_cs.snapshot_pairs(),
@@ -2712,30 +2670,33 @@ pub async fn run(args: &DevArgs) -> Result<()> {
                         if let Some(rollback) = error
                             .downcast_ref::<crate::commands::build::DevClientScriptRollbackError>(
                         ) {
+                            let uncertain: HashSet<String> = rollback
+                                .uncertain_output_filenames()
+                                .map(str::to_owned)
+                                .collect();
+                            client_ledger
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .track_candidate(&uncertain);
                             obligations
                                 .lock()
                                 .unwrap_or_else(|p| p.into_inner())
-                                .record_client_publication_rollback_failure(
-                                    rollback.uncertain_output_filenames().map(str::to_owned),
-                                );
+                                .record_client_publication_rollback_failure(uncertain);
                         }
                         return Err(error);
                     }
                 };
             let published_urls = dev_client_script_urls(&url_prefix, &outcome.output_filenames);
-            let mut guard = staged_output_filenames.lock().unwrap_or_else(|p| {
+            let mut ledger = client_ledger.lock().unwrap_or_else(|p| {
                 tracing::warn!(
                     site = "dev.run_client_scripts.staged_output_filenames",
                     "mutex poisoned, recovered"
                 );
                 p.into_inner()
             });
-            *guard = Some(outcome.output_filenames.clone());
-            drop(guard);
-            unresolved_output_filenames
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .extend(outcome.output_filenames);
+            ledger.track_candidate(&outcome.output_filenames);
+            ledger.stage(outcome.output_filenames.clone(), outcome.changed);
+            drop(ledger);
             raw_invalidation.replace_client_scripts(outcome.raw_targets);
             raw_invalidation.replace_client_script_workers(outcome.worker_targets);
             raw_invalidation.replace_client_script_siblings(outcome.client_script_siblings);
