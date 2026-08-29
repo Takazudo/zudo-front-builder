@@ -17514,6 +17514,7 @@ mod tests {
             route_module_deps: Vec::new(),
             emitted_wasm_assets: Vec::new(),
             content_bridge_fallback_pages: Vec::new(),
+            dropped_plain_css_inputs: Vec::new(),
         }
     }
 

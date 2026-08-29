@@ -421,6 +421,7 @@ fn make_full_fixture_input(root: &std::path::Path, esbuild: &std::path::Path) ->
         main_fields: Vec::new(),
         extra_loader_args: Vec::new(),
         project_root: root.to_path_buf(),
+        authored_css_paths: Default::default(),
         pages_dir: PathBuf::from("pages"),
         injected_pages_root: None,
         content_dir: PathBuf::from("content"),

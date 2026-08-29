@@ -291,6 +291,11 @@ pub struct BundlerInput {
     /// Project root. All other paths are interpreted relative to this if
     /// they are relative; absolute paths pass through.
     pub project_root: PathBuf,
+    /// Canonical real paths already emitted through the authored global-CSS
+    /// entry and its `@import` closure. Plain-CSS inputs reported by esbuild's
+    /// metafile are subtracted by this identity before they are warned as
+    /// dropped; esbuild remains the sole JS/TS resolution oracle.
+    pub authored_css_paths: BTreeSet<PathBuf>,
     /// Directory of route source files. Every file whose extension is in
     /// [`zfb_types::ROUTABLE_PAGE_EXTENSIONS`] (`.tsx`/`.ts`/`.jsx`/`.js`/
     /// `.mdx`/`.md`/`.html`) under this directory becomes a route in the
@@ -770,6 +775,7 @@ impl BundlerInput {
     ) -> Self {
         Self {
             project_root,
+            authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
             content_dir: PathBuf::from("content"),
@@ -854,6 +860,14 @@ pub struct BundlerOutput {
     /// bundler call is unaffected by construction. Empty by default — a
     /// project with no fallback pays nothing extra.
     pub content_bridge_fallback_pages: Vec<String>,
+    /// Canonical, sorted plain `.css` paths esbuild resolved from JS/TS but
+    /// which are not emitted by the SSR bundler and are not already covered
+    /// by the authored global-CSS entry or its `@import` closure.
+    ///
+    /// This records fact only. The bundler warns unconditionally; command
+    /// policy decides whether a production build should fail, keeping dev
+    /// warning-only by construction.
+    pub dropped_plain_css_inputs: Vec<PathBuf>,
 }
 
 /// What the bundle exports, in a form a downstream tool can read without
@@ -4610,6 +4624,19 @@ pub fn bundle_with_session(
         None => Vec::new(),
     };
 
+    // Esbuild's metafile is the sole resolution oracle for JS/TS imports.
+    // Subtract only canonical paths the authored CSS emitter already owns;
+    // never infer an import winner in Rust.
+    let dropped_plain_css_inputs = retained_dropped_plain_css_inputs(
+        metafile_bytes.as_deref(),
+        shadow,
+        &input.project_root,
+        &input.authored_css_paths,
+    );
+    for path in &dropped_plain_css_inputs {
+        warn_dropped_plain_css_input(path, &input.project_root);
+    }
+
     // Parse the metafile into per-route `Module` edges while the shadow tree
     // still exists. This remains development-only and best-effort: a missing
     // or malformed metafile falls back to the previous empty dependency set.
@@ -4708,6 +4735,7 @@ pub fn bundle_with_session(
         route_module_deps,
         emitted_wasm_assets,
         content_bridge_fallback_pages,
+        dropped_plain_css_inputs,
     })
 }
 
@@ -6767,6 +6795,43 @@ fn dangling_symlink_warning_message(link: &Path, target: &Path) -> String {
         link.display(),
         target.display()
     )
+}
+
+/// Exact warning shared by the tracing and real CLI stderr channels when
+/// esbuild resolved a plain stylesheet that this build intentionally drops.
+fn plain_css_import_dropped_warning_message(path: &Path, project_root: &Path) -> String {
+    let canonical_path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical_root =
+        fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    let display = canonical_path
+        .strip_prefix(&canonical_root)
+        .map(path_to_posix_string)
+        .unwrap_or_else(|_| canonical_path.display().to_string());
+    format!(
+        "plain CSS import `{display}` was dropped: plain `.css` imports from JavaScript/TypeScript are not included in emitted CSS; move global CSS into `styles/global.css` (or its `@import` closure), or use a `.module.css` default import"
+    )
+}
+
+fn warn_dropped_plain_css_input(path: &Path, project_root: &Path) {
+    let msg = plain_css_import_dropped_warning_message(path, project_root);
+    tracing::warn!("{msg}");
+    eprintln!("zfb warn: {msg}");
+}
+
+fn retained_dropped_plain_css_inputs(
+    metafile_bytes: Option<&[u8]>,
+    shadow: &Path,
+    project_root: &Path,
+    authored_css_paths: &BTreeSet<PathBuf>,
+) -> Vec<PathBuf> {
+    metafile_bytes
+        .map(|bytes| {
+            crate::metafile_deps::plain_css_inputs(bytes, shadow, project_root)
+                .into_iter()
+                .filter(|path| !authored_css_paths.contains(path))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn preflight_raw_tree(src: &Path, dest: &Path, ctx: &MaterialiseCtx<'_, '_>) -> Result<()> {
@@ -13506,6 +13571,7 @@ mod tests {
         fs::create_dir_all(root.join("layouts")).unwrap();
         BundlerInput {
             project_root: root.clone(),
+            authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
             content_dir: PathBuf::from("content"),
@@ -17004,6 +17070,144 @@ mod tests {
         assert!(msg.contains("cannot be resolved"), "{msg}");
     }
 
+    #[test]
+    fn plain_css_import_dropped_warning_message_is_exact_and_project_relative() {
+        let project = tempfile::tempdir().unwrap();
+        let css = project.path().join("components/alpha/alpha.css");
+        fs::create_dir_all(css.parent().unwrap()).unwrap();
+        fs::write(&css, "alpha").unwrap();
+
+        assert_eq!(
+            plain_css_import_dropped_warning_message(&css, project.path()),
+            "plain CSS import `components/alpha/alpha.css` was dropped: plain `.css` imports from JavaScript/TypeScript are not included in emitted CSS; move global CSS into `styles/global.css` (or its `@import` closure), or use a `.module.css` default import"
+        );
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn plain_css_warning_uses_tracing_channel() {
+        let project = tempfile::tempdir().unwrap();
+        let css = project.path().join("components/alpha.css");
+        fs::create_dir_all(css.parent().unwrap()).unwrap();
+        fs::write(&css, "alpha").unwrap();
+        let msg = plain_css_import_dropped_warning_message(&css, project.path());
+        warn_dropped_plain_css_input(&css, project.path());
+        assert!(logs_contain(&msg));
+    }
+
+    #[test]
+    fn dropped_plain_css_inputs_suppress_full_authored_set_and_remain_sorted() {
+        let project = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        for rel in [
+            "styles/global.css",
+            "styles/vendor.css",
+            "components/zeta.css",
+            "components/alpha.css",
+        ] {
+            let path = project.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, rel).unwrap();
+        }
+        let metafile = br#"{
+            "inputs": {
+                "styles/global.css": { "bytes": 0, "imports": [] },
+                "styles/vendor.css": { "bytes": 0, "imports": [] },
+                "components/zeta.css": { "bytes": 0, "imports": [] },
+                "components/alpha.css": { "bytes": 0, "imports": [] }
+            }
+        }"#;
+        let authored_css_paths = ["styles/global.css", "styles/vendor.css"]
+            .into_iter()
+            .map(|rel| fs::canonicalize(project.path().join(rel)).unwrap())
+            .collect();
+
+        let retained = retained_dropped_plain_css_inputs(
+            Some(metafile),
+            shadow.path(),
+            project.path(),
+            &authored_css_paths,
+        );
+        let mut expected = ["components/alpha.css", "components/zeta.css"]
+            .into_iter()
+            .map(|rel| fs::canonicalize(project.path().join(rel)).unwrap())
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(retained, expected);
+        assert!(retained.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn dropped_plain_css_inputs_are_empty_without_usable_metafile() {
+        let project = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        assert!(retained_dropped_plain_css_inputs(
+            None,
+            shadow.path(),
+            project.path(),
+            &BTreeSet::new()
+        )
+        .is_empty());
+        assert!(retained_dropped_plain_css_inputs(
+            Some(b"not json"),
+            shadow.path(),
+            project.path(),
+            &BTreeSet::new()
+        )
+        .is_empty());
+    }
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn real_esbuild_records_and_warns_non_authored_plain_css_once_in_sorted_order() {
+        let Some(bin) = locate_real_esbuild() else {
+            eprintln!("[plain_css_output] no esbuild binary; skipping");
+            return;
+        };
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path();
+        for dir in ["pages", "content", "components", "layouts"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(
+            root.join("pages/index.ts"),
+            "import '../components/zeta.css';\nimport '../components/alpha.css';\nimport '../components/zeta.css';\nexport default function Home() { return null; }\n",
+        )
+        .unwrap();
+        fs::write(root.join("components/alpha.css"), ".alpha {}\n").unwrap();
+        fs::write(root.join("components/zeta.css"), ".zeta {}\n").unwrap();
+
+        let input = BundlerInput {
+            esbuild_binary: Some(bin),
+            external: vec![
+                "preact".into(),
+                "preact-render-to-string".into(),
+                "@takazudo/zfb-runtime".into(),
+                "@takazudo/zfb-runtime/*".into(),
+            ],
+            ..BundlerInput::for_project(
+                root.to_path_buf(),
+                Framework::Preact,
+                BundleMode::Production,
+                root.join("dist"),
+                None,
+            )
+        };
+        let output = bundle(input).expect("real esbuild bundle with plain CSS imports");
+        let mut expected = vec![
+            fs::canonicalize(root.join("components/alpha.css")).unwrap(),
+            fs::canonicalize(root.join("components/zeta.css")).unwrap(),
+        ];
+        expected.sort();
+        assert_eq!(output.dropped_plain_css_inputs, expected);
+        assert!(logs_contain(
+            "plain CSS import `components/alpha.css` was dropped"
+        ));
+        assert!(logs_contain(
+            "plain CSS import `components/zeta.css` was dropped"
+        ));
+    }
+
     /// A dangling symlink (target deleted) under a `copy_mode` tree must not
     /// abort `preflight_raw_tree` — it used to propagate a bare `os error 2`
     /// with no mention of a symlink. Also pins the warning text names both
@@ -19168,6 +19372,7 @@ mod tests {
 
         let input = BundlerInput {
             project_root: root.clone(),
+            authored_css_paths: BTreeSet::new(),
             pages_dir: PathBuf::from("pages"),
             injected_pages_root: None,
             content_dir: PathBuf::from("content"),
