@@ -66,6 +66,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -178,6 +179,67 @@ pub enum ChangeKind {
 pub struct Change {
     pub path: PathBuf,
     pub kind: ChangeKind,
+    /// Timing-only identity of the watcher flush that emitted this change.
+    /// Zero means the `ZFB_DEV_TIMING` probe was disabled (or the change was
+    /// constructed synthetically by a downstream test).
+    #[doc(hidden)]
+    pub handoff_batch_id: u64,
+    /// Total number of changes emitted by that watcher flush. See
+    /// [`Change::handoff_batch_id`].
+    #[doc(hidden)]
+    pub handoff_batch_size: usize,
+}
+
+impl Change {
+    /// Construct a change without timing metadata. Production watcher
+    /// delivery adds the metadata only while `ZFB_DEV_TIMING` is enabled.
+    pub fn new(path: PathBuf, kind: ChangeKind) -> Self {
+        Self {
+            path,
+            kind,
+            handoff_batch_id: 0,
+            handoff_batch_size: 0,
+        }
+    }
+
+    fn with_handoff_batch(
+        path: PathBuf,
+        kind: ChangeKind,
+        handoff_batch_id: u64,
+        handoff_batch_size: usize,
+    ) -> Self {
+        Self {
+            path,
+            kind,
+            handoff_batch_id,
+            handoff_batch_size,
+        }
+    }
+}
+
+static NEXT_HANDOFF_BATCH_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Match the dev-server timing probes' tolerant boolean gate. Keeping the
+/// metadata at zero when disabled makes the watcher handoff probe inert by
+/// default, including the normal no-log path.
+fn dev_timing_enabled() -> bool {
+    std::env::var("ZFB_DEV_TIMING")
+        .ok()
+        .as_deref()
+        .map(|raw| {
+            let t = raw.trim();
+            t.eq_ignore_ascii_case("1") || t.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+fn next_handoff_batch(size: usize) -> (u64, usize) {
+    if size == 0 || !dev_timing_enabled() {
+        return (0, 0);
+    }
+    let batch_id = NEXT_HANDOFF_BATCH_ID.fetch_add(1, AtomicOrdering::Relaxed);
+    eprintln!("[zfb-timing] watcher handoff: batch_id={batch_id} batch_size={size}");
+    (batch_id, size)
 }
 
 /// The watcher handle.
@@ -1545,10 +1607,11 @@ async fn emit_ready_racing_shutdown(
     out_tx: &mpsc::Sender<Change>,
     shutdown: &mut oneshot::Receiver<()>,
 ) -> DrainOutcome {
+    let (handoff_batch_id, handoff_batch_size) = next_handoff_batch(ready.len());
     let mut ready = std::collections::VecDeque::from(ready);
     while let Some((path, kind)) = ready.pop_front() {
         let kind = resolve_emit_kind(&path, kind);
-        let change = Change { path, kind };
+        let change = Change::with_handoff_batch(path, kind, handoff_batch_id, handoff_batch_size);
         tokio::select! {
             biased;
 
@@ -1559,7 +1622,12 @@ async fn emit_ready_racing_shutdown(
             _ = &mut *shutdown => {
                 for (path, kind) in ready.drain(..) {
                     let kind = resolve_emit_kind(&path, kind);
-                    let _ = out_tx.try_send(Change { path, kind });
+                    let _ = out_tx.try_send(Change::with_handoff_batch(
+                        path,
+                        kind,
+                        handoff_batch_id,
+                        handoff_batch_size,
+                    ));
                 }
                 return DrainOutcome::ShutdownRequested;
             }
@@ -1580,9 +1648,15 @@ async fn emit_ready_racing_shutdown(
 /// change the saturated (or closed) channel cannot accept immediately is
 /// dropped rather than awaited, so this can never park `Watcher::shutdown()`.
 fn drain_all_dropping(pending: &mut HashMap<PathBuf, Pending>, out_tx: &mpsc::Sender<Change>) {
+    let (handoff_batch_id, handoff_batch_size) = next_handoff_batch(pending.len());
     for (path, p) in pending.drain() {
         let kind = resolve_emit_kind(&path, p.kind);
-        let _ = out_tx.try_send(Change { path, kind });
+        let _ = out_tx.try_send(Change::with_handoff_batch(
+            path,
+            kind,
+            handoff_batch_id,
+            handoff_batch_size,
+        ));
     }
 }
 
@@ -1926,10 +2000,10 @@ mod tests {
         let filler = out_tx.clone();
         let mut filled = 0usize;
         loop {
-            match filler.try_send(Change {
-                path: PathBuf::from(format!("/synthetic/fill_{filled}.txt")),
-                kind: ChangeKind::Modified,
-            }) {
+            match filler.try_send(Change::new(
+                PathBuf::from(format!("/synthetic/fill_{filled}.txt")),
+                ChangeKind::Modified,
+            )) {
                 Ok(()) => filled += 1,
                 Err(mpsc::error::TrySendError::Full(_)) => break,
                 Err(mpsc::error::TrySendError::Closed(_)) => {
