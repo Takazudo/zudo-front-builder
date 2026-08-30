@@ -380,6 +380,117 @@ export default function Home() {
     (project, nm_handle)
 }
 
+fn write_broad_root_alias_only_fixture(ws_root: &Path) -> (PathBuf, tempfile::TempDir) {
+    fs::write(
+        ws_root.join("pnpm-workspace.yaml"),
+        "packages:\n  - '.'\n  - 'styleguide'\n",
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("package.json"),
+        r#"{ "name": "workspace-root", "private": true }"#,
+    )
+    .unwrap();
+    let (nm_handle, embedded_nm_path) =
+        zfb::render_pipeline::embedded_node_modules().expect("embedded_node_modules");
+    std::os::unix::fs::symlink(&embedded_nm_path, ws_root.join("node_modules"))
+        .expect("symlink workspace node_modules");
+
+    let project = ws_root.join("styleguide");
+    fs::create_dir_all(project.join("pages")).unwrap();
+    fs::write(
+        project.join("package.json"),
+        r#"{ "name": "styleguide", "private": true }"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("zfb.config.json"),
+        r#"{ "framework": "preact" }"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("tsconfig.json"),
+        r#"{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@/*": ["../*"] }
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.join("pages/index.tsx"),
+        r#"import { RootCard } from "@/root-card";
+
+export default function Home() {
+  return <main><RootCard /></main>;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("root-card.tsx"),
+        r#"import styles from "./root-card.module.css";
+
+export function RootCard() {
+  return <section class={styles.rootCard}>ROOT_CARD_MARKER</section>;
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        ws_root.join("root-card.module.css"),
+        ".rootCard { color: #456def; }\n",
+    )
+    .unwrap();
+
+    (project, nm_handle)
+}
+
+#[test]
+fn broad_root_alias_only_discovers_root_package_css_module_class_map() {
+    let Some(esbuild) = locate_esbuild() else {
+        eprintln!(
+            "[sibling_css_module_command_layer_build] no esbuild binary available; skipping. \
+             Set ZFB_ESBUILD_BIN or install esbuild on PATH."
+        );
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (project, _nm_handle) = write_broad_root_alias_only_fixture(tmp.path());
+    let output = Command::new(zfb_binary!())
+        .arg("build")
+        .current_dir(&project)
+        .env("ZFB_ESBUILD_BIN", &esbuild)
+        .output()
+        .expect("spawn `zfb build`");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected `zfb build` to succeed; got status={:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        output.status,
+    );
+
+    let html_blob = collect_files(&project.join("dist"), "html")
+        .iter()
+        .map(|path| fs::read_to_string(path).unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        html_blob.contains("_rootCard"),
+        "expected the root-package CSS Module's scoped class in emitted HTML.\n--- html ---\n{}",
+        truncate(&html_blob, 2_000),
+    );
+    assert!(
+        !html_blob.contains("class=\"undefined\""),
+        "root-package CSS Module must not render an undefined class.\n--- html ---\n{}",
+        truncate(&html_blob, 2_000),
+    );
+}
+
 /// Issue #1886 (epic #1883): the real command path must support a nested host
 /// reaching concrete root-package TS/TSX/CSS/JSON source through a broad root
 /// alias, alongside a narrower root component alias and a sibling package
@@ -439,6 +550,12 @@ fn workspace_root_alias_graph_builds_through_real_zfb_command() {
             truncate(&html_blob, 2_000),
         );
     }
+    assert!(
+        html_blob.contains("_rootAliasStyle"),
+        "fresh emitted HTML must contain the root component's scoped CSS Module class; \
+         the raw CSS marker alone does not prove the class map participated.\n--- html ---\n{}",
+        truncate(&html_blob, 2_000),
+    );
 
     let css_blob = collect_files(&dist.join("assets"), "css")
         .iter()

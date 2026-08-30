@@ -1577,6 +1577,39 @@ fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<
     }
 }
 
+fn root_package_css_excluded_dirs(project_root: &Path, first_party_root: &Path) -> Vec<PathBuf> {
+    let first_party_root = zfb_types::normalize_path_lexical(first_party_root);
+    let mut excluded = zfb_types::first_party::claimed_workspace_member_names(&first_party_root)
+        .into_values()
+        .map(|path| zfb_types::normalize_path_lexical(&path))
+        .filter(|path| path != &first_party_root)
+        .collect::<Vec<_>>();
+    let project_root = zfb_types::normalize_path_lexical(project_root);
+    if !excluded.contains(&project_root) {
+        excluded.push(project_root);
+    }
+    excluded
+}
+
+fn is_root_package_css_path(
+    path: &Path,
+    first_party_root: &Path,
+    excluded_dirs: &[PathBuf],
+) -> bool {
+    let path = zfb_types::normalize_path_lexical(path);
+    let first_party_root = zfb_types::normalize_path_lexical(first_party_root);
+    let Ok(relative) = path.strip_prefix(&first_party_root) else {
+        return false;
+    };
+    !excluded_dirs.iter().any(|dir| path.starts_with(dir))
+        && !relative.components().any(|component| match component {
+            std::path::Component::Normal(name) => CSS_SIBLING_MIRROR_SKIP_DIRS
+                .iter()
+                .any(|skip| name == std::ffi::OsStr::new(*skip)),
+            _ => false,
+        })
+}
+
 /// Walk the conventional CSS-content roots (`pages/`, `components/`,
 /// `layouts/`, `content/`) and return every TSX/TS/JSX/JS/MDX/MD
 /// source file beneath them. Used as the `sources` field for the
@@ -1602,6 +1635,12 @@ fn push_if_matching_extension(path: PathBuf, extensions: &[&str], out: &mut Vec<
 /// this pre-bundle command-layer call site. Empty (and inert) for a
 /// standalone project, so a non-workspace build walks exactly the same
 /// files as before.
+///
+/// Root Package (issue #2772): when the workspace explicitly claims `.`,
+/// source files in that root package form a third, bounded channel. Declared
+/// sibling members, the nested project, and infra directories are excluded;
+/// esbuild remains responsible for selecting which of the surplus scan
+/// sources actually participate in the bundle.
 fn discover_css_source_files(
     project_root: &Path,
     plugin_alias_entries: &[(String, String)],
@@ -1660,6 +1699,34 @@ fn discover_css_source_files(
                     }
                 }
                 true
+            })
+            .build();
+        for entry in walker.flatten() {
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
+            }
+            push_if_matching_extension(entry.into_path(), &extensions, &mut out);
+        }
+    }
+
+    if zfb_types::first_party::workspace_explicitly_claims_root_package(project_root) {
+        let excluded_dirs = root_package_css_excluded_dirs(project_root, &first_party_root);
+        let walker = ignore::WalkBuilder::new(&first_party_root)
+            .standard_filters(true)
+            .require_git(false)
+            .filter_entry(move |entry| {
+                if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    return true;
+                }
+                let path = zfb_types::normalize_path_lexical(entry.path());
+                if path != first_party_root && excluded_dirs.iter().any(|dir| path.starts_with(dir))
+                {
+                    return false;
+                }
+                let name = entry.file_name().to_string_lossy();
+                !CSS_SIBLING_MIRROR_SKIP_DIRS
+                    .iter()
+                    .any(|skip| name == *skip)
             })
             .build();
         for entry in walker.flatten() {
@@ -1739,17 +1806,17 @@ fn discovered_direct_css_modules(
 /// attributes would reference classes that never appear in the
 /// stylesheet.
 ///
-/// Sibling Mirror (issue #1691/#1696): a resolved module outside
-/// `project_root` is kept only when the [`zfb_build::SiblingMirrorPlan`]
-/// actually claims it. `discover_css_source_files` already restricts scan
-/// *sources* to project files + claimed sibling files, but a claimed
+/// Outside-project modules are kept when the [`zfb_build::SiblingMirrorPlan`]
+/// claims them or when they belong to an explicitly claimed, bounded root
+/// package (issue #2772). `discover_css_source_files` already restricts scan
+/// *sources* to project files, claimed sibling files, and bounded root-package
+/// files, but a claimed
 /// sibling source can still contain a stray relative import that escapes
 /// its own claimed region (e.g. `../../another-unclaimed-lib/x.module.css`)
-/// — the real SSR shadow never mirrors that region, so including it here
-/// would desync the class map from the emitted stylesheet. This is the
-/// gate that makes an unclaimed sibling `.module.css` a no-op for CSS
-/// output, matching the epic invariant that esbuild-visible reachability
-/// (staged trees) is the only thing that ships.
+/// or a root-package source can import into an excluded member/infra region.
+/// This gate keeps those escapes out while deliberately accepting surplus
+/// root-package class maps; under-inclusion would recreate the missing-map
+/// failure, while unused maps are harmless.
 pub(crate) fn compute_css_module_class_maps(
     project_root: &Path,
     plugin_alias_entries: &[(String, String)],
@@ -1778,6 +1845,10 @@ pub(crate) fn compute_css_module_class_maps(
 
     let first_party_root = zfb_types::first_party_root_for(project_root);
     let project_root_norm = zfb_types::normalize_path_lexical(project_root);
+    let root_package_claimed =
+        zfb_types::first_party::workspace_explicitly_claims_root_package(project_root);
+    let root_package_excluded_dirs = root_package_claimed
+        .then(|| root_package_css_excluded_dirs(project_root, &first_party_root));
     let plan = zfb_build::SiblingMirrorPlan::compute(
         project_root,
         &first_party_root,
@@ -1800,7 +1871,15 @@ pub(crate) fn compute_css_module_class_maps(
         scan.modules
             .into_iter()
             .filter(|m| m.exists())
-            .filter(|m| m.starts_with(&project_root_norm) || plan.claims_path(m))
+            .filter(|m| {
+                m.starts_with(&project_root_norm)
+                    || plan.claims_path(m)
+                    || root_package_excluded_dirs
+                        .as_deref()
+                        .is_some_and(|excluded| {
+                            is_root_package_css_path(m, &first_party_root, excluded)
+                        })
+            })
             .collect()
     };
 
@@ -8001,6 +8080,81 @@ mod tests {
     use zfb_build::bundler::{BundleManifest, BundlerOutput, RouteEntry};
     use zfb_build::renderer::{HttpResponseLike, RendererOutput, SsrManifest};
     use zfb_router::{Route, RouteKind, Segment};
+
+    fn write_css_root_claim_workspace(root: &Path, packages: &str) -> PathBuf {
+        std::fs::write(
+            root.join("pnpm-workspace.yaml"),
+            format!("packages:\n{packages}"),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{ "name": "workspace-root", "private": true }"#,
+        )
+        .unwrap();
+        let project = root.join("styleguide");
+        std::fs::create_dir_all(project.join("pages")).unwrap();
+        std::fs::write(
+            project.join("package.json"),
+            r#"{ "name": "styleguide", "private": true }"#,
+        )
+        .unwrap();
+        project
+    }
+
+    #[test]
+    fn css_root_package_channel_is_inert_without_dot_workspace_claim() {
+        let tmp = tempdir().unwrap();
+        let project = write_css_root_claim_workspace(tmp.path(), "  - 'styleguide'\n");
+        let root_source = tmp.path().join("root-only.tsx");
+        std::fs::write(&root_source, "export const rootOnly = true;\n").unwrap();
+
+        let sources = discover_css_source_files(&project, &[], &BTreeSet::new());
+
+        assert!(!sources.contains(&root_source));
+    }
+
+    #[test]
+    fn css_root_package_channel_excludes_sibling_workspace_members() {
+        let tmp = tempdir().unwrap();
+        let project = write_css_root_claim_workspace(
+            tmp.path(),
+            "  - '.'\n  - 'styleguide'\n  - 'packages/*'\n",
+        );
+        let root_source = tmp.path().join("root-only.tsx");
+        std::fs::write(&root_source, "export const rootOnly = true;\n").unwrap();
+        let sibling = tmp.path().join("packages/shared");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(
+            sibling.join("package.json"),
+            r#"{ "name": "shared", "private": true }"#,
+        )
+        .unwrap();
+        let sibling_source = sibling.join("sibling.tsx");
+        std::fs::write(&sibling_source, "export const sibling = true;\n").unwrap();
+
+        let sources = discover_css_source_files(&project, &[], &BTreeSet::new());
+
+        assert!(sources.contains(&root_source));
+        assert!(!sources.contains(&sibling_source));
+    }
+
+    #[test]
+    fn css_root_package_channel_excludes_workspace_node_modules() {
+        let tmp = tempdir().unwrap();
+        let project = write_css_root_claim_workspace(tmp.path(), "  - '.'\n  - 'styleguide'\n");
+        let root_source = tmp.path().join("root-only.tsx");
+        std::fs::write(&root_source, "export const rootOnly = true;\n").unwrap();
+        let dependency = tmp.path().join("node_modules/dependency");
+        std::fs::create_dir_all(&dependency).unwrap();
+        let dependency_source = dependency.join("leak.tsx");
+        std::fs::write(&dependency_source, "export const leak = true;\n").unwrap();
+
+        let sources = discover_css_source_files(&project, &[], &BTreeSet::new());
+
+        assert!(sources.contains(&root_source));
+        assert!(!sources.contains(&dependency_source));
+    }
 
     #[test]
     fn production_islands_payload_keeps_resource_companions_verbatim() {
