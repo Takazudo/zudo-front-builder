@@ -137,19 +137,23 @@ declaration is removable even if its package remains in `Cargo.lock`.
   streaming rewriter and does not replace a mutable HTML5 tree for test
   canonicalization. These dependencies do not genuinely consolidate; leave
   both roles explicit.
-* **`bincode` 2 — KEEP in `zfb-graph`.** It serializes the on-disk dependency
-  graph cache through the `serde` integration. The wire-format version was
-  bumped during the bincode 1→2 migration because the encoding differs, and
-  the existing cache invalidation behavior depends on that explicit version.
-* **`imagesize` — KEEP in `zfb-md-extras`.** The image-dimensions feature probes
-  raster headers without decoding complete image payloads, preserving the
-  warning and cache behavior of the plugin.
-* **`roxmltree` — KEEP in `zfb-md-extras`.** `imagesize` cannot read SVGs, so
-  the plugin uses `roxmltree` to parse SVG `width`/`height` and `viewBox`
-  dimensions while skipping files with no determinable intrinsic size.
-* **`html-escape` — KEEP in `zfb-content`.** The directive parser decodes HTML
-  character references in attribute values before constructing its typed
-  nodes; the dependency is a live parser operation, not an unused declaration.
+* **`bincode` 2 — KEEP in `zfb-graph`.** This first-party-only direct edge is
+  removable in principle, but it serializes the on-disk dependency graph cache
+  through the `serde` integration. The wire-format version was bumped during
+  the bincode 1→2 migration because the encoding differs, and the existing
+  cache invalidation behavior depends on that explicit version.
+* **`imagesize` — KEEP in `zfb-md-extras`.** This exclusively ours direct edge
+  is removable in principle, but the image-dimensions feature probes raster
+  headers without decoding complete image payloads, preserving the warning and
+  cache behavior of the plugin.
+* **`roxmltree` — KEEP in `zfb-md-extras`.** This exclusively ours direct edge
+  is removable in principle, but `imagesize` cannot read SVGs, so the plugin
+  uses `roxmltree` to parse SVG `width`/`height` and `viewBox` dimensions while
+  skipping files with no determinable intrinsic size.
+* **`html-escape` — KEEP in `zfb-content`.** This exclusively ours direct edge
+  is removable in principle, but the directive parser decodes HTML character
+  references in attribute values before constructing its typed nodes; it is a
+  live parser operation, not an unused declaration.
 
 ### Rust decisions recorded by the audit
 
@@ -238,7 +242,8 @@ The only first-party ownership choices in this list are the deliberate
 `bincode 2` cache codec and `getrandom 0.3` Web Crypto edge, both of which are
 live and documented above. `swc_core`, `deno_core`, `lightningcss`, Oxc,
 `garde`, `lol_html`, Rustls, and `tempfile` dictate the remaining versions.
-There is no safe duplicate collapse to perform in this register.
+There is no currently actionable duplicate for us to fix and no safe duplicate
+collapse to perform in this register.
 
 ## Deliberate duplication
 
@@ -250,9 +255,9 @@ There is no safe duplicate collapse to perform in this register.
 * **`html-validate`.** The root pins `10.17.0` exactly for root/showcase HTML
   validation, while docs declares `^10.0.0` for its `check:html` script. The
   current lock resolves the docs declaration to `10.17.0`, but the ranges
-  express different ownership boundaries. Recommendation: add a follow-up
-  pin-guard if root/docs version parity is required for reproducible validation;
-  do not implement that guard in this documentation issue.
+  express different ownership boundaries. Recommendation: yes, add an
+  equivalent pin-guard in a follow-up issue for reproducible root/docs
+  validation; do not implement that guard in this documentation issue.
 
 ## Abandon rule
 
@@ -276,11 +281,12 @@ failure; downstream auto-review must not reopen removal of that dependency.
 
 ## npm-workspace inventory
 
-The #2746 inventory covered the root manifest, `docs/`, every `packages/*`
-manifest, every current `crates/*/npm` manifest, and
-`tests/md-wasm-browser-smoke/package.json`. The reserved `examples/*` workspace
-glob currently has no package manifest. Test-fixture `package.json` files under
-crate fixture trees are fixtures, not workspace package importers.
+The #2746 inventory covered 14 package manifests: the workspace root,
+`docs/`, every `packages/*` manifest, every current `crates/*/npm` manifest, and
+`tests/md-wasm-browser-smoke/package.json` (the root plus 13 pnpm projects).
+The reserved `examples/*` workspace glob currently has no package manifest.
+Test-fixture `package.json` files under crate fixture trees are fixtures, not
+workspace package importers.
 
 | Manifest | Package and declarations reviewed | Result |
 | --- | --- | --- |
