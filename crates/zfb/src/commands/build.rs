@@ -1635,6 +1635,12 @@ fn is_root_package_css_path(
 /// this pre-bundle command-layer call site. Empty (and inert) for a
 /// standalone project, so a non-workspace build walks exactly the same
 /// files as before.
+///
+/// Root Package (issue #2772): when the workspace explicitly claims `.`,
+/// source files in that root package form a third, bounded channel. Declared
+/// sibling members, the nested project, and infra directories are excluded;
+/// esbuild remains responsible for selecting which of the surplus scan
+/// sources actually participate in the bundle.
 fn discover_css_source_files(
     project_root: &Path,
     plugin_alias_entries: &[(String, String)],
@@ -1800,17 +1806,17 @@ fn discovered_direct_css_modules(
 /// attributes would reference classes that never appear in the
 /// stylesheet.
 ///
-/// Sibling Mirror (issue #1691/#1696): a resolved module outside
-/// `project_root` is kept only when the [`zfb_build::SiblingMirrorPlan`]
-/// actually claims it. `discover_css_source_files` already restricts scan
-/// *sources* to project files + claimed sibling files, but a claimed
+/// Outside-project modules are kept when the [`zfb_build::SiblingMirrorPlan`]
+/// claims them or when they belong to an explicitly claimed, bounded root
+/// package (issue #2772). `discover_css_source_files` already restricts scan
+/// *sources* to project files, claimed sibling files, and bounded root-package
+/// files, but a claimed
 /// sibling source can still contain a stray relative import that escapes
 /// its own claimed region (e.g. `../../another-unclaimed-lib/x.module.css`)
-/// — the real SSR shadow never mirrors that region, so including it here
-/// would desync the class map from the emitted stylesheet. This is the
-/// gate that makes an unclaimed sibling `.module.css` a no-op for CSS
-/// output, matching the epic invariant that esbuild-visible reachability
-/// (staged trees) is the only thing that ships.
+/// or a root-package source can import into an excluded member/infra region.
+/// This gate keeps those escapes out while deliberately accepting surplus
+/// root-package class maps; under-inclusion would recreate the missing-map
+/// failure, while unused maps are harmless.
 pub(crate) fn compute_css_module_class_maps(
     project_root: &Path,
     plugin_alias_entries: &[(String, String)],
