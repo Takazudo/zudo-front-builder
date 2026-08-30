@@ -341,6 +341,67 @@ checked 2026-08-30).
   the standing rule ([compat migration notes](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/doc/MIGRATION-FROM-SERDE-YAML.md),
   checked 2026-08-30; [abandon rule](#abandon-rule), checked 2026-08-30).
 
+##### `noyalib 0.0.28` differential evaluation (#2787) — KEEP
+
+This evaluation started from
+`b7edbf7428fbc9f7d5cc21fe933e0f278671164c`. It used the committed #2786
+corpus and immutable serde_yaml baseline through separate
+`noyalib::compat::serde_yaml::from_str::<serde_json::Value>` and
+`noyalib::from_str::<serde_json::Value>` adapters, plus temporary production
+wiring through each path. The compat and direct observations were identical,
+and each differed from the baseline in 11 of 18 cases:
+
+* the default `MergeKeyPolicy::Auto` expanded the plain `<<` mapping instead
+  of preserving `<<` as an ordinary JSON key;
+* a composite sequence key was accepted as the string `"[a, b]"` instead of
+  failing at `1:1:0`; old-style `0123` became the number `123` instead of a
+  string, while `0b11` became a string instead of the number `3`;
+* a custom tagged value was accepted as the untagged JSON string `"value"`
+  instead of producing serde_yaml's located JSON-enum error. Thus native
+  `Value::Tagged` retention does not preserve the current zfb
+  `serde_json::Value` contract;
+* non-finite values still normalized to JSON null, but overflow `1e999` also
+  became null instead of the string `"1e999"`; `u64::MAX` lost integer
+  precision by becoming an approximate floating-point JSON number, and the
+  one-past-`u64::MAX` case was accepted similarly instead of failing;
+* malformed-input `Display` text used noyalib wording. For example, the
+  Unicode case changed from `did not find expected node content at line 1
+  column 8, while parsing a flow node` to `YAML parse error at line 1, column
+  8: expected a node but found FlowMappingEnd`. Its location remained
+  `1:8:16`, but the EOF flow-sequence pin changed from `2:1:12` to `1:13:12`,
+  and the protected md-wasm API assertion consequently observed source line
+  2 instead of 3. The indentation error retained `2:9:18` but changed its
+  display text;
+* the bounded alias-expansion case succeeded and materialized the expanded
+  value instead of returning serde_yaml's unlocated `repetition limit
+  exceeded` error.
+
+The YAML-boolean case did match: legacy bare `y`, `yes`, `n`, `no`, `on`, and
+`off` remained strings while `true` and `FALSE` resolved as booleans. The
+Unicode/CRLF/emoji value case, scalar non-string keys, built-in tags, duplicate
+keys, and the remaining successful/error cases also matched. Nevertheless,
+the merge, tag/JSON, number, resource-limit, error-display, and EOF-location
+differences are concrete production-contract blockers. The terminal verdict
+is **KEEP `serde_yaml`**; Phase 2 was therefore skipped exactly as required
+(no wasm32 or `pnpm test:md-wasm` run, no four-artifact size measurement, no
+transitive/license diff, and no `cargo deny` run).
+
+The temporary replacement changed 2 rustfmt-formatted non-test production
+lines in `frontmatter.rs`, below the 40-line threshold, and required no unsafe,
+FFI, OS branch, polling, signal supervision, or Unicode table. One candidate
+round was run; a test-only oracle declaration was corrected once so the
+immutable serde_yaml adapter remained available. No behavioral compatibility
+adapter or candidate correction was attempted because Phase 1 already decided
+the candidate. The release and maintenance records used by this run remain the
+immutable 0.0.28 crates.io record (released 2026-08-24) and canonical v0.0.28
+repository release, both
+checked 2026-08-30 ([crates.io version record](https://crates.io/api/v1/crates/noyalib/0.0.28);
+[GitHub release v0.0.28](https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.28)).
+All experimental manifest, lockfile, production source, test-probe, and target
+artifacts were restored or removed; the final committed delta is this evidence
+only ([#2787](https://github.com/Takazudo/zudo-front-builder/issues/2787),
+checked 2026-08-30).
+
 #### `serde-saphyr 1.2.0`
 
 * **Release and maintenance evidence.** The 1.2.0 registry record reports
