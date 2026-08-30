@@ -1,5 +1,10 @@
 # SECURITY-DEPS.md — Runtime Dependency Audit
 
+The workspace-wide dependency rationale is in
+[DEPENDENCIES.md](./DEPENDENCIES.md). This file stays narrow: it audits the
+runtime `dependencies` of published npm packages as downstream supply-chain
+surface.
+
 ## Policy
 
 Every runtime dep on a publishable package is a supply-chain liability for downstream users.
@@ -8,13 +13,13 @@ Add deps only when a Node built-in cannot do the job, document the reason here, 
 
 ## Published packages and their runtime deps
 
-The release pipeline publishes nine npm packages:
+The release pipeline publishes ten npm packages:
 
 - five first-party platform binary packages: `@takazudo/zfb-darwin-arm64`,
   `@takazudo/zfb-darwin-x64`, `@takazudo/zfb-linux-arm64-gnu`,
   `@takazudo/zfb-linux-x64-gnu`, and `@takazudo/zfb-win32-x64-msvc`;
-- four non-platform packages: `@takazudo/zfb`, `@takazudo/zfb-runtime`,
-  `@takazudo/zfb-adapter-cloudflare`, and `create-zfb`.
+- five non-platform packages: `@takazudo/zfb`, `@takazudo/zfb-runtime`,
+  `@takazudo/zfb-adapter-cloudflare`, `@takazudo/zfb-md-wasm`, and `create-zfb`.
 
 Their `dependencies` fields (NOT `devDependencies`) are audited here. First-party
 workspace links and optional platform packages still matter for publication integrity, but
@@ -59,6 +64,20 @@ Those fields are intentionally separate from third-party production `dependencie
 `node:url`) and one project-internal import (`../src/worker-wrapper.mjs`). No external npm
 package is imported at runtime. The file carries an explicit `// invariant: no runtime npm
 deps — see SECURITY-DEPS.md` comment to make this contractual.
+
+### `@takazudo/zfb-md-wasm`
+
+**Runtime deps:**
+
+| Package | Version source | Rationale |
+| ------- | -------------- | --------- |
+| `@types/mdast` | `crates/zfb-md-wasm/npm/package.json` | The published TypeScript declarations expose mdast-compatible node shapes and import the ecosystem's `mdast` types. It remains a package dependency so a consumer can resolve the shipped declarations without relying on the producer's dev tree. |
+| `mdast-util-directive` | `crates/zfb-md-wasm/npm/package.json` | The published `mdast.ts` declaration surface re-exports the directive type registry, preserving directive node typing for consumers. |
+| `mdast-util-mdx` | `crates/zfb-md-wasm/npm/package.json` | The published declaration surface imports and re-exports MDX attribute and node types; consumers need the MDX type registry when using `parseToAst`/`MdastRoot`. |
+
+These are declaration/runtime-contract dependencies of the published md-wasm
+surface, not build-only tools. The parser and bundler test tools remain in
+`devDependencies`.
 
 ### `create-zfb`
 
