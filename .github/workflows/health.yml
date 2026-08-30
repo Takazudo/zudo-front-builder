@@ -220,6 +220,18 @@ jobs:
         with:
           tool: nextest@0.9.138
 
+      # cargo-machete (issue #2752) — a fast workspace dependency audit. Keep
+      # the exact crates.io release pinned through the same checksum-verified
+      # prebuilt-tool action as cargo-nextest; the metadata mode honors the
+      # build.rs false-positive allowlist in crates/zfb/Cargo.toml.
+      - name: Install cargo-machete (pinned)
+        uses: taiki-e/install-action@6c1f7cf125e42770ff087ea443901b487cc5471a # v2.79.5
+        with:
+          tool: cargo-machete@0.9.2
+
+      - name: Dead-dependency check (cargo-machete)
+        run: cargo machete --with-metadata
+
       # Fmt gate (issue #988): near-free fail-fast check before the expensive
       # rust-cache restore + V8 build. Note: cargo fmt --check on the stable
       # toolchain can change behaviour on a future toolchain bump — accepted

@@ -163,3 +163,9 @@ zfb-test-utils = { path = "../zfb-test-utils" }
 # Unix-only; the test is #[cfg(unix)]-gated.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+[package.metadata.cargo-machete]
+# These are [build-dependencies] used in build.rs; cargo-machete does not parse
+# build.rs and reports them as unused. Verified used: flate2/tar (tarball
+# extraction), zfb-binfetch (binary download), hex (digest encoding).
+ignored = ["flate2", "tar", "hex", "zfb-binfetch"]
