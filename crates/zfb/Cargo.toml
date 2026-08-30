@@ -52,7 +52,9 @@ anyhow = { workspace = true }
 async-trait = "0.1"
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+# HTTP deferred-path evaluation in render_pipeline.rs uses reqwest's blocking
+# client and Response::json() to parse /__paths__ responses.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 include_dir = "0.7"
 indicatif = "0.18"
 # Gitignore-aware directory walker (issue #1696): wholesale-walks a
