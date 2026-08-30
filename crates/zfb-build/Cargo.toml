@@ -96,18 +96,13 @@ swc_core = { workspace = true, features = [
 # Build-time render orchestrator (T6). `blocking` keeps the renderer
 # loop synchronous to match the bundler's call style; `rustls-tls`
 # avoids depending on a system OpenSSL for what is in practice a
-# 127.0.0.1 connection. `json` is unused today but lets future error
-# bodies be consumed cheaply.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+# 127.0.0.1 connection.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 # Source-map parsing for re-projecting embedded-V8 JS stack frames back
 # to the user's TSX/MDX source. The `sourcemap` crate is the canonical
 # Rust port of Mozilla's source-map library and handles `.map` files
 # emitted by esbuild's `--sourcemap=linked`.
 sourcemap = { workspace = true }
-# Cross-process file lock for gated end-to-end tests so parallel
-# worktrees don't race for the same loopback port. Only used
-# in tests; pulled in via the main deps for simplicity.
-fs2 = "0.4"
 # Content-addressed asset hashing for the production asset pipeline
 # (see `pipeline::prod::ProductionAssetPipeline`). SHA-256 truncated to
 # 8 hex chars matches the existing convention used by `zfb-css` and
@@ -115,8 +110,7 @@ fs2 = "0.4"
 # same byte stream.
 sha2 = "0.10"
 hex = "0.4"
-# Bounded wait for child processes so a wedged pnpm or esbuild subprocess
-# cannot hang the build indefinitely. Zero transitive deps; cross-platform.
+# KEEP: cross-platform bounded child waits with no extra transitive deps beyond target-gated libc; polling is not equivalent.
 wait-timeout = "0.2"
 # `file://` URL construction for staged plugin bundles (plugin_bundler.rs).
 # Matches `zfb-config-loader`'s `resolve_plugin_path_to_file_url`, which

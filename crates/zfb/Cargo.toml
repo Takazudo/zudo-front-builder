@@ -56,7 +56,6 @@ clap = { version = "4", features = ["derive"] }
 # client and Response::json() to parse /__paths__ responses.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 include_dir = "0.7"
-indicatif = "0.18"
 # Gitignore-aware directory walker (issue #1696): wholesale-walks a
 # claimed sibling mirror root for CSS Modules scan sources, mirroring
 # `zfb-build`'s own `enumerate_mirror_root_files` (same crate, same
@@ -127,9 +126,7 @@ zfb-watcher = { path = "../zfb-watcher" }
 # already used as a build-dependency (binary verification in build.rs) and by
 # zfb-graph for its ManifestDigest; adding it here avoids pulling a new crate.
 sha2 = "0.10"
-# IP-enumeration for the dev ready-banner (#487/#499): when the user binds to
-# an unspecified address (0.0.0.0), we list non-loopback IPv4 interfaces so
-# the banner shows actual reachable URLs instead of the literal `0.0.0.0`.
+# KEEP: bind-all ready URLs enumerate every non-loopback IPv4 interface; UDP connect selects only one egress address (#487/#499).
 local-ip-address = "0.6"
 
 [build-dependencies]
@@ -166,3 +163,9 @@ zfb-test-utils = { path = "../zfb-test-utils" }
 # Unix-only; the test is #[cfg(unix)]-gated.
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+[package.metadata.cargo-machete]
+# These are [build-dependencies] used in build.rs; cargo-machete does not parse
+# build.rs and reports them as unused. Verified used: flate2/tar (tarball
+# extraction), zfb-binfetch (binary download), hex (digest encoding).
+ignored = ["flate2", "tar", "hex", "zfb-binfetch"]

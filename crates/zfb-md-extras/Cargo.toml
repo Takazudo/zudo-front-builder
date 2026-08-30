@@ -71,7 +71,6 @@ test-utils = ["dep:zfb-test-utils", "dep:tempfile"]
 
 [dependencies]
 markdown = { workspace = true }
-anyhow = { workspace = true }
 zfb-md-ast = { path = "../zfb-md-ast" }
 zfb-types = { path = "../zfb-types" }
 # Header-only image dimension probing for the image_dimensions feature (Wave 6 #579).
@@ -88,7 +87,6 @@ zfb-test-utils = { path = "../zfb-test-utils", optional = true }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
-anyhow = { workspace = true }
 # Keep here for cfg(test) builds of this crate's own tests (test_harness tests
 # compile via cfg(test), not via the test-utils feature flag).
 zfb-test-utils = { path = "../zfb-test-utils" }

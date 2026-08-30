@@ -17,48 +17,49 @@ set -uo pipefail
 #   1. Shell-script syntax check (bash -n)          — near-free, no compilation
 #   2. Offline shell unit tests (tests/unit/*.sh)   — near-free, sub-second; one
 #      step per test file, mirrors health.yml:47-50
-#   3. cargo fmt --check                          — near-free, no compilation
-#   4. pnpm format:check (prettier + mdx)         — fast
-#   5. node scripts/assert-md-wasm-size-docs.mjs — fast
-#   6. node scripts/check-sse-endpoint.mjs — fast, offline source guard
-#   7. pnpm typecheck:workspace (excluding examples + zfb-md-wasm) — fast
-#   8. pnpm test:workspace (vitest; excluding zfb-md-wasm) — fast
-#   9. cargo clippy -D warnings                   — fast on a WARM tree
-#  10. Regenerate + diff syntect syntax-set.packdump       — opt-in (B4PUSH_FULL=1)
-#  11. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
-#  12. cargo test --workspace --doc (nextest branch only)  — opt-in (B4PUSH_FULL=1)
-#  13. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  14. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
-#  15. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
-#  16. cargo test -p zfb-islands --tests -- --ignored (esbuild env-gate)  — opt-in (B4PUSH_FULL=1)
-#  17. cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored (esbuild env-gate) — opt-in (B4PUSH_FULL=1)
-#  18. cargo test -p zfb-css --test integration -- --ignored (tailwindcss env-gate)     — opt-in (B4PUSH_FULL=1)
-#  19. cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored (tailwindcss env-gate) — opt-in (B4PUSH_FULL=1)
-#  20. cargo test -p zfb --lib commands::build:: -- --ignored (command-layer env-gates) — opt-in (B4PUSH_FULL=1)
+#   3. cargo machete --with-metadata (optional local tool) — fast
+#   4. cargo fmt --check                          — near-free, no compilation
+#   5. pnpm format:check (prettier + mdx)         — fast
+#   6. node scripts/assert-md-wasm-size-docs.mjs — fast
+#   7. node scripts/check-sse-endpoint.mjs — fast, offline source guard
+#   8. pnpm typecheck:workspace (excluding examples + zfb-md-wasm) — fast
+#   9. pnpm test:workspace (vitest; excluding zfb-md-wasm) — fast
+#  10. cargo clippy -D warnings                   — fast on a WARM tree
+#  11. Regenerate + diff syntect syntax-set.packdump       — opt-in (B4PUSH_FULL=1)
+#  12. cargo nextest run --workspace (or cargo test)       — opt-in (B4PUSH_FULL=1)
+#  13. cargo test --workspace --doc (nextest branch only)  — opt-in (B4PUSH_FULL=1)
+#  14. cargo nextest run -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  15. cargo clippy -p zfb-md-extras --features test-utils — opt-in (B4PUSH_FULL=1)
+#  16. cargo check --no-default-features -p zfb --tests    — opt-in (B4PUSH_FULL=1)
+#  17. cargo test -p zfb-islands --tests -- --ignored (esbuild env-gate)  — opt-in (B4PUSH_FULL=1)
+#  18. cargo test -p zfb --test client_bundling_cross_pipeline -- --ignored (esbuild env-gate) — opt-in (B4PUSH_FULL=1)
+#  19. cargo test -p zfb-css --test integration -- --ignored (tailwindcss env-gate)     — opt-in (B4PUSH_FULL=1)
+#  20. cargo test -p zfb-build --test prod_asset_graph_e2e -- --ignored (tailwindcss env-gate) — opt-in (B4PUSH_FULL=1)
+#  21. cargo test -p zfb --lib commands::build:: -- --ignored (command-layer env-gates) — opt-in (B4PUSH_FULL=1)
 #
-# Steps 11 and 13 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
+# Steps 12 and 14 use cargo-nextest (nextest's DEFAULT profile, retries = 0) when
 # it is installed, matching CI's runner; they fall back to plain `cargo test`
-# when nextest is absent (issue #1340). Step 12 exists ONLY in the nextest branch:
+# when nextest is absent (issue #1340). Step 13 exists ONLY in the nextest branch:
 # nextest does NOT run doctests, so — mirroring health.yml's separate doc step —
 # a `cargo test --workspace --doc` follows the nextest workspace run to keep
 # doctest coverage. The plain-`cargo test --workspace` fallback already runs
 # doctests as part of that same command, so it needs no separate step.
 #
-# Steps 13-15 mirror the health.yml lanes that steps 1-11 alone cannot reproduce
+# Steps 14-16 mirror the health.yml lanes that steps 1-12 alone cannot reproduce
 # (issue #1332): the zfb-md-extras `test-utils`-gated suite + its scoped clippy
 # (health.yml:165,169), and the V8-off `build-no-v8` job's cargo check
 # (health.yml:219). Without them, "B4PUSH_FULL=1 pnpm b4push passed" did not
 # imply "health.yml will pass."
 #
-# Steps 16-20 maintain parity with health.yml's dedicated env-gated lanes. The
+# Steps 17-21 maintain parity with health.yml's dedicated env-gated lanes. The
 # zfb-islands esbuild-gated lane (added by #1337) had no B4PUSH_FULL
 # counterpart, so a green B4PUSH_FULL=1 run did not imply that lane would pass
 # in CI — the exact
 # gap #1332 closed for the md-extras/no-v8 lanes, reopened when #1337 added the
-# islands step to health.yml without updating b4push. Step 16 restores it;
-# step 17 mirrors #1504's real-zfb cross-pipeline acceptance lane.
-# Steps 18-20 cover the 3 tailwindcss-v4 env-gate locations that #1393 wired
-# into health.yml for the first time; step 20 also co-runs the two esbuild
+# islands step to health.yml without updating b4push. Step 17 restores it;
+# step 18 mirrors #1504's real-zfb cross-pipeline acceptance lane.
+# Steps 19-21 cover the 3 tailwindcss-v4 env-gate locations that #1393 wired
+# into health.yml for the first time; step 21 also co-runs the two esbuild
 # command-layer env-gates, so it pins both binary slots. All 5 steps are
 # guarded on their staged binary existing (a tree built with
 # B4PUSH_SKIP_CLIPPY=1, or one that has never run
@@ -70,9 +71,9 @@ set -uo pipefail
 # binary_path never resolves.
 #
 # Env overrides:
-#   B4PUSH_SKIP_CLIPPY=1   — skip clippy (step 9); use on a cold tree to stay bounded
-#   B4PUSH_SKIP_JS_TEST=1  — skip the vitest suites (step 8)
-#   B4PUSH_FULL=1          — additionally run steps 10-20 (syntect packdump
+#   B4PUSH_SKIP_CLIPPY=1   — skip clippy (step 10); use on a cold tree to stay bounded
+#   B4PUSH_SKIP_JS_TEST=1  — skip the vitest suites (step 9)
+#   B4PUSH_FULL=1          — additionally run steps 11-21 (syntect packdump
 #                            freshness gate, full workspace test,
 #                            zfb-md-extras test-utils lane, no-V8 cargo check,
 #                            esbuild + tailwindcss env-gate suites)
@@ -157,6 +158,21 @@ for t in tests/unit/*.sh; do
     fail "$(basename "$t")"
   fi
 done
+
+# ── Cargo dependency audit ────────────────────────────
+# cargo-machete is optional for local development. CI provisions an exact
+# version in health.yml, while a fresh local checkout should remain usable
+# without the optional binary.
+step "Dead-dependency check (cargo-machete)"
+if command -v cargo-machete >/dev/null 2>&1; then
+  if cargo machete --with-metadata; then
+    pass "cargo machete"
+  else
+    fail "cargo machete"
+  fi
+else
+  skip "cargo machete (cargo-machete not installed)"
+fi
 
 # ── Rust formatting ────────────────────────────────────
 step "Rust formatting (cargo fmt --check)"

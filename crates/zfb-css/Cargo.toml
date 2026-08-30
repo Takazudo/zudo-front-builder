@@ -18,8 +18,6 @@ zfb-types = { path = "../zfb-types" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
-walkdir = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 
 # CSS pipeline crates (direct deps — not yet in workspace deps).

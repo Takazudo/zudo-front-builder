@@ -80,7 +80,7 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
-use futures::stream::{Stream, StreamExt};
+use futures_util::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
