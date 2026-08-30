@@ -56,10 +56,10 @@ set -uo pipefail
 # counterpart, so a green B4PUSH_FULL=1 run did not imply that lane would pass
 # in CI — the exact
 # gap #1332 closed for the md-extras/no-v8 lanes, reopened when #1337 added the
-# islands step to health.yml without updating b4push. Step 16 restores it;
-# step 17 mirrors #1504's real-zfb cross-pipeline acceptance lane.
-# Steps 18-20 cover the 3 tailwindcss-v4 env-gate locations that #1393 wired
-# into health.yml for the first time; step 20 also co-runs the two esbuild
+# islands step to health.yml without updating b4push. Step 17 restores it;
+# step 18 mirrors #1504's real-zfb cross-pipeline acceptance lane.
+# Steps 19-21 cover the 3 tailwindcss-v4 env-gate locations that #1393 wired
+# into health.yml for the first time; step 21 also co-runs the two esbuild
 # command-layer env-gates, so it pins both binary slots. All 5 steps are
 # guarded on their staged binary existing (a tree built with
 # B4PUSH_SKIP_CLIPPY=1, or one that has never run
