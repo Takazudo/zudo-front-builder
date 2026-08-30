@@ -167,18 +167,57 @@ declaration is removable even if its package remains in `Cargo.lock`.
   in, with no package-count reduction. The package-facing behavior is recorded
   in the `zfb` and `zfb-md-wasm` v2.14.0 lanes; the other three lanes say no
   package-specific changes.
-* **`serde_yaml 0.9.34+deprecated` (#2750) — STAY.** It remains directly used
+* **`serde_yaml 0.9.34+deprecated` (#2750) — Branch B: TRIGGER FIRED; STAY
+  pending evaluation [#2774](https://github.com/Takazudo/zudo-front-builder/issues/2774).**
+  Re-checked 2026-08-30. It remains directly used
   for frontmatter-to-`serde_json::Value` conversion, `zfb`'s 1-based diagnostic
-  locations, and the md-wasm path. `serde_yaml_ng` matched the tested API and
-  behavior but its latest release was 2024-05-26 and its last repository commit
-  was 2025-09-14 as of this audit; it does not resolve the maintenance concern.
-  `serde_yml` is deprecated/archived, changes error locations and merge-key
-  behavior, and is rejected by the repository's advisory policy. `saphyr` is
-  active but is not a Serde deserializer, so it cannot preserve the contract
-  without a new adapter. #2755 is the standing follow-up: re-open when a
-  maintained compatible release, fork, or Serde wrapper can preserve the
-  existing JSON and diagnostic behavior, and include `serde_norway`, `noyalib`,
-  and `serde-saphyr` in that future scan if they remain current.
+  locations, and the md-wasm path. No dependency change belongs in this trigger
+  screen; [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755)
+  remains the standing follow-up.
+  * **`serde_yaml_ng` — no trigger:** `0.10.0` released 2024-05-26
+    ([crates.io record](https://crates.io/api/v1/crates/serde_yaml_ng/0.10.0));
+    latest canonical commit 2025-09-14
+    ([commit](https://github.com/acatton/serde-yaml-ng/commit/3628102977f3ec9e02b95ef32fcec30b3df91390)).
+    It matched the tested API and behavior in #2750, but has no post-0.10
+    release or ongoing-maintenance evidence, so the maintenance blocker remains.
+  * **`serde_yml` — no trigger:** `0.0.13` released 2026-05-27
+    ([crates.io record](https://crates.io/api/v1/crates/serde_yml/0.0.13));
+    latest canonical commit 2026-05-28
+    ([commit](https://github.com/sebastienrousseau/serde_yml/commit/5caeeec0512296f985135502d36cd08e8ffb23d1)).
+    The crate is deprecated/unmaintained and its canonical repository is
+    archived; [RUSTSEC-2025-0068](https://rustsec.org/advisories/RUSTSEC-2025-0068.html)
+    has no patched version, and the shim's error
+    locations/merge-key behavior are not the #2750 contract.
+  * **`saphyr` — no trigger:** `0.0.12` released 2026-08-18
+    ([crates.io record](https://crates.io/api/v1/crates/saphyr/0.0.12)); latest
+    canonical commit 2026-08-18
+    ([commit](https://github.com/saphyr-rs/saphyr/commit/5c45acd365c711e3d92f0ed4a0ceabe349cde514)).
+    It is an active YAML parser/object library, but not a Serde deserializer;
+    the released crate has no `from_str::<serde_json::Value>` replacement.
+  * **`serde_norway` — no trigger:** `0.9.42` released 2024-12-21
+    ([crates.io record](https://crates.io/api/v1/crates/serde_norway/0.9.42));
+    latest canonical commit 2024-12-21
+    ([commit](https://github.com/cafkafk/serde-norway/commit/1d37c159fc01c269a17ab72d021b271faf29472a)).
+    The Serde-shaped fork remains available, but release and repository activity
+    provide no evidence of ongoing maintenance at this re-check.
+  * **`noyalib` — trigger candidate; evaluation required:** `0.0.28` released
+    2026-08-24 ([crates.io record](https://crates.io/api/v1/crates/noyalib/0.0.28));
+    latest canonical commit 2026-08-25
+    ([commit](https://github.com/sebastienrousseau/noyalib/commit/ae86a20b764905c8332652b28d8989f7ddde0376)).
+    Its maintained pure-Rust Serde integration and `compat-serde-yaml` shim
+    trigger #2774, but its [documented](https://github.com/sebastienrousseau/noyalib/blob/main/doc/MIGRATION-FROM-SERDE-YAML.md)
+    `Value::Tagged`, YAML 1.2 boolean
+    defaults, merge-key policy, and different error model require differential
+    evaluation; it is not declared drop-in.
+  * **`serde-saphyr` — trigger candidate; evaluation required:** `1.1.0`
+    released 2026-08-15
+    ([crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.1.0));
+    latest canonical commit 2026-08-30
+    ([commit](https://github.com/bourumir-wyngs/serde-saphyr/commit/ea3333b7ce5a19f6993af8a72d5be366364a0a00)).
+    Its maintained Serde wrapper over a Saphyr-derived parser triggers #2774,
+    but it [streams typed values without a `Value` DOM](https://github.com/bourumir-wyngs/serde-saphyr/blob/master/README.md)
+    and has a different diagnostic surface; JSON and error-location
+    compatibility must be evaluated.
 * **Platform/process utilities (#2751) — KEEP.** `local-ip-address` enumerates
   every non-loopback IPv4 interface for bind-all ready URLs; a UDP-connect
   shortcut would select only one egress address, and the repository has no
