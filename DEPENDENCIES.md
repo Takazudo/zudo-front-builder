@@ -488,6 +488,76 @@ checked 2026-08-30).
   tests must be re-counted ([README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
   checked 2026-08-30; [abandon rule](#abandon-rule), checked 2026-08-30).
 
+##### `serde-saphyr 1.2.0` differential evaluation (#2788) — KEEP
+
+This evaluation deliberately used **serde-saphyr 1.2.0**, superseding the
+1.1.0 named in #2774, and started from
+`a52971ba678b00ba3bf616d1117a49b1018d953e`. Phase 1 exercised the committed
+#2786 corpus through the default `from_str::<serde_json::Value>` path and a
+closest-contract option set (`LastWins`, merge keys as ordinary keys, strict
+booleans, rejected unsupported tags, and permitted non-finite typeless
+floats). It also compiled a temporary direct production port and exercised a
+typed anchor/alias struct. serde-saphyr's streaming typed path successfully
+resolved the corpus anchor and alias to equal typed values. Its lack of a
+native `Value` DOM does not prevent direct JSON deserialization in general,
+but it could not produce the current JSON result for every corpus case.
+
+The closest-configured JSON path differed from the immutable serde_yaml
+baseline in **11 of 18 cases**, spanning the required categories:
+
+* anchors/aliases, null/date scalars, Unicode/CRLF/emoji values, integer
+  boundaries, configured merge-as-ordinary behavior, strict booleans, and
+  configured duplicate-key last-wins behavior matched;
+* scalar non-string keys failed on the null key instead of producing the
+  baseline JSON object, while the composite-key error had different text;
+* old-style `0123` became `123.0` instead of remaining the string `"0123"`;
+* all three malformed inputs changed `Display` rendering to serde-saphyr's
+  annotated snippet format. The Unicode error moved from `1:8:16` to line 1,
+  column 7 with no byte offset; the EOF flow sequence moved from `2:1:12` to
+  line 1, column 8 with no byte offset; and the indentation error retained
+  line 2, column 9 but exposed no byte offset;
+* built-in explicit tags failed where serde_yaml produced JSON, while a custom
+  tag was silently discarded by default. Rejecting unsupported tags restored
+  an error but not serde_yaml's text or `1:8:7` location;
+* permitting non-finite typeless floats produced the strings `".nan"`,
+  `".inf"`, and `"-.inf"`, and normalized `1e999` to `".inf"`, rather than
+  serde_yaml's JSON nulls plus string `"1e999"`; one-past-`u64::MAX` was
+  accepted as an approximate floating-point number instead of failing at
+  `1:11:10`;
+* the bounded alias-expansion case succeeded and materialized the expanded
+  value instead of returning serde_yaml's unlocated `repetition limit
+  exceeded` error.
+
+The default option set diverged further: it expanded merge keys, resolved YAML
+1.1 `y`/`yes`/`n`/`no`/`on`/`off` spellings as booleans, rejected duplicate
+keys, rejected non-finite typeless floats, and accepted the custom tag after
+discarding its identity. Thus options can repair individual policies but do
+not repair the JSON, tag, number, resource-limit, error-rendering, or location
+contract as a whole.
+
+The temporary direct port changed **10** rustfmt-formatted non-test production
+lines across the four production call sites: two in `frontmatter.rs`, one in
+`diagnostics.rs`, and seven in `zfb-md-wasm/src/lib.rs`. This is below the
+40-line abandon threshold and required no unsafe, FFI, OS-specific branch,
+polling, signal supervision, or Unicode table. The native candidate port
+compiled for `zfb-content` and `zfb-md-wasm`; the broader `zfb` check reached
+its pre-existing build-script prerequisite and stopped because the frozen
+pnpm packages were not installed. Installing them was unnecessary after the
+semantic blocker. The protected `zfb-content/tests/error_messages.rs` suite
+still passed, but the untouched md-wasm API pin observed source line 2 instead
+of 3, and the untouched `parse_to_ast.rs` Unicode pin observed column 7 instead
+of UTF-16 column 9. One candidate round was run and no corrective production
+round was attempted.
+
+These are concrete production-contract blockers, so the terminal verdict is
+**KEEP `serde_yaml`**. Phase 2 was skipped exactly as required: no wasm32
+check, `pnpm test:md-wasm`, four-artifact size measurement, transitive/license
+diff, or `cargo deny` run. All temporary manifest, lockfile, production,
+test-adapter, and generated changes were restored byte-identically to the
+starting revision, and all isolated Cargo target directories were removed.
+The final committed delta is this evidence only ([#2788](https://github.com/Takazudo/zudo-front-builder/issues/2788),
+checked 2026-08-31).
+
 This desk research does not select either candidate. The release substitution
 to serde-saphyr 1.2.0, the JSON/tag/boolean/merge/key/location risks, and the
 line-count pre-assessments are inputs for the differential-test decision; no
