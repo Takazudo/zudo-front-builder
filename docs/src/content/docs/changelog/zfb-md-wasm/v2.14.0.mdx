@@ -5,12 +5,14 @@ sidebar_position: 6
 
 # v2.14.0
 
-Released: 2026-08-30
+Released: 2026-08-31
+
+## Bug Fixes
+
+- fix(content): protect GFM autolink ports (19d0d77f)
+- fix(content): reject overlapping directive siblings (92e8b830)
+- fix(content): honor Unicode autolink whitespace (6dd813b3)
 
 ## Other Changes
 
-- Update directive-name boundaries to Unicode 16.0.0: newer punctuation and
-  symbols now end names, while U+111C9 no longer does.
-- Preserve GFM autolink literals containing ports during generic directive
-  scanning, so `parseToAst` returns full URLs and non-overlapping sibling
-  ranges while real text directives remain available.
+- chore(deps): update Unicode category data (e62f1402)
