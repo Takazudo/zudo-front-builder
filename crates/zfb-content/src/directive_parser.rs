@@ -911,8 +911,15 @@ fn validate_tree(node: &DirectiveMdastNode, source: &str) -> Result<(), Pipeline
         )));
     }
     if let Some(children) = &node.children {
+        let mut previous_end = range.start;
         for child in children {
             let child_range = child.byte_range();
+            if previous_end > child_range.start {
+                return Err(PipelineError::Parse(format!(
+                    "sibling offsets are monotonic and non-overlapping under {}",
+                    node.kind
+                )));
+            }
             if child_range.start < range.start || child_range.end > range.end {
                 return Err(PipelineError::Parse(format!(
                     "{} span {}..{} escapes {} span {}..{}",
@@ -925,6 +932,7 @@ fn validate_tree(node: &DirectiveMdastNode, source: &str) -> Result<(), Pipeline
                 )));
             }
             validate_tree(child, source)?;
+            previous_end = child_range.end;
         }
     }
     Ok(())
@@ -1474,6 +1482,27 @@ mod tests {
         find(&root, "leafDirective", &mut leaf);
         assert_eq!(leaf.len(), 1);
         validate_tree(&root, source).unwrap();
+    }
+
+    #[test]
+    fn rejects_overlapping_sibling_byte_ranges() {
+        let source = "abcdef";
+        let root = DirectiveMdastNode {
+            kind: "root".to_string(),
+            position: position_at(source, 0, source.len()),
+            children: Some(vec![
+                text_node("abcd", position_at(source, 0, 4)),
+                text_node("def", position_at(source, 3, 6)),
+            ]),
+            fields: BTreeMap::new(),
+        };
+
+        let error = validate_tree(&root, source).unwrap_err();
+        assert!(matches!(
+            error,
+            PipelineError::Parse(message)
+                if message == "sibling offsets are monotonic and non-overlapping under root"
+        ));
     }
 
     #[test]
