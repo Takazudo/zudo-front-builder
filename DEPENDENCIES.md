@@ -201,23 +201,239 @@ declaration is removable even if its package remains in `Cargo.lock`.
     The Serde-shaped fork remains available, but release and repository activity
     provide no evidence of ongoing maintenance at this re-check.
   * **`noyalib` — trigger candidate; evaluation required:** `0.0.28` released
-    2026-08-24 ([crates.io record](https://crates.io/api/v1/crates/noyalib/0.0.28));
-    latest canonical commit 2026-08-25
-    ([commit](https://github.com/sebastienrousseau/noyalib/commit/ae86a20b764905c8332652b28d8989f7ddde0376)).
-    Its maintained pure-Rust Serde integration and `compat-serde-yaml` shim
-    trigger #2774, but its [documented](https://github.com/sebastienrousseau/noyalib/blob/main/doc/MIGRATION-FROM-SERDE-YAML.md)
-    `Value::Tagged`, YAML 1.2 boolean
-    defaults, merge-key policy, and different error model require differential
-    evaluation; it is not declared drop-in.
-  * **`serde-saphyr` — trigger candidate; evaluation required:** `1.1.0`
-    released 2026-08-15
-    ([crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.1.0));
-    latest canonical commit 2026-08-30
-    ([commit](https://github.com/bourumir-wyngs/serde-saphyr/commit/ea3333b7ce5a19f6993af8a72d5be366364a0a00)).
-    Its maintained Serde wrapper over a Saphyr-derived parser triggers #2774,
-    but it [streams typed values without a `Value` DOM](https://github.com/bourumir-wyngs/serde-saphyr/blob/master/README.md)
+    2026-08-24 ([crates.io record](https://crates.io/api/v1/crates/noyalib/0.0.28),
+    checked 2026-08-30); latest canonical commit 2026-08-25
+    ([commit](https://github.com/sebastienrousseau/noyalib/commit/ae86a20b764905c8332652b28d8989f7ddde0376),
+    checked 2026-08-30). Its maintained pure-Rust Serde integration and
+    `compat-serde-yaml` shim trigger [#2774](https://github.com/Takazudo/zudo-front-builder/issues/2774),
+    checked 2026-08-30, but its `Value::Tagged`, YAML 1.2
+    boolean defaults, merge-key policy, and different error model require the
+    no-build differential screen below; it is not declared drop-in
+    ([migration guide](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/doc/MIGRATION-FROM-SERDE-YAML.md),
+    checked 2026-08-30).
+  * **`serde-saphyr` — trigger candidate; evaluation required:** the planned
+    `1.1.0` screen is superseded by `1.2.0`, released 2026-08-30
+    ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
+    checked 2026-08-30; [1.1.0 record](https://crates.io/api/v1/crates/serde-saphyr/1.1.0),
+    checked 2026-08-30). Latest canonical commit on 2026-08-30 is recorded
+    here ([commit](https://github.com/bourumir-wyngs/serde-saphyr/commit/ea3333b7ce5a19f6993af8a72d5be366364a0a00),
+    checked 2026-08-30). Its maintained Serde wrapper over a Saphyr-derived
+    parser triggers [#2774](https://github.com/Takazudo/zudo-front-builder/issues/2774),
+    checked 2026-08-30, but it streams typed values without a `Value` DOM
     and has a different diagnostic surface; JSON and error-location
-    compatibility must be evaluated.
+    compatibility are evaluated below ([release README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
+    checked 2026-08-30).
+
+### Candidate desk research (#2785; no-build, checked 2026-08-30)
+
+This is the requested candidate screen, not a migration recommendation. The
+actual zfb contract is the direct YAML-frontmatter parse into
+`serde_json::Value`, conversion of `serde_yaml::Error` into
+`FrontmatterError::Yaml`, and consumption of `location().line()`,
+`location().column()`, and (in md-wasm) `location().index()`; `serde_yaml::Value`
+is not part of the public surface ([frontmatter.rs](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb-content/src/frontmatter.rs),
+checked 2026-08-30; [zfb diagnostics](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb/src/diagnostics.rs),
+checked 2026-08-30; [md-wasm diagnostics](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb-md-wasm/src/lib.rs),
+checked 2026-08-30). The issue requires these points to be checked against
+tagged values, YAML 1.1-vs-1.2 booleans, merge keys, non-string keys, and
+error locations, with differential tests still belonging to the decision
+sub-issue ([#2785](https://github.com/Takazudo/zudo-front-builder/issues/2785),
+checked 2026-08-30). Both candidates below are screened at their newest
+requested release and no binding verdict is recorded ([noyalib 0.0.28
+metadata](https://crates.io/api/v1/crates/noyalib/0.0.28), checked 2026-08-30;
+[serde-saphyr 1.2.0 metadata](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
+checked 2026-08-30).
+
+The planning constraints remain unchanged: the current `deny.toml` has no
+`serde_yaml` or `unsafe-libyaml` advisory entries, and the security workflow
+makes advisories the only deny-on-finding section while licenses, bans, and
+sources remain warn-only. Maintenance evidence is therefore the trigger
+screen, not a new CI or advisory verdict ([deny.toml](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/deny.toml),
+checked 2026-08-30; [security-audit workflow](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/.github/workflows/security-audit.yml),
+checked 2026-08-30; [#2785](https://github.com/Takazudo/zudo-front-builder/issues/2785),
+checked 2026-08-30).
+
+#### `noyalib 0.0.28`
+
+* **Release and maintenance evidence.** The 0.0.28 registry record reports
+  release creation on 2026-08-24, `yanked: false`, `rust_version: 1.86.0`,
+  and `MIT OR Apache-2.0`; its release page is published on 2026-08-24
+  ([crates.io version record](https://crates.io/api/v1/crates/noyalib/0.0.28),
+  checked 2026-08-30; [GitHub release v0.0.28](https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.28),
+  checked 2026-08-30). The registry history contains 26 non-yanked releases
+  from 0.0.1 on 2026-05-10 through 0.0.28 on 2026-08-24, which is release
+  cadence evidence rather than a guarantee of future maintenance
+  ([crates.io history](https://crates.io/api/v1/crates/noyalib), checked
+  2026-08-30). Canonical repository metadata reports `archived: false`,
+  `disabled: false`, and a push on 2026-08-25; the checked version response
+  contains no `deprecated` field ([repository metadata](https://api.github.com/repos/sebastienrousseau/noyalib),
+  checked 2026-08-30; [crates.io version record](https://crates.io/api/v1/crates/noyalib/0.0.28),
+  checked 2026-08-30). The immutable release source describes a pure-Rust
+  YAML 1.2 implementation with Serde integration and no unsafe in the
+  library ([v0.0.28 README](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/README.md),
+  checked 2026-08-30).
+* **Tagged values.** Native `noyalib::Value` has seven variants, including
+  `Tagged`, and the migration guide says custom tags are retained there
+  ([value source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/value.rs),
+  checked 2026-08-30; [migration guide](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/doc/MIGRATION-FROM-SERDE-YAML.md),
+  checked 2026-08-30). zfb requests `serde_json::Value`, not native
+  `noyalib::Value`; the v0.0.28 deserializer uses a special fast path only
+  for the native type, while `Value::Tagged` recurses through its inner value
+  for generic `deserialize_any`. The source therefore predicts that a custom
+  tag will not become a JSON tag node in this zfb call, but this is a
+  source-derived inference that requires a differential fixture
+  ([deserializer source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/de.rs),
+  checked 2026-08-30; [Serde value adapter](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/value/serde_impl.rs),
+  checked 2026-08-30).
+* **Booleans.** The default parser follows YAML 1.2 boolean resolution:
+  bare `yes`, `no`, `on`, and `off` remain strings, while the migration guide
+  documents an opt-in legacy-booleans setting for YAML 1.1 spellings
+  ([configuration source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/de/config.rs),
+  checked 2026-08-30; [migration guide](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/doc/MIGRATION-FROM-SERDE-YAML.md),
+  checked 2026-08-30). Because the zfb target is the generic
+  `serde_json::Value` path, the source predicts strict YAML 1.2 JSON values
+  under default configuration; the exact scalar corpus remains a differential
+  test obligation ([loader source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/parser/loader.rs),
+  checked 2026-08-30).
+* **Merge keys.** `MergeKeyPolicy::Auto` is the default; `AsOrdinary` and
+  `Error` are available. The v0.0.28 policy and tests say only a plain `<<`
+  key is eligible, while quoted `"<<"` and an alias resolving to a string are
+  ordinary keys ([policy source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/de/config.rs),
+  checked 2026-08-30; [policy tests](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/tests/merge_key_policy.rs),
+  checked 2026-08-30; [plain-key tests](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/tests/merge_key_plain_only.rs),
+  checked 2026-08-30). The loader has no corresponding explicit `!!merge`
+  branch in the release source; unknown tags are represented as `Tagged`, so
+  explicit-tag behavior is an uncertainty to test rather than an assumed
+  compatibility match ([loader source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/parser/loader.rs),
+  checked 2026-08-30).
+* **Non-string keys.** The public `Mapping` stores `IndexMap<String, Value>`;
+  the loader's `value_to_key_string` converts scalar, tagged, sequence, and
+  mapping keys to deterministic strings and reports `KeyCollision` when
+  distinct typed keys stringify identically ([mapping source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/value/mapping.rs),
+  checked 2026-08-30; [loader source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/parser/loader.rs),
+  checked 2026-08-30). Inference for this zfb surface: numeric or composite
+  YAML keys that current direct `serde_yaml`→JSON conversion rejects may be
+  accepted as JSON object strings by noyalib, subject to collision errors;
+  this is a material differential-test risk ([current frontmatter call](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb-content/src/frontmatter.rs),
+  checked 2026-08-30).
+* **Errors and locations.** v0.0.28 exposes `Error::location()` as an
+  `Option<Location>`; parser locations are 1-based for line and column and
+  `index()` is a 0-based UTF-8 byte offset, with no location for several
+  unlocated error variants. Its structured `Display` prefixes (for example,
+  `YAML parse error at ...`) are its own wording, so zfb's verbatim
+  `FrontmatterError::Yaml` message would need differential review
+  ([error source](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/error.rs),
+  checked 2026-08-30; [compatibility surface](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/crates/noyalib/src/compat/serde_yaml.rs),
+  checked 2026-08-30; [zfb consumers](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb/src/diagnostics.rs),
+  checked 2026-08-30; [md-wasm consumers](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb-md-wasm/src/lib.rs),
+  checked 2026-08-30).
+* **Abandon-rule pre-assessment.** A direct noyalib port changes the error
+  type and parse call in `frontmatter.rs`; the compat port changes those two
+  paths to `noyalib::compat::serde_yaml` even though it is not a Cargo package
+  alias. Across the four known production callsites (two frontmatter lines and
+  two diagnostic consumers), the existing line/column/index method names and
+  relative frontmatter offset can remain conceptually the same, so the initial
+  production delta is estimated at roughly 2–4 rustfmt lines, below the
+  40-line trigger. The
+  candidate screen found no required unsafe, FFI, OS-specific branch, polling
+  loop, signal supervision, or Unicode table; this is a pre-assessment only,
+  and any adapter required by differential tests must be re-counted against
+  the standing rule ([compat migration notes](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/doc/MIGRATION-FROM-SERDE-YAML.md),
+  checked 2026-08-30; [abandon rule](#abandon-rule), checked 2026-08-30).
+
+#### `serde-saphyr 1.2.0`
+
+* **Release and maintenance evidence.** The 1.2.0 registry record reports
+  creation on 2026-08-30, `yanked: false`, `rust_version: 1.89`, and
+  `MIT OR Apache-2.0`; it supersedes the planning screen's 1.1.0, which was
+  released on 2026-08-15 ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
+  checked 2026-08-30; [1.1.0 record](https://crates.io/api/v1/crates/serde-saphyr/1.1.0),
+  checked 2026-08-30). The stable release sequence is 1.0.0 on 2026-07-31,
+  1.0.1 on 2026-08-05, 1.1.0 on 2026-08-15, and 1.2.0 on 2026-08-30,
+  which is cadence evidence rather than a guarantee of future maintenance
+  ([crates.io history](https://crates.io/api/v1/crates/serde-saphyr), checked
+  2026-08-30). Canonical repository metadata reports `archived: false`,
+  `disabled: false`, and a push on 2026-08-30; the checked version response
+  contains no `deprecated` field, and the 1.2.0 release is published on that
+  date ([repository metadata](https://api.github.com/repos/bourumir-wyngs/serde-saphyr),
+  checked 2026-08-30; [1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
+  checked 2026-08-30; [1.2.0 release](https://github.com/bourumir-wyngs/serde-saphyr/releases/tag/1.2.0),
+  checked 2026-08-30). The release README describes a strongly typed,
+  fuzz-tested deserializer and says the library build denies unsafe, while
+  explicitly leaving transitive dependencies to a separate audit
+  ([v1.2.0 README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
+  checked 2026-08-30).
+* **Tagged values.** serde-saphyr has no abstract `Value` DOM; it supports
+  direct deserialization to `serde_json::Value`, exposes `Tagged<T>` for a
+  caller that explicitly wants a tag, and defaults to permissive handling of
+  unsupported tags ([README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
+  checked 2026-08-30; [tag options/tests](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/tests/unsupported_tags.rs),
+  checked 2026-08-30). Its generic `deserialize_any` path discards YAML tags
+  for ordinary untyped visitors, so the zfb JSON target is expected to lose
+  tag identity unless a typed wrapper is introduced; that expectation must be
+  verified against the fixture corpus ([deserializer source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/de/deserializer.rs),
+  checked 2026-08-30).
+* **Booleans.** `strict_booleans` defaults to false. In the typeless
+  `deserialize_any` path used by a JSON-like target, the release parser
+  recognizes YAML 1.1 spellings such as `y`, `yes`, `on`, `n`, `no`, and
+  `off` as booleans; the README warns that this can be surprising for
+  `serde_json::Value`, and `strict_booleans: true` is the opt-in YAML 1.2
+  behavior ([options source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/de/options.rs),
+  checked 2026-08-30; [scalar resolver](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/parse_scalars.rs),
+  checked 2026-08-30; [README warning](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
+  checked 2026-08-30).
+* **Merge keys.** The default `MergeKeyPolicy::Merge` expands both plain
+  `<<` and an explicitly resolved `!!merge` key; `AsOrdinary` and `Error` are
+  available alternatives. The release tests exercise merge expansion into
+  `serde_json::Value` ([options source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/de/options.rs),
+  checked 2026-08-30; [merge-key source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/de/key_nodes.rs),
+  checked 2026-08-30; [JSON-value test](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/tests/serde_yaml/test_from_str_value.rs),
+  checked 2026-08-30).
+* **Non-string keys.** serde-saphyr records typed key fingerprints for
+  duplicate detection and its string-key deserializer rejects integer/core-tag
+  keys that cannot be parsed as `String`; the historical regression test
+  expects a composite key into `HashMap<String, String>` to fail
+  ([key-node source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/de/key_nodes.rs),
+  checked 2026-08-30; [deserializer source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/de/deserializer.rs),
+  checked 2026-08-30; [historical regression test](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/tests/serde_yaml/test_historical_failures.rs),
+  checked 2026-08-30). This differs from noyalib's explicit stringification
+  risk and needs a direct `serde_json::Value` differential case; no DOM path
+  exists to preserve typed keys ([README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
+  checked 2026-08-30).
+* **Errors and locations.** `serde_saphyr::Error::location()` returns an
+  `Option<Location>`, with line and column exposed as 1-based `u64` character
+  positions. `Location::span().byte_offset()` is an optional byte offset for
+  string input; there is no serde_yaml-shaped `index()` method, and alias
+  errors can carry multiple locations. Display text includes structured
+  messages/snippets and therefore differs from zfb's current verbatim error
+  embedding ([location source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/location.rs),
+  checked 2026-08-30; [span source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/span.rs),
+  checked 2026-08-30; [error source](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/src/de/error.rs),
+  checked 2026-08-30; [location tests](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/tests/location.rs),
+  checked 2026-08-30). The zfb diagnostic path would need `u64`→`usize`
+  conversion and an md-wasm replacement for `index()` using the optional
+  byte offset, with explicit fallback behavior for `None` ([zfb diagnostics](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb/src/diagnostics.rs),
+  checked 2026-08-30; [md-wasm diagnostics](https://github.com/Takazudo/zudo-front-builder/blob/146eb937b5ae33e8742a07207417ab19ef1b0b2e/crates/zfb-md-wasm/src/lib.rs),
+  checked 2026-08-30).
+* **Abandon-rule pre-assessment.** A direct serde-saphyr port changes the
+  frontmatter error type and parse call, adds the diagnostic integer casts,
+  and adapts md-wasm from `location().index()` to
+  `location().span().byte_offset()`; the initial estimate is roughly 7–10
+  rustfmt lines across the four known production callsites, below the 40-line
+  trigger. The candidate screen found no
+  required unsafe, FFI, OS-specific branch, polling loop, signal supervision,
+  or Unicode table; the README's direct-library unsafe statement does not
+  replace the required transitive audit. Any adapter required by differential
+  tests must be re-counted ([README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
+  checked 2026-08-30; [abandon rule](#abandon-rule), checked 2026-08-30).
+
+This desk research does not select either candidate. The release substitution
+to serde-saphyr 1.2.0, the JSON/tag/boolean/merge/key/location risks, and the
+line-count pre-assessments are inputs for the differential-test decision; no
+dependency, build, production-code, or test-fixture change is authorized by
+this section ([#2785](https://github.com/Takazudo/zudo-front-builder/issues/2785),
+checked 2026-08-30).
+
 * **Platform/process utilities (#2751) — KEEP.** `local-ip-address` enumerates
   every non-loopback IPv4 interface for bind-all ready URLs; a UDP-connect
   shortcut would select only one egress address, and the repository has no
