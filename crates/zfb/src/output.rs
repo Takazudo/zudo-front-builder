@@ -4,8 +4,6 @@
 //! (`dev`, `build`, `preview`, `new`). It centralises:
 //!
 //! * Coloured status logging (`info`, `success`, `warn`, `error`, `ready`).
-//! * A thin progress-bar wrapper around [`indicatif::ProgressBar`]
-//!   ([`BuildProgress`]).
 //! * User-friendly multi-line error rendering for `anyhow::Error`
 //!   ([`format_error`]).
 //!
@@ -19,9 +17,7 @@
 //! conventional Unix CLI behaviour.
 
 use std::net::IpAddr;
-use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::{OwoColorize, Stream};
 
 // ---------------------------------------------------------------------------
@@ -234,68 +230,6 @@ fn collect_network_urls(scheme: &str, port: u16) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Progress
-// ---------------------------------------------------------------------------
-
-/// Progress-bar wrapper used by long-running multi-step commands such as
-/// `zfb build`.
-///
-/// Wraps [`indicatif::ProgressBar`] with a project-standard template and
-/// emits a green summary line on completion.
-// Intended for `zfb build` progress reporting; not yet wired up in the build command.
-#[allow(dead_code)]
-pub struct BuildProgress {
-    bar: ProgressBar,
-}
-
-#[allow(dead_code)]
-impl BuildProgress {
-    /// Create a new progress bar for `total` units of work.
-    ///
-    /// The bar uses a stable template (`[bar] pos/len msg`) so that callers
-    /// just need to call [`BuildProgress::inc`] for each completed unit.
-    pub fn new(total: u64) -> Self {
-        let bar = ProgressBar::new(total);
-        // The template is intentionally kept simple; if it fails to parse
-        // (which shouldn't happen given the literal string), we fall back
-        // to indicatif's default style.
-        if let Ok(style) =
-            ProgressStyle::with_template("{spinner:.cyan} [{bar:30.green/dim}] {pos}/{len} {msg}")
-        {
-            bar.set_style(style.progress_chars("=> "));
-        }
-        Self { bar }
-    }
-
-    /// Advance the bar by one step and update the trailing message.
-    pub fn inc(&self, label: &str) {
-        self.bar.set_message(label.to_string());
-        self.bar.inc(1);
-    }
-
-    /// Finish the bar and print a one-line summary of the form
-    /// `✓ N pages built in X.XXs`.
-    pub fn finish_and_summary(self, count: u64, elapsed: Duration) {
-        self.bar.finish_and_clear();
-        println!("{}", fmt_summary(count, elapsed));
-    }
-}
-
-/// Render the build summary line. Extracted so it can be unit-tested without
-/// touching `stdout`.
-// Private helper for BuildProgress::finish_and_summary; only reached via tests until build uses it.
-#[allow(dead_code)]
-fn fmt_summary(count: u64, elapsed: Duration) -> String {
-    let mark = "✓".if_supports_color(Stream::Stdout, |t| t.green().to_string());
-    format!(
-        "{} {} pages built in {:.2}s",
-        mark,
-        count,
-        elapsed.as_secs_f64()
-    )
-}
-
-// ---------------------------------------------------------------------------
 // Error formatting
 // ---------------------------------------------------------------------------
 
@@ -469,6 +403,7 @@ pub(crate) mod color_override_lock {
 mod tests {
     use super::*;
     use anyhow::{anyhow, Context};
+    use std::time::Duration;
 
     /// Strip ANSI escape sequences (CSI ... m) from a string for assertions
     /// that should be colour-agnostic.
@@ -660,23 +595,6 @@ mod tests {
             text.contains("watchPollIntervalMs"),
             "poll-mode guidance should point at the interval knob instead, got: {text}"
         );
-    }
-
-    #[test]
-    fn build_progress_zero_total_summary_does_not_panic() {
-        let p = BuildProgress::new(0);
-        p.finish_and_summary(0, Duration::ZERO);
-    }
-
-    #[test]
-    fn fmt_summary_renders_expected_text() {
-        // Colour codes vary depending on environment, so strip them before
-        // asserting on the underlying text shape.
-        let line = strip_ansi(&fmt_summary(0, Duration::ZERO));
-        assert_eq!(line, "✓ 0 pages built in 0.00s");
-
-        let line = strip_ansi(&fmt_summary(7, Duration::from_millis(1234)));
-        assert_eq!(line, "✓ 7 pages built in 1.23s");
     }
 
     // -----------------------------------------------------------------------
