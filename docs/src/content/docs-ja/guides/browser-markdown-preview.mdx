@@ -51,10 +51,10 @@ Node ≥ 20 でもこのパッケージをロードできます — パッケー
 
 | インポート | gzip-9 wasm（2.14.0） | 正確なランタイム値 | 型の面 | 使う場面 |
 | --- | ---: | --- | --- | --- |
-| `@takazudo/zfb-md-wasm` | 1,442,270 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | compile/render/parse/raw-mdast/highlight の現在の完全な型セット | MDX をコンパイル、または複数の API を使う場合 |
+| `@takazudo/zfb-md-wasm` | 1,443,039 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | compile/render/parse/raw-mdast/highlight の現在の完全な型セット | MDX をコンパイル、または複数の API を使う場合 |
 | `@takazudo/zfb-md-wasm/highlight` | 758,249 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換 |
 | `@takazudo/zfb-md-wasm/render` | 1,010,797 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML にする場合 |
-| `@takazudo/zfb-md-wasm/parse` | 260,760 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
+| `@takazudo/zfb-md-wasm/parse` | 261,098 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
 
 focused エントリは、対応する private リソースペアだけを持ちます:
 
@@ -498,27 +498,27 @@ wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { l
 
 | エントリ / グラフ | final wasm | gzip-9 | glue | glue gzip-9 |
 | --- | ---: | ---: | ---: | ---: |
-| root（full） | 3,293,554 B | 1,442,270 B | 14,998 B | 4,199 B |
+| root（full） | 3,294,286 B | 1,443,039 B | 14,998 B | 4,199 B |
 | highlight | 1,476,740 B | 758,249 B | 8,758 B | 2,637 B |
 | render | 2,082,385 B | 1,010,797 B | 8,772 B | 2,661 B |
-| parse | 645,272 B | 260,760 B | 11,159 B | 3,797 B |
+| parse | 646,115 B | 261,098 B | 11,159 B | 3,797 B |
 
 #2447 の決定スナップショットでは、split パッケージの構成が 3,638,607 B、root + highlight が
 2,314,818 B、クリーンな本番の参照上限は 210 秒、選択されたスナップショットの中央値は 155.015 秒
 [153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 820,000 B、
 render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
-いずれも上限の内側で出荷されており、上限までの余裕は root 157,730 B、highlight 61,751 B、
-render 89,203 B、parse 64,240 B です。これらは永続的な保証ではなく 2.14.0 の測定値です —
+いずれも上限の内側で出荷されており、上限までの余裕は root 156,961 B、highlight 61,751 B、
+render 89,203 B、parse 63,902 B です。これらは永続的な保証ではなく 2.14.0 の測定値です —
 実際にインストールしたバージョンで測り直してください。
 
 highlight グラフから `swc_core` をゲートで外したこと（#2449 / #2450）は、
-**証明可能性の勝利であって、サイズの勝利ではありません**。出荷された highlight の
-アーティファクトは、#2447 の SWC 保持ベースラインよりわずか 7,965 B 小さいだけです
-（1,484,705 B → 1,476,740 B、gzip-9 は 767,009 B → 758,244 B で −8,765 B）。wasm-opt は
+**証明可能性の勝利であって、サイズの勝利ではありません**。#2447 の SWC 保持ベースラインは
+raw 1,484,705 B、gzip-9 767,009 B で、#2450 の結果は raw で 7,965 B、gzip-9 で
+8,765 B（結果は 758,244 B）小さくなりました。wasm-opt は
 到達不能な `swc_core` を既にデッドストリップしていたのであり、#2450 の完全パリティと
 `swc_core` 不在のアサーションが、その創発的な性質を保証されたものへと変えました。
 highlight だけを使う利用者にとって意味のある差は、root と highlight の差のほうです:
-raw で 1,816,814 B、gzip-9 で 684,021 B 小さく、highlight は root の raw バイトの約 45%、
+raw で 1,817,546 B、gzip-9 で 684,790 B 小さく、highlight は root の raw バイトの約 45%、
 gzip 後のバイトの約 53% に収まります。
 
 ## Node での利用（テストとツール）
@@ -581,27 +581,27 @@ wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { l
 
 | エントリ / グラフ | final wasm | gzip-9 | glue | glue gzip-9 |
 | --- | ---: | ---: | ---: | ---: |
-| root（full） | 3,293,554 B | 1,442,270 B | 14,998 B | 4,199 B |
+| root（full） | 3,294,286 B | 1,443,039 B | 14,998 B | 4,199 B |
 | highlight | 1,476,740 B | 758,249 B | 8,758 B | 2,637 B |
 | render | 2,082,385 B | 1,010,797 B | 8,772 B | 2,661 B |
-| parse | 645,272 B | 260,760 B | 11,159 B | 3,797 B |
+| parse | 646,115 B | 261,098 B | 11,159 B | 3,797 B |
 
 #2447 の決定スナップショットでは、split パッケージの構成が 3,638,607 B、root + highlight が
 2,314,818 B、クリーンな本番の上限は 210 秒、決定スナップショットの中央値は 155.015 秒
 [153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 820,000 B、
 render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
-いずれも上限の内側で出荷されており、上限までの余裕は root 157,730 B、highlight 61,751 B、
-render 89,203 B、parse 64,240 B です。これらは永続的な保証ではなく 2.14.0 の測定値です —
+いずれも上限の内側で出荷されており、上限までの余裕は root 156,961 B、highlight 61,751 B、
+render 89,203 B、parse 63,902 B です。これらは永続的な保証ではなく 2.14.0 の測定値です —
 実際にインストールしたバージョンで測り直してください。
 
 highlight グラフから `swc_core` をゲートで外したこと（#2449 / #2450）は、
-**証明可能性の勝利であって、サイズの勝利ではありません**。出荷された highlight の
-アーティファクトは、#2447 の SWC 保持ベースラインよりわずか 7,965 B 小さいだけです
-（1,484,705 B → 1,476,740 B、gzip-9 は 767,009 B → 758,244 B で −8,765 B）。wasm-opt は
+**証明可能性の勝利であって、サイズの勝利ではありません**。#2447 の SWC 保持ベースラインは
+raw 1,484,705 B、gzip-9 767,009 B で、#2450 の結果は raw で 7,965 B、gzip-9 で
+8,765 B（結果は 758,244 B）小さくなりました。wasm-opt は
 到達不能な `swc_core` を既にデッドストリップしていたのであり、#2450 の完全パリティと
 `swc_core` 不在のアサーションが、その創発的な性質を保証されたものへと変えました。
 highlight だけを使う利用者にとって意味のある差は、root と highlight の差のほうです:
-raw で 1,816,814 B、gzip-9 で 684,021 B 小さく、highlight は root の raw バイトの約 45%、
+raw で 1,817,546 B、gzip-9 で 684,790 B 小さく、highlight は root の raw バイトの約 45%、
 gzip 後のバイトの約 53% に収まります。
 
 ## トラップからの回復

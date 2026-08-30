@@ -33,5 +33,11 @@
     "name": "labels-entities-escapes-and-definitions",
     "dialect": "markdown",
     "source": ":empty[]\n\n:attrs{#one .a .b flag unquoted=value quoted=\"a &copy; &#x1F980;\"}\n\n:multi[first\nsecond]{title=\"line\nvalue\"}\n\n\\:escaped[label]\n\n[id]: https://example.test/:not-a-directive[label]"
+  },
+  {
+    "name": "gfm-autolink-literal-ports",
+    "dialect": "markdown",
+    "gfm": true,
+    "source": "http://localhost:4323/preview/x\n\nhttp://127.0.0.1:8080/a.html\n\nwww.example.com:8080/x\n\nhttp://localhost:abc/x\n\nxhttp://h:8080\n\nsee http://h:8080 :badge[x]"
   }
 ]

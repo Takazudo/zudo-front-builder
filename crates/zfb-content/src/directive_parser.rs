@@ -911,8 +911,15 @@ fn validate_tree(node: &DirectiveMdastNode, source: &str) -> Result<(), Pipeline
         )));
     }
     if let Some(children) = &node.children {
+        let mut previous_end = range.start;
         for child in children {
             let child_range = child.byte_range();
+            if previous_end > child_range.start {
+                return Err(PipelineError::Parse(format!(
+                    "sibling offsets are monotonic and non-overlapping under {}",
+                    node.kind
+                )));
+            }
             if child_range.start < range.start || child_range.end > range.end {
                 return Err(PipelineError::Parse(format!(
                     "{} span {}..{} escapes {} span {}..{}",
@@ -925,6 +932,7 @@ fn validate_tree(node: &DirectiveMdastNode, source: &str) -> Result<(), Pipeline
                 )));
             }
             validate_tree(child, source)?;
+            previous_end = child_range.end;
         }
     }
     Ok(())
@@ -1067,6 +1075,11 @@ fn text_previous_allows(source: &str, offset: usize) -> bool {
 
 fn protected_end(options: ParseMdastOptions, source: &str, start: usize) -> Option<usize> {
     let byte = source.as_bytes()[start];
+    if options.gfm.autolink_literal && matches!(byte, b'h' | b'H' | b'w' | b'W') {
+        if let Some(end) = gfm_autolink_literal_end(source, start) {
+            return Some(end);
+        }
+    }
     if byte == b'[' {
         if let Some(end) = definition_line_end(source, start) {
             return Some(end);
@@ -1098,6 +1111,38 @@ fn protected_end(options: ParseMdastOptions, source: &str, start: usize) -> Opti
         return balanced_end(source, start, b'{', b'}');
     }
     None
+}
+
+fn gfm_autolink_literal_end(source: &str, start: usize) -> Option<usize> {
+    let rest = &source[start..];
+    let is_http = rest
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        || rest
+            .get(..8)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+    let is_www = rest
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("www."));
+
+    let before = start.checked_sub(1).map(|offset| source.as_bytes()[offset]);
+    if (is_http && before.is_some_and(|byte| byte.is_ascii_alphabetic()))
+        || (is_www
+            && !matches!(
+                before,
+                None | Some(b'\n' | b'\r' | b' ' | b'\t' | b'(' | b'*' | b'_' | b'[' | b']' | b'~')
+            ))
+        || (!is_http && !is_www)
+    {
+        return None;
+    }
+
+    Some(
+        source[start..]
+            .char_indices()
+            .find_map(|(relative, ch)| ch.is_whitespace().then_some(relative))
+            .map_or(source.len(), |relative| start + relative),
+    )
 }
 
 fn definition_line_end(source: &str, start: usize) -> Option<usize> {
@@ -1333,6 +1378,98 @@ mod tests {
     }
 
     #[test]
+    fn protects_gfm_autolink_literals_from_directive_claims() {
+        for source in [
+            "http://localhost:4323/preview/x",
+            "http://127.0.0.1:8080/a.html",
+            "www.example.com:8080/x",
+            "http://localhost:abc/x",
+        ] {
+            let root = parse_directive_mdast(options(ParseDialect::Markdown), source).unwrap();
+            let mut links = Vec::new();
+            find(&root, "link", &mut links);
+            assert_eq!(links.len(), 1, "{source:?}");
+            let expected_url = if source.starts_with("www.") {
+                format!("http://{source}")
+            } else {
+                source.to_owned()
+            };
+            assert_eq!(links[0].fields["url"], expected_url, "{source:?}");
+            assert_strictly_increasing_sibling_ranges(&root, source);
+        }
+    }
+
+    #[test]
+    fn autolink_protection_honors_before_restrictions_and_ends_at_whitespace() {
+        let source = "xhttp://h:8080";
+        let root = parse_directive_mdast(options(ParseDialect::Markdown), source).unwrap();
+        let mut links = Vec::new();
+        find(&root, "link", &mut links);
+        assert!(links.is_empty());
+        let mut directives = Vec::new();
+        find(&root, "textDirective", &mut directives);
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].fields["name"], "8080");
+        assert_strictly_increasing_sibling_ranges(&root, source);
+
+        let source = "see http://h:8080 :badge[x]";
+        let root = parse_directive_mdast(options(ParseDialect::Markdown), source).unwrap();
+        let mut links = Vec::new();
+        find(&root, "link", &mut links);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].fields["url"], "http://h:8080");
+        let mut directives = Vec::new();
+        find(&root, "textDirective", &mut directives);
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].fields["name"], "badge");
+        assert_strictly_increasing_sibling_ranges(&root, source);
+
+        for separator in ['\u{00a0}', '\u{2003}'] {
+            let source = format!("see http://h:8080{separator}:badge[x]");
+            let root = parse_directive_mdast(options(ParseDialect::Markdown), &source).unwrap();
+            let mut links = Vec::new();
+            find(&root, "link", &mut links);
+            assert_eq!(links.len(), 1, "{source:?}");
+            assert_eq!(links[0].fields["url"], "http://h:8080", "{source:?}");
+            let mut directives = Vec::new();
+            find(&root, "textDirective", &mut directives);
+            assert_eq!(directives.len(), 1, "{source:?}");
+            assert_eq!(directives[0].fields["name"], "badge", "{source:?}");
+            assert_strictly_increasing_sibling_ranges(&root, &source);
+        }
+
+        let mut disabled = options(ParseDialect::Markdown);
+        disabled.gfm.autolink_literal = false;
+        let source = "http://h:8080";
+        let root = parse_directive_mdast(disabled, source).unwrap();
+        let mut links = Vec::new();
+        find(&root, "link", &mut links);
+        assert!(links.is_empty());
+        let mut directives = Vec::new();
+        find(&root, "textDirective", &mut directives);
+        assert_eq!(directives.len(), 1);
+        assert_eq!(directives[0].fields["name"], "8080");
+        assert_strictly_increasing_sibling_ranges(&root, source);
+    }
+
+    fn assert_strictly_increasing_sibling_ranges(node: &DirectiveMdastNode, source: &str) {
+        if let Some(children) = &node.children {
+            for pair in children.windows(2) {
+                assert!(
+                    pair[0].position.start.offset < pair[1].position.start.offset
+                        && pair[0].position.end.offset <= pair[1].position.start.offset,
+                    "overlapping sibling ranges {:?} and {:?} in {source:?}",
+                    pair[0].byte_range(),
+                    pair[1].byte_range()
+                );
+            }
+            for child in children {
+                assert_strictly_increasing_sibling_ranges(child, source);
+            }
+        }
+    }
+
+    #[test]
     fn malformed_flow_forms_stay_literal() {
         for source in [":::bad trailing\nbody\n:::", "::a[x] nope"] {
             let root = parse_directive_mdast(options(ParseDialect::Markdown), source).unwrap();
@@ -1359,6 +1496,27 @@ mod tests {
         find(&root, "leafDirective", &mut leaf);
         assert_eq!(leaf.len(), 1);
         validate_tree(&root, source).unwrap();
+    }
+
+    #[test]
+    fn rejects_overlapping_sibling_byte_ranges() {
+        let source = "abcdef";
+        let root = DirectiveMdastNode {
+            kind: "root".to_string(),
+            position: position_at(source, 0, source.len()),
+            children: Some(vec![
+                text_node("abcd", position_at(source, 0, 4)),
+                text_node("def", position_at(source, 3, 6)),
+            ]),
+            fields: BTreeMap::new(),
+        };
+
+        let error = validate_tree(&root, source).unwrap_err();
+        assert!(matches!(
+            error,
+            PipelineError::Parse(message)
+                if message == "sibling offsets are monotonic and non-overlapping under root"
+        ));
     }
 
     #[test]
