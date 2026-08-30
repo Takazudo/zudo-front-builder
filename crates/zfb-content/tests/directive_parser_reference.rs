@@ -108,8 +108,16 @@ fn assert_spans(node: &DirectiveMdastNode, source: &str, parent: Option<(usize, 
         );
     }
     if let Some(children) = &node.children {
+        let mut previous_end = start;
         for child in children {
+            let child_start = child.position.start.offset;
+            assert!(
+                previous_end <= child_start,
+                "sibling offsets are monotonic and non-overlapping under {}",
+                node.kind
+            );
             assert_spans(child, source, Some((start, end)));
+            previous_end = child.position.end.offset;
         }
     }
 }
