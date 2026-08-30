@@ -167,13 +167,30 @@ declaration is removable even if its package remains in `Cargo.lock`.
   in, with no package-count reduction. The package-facing behavior is recorded
   in the `zfb` and `zfb-md-wasm` v2.14.0 lanes; the other three lanes say no
   package-specific changes.
-* **`serde_yaml 0.9.34+deprecated` (#2750) — Branch B: TRIGGER FIRED; STAY
-  pending evaluation [#2774](https://github.com/Takazudo/zudo-front-builder/issues/2774).**
-  Re-checked 2026-08-30. It remains directly used
-  for frontmatter-to-`serde_json::Value` conversion, `zfb`'s 1-based diagnostic
-  locations, and the md-wasm path. No dependency change belongs in this trigger
-  screen; [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755)
-  remains the standing follow-up.
+* **`serde_yaml 0.9.34+deprecated` (#2750, #2774) — RETAIN.** Final re-check
+  2026-08-31. The maintained candidates evaluated in #2787 and #2788 each
+  diverged from the committed `serde_yaml` baseline in 11 of 18 cases, so the
+  concrete JSON, resource-limit, error-rendering, and diagnostic-location
+  blockers outweigh their maintenance advantage. Nothing in CI forces a
+  migration: `deny.toml` has no `serde_yaml` or `unsafe-libyaml` exception or
+  advisory entry, and advisories are the security workflow's only
+  deny-on-finding section. The maintenance liability is also confined to a
+  tiny current surface: one frontmatter `from_str::<serde_json::Value>` call,
+  one `#[from]` error conversion, and `Error::location()` consumers in `zfb`
+  and `zfb-md-wasm`; `serde_yaml::Value` is not used.
+
+  The standing abandon rule makes a migration terminally KEEP if it needs more
+  than 40 rustfmt-formatted non-test production lines, a second corrective
+  candidate round, or unsafe/FFI, OS-specific branches, polling, signal
+  supervision, or a generated Unicode table. Neither evaluated candidate hit
+  those mechanical thresholds: the noyalib port was 2 production lines and
+  the serde-saphyr port was 10, each in one candidate round and without a
+  prohibited mechanism. Their semantic incompatibilities decided the result
+  before Phase 2, so no wasm size, transitive-package, or license delta was
+  measured and no migration issue or changelog entry is warranted.
+  [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) remains
+  open as the standing re-evaluation trigger.
+
   * **`serde_yaml_ng` — no trigger:** `0.10.0` released 2024-05-26
     ([crates.io record](https://crates.io/api/v1/crates/serde_yaml_ng/0.10.0));
     latest canonical commit 2025-09-14
@@ -200,29 +217,31 @@ declaration is removable even if its package remains in `Cargo.lock`.
     ([commit](https://github.com/cafkafk/serde-norway/commit/1d37c159fc01c269a17ab72d021b271faf29472a)).
     The Serde-shaped fork remains available, but release and repository activity
     provide no evidence of ongoing maintenance at this re-check.
-  * **`noyalib` — trigger candidate; evaluation required:** `0.0.28` released
+  * **`noyalib` — evaluated; retain:** `0.0.28` released
     2026-08-24 ([crates.io record](https://crates.io/api/v1/crates/noyalib/0.0.28),
     checked 2026-08-30); latest canonical commit 2026-08-25
     ([commit](https://github.com/sebastienrousseau/noyalib/commit/ae86a20b764905c8332652b28d8989f7ddde0376),
-    checked 2026-08-30). Its maintained pure-Rust Serde integration and
-    `compat-serde-yaml` shim trigger [#2774](https://github.com/Takazudo/zudo-front-builder/issues/2774),
-    checked 2026-08-30, but its `Value::Tagged`, YAML 1.2
-    boolean defaults, merge-key policy, and different error model require the
-    no-build differential screen below; it is not declared drop-in
-    ([migration guide](https://github.com/sebastienrousseau/noyalib/blob/0a0c75faefdd2e1ba5ea06d4fe9b372154a99a6e/doc/MIGRATION-FROM-SERDE-YAML.md),
-    checked 2026-08-30).
-  * **`serde-saphyr` — trigger candidate; evaluation required:** the planned
-    `1.1.0` screen is superseded by `1.2.0`, released 2026-08-30
+    checked 2026-08-30). Its rapid 26-release cadence from 0.0.1 through
+    0.0.28 is maintenance evidence, but the `0.0.x` line carries no API-stability
+    promise. Both its direct and compatibility-shim JSON paths diverged in 11
+    of 18 cases: merge-key expansion, composite-key acceptance, tagged-value
+    loss, numeric conversion and precision, alias-expansion limits, error text,
+    and the EOF location protected by md-wasm are concrete blockers
+    ([#2787](https://github.com/Takazudo/zudo-front-builder/issues/2787), checked
+    2026-08-31).
+  * **`serde-saphyr` — evaluated; retain:** the planned `1.1.0` screen was
+    superseded by `1.2.0`, released 2026-08-30
     ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
     checked 2026-08-30; [1.1.0 record](https://crates.io/api/v1/crates/serde-saphyr/1.1.0),
     checked 2026-08-30). Latest canonical commit on 2026-08-30 is recorded
     here ([commit](https://github.com/bourumir-wyngs/serde-saphyr/commit/ea3333b7ce5a19f6993af8a72d5be366364a0a00),
-    checked 2026-08-30). Its maintained Serde wrapper over a Saphyr-derived
-    parser triggers [#2774](https://github.com/Takazudo/zudo-front-builder/issues/2774),
-    checked 2026-08-30, but it streams typed values without a `Value` DOM
-    and has a different diagnostic surface; JSON and error-location
-    compatibility are evaluated below ([release README](https://github.com/bourumir-wyngs/serde-saphyr/blob/45042059e6905e833516f52d958cba4c16e8cedd/README.md),
-    checked 2026-08-30).
+    checked 2026-08-30). Its closest-configured JSON path diverged in 11 of 18
+    cases: non-string keys, old-style numbers, built-in and custom tags,
+    non-finite and overflowing numbers, alias-expansion limits, all malformed
+    error displays, and both protected diagnostic-location pins are concrete
+    blockers. Options repaired individual policies but not the contract as a
+    whole ([#2788](https://github.com/Takazudo/zudo-front-builder/issues/2788),
+    checked 2026-08-31).
 
 ### Candidate desk research (#2785; no-build, checked 2026-08-30)
 
