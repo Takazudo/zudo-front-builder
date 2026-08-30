@@ -2,9 +2,9 @@
 
 This is the durable register for the Rust and npm dependency audit in #2742. It
 records the decisions made in the merged audit work, so a future audit can start
-from evidence instead of repeating the same probes. The baseline artifacts are
-under `_temp-resource/dep-audit-baseline/`; the durable subtopic reports are in
-`.git/x-wt-teams/reviews/2744.md` through `2752.md`.
+from evidence instead of repeating the same probes. The temporary baseline and
+decision artifacts used during the audit were removed by #2754 after the final
+comparisons; this document is their durable repository-level synthesis.
 
 The published npm packages' runtime supply-chain surface is intentionally kept
 separate in [SECURITY-DEPS.md](./SECURITY-DEPS.md).
@@ -224,8 +224,7 @@ audit by treating this as an open consolidation task.
 
 ## Duplicate-version note
 
-The baseline duplicate report is
-`_temp-resource/dep-audit-baseline/baseline-duplicates.txt`. It records these
+The duplicate-version capture taken at the audit's parent commit recorded these
 version families:
 
 | Family | Baseline ownership/control analysis |
