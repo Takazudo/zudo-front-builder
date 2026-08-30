@@ -11385,7 +11385,7 @@ mod tests {
     /// Modules tests below. Layout:
     ///
     /// ```text
-    /// <ws>/pnpm-workspace.yaml              packages: ['.', 'sub-packages/*']
+    /// <ws>/pnpm-workspace.yaml              packages: ['sub-packages/*']
     /// <ws>/sub-packages/host/                the project (host)
     /// <ws>/sub-packages/host/tsconfig.json   "@shared/*" -> "../../lib/shared/*"
     /// <ws>/lib/shared/Button.tsx             relatively imports ./Button.module.css
@@ -11396,6 +11396,9 @@ mod tests {
     /// `zfb_build::SiblingMirrorPlan` — no `package.json` sits between
     /// `lib/shared` and the workspace root, so the mirror root resolves to
     /// the claim's own directory (`resolve_mirror_root`'s bare-dir branch).
+    /// The workspace root is deliberately not a package: otherwise the root
+    /// package CSS channel would correctly claim every eligible source under
+    /// `<ws>`, including paths these tests need to leave to the alias plan.
     /// Returns `(TempDir, project_root)`; the guard must stay alive for the
     /// fixture files to keep existing.
     fn sibling_css_workspace_fixture() -> (tempfile::TempDir, PathBuf) {
@@ -11403,7 +11406,7 @@ mod tests {
         let ws = tmp.path();
         std::fs::write(
             ws.join("pnpm-workspace.yaml"),
-            "packages:\n  - '.'\n  - 'sub-packages/*'\n",
+            "packages:\n  - 'sub-packages/*'\n",
         )
         .unwrap();
 
