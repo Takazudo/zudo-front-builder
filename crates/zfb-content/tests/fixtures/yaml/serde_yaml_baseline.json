@@ -1,0 +1,246 @@
+{
+  "adapter": "serde_yaml 0.9.34+deprecated",
+  "cases": [
+    {
+      "category": "anchors-aliases",
+      "name": "anchors-and-aliases",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "base": {
+            "labels": ["yaml", "serde"],
+            "name": "zfb"
+          },
+          "copy": {
+            "labels": ["yaml", "serde"],
+            "name": "zfb"
+          }
+        }
+      }
+    },
+    {
+      "category": "merge-keys",
+      "name": "merge-key-is-an-ordinary-json-key",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "defaults": {
+            "draft": false,
+            "title": "Default"
+          },
+          "post": {
+            "<<": {
+              "draft": false,
+              "title": "Default"
+            },
+            "title": "Override"
+          }
+        }
+      }
+    },
+    {
+      "category": "non-string-keys",
+      "name": "non-string-scalar-keys",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "1": "one",
+          "null": "nil",
+          "true": "yes"
+        }
+      }
+    },
+    {
+      "category": "non-string-keys",
+      "name": "non-string-composite-key",
+      "observation": {
+        "display": "invalid type: sequence, expected a string key",
+        "kind": "error",
+        "location": {
+          "column": 1,
+          "index": 0,
+          "line": 1
+        }
+      }
+    },
+    {
+      "category": "scalar-edge-cases",
+      "name": "yaml-11-boolean-spellings",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "false_value": false,
+          "n_value": "n",
+          "no_value": "no",
+          "off_value": "off",
+          "on_value": "on",
+          "true_value": true,
+          "y_value": "y",
+          "yes_value": "yes"
+        }
+      }
+    },
+    {
+      "category": "scalar-edge-cases",
+      "name": "octals-sexagesimals-and-numbers",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "binary": 3,
+          "exp": 1000.0,
+          "float": 1.2,
+          "hex": 16,
+          "octal_new": 83,
+          "octal_old": "0123",
+          "sexagesimal": "1:20"
+        }
+      }
+    },
+    {
+      "category": "scalar-edge-cases",
+      "name": "null-and-date-scalars",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "date": "2024-01-02",
+          "datetime": "2024-01-02T03:04:05Z",
+          "empty": null,
+          "null_lower": null,
+          "null_upper": null,
+          "tilde": null
+        }
+      }
+    },
+    {
+      "category": "unicode-bom-crlf-emoji",
+      "name": "unicode-crlf-and-emoji",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "items": ["🍣"],
+          "title": "日本語 😀"
+        }
+      }
+    },
+    {
+      "category": "malformed-input",
+      "name": "malformed-unicode-location",
+      "observation": {
+        "display": "did not find expected node content at line 1 column 8, while parsing a flow node",
+        "kind": "error",
+        "location": {
+          "column": 8,
+          "index": 16,
+          "line": 1
+        }
+      }
+    },
+    {
+      "category": "malformed-input",
+      "name": "malformed-flow-sequence-at-eof",
+      "observation": {
+        "display": "did not find expected ',' or ']' at line 2 column 1, while parsing a flow sequence at line 1 column 8",
+        "kind": "error",
+        "location": {
+          "column": 1,
+          "index": 12,
+          "line": 2
+        }
+      }
+    },
+    {
+      "category": "malformed-input",
+      "name": "malformed-indentation",
+      "observation": {
+        "display": "mapping values are not allowed in this context at line 2 column 9",
+        "kind": "error",
+        "location": {
+          "column": 9,
+          "index": 18,
+          "line": 2
+        }
+      }
+    },
+    {
+      "category": "explicit-tags",
+      "name": "built-in-explicit-tags",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "as_int": 123,
+          "as_string": "123"
+        }
+      }
+    },
+    {
+      "category": "explicit-tags",
+      "name": "custom-explicit-tag",
+      "observation": {
+        "display": "thing: invalid type: enum, expected any valid JSON value at line 1 column 8",
+        "kind": "error",
+        "location": {
+          "column": 8,
+          "index": 7,
+          "line": 1
+        }
+      }
+    },
+    {
+      "category": "duplicate-keys",
+      "name": "duplicate-map-keys-last-wins",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "a": 2
+        }
+      }
+    },
+    {
+      "category": "non-finite-overflowing-numbers",
+      "name": "non-finite-and-overflowing-numbers",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "inf": null,
+          "nan": null,
+          "neg_inf": null,
+          "overflow": "1e999"
+        }
+      }
+    },
+    {
+      "category": "non-finite-overflowing-numbers",
+      "name": "integer-boundaries",
+      "observation": {
+        "kind": "success",
+        "value": {
+          "i64_min": -9223372036854775808,
+          "u64_max": 18446744073709551615
+        }
+      }
+    },
+    {
+      "category": "non-finite-overflowing-numbers",
+      "name": "integer-overflow",
+      "observation": {
+        "display": "u64_over: JSON number out of range at line 1 column 11",
+        "kind": "error",
+        "location": {
+          "column": 11,
+          "index": 10,
+          "line": 1
+        }
+      }
+    },
+    {
+      "category": "alias-anchor-resource-limits",
+      "name": "alias-anchor-repetition-limit",
+      "observation": {
+        "display": "repetition limit exceeded",
+        "kind": "error",
+        "location": null
+      }
+    }
+  ],
+  "schema_version": 1
+}
