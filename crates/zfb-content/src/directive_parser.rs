@@ -1139,8 +1139,8 @@ fn gfm_autolink_literal_end(source: &str, start: usize) -> Option<usize> {
 
     Some(
         source[start..]
-            .bytes()
-            .position(|byte| matches!(byte, b'\n' | b'\r' | b' ' | b'\t'))
+            .char_indices()
+            .find_map(|(relative, ch)| ch.is_whitespace().then_some(relative))
             .map_or(source.len(), |relative| start + relative),
     )
 }
@@ -1423,6 +1423,20 @@ mod tests {
         assert_eq!(directives.len(), 1);
         assert_eq!(directives[0].fields["name"], "badge");
         assert_strictly_increasing_sibling_ranges(&root, source);
+
+        for separator in ['\u{00a0}', '\u{2003}'] {
+            let source = format!("see http://h:8080{separator}:badge[x]");
+            let root = parse_directive_mdast(options(ParseDialect::Markdown), &source).unwrap();
+            let mut links = Vec::new();
+            find(&root, "link", &mut links);
+            assert_eq!(links.len(), 1, "{source:?}");
+            assert_eq!(links[0].fields["url"], "http://h:8080", "{source:?}");
+            let mut directives = Vec::new();
+            find(&root, "textDirective", &mut directives);
+            assert_eq!(directives.len(), 1, "{source:?}");
+            assert_eq!(directives[0].fields["name"], "badge", "{source:?}");
+            assert_strictly_increasing_sibling_ranges(&root, &source);
+        }
 
         let mut disabled = options(ParseDialect::Markdown);
         disabled.gfm.autolink_literal = false;
