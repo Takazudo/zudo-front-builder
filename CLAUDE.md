@@ -103,8 +103,9 @@ Shared historical lockstep notes from v0.1.0-next.5 through v2.10.0 belong to th
 notes belong to their package lane; do not claim the initially empty runtime, adapter, create, or
 MD/WASM lanes contain shared-history versions.
 
-Compute `sidebar_position` independently for each lane by scanning only that directory's non-index
-`v*.mdx` pages and adding one to its maximum; never use the retired root
+Compute `sidebar_position` independently for each lane as if the target page were absent. The
+`scripts/next-changelog-sidebar-position.mjs` helper scans only that directory's non-index `v*.mdx`
+pages, validates their positions, and adds one to its maximum; never use the retired root
 `docs/src/content/docs/changelog/v*.mdx` path or a global maximum. The migrated `zfb` lane continues
 after its historical maximum. An empty lane starts at position 1, and its first-ever page must set
 `pagination_next: null` so pager traversal cannot cross into another package lane.
