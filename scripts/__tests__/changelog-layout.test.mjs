@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -397,17 +405,14 @@ describe("integrated changelog contract", () => {
   });
 
   it("computes the next position for every current lane", () => {
-    const expectedPositions = new Map([
-      ["zfb", 121],
-      ["zfb-runtime", 7],
-      ["zfb-adapter-cloudflare", 7],
-      ["create-zfb", 7],
-      ["zfb-md-wasm", 7],
-    ]);
-
     for (const lane of LANES) {
+      const entries = releaseEntries(lane);
+      const expectedPosition =
+        Math.max(0, ...entries.map((entry) => Number(entry.frontmatter.get("sidebar_position")))) +
+        1;
       const targetPath = join(CHANGELOG_ROOT, lane, "v9.9.9.mdx");
-      expect(runPositionHelper(targetPath), lane).toBe(`${expectedPositions.get(lane)}\n`);
+      expect(readdirSync(dirname(targetPath))).not.toContain("v9.9.9.mdx");
+      expect(runPositionHelper(targetPath), lane).toBe(`${expectedPosition}\n`);
     }
   });
 
@@ -417,6 +422,7 @@ describe("integrated changelog contract", () => {
         writeFixturePage(directory, `v1.0.${position}.mdx`, position);
       }
       writeFixturePage(directory, "index.mdx", 999);
+      mkdirSync(join(directory, "v1.0.99.mdx"));
 
       const targetPath = join(directory, "v1.0.6.mdx");
       expect(runPositionHelper(targetPath)).toBe("6\n");
