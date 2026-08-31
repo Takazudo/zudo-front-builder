@@ -31,9 +31,9 @@ are SWC-free isolated graphs: they omit `swc_core` and `zfb-render`, while
 intentionally retaining `zfb-content` and its `syntect-fancy` backend. Parse
 is not syntect-free.
 
-| Entry | gzip-9 wasm (2.14.0) | Runtime values | Type surface |
+| Entry | gzip-9 wasm (2.14.1) | Runtime values | Type surface |
 | --- | ---: | --- | --- |
-| `.` | 1,443,041 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
+| `.` | 1,443,039 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile, render, parse/raw-mdast, and highlight types |
 | `./highlight` | 758,247 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
 | `./render` | 1,010,796 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
 | `./parse` | 261,099 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
@@ -269,13 +269,13 @@ three-step repair sequence:
 2. Run `node scripts/assert-zfb-md-wasm-budgets.mjs --build-log "$BUILD_LOG" --dist crates/zfb-md-wasm/npm/dist --update-manifest`.
 3. Run `node scripts/assert-md-wasm-size-docs.mjs --fix`, then `pnpm format:mdx`.
 
-These are the shipped **2.14.0** artifact rows — optimized final wasm after
+These are the shipped **2.14.1** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
 bytes/gzip:
 
 | Entry/graph | final wasm | gzip-9 | glue | glue gzip-9 |
 | --- | ---: | ---: | ---: | ---: |
-| root (full) | 3,294,286 B | 1,443,041 B | 14,998 B | 4,199 B |
+| root (full) | 3,294,286 B | 1,443,039 B | 14,998 B | 4,199 B |
 | highlight | 1,476,740 B | 758,247 B | 8,758 B | 2,637 B |
 | render | 2,082,385 B | 1,010,796 B | 8,772 B | 2,661 B |
 | parse | 646,115 B | 261,099 B | 11,159 B | 3,797 B |
@@ -284,8 +284,8 @@ The #2447 decision snapshot measured the split package at 3,638,607 B versus
 the root-plus-highlight package at 2,314,818 B. Locked gzip-9 ceilings are
 root 1,600,000 B, highlight 820,000 B, render 1,100,000 B, and parse
 325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
-inside their ceilings, with 156,959 B (root), 61,753 B (highlight), 89,204 B
-(render), and 63,901 B (parse) of headroom. These are 2.14.0 measurements, not
+inside their ceilings, with 156,961 B (root), 61,753 B (highlight), 89,204 B
+(render), and 63,901 B (parse) of headroom. These are 2.14.1 measurements, not
 permanent promises — re-measure against the version you actually install. The
 four-step clean production reference ceiling is 210 seconds, with the #2447
 selected median at 155.015 s [153.496, 165.977].
@@ -297,7 +297,7 @@ raw and 8,765 B smaller gzip-9 (758,244 B) — wasm-opt was already
 dead-stripping the unreachable `swc_core`, and #2450's exact-parity and
 no-`swc_core` assertions turned that emergent property into a guaranteed one.
 The delta that matters to a highlight-only consumer is root versus
-highlight: the highlight artifact is 1,817,546 B smaller raw and 684,794 B
+highlight: the highlight artifact is 1,817,546 B smaller raw and 684,792 B
 smaller gzip-9, landing at about 45% of root's raw bytes and 53% of its
 gzipped bytes.
 
