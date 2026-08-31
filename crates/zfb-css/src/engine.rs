@@ -1306,7 +1306,7 @@ pub fn is_tailwind_entry_tmp(path: &Path) -> bool {
 }
 
 impl CssEngine for TailwindSubprocessEngine {
-    fn produce_utility_css(&self, sources: &[PathBuf]) -> Result<String> {
+    fn produce_utility_css(&self, _sources: &[PathBuf]) -> Result<String> {
         // Build the synthesised entry CSS. Read user input_css if set —
         // failure to read is fatal because the user explicitly asked for
         // it.
@@ -1430,15 +1430,6 @@ impl CssEngine for TailwindSubprocessEngine {
         for extra in &self.config.extra_args {
             cmd.arg(extra);
         }
-
-        // Annotate sources purely for diagnostics. Tailwind v4 discovers
-        // sources via its own config / `@source` directives — but we record
-        // the caller's hint in an env var so a wrapping script can see it.
-        let sources_joined: Vec<String> = sources
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        cmd.env("ZFB_TAILWIND_SOURCES", sources_joined.join("\n"));
 
         // Capture both stdout and stderr; relay stderr through a clean
         // error message rather than letting it scroll into the parent

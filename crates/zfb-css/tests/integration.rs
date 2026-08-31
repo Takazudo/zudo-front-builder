@@ -99,6 +99,84 @@ done
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn subprocess_engine_spawns_with_source_list_over_linux_max_arg_strlen() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // The source paths are intentionally not materialised. They are only
+    // caller hints; Tailwind reads the explicit @source directives from the
+    // synthesised entry CSS instead. Keeping this inventory in memory makes
+    // the fixture exercise the subprocess transport itself without creating
+    // thousands of files.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fake_bin = dir.path().join("tailwindcss");
+    std::fs::write(
+        &fake_bin,
+        br##"#!/bin/sh
+# An old engine revision put the complete source inventory in this env var.
+# Reject it so the test fails on Unix hosts where execve accepts the value;
+# on 4 KiB-page Linux, the kernel rejects the spawn before this script starts.
+if [ "${ZFB_TAILWIND_SOURCES+x}" = x ]; then
+  echo "ZFB_TAILWIND_SOURCES must not be inherited" >&2
+  exit 91
+fi
+previous=
+output=
+for argument in "$@"; do
+  if [ "$previous" = "-o" ]; then output=$argument; fi
+  previous=$argument
+done
+if [ -z "$output" ]; then
+  echo "missing -o output path" >&2
+  exit 92
+fi
+printf '.source-list-regression { color: red; }\n' > "$output"
+"##,
+    )
+    .expect("write fake tailwind executable");
+    std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake tailwind executable");
+
+    let target_size = 256 * 1024;
+    let mut sources = Vec::new();
+    let mut joined_len = 0;
+    while joined_len < target_size {
+        let path = dir.path().join(format!(
+            "source-{index:06}-{}",
+            "x".repeat(112),
+            index = sources.len()
+        ));
+        joined_len += path.as_os_str().to_string_lossy().len();
+        if !sources.is_empty() {
+            joined_len += 1;
+        }
+        sources.push(path);
+    }
+    assert!(
+        (250 * 1024..=270 * 1024).contains(&joined_len),
+        "source inventory should be about 256 KiB, got {joined_len} bytes"
+    );
+    assert!(
+        sources.iter().all(|path| !path.exists()),
+        "the large source inventory must not materialise files"
+    );
+
+    let config = TailwindSubprocessConfig::default()
+        .with_binary_path(&fake_bin)
+        .with_working_dir(dir.path())
+        .with_oxide_warmup(OxideWarmupPolicy::Never);
+    let engine = TailwindSubprocessEngine::new(config);
+    let css = engine
+        .produce_utility_css(&sources)
+        .expect("large source inventory must not prevent child spawn");
+
+    assert!(
+        css.contains(".source-list-regression"),
+        "fake child output should be returned, got: {css}"
+    );
+}
+
 #[test]
 #[ignore = "env-gate: tailwindcss v4 binary — cargo test -p zfb-css --test \
             integration -- --include-ignored (ZFB_TAILWIND_BIN or the staged \
