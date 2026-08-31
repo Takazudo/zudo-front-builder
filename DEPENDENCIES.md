@@ -456,6 +456,13 @@ This evaluation started from zfb commit
   `lossless_u64_integers(true)`, the closest documented configuration for the
   two configurable baseline differences.
 
+The new `plain_scalar_strings` flag was deliberately not enabled: pinned source
+confines it to explicitly typed `String`/`char` targets, while zfb's
+`serde_json::Value` path uses `deserialize_any`; it cannot repair the value
+rows below. Lowering noyalib's alias budgets would likewise manufacture a
+different budget error rather than serde_yaml's exact unlocated `repetition
+limit exceeded` contract, so it is not a viable compatibility setting.
+
 The complete named matrix (`match` means an exactly equal structured
 observation, including error text and location) was:
 
