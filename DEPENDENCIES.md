@@ -168,26 +168,30 @@ declaration is removable even if its package remains in `Cargo.lock`.
   in the `zfb` and `zfb-md-wasm` v2.14.0 lanes; the other three lanes say no
   package-specific changes.
 * **`serde_yaml 0.9.34+deprecated` (#2750, #2774) — RETAIN.** Final re-check
-  2026-08-31. The maintained candidates evaluated in #2787 and #2788 each
-  diverged from the committed `serde_yaml` baseline in 11 of 18 cases, so the
-  concrete JSON, resource-limit, error-rendering, and diagnostic-location
-  blockers outweigh their maintenance advantage. Nothing in CI forces a
-  migration: `deny.toml` has no `serde_yaml` or `unsafe-libyaml` exception or
-  advisory entry, and advisories are the security workflow's only
-  deny-on-finding section. The maintenance liability is also confined to a
-  tiny current surface: one frontmatter `from_str::<serde_json::Value>` call,
-  one `#[from]` error conversion, and `Error::location()` consumers in `zfb`
-  and `zfb-md-wasm`; `serde_yaml::Value` is not used.
+  2026-09-01. The released candidates evaluated in #2787 and #2788 each
+  diverged from the committed `serde_yaml` baseline in 11 of 18 cases. A
+  pinned pre-release re-check of noyalib's post-cutoff `feat/v0.0.29` branch
+  in #2808 still found 11 mismatches through its compatibility shim and 9
+  through the closest configured direct path. Concrete JSON, resource-limit,
+  error-rendering, and diagnostic-location blockers therefore outweigh the
+  candidates' maintenance advantage. Nothing in CI forces a migration:
+  `deny.toml` has no `serde_yaml` or `unsafe-libyaml` exception or advisory
+  entry, and advisories are the security workflow's only deny-on-finding
+  section. The maintenance liability is also confined to a tiny current
+  surface: one frontmatter `from_str::<serde_json::Value>` call, one `#[from]`
+  error conversion, and `Error::location()` consumers in `zfb` and
+  `zfb-md-wasm`; `serde_yaml::Value` is not used.
 
   The standing abandon rule makes a migration terminally KEEP if it needs more
   than 40 rustfmt-formatted non-test production lines, a second corrective
   candidate round, or unsafe/FFI, OS-specific branches, polling, signal
   supervision, or a generated Unicode table. Neither evaluated candidate hit
-  those mechanical thresholds: the noyalib port was 2 production lines and
-  the serde-saphyr port was 10, each in one candidate round and without a
-  prohibited mechanism. Their semantic incompatibilities decided the result
-  before Phase 2, so no wasm size, transitive-package, or license delta was
-  measured and no migration issue or changelog entry is warranted.
+  those mechanical thresholds: the noyalib compatibility port was 2
+  production lines, its configured direct path was 5, and the serde-saphyr
+  port was 10, each in one candidate round and without a prohibited
+  mechanism. Their semantic incompatibilities decided the result before Phase
+  2, so no wasm size, transitive-package, or license delta was measured and no
+  migration issue or changelog entry is warranted.
   [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) remains
   open as the standing re-evaluation trigger.
 
@@ -217,25 +221,27 @@ declaration is removable even if its package remains in `Cargo.lock`.
     ([commit](https://github.com/cafkafk/serde-norway/commit/1d37c159fc01c269a17ab72d021b271faf29472a)).
     The Serde-shaped fork remains available, but release and repository activity
     provide no evidence of ongoing maintenance at this re-check.
-  * **`noyalib` — evaluated; retain:** `0.0.28` released
-    2026-08-24 ([crates.io record](https://crates.io/api/v1/crates/noyalib/0.0.28),
-    checked 2026-08-30); latest canonical commit 2026-08-25
-    ([commit](https://github.com/sebastienrousseau/noyalib/commit/ae86a20b764905c8332652b28d8989f7ddde0376),
-    checked 2026-08-30). Its rapid 26-release cadence from 0.0.1 through
-    0.0.28 is maintenance evidence, but the `0.0.x` line carries no API-stability
-    promise. Both its direct and compatibility-shim JSON paths diverged in 11
-    of 18 cases: merge-key expansion, composite-key acceptance, tagged-value
-    loss, numeric conversion and precision, alias-expansion limits, error text,
-    and the EOF location protected by md-wasm are concrete blockers
-    ([#2787](https://github.com/Takazudo/zudo-front-builder/issues/2787), checked
-    2026-08-31).
+  * **`noyalib` — evaluated; retain:** `0.0.28` remains the newest release
+    ([crates.io record](https://crates.io/api/v1/crates/noyalib/0.0.28), checked
+    2026-09-01), while canonical pre-release branch `feat/v0.0.29` is 40
+    commits ahead of `main` at
+    [`697195f`](https://github.com/sebastienrousseau/noyalib/commit/697195f15ffa0477d2de02b19d7d8253819e10c5)
+    and [release PR 365](https://github.com/sebastienrousseau/noyalib/pull/365)
+    remains open with no `v0.0.29` tag or GitHub Release (checked 2026-09-01).
+    The pinned branch improves custom-tag rejection and its configured direct
+    path can preserve merge keys and `u64::MAX`, but 11 compatibility-shim and
+    9 configured-direct corpus mismatches remain across composite keys, scalar
+    resolution, diagnostics, overflow, and alias limits
+    ([#2808](https://github.com/Takazudo/zudo-front-builder/issues/2808), checked
+    2026-09-01). Publication of a release containing this work is the next
+    trigger; the unreleased branch is not migration-eligible.
   * **`serde-saphyr` — evaluated; retain:** the planned `1.1.0` screen was
     superseded by `1.2.0`, released 2026-08-30
     ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
     checked 2026-08-30; [1.1.0 record](https://crates.io/api/v1/crates/serde-saphyr/1.1.0),
     checked 2026-08-30). Latest canonical commit on 2026-08-30 is recorded
-    here ([commit](https://github.com/bourumir-wyngs/serde-saphyr/commit/ea3333b7ce5a19f6993af8a72d5be366364a0a00),
-    checked 2026-08-30). Its closest-configured JSON path diverged in 11 of 18
+    here ([commit](https://github.com/bourumir-wyngs/serde-saphyr/commit/45042059e6905e833516f52d958cba4c16e8cedd),
+    checked 2026-09-01). Its closest-configured JSON path diverged in 11 of 18
     cases: non-string keys, old-style numbers, built-in and custom tags,
     non-finite and overflowing numbers, alias-expansion limits, all malformed
     error displays, and both protected diagnostic-location pins are concrete
@@ -420,6 +426,110 @@ All experimental manifest, lockfile, production source, test-probe, and target
 artifacts were restored or removed; the final committed delta is this evidence
 only ([#2787](https://github.com/Takazudo/zudo-front-builder/issues/2787),
 checked 2026-08-30).
+
+##### `noyalib 0.0.29` pre-release differential evaluation (#2808) — KEEP
+
+The post-#2787 live-source confirmation looked only at canonical default
+branches and therefore missed real work after its
+`2026-08-30T15:20:51Z` cutoff. The `noyalib` repository's
+`feat/v0.0.29` branch was 40 commits ahead of `main` at immutable commit
+[`697195f`](https://github.com/sebastienrousseau/noyalib/commit/697195f15ffa0477d2de02b19d7d8253819e10c5)
+(`2026-08-30T22:56:51Z`). Its changelog and source include located typed
+deserialization errors, retained streaming messages, tagged-scalar handling,
+plain-scalar configuration, and number changes relevant to the earlier
+blockers. [Release PR 365](https://github.com/sebastienrousseau/noyalib/pull/365)
+was open and green at both the start and end of this evaluation, its manifest
+said `0.0.29`, and crates.io still exposed only
+[`0.0.28`](https://crates.io/api/v1/crates/noyalib/0.0.28); no `v0.0.29` tag or
+GitHub Release existed (all checked 2026-09-01). The branch is maintenance and
+pre-release evaluation evidence, not a shipped migration target.
+
+This evaluation started from zfb commit
+`ec6e9a14d3e603e2ec21166bfedae96538c7ecfd` and pinned every candidate build to
+`697195f15ffa0477d2de02b19d7d8253819e10c5`. Phase 1 compared the immutable
+18-case serde_yaml baseline with two paths:
+
+* `compat-default` used
+  `noyalib::compat::serde_yaml::from_str::<serde_json::Value>`; and
+* `direct-configured` used `noyalib::from_str_with_config` with
+  `MergeKeyPolicy::AsOrdinary` and the `lossless-u64` feature plus
+  `lossless_u64_integers(true)`, the closest documented configuration for the
+  two configurable baseline differences.
+
+The new `plain_scalar_strings` flag was deliberately not enabled: pinned source
+confines it to explicitly typed `String`/`char` targets, while zfb's
+`serde_json::Value` path uses `deserialize_any`; it cannot repair the value
+rows below. Lowering noyalib's alias budgets would likewise manufacture a
+different budget error rather than serde_yaml's exact unlocated `repetition
+limit exceeded` contract, so it is not a viable compatibility setting.
+
+The complete named matrix (`match` means an exactly equal structured
+observation, including error text and location) was:
+
+| Corpus case | compat-default | direct-configured |
+| --- | --- | --- |
+| `anchors-and-aliases` | match | match |
+| `merge-key-is-an-ordinary-json-key` | mismatch | match |
+| `non-string-scalar-keys` | match | match |
+| `non-string-composite-key` | mismatch | mismatch |
+| `yaml-11-boolean-spellings` | match | match |
+| `octals-sexagesimals-and-numbers` | mismatch | mismatch |
+| `null-and-date-scalars` | match | match |
+| `unicode-crlf-and-emoji` | match | match |
+| `malformed-unicode-location` | mismatch | mismatch |
+| `malformed-flow-sequence-at-eof` | mismatch | mismatch |
+| `malformed-indentation` | mismatch | mismatch |
+| `built-in-explicit-tags` | match | match |
+| `custom-explicit-tag` | mismatch | mismatch |
+| `duplicate-map-keys-last-wins` | match | match |
+| `non-finite-and-overflowing-numbers` | mismatch | mismatch |
+| `integer-boundaries` | mismatch | match |
+| `integer-overflow` | mismatch | mismatch |
+| `alias-anchor-repetition-limit` | mismatch | mismatch |
+
+The compatibility shim therefore remained at **11/18 mismatches**. The
+configured direct path improved to **9/18 mismatches**, but still failed the
+contract:
+
+* composite sequence keys were accepted as the string `"[a, b]"` instead of
+  failing at `1:1:0`; `0123` became numeric `123` rather than a string and
+  `0b11` remained a string rather than numeric `3`;
+* malformed Unicode kept the correct `1:8:16` location but retained noyalib's
+  different `YAML parse error ... FlowMappingEnd` text. The EOF flow-sequence
+  error remained `1:13:12` instead of `2:1:12`, and indentation retained
+  `2:9:18` with different wording;
+* v0.0.29 improved the custom-tag case from #2787's silently accepted,
+  untagged JSON string to an error, but it reported
+  `deserialization error at line 1, column 16 ...` at `1:16:15` instead of
+  serde_yaml's text and `1:8:7` location;
+* `1e999` still became JSON null instead of the string `"1e999"`;
+  configured `u64::MAX` now matched exactly, but one-past-`u64::MAX` became the
+  string `"18446744073709551616"` instead of a located error; and
+* the bounded alias-expansion case still materialized the expanded value
+  instead of returning the unlocated `repetition limit exceeded` error.
+
+The protected `zfb-content` error-quality assertion passed unchanged for both
+production wirings because both still include line/column context. The exact
+md-wasm render API assertion failed unchanged for both paths: it observed
+source line 2 instead of the protected line 3. The parse-to-AST invalid-YAML
+API case and the standalone UTF-16 frontmatter diagnostic test passed. No
+protected assertion, corpus case, or baseline record was edited.
+
+The compatibility wiring changed 2 rustfmt-formatted non-test production lines
+and the configured direct wiring changed 5, both below the 40-line abandon
+threshold. One candidate round used only documented configuration; neither
+path required unsafe/FFI, OS branches, polling, signal supervision, or a
+generated Unicode table. Because neither path fully matched Phase 1, the
+terminal verdict is **KEEP `serde_yaml`**. Phase 2 was skipped as required: no
+wasm32 check, full `pnpm test:md-wasm`, four-artifact size measurement,
+transitive/license diff, or `cargo deny` run was warranted.
+
+The single isolated target consumed 2.0 GiB and was removed after the run.
+`Cargo.toml`, `Cargo.lock`, production code, the corpus/baseline, protected
+assertions, generated artifacts, `shipped-sizes.json`, and every changelog were
+restored byte-for-byte. The next trigger is publication of a release containing
+the evaluated v0.0.29 work; the standing issue remains open. This KEEP has no
+package-facing effect and warrants no migration or changelog entry.
 
 #### `serde-saphyr 1.2.0`
 
