@@ -79,7 +79,9 @@ export function nextChangelogSidebarPosition(targetPagePath) {
 
   let maximum = 0;
   for (const entry of entries) {
-    if (entry.name === targetName || !RELEASE_PAGE_NAME.test(entry.name)) continue;
+    if (entry.name === targetName || !entry.isFile() || !RELEASE_PAGE_NAME.test(entry.name)) {
+      continue;
+    }
 
     const siblingPath = resolve(laneDirectory, entry.name);
     const position = readSidebarPosition(siblingPath);
