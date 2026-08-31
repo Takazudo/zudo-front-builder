@@ -1,4 +1,14 @@
-import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  lstatSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -8,6 +18,7 @@ const DOCS_ROOT = join(REPO_ROOT, "docs");
 const CHANGELOG_ROOT = join(DOCS_ROOT, "src", "content", "docs", "changelog");
 const REDIRECTS_PATH = join(DOCS_ROOT, "public", "_redirects");
 const RELEASE_SKILL_RELATIVE_PATH = ".claude/skills/l-make-release/SKILL.md";
+const POSITION_HELPER_PATH = join(REPO_ROOT, "scripts", "next-changelog-sidebar-position.mjs");
 
 const LANES = ["zfb", "zfb-runtime", "zfb-adapter-cloudflare", "create-zfb", "zfb-md-wasm"];
 const HISTORICAL_CUTOFF = "v2.10.0";
@@ -17,6 +28,27 @@ const RELEASE_ENTRIES = new Map();
 
 function read(relativePath) {
   return readFileSync(join(REPO_ROOT, relativePath), "utf8");
+}
+
+function runPositionHelper(targetPath) {
+  return execFileSync(process.execPath, [POSITION_HELPER_PATH, targetPath], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+}
+
+function withPositionFixture(callback) {
+  const directory = mkdtempSync(join(tmpdir(), "zfb-changelog-position-"));
+  try {
+    return callback(directory);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function writeFixturePage(directory, name, sidebarPosition) {
+  const field = sidebarPosition === undefined ? "" : `sidebar_position: ${sidebarPosition}\n`;
+  writeFileSync(join(directory, name), `---\ntitle: '${name}'\n${field}---\n`);
 }
 
 function readFrontmatter(text, source) {
@@ -349,24 +381,90 @@ describe("integrated changelog contract", () => {
     expect(stageSection).not.toContain("docs/src/content/docs/changelog/v<version>.mdx");
   });
 
-  it("keeps release position scans lane-local and documents the first-page boundary", () => {
+  it("keeps release position calls lane-local and documents the first-page boundary", () => {
     const skill = read(RELEASE_SKILL_RELATIVE_PATH);
     const positionSection = sectionBetween(
       skill,
-      "Compute `sidebar_position` independently in each package directory.",
+      "Compute `sidebar_position` independently in each package directory as if the target page were",
       "The migrated `zfb` lane continues after its historical maximum.",
     );
     for (const lane of LANES) {
+      const targetPath = `docs/src/content/docs/changelog/${lane}/v<version>.mdx`;
       expect(positionSection).toContain(
-        `find docs/src/content/docs/changelog/${lane} -maxdepth 1 -type f -name 'v*.mdx'`,
+        `$(node scripts/next-changelog-sidebar-position.mjs ${targetPath})`,
       );
     }
-    expect(positionSection).not.toMatch(
-      /find docs\/src\/content\/docs\/changelog -maxdepth 1 -type f -name 'v\*\.mdx'/,
-    );
+    expect(positionSection.match(/next-changelog-sidebar-position\.mjs/g)).toHaveLength(5);
+    expect(positionSection).not.toContain("find docs/src/content/docs/changelog");
+    expect(positionSection).not.toContain("grep -h '^sidebar_position:");
+    expect(positionSection).not.toContain("awk 'BEGIN { max = 0 }");
+    expect(skill).toContain("as if the target page were\n  absent");
     expect(skill).toContain("include `pagination_next: null` in that first page's frontmatter");
     expect(skill).toContain("previous/next traversal cannot cross into another package lane");
     expect(skill).toContain("use exactly `- No package-specific changes.`");
+  });
+
+  it("computes the next position for every current lane", () => {
+    for (const lane of LANES) {
+      const entries = releaseEntries(lane);
+      const expectedPosition =
+        Math.max(0, ...entries.map((entry) => Number(entry.frontmatter.get("sidebar_position")))) +
+        1;
+      const targetPath = join(CHANGELOG_ROOT, lane, "v9.9.9.mdx");
+      expect(readdirSync(dirname(targetPath))).not.toContain("v9.9.9.mdx");
+      expect(runPositionHelper(targetPath), lane).toBe(`${expectedPosition}\n`);
+    }
+  });
+
+  it("ignores a pre-authored target while computing a lane's next position", () => {
+    withPositionFixture((directory) => {
+      for (let position = 1; position <= 5; position += 1) {
+        writeFixturePage(directory, `v1.0.${position}.mdx`, position);
+      }
+      writeFixturePage(directory, "index.mdx", 999);
+      mkdirSync(join(directory, "v1.0.99.mdx"));
+
+      const targetPath = join(directory, "v1.0.6.mdx");
+      expect(runPositionHelper(targetPath)).toBe("6\n");
+
+      writeFixturePage(directory, "v1.0.6.mdx", 6);
+      expect(runPositionHelper(targetPath)).toBe("6\n");
+    });
+  });
+
+  it("starts at one for an empty lane and a first pre-authored target", () => {
+    withPositionFixture((directory) => {
+      writeFixturePage(directory, "index.mdx", 999);
+      expect(runPositionHelper(join(directory, "v1.0.0.mdx"))).toBe("1\n");
+
+      writeFixturePage(directory, "v1.0.0.mdx", 1);
+      expect(runPositionHelper(join(directory, "v1.0.0.mdx"))).toBe("1\n");
+    });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["malformed", "not-a-number"],
+    ["fractional", "2.5"],
+    ["zero", "0"],
+    ["negative", "-1"],
+  ])("fails closed for a %s sibling sidebar position", (_caseName, sidebarPosition) => {
+    withPositionFixture((directory) => {
+      writeFixturePage(directory, "v1.0.0.mdx", sidebarPosition);
+
+      let failure;
+      try {
+        runPositionHelper(join(directory, "v2.0.0.mdx"));
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toBeDefined();
+      expect(failure.status).not.toBe(0);
+      const stderr = String(failure.stderr);
+      expect(stderr).toContain("v1.0.0.mdx");
+      expect(stderr).toContain("sidebar_position");
+    });
   });
 
   it("keeps five independent package headings and notes sources in release assembly", () => {

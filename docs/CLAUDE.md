@@ -100,9 +100,10 @@ owns only its named package. The complete shared lockstep history through **v2.1
 Release pages use the path convention
 `src/content/docs/changelog/<lane>/v<version>.mdx`, which emits
 `/docs/changelog/<lane>/v<version>/`. For a new release, calculate that lane's
-`sidebar_position` as **max existing release position + 1**; do not reuse a position from another
-lane. Each lane index owns its own descending release order, and its previous/next pagination is
-disabled. The oldest release in every populated lane must stop its pager at the lane boundary with
+`sidebar_position` as **max existing release position + 1**, as if the target page were absent,
+using `scripts/next-changelog-sidebar-position.mjs`; do not reuse a position from another lane.
+Each lane index owns its own descending release order, and its previous/next pagination is disabled.
+The oldest release in every populated lane must stop its pager at the lane boundary with
 `pagination_next: null`; no pager may cross from one lane into another.
 
 In `docs/zfb.config.ts`, `Changelog` is the parent header item with `categoryMatch: "changelog"`

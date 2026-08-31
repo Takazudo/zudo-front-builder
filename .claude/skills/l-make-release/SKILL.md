@@ -391,16 +391,18 @@ Rules:
 - Each entry: commit subject followed by the short hash in parentheses.
 - Duplicate cross-package changes into every affected page.
 - Omit repo-only docs/tests/CI/maintenance changes with no package-facing effect.
-- Compute `sidebar_position` independently in each package directory. Scan only that lane's
-  non-index `v*.mdx` pages, take its maximum, and add one. Run all five scans — never derive one
-  lane's position from another or scan the retired changelog root:
+- Compute `sidebar_position` independently in each package directory as if the target page were
+  absent. For each target, call the executable helper with that target path; it scans only that
+  lane's non-index `v*.mdx` pages, validates their positions, takes the maximum, and adds one.
+  Run all five calls — never derive one lane's position from another or scan the retired changelog
+  root:
 
   ```bash
-  ZFB_POSITION=$(find docs/src/content/docs/changelog/zfb -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
-  ZFB_RUNTIME_POSITION=$(find docs/src/content/docs/changelog/zfb-runtime -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
-  ZFB_ADAPTER_CLOUDFLARE_POSITION=$(find docs/src/content/docs/changelog/zfb-adapter-cloudflare -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
-  CREATE_ZFB_POSITION=$(find docs/src/content/docs/changelog/create-zfb -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
-  ZFB_MD_WASM_POSITION=$(find docs/src/content/docs/changelog/zfb-md-wasm -maxdepth 1 -type f -name 'v*.mdx' -exec grep -h '^sidebar_position:' {} + | awk 'BEGIN { max = 0 } $2 > max { max = $2 } END { print max + 1 }')
+  ZFB_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb/v<version>.mdx)
+  ZFB_RUNTIME_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb-runtime/v<version>.mdx)
+  ZFB_ADAPTER_CLOUDFLARE_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb-adapter-cloudflare/v<version>.mdx)
+  CREATE_ZFB_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/create-zfb/v<version>.mdx)
+  ZFB_MD_WASM_POSITION=$(node scripts/next-changelog-sidebar-position.mjs docs/src/content/docs/changelog/zfb-md-wasm/v<version>.mdx)
   ```
 
   The migrated `zfb` lane continues after its historical maximum. A lane with no existing version
