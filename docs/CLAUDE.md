@@ -15,10 +15,9 @@ Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) �
 Keep these direct docs declarations when auditing dependencies:
 
 - **zudo-doc peer feature packages:** `diff`, `katex`, `preact`, `zod`, `@takazudo/zdtp`, and `@takazudo/zudo-doc-history-server`. `@takazudo/zudo-doc` declares these as peers; the docs site installs them deliberately to satisfy the package contract and opt into its features.
-- **zudo-doc runtime imports:** `mermaid`, `minisearch`, and `remark-cjk-friendly`. They are imported by zudo-doc's generated runtime bundle without being declared by zudo-doc itself, so removing these direct declarations breaks module resolution or feature behavior.
 - **`npm-run-all2`:** Keep it for the `run-p` supervisors in `dev` and `dev:network`; any replacement must forward signals, propagate exit status, and clean up child processes on Ctrl-C. JSON cannot carry this rationale as a comment.
 
-This register is a keep-list, not a request to add dependencies. Re-check the installed zudo-doc package and the generated `docs/.zfb-build/bundle.mjs` before changing either list.
+This register is a keep-list, not a request to add dependencies. Re-check the installed zudo-doc package and the generated `docs/.zfb-build/bundle.mjs` before changing these declarations.
 
 ## Setup
 
@@ -171,7 +170,7 @@ The following keys are set in `zfb.config.ts`'s `zudoDoc({ ... })` call:
 - **metaTags** — `<head>` metadata; shallow-merged wholesale (a supplied nested object replaces the package default, not patches it — all keys must be given even when only a couple differ)
 - **logo** — `/img/logo.svg`, reproducing the pre-v4 home hero mask (v4's own default is an auto-generated mark)
 - **locales** — the `ja` locale, mapped to `src/content/docs-ja`
-- **cjkFriendly** — Applies `remark-cjk-friendly` for better CJK line-breaking
+- **cjkFriendly** — Enables the CJK-friendly Markdown pipeline for better CJK line-breaking
 - **defaultLocaleOnlyPrefixes** — sections built only in EN (see i18n above)
 - **sitemap** — Generates `sitemap.xml`
 - **llmsTxt** — Generates `llms.txt` for LLM consumption
