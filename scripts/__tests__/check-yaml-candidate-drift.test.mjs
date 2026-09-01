@@ -1,14 +1,25 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  BASELINE_COMMENT,
+  CANDIDATE_CONFIG,
   CANDIDATE_DRIFT,
   NO_DRIFT,
   OPERATIONAL_FAILURE,
   TRACKED_CANDIDATES,
   compareCandidate,
   compareSnapshots,
+  createNetworkClients,
+  fetchJson,
   formatJsonReport,
   formatReport,
+  observeSnapshot,
+  parseCliArgs,
+  runCli,
+  snapshotForBaseline,
 } from "../check-yaml-candidate-drift.mjs";
 
 function candidate(overrides = {}) {
@@ -257,5 +268,240 @@ describe("report formatters", () => {
     const json = formatJsonReport(result);
     expect(json.endsWith("\n")).toBe(true);
     expect(JSON.parse(json)).toEqual(result);
+  });
+});
+
+function headers(values = {}) {
+  return new Headers(values);
+}
+
+function response(data, { status = 200, responseHeaders = {} } = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    statusText: status === 200 ? "OK" : "failure",
+    headers: { "content-type": "application/json", ...responseHeaders },
+  });
+}
+
+function completeClients(overrides = {}) {
+  return {
+    crateVersions: async () => ["1.0.0"],
+    repo: async () => ({ archived: false }),
+    branches: async () => [{ name: "main", commit: { sha: "abc" } }],
+    tags: async () => [{ name: "v1.0.0" }],
+    releases: async () => [{ tag_name: "v1.0.0" }],
+    pullRequest: async () => ({ state: "open", merged_at: null }),
+    compare: async () => ({ status: "ahead" }),
+    ...overrides,
+  };
+}
+
+describe("network clients", () => {
+  it("fetches complete crates.io version history and sends a descriptive User-Agent", async () => {
+    const requests = [];
+    const clients = createNetworkClients({
+      fetchImpl: async (url, options) => {
+        requests.push({ url: String(url), options });
+        return response({ versions: [{ num: "1.0.0" }, { num: "0.9.0" }] });
+      },
+    });
+    await expect(clients.crateVersions("demo")).resolves.toEqual(["0.9.0", "1.0.0"]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].options.headers["User-Agent"]).toContain("github.com");
+  });
+
+  it.each([
+    ["branches", { name: "main", commit: { sha: "abc" } }],
+    ["tags", { name: "v1" }],
+    ["releases", { tag_name: "v1" }],
+  ])("follows Link pagination for every GitHub %s collection", async (resource, item) => {
+    const requests = [];
+    const clients = createNetworkClients({
+      githubToken: "secret-test-token",
+      fetchImpl: async (url, options) => {
+        requests.push({ url: String(url), options });
+        return response([item], {
+          responseHeaders:
+            requests.length === 1 ? { link: '<https://api.github.com/next>; rel="next"' } : {},
+        });
+      },
+    });
+    await expect(clients[resource]("owner/repo")).resolves.toHaveLength(2);
+    expect(requests[0].options.headers.Authorization).toBe("Bearer secret-test-token");
+    expect(requests[1].url).toContain("page=2");
+  });
+
+  it("honors Retry-After before retrying a 429", async () => {
+    const delays = [];
+    let attempts = 0;
+    const result = await fetchJson("https://example.test", {
+      retries: 1,
+      sleepImpl: async (delay) => delays.push(delay),
+      fetchImpl: async () => {
+        attempts += 1;
+        return attempts === 1
+          ? response({}, { status: 429, responseHeaders: { "retry-after": "3" } })
+          : response({ ok: true });
+      },
+    });
+    expect(result.data).toEqual({ ok: true });
+    expect(delays).toEqual([3000]);
+  });
+
+  it("retries a GitHub-style throttling 403 when Retry-After is present", async () => {
+    let attempts = 0;
+    await expect(
+      fetchJson("https://api.github.test", {
+        retries: 1,
+        sleepImpl: async () => {},
+        fetchImpl: async () => {
+          attempts += 1;
+          return attempts === 1
+            ? response({}, { status: 403, responseHeaders: { "retry-after": "0" } })
+            : response({ ok: true });
+        },
+      }),
+    ).resolves.toMatchObject({ data: { ok: true } });
+    expect(attempts).toBe(2);
+  });
+
+  it("aborts a request that exceeds its timeout", async () => {
+    await expect(
+      fetchJson("https://example.test", {
+        retries: 0,
+        timeoutMs: 1,
+        fetchImpl: async (_url, { signal }) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () =>
+              reject(new DOMException("aborted", "AbortError")),
+            );
+          }),
+      }),
+    ).rejects.toThrow(/aborted/);
+  });
+
+  it("never exceeds configured request concurrency", async () => {
+    let active = 0;
+    let maximum = 0;
+    const clients = createNetworkClients({
+      concurrency: 2,
+      fetchImpl: async () => {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return response({ archived: false });
+      },
+    });
+    await Promise.all(["a/a", "b/b", "c/c", "d/d"].map((repo) => clients.repo(repo)));
+    expect(maximum).toBe(2);
+  });
+});
+
+describe("observation and CLI", () => {
+  it("supplies ahead/diverged ancestry evidence for every changed branch head", async () => {
+    const baseline = {
+      candidates: Object.fromEntries(
+        TRACKED_CANDIDATES.map((name) => [name, { branches: { main: "old" } }]),
+      ),
+    };
+    const comparisons = [];
+    const observed = await observeSnapshot({
+      baseline,
+      now: new Date("2026-09-01T00:00:00Z"),
+      clients: completeClients({
+        compare: async (repo, base, head) => {
+          comparisons.push({ repo, base, head });
+          return { status: repo.includes("saphyr-rs") ? "diverged" : "ahead" };
+        },
+      }),
+    });
+    expect(comparisons).toHaveLength(TRACKED_CANDIDATES.length);
+    expect(observed.candidates.saphyr.branches.main).toEqual({
+      sha: "abc",
+      relation: "diverged",
+    });
+    expect(observed.candidates.noyalib.branches.main).toEqual({ sha: "abc", relation: "ahead" });
+  });
+
+  it.each([
+    ["network error", async () => Promise.reject(new Error("offline"))],
+    ["HTTP 429", async () => response({}, { status: 429 })],
+    ["HTTP 5xx", async () => response({}, { status: 503 })],
+  ])("turns %s into operational failure, never drift or no-drift", async (_label, fetchImpl) => {
+    const clients = createNetworkClients({ fetchImpl, retries: 0 });
+    const observed = await observeSnapshot({ clients });
+    const { baseline } = snapshots();
+    const result = compareSnapshots(baseline, observed);
+    expect(result.status).toBe(OPERATIONAL_FAILURE);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.exitCode).not.toBe(10);
+  });
+
+  it("strips transient ancestry evidence and adds the anti-gaming comment", () => {
+    const observed = {
+      schemaVersion: 1,
+      checkedAt: "2026-09-01T00:00:00Z",
+      candidates: {
+        demo: candidate({ branches: { main: { sha: "new", relation: "ahead" } } }),
+      },
+    };
+    expect(snapshotForBaseline(observed)).toMatchObject({
+      comment: BASELINE_COMMENT,
+      candidates: { demo: { branches: { main: "new" } } },
+    });
+  });
+
+  it("parses the locked CLI flags and rejects missing baseline paths", () => {
+    expect(parseCliArgs(["--snapshot", "--json", "--baseline", "custom.json"])).toMatchObject({
+      snapshot: true,
+      json: true,
+      baseline: "custom.json",
+    });
+    expect(() => parseCliArgs(["--baseline"])).toThrow(/requires a path/);
+  });
+
+  it("--snapshot writes only stdout and never modifies the baseline path", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "yaml-candidate-watch-"));
+    const baselinePath = join(directory, "baseline.json");
+    await writeFile(baselinePath, "sentinel\n");
+    let stdout = "";
+    let stderr = "";
+    const exitCode = await runCli(["--snapshot", "--baseline", join(directory, "missing.json")], {
+      clients: completeClients(),
+      now: new Date("2026-09-01T00:00:00Z"),
+      stdout: { write: (value) => (stdout += value) },
+      stderr: { write: (value) => (stderr += value) },
+    });
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout).comment).toBe(BASELINE_COMMENT);
+    expect(await readFile(baselinePath, "utf8")).toBe("sentinel\n");
+    await rm(directory, { recursive: true });
+  });
+});
+
+describe("committed baseline guard", () => {
+  it("matches the candidate set documented in DEPENDENCIES.md", async () => {
+    const baseline = JSON.parse(
+      await readFile(new URL("../yaml-candidate-baseline.json", import.meta.url), "utf8"),
+    );
+    const dependencies = await readFile(new URL("../../DEPENDENCIES.md", import.meta.url), "utf8");
+    const documented = TRACKED_CANDIDATES.filter((name) => dependencies.includes(`**\`${name}\``));
+    expect(Object.keys(baseline.candidates).sort()).toEqual([...documented].sort());
+    expect(documented.sort()).toEqual([...TRACKED_CANDIDATES].sort());
+    expect(baseline.comment).toBe(BASELINE_COMMENT);
+  });
+
+  it("uses the canonical crate and repository mapping", async () => {
+    const baseline = JSON.parse(
+      await readFile(new URL("../yaml-candidate-baseline.json", import.meta.url), "utf8"),
+    );
+    for (const name of TRACKED_CANDIDATES) {
+      expect(baseline.candidates[name]).toMatchObject({
+        crate: CANDIDATE_CONFIG[name].crate,
+        repo: CANDIDATE_CONFIG[name].repo,
+      });
+    }
   });
 });

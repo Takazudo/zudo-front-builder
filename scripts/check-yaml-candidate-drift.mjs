@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 /**
  * Pure comparison and reporting core for the YAML candidate watcher.
  *
@@ -60,6 +62,281 @@ export const TRACKED_CANDIDATES = Object.freeze([
   "noyalib",
   "serde-saphyr",
 ]);
+
+export const CANDIDATE_CONFIG = Object.freeze({
+  serde_yaml_ng: { crate: "serde_yaml_ng", repo: "acatton/serde-yaml-ng" },
+  serde_yml: { crate: "serde_yml", repo: "sebastienrousseau/serde_yml" },
+  saphyr: { crate: "saphyr", repo: "saphyr-rs/saphyr" },
+  serde_norway: { crate: "serde_norway", repo: "cafkafk/serde-norway" },
+  noyalib: {
+    crate: "noyalib",
+    repo: "sebastienrousseau/noyalib",
+    pendingReleasePr: 365,
+  },
+  "serde-saphyr": { crate: "serde-saphyr", repo: "bourumir-wyngs/serde-saphyr" },
+});
+
+export const BASELINE_COMMENT =
+  "Anti-gaming rule: refresh this baseline only as part of a recorded triage; never bump it merely to turn the lane green.";
+
+const DEFAULT_BASELINE_URL = new URL("./yaml-candidate-baseline.json", import.meta.url);
+const USER_AGENT =
+  "zudo-front-builder-yaml-candidate-watch/1.0 (+https://github.com/Takazudo/zudo-front-builder/issues/2810)";
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_RETRIES = 2;
+const DEFAULT_CONCURRENCY = 4;
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function retryDelay(response, attempt) {
+  const retryAfter = response?.headers?.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000);
+    const date = Date.parse(retryAfter);
+    if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  }
+  return 250 * 2 ** attempt;
+}
+
+/** A dependency-free request primitive with timeout and retry semantics. */
+export async function fetchJson(
+  url,
+  {
+    fetchImpl = globalThis.fetch,
+    headers = {},
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    retries = DEFAULT_RETRIES,
+    sleepImpl = sleep,
+  } = {},
+) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetchImpl(url, { headers, signal: controller.signal });
+      if (!response.ok) {
+        const error = new Error(`${response.status} ${response.statusText}`.trim());
+        error.status = response.status;
+        throw error;
+      }
+      return { data: await response.json(), headers: response.headers };
+    } catch (error) {
+      lastError = error;
+      const retryable =
+        error.name === "AbortError" ||
+        response?.headers?.has("retry-after") ||
+        error.status === 429 ||
+        error.status >= 500 ||
+        error.status === undefined;
+      if (!retryable || attempt === retries) break;
+      await sleepImpl(retryDelay(response, attempt));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error(`request failed for ${url}: ${lastError?.message ?? "unknown error"}`);
+}
+
+/** Limit all requests, including pagination and ancestry checks, globally. */
+export function createRequestLimiter(concurrency = DEFAULT_CONCURRENCY) {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error("concurrency must be a positive integer");
+  }
+  let active = 0;
+  const queue = [];
+  const drain = () => {
+    while (active < concurrency && queue.length > 0) {
+      active += 1;
+      const { operation, resolve, reject } = queue.shift();
+      operation()
+        .then(resolve, reject)
+        .finally(() => {
+          active -= 1;
+          drain();
+        });
+    }
+  };
+  return (operation) =>
+    new Promise((resolve, reject) => {
+      queue.push({ operation, resolve, reject });
+      drain();
+    });
+}
+
+function githubHeaders(token) {
+  return {
+    Accept: "application/vnd.github+json",
+    "User-Agent": USER_AGENT,
+    "X-GitHub-Api-Version": "2022-11-28",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+function cratesHeaders() {
+  return { Accept: "application/json", "User-Agent": USER_AGENT };
+}
+
+function hasNextLink(headers) {
+  return (headers.get("link") ?? "").split(",").some((part) => /;\s*rel="next"\s*$/.test(part));
+}
+
+export function createNetworkClients(options = {}) {
+  const request = createRequestLimiter(options.concurrency ?? DEFAULT_CONCURRENCY);
+  const requestOptions = Object.fromEntries(
+    Object.entries({
+      fetchImpl: options.fetchImpl,
+      timeoutMs: options.timeoutMs,
+      retries: options.retries,
+      sleepImpl: options.sleepImpl,
+    }).filter(([, value]) => value !== undefined),
+  );
+  const githubToken = options.githubToken ?? process.env.GITHUB_TOKEN;
+
+  async function get(url, headers) {
+    return request(() => fetchJson(url, { ...requestOptions, headers }));
+  }
+
+  async function crateVersions(crate) {
+    const url = `https://crates.io/api/v1/crates/${encodeURIComponent(crate)}/versions`;
+    const { data } = await get(url, cratesHeaders());
+    if (!Array.isArray(data.versions)) throw new Error(`${crate}: malformed crates.io response`);
+    return [...new Set(data.versions.map((version) => version.num))].sort();
+  }
+
+  async function githubPages(repo, resource) {
+    const items = [];
+    for (let page = 1; ; page += 1) {
+      const url = `https://api.github.com/repos/${repo}/${resource}?per_page=100&page=${page}`;
+      const { data, headers } = await get(url, githubHeaders(githubToken));
+      if (!Array.isArray(data)) throw new Error(`${repo}: malformed GitHub ${resource} response`);
+      items.push(...data);
+      if (!hasNextLink(headers)) break;
+    }
+    return items;
+  }
+
+  return {
+    crateVersions,
+    repo: async (repo) =>
+      (await get(`https://api.github.com/repos/${repo}`, githubHeaders(githubToken))).data,
+    branches: async (repo) => githubPages(repo, "branches"),
+    tags: async (repo) => githubPages(repo, "tags"),
+    releases: async (repo) => githubPages(repo, "releases"),
+    pullRequest: async (repo, number) =>
+      (
+        await get(
+          `https://api.github.com/repos/${repo}/pulls/${number}`,
+          githubHeaders(githubToken),
+        )
+      ).data,
+    compare: async (repo, base, head) =>
+      (
+        await get(
+          `https://api.github.com/repos/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+          githubHeaders(githubToken),
+        )
+      ).data,
+  };
+}
+
+function pullRequestState(pullRequest) {
+  if (pullRequest.merged_at) return "MERGED";
+  return pullRequest.state === "open" ? "OPEN" : "CLOSED";
+}
+
+function ancestryRelation(status) {
+  return status === "ahead" ? "ahead" : "diverged";
+}
+
+/** Observe every known candidate, retaining per-candidate operational errors. */
+export async function observeSnapshot({ baseline, clients = createNetworkClients(), now } = {}) {
+  const checkedAt = (now ?? new Date()).toISOString();
+  const entries = await Promise.all(
+    TRACKED_CANDIDATES.map(async (name) => {
+      const config = CANDIDATE_CONFIG[name];
+      try {
+        const [versions, repository, branchList, tagList, releaseList, pullRequest] =
+          await Promise.all([
+            clients.crateVersions(config.crate),
+            clients.repo(config.repo),
+            clients.branches(config.repo),
+            clients.tags(config.repo),
+            clients.releases(config.repo),
+            config.pendingReleasePr
+              ? clients.pullRequest(config.repo, config.pendingReleasePr)
+              : Promise.resolve(null),
+          ]);
+        const oldBranches = baseline?.candidates?.[name]?.branches ?? {};
+        const branches = Object.fromEntries(
+          await Promise.all(
+            branchList.map(async (branch) => {
+              const sha = branch.commit?.sha;
+              if (!branch.name || !sha)
+                throw new Error(`${config.repo}: malformed branch response`);
+              const old = branchValue(oldBranches[branch.name]);
+              if (!old || old.sha === sha) return [branch.name, sha];
+              const comparison = await clients.compare(config.repo, old.sha, sha);
+              if (typeof comparison.status !== "string") {
+                throw new Error(`${config.repo}: malformed ancestry response for ${branch.name}`);
+              }
+              return [branch.name, { sha, relation: ancestryRelation(comparison.status) }];
+            }),
+          ),
+        );
+        return [
+          name,
+          {
+            crate: config.crate,
+            repo: config.repo,
+            versions,
+            branches,
+            tags: [...new Set(tagList.map((tag) => tag.name))].sort(),
+            releases: [...new Set(releaseList.map((release) => release.tag_name))].sort(),
+            pendingReleasePr: pullRequest
+              ? { number: config.pendingReleasePr, state: pullRequestState(pullRequest) }
+              : null,
+            archived: repository.archived,
+            checkedAt,
+          },
+        ];
+      } catch (error) {
+        return [name, { error: error.message }];
+      }
+    }),
+  );
+  return { schemaVersion: SCHEMA_VERSION, checkedAt, candidates: Object.fromEntries(entries) };
+}
+
+export function snapshotForBaseline(observed) {
+  const candidates = Object.fromEntries(
+    Object.entries(observed.candidates).map(([name, candidate]) => {
+      if (candidate.error) throw new Error(`${name}: ${candidate.error}`);
+      return [
+        name,
+        {
+          ...candidate,
+          branches: Object.fromEntries(
+            Object.entries(candidate.branches).map(([branch, value]) => [
+              branch,
+              branchValue(value).sha,
+            ]),
+          ),
+        },
+      ];
+    }),
+  );
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    checkedAt: observed.checkedAt,
+    comment: BASELINE_COMMENT,
+    candidates,
+  };
+}
 
 const PR_STATES = new Set(["OPEN", "MERGED", "CLOSED"]);
 const BRANCH_RELATIONS = new Set(["ahead", "diverged"]);
@@ -376,4 +653,69 @@ export function formatReport(result) {
 /** Render the documented --json representation deterministically. */
 export function formatJsonReport(result) {
   return `${JSON.stringify(result, null, 2)}\n`;
+}
+
+export function parseCliArgs(args) {
+  const options = { baseline: DEFAULT_BASELINE_URL, snapshot: false, json: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--snapshot") options.snapshot = true;
+    else if (argument === "--json") options.json = true;
+    else if (argument === "--baseline") {
+      const path = args[index + 1];
+      if (!path || path.startsWith("--")) throw new Error("--baseline requires a path");
+      options.baseline = path;
+      index += 1;
+    } else {
+      throw new Error(`unknown argument: ${argument}`);
+    }
+  }
+  return options;
+}
+
+async function readBaseline(path) {
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+export async function runCli(
+  args,
+  { stdout = process.stdout, stderr = process.stderr, clients, now } = {},
+) {
+  try {
+    const options = parseCliArgs(args);
+    let baseline;
+    try {
+      baseline = await readBaseline(options.baseline);
+    } catch (error) {
+      if (!options.snapshot) throw error;
+      if (error.code !== "ENOENT") throw error;
+    }
+    const observed = await observeSnapshot({ baseline, clients, now });
+    if (options.snapshot) {
+      stdout.write(`${JSON.stringify(snapshotForBaseline(observed), null, 2)}\n`);
+      return 0;
+    }
+    const result = compareSnapshots(baseline, observed);
+    stdout.write(options.json ? formatJsonReport(result) : formatReport(result));
+    return result.exitCode;
+  } catch (error) {
+    if (args.includes("--json")) {
+      stdout.write(
+        formatJsonReport({
+          status: OPERATIONAL_FAILURE,
+          exitCode: EXIT_CODES[OPERATIONAL_FAILURE],
+          checkedAt: null,
+          candidates: [],
+          errors: [{ candidate: "monitor", message: error.message }],
+        }),
+      );
+    } else {
+      stderr.write(`YAML candidate watch operational failure: ${error.message}\n`);
+    }
+    return EXIT_CODES[OPERATIONAL_FAILURE];
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = await runCli(process.argv.slice(2));
 }
