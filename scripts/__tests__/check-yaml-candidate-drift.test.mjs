@@ -424,6 +424,30 @@ describe("observation and CLI", () => {
     expect(observed.candidates.noyalib.branches.main).toEqual({ sha: "abc", relation: "ahead" });
   });
 
+  it("treats an unexpected ancestry status as operational failure", async () => {
+    const baseline = {
+      candidates: Object.fromEntries(
+        TRACKED_CANDIDATES.map((name) => [name, { branches: { main: "old" } }]),
+      ),
+    };
+    const observed = await observeSnapshot({
+      baseline,
+      clients: completeClients({ compare: async () => ({ status: "unknown" }) }),
+    });
+    expect(observed.candidates.noyalib).toEqual({
+      error: "unexpected GitHub comparison status: unknown",
+    });
+  });
+
+  it("treats a malformed pending-release PR response as operational failure", async () => {
+    const observed = await observeSnapshot({
+      clients: completeClients({
+        pullRequest: async () => ({ state: "mystery", merged_at: null }),
+      }),
+    });
+    expect(observed.candidates.noyalib).toEqual({ error: "malformed pull request response" });
+  });
+
   it.each([
     ["network error", async () => Promise.reject(new Error("offline"))],
     ["HTTP 429", async () => response({}, { status: 429 })],

@@ -245,12 +245,24 @@ export function createNetworkClients(options = {}) {
 }
 
 function pullRequestState(pullRequest) {
-  if (pullRequest.merged_at) return "MERGED";
-  return pullRequest.state === "open" ? "OPEN" : "CLOSED";
+  if (!pullRequest || typeof pullRequest !== "object" || Array.isArray(pullRequest)) {
+    throw new Error("malformed pull request response");
+  }
+  if (typeof pullRequest.merged_at === "string" && pullRequest.merged_at !== "") {
+    return "MERGED";
+  }
+  if (pullRequest.merged_at !== null) {
+    throw new Error("malformed pull request response");
+  }
+  if (pullRequest.state === "open") return "OPEN";
+  if (pullRequest.state === "closed") return "CLOSED";
+  throw new Error("malformed pull request response");
 }
 
 function ancestryRelation(status) {
-  return status === "ahead" ? "ahead" : "diverged";
+  if (status === "ahead") return "ahead";
+  if (status === "behind" || status === "diverged") return "diverged";
+  throw new Error(`unexpected GitHub comparison status: ${status}`);
 }
 
 /** Observe every known candidate, retaining per-candidate operational errors. */
