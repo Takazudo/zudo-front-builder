@@ -249,6 +249,17 @@ declaration is removable even if its package remains in `Cargo.lock`.
     whole ([#2788](https://github.com/Takazudo/zudo-front-builder/issues/2788),
     checked 2026-08-31).
 
+  The machine-readable drift baseline is `scripts/yaml-candidate-baseline.json`,
+  and `.github/workflows/yaml-candidate-watch.yml` is the weekly lane that
+  re-checks it. The lane enumerates **all branches** because the 2026-08-31
+  correction on #2755 records that a prior round *"inspected default branches
+  and missed `noyalib`'s `feat/v0.0.29` release branch."* A detected
+  `CANDIDATE_DRIFT` opens a tracking issue referencing
+  [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) for triage;
+  the watcher does not itself decide that the #2755 trigger has
+  fired. The baseline is refreshed only as part of a recorded triage, never
+  merely to turn the lane green.
+
 ### Candidate desk research (#2785; no-build, checked 2026-08-30)
 
 This is the requested candidate screen, not a migration recommendation. The

@@ -1,0 +1,168 @@
+# YAML candidate watch — weekly pre-trigger monitor for issue #2755.
+#
+# The detector reports mechanical candidate drift only. CANDIDATE_DRIFT is
+# evidence requiring triage against #2755; it never claims that the semantic
+# trigger has fired. A failed monitor is operational failure and must remain
+# distinct from a completed run that found drift.
+#
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names
+# the release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
+name: YAML candidate watch
+
+# Weekly Thursday 05:29 UTC — an off-minute quiet hour, deliberately not a
+# round number, and a different day from the sibling scheduled lanes.
+on:
+  schedule:
+    - cron: "29 5 * * 4"
+  workflow_dispatch:
+
+concurrency:
+  group: yaml-candidate-watch-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to least privilege; only the tracking-issue job opts into issues:write.
+permissions:
+  contents: read
+
+jobs:
+  detector:
+    name: Detect YAML candidate drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The detector calls the GitHub API for every candidate and must not be
+    # anonymously rate-limited. Keep this on the detector job itself rather
+    # than relying on the filing job's token.
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    outputs:
+      rc: ${{ steps.run_detector.outputs.rc }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # This detector is dependency-free Node ESM over built-ins + fetch, so
+      # it intentionally needs no package-manager setup or installation.
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+
+      - name: Check YAML candidate drift
+        id: run_detector
+        shell: bash
+        run: |
+          # Keep the detector's exit code separate from the report rendering.
+          # In particular, a pipeline would report the renderer's status
+          # rather than the detector's status.
+          set +e
+          node scripts/check-yaml-candidate-drift.mjs --json > yaml-candidate-watch-report.json
+          rc=$?
+          set -e
+          cat yaml-candidate-watch-report.json
+          cat yaml-candidate-watch-report.json >> "$GITHUB_STEP_SUMMARY"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # Downstream jobs branch on outputs.rc, including the distinction
+          # between CANDIDATE_DRIFT (10) and operational failures.
+          exit 0
+
+      - name: Mark a non-clean detector outcome as failed
+        if: always() && steps.run_detector.outputs.rc != '0'
+        env:
+          DETECTOR_RC: ${{ steps.run_detector.outputs.rc }}
+        run: |
+          if [ -n "$DETECTOR_RC" ]; then
+            echo "::error::YAML candidate watch exited ${DETECTOR_RC}."
+          else
+            echo "::error::YAML candidate watch did not produce an exit code."
+          fi
+          exit 1
+
+  file-or-close-issue:
+    # One deduped tracking issue per workflow: red runs append to the open
+    # issue, while a completed no-drift run closes it. This job branches on
+    # detector.outputs.rc because the detector job result cannot distinguish
+    # exit 10 from an operational failure.
+    name: File/close YAML candidate watch tracking issue
+    needs: [detector]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: File or comment on tracking issue (candidate drift)
+        if: ${{ needs.detector.outputs.rc == '10' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEG: >-
+            candidate drift detected (CANDIDATE_DRIFT); triage against #2755:
+            https://github.com/Takazudo/zudo-front-builder/issues/2755
+        run: bash scripts/file-exam-issue.sh "YAML candidate watch"
+
+      - name: File or comment on tracking issue (operational failure)
+        if: ${{ needs.detector.outputs.rc != '0' && needs.detector.outputs.rc != '10' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEG: >-
+            operational failure; the monitor did not complete, so no conclusion
+            about drift may be drawn; see #2755:
+            https://github.com/Takazudo/zudo-front-builder/issues/2755
+        run: bash scripts/file-exam-issue.sh "YAML candidate watch"
+
+      - name: Close tracking issue (green)
+        if: ${{ needs.detector.outputs.rc == '0' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/file-exam-issue.sh "YAML candidate watch" --green
+
+  notify:
+    # Alerting guard: a red detector run otherwise sits unseen in the Actions
+    # tab. The notification also preserves the distinction between candidate
+    # drift and an operational failure, using the detector job output rather
+    # than the detector job result.
+    name: Notify via IFTTT on failure
+    needs: [detector]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      - name: Notify via IFTTT on failure
+        if: env.IFTTT_PROD_NOTIFY != ''
+        env:
+          DETECTOR_RC: ${{ needs.detector.outputs.rc }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          FAILURE_KIND=""
+          if [ "$DETECTOR_RC" = "10" ]; then
+            FAILURE_KIND="candidate drift detected (CANDIDATE_DRIFT; triage against #2755)"
+          elif [ "$DETECTOR_RC" != "0" ]; then
+            FAILURE_KIND="operational failure (monitor incomplete; no conclusion about drift; see #2755)"
+          fi
+
+          if [ -z "$FAILURE_KIND" ]; then
+            echo "No detector failure — skipping notification."
+            exit 0
+          fi
+
+          RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
+
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"YAML candidate watch failed (${FAILURE_KIND})\",
+              \"value2\": \"weekly candidate drift monitor\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
