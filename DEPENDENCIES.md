@@ -719,24 +719,18 @@ checked 2026-08-30).
   not make a JS checker required in this audit. If revisited, pilot a pinned
   **Knip** release in report-only mode rather than depcheck: it better models
   pnpm projects, entry points, exports, and dependency categories. Reconcile
-  every report against the generated docs bundle, the optional/undeclared peer
-  keep-lists below, and publishable package contracts; promote only after two
+  every report against the generated docs bundle, the optional peer keep-list
+  below, and publishable package contracts; promote only after two
   clean pilots and reviewed configuration. The existing cargo-machete guard is
   the lower-noise Rust check.
 
-### npm keep-lists from `docs/CLAUDE.md`
+### npm keep-list from `docs/CLAUDE.md`
 
 The docs site deliberately installs these **optional peer feature packages** of
 `@takazudo/zudo-doc`: `diff`, `katex`, `preact`, `zod`, `@takazudo/zdtp`, and
 `@takazudo/zudo-doc-history-server`. They satisfy opt-in package features and
 the history server's docs development process; they are not dead because their
 imports are not all in `docs/src`.
-
-It also declares these **runtime imports not declared by zudo-doc itself**:
-`mermaid`, `minisearch`, and `remark-cjk-friendly`. They appear in the generated
-`docs/.zfb-build/bundle.mjs`, so the docs-level declarations supply module
-resolution and feature behavior. `docs/CLAUDE.md` is the keep-list's source of
-truth; it is not a request to add dependencies.
 
 ## walkdir consolidation is an explicit non-goal
 
@@ -816,7 +810,7 @@ workspace package importers.
 | Manifest | Package and declarations reviewed | Result |
 | --- | --- | --- |
 | `package.json` | Private root; six dev tools: `@playwright/test`, `html-validate`, `lefthook`, `prettier`, `vitest`, `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
-| `docs/package.json` | Private docs site; zudo-doc stack, the two intentional keep-lists, TypeScript/types, `html-validate`, `npm-run-all2`, `vitest`, and Wrangler. | Clean after #2746 removed only `pagefind`, `remark-directive`, and the redundant `gray-matter`; zudo-doc 5.14.0 removed its `gray-matter`/`js-yaml` chain, so the `js-yaml` override was retired in #2823. |
+| `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `npm-run-all2`, `vitest`, and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. |
 | `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and Vitest dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
 | `packages/zfb/package.json` | Publishable SDK with five optional platform packages, React peer, and build/test type tooling. | Clean: optional carriers and peer/dev fixtures are part of the package contract. |
 | `packages/zfb-runtime/package.json` | Publishable runtime with `hono` dependency, zfb/React peers, and dev fixtures. | Clean: Hono is the runtime router; peer and dev declarations support the published API/tests. |
