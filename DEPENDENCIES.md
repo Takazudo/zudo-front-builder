@@ -816,7 +816,7 @@ workspace package importers.
 | Manifest | Package and declarations reviewed | Result |
 | --- | --- | --- |
 | `package.json` | Private root; six dev tools: `@playwright/test`, `html-validate`, `lefthook`, `prettier`, `vitest`, `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
-| `docs/package.json` | Private docs site; zudo-doc stack, the two intentional keep-lists, TypeScript/types, `html-validate`, `npm-run-all2`, `vitest`, and Wrangler. | Clean after #2746 removed only `pagefind`, `remark-directive`, and the redundant `gray-matter`; `js-yaml`'s override remains because `gray-matter` is still transitive through zudo-doc. |
+| `docs/package.json` | Private docs site; zudo-doc stack, the two intentional keep-lists, TypeScript/types, `html-validate`, `npm-run-all2`, `vitest`, and Wrangler. | Clean after #2746 removed only `pagefind`, `remark-directive`, and the redundant `gray-matter`; zudo-doc 5.14.0 removed its `gray-matter`/`js-yaml` chain, so the `js-yaml` override was retired in #2823. |
 | `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and Vitest dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
 | `packages/zfb/package.json` | Publishable SDK with five optional platform packages, React peer, and build/test type tooling. | Clean: optional carriers and peer/dev fixtures are part of the package contract. |
 | `packages/zfb-runtime/package.json` | Publishable runtime with `hono` dependency, zfb/React peers, and dev fixtures. | Clean: Hono is the runtime router; peer and dev declarations support the published API/tests. |
