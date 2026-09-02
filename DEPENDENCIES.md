@@ -246,17 +246,23 @@ declaration is removable even if its package remains in `Cargo.lock`.
     `75e46581e5dbf3e234813aaaa00f71184f784bae` to
     `a0bb22ec1ce1bf80ddc65e5e83ba8c4eeaa634eb`, the 2026-09-02T13:41:42Z
     _“Merge branch 'feat/v0.0.31' into feat/v0.0.33”_ commit; and
-    `feat/v0.0.33` was deleted at that same full SHA. There was no
-    `version-published`, `tag-added`, `release-added`, or archive delta for any
-    candidate, and the re-checked crates.io maxima remained `0.0.29` for both
-    `noyalib` and `noyalib-serde-yaml`. At the observed `feat/v0.0.30` head, the
-    upstream contract still asserts Display column 8 and `1:8:7` _“since
-    v0.0.30”_; tag `v0.0.29` retains the _KNOWN PARTIAL_ Display column 16 /
-    `1:16:15` behavior. This is release-prep branch churn, so the standing
+    `feat/v0.0.33` was deleted at that same full SHA. A review-time recheck at
+    `2026-09-02T17:11:36.674Z` again returned rc 10 with no errors and one
+    additional allowed delta: `feat/v0.0.31` advanced from
+    `a0bb22ec1ce1bf80ddc65e5e83ba8c4eeaa634eb` to
+    `0fa6c414a4a73c99a6df533d206f73158d80cab8`, the 2026-09-02T17:08:46Z
+    _“Merge branch 'feat/v0.0.30' into feat/v0.0.31”_ commit. Neither
+    observation contained a `version-published`, `tag-added`, `release-added`,
+    or archive delta for any candidate, and the re-checked crates.io maxima
+    remained `0.0.29` for both `noyalib` and `noyalib-serde-yaml`. At the
+    observed `feat/v0.0.30` head, the upstream contract still asserts Display
+    column 8 and `1:8:7` _“since v0.0.30”_; tag `v0.0.29` retains the _KNOWN
+    PARTIAL_ Display column 16 / `1:16:15` behavior. This is release-prep branch
+    churn, so the standing
     [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) trigger
     has not fired: it requires a lockstep release carrying that pin. As part of
     this recorded triage, the baseline was refreshed at
-    `2026-09-02T17:05:38.621Z`, and the tracked release PR was re-pointed from
+    `2026-09-02T17:12:41.295Z`, and the tracked release PR was re-pointed from
     merged PR 365 to observed-open
     [PR 371](https://github.com/sebastienrousseau/noyalib/pull/371). The next
     `version-published`, `tag-added`, or `release-added` delta for a lockstep
