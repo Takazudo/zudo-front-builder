@@ -492,7 +492,7 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            default_fp, "f1ccd59bb3526f4665ac11b6a69639cc381c5dc807bda4f83157fc3b5d455c92",
+            default_fp, "12c8861ccca09aec9443b68477ec315b0fd3dbd9d7e6ec3b40267d222cb59203",
             "default-spec fingerprint drifted from pre-#977 HEAD (re-captured when the \
              conservative GFM default flipped autolink_literal on — the default \
              constructs descriptor changed, see that commit)"
@@ -514,7 +514,7 @@ mod tests {
             .config_fingerprint()
             .expect("fingerprintable");
         assert_eq!(
-            armed_fp, "3b5a20049802f8d87baadc8c88238fcf2264f153e5767fdae548afbcfafd672f",
+            armed_fp, "965cde3113e5d962c2bfa20058594a8fc25028345767c00a53010dbfa6e4de1a",
             "linkValidation-armed fingerprint drifted from pre-#977 HEAD (re-captured when \
              the conservative GFM default flipped autolink_literal on — the default \
              constructs descriptor changed, see that commit)"

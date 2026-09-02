@@ -1,34 +1,34 @@
 {
-  "measuredOnVersion": "2.14.2",
+  "measuredOnVersion": "2.14.3",
   "measured": {
     "root": {
-      "finalWasm": 3294286,
-      "gzip9": 1443040,
+      "finalWasm": 3359843,
+      "gzip9": 1511297,
       "glue": 14998,
       "glueGzip9": 4199
     },
     "highlight": {
-      "finalWasm": 1476740,
-      "gzip9": 758248,
+      "finalWasm": 1533462,
+      "gzip9": 822539,
       "glue": 8758,
       "glueGzip9": 2637
     },
     "render": {
-      "finalWasm": 2082385,
-      "gzip9": 1010797,
+      "finalWasm": 2139370,
+      "gzip9": 1074557,
       "glue": 8772,
       "glueGzip9": 2661
     },
     "parse": {
-      "finalWasm": 646115,
-      "gzip9": 261099,
+      "finalWasm": 644715,
+      "gzip9": 260191,
       "glue": 11159,
       "glueGzip9": 3797
     }
   },
   "ceilings": {
     "root": 1600000,
-    "highlight": 820000,
+    "highlight": 880000,
     "render": 1100000,
     "parse": 325000,
     "tarball": 3900000

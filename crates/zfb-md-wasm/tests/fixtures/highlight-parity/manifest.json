@@ -43,6 +43,16 @@
       "slug": "toml-semantic",
       "code": "[package]\nname = \"zfb\"\nversion = 1\nenabled = true\n# a comment\n",
       "options": { "language": "toml" }
+    },
+    {
+      "slug": "typescript",
+      "code": "@sealed\nclass Repository<T extends { id: string }> {\n  find<U extends T>(value: U): value is U & { active: true } {\n    const label = `record ${value.id}\nactive`;\n    return label.length > 0 && \"active\" in value;\n  }\n}\n\nenum Mode { Read = \"read\", Write = \"write\" }\nconst map = <T, U>(items: T[], fn: (item: T) => U): U[] => items.map(fn);\n",
+      "options": { "language": "ts" }
+    },
+    {
+      "slug": "tsx",
+      "code": "type CardProps<T> = { item: T; title: string; active?: boolean };\n\nexport const Card = <T extends { id: string }>({ item, ...props }: CardProps<T>) => (\n  <>\n    <article {...props} data-id={item.id}>\n      <h2>{props.title}</h2>\n      {props.active && <span>{`active ${item.id}`}</span>}\n    </article>\n  </>\n);\n",
+      "options": { "language": "tsx" }
     }
   ]
 }

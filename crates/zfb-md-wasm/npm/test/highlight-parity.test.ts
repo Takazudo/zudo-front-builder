@@ -31,7 +31,7 @@ interface HighlightManifest {
 const manifest: HighlightManifest = JSON.parse(
   readFileSync(join(fixturesDir, "manifest.json"), "utf8"),
 );
-const FOCUSED_HIGHLIGHT_CORPUS_SIZE = 8;
+const FOCUSED_HIGHLIGHT_CORPUS_SIZE = 10;
 
 const ENTRIES = [
   { label: "default (`.`) entry", highlightCode: highlightCodeDefault },

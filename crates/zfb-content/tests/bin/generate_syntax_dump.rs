@@ -27,7 +27,7 @@ use syntect::parsing::SyntaxSet;
 /// Grammars this dump exists to add, sanity-checked by name below before the
 /// dump is written — a silently-failed `add_from_folder` would otherwise ship
 /// a dump indistinguishable from the plain bundled defaults.
-const EXPECTED_EXTRA_SYNTAXES: &[&str] = &["TOML"];
+const EXPECTED_EXTRA_SYNTAXES: &[&str] = &["TOML", "TypeScript", "TypeScriptReact"];
 
 fn main() {
     // `add_from_folder` records the path it walked (joined per-component)

@@ -119,6 +119,37 @@ EOF
 done
 "#,
     ),
+    (
+        "typescript",
+        "ts",
+        r#"@sealed
+class Repository<T extends { id: string }> {
+  find<U extends T>(value: U): value is U & { active: true } {
+    const label = `record ${value.id}
+active`;
+    return label.length > 0 && "active" in value;
+  }
+}
+
+enum Mode { Read = "read", Write = "write" }
+const map = <T, U>(items: T[], fn: (item: T) => U): U[] => items.map(fn);
+"#,
+    ),
+    (
+        "tsx",
+        "tsx",
+        r#"type CardProps<T> = { item: T; title: string; active?: boolean };
+
+export const Card = <T extends { id: string }>({ item, ...props }: CardProps<T>) => (
+  <>
+    <article {...props} data-id={item.id}>
+      <h2>{props.title}</h2>
+      {props.active && <span>{`active ${item.id}`}</span>}
+    </article>
+  </>
+);
+"#,
+    ),
 ];
 
 fn snapshot_dir() -> PathBuf {

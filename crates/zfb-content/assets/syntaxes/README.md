@@ -24,24 +24,22 @@ upstream license covering it.
   `-license` sidecar file exists in that repo, so the root license applies).
 - Self-contained: no `extends:` dependency on another grammar file.
 
-## TypeScript / TSX — not included yet
+## typescript/
 
-TypeScript/TSX grammars are deliberately NOT in this directory yet. Every
-`.sublime-syntax` source investigated for them is unusable with syntect as-is:
+- Source: bat's hand-converted `TypeScript.sublime-syntax` and
+  `TypsecriptReact.sublime-syntax` at commit
+  `0acf9417cd6d9635d927dda9f8e6ab5e57176fa4` (the latter is stored here with
+  its filename typo corrected). bat vendors Microsoft's
+  `TypeScript-Sublime-Plugin`, not `braver/TypeScriptSyntax`; its submodule pin
+  is `ba45efd058df5111837e30fb9598cfc8cbd51095`, and the conversion history is
+  recorded by bat commits `1d46eb8e`, `c97aa551`, `3358b075`, and `d7b65194`.
+- License: Apache-2.0. `typescript/LICENSE` is copied verbatim from Microsoft;
+  bat's derivative is MIT OR Apache-2.0. See `typescript/PROVENANCE.md`.
+- Self-contained: neither grammar uses `extends:`.
 
-- Microsoft's own `TypeScript-Sublime-Plugin` and the community
-  `braver/TypeScriptSyntax` (also the grammar `bat` vendors) ship only
-  `.tmLanguage` (plist/XML), a format syntect's syntax loader cannot parse at
-  all (`SyntaxSetBuilder::add_from_folder` only reads `.sublime-syntax` YAML;
-  syntect's `plist-load` feature covers `.tmTheme` *themes*, not tmLanguage
-  *syntax definitions*).
-- `sublimehq/Packages` itself DOES ship genuine `.sublime-syntax` files —
-  `JavaScript/TypeScript.sublime-syntax` and `JavaScript/TSX.sublime-syntax` —
-  but both declare `extends: JavaScript.sublime-syntax` (Sublime Text 4's
-  syntax-inheritance mechanism) and reference contexts (e.g. `script`) that
-  only exist in the base `JavaScript.sublime-syntax` file. syntect has never
-  implemented `extends:`/`version: 2` inheritance, so loading either file
-  standalone fails to resolve those contexts.
-
-See issue #1848's follow-up discussion for the sourcing decision on
-TypeScript/TSX before adding them here.
+The current `sublimehq/Packages` TypeScript/TSX grammars cannot be shimmed into
+syntect 5.3.0: they depend on Sublime Text syntax inheritance and newer
+`branch_point`/`branch`/`fail` keys that the 5.3.0 YAML loader does not
+implement. syntect master's `load_defaults_newlines()` already contains
+TypeScript, TSX, and TOML (192 syntaxes), so these extras can be removed when
+the trigger-based syntect 6 migration recorded in `DEPENDENCIES.md` proceeds.

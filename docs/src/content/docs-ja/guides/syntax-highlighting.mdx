@@ -24,11 +24,12 @@ zfb には、色を焼き込む代わりに各トークンへ再テーマ可能�
 
 ## 認識される言語
 
-フェンス付きコードブロックの言語タグは、zfb のエイリアス表を経由して、syntect に同梱された Sublime Text 互換の文法か、zfb 自身が追加している 1 つの文法（`TOML` — syntect には同梱されていません）のいずれかに解決されます。マッピングされているタグは次のとおりです。
+フェンス付きコードブロックの言語タグは、zfb のエイリアス表を経由して、syntect に同梱された Sublime Text 互換の文法か、zfb 自身が追加している 3 つの文法（`TOML`、`TypeScript`、`TypeScriptReact`）のいずれかに解決されます。マッピングされているタグは次のとおりです。
 
 | タグ | 文法 |
 |---|---|
-| `ts`、`typescript`、`tsx` | JavaScript（下記の注意を参照） |
+| `ts`、`typescript` | TypeScript |
+| `tsx` | TypeScriptReact |
 | `js`、`javascript`、`jsx` | JavaScript |
 | `rs`、`rust` | Rust |
 | `py`、`python` | Python |
@@ -42,12 +43,6 @@ zfb には、色を焼き込む代わりに各トークンへ再テーマ可能�
 | `toml` | TOML |
 | `html` | HTML |
 | `css` | CSS |
-
-<Note>
-
-**`ts` / `tsx` は JavaScript の文法でハイライトされます。** syntect に同梱された syntax set には、読み込んで使える TypeScript / TSX の文法がありません。zfb が検討した再配布可能なソースはいずれも、syntect が対応していないファイル形式で提供されているか、syntect が実装していない `extends:` の継承機構に依存しています（調査の全容は `crates/zfb-content/assets/syntaxes/README.md` にあります）。そのため、どちらのタグもハイライトなしのフォールバックではなく、JavaScript のハイライトに流れます。
-
-</Note>
 
 この表にないタグは、上で説明したテーマ適用のハイライトなし経路にフォールバックします。コードは保持・エスケープされますが、トークンの着色は行われません。
 
@@ -370,7 +365,7 @@ Markdown/MDX エディタ、貼り付けてプレビューするボックス、�
 `@takazudo/zfb-md-wasm/highlight` サブパスからインポートしてください。公開 API と
 リソースは後方互換のまま、#2450 の完全パリティと `swc_core` 不在ゲートを通った
 出荷グラフは SWC-free になっています。しかもダウンロード量はルートエントリのおよそ
-半分です: 2.14.2 では gzip-9 で 758,248 B、ルートは 1,443,040 B です。
+半分です: 2.14.3 では gzip-9 で 822,539 B、ルートは 1,511,297 B です。
 
 </Tip>
 

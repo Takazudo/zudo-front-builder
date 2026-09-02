@@ -63,7 +63,7 @@ pub use zfb_md_ast::gfm_constructs::{
 /// the fingerprint does not otherwise encode the syntax set, so swapping in
 /// a new grammar dump would silently leave stale compile-cache entries
 /// pointing at HTML highlighted under the old grammar set.
-const FINGERPRINT_VERSION: &str = "zfb-pipeline-fp-v2";
+const FINGERPRINT_VERSION: &str = "zfb-pipeline-fp-v3";
 
 /// Canonical descriptor segment for a [`ResolvedGfmConstructs`] set.
 fn gfm_fingerprint_segment(resolved: ResolvedGfmConstructs) -> String {
