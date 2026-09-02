@@ -72,7 +72,7 @@ export const CANDIDATE_CONFIG = Object.freeze({
   noyalib: {
     crate: "noyalib",
     repo: "sebastienrousseau/noyalib",
-    pendingReleasePr: 365,
+    pendingReleasePr: 371,
   },
   "noyalib-serde-yaml": {
     crate: "noyalib-serde-yaml",
