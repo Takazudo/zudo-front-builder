@@ -26,8 +26,9 @@ permissions:
 
 # The docs build (+ docs/check + docs/check:html) previously lived here as
 # an unconditional job, rebuilding the docs site on every PR including
-# pure-Rust changes. It now lives in the path-filtered docs-checks.yml
-# workflow (issue #1336) so it only runs when docs-affecting files change.
+# pure-Rust changes. It now lives in docs-checks.yml, job-level path-gated
+# (#1336, then #2827's `Docs gate`) so the build only runs when docs-affecting
+# files change while a required context still reports on every PR.
 # `pnpm audit (prod)` below stays here, unfiltered — it is a required
 # status check on every PR per #1333's branch ruleset, and moving it behind
 # a path filter would hang non-docs PRs forever.

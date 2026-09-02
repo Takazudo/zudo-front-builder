@@ -19,8 +19,9 @@ name: router-chromium
 #
 # Path-filtered: this only runs when the router runtime, the islands runtime,
 # livereload.js, or the L4 suite changes, so unrelated Rust / docs PRs never pay
-# for it. Like docs-checks.yml, that means this workflow is NOT — and must not become — a
-# required status check: a required check that legitimately does not run on
+# for it. Like docs-checks.yml before #2827, that means this workflow is NOT — and must not
+# become — a required status check (#2827's job-level `changed-files` + `if: always()` gate
+# is the pattern to copy if it ever must be): a required check that legitimately does not run on
 # unrelated PRs would hang them forever (see the #1333 branch-ruleset note in
 # CLAUDE.md). `base/**` covers the long-lived integration branches used by
 # /x-wt-teams epics.

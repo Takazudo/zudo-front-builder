@@ -17,6 +17,7 @@ set -euo pipefail
 #   - Smoke arm64 TS-config (local mode)            (.github/workflows/node-free-smoke.yml)
 #   - Scaffold E2E (packed tarballs, pre-publish)   (.github/workflows/node-free-smoke.yml)
 #   - pnpm audit (prod)                             (.github/workflows/pr-checks.yml)
+#   - Docs gate                                      (.github/workflows/docs-checks.yml)
 #
 # Build binary's two matrix legs both build on the ubuntu-22.04 runner (the
 # GLIBC 2.35 floor host, and the arm64 leg cross-compiles rather than using a
@@ -26,11 +27,12 @@ set -euo pipefail
 # (ubuntu-22.04)" and a ruleset couldn't require them independently.
 #
 # Deliberately NOT required:
-#   - "Build docs site" (.github/workflows/pr-checks.yml) — sibling issue
-#     #1336 is making this job path-filtered to docs/** changes. A required
-#     check that stops running on non-docs PRs hangs those PRs forever, so
-#     it is excluded here on purpose. If a future change makes it
-#     unconditional again, add it back.
+#   - "Build docs site (docs-checks.yml)" is job-level path-gated behind
+#     docs-checks.yml's `changed-files (docs)` detector (#1336 → #2827), so it
+#     legitimately skips on non-docs PRs, and its name also collides with the
+#     `Build docs site` jobs in docs-pr-preview.yml / docs-deploy.yml; the
+#     workflow's unconditional `Docs gate` job (`if: always()`, fails closed on
+#     a failed/cancelled detector or build) is what is required instead.
 #   - "Smoke released (install.sh)" — only fires via workflow_run after a
 #     release tag, never on a normal PR; requiring it would block all PRs.
 #   - anything from docs-pr-preview.yml / docs-deploy.yml / actionlint.yml /
@@ -89,7 +91,8 @@ BODY=$(cat <<'JSON'
           { "context": "Smoke arm64 (local mode)" },
           { "context": "Smoke arm64 TS-config (local mode)" },
           { "context": "Scaffold E2E (packed tarballs, pre-publish)" },
-          { "context": "pnpm audit (prod)" }
+          { "context": "pnpm audit (prod)" },
+          { "context": "Docs gate" }
         ],
         "strict_required_status_checks_policy": false
       }

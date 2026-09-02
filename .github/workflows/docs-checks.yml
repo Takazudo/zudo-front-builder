@@ -6,15 +6,43 @@
 
 name: Docs Checks
 
-# Split out of pr-checks.yml (issue #1336): the docs build + `zfb check` +
-# `check:html` used to run unconditionally on every PR, including pure-Rust
-# changes that never touch docs/. A workflow-level `paths:` filter can't be
-# added to pr-checks.yml itself because that workflow also carries the
-# `pnpm audit (prod)` job, which is a required status check on every PR
-# (#1333's branch ruleset) — path-filtering the whole workflow would hang
-# non-docs PRs. This workflow only ever carries docs-scoped jobs, so a
-# workflow-level path filter here is safe: it is not (and must not become) a
-# required check, since it legitimately does not run on non-docs PRs.
+# Split out of pr-checks.yml (issue #1336) so pure-Rust PRs stop paying for the
+# docs build. Until #2827 the whole workflow was path-filtered at the trigger,
+# which is why it could never be a required check: a path-skipped workflow's
+# checks sit "Pending" forever on unrelated PRs, so GitHub happily merged a
+# docs PR while this build was still running.
+#
+# #2827 keeps the cost saving but moves the path gate to JOB level, the same
+# detector pattern health.yml uses for its optional wasm-md jobs:
+#
+#   changed-files  — always runs (~5s, API only, no checkout); decides whether
+#                    the docs closure changed.
+#   build          — the strict docs build; runs only when it did.
+#   docs-gate      — ALWAYS reports. This is the ONE context from this
+#                    workflow that the `main` ruleset requires
+#                    (scripts/apply-main-ruleset.sh, CLAUDE.md "Branch ruleset
+#                    on main"). Green when `build` passed or was legitimately
+#                    skipped; red when the detector or the build failed or
+#                    was cancelled.
+#
+# Three invariants, each backed by GitHub's "Troubleshooting required status
+# checks" table — break one and the gate silently stops gating:
+#
+#   1. NEVER re-add a workflow-level `paths:` filter. A workflow skipped by
+#      path filtering leaves its checks "Pending" and blocks every unrelated
+#      PR from merging.
+#   2. `docs-gate` MUST keep `if: always()` and its explicit verdict. A job
+#      skipped by a conditional reports "Success" to required-status-checks,
+#      and a job that depends on a failed job is skipped by default — so with
+#      the implicit `success()` a failed docs build would SKIP the gate and
+#      the PR would be mergeable. `always()` is the only form that runs and
+#      emits an explicit verdict in every terminal state, including a
+#      cancelled run (issue #2827: failed OR cancelled docs checks must fail
+#      the gate).
+#   3. Require `Docs gate`, never `build`'s own context. `build` is job-level
+#      gated (skipped on non-docs PRs) and its name collides with the
+#      `Build docs site` jobs in docs-pr-preview.yml and docs-deploy.yml, so
+#      a name-matched requirement could be satisfied by the wrong workflow.
 on:
   pull_request:
     branches:
@@ -24,12 +52,6 @@ on:
       - opened
       - synchronize
       - reopened
-    paths:
-      - "docs/**"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "package.json"
-      - ".github/workflows/docs-checks.yml"
 
 concurrency:
   group: docs-checks-${{ github.event.pull_request.number }}
@@ -39,8 +61,48 @@ permissions:
   contents: read
 
 jobs:
+  # Mirrors the former workflow-level `paths:` list (plus .npmrc, which pnpm
+  # reads at install time) — keep it in sync with the docs build's real input
+  # closure (docs/**, the root manifests and rc that resolve docs/'s
+  # dependencies, and this workflow file itself).
+  changed-files:
+    name: changed-files (docs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Job-level `permissions:` REPLACES the workflow default, so contents:read
+    # is restated. pull-requests:read is what paths-filter needs to list the
+    # PR's changed files through the REST API.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      # pull_request-only workflow: paths-filter compares against the PR base
+      # through the API, so no checkout is needed (its README: "For pull
+      # requests it's not necessary to checkout the code"). health.yml's copy
+      # checks out with fetch-depth 0 only because it also runs on push.
+      - name: Detect docs-affecting changes
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            docs:
+              - 'docs/**'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'package.json'
+              - '.npmrc'
+              - '.github/workflows/docs-checks.yml'
+
   build:
-    name: Build docs site
+    # Named after this workflow file on purpose: docs-pr-preview.yml and
+    # docs-deploy.yml also carry a job called "Build docs site", and #2823's
+    # manual merge gate had to resolve the run by workflow to avoid matching
+    # the wrong one. This job is NOT in the ruleset — `docs-gate` below is.
+    name: Build docs site (docs-checks.yml)
+    needs: changed-files
+    if: ${{ needs.changed-files.outputs.docs == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -73,3 +135,47 @@ jobs:
 
       - name: Check wrangler pin
         run: pnpm --filter docs check:wrangler-pin
+
+  # The required context. `if: always()` and the explicit fail-closed verdict
+  # below are load-bearing — see invariant 2 in the header.
+  docs-gate:
+    name: Docs gate
+    needs: [changed-files, build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report gate verdict
+        env:
+          DETECTOR_RESULT: ${{ needs.changed-files.result }}
+          DOCS_CHANGED: ${{ needs.changed-files.outputs.docs }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          set -euo pipefail
+          echo "changed-files (docs): result=${DETECTOR_RESULT} docs_changed=${DOCS_CHANGED:-<unset>}"
+          echo "Build docs site (docs-checks.yml): result=${BUILD_RESULT}"
+
+          if [ "${DETECTOR_RESULT}" != "success" ]; then
+            echo "::error::Docs gate: the changed-files detector ended '${DETECTOR_RESULT}', so the docs closure cannot be proven untouched."
+            exit 1
+          fi
+
+          case "${BUILD_RESULT}" in
+            success)
+              echo "Docs gate: PASS — the strict docs build succeeded."
+              ;;
+            skipped)
+              # Fail closed unless the detector explicitly said "false": an
+              # unset/renamed output must never read as "nothing changed".
+              if [ "${DOCS_CHANGED}" = "false" ]; then
+                echo "Docs gate: PASS — the docs closure is untouched, build legitimately skipped."
+              else
+                echo "::error::Docs gate: the build was skipped but the detector reported docs_changed='${DOCS_CHANGED:-<unset>}' (expected 'false'); failing closed."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Docs gate: the strict docs build ended '${BUILD_RESULT}'."
+              exit 1
+              ;;
+          esac
