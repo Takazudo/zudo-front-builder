@@ -167,7 +167,7 @@ declaration is removable even if its package remains in `Cargo.lock`.
   in, with no package-count reduction. The package-facing behavior is recorded
   in the `zfb` and `zfb-md-wasm` v2.14.0 lanes; the other three lanes say no
   package-specific changes.
-* **`serde_yaml 0.9.34+deprecated` (#2750, #2774) — MIGRATE.** Final re-check
+* **`serde_yaml 0.9.34+deprecated` (#2750, #2774) — MIGRATED.** Final re-check
   2026-09-02 in
   [#2851](https://github.com/Takazudo/zudo-front-builder/issues/2851). The
   standing #2755 trigger fired and resolved in favour of migrating: the
@@ -175,12 +175,25 @@ declaration is removable even if its package remains in `Cargo.lock`.
   the immutable baseline **18/18** on both the zero-line package-alias and
   two-line direct paths, left every protected assertion unedited, and passed
   Phase 2 green with a net-zero package delta, no new `cargo deny` exception,
-  and every wasm artifact under its ceiling. The migration itself is a separate
-  topic ([#2852](https://github.com/Takazudo/zudo-front-builder/issues/2852)),
-  so until it lands the production dependency is still `serde_yaml`. The one
-  live constraint carried forward is that the `render-only` wasm artifact
-  clears its 1,100,000 B gzip-9 ceiling by only 6,583 B under the alias, so the
-  migration must re-measure the four artifact budgets on its own build.
+  and every wasm artifact under its ceiling. The migration landed 2026-09-03 in
+  [#2852](https://github.com/Takazudo/zudo-front-builder/issues/2852) via the
+  zero-production-line package alias: root `Cargo.toml` now pins `serde_yaml
+  = { package = "noyalib-serde-yaml", version = "=0.0.30" }`, so every existing
+  `serde_yaml::` reference in `zfb-content`, `zfb`, and `zfb-md-wasm` compiles
+  unchanged. The two authorized sha256 checksums —
+  `23d48ffd97a6485043e2d05849188ba375a990a856b3607ce55e585a36ecfbb1`
+  (`noyalib 0.0.30`) and
+  `d3b783463958e25c83a0aa93aa6adc9d632c85a1ef0aff4d81029871853631c7`
+  (`noyalib-serde-yaml 0.0.30`) — matched `Cargo.lock` byte-for-byte.
+  `Cargo.lock` moved −`serde_yaml` −`unsafe-libyaml` +`noyalib`
+  +`noyalib-serde-yaml`, net zero at 597 packages. The `render-only` wasm
+  artifact's measured headroom on the migration build was 6,583 B under its
+  1,100,000 B gzip-9 ceiling, matching the #2851 prediction exactly; the other
+  three artifacts cleared their ceilings with more room.
+  [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) remains
+  open — it is the standing trigger for continued upstream YAML-candidate
+  watching, and its future is the owner's call, not something this migration
+  closes.
 
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
@@ -239,7 +252,7 @@ declaration is removable even if its package remains in `Cargo.lock`.
     ([commit](https://github.com/cafkafk/serde-norway/commit/1d37c159fc01c269a17ab72d021b271faf29472a)).
     The Serde-shaped fork remains available, but release and repository activity
     provide no evidence of ongoing maintenance at this re-check.
-  * **`noyalib` — evaluated; migrate:** the lockstep `noyalib 0.0.30` /
+  * **`noyalib` — evaluated; migrated:** the lockstep `noyalib 0.0.30` /
     **`noyalib-serde-yaml`** `0.0.30` pair was published on 2026-09-02 and is
     the release the standing trigger named. The
     [noyalib tag](https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.30)
@@ -258,9 +271,10 @@ declaration is removable even if its package remains in `Cargo.lock`.
     there, with `custom-explicit-tag` anchored at `1:16:15` and Display column
     16, which is why its verdict was RETAIN
     ([#2836](https://github.com/Takazudo/zudo-front-builder/issues/2836)).
-    There is no further trigger to wait for; the remaining work is the
-    migration topic
-    ([#2852](https://github.com/Takazudo/zudo-front-builder/issues/2852)).
+    The migration landed 2026-09-03 in the migration topic
+    ([#2852](https://github.com/Takazudo/zudo-front-builder/issues/2852)); see
+    the `serde_yaml 0.9.34+deprecated` summary bullet above for the landed
+    diff, checksums, and lock delta.
 
     Recorded branch-churn triage (live check
     `2026-09-02T17:02:57.258Z`): the detector returned rc 10 with no errors and
