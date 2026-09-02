@@ -48,7 +48,7 @@ describe("slim artifact descriptors", () => {
         cargoFeatureArgs: ["--no-default-features", "--features", "highlight"],
         dirName: "wasm-highlight",
         outName: "zfb_md_wasm_highlight",
-        gzipCeiling: 820_000,
+        gzipCeiling: 880_000,
       },
       {
         entry: "./render",

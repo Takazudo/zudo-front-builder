@@ -250,12 +250,12 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 `./parse` は独立した **SWC-free** グラフです。`swc_core` と `zfb-render` を除外しつつ、
 `zfb-content` と `syntect-fancy` は意図的に保持します。parse は syntect-free ではありません。
 
-| サブパス | gzip-9 wasm（2.14.2） | 正確なランタイム値 | 正確な型の面 | 使う場面 |
+| サブパス | gzip-9 wasm（2.14.3） | 正確なランタイム値 | 正確な型の面 | 使う場面 |
 | --- | ---: | --- | --- | --- |
-| `.` | 1,443,040 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | 現在の compile/render/parse/raw-mdast/highlight の完全な型セット | MDX のコンパイル、または複数の現在の API を使う場合 |
-| `./highlight` | 758,248 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換のまま |
-| `./render` | 1,010,797 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML へ描画する場合 |
-| `./parse` | 261,099 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
+| `.` | 1,511,297 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | 現在の compile/render/parse/raw-mdast/highlight の完全な型セット | MDX のコンパイル、または複数の現在の API を使う場合 |
+| `./highlight` | 822,539 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換のまま |
+| `./render` | 1,074,557 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML へ描画する場合 |
+| `./parse` | 260,191 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
 
 focused エントリのリソースペアは非公開で、互いに置き換えられません:
 
@@ -304,23 +304,23 @@ ESM 形状の AST ノードは不活性なデータとして扱われます。
 
 ### 出荷アーティファクトのサイズと上限
 
-出荷された **2.14.2** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+出荷された **2.14.3** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
 wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
 グルーコードのバイト数とその gzip です:
 
 | エントリ / グラフ | final wasm | gzip-9 | glue | glue gzip-9 |
 | --- | ---: | ---: | ---: | ---: |
-| root（full） | 3,294,286 B | 1,443,040 B | 14,998 B | 4,199 B |
-| highlight | 1,476,740 B | 758,248 B | 8,758 B | 2,637 B |
-| render | 2,082,385 B | 1,010,797 B | 8,772 B | 2,661 B |
-| parse | 646,115 B | 261,099 B | 11,159 B | 3,797 B |
+| root（full） | 3,359,843 B | 1,511,297 B | 14,998 B | 4,199 B |
+| highlight | 1,533,462 B | 822,539 B | 8,758 B | 2,637 B |
+| render | 2,139,370 B | 1,074,557 B | 8,772 B | 2,661 B |
+| parse | 644,715 B | 260,191 B | 11,159 B | 3,797 B |
 
 #2447 の決定スナップショットでは、split パッケージの構成が 3,638,607 B、root + highlight が
 2,314,818 B、クリーンな本番 4 ステップの上限は 210 秒、選択されたスナップショットの中央値は 155.015 秒
-[153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 820,000 B、
+[153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 880,000 B、
 render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
-いずれも上限の内側で出荷されており、上限までの余裕は root 156,960 B、highlight 61,752 B、
-render 89,203 B、parse 63,901 B です。これらは永続的な保証ではなく 2.14.2 の測定値です —
+いずれも上限の内側で出荷されており、上限までの余裕は root 88,703 B、highlight 57,461 B、
+render 25,443 B、parse 64,809 B です。これらは永続的な保証ではなく 2.14.3 の測定値です —
 実際にインストールしたバージョンで測り直してください。
 
 highlight グラフから `swc_core` をゲートで外したこと（#2449 / #2450）は、
@@ -330,8 +330,8 @@ raw 1,484,705 B、gzip-9 767,009 B で、#2450 の結果は raw で 7,965 B、gz
 到達不能な `swc_core` を既にデッドストリップしていたのであり、#2450 の完全パリティと
 `swc_core` 不在のアサーションが、その創発的な性質を保証されたものへと変えました。
 highlight だけを使う利用者にとって意味のある差は、root と highlight の差のほうです:
-raw で 1,817,546 B、gzip-9 で 684,792 B 小さく、highlight は root の raw バイトの約 45%、
-gzip 後のバイトの約 53% に収まります。
+raw で 1,826,381 B、gzip-9 で 688,758 B 小さく、highlight は root の raw バイトの約 46%、
+gzip 後のバイトの約 54% に収まります。
 
 各サブパスの `exports` マップは、`default` 条件（`src/index.ts` / `src/highlight.ts` にある、動的な Node の `fs` または `fetch` ローダ）よりも先に `browser` 条件（`src/browser.ts` / `src/highlight-browser.ts` が使う、静的でバンドラフレンドリーなリソースパス）を解決します。両方の条件は同じ `types` エントリと、同じ基盤の `createWasmApi` ランタイムを共有します。
 

@@ -705,6 +705,32 @@ dependency, build, production-code, or test-fixture change is authorized by
 this section ([#2785](https://github.com/Takazudo/zudo-front-builder/issues/2785),
 checked 2026-08-30).
 
+* **syntect 5.3.0 — RETAIN; watch 6.0.0.** Checked 2026-09-02:
+  [crates.io still tops out at 5.3.0](https://crates.io/crates/syntect/versions),
+  and [master HEAD `4aa78031`](https://github.com/trishume/syntect/commit/4aa78031)
+  is dated 2026-04-28 with `Cargo.toml` still declaring 5.3.0. The
+  [6.0 milestone](https://github.com/trishume/syntect/milestone/3) remains 14
+  open / 3 closed, while [PR #700](https://github.com/trishume/syntect/pull/700)
+  is still changing the parse-output contract. There is no security reason to
+  move: `cargo deny check advisories` passes; the bincode 1.3 advisory is
+  already explicitly tracked under #1373, and master still uses bincode 1.3.
+
+  Adoption requires regenerating the committed packdump because its format no
+  longer deserializes on master. Master's 192 default syntaxes already include
+  TypeScript, TSX, and TOML, so the extra assets can then be removed. The
+  pre-computed cost is at least +262 KB of gzip-incompressible dump and about
+  +31 KB of wasm code against the highlight artifact's former 61,752 B of
+  headroom, requiring either a new ceiling decision or a curated dump rebuilt
+  from scratch. The JavaScript grammar also jumps from 2017 to 2026, requiring
+  regeneration of the onig snapshots and both parity oracles. The source API
+  adaptation is small: about two `.ops` lines for `ParseState::parse_line`'s
+  new return type.
+
+  Re-evaluate on any of these explicit triggers: (1) a crates.io release at or
+  above `6.0.0-alpha`; (2) a `v6*` tag or master `Cargo.toml` version bump; or
+  (3) merge of upstream #700 and #701, the earliest point at which a git-SHA
+  spike is worthwhile. A git pin or vendoring before trigger (3) is not
+  migration-eligible.
 * **Platform/process utilities (#2751) — KEEP.** `local-ip-address` enumerates
   every non-loopback IPv4 interface for bind-all ready URLs; a UDP-connect
   shortcut would select only one egress address, and the repository has no
