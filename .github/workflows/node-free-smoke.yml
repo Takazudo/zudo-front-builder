@@ -227,7 +227,7 @@ jobs:
       # SHA check skips the download. The x86_64 leg's key matches health.yml
       # so those jobs share one cache entry.
       - name: Cache staged esbuild + tailwindcss binaries (issue 2385)
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         continue-on-error: true
         with:
           # Only the two gitignored executable slots — never the whole dir:
@@ -408,8 +408,9 @@ jobs:
   # it cannot drift from crates/zfb/templates/.
   #
   # NOT a required status check, and deliberately excluded from the `main`
-  # ruleset (18452968) — same reasoning as `Build docs site` and
-  # `Built-site browser smoke (L4)`. In tier terms this is an ALERTING GUARD,
+  # ruleset (18452968) — same reasoning as `Built-site browser smoke (L4)`
+  # (and as `Build docs site` was before #2827's `Docs gate`). In tier terms
+  # this is an ALERTING GUARD,
   # not a gate: it runs post-merge, so it can only detect a bad deploy, never
   # prevent one.
   showcase-deploy:

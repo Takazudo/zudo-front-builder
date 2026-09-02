@@ -221,20 +221,20 @@ declaration is removable even if its package remains in `Cargo.lock`.
     ([commit](https://github.com/cafkafk/serde-norway/commit/1d37c159fc01c269a17ab72d021b271faf29472a)).
     The Serde-shaped fork remains available, but release and repository activity
     provide no evidence of ongoing maintenance at this re-check.
-  * **`noyalib` — evaluated; retain:** `0.0.28` remains the newest release
-    ([crates.io record](https://crates.io/api/v1/crates/noyalib/0.0.28), checked
-    2026-09-01), while canonical pre-release branch `feat/v0.0.29` is 40
-    commits ahead of `main` at
-    [`697195f`](https://github.com/sebastienrousseau/noyalib/commit/697195f15ffa0477d2de02b19d7d8253819e10c5)
-    and [release PR 365](https://github.com/sebastienrousseau/noyalib/pull/365)
-    remains open with no `v0.0.29` tag or GitHub Release (checked 2026-09-01).
-    The pinned branch improves custom-tag rejection and its configured direct
-    path can preserve merge keys and `u64::MAX`, but 11 compatibility-shim and
-    9 configured-direct corpus mismatches remain across composite keys, scalar
-    resolution, diagnostics, overflow, and alias limits
-    ([#2808](https://github.com/Takazudo/zudo-front-builder/issues/2808), checked
-    2026-09-01). Publication of a release containing this work is the next
-    trigger; the unreleased branch is not migration-eligible.
+  * **`noyalib` — evaluated; retain:** `noyalib 0.0.29` and its package-alias
+    crate **`noyalib-serde-yaml`** `0.0.29` were published on 2026-09-01. The
+    [noyalib tag](https://github.com/sebastienrousseau/noyalib/releases/tag/v0.0.29)
+    resolves to `9dca232d7014b853a1c25e0768ddd12afa2873a2`,
+    [release PR 365](https://github.com/sebastienrousseau/noyalib/pull/365) is
+    merged, and `feat/v0.0.30` exists (checked 2026-09-02). Both the zero-line
+    package alias and two-line direct shim matched **17/18** immutable corpus
+    cases and every protected assertion; `custom-explicit-tag` remained
+    anchored at `1:16:15` with Display column 16 instead of `1:8:7` and column
+    8, so the strict verdict remains RETAIN
+    ([#2836](https://github.com/Takazudo/zudo-front-builder/issues/2836)). The
+    next trigger is a lockstep `noyalib` / `noyalib-serde-yaml` release whose
+    `crates/noyalib/tests/serde_yaml_contract.rs` pins `custom-explicit-tag` at
+    location `1:8:7` and Display column 8 via an exact assertion.
   * **`serde-saphyr` — evaluated; retain:** the planned `1.1.0` screen was
     superseded by `1.2.0`, released 2026-08-30
     ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
@@ -542,6 +542,127 @@ restored byte-for-byte. The next trigger is publication of a release containing
 the evaluated v0.0.29 work; the standing issue remains open. This KEEP has no
 package-facing effect and warrants no migration or changelog entry.
 
+##### `noyalib 0.0.29` / `noyalib-serde-yaml 0.0.29` released differential evaluation (#2836) — RETAIN
+
+The released evaluation started from zfb commit
+`f9e8187e154a5df45ad5b506de72a76d7ab5e948`. Upstream's own shipped contract
+predicted **17/18**: it pins `custom-explicit-tag` at Display column 16 while
+zfb's immutable serde_yaml baseline pins column 8. The experiment independently
+confirmed that prediction; the documented partial was not corrected or treated
+as a match.
+
+The trigger artifacts were re-queried at the start and before finalization.
+[`noyalib 0.0.29`](https://crates.io/api/v1/crates/noyalib/0.0.29) was published
+`2026-09-01T22:53:33Z`, is not yanked, is `MIT OR Apache-2.0`, requires Rust
+1.86.0, and has sha256
+`f102aea73ec3023f33cb904bcc59b8f2ac91bce8b77cbe16c14491d117c57b5e`.
+Its `v0.0.29` tag resolves to
+[`9dca232d`](https://github.com/sebastienrousseau/noyalib/commit/9dca232d7014b853a1c25e0768ddd12afa2873a2),
+[PR 365](https://github.com/sebastienrousseau/noyalib/pull/365) merged at
+`2026-09-01T22:36:28Z`, and the GitHub Release was published at
+`2026-09-01T22:52:41Z`. A `feat/v0.0.30` branch exists.
+[`noyalib-serde-yaml 0.0.29`](https://crates.io/api/v1/crates/noyalib-serde-yaml/0.0.29)
+was published `2026-09-01T23:06:37Z`, is not yanked, and has sha256
+`239d1cfb4eb2ccac255bdaa7583c97d48e28dfad3fefb33e06fbe6a89d4956a6`;
+its tag resolves to
+[`11cffda3`](https://github.com/sebastienrousseau/noyalib-serde-yaml/commit/11cffda345303d9e19cadd3e297a4506818a4d01),
+and it also has a `feat/v0.0.30` branch. No `0.0.30` publication existed for
+either crate at either release-race check.
+
+Only the exact crates.io archives above were inspected and built. Their bytes
+matched the authorized checksums and the temporary `Cargo.lock` checksums.
+The alias crate's published manifest has no patch, build script, or proc macro;
+its sole normal dependency is exact `noyalib =0.0.29` with `std` and
+`compat-serde-yaml`, and its library is a single public re-export. The noyalib
+build script only declares two cfg names, runs `rustc --version`, and reads
+`NOYALIB_COVERAGE`. No upstream example, script, or benchmark was executed.
+There were no RUSTSEC advisories for either crate. The migration lock delta
+observed exactly the predicted net-zero package count: remove `serde_yaml` and
+`unsafe-libyaml`; add `noyalib` and `noyalib-serde-yaml`; all of noyalib's normal
+dependencies were already locked.
+
+Phase 1 exercised two paths. P1 changed only the root dependency to the exact
+package alias, so all three production call sites compiled with **0 production
+source lines changed**. P3 used exact `noyalib` with default features disabled
+and features `std,compat-serde-yaml`, changed the frontmatter error and parse
+paths (**2 rustfmt-formatted production lines**), compiled `zfb-content`, and
+ran the same harness. Both paths produced this complete structured matrix;
+`match` includes the success value or the complete error Display and optional
+1-based line/column plus 0-based byte index:
+
+| Category | Corpus case | P1 package alias | P3 direct shim |
+| --- | --- | --- | --- |
+| anchors-aliases | `anchors-and-aliases` | match | match |
+| merge-keys | `merge-key-is-an-ordinary-json-key` | match | match |
+| non-string-keys | `non-string-scalar-keys` | match | match |
+| non-string-keys | `non-string-composite-key` | match | match |
+| scalar-edge-cases | `yaml-11-boolean-spellings` | match | match |
+| scalar-edge-cases | `octals-sexagesimals-and-numbers` | match | match |
+| scalar-edge-cases | `null-and-date-scalars` | match | match |
+| unicode-bom-crlf-emoji | `unicode-crlf-and-emoji` | match | match |
+| malformed-input | `malformed-unicode-location` | match | match |
+| malformed-input | `malformed-flow-sequence-at-eof` | match | match |
+| malformed-input | `malformed-indentation` | match | match |
+| explicit-tags | `built-in-explicit-tags` | match | match |
+| explicit-tags | `custom-explicit-tag` | **mismatch** | **mismatch** |
+| duplicate-keys | `duplicate-map-keys-last-wins` | match | match |
+| non-finite-overflowing-numbers | `non-finite-and-overflowing-numbers` | match | match |
+| non-finite-overflowing-numbers | `integer-boundaries` | match | match |
+| non-finite-overflowing-numbers | `integer-overflow` | match | match |
+| alias-anchor-resource-limits | `alias-anchor-repetition-limit` | match | match |
+
+For the sole mismatch, the baseline is
+`thing: invalid type: enum, expected any valid JSON value at line 1 column 8`
+with location `{ line: 1, column: 8, index: 7 }`; both candidates observed the
+same text ending in column 16 with
+`{ line: 1, column: 16, index: 15 }`. Thus both paths were **17/18**.
+
+Every protected assertion passed unchanged under P1:
+`zfb-content/tests/error_messages.rs` (2/2), md-wasm's
+`invalid_yaml_frontmatter_returns_frontmatter_diagnostic` with EOF source line
+3, md-wasm's `frontmatter_diagnostics_use_original_source_utf16_columns` with
+column 9, and zfb's `frontmatter_yaml_error_locates_within_user_file` unit test.
+`cargo check -p zfb-content -p zfb -p zfb-md-wasm` also compiled the three
+production consumers. P3's compile and harness were identical by construction.
+Neither path required unsafe or FFI, OS-specific branches, polling, signal
+supervision, generated Unicode tables, a corrective round, or more than 40
+production lines.
+
+The strict pre-declared gate makes any structural mismatch disqualifying, so
+the terminal verdict is **RETAIN `serde_yaml`**. Phase 2 was correctly skipped:
+the 18/18 prerequisite failed, independently of the machine's 16 GiB free disk
+(which was also below Phase 2's 30 GiB minimum). No wasm build, md-wasm package
+test, gzip-size delta, dependency/license analysis, or `cargo deny` candidate
+run was performed.
+
+The other-candidate status scan found no movement since the 2026-09-01
+baseline: `serde_yaml_ng` remains 0.10.0 with canonical commit
+[`36281029`](https://github.com/acatton/serde-yaml-ng/commit/3628102977f3ec9e02b95ef32fcec30b3df91390)
+dated 2025-09-14; `serde_yml` remains 0.0.13 at
+[`5caeeec0`](https://github.com/sebastienrousseau/serde_yml/commit/5caeeec0512296f985135502d36cd08e8ffb23d1)
+dated 2026-05-28; `saphyr` remains 0.0.12 at
+[`5c45acd3`](https://github.com/saphyr-rs/saphyr/commit/5c45acd365c711e3d92f0ed4a0ceabe349cde514)
+dated 2026-08-18; `serde_norway` remains 0.9.42 at
+[`1d37c159`](https://github.com/cafkafk/serde-norway/commit/1d37c159fc01c269a17ab72d021b271faf29472a)
+dated 2024-12-21; and `serde-saphyr` remains 1.2.0 at
+[`45042059`](https://github.com/bourumir-wyngs/serde-saphyr/commit/45042059e6905e833516f52d958cba4c16e8cedd)
+dated 2026-08-30. The refreshed watcher snapshot records PR 365 as MERGED and
+both evaluated crates at 0.0.29.
+
+One isolated target, `/tmp/zfb-2836-cargo-target.ojB59v`, was used for every
+candidate and restoration Cargo command. Before the experiment the filesystem
+had 16 GiB free; the target reached 12 GiB at its peak. The experimental
+manifests, lockfile, two frontmatter lines,
+matrix printer, production consumers, immutable corpus/baseline, protected
+assertions, shipped-size manifest, generated artifacts, and changelogs were
+restored byte-for-byte. The target was validated, cleaned with Cargo, and
+removed; the filesystem had 26 GiB free afterward. The next trigger is a
+lockstep noyalib / noyalib-serde-yaml release whose
+`crates/noyalib/tests/serde_yaml_contract.rs` pins `custom-explicit-tag` at
+location `1:8:7` and Display column 8 via an exact assertion. #2755 remains
+open. Reporting the diagnostic-anchor divergence upstream is recommended but
+was not performed.
+
 #### `serde-saphyr 1.2.0`
 
 * **Release and maintenance evidence.** The 1.2.0 registry record reports
@@ -705,16 +826,55 @@ dependency, build, production-code, or test-fixture change is authorized by
 this section ([#2785](https://github.com/Takazudo/zudo-front-builder/issues/2785),
 checked 2026-08-30).
 
+* **syntect 5.3.0 — RETAIN; watch 6.0.0.** Checked 2026-09-02:
+  [crates.io still tops out at 5.3.0](https://crates.io/crates/syntect/versions),
+  and [master HEAD `4aa78031`](https://github.com/trishume/syntect/commit/4aa78031)
+  is dated 2026-04-28 with `Cargo.toml` still declaring 5.3.0. The
+  [6.0 milestone](https://github.com/trishume/syntect/milestone/3) remains 14
+  open / 3 closed, while [PR #700](https://github.com/trishume/syntect/pull/700)
+  is still changing the parse-output contract. There is no security reason to
+  move: `cargo deny check advisories` passes; the bincode 1.3 advisory is
+  already explicitly tracked under #1373, and master still uses bincode 1.3.
+
+  Adoption requires regenerating the committed packdump because its format no
+  longer deserializes on master. Master's 192 default syntaxes already include
+  TypeScript, TSX, and TOML, so the extra assets can then be removed. The
+  pre-computed cost is at least +262 KB of gzip-incompressible dump and about
+  +31 KB of wasm code against the highlight artifact's former 61,752 B of
+  headroom, requiring either a new ceiling decision or a curated dump rebuilt
+  from scratch. The JavaScript grammar also jumps from 2017 to 2026, requiring
+  regeneration of the onig snapshots and both parity oracles. The source API
+  adaptation is small: about two `.ops` lines for `ParseState::parse_line`'s
+  new return type.
+
+  Re-evaluate on any of these explicit triggers: (1) a crates.io release at or
+  above `6.0.0-alpha`; (2) a `v6*` tag or master `Cargo.toml` version bump; or
+  (3) merge of upstream #700 and #701, the earliest point at which a git-SHA
+  spike is worthwhile. A git pin or vendoring before trigger (3) is not
+  migration-eligible.
 * **Platform/process utilities (#2751) — KEEP.** `local-ip-address` enumerates
   every non-loopback IPv4 interface for bind-all ready URLs; a UDP-connect
   shortcut would select only one egress address, and the repository has no
   Windows Rust test lane to prove equivalent interface enumeration. `wait-timeout`
   provides the cross-platform `ChildExt::wait_timeout` path that kills and
   reaps a timed-out child; replacing it with polling is both a semantic change
-  and an abandon-rule trigger. `npm-run-all2` supervises the two long-running
-  docs processes in `dev` and `dev:network`; a replacement must forward signals,
-  propagate exit status, and clean up both children. No such replacement met
-  the required contrary gate.
+  and an abandon-rule trigger. #2826 is a human-initiated reopen with new
+  upstream evidence: `@takazudo/zudo-doc` now ships the `run-parallel`
+  supervisor. The contrary gate this KEEP demanded is met: it forwards signals
+  to the full descendant tree, propagates the real exit code, and reaps both
+  children on Ctrl-C. Zero lines of replacement code live in this repository,
+  so the abandon rule's signal-supervision trigger does not apply. The lockfile
+  loses 19 package records and 106 non-blank lines: the former process-supervisor
+  package at `7.0.2`,
+  `ansi-styles@6.2.3`, `cross-spawn@7.0.6`, `path-key@3.1.1`,
+  `shebang-command@2.0.0`, `shebang-regex@3.0.0`, `which@2.0.2`,
+  `isexe@2.0.0`, `memorystream@0.3.1`, `minimatch@9.0.9`,
+  `brace-expansion@2.1.2`, `balanced-match@1.0.2`, `pidtree@0.6.1`,
+  `read-package-json-fast@4.0.0`, `json-parse-even-better-errors@4.0.0`,
+  `npm-normalize-package-bin@4.0.0`, `shell-quote@1.10.0`, `which@5.0.0`,
+  and `isexe@3.1.5`. The full audit also loses its two high
+  `brace-expansion` advisories (GHSA-mh99-v99m-4gvg and
+  GHSA-rgw5-rvv9-x895); the gated production audit is unchanged.
 * **JavaScript checker (#2752) — recommendation, not a new dependency.** Do
   not make a JS checker required in this audit. If revisited, pilot a pinned
   **Knip** release in report-only mode rather than depcheck: it better models
@@ -810,7 +970,7 @@ workspace package importers.
 | Manifest | Package and declarations reviewed | Result |
 | --- | --- | --- |
 | `package.json` | Private root; six dev tools: `@playwright/test`, `html-validate`, `lefthook`, `prettier`, `vitest`, `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
-| `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `npm-run-all2`, `vitest`, and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. |
+| `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `vitest`, and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. #2826 replaces the separate docs process supervisor with zudo-doc's `run-parallel`, which forwards signals, propagates real exit codes, and reaps both children. |
 | `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and Vitest dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
 | `packages/zfb/package.json` | Publishable SDK with five optional platform packages, React peer, and build/test type tooling. | Clean: optional carriers and peer/dev fixtures are part of the package contract. |
 | `packages/zfb-runtime/package.json` | Publishable runtime with `hono` dependency, zfb/React peers, and dev fixtures. | Clean: Hono is the runtime router; peer and dev declarations support the published API/tests. |
