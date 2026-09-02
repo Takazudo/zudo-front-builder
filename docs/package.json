@@ -7,10 +7,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "run-p dev:zfb dev:history",
+    "dev": "run-parallel dev:zfb dev:history",
     "dev:zfb": "zfb dev",
     "dev:zfb:network": "zfb dev --host 0.0.0.0",
-    "dev:network": "run-p dev:zfb:network dev:history",
+    "dev:network": "run-parallel dev:zfb:network dev:history",
     "dev:history": "doc-history-server --port 4322 --content-dir src/content/docs --locale ja:src/content/docs-ja",
     "build": "zfb build --strict-broken",
     "preview": "zfb preview",
@@ -40,7 +40,6 @@
     "typescript": "^5.9.0",
     "@types/node": "^22.0.0",
     "html-validate": "^10.0.0",
-    "npm-run-all2": "^7.0.2",
     "vitest": "^2.1.9",
     "wrangler": "4.85.0"
   }

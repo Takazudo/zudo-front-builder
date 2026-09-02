@@ -15,7 +15,7 @@ Documentation site built with [zudo-doc](https://github.com/zudolab/zudo-doc) �
 Keep these direct docs declarations when auditing dependencies:
 
 - **zudo-doc peer feature packages:** `diff`, `katex`, `preact`, `zod`, `@takazudo/zdtp`, and `@takazudo/zudo-doc-history-server`. `@takazudo/zudo-doc` declares these as peers; the docs site installs them deliberately to satisfy the package contract and opt into its features.
-- **`npm-run-all2`:** Keep it for the `run-p` supervisors in `dev` and `dev:network`; any replacement must forward signals, propagate exit status, and clean up child processes on Ctrl-C. JSON cannot carry this rationale as a comment.
+- **No separate script supervisor:** `dev` and `dev:network` use `run-parallel`, a bin shipped by `@takazudo/zudo-doc` (already a direct dependency, since 5.14.0), so no separate process-supervisor package belongs here. Any future replacement must forward signals to the whole descendant tree, propagate the real exit status, and reap both children on Ctrl-C — `run-parallel` was verified for all three in the PR for issue #2826. JSON cannot carry this rationale as a comment.
 
 This register is a keep-list, not a request to add dependencies. Re-check the installed zudo-doc package and the generated `docs/.zfb-build/bundle.mjs` before changing these declarations.
 
@@ -30,7 +30,7 @@ Two scripts in `docs/scripts/` each install a Claude Code skill that symlinks th
 
 All commands run from the **repo root** with the `--filter docs` workspace flag, or directly inside `docs/`:
 
-- `pnpm docs:dev` — starts the dev loop, which is **two processes** run in parallel (`run-p dev:zfb dev:history`): `zfb dev` on port **4321**, and `doc-history-server` on port **4322** (feeds the `docHistory` feature; see below).
+- `pnpm docs:dev` — starts the dev loop, which is **two processes** run in parallel (`run-parallel dev:zfb dev:history`, the supervisor bin shipped by `@takazudo/zudo-doc`): `zfb dev` on port **4321**, and `doc-history-server` on port **4322** (feeds the `docHistory` feature; see below). The supervisor accepts only literal script names — no flags, globs, or forwarded arguments — so `pnpm docs:dev -- --host` fails loudly instead of silently ignoring the flag; use `pnpm --filter docs dev:network` for `--host 0.0.0.0`. If either child exits non-zero, the other is torn down and the real exit status is propagated. Ctrl-C or SIGINT/SIGTERM aimed at the supervisor alone signals the entire descendant tree; a second signal escalates to SIGKILL. The `ERROR: "dev:zfb" exited with 130.` line on Ctrl-C is expected.
 - `pnpm docs:build` — static HTML export to `docs/dist/`
 - `pnpm docs:check` — zfb type checking (`tsc --noEmit` over `zfb.config.ts`, collection schemas, `src/`, and `pages/`).
 - `pnpm --filter docs check:html` — validates emitted HTML in `dist/` against `docs/.htmlvalidate.json` (`html-validate`); no root-level alias exists for this one.

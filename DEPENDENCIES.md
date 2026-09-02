@@ -711,10 +711,23 @@ checked 2026-08-30).
   Windows Rust test lane to prove equivalent interface enumeration. `wait-timeout`
   provides the cross-platform `ChildExt::wait_timeout` path that kills and
   reaps a timed-out child; replacing it with polling is both a semantic change
-  and an abandon-rule trigger. `npm-run-all2` supervises the two long-running
-  docs processes in `dev` and `dev:network`; a replacement must forward signals,
-  propagate exit status, and clean up both children. No such replacement met
-  the required contrary gate.
+  and an abandon-rule trigger. #2826 is a human-initiated reopen with new
+  upstream evidence: `@takazudo/zudo-doc` now ships the `run-parallel`
+  supervisor. The contrary gate this KEEP demanded is met: it forwards signals
+  to the full descendant tree, propagates the real exit code, and reaps both
+  children on Ctrl-C. Zero lines of replacement code live in this repository,
+  so the abandon rule's signal-supervision trigger does not apply. The lockfile
+  loses 19 package records and 106 non-blank lines: the former process-supervisor
+  package at `7.0.2`,
+  `ansi-styles@6.2.3`, `cross-spawn@7.0.6`, `path-key@3.1.1`,
+  `shebang-command@2.0.0`, `shebang-regex@3.0.0`, `which@2.0.2`,
+  `isexe@2.0.0`, `memorystream@0.3.1`, `minimatch@9.0.9`,
+  `brace-expansion@2.1.2`, `balanced-match@1.0.2`, `pidtree@0.6.1`,
+  `read-package-json-fast@4.0.0`, `json-parse-even-better-errors@4.0.0`,
+  `npm-normalize-package-bin@4.0.0`, `shell-quote@1.10.0`, `which@5.0.0`,
+  and `isexe@3.1.5`. The full audit also loses its two high
+  `brace-expansion` advisories (GHSA-mh99-v99m-4gvg and
+  GHSA-rgw5-rvv9-x895); the gated production audit is unchanged.
 * **JavaScript checker (#2752) — recommendation, not a new dependency.** Do
   not make a JS checker required in this audit. If revisited, pilot a pinned
   **Knip** release in report-only mode rather than depcheck: it better models
@@ -810,7 +823,7 @@ workspace package importers.
 | Manifest | Package and declarations reviewed | Result |
 | --- | --- | --- |
 | `package.json` | Private root; six dev tools: `@playwright/test`, `html-validate`, `lefthook`, `prettier`, `vitest`, `wrangler`. | Clean: Playwright, HTML validation, hooks, formatting, tests, and Wrangler workflows/scripts each consume the declared tool. |
-| `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `npm-run-all2`, `vitest`, and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. |
+| `docs/package.json` | Private docs site; zudo-doc stack, the intentional peer keep-list, TypeScript/types, `html-validate`, `vitest`, and Wrangler. | Clean after #2746 removed `pagefind`, `remark-directive`, and redundant `gray-matter`; #2825 removed the stale runtime-import keep-list, and zudo-doc 5.14.0's removal of the `gray-matter`/`js-yaml` chain retired the override in #2823. #2826 replaces the separate docs process supervisor with zudo-doc's `run-parallel`, which forwards signals, propagates real exit codes, and reaps both children. |
 | `packages/create-zfb/package.json` | Publishable scaffold with `@takazudo/zfb` dependency and Vitest dev dependency. | Clean: the CLI resolves and spawns the zfb package; tests consume Vitest. |
 | `packages/zfb/package.json` | Publishable SDK with five optional platform packages, React peer, and build/test type tooling. | Clean: optional carriers and peer/dev fixtures are part of the package contract. |
 | `packages/zfb-runtime/package.json` | Publishable runtime with `hono` dependency, zfb/React peers, and dev fixtures. | Clean: Hono is the runtime router; peer and dev declarations support the published API/tests. |
