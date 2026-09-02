@@ -340,6 +340,58 @@ declaration is removable even if its package remains in `Cargo.lock`.
     ([#2853](https://github.com/Takazudo/zudo-front-builder/issues/2853)) of
     epic [#2850](https://github.com/Takazudo/zudo-front-builder/issues/2850),
     as late as possible.
+
+    The confirm topic ([#2853](https://github.com/Takazudo/zudo-front-builder/issues/2853))
+    then performed that single late refresh. A live check at
+    `2026-09-02T21:07:22.080Z` (config still pointing `pendingReleasePr` at
+    merged PR 371) returned rc 10 with no errors and, versus the
+    `2026-09-02T17:12:41.295Z` baseline, exactly the following deltas: for
+    `noyalib` — `version-published 0.0.30`, `tag-added v0.0.30`,
+    `release-added v0.0.30`, `branch-deleted feat/v0.0.30` at
+    `e5f4e7b1498c7a7b990971c5f0a4c48e6343c0bb`, `branch-advanced
+    feat/v0.0.31` from `0fa6c414a4a73c99a6df533d206f73158d80cab8` to
+    `a1fb50918d8b7484b928118c9adffe852aacc5f1`, `branch-advanced main` from
+    `9dca232d7014b853a1c25e0768ddd12afa2873a2` to
+    `e33ba3c90a02721388e974b458f07eeb0b40198a`, and
+    `release-pr-state-changed` for PR 371 from OPEN to MERGED; for
+    `noyalib-serde-yaml` — `version-published 0.0.30`, `tag-added v0.0.30`,
+    `release-added v0.0.30`, `branch-advanced main` from
+    `11cffda345303d9e19cadd3e297a4506818a4d01` to
+    `f12787c737bef8b579265fde52cd09696c60cfd6`, and `branch-added
+    release/v0.0.30` at that same SHA. The other five tracked candidates
+    reported no drift. Every delta was classified as either the
+    already-evaluated 0.0.30 release set #2851 recorded above or ordinary
+    `main`/`feat/*` branch churn — the `feat/v0.0.31` head had simply
+    advanced again past the #2851 observation; none was an un-evaluated
+    trigger-kind delta (no version/tag/release beyond 0.0.30 for either
+    crate, no yank, and no drift on `serde_yaml_ng`, `serde_yml`, `saphyr`,
+    `serde_norway`, or `serde-saphyr`), so the step-2 gate did not fire.
+    `CANDIDATE_CONFIG.noyalib.pendingReleasePr` was then set to `null` in
+    `scripts/check-yaml-candidate-drift.mjs`. `sebastienrousseau/noyalib`'s
+    open pull requests at that point were only
+    [PR 374](https://github.com/sebastienrousseau/noyalib/pull/374)
+    (`feat/v0.0.31`, _"chore(structure)!: v0.0.31: docs layout, User Manual,
+    install UX groundwork, contributor DX"_ — a docs/structure PR, the same
+    pattern already recorded above for the alias repo's open PR 3) and
+    [PR 373](https://github.com/sebastienrousseau/noyalib/pull/373) (an
+    unrelated CST-parsing feature PR), neither a release PR, so no PR number
+    was substituted. A second, fresh observation immediately after the
+    config edit, at `2026-09-02T21:08:22.477Z`, reported the identical delta
+    set except that `noyalib`'s PR-tracking delta became `release-pr-changed`
+    from `{ number: 371, state: "OPEN" }` to `null` — the direct, expected
+    consequence of the config edit — so re-classifying this second report
+    changed nothing and the gate still did not fire. That second
+    observation's snapshot was installed as the new
+    `scripts/yaml-candidate-baseline.json` (`checkedAt`
+    `2026-09-02T21:08:22.477Z`), config and baseline now agreeing on a
+    `null` `pendingReleasePr` for `noyalib`. A post-install re-run at
+    `2026-09-02T21:08:56.542Z` returned exit 0, `no-drift`, `errors: []`.
+    **This is the single refresh of this triage; further upstream churn
+    after it gets no second refresh** — the next `version-published`,
+    `tag-added`, or `release-added` delta for either crate beyond 0.0.30, a
+    yank, or any newly observed-open `noyalib` release PR is fresh
+    trigger-kind evidence for a new evaluation topic, not grounds to refresh
+    this baseline again.
   * **`serde-saphyr` — evaluated; retain:** the planned `1.1.0` screen was
     superseded by `1.2.0`, released 2026-08-30
     ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),
