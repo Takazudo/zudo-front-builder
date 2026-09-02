@@ -526,6 +526,9 @@ describe("committed baseline guard", () => {
         crate: CANDIDATE_CONFIG[name].crate,
         repo: CANDIDATE_CONFIG[name].repo,
       });
+      expect(baseline.candidates[name].pendingReleasePr?.number ?? null).toBe(
+        CANDIDATE_CONFIG[name].pendingReleasePr ?? null,
+      );
     }
     expect(CANDIDATE_CONFIG["noyalib-serde-yaml"]).toEqual({
       crate: "noyalib-serde-yaml",

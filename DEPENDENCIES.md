@@ -235,6 +235,35 @@ declaration is removable even if its package remains in `Cargo.lock`.
     next trigger is a lockstep `noyalib` / `noyalib-serde-yaml` release whose
     `crates/noyalib/tests/serde_yaml_contract.rs` pins `custom-explicit-tag` at
     location `1:8:7` and Display column 8 via an exact assertion.
+
+    Recorded branch-churn triage (live check
+    `2026-09-02T17:02:57.258Z`): the detector returned rc 10 with no errors and
+    only `noyalib` branch deltas. `feat/v0.0.30` advanced from
+    `17790c55f19301af0c6e94c8bfceb1dc914086c1` to
+    `e5f4e7b1498c7a7b990971c5f0a4c48e6343c0bb`, whose 2026-09-02T16:14:05Z
+    subject is _“style: rustfmt the span-widening closure and contract pins”_;
+    `feat/v0.0.31` advanced from
+    `75e46581e5dbf3e234813aaaa00f71184f784bae` to
+    `a0bb22ec1ce1bf80ddc65e5e83ba8c4eeaa634eb`, the 2026-09-02T13:41:42Z
+    _“Merge branch 'feat/v0.0.31' into feat/v0.0.33”_ commit; and
+    `feat/v0.0.33` was deleted at that same full SHA. There was no
+    `version-published`, `tag-added`, `release-added`, or archive delta for any
+    candidate, and the re-checked crates.io maxima remained `0.0.29` for both
+    `noyalib` and `noyalib-serde-yaml`. At the observed `feat/v0.0.30` head, the
+    upstream contract still asserts Display column 8 and `1:8:7` _“since
+    v0.0.30”_; tag `v0.0.29` retains the _KNOWN PARTIAL_ Display column 16 /
+    `1:16:15` behavior. This is release-prep branch churn, so the standing
+    [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) trigger
+    has not fired: it requires a lockstep release carrying that pin. As part of
+    this recorded triage, the baseline was refreshed at
+    `2026-09-02T17:05:38.621Z`, and the tracked release PR was re-pointed from
+    merged PR 365 to observed-open
+    [PR 371](https://github.com/sebastienrousseau/noyalib/pull/371). The next
+    `version-published`, `tag-added`, or `release-added` delta for a lockstep
+    `noyalib` + `noyalib-serde-yaml` 0.0.30 release **is** the trigger: run the
+    evaluation protocol and never refresh over it. Further branch-only churn
+    while upstream prepares 0.0.30/0.0.31 requires one recorded-triage refresh
+    per observation, never a refresh loop.
   * **`serde-saphyr` — evaluated; retain:** the planned `1.1.0` screen was
     superseded by `1.2.0`, released 2026-08-30
     ([1.2.0 crates.io record](https://crates.io/api/v1/crates/serde-saphyr/1.2.0),

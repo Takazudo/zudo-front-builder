@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedAt": "2026-09-02T13:43:07.896Z",
+  "checkedAt": "2026-09-02T17:05:38.621Z",
   "comment": "Anti-gaming rule: refresh this baseline only as part of a recorded triage; never bump it merely to turn the lane green.",
   "candidates": {
     "serde_yaml_ng": {
@@ -14,7 +14,7 @@
       "releases": [],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T13:43:07.896Z"
+      "checkedAt": "2026-09-02T17:05:38.621Z"
     },
     "serde_yml": {
       "crate": "serde_yml",
@@ -42,7 +42,7 @@
       "releases": ["0.0.8", "v0.0.10", "v0.0.11", "v0.0.12", "v0.0.13", "v0.0.9"],
       "pendingReleasePr": null,
       "archived": true,
-      "checkedAt": "2026-09-02T13:43:07.896Z"
+      "checkedAt": "2026-09-02T17:05:38.621Z"
     },
     "saphyr": {
       "crate": "saphyr",
@@ -87,7 +87,7 @@
       "releases": ["v0.0.4", "v0.0.5", "v0.0.6"],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T13:43:07.896Z"
+      "checkedAt": "2026-09-02T17:05:38.621Z"
     },
     "serde_norway": {
       "crate": "serde_norway",
@@ -205,7 +205,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T13:43:07.896Z"
+      "checkedAt": "2026-09-02T17:05:38.621Z"
     },
     "noyalib": {
       "crate": "noyalib",
@@ -241,9 +241,8 @@
       ],
       "branches": {
         "chore/cleanup": "c4f4ef9dba9ffccacd441225156bdbbb4c04adb6",
-        "feat/v0.0.30": "17790c55f19301af0c6e94c8bfceb1dc914086c1",
-        "feat/v0.0.31": "75e46581e5dbf3e234813aaaa00f71184f784bae",
-        "feat/v0.0.33": "a0bb22ec1ce1bf80ddc65e5e83ba8c4eeaa634eb",
+        "feat/v0.0.30": "e5f4e7b1498c7a7b990971c5f0a4c48e6343c0bb",
+        "feat/v0.0.31": "a0bb22ec1ce1bf80ddc65e5e83ba8c4eeaa634eb",
         "main": "9dca232d7014b853a1c25e0768ddd12afa2873a2"
       },
       "tags": [
@@ -305,11 +304,11 @@
         "v0.0.8"
       ],
       "pendingReleasePr": {
-        "number": 365,
-        "state": "MERGED"
+        "number": 371,
+        "state": "OPEN"
       },
       "archived": false,
-      "checkedAt": "2026-09-02T13:43:07.896Z"
+      "checkedAt": "2026-09-02T17:05:38.621Z"
     },
     "noyalib-serde-yaml": {
       "crate": "noyalib-serde-yaml",
@@ -324,7 +323,7 @@
       "releases": ["v0.0.29"],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T13:43:07.896Z"
+      "checkedAt": "2026-09-02T17:05:38.621Z"
     },
     "serde-saphyr": {
       "crate": "serde-saphyr",
@@ -456,7 +455,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T13:43:07.896Z"
+      "checkedAt": "2026-09-02T17:05:38.621Z"
     }
   }
 }
