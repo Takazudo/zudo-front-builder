@@ -408,8 +408,9 @@ jobs:
   # it cannot drift from crates/zfb/templates/.
   #
   # NOT a required status check, and deliberately excluded from the `main`
-  # ruleset (18452968) — same reasoning as `Build docs site` and
-  # `Built-site browser smoke (L4)`. In tier terms this is an ALERTING GUARD,
+  # ruleset (18452968) — same reasoning as `Built-site browser smoke (L4)`
+  # (and as `Build docs site` was before #2827's `Docs gate`). In tier terms
+  # this is an ALERTING GUARD,
   # not a gate: it runs post-merge, so it can only detect a bad deploy, never
   # prevent one.
   showcase-deploy:
