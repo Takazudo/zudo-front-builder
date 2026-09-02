@@ -60,6 +60,7 @@ export const TRACKED_CANDIDATES = Object.freeze([
   "saphyr",
   "serde_norway",
   "noyalib",
+  "noyalib-serde-yaml",
   "serde-saphyr",
 ]);
 
@@ -72,6 +73,10 @@ export const CANDIDATE_CONFIG = Object.freeze({
     crate: "noyalib",
     repo: "sebastienrousseau/noyalib",
     pendingReleasePr: 365,
+  },
+  "noyalib-serde-yaml": {
+    crate: "noyalib-serde-yaml",
+    repo: "sebastienrousseau/noyalib-serde-yaml",
   },
   "serde-saphyr": { crate: "serde-saphyr", repo: "bourumir-wyngs/serde-saphyr" },
 });
