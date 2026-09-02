@@ -440,12 +440,22 @@ describe("observation and CLI", () => {
   });
 
   it("treats a malformed pending-release PR response as operational failure", async () => {
-    const observed = await observeSnapshot({
-      clients: completeClients({
-        pullRequest: async () => ({ state: "mystery", merged_at: null }),
-      }),
-    });
-    expect(observed.candidates.noyalib).toEqual({ error: "malformed pull request response" });
+    // noyalib.pendingReleasePr is null now that PR 371 merged (#2853's release-PR
+    // re-point), so observeSnapshot no longer calls clients.pullRequest for it under
+    // the real config. CANDIDATE_CONFIG is only shallow-frozen, so temporarily give
+    // noyalib a truthy pendingReleasePr to keep exercising this validation branch.
+    const originalPendingReleasePr = CANDIDATE_CONFIG.noyalib.pendingReleasePr;
+    CANDIDATE_CONFIG.noyalib.pendingReleasePr = 999;
+    try {
+      const observed = await observeSnapshot({
+        clients: completeClients({
+          pullRequest: async () => ({ state: "mystery", merged_at: null }),
+        }),
+      });
+      expect(observed.candidates.noyalib).toEqual({ error: "malformed pull request response" });
+    } finally {
+      CANDIDATE_CONFIG.noyalib.pendingReleasePr = originalPendingReleasePr;
+    }
   });
 
   it.each([
