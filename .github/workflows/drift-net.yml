@@ -112,6 +112,12 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
+          # No pnpm in this job (only `node scripts/check-provenance-drift.mjs`).
+          # setup-node@v5 defaults package-manager-cache to true, reads the root
+          # package.json `packageManager: pnpm@…` field, then fails with "Unable
+          # to locate executable file: pnpm" because pnpm/action-setup never ran
+          # here (issue #2829). Disable it — pnpm is not needed for this leg.
+          package-manager-cache: false
 
       - name: Check npm provenance for regressions
         run: node scripts/check-provenance-drift.mjs
