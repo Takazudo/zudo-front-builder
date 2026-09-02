@@ -527,5 +527,9 @@ describe("committed baseline guard", () => {
         repo: CANDIDATE_CONFIG[name].repo,
       });
     }
+    expect(CANDIDATE_CONFIG["noyalib-serde-yaml"]).toEqual({
+      crate: "noyalib-serde-yaml",
+      repo: "sebastienrousseau/noyalib-serde-yaml",
+    });
   });
 });
