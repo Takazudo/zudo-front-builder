@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedAt": "2026-09-02T17:12:41.295Z",
+  "checkedAt": "2026-09-02T21:08:22.477Z",
   "comment": "Anti-gaming rule: refresh this baseline only as part of a recorded triage; never bump it merely to turn the lane green.",
   "candidates": {
     "serde_yaml_ng": {
@@ -14,7 +14,7 @@
       "releases": [],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T17:12:41.295Z"
+      "checkedAt": "2026-09-02T21:08:22.477Z"
     },
     "serde_yml": {
       "crate": "serde_yml",
@@ -42,7 +42,7 @@
       "releases": ["0.0.8", "v0.0.10", "v0.0.11", "v0.0.12", "v0.0.13", "v0.0.9"],
       "pendingReleasePr": null,
       "archived": true,
-      "checkedAt": "2026-09-02T17:12:41.295Z"
+      "checkedAt": "2026-09-02T21:08:22.477Z"
     },
     "saphyr": {
       "crate": "saphyr",
@@ -87,7 +87,7 @@
       "releases": ["v0.0.4", "v0.0.5", "v0.0.6"],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T17:12:41.295Z"
+      "checkedAt": "2026-09-02T21:08:22.477Z"
     },
     "serde_norway": {
       "crate": "serde_norway",
@@ -205,7 +205,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T17:12:41.295Z"
+      "checkedAt": "2026-09-02T21:08:22.477Z"
     },
     "noyalib": {
       "crate": "noyalib",
@@ -233,6 +233,7 @@
         "0.0.28",
         "0.0.29",
         "0.0.3",
+        "0.0.30",
         "0.0.4",
         "0.0.5",
         "0.0.6",
@@ -241,9 +242,8 @@
       ],
       "branches": {
         "chore/cleanup": "c4f4ef9dba9ffccacd441225156bdbbb4c04adb6",
-        "feat/v0.0.30": "e5f4e7b1498c7a7b990971c5f0a4c48e6343c0bb",
-        "feat/v0.0.31": "0fa6c414a4a73c99a6df533d206f73158d80cab8",
-        "main": "9dca232d7014b853a1c25e0768ddd12afa2873a2"
+        "feat/v0.0.31": "a1fb50918d8b7484b928118c9adffe852aacc5f1",
+        "main": "e33ba3c90a02721388e974b458f07eeb0b40198a"
       },
       "tags": [
         "v0.0.1",
@@ -268,6 +268,7 @@
         "v0.0.28",
         "v0.0.29",
         "v0.0.3",
+        "v0.0.30",
         "v0.0.4",
         "v0.0.5",
         "v0.0.6",
@@ -297,33 +298,32 @@
         "v0.0.28",
         "v0.0.29",
         "v0.0.3",
+        "v0.0.30",
         "v0.0.4",
         "v0.0.5",
         "v0.0.6",
         "v0.0.7",
         "v0.0.8"
       ],
-      "pendingReleasePr": {
-        "number": 371,
-        "state": "OPEN"
-      },
+      "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T17:12:41.295Z"
+      "checkedAt": "2026-09-02T21:08:22.477Z"
     },
     "noyalib-serde-yaml": {
       "crate": "noyalib-serde-yaml",
       "repo": "sebastienrousseau/noyalib-serde-yaml",
-      "versions": ["0.0.29"],
+      "versions": ["0.0.29", "0.0.30"],
       "branches": {
         "feat/v0.0.30": "58a23f239c061d898230748fc0745da67ca3e978",
         "feat/v0.0.31": "d6e29a7b048f630f3bda691de489515fe9a158e8",
-        "main": "11cffda345303d9e19cadd3e297a4506818a4d01"
+        "main": "f12787c737bef8b579265fde52cd09696c60cfd6",
+        "release/v0.0.30": "f12787c737bef8b579265fde52cd09696c60cfd6"
       },
-      "tags": ["v0.0.29"],
-      "releases": ["v0.0.29"],
+      "tags": ["v0.0.29", "v0.0.30"],
+      "releases": ["v0.0.29", "v0.0.30"],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T17:12:41.295Z"
+      "checkedAt": "2026-09-02T21:08:22.477Z"
     },
     "serde-saphyr": {
       "crate": "serde-saphyr",
@@ -455,7 +455,7 @@
       ],
       "pendingReleasePr": null,
       "archived": false,
-      "checkedAt": "2026-09-02T17:12:41.295Z"
+      "checkedAt": "2026-09-02T21:08:22.477Z"
     }
   }
 }

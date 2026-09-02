@@ -7,7 +7,7 @@ resolver = "2"
 # needed by the zfb-md-wasm `parseToAst` PROTOTYPE (zfb#1855, epic zfb#1854).
 markdown = { version = "1.0", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.30" }
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"

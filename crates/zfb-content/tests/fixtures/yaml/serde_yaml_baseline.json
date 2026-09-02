@@ -1,5 +1,5 @@
 {
-  "adapter": "serde_yaml 0.9.34+deprecated",
+  "adapter": "noyalib-serde-yaml 0.0.30 (noyalib 0.0.30 compat-serde-yaml)",
   "cases": [
     {
       "category": "anchors-aliases",
