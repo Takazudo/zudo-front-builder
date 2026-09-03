@@ -309,7 +309,10 @@ declaration is removable even if its package remains in `Cargo.lock`.
     `noyalib` + `noyalib-serde-yaml` 0.0.30 release **is** the trigger: run the
     evaluation protocol and never refresh over it. Further branch-only churn
     while upstream prepares 0.0.30/0.0.31 requires one recorded-triage refresh
-    per observation, never a refresh loop.
+    per observation, never a refresh loop. (Superseded 2026-09-03: the
+    detector now classifies branch-only churn as `informational-drift`, exit
+    0, which needs neither a recorded-triage refresh nor a tracking issue;
+    see the lane paragraph below.)
 
     That predicted trigger then fired, and the deltas below were **evaluated by
     the #2851 section further down this file, not refreshed over**. The live
@@ -410,12 +413,70 @@ declaration is removable even if its package remains in `Cargo.lock`.
   and `.github/workflows/yaml-candidate-watch.yml` is the weekly lane that
   re-checks it. The lane enumerates **all branches** because the 2026-08-31
   correction on #2755 records that a prior round *"inspected default branches
-  and missed `noyalib`'s `feat/v0.0.29` release branch."* A detected
-  `CANDIDATE_DRIFT` opens a tracking issue referencing
-  [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) for triage;
-  the watcher does not itself decide that the #2755 trigger has
-  fired. The baseline is refreshed only as part of a recorded triage, never
-  merely to turn the lane green.
+  and missed `noyalib`'s `feat/v0.0.29` release branch."* Every delta carries
+  a severity. The nine triage-severity kinds — `version-published`,
+  `version-yanked`, `version-unyanked`, `tag-added`, `release-added`,
+  `release-pr-state-changed`, `release-pr-changed`, `repository-archived`,
+  `repository-unarchived` — make the run `CANDIDATE_DRIFT` (exit 10) and open
+  or append the deduped tracking issue referencing
+  [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755). The
+  four branch kinds — `branch-added`, `branch-deleted`, `branch-advanced`,
+  `branch-diverged` — are still observed and listed but make the run
+  `informational-drift` (exit 0), which closes or keeps closed the tracker
+  exactly like `no-drift`; divergence is measured against the baseline head,
+  which moves only at recorded triages, so a rewrite that preserves the
+  baseline head as an ancestor is reported as `branch-advanced`, and a branch
+  head that changed without ancestry evidence is still an operational
+  failure — resolving it is itself a recorded triage that may refresh the
+  baseline. What a `CANDIDATE_DRIFT` means depends on the crate's role: for
+  the adopted pair (`noyalib`, `noyalib-serde-yaml`, pinned `=0.0.30` since
+  PR #2854) run `crates/zfb-content/tests/yaml_differential_harness.rs`
+  against the new lockstep pair and record the verdict as a new evaluation
+  topic (pin bump if 18/18 plus the Phase 2 checks, otherwise record the
+  blocker); for the five candidates re-scan under #2755. The watcher never
+  decides that the #2755 trigger has fired; the baseline is refreshed only as
+  part of a recorded triage, never merely to turn the lane green, and
+  branch-only churn no longer requires one. The only refresh recipe is
+  write-then-copy —
+  `GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
+  — because the detector reads the baseline it is about to replace for
+  branch-ancestry evidence, so `--snapshot` output must never be redirected
+  onto the baseline path.
+
+  Reconcile the vocabulary once: triage-severity is what the recorded
+  triages above call trigger-kind evidence, with one exception: the "any
+  newly observed-open `noyalib` release PR" clause is a human triage-time
+  observation (re-point `pendingReleasePr` in
+  `scripts/check-yaml-candidate-drift.mjs` when a triage happens), not
+  something the detector observes; its former mechanical proxy — a new
+  `feat/vX.Y.Z` branch — is now informational, and the adopted pair's release
+  itself (`version-published` / `tag-added` / `release-added`, which
+  noyalib's 1-2 day cadence delivers within days of such a branch) is the
+  paging signal. While `pendingReleasePr` is `null` the watcher does not
+  discover newly opened release PRs at all, so this clause cannot proactively
+  trigger a triage before a publish/tag/release signal.
+
+  **Recorded classification triage (2026-09-03):** workflow runs
+  [33644242370](https://github.com/Takazudo/zudo-front-builder/actions/runs/33644242370),
+  [33662445535](https://github.com/Takazudo/zudo-front-builder/actions/runs/33662445535)
+  and
+  [33688523915](https://github.com/Takazudo/zudo-front-builder/actions/runs/33688523915)
+  plus local detector checks at `2026-09-03T04:16Z` and `2026-09-03T04:52Z`
+  each returned rc 10, `errors: []`, and exactly one delta, `noyalib`
+  `branch-advanced feat/v0.0.31` (`a1fb50918d8b7484b928118c9adffe852aacc5f1` →
+  `b76f1aad8b773e1482f3cb12cdc760f86177bde6` by the last check), with no
+  triage-severity delta on any candidate; that branch receives commits
+  daily, so under single-tier classification the tracker could never close.
+  The resolution was to reclassify, not to refresh — the baseline remains
+  the `2026-09-02T21:08:22.477Z` observation, back-filled with a `yanked`
+  field (schemaVersion 2: `["0.0.8-alpha-pre", "0.0.9"]` for
+  `serde-saphyr`, `[]` for the other six), whose values are fully determined
+  at that `checkedAt` because crates.io records `updated_at`
+  `2025-11-24T13:24:30Z` and `2025-11-19T20:36:13Z` for the two yanks and no
+  other tracked crate has a yanked version; the tracker (#2845) is closed by
+  the first green exact-`main` run. As of this writing (2026-09-03T05:23
+  UTC), the next scheduled run (Thu 05:29 UTC) had not yet fired; the most
+  recent run remains 33688523915 above, per the newest comment on #2845.
 
 ### Candidate desk research (#2785; no-build, checked 2026-08-30)
 
