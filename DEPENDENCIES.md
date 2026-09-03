@@ -422,10 +422,10 @@ declaration is removable even if its package remains in `Cargo.lock`.
   `version-yanked`, `version-unyanked`, `tag-added`, `release-added`,
   `release-pr-state-changed`, `release-pr-changed`, `repository-archived`,
   `repository-unarchived` — make the run `CANDIDATE_DRIFT` (exit 10) and open
-  or append the deduped tracking issue, but severity is role-aware: this
-  applies only on the adopted pair (`noyalib`, `noyalib-serde-yaml`; the
-  current pin lives in the root `Cargo.toml`, its history in the ledger
-  above). The same nine kinds on any of the five candidates, plus the four
+  or append the deduped tracking issue, but only on the adopted pair
+  (`noyalib`, `noyalib-serde-yaml`; the current pin lives in the root
+  `Cargo.toml`, its history in the ledger above): severity is role-aware.
+  The same nine kinds on any of the five candidates, plus the four
   branch kinds — `branch-added`, `branch-deleted`, `branch-advanced`,
   `branch-diverged` — on every crate regardless of role, are still observed
   and listed but make the run `informational-drift` (exit 0), which closes or
