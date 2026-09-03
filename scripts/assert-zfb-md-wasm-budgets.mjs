@@ -135,22 +135,58 @@ function measuredValues({ wasm, wasmGzip, glue, glueGzip }) {
   return { finalWasm: wasm, gzip9: wasmGzip, glue, glueGzip9: glueGzip };
 }
 
-function manifestMismatch(artifact, measured, documented) {
-  const manifestArtifact = MANIFEST_ARTIFACTS[artifact.label];
-  for (const column of MANIFEST_COLUMNS) {
-    if (measured[column] !== documented[manifestArtifact][column]) {
-      return new Error(
-        `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
-          `documented=${documented[manifestArtifact][column]}; ${REPAIR_INSTRUCTIONS}`,
-      );
+// Findings never throw mid-loop: main() collects every mismatch/breach across
+// all four artifacts first, so a CI run reports them all in one round trip
+// instead of one per rerun (zfb#2879).
+export function compareManifest(measuredByArtifact, documented) {
+  const findings = [];
+  for (const artifact of ARTIFACTS) {
+    const manifestArtifact = MANIFEST_ARTIFACTS[artifact.label];
+    const measured = measuredByArtifact[artifact.label];
+    const documentedValues = documented[manifestArtifact];
+    for (const column of MANIFEST_COLUMNS) {
+      if (measured[column] !== documentedValues[column]) {
+        findings.push({
+          code: "manifest-mismatch",
+          severity: "error",
+          artifact: artifact.label,
+          column,
+          measured: measured[column],
+          documented: documentedValues[column],
+          delta: measured[column] - documentedValues[column],
+          message:
+            `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
+            `documented=${documentedValues[column]}`,
+        });
+      }
     }
   }
-  return undefined;
+  return findings;
 }
 
-function assertManifestMatches(artifact, measured, documented) {
-  const mismatch = manifestMismatch(artifact, measured, documented);
-  if (mismatch) throw mismatch;
+export function checkCeilings(measuredByArtifact) {
+  const findings = [];
+  for (const artifact of ARTIFACTS) {
+    const measured = measuredByArtifact[artifact.label];
+    if (measured.gzip9 > artifact.ceiling) {
+      findings.push({
+        code: "ceiling-exceeded",
+        severity: "error",
+        artifact: artifact.label,
+        measured: measured.gzip9,
+        ceiling: artifact.ceiling,
+        message: `${artifact.label} gzip-9 size ${measured.gzip9} exceeds ceiling ${artifact.ceiling}`,
+      });
+    }
+  }
+  return findings;
+}
+
+export function formatFindings(findings) {
+  const lines = findings
+    .filter((finding) => finding.severity === "error")
+    .map((finding) => finding.message);
+  return [...lines, REPAIR_INSTRUCTIONS].join("\n");
 }
 
 function writeMeasuredManifest(manifestPath, measured, measuredOnVersion) {
@@ -206,14 +242,14 @@ function selfTest() {
   }
 
   const documented = SHIPPED_SIZES.measured;
-  const mismatched = { ...documented.root, finalWasm: documented.root.finalWasm + 1 };
-  let mismatch;
-  try {
-    assertManifestMatches(ARTIFACTS[0], { ...mismatched }, documented);
-  } catch (error) {
-    mismatch = error;
-  }
-  if (!mismatch?.message.includes("default finalWasm")) {
+  const mismatchedMeasuredByArtifact = {
+    default: { ...documented.root, finalWasm: documented.root.finalWasm + 1 },
+    "highlight-only": documented.highlight,
+    "render-only": documented.render,
+    "parse-only": documented.parse,
+  };
+  const mismatchFindings = compareManifest(mismatchedMeasuredByArtifact, documented);
+  if (mismatchFindings.length !== 1 || !mismatchFindings[0].message.includes("default finalWasm")) {
     throw new Error("manifest mismatch fixture did not name artifact and column");
   }
 
@@ -291,16 +327,17 @@ function main() {
         `final-wasm=${fmt(wasm)} gzip-9=${fmt(wasmGzip)} ` +
         `glue=${fmt(glue)} glue-gzip-9=${fmt(glueGzip)} ceiling=${fmt(artifact.ceiling)}`,
     );
-    if (wasmGzip > artifact.ceiling) {
-      throw new Error(
-        `${artifact.label} gzip-9 size ${wasmGzip} exceeds ceiling ${artifact.ceiling}`,
-      );
-    }
 
-    if (!args["update-manifest"]) {
-      assertManifestMatches(artifact, measured, SHIPPED_SIZES.measured);
-    }
     measuredByArtifact[artifact.label] = measured;
+  }
+
+  const findings = [
+    ...checkCeilings(measuredByArtifact),
+    ...(args["update-manifest"] ? [] : compareManifest(measuredByArtifact, SHIPPED_SIZES.measured)),
+  ];
+  const errorFindings = findings.filter((finding) => finding.severity === "error");
+  if (errorFindings.length > 0) {
+    throw new Error(formatFindings(findings));
   }
 
   const totalDist = distBytes(dist);
