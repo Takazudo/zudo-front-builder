@@ -250,11 +250,11 @@ function toMdastRoot(ast: MdastRoot | null): Root // ecosystem "mdast" Root (@ty
 `./parse` は独立した **SWC-free** グラフです。`swc_core` と `zfb-render` を除外しつつ、
 `zfb-content` と `syntect-fancy` は意図的に保持します。parse は syntect-free ではありません。
 
-| サブパス | gzip-9 wasm（2.14.3） | 正確なランタイム値 | 正確な型の面 | 使う場面 |
+| サブパス | gzip-9 wasm（2.15.0） | 正確なランタイム値 | 正確な型の面 | 使う場面 |
 | --- | ---: | --- | --- | --- |
 | `.` | 1,514,540 B | `init`、`compile`、`renderHtml`、`parseToAst`、`highlightCode`、`version`、`toMdastRoot`、`MdastAdapterError`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | 現在の compile/render/parse/raw-mdast/highlight の完全な型セット | MDX のコンパイル、または複数の現在の API を使う場合 |
 | `./highlight` | 817,922 B | `init`、`highlightCode`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `HighlightRole`、`HighlightCodeOptions`、`HighlightCodeResult`、`HighlightDiagnostic`、`HighlightDiagnosticSource` | コードだけをハイライトする場合。公開 API / リソースは互換のまま |
-| `./render` | 1,088,857 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML へ描画する場合 |
+| `./render` | 1,088,858 B | `init`、`renderHtml`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `RenderHtmlResult`、`Diagnostic`、`DiagnosticSource`、`ZfbMdWasmOptions`、`ParseDialect`、`PipelineOptions`、`GfmOptions`、`CodeHighlightMode`、`CodeHighlightOptions`、`MarkdownFeaturesConfig`、`JsxRuntime`、`HighlightRole` | コンパイラのバイトを含めず Markdown を HTML へ描画する場合 |
 | `./parse` | 281,395 B | `init`、`parseToAst`、`toMdastRoot`、`MdastAdapterError`、`version`、`ZfbMdWasmTrapError`、`ZfbMdWasmTrapRecoveryLimitError`、`__forceTrapForTests`、`__getTrapRecoveryStateForTests` | `ParseToAstResult`、`ParseToAstOptions`、`ParseDialect`、`FrontmatterPolicy`、`ParsePipelineOptions`、`Diagnostic`、`DiagnosticSource`、`AstPoint`、`AstPosition`、`RawMdastData`、`MarkdownRsStop`、`MdastNode`、`MdastRoot`、`UnknownMdastNode`、`Root`、`Paragraph`、`Heading`、`ThematicBreak`、`Blockquote`、`List`、`ListItem`、`Html`、`Code`、`Definition`、`Text`、`DirectiveNodeBase`、`ContainerDirective`、`LeafDirective`、`TextDirective`、`Emphasis`、`Strong`、`InlineCode`、`Break`、`Link`、`Image`、`ReferenceKind`、`LinkReference`、`ImageReference`、`FootnoteDefinition`、`FootnoteReference`、`TableAlign`、`Table`、`TableRow`、`TableCell`、`Delete`、`Yaml`、`MdxFlowExpression`、`MdxTextExpression`、`MdxJsxFlowElement`、`MdxJsxTextElement`、`MdxJsxAttributeContent`、`MdxJsxAttribute`、`MdxJsxAttributeValueExpression`、`MdxJsxExpressionAttribute` | AST をパースし、必要なら利用側の制御されたコードで解釈する場合 |
 
 focused エントリのリソースペアは非公開で、互いに置き換えられません:
@@ -304,7 +304,7 @@ ESM 形状の AST ノードは不活性なデータとして扱われます。
 
 ### 出荷アーティファクトのサイズと上限
 
-出荷された **2.14.3** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
+出荷された **2.15.0** のアーティファクトの行は次のとおりです。final wasm は wasm-bindgen と
 wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { level: 9 })`、glue は
 グルーコードのバイト数とその gzip です:
 
@@ -312,7 +312,7 @@ wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { l
 | --- | ---: | ---: | ---: | ---: |
 | root（full） | 3,394,144 B | 1,514,540 B | 14,998 B | 4,199 B |
 | highlight | 1,539,186 B | 817,922 B | 8,758 B | 2,637 B |
-| render | 2,189,671 B | 1,088,857 B | 8,772 B | 2,661 B |
+| render | 2,189,671 B | 1,088,858 B | 8,772 B | 2,661 B |
 | parse | 693,479 B | 281,395 B | 11,159 B | 3,797 B |
 
 #2447 の決定スナップショットでは、split パッケージの構成が 3,638,607 B、root + highlight が
@@ -320,7 +320,7 @@ wasm-opt を通した最適化後の値、gzip-9 は Node の `gzipSync(..., { l
 [153.496, 165.977] でした。固定された gzip-9 の上限は root 1,600,000 B、highlight 880,000 B、
 render 1,100,000 B、parse 325,000 B、完全な packed tarball は 3,900,000 B です。4 つのエントリは
 いずれも上限の内側で出荷されており、上限までの余裕は root 85,460 B、highlight 62,078 B、
-render 11,143 B、parse 43,605 B です。これらは永続的な保証ではなく 2.14.3 の測定値です —
+render 11,142 B、parse 43,605 B です。これらは永続的な保証ではなく 2.15.0 の測定値です —
 実際にインストールしたバージョンで測り直してください。
 
 highlight グラフから `swc_core` をゲートで外したこと（#2449 / #2450）は、
