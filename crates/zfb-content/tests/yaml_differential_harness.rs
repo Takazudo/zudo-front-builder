@@ -17,7 +17,7 @@ use serde_json::Value;
 
 const CORPUS: &str = include_str!("fixtures/yaml/serde_yaml_corpus.json");
 const BASELINE: &str = include_str!("fixtures/yaml/serde_yaml_baseline.json");
-const CURRENT_ADAPTER_NAME: &str = "noyalib-serde-yaml 0.0.30 (noyalib 0.0.30 compat-serde-yaml)";
+const CURRENT_ADAPTER_NAME: &str = "noyalib-serde-yaml 0.0.31 (noyalib 0.0.31 compat-serde-yaml)";
 
 const REQUIRED_CATEGORIES: &[&str] = &[
     "anchors-aliases",

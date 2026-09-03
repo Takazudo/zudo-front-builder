@@ -2455,9 +2455,9 @@ dependencies = [
 
 [[package]]
 name = "noyalib"
-version = "0.0.30"
+version = "0.0.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23d48ffd97a6485043e2d05849188ba375a990a856b3607ce55e585a36ecfbb1"
+checksum = "6c34297b0e8a3fc5a5245f7ea28e50fc96d290b28e3d0d0da8e7c14235ec33b0"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
@@ -2470,9 +2470,9 @@ dependencies = [
 
 [[package]]
 name = "noyalib-serde-yaml"
-version = "0.0.30"
+version = "0.0.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3b783463958e25c83a0aa93aa6adc9d632c85a1ef0aff4d81029871853631c7"
+checksum = "8eaae0a5d646674f179b3ae62539049568ffa065aaadb89a7135ef5e1c1c274e"
 dependencies = [
  "noyalib",
 ]
