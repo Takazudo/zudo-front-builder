@@ -110,9 +110,17 @@ describe("severity classification", () => {
   it("classifies exactly the documented delta kinds and fails closed on any other", () => {
     expect(Object.keys(DELTA_KINDS).sort()).toEqual(DOCUMENTED_DELTA_KINDS);
     for (const kind of DOCUMENTED_DELTA_KINDS) {
-      expect(deltaSeverity(kind)).toBe(kind.startsWith("branch-") ? INFORMATIONAL : TRIAGE);
+      const tableSeverity = kind.startsWith("branch-") ? INFORMATIONAL : TRIAGE;
+      expect(deltaSeverity(kind, "adopted")).toBe(tableSeverity);
+      // A candidate-role crate is informational for every kind, even a kind
+      // that carries triage severity in the table above.
+      expect(deltaSeverity(kind, "candidate")).toBe(INFORMATIONAL);
     }
-    expect(() => deltaSeverity("mystery")).toThrow(/unknown delta kind/);
+    expect(() => deltaSeverity("mystery", "adopted")).toThrow(/unknown delta kind/);
+    expect(() => deltaSeverity("mystery", "candidate")).toThrow(/unknown delta kind/);
+    expect(() => deltaSeverity("version-published", "unknown-role")).toThrow(
+      /unknown candidate role/,
+    );
     expect(() =>
       formatReport({
         status: CANDIDATE_DRIFT,
@@ -179,9 +187,19 @@ describe("compareCandidate", () => {
     });
   });
 
-  it("detects an unyank as CANDIDATE_DRIFT, never an operational failure", () => {
+  it("detects an unyank as informational drift on a candidate-role crate, never an operational failure", () => {
     const result = compareCandidate(
       "serde-saphyr",
+      candidate({ yanked: ["0.0.28"] }),
+      candidate({ yanked: [] }),
+    );
+    expect(result.status).toBe(INFORMATIONAL_DRIFT);
+    expect(result.deltas).toContainEqual({ kind: "version-unyanked", version: "0.0.28" });
+  });
+
+  it("keeps the same unyank delta CANDIDATE_DRIFT on an adopted-role crate", () => {
+    const result = compareCandidate(
+      "noyalib",
       candidate({ yanked: ["0.0.28"] }),
       candidate({ yanked: [] }),
     );
@@ -405,11 +423,13 @@ describe("compareSnapshots", () => {
     });
   });
 
-  it("gives a triage-severity delta on any candidate precedence over informational drift", () => {
+  it("gives a triage-severity delta on an adopted-role candidate precedence over informational drift", () => {
     const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
-    observed.candidates.saphyr = candidate({
-      crate: "saphyr",
-      repo: "owner/saphyr",
+    // A candidate-role publish would only ever be informational now, so the
+    // triage-severity delta here must land on the other adopted-role crate.
+    observed.candidates["noyalib-serde-yaml"] = candidate({
+      crate: "noyalib-serde-yaml",
+      repo: "owner/noyalib-serde-yaml",
       versions: ["0.0.28", "0.0.29"],
     });
     const result = compareSnapshots(baseline, observed);
@@ -496,14 +516,14 @@ describe("report formatters", () => {
   it("never dresses branch-only movement as CANDIDATE_DRIFT", () => {
     const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("informational-drift (branch movement only; no triage required)");
+    expect(report).toContain("informational-drift (informational only; no triage required)");
     expect(report).toContain("[informational] branch");
     expect(report).toContain("no triage, no tracking issue, and no baseline refresh");
     expect(report).not.toContain("CANDIDATE_DRIFT");
     expect(report).not.toMatch(/trigger fired/i);
   });
 
-  it("names the re-scan protocol for a candidate-role crate and the harness in the footer", () => {
+  it("renders a candidate-role publish as informational, never CANDIDATE_DRIFT", () => {
     const changed = candidate({
       crate: "saphyr",
       repo: "owner/saphyr",
@@ -511,13 +531,29 @@ describe("report formatters", () => {
     });
     const { baseline, observed } = snapshots("saphyr", changed);
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).toContain("informational-drift (informational only; no triage required)");
+    expect(report).toContain("[informational] new crates.io version 0.0.29");
+    expect(report).not.toContain("CANDIDATE_DRIFT");
+    expect(report).not.toMatch(/trigger fired/i);
+  });
+
+  it("keeps the same publish delta CANDIDATE_DRIFT with a triage tag and the harness in the footer on an adopted-role crate", () => {
+    const changed = candidate({
+      crate: "noyalib-serde-yaml",
+      repo: "owner/noyalib-serde-yaml",
+      versions: ["0.0.28", "0.0.29"],
+    });
+    const { baseline, observed } = snapshots("noyalib-serde-yaml", changed);
+    const result = compareSnapshots(baseline, observed);
+    expect(result.exitCode).toBe(10);
+    const report = formatReport(result);
+    expect(report).toContain("CANDIDATE_DRIFT (adopted dependency");
     expect(report).toContain("[triage] new crates.io version 0.0.29");
     expect(report).toContain("yaml_differential_harness.rs");
     expect(report).not.toMatch(/trigger fired/i);
   });
 
-  it("renders a serde-saphyr yank with no upstream message and the candidate re-scan protocol", () => {
+  it("renders a serde-saphyr yank with no upstream message as informational", () => {
     const changed = candidate({
       crate: "serde-saphyr",
       repo: "owner/serde-saphyr",
@@ -526,12 +562,15 @@ describe("report formatters", () => {
     });
     const { baseline, observed } = snapshots("serde-saphyr", changed);
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("[triage] crates.io version 0.0.9 yanked (no upstream message)");
-    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).toContain(
+      "[informational] crates.io version 0.0.9 yanked (no upstream message)",
+    );
+    expect(report).toContain("informational-drift (informational only; no triage required)");
+    expect(report).not.toContain("CANDIDATE_DRIFT");
     expect(report).not.toMatch(/trigger fired/i);
   });
 
-  it("renders an unyank", () => {
+  it("renders an unyank on a candidate-role crate as informational", () => {
     const versions = ["0.0.8-alpha-pre", "0.0.9"];
     const { baseline, observed } = snapshots(
       "serde-saphyr",
@@ -539,7 +578,7 @@ describe("report formatters", () => {
     );
     Object.assign(baseline.candidates["serde-saphyr"], { versions, yanked: ["0.0.9"] });
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("[triage] crates.io version 0.0.9 unyanked");
+    expect(report).toContain("[informational] crates.io version 0.0.9 unyanked");
   });
 
   it("keeps an upstream yank message on one line and inside the summary's text fence", () => {
@@ -554,7 +593,7 @@ describe("report formatters", () => {
     const report = formatReport(compareSnapshots(baseline, observed));
     const line = report.split("\n").find((entry) => entry.includes("0.0.9 yanked"));
     expect(line).toBe(
-      '  - [triage] crates.io version 0.0.9 yanked (upstream message: "line one ``` line \\"two\\"")',
+      '  - [informational] crates.io version 0.0.9 yanked (upstream message: "line one ``` line \\"two\\"")',
     );
     expect(report).not.toContain("\n```");
   });
@@ -573,7 +612,7 @@ describe("report formatters", () => {
     ).toContain("- monitor: operational failure: bad");
   });
 
-  it("still renders a saved report from before roles existed", () => {
+  it("still renders a saved report from before roles existed, recovering role from configuration", () => {
     const { baseline, observed } = snapshots(
       "saphyr",
       candidate({ crate: "saphyr", repo: "owner/saphyr", versions: ["0.0.28", "0.0.29"] }),
@@ -581,7 +620,8 @@ describe("report formatters", () => {
     const result = compareSnapshots(baseline, observed);
     for (const row of result.candidates) delete row.role;
     const report = formatReport(result);
-    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).toContain("informational-drift (informational only; no triage required)");
+    expect(report).toContain("[informational] new crates.io version 0.0.29");
     expect(report).not.toContain("undefined");
   });
 });

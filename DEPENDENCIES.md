@@ -193,7 +193,9 @@ declaration is removable even if its package remains in `Cargo.lock`.
   [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) remains
   open — it is the standing trigger for continued upstream YAML-candidate
   watching, and its future is the owner's call, not something this migration
-  closes.
+  closes. (Superseded 2026-09-03: #2755 was closed with a terminal comment
+  once the migration had merged; the watch's protocol now lives in the "YAML
+  candidate watch" lane paragraph below.)
 
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
@@ -224,7 +226,9 @@ declaration is removable even if its package remains in `Cargo.lock`.
   in any of them; #2851 is the first round to reach Phase 2 and therefore the
   first to warrant a migration topic and changelog entries.
   [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755) remains
-  open and is not closed by the migration.
+  open and is not closed by the migration. (Superseded 2026-09-03: #2755 was
+  closed with a terminal comment once the migration had merged; the watch's
+  protocol now lives in the "YAML candidate watch" lane paragraph below.)
 
   * **`serde_yaml_ng` — no trigger:** `0.10.0` released 2024-05-26
     ([crates.io record](https://crates.io/api/v1/crates/serde_yaml_ng/0.10.0));
@@ -418,25 +422,26 @@ declaration is removable even if its package remains in `Cargo.lock`.
   `version-yanked`, `version-unyanked`, `tag-added`, `release-added`,
   `release-pr-state-changed`, `release-pr-changed`, `repository-archived`,
   `repository-unarchived` — make the run `CANDIDATE_DRIFT` (exit 10) and open
-  or append the deduped tracking issue referencing
-  [#2755](https://github.com/Takazudo/zudo-front-builder/issues/2755). The
-  four branch kinds — `branch-added`, `branch-deleted`, `branch-advanced`,
-  `branch-diverged` — are still observed and listed but make the run
-  `informational-drift` (exit 0), which closes or keeps closed the tracker
-  exactly like `no-drift`; divergence is measured against the baseline head,
-  which moves only at recorded triages, so a rewrite that preserves the
-  baseline head as an ancestor is reported as `branch-advanced`, and a branch
-  head that changed without ancestry evidence is still an operational
-  failure — resolving it is itself a recorded triage that may refresh the
-  baseline. What a `CANDIDATE_DRIFT` means depends on the crate's role: for
-  the adopted pair (`noyalib`, `noyalib-serde-yaml`; the current pin lives in
-  the root `Cargo.toml`, its history in the ledger above) run
-  `crates/zfb-content/tests/yaml_differential_harness.rs`
-  against the new lockstep pair and record the verdict as a new evaluation
-  topic (pin bump if 18/18 plus the Phase 2 checks, otherwise record the
-  blocker); for the five candidates re-scan under #2755. The watcher never
-  decides that the #2755 trigger has fired; the baseline is refreshed only as
-  part of a recorded triage, never merely to turn the lane green, and
+  or append the deduped tracking issue, but only on the adopted pair
+  (`noyalib`, `noyalib-serde-yaml`; the current pin lives in the root
+  `Cargo.toml`, its history in the ledger above): severity is role-aware.
+  The same nine kinds on any of the five candidates, plus the four
+  branch kinds — `branch-added`, `branch-deleted`, `branch-advanced`,
+  `branch-diverged` — on every crate regardless of role, are still observed
+  and listed but make the run `informational-drift` (exit 0), which closes or
+  keeps closed the tracker exactly like `no-drift`; divergence is measured
+  against the baseline head, which moves only at recorded triages, so a
+  rewrite that preserves the baseline head as an ancestor is reported as
+  `branch-advanced`, and a branch head that changed without ancestry evidence
+  is still an operational failure — resolving it is itself a recorded triage
+  that may refresh the baseline. A `CANDIDATE_DRIFT` on the adopted pair
+  means: run `crates/zfb-content/tests/yaml_differential_harness.rs` against
+  the new lockstep pair and record the verdict as a new evaluation topic (pin
+  bump if 18/18 plus the Phase 2 checks, otherwise record the blocker). A
+  delta on any of the five candidates is fallback-ledger information only —
+  no evaluation is triggered unless the adopted pair itself degrades. The
+  watcher never decides that evaluation's verdict; the baseline is refreshed
+  only as part of a recorded triage, never merely to turn the lane green, and
   branch-only churn no longer requires one. The only refresh recipe is
   write-then-copy —
   `S=$(mktemp -d) && GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
@@ -1100,7 +1105,12 @@ fixtures, production sources and protected tests plus all 165 changelog pages
 -p zfb-content --test yaml_differential_harness` passed 4/4 and
 `pnpm test:workspace` passed 823 tests across 7 packages with exit code 0.
 
-#2755 remains open; this section uses `Refs #2755` and closes nothing. No
+This section used `Refs #2755` and closed nothing — consistent with every PR
+body in the retirement epic, which never writes `Closes #2755`. **Update
+(2026-09-03):** #2755 was closed with a terminal comment once PR #2854
+merged this migration; a follow-up epic then retired the standing-trigger
+wording across the detector, its workflow, and this ledger (see the "YAML
+candidate watch" lane paragraph above for the current protocol). No
 upstream report was warranted, because the divergence #2836 recorded is the
 one upstream fixed in this release. Acknowledging that upstream is an
 outward-facing action and remains the owner's call; it was not performed.
