@@ -5,10 +5,11 @@ import { pathToFileURL } from "node:url";
  * Pure comparison, severity classification, and reporting core for the YAML
  * candidate watcher.
  *
- * In scope: newly published versions, new tags and GitHub Releases, heads of
- * every branch (including non-default branches), branch addition/deletion and
- * force-push/divergence, pending release-PR state, archive/unarchive state, and
- * the severity each of those deltas carries.
+ * In scope: newly published versions, crates.io yank/unyank state, new tags
+ * and GitHub Releases, heads of every branch (including non-default
+ * branches), branch addition/deletion and force-push/divergence, pending
+ * release-PR state, archive/unarchive state, and the severity each of those
+ * deltas carries.
  *
  * Out of scope: #2755 acceptance criteria 2-6 — Error::location()
  * compatibility, the 18-case differential JSON corpus, wasm32 plus
@@ -25,9 +26,10 @@ import { pathToFileURL } from "node:url";
  * rather than defaulting, so a kind added later can never be silently
  * downgraded into a green run:
  *
- *   triage         version-published, tag-added, release-added,
- *                  release-pr-state-changed, release-pr-changed,
- *                  repository-archived, repository-unarchived
+ *   triage         version-published, version-yanked, version-unyanked,
+ *                  tag-added, release-added, release-pr-state-changed,
+ *                  release-pr-changed, repository-archived,
+ *                  repository-unarchived
  *   informational  branch-added, branch-deleted, branch-advanced,
  *                  branch-diverged
  *
@@ -60,15 +62,16 @@ import { pathToFileURL } from "node:url";
  * `candidate` and call for a re-scan against #2755. Role is configuration: it
  * is never persisted in a baseline and never compared.
  *
- * Baseline/snapshot schema (schemaVersion 1):
+ * Baseline/snapshot schema (schemaVersion 2):
  * {
- *   schemaVersion: 1,
+ *   schemaVersion: 2,
  *   checkedAt: ISO-8601 string,
  *   candidates: {
  *     [candidateName]: {
  *       crate: string,
  *       repo: "owner/repository",
  *       versions: string[],
+ *       yanked: string[],  // required; sorted unique; subset of versions
  *       branches: { [branchName]: string | { sha: string } },
  *       tags: string[],
  *       releases: string[],
@@ -83,9 +86,19 @@ import { pathToFileURL } from "node:url";
  * `relation` is transient comparison evidence, not required in a persisted
  * baseline. A changed head without this evidence is an operational failure:
  * guessing would conceal a force-push as an ordinary new commit.
+ *
+ * An observed candidate may additionally carry `yankMessages: { [version]:
+ * string }`, the crates.io yank_message for each currently-yanked version
+ * that has a non-empty message. Like branch `relation`, it is transient
+ * comparison evidence: `snapshotForBaseline` strips it before persisting.
+ *
+ * `--snapshot` reads the baseline path (for branch ancestry evidence) before
+ * writing the new snapshot to stdout; never redirect that stdout onto the
+ * baseline path itself — doing so truncates the file before the detector can
+ * read it.
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const NO_DRIFT = "no-drift";
 export const INFORMATIONAL_DRIFT = "informational-drift";
 export const CANDIDATE_DRIFT = "CANDIDATE_DRIFT";
@@ -110,6 +123,17 @@ export const DELTA_KINDS = Object.freeze({
   "version-published": {
     severity: TRIAGE,
     describe: (delta) => `new crates.io version ${delta.version}`,
+  },
+  "version-yanked": {
+    severity: TRIAGE,
+    describe: (delta) =>
+      delta.message
+        ? `crates.io version ${delta.version} yanked (upstream message: "${delta.message}")`
+        : `crates.io version ${delta.version} yanked (no upstream message)`,
+  },
+  "version-unyanked": {
+    severity: TRIAGE,
+    describe: (delta) => `crates.io version ${delta.version} unyanked`,
   },
   "tag-added": {
     severity: TRIAGE,
@@ -347,7 +371,23 @@ export function createNetworkClients(options = {}) {
     const url = `https://crates.io/api/v1/crates/${encodeURIComponent(crate)}/versions`;
     const { data } = await get(url, cratesHeaders());
     if (!Array.isArray(data.versions)) throw new Error(`${crate}: malformed crates.io response`);
-    return [...new Set(data.versions.map((version) => version.num))].sort();
+    const versions = [...new Set(data.versions.map((version) => version.num))].sort();
+    const yanked = [
+      ...new Set(
+        data.versions.filter((version) => version.yanked === true).map((version) => version.num),
+      ),
+    ].sort();
+    const yankMessages = Object.fromEntries(
+      data.versions
+        .filter(
+          (version) =>
+            version.yanked === true &&
+            typeof version.yank_message === "string" &&
+            version.yank_message !== "",
+        )
+        .map((version) => [version.num, version.yank_message]),
+    );
+    return { versions, yanked, yankMessages };
   }
 
   async function githubPages(repo, resource) {
@@ -414,7 +454,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
     TRACKED_CANDIDATES.map(async (name) => {
       const config = CANDIDATE_CONFIG[name];
       try {
-        const [versions, repository, branchList, tagList, releaseList, pullRequest] =
+        const [crateVersionsResult, repository, branchList, tagList, releaseList, pullRequest] =
           await Promise.all([
             clients.crateVersions(config.crate),
             clients.repo(config.repo),
@@ -425,6 +465,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
               ? clients.pullRequest(config.repo, config.pendingReleasePr)
               : Promise.resolve(null),
           ]);
+        const { versions, yanked, yankMessages } = crateVersionsResult;
         const oldBranches = baseline?.candidates?.[name]?.branches ?? {};
         const branches = Object.fromEntries(
           await Promise.all(
@@ -448,6 +489,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
             crate: config.crate,
             repo: config.repo,
             versions,
+            yanked,
             branches,
             tags: [...new Set(tagList.map((tag) => tag.name))].sort(),
             releases: [...new Set(releaseList.map((release) => release.tag_name))].sort(),
@@ -456,6 +498,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
               : null,
             archived: repository.archived,
             checkedAt,
+            yankMessages,
           },
         ];
       } catch (error) {
@@ -470,10 +513,11 @@ export function snapshotForBaseline(observed) {
   const candidates = Object.fromEntries(
     Object.entries(observed.candidates).map(([name, candidate]) => {
       if (candidate.error) throw new Error(`${name}: ${candidate.error}`);
+      const { yankMessages, ...rest } = candidate;
       return [
         name,
         {
-          ...candidate,
+          ...rest,
           branches: Object.fromEntries(
             Object.entries(candidate.branches).map(([branch, value]) => [
               branch,
@@ -533,9 +577,12 @@ export function validateCandidateRecord(candidate, { observed = false } = {}) {
   if (typeof candidate.repo !== "string" || !/^[^/]+\/[^/]+$/.test(candidate.repo)) {
     return "repo must be an owner/repository slug";
   }
-  for (const field of ["versions", "tags", "releases"]) {
+  for (const field of ["versions", "yanked", "tags", "releases"]) {
     const error = validateStringArray(candidate[field], field);
     if (error) return error;
+  }
+  if (candidate.yanked.some((version) => !candidate.versions.includes(version))) {
+    return "yanked must be a subset of versions";
   }
   if (
     !candidate.branches ||
@@ -645,6 +692,16 @@ export function compareCandidate(name, baseline, observed) {
   }
   for (const version of additions(baseline.versions, observed.versions)) {
     deltas.push({ kind: "version-published", version });
+  }
+  for (const version of additions(baseline.yanked, observed.yanked)) {
+    deltas.push({
+      kind: "version-yanked",
+      version,
+      message: observed.yankMessages?.[version] ?? null,
+    });
+  }
+  for (const version of removals(baseline.yanked, observed.yanked)) {
+    deltas.push({ kind: "version-unyanked", version });
   }
   for (const tag of additions(baseline.tags, observed.tags)) {
     deltas.push({ kind: "tag-added", tag });
