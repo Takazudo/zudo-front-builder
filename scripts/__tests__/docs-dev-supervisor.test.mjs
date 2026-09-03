@@ -198,6 +198,28 @@ async function terminateForCleanup(supervisor, childPids) {
   }
 }
 
+// vitest 2.1.9's context.skip() ignores its reason argument, so the reasons live
+// here: without docs/node_modules there is no run-parallel binary to spawn (run
+// pnpm install), and the process-signal assertions only hold on macOS/Linux.
+const supervisorRunnable = runParallelAvailable && process.platform !== "win32";
+if (process.env.CI && !runParallelAvailable) {
+  throw new Error(
+    `Missing ${RUN_PARALLEL_PATH}; CI must install the docs workspace before running this test`,
+  );
+}
+
+async function withSupervisor(scripts, run) {
+  const fixture = createFixture();
+  const supervisor = spawnSupervisor(fixture.directory, scripts);
+  const childPids = [];
+  try {
+    await run(supervisor, childPids);
+  } finally {
+    await terminateForCleanup(supervisor, childPids);
+    rmSync(fixture.directory, { recursive: true, force: true });
+  }
+}
+
 describe("docs dev supervisor", () => {
   it("uses zudo-doc run-parallel for both docs dev scripts", () => {
     expect(docsPackage.scripts.dev).toMatch(/^run-parallel /);
@@ -205,56 +227,38 @@ describe("docs dev supervisor", () => {
     expect(docsPackage.devDependencies).not.toHaveProperty(legacySupervisorName);
   });
 
-  it("propagates failures and forwards supervisor-only SIGINT", async ({ skip }) => {
-    if (!runParallelAvailable) {
-      if (process.env.CI) {
-        throw new Error(
-          `Missing ${RUN_PARALLEL_PATH}; CI must install the docs workspace before running this test`,
-        );
-      }
-      skip(`Missing ${RUN_PARALLEL_PATH}; run pnpm install to exercise the supervisor`);
-      return;
-    }
-    if (process.platform === "win32") {
-      skip("process signal assertions are limited to the macOS/Linux CI lanes");
-      return;
-    }
+  // Worst case is 41s of chained PROCESS_TIMEOUT_MS waits (SIGINT test) plus the
+  // 1s cleanup wait; 41s / 0.75 ~= 55s -> 60s so the inner waits fail first and
+  // name their phase instead of vitest's bare 5s "Test timed out" (#2874, #2869).
+  // Scoped to this describe: every other root suite keeps the 5s hang guardrail.
+  describe.skipIf(!supervisorRunnable)("supervisor process behaviour", { timeout: 60_000 }, () => {
+    it("aborts every sibling when a task exits non-zero", async () => {
+      await withSupervisor(["up", "boom"], async (supervisor, childPids) => {
+        const upLine = await supervisor.stdout.waitFor((line) => line.startsWith("UP up "));
+        childPids.push(pidFromUpLine(upLine));
+        expect(portFromUpLine(upLine)).toBeGreaterThan(0);
+        const failure = await waitForExit(supervisor.close);
+        expect(failure.code).toBe(3);
+        expect(failure.signal).toBeNull();
+        expect(supervisor.stderr.all()).toContain('ERROR: "boom" exited with 3.');
+        expect(await waitUntil(() => !processIsAlive(childPids[0]))).toBe(true);
+      });
+    });
 
-    const failureFixture = createFixture();
-    const failureSupervisor = spawnSupervisor(failureFixture.directory, ["up", "boom"]);
-    const failurePids = [];
-    try {
-      const upLine = await failureSupervisor.stdout.waitFor((line) => line.startsWith("UP up "));
-      failurePids.push(pidFromUpLine(upLine));
-      expect(portFromUpLine(upLine)).toBeGreaterThan(0);
-      const failure = await waitForExit(failureSupervisor.close);
-      expect(failure.code).toBe(3);
-      expect(failure.signal).toBeNull();
-      expect(failureSupervisor.stderr.all()).toContain('ERROR: "boom" exited with 3.');
-      expect(await waitUntil(() => !processIsAlive(failurePids[0]))).toBe(true);
-    } finally {
-      await terminateForCleanup(failureSupervisor, failurePids);
-      rmSync(failureFixture.directory, { recursive: true, force: true });
-    }
+    it("forwards a supervisor-only SIGINT to the whole process tree", async () => {
+      await withSupervisor(["up", "up2"], async (supervisor, childPids) => {
+        const upLine = await supervisor.stdout.waitFor((line) => line.startsWith("UP up "));
+        const up2Line = await supervisor.stdout.waitFor((line) => line.startsWith("UP up2 "));
+        childPids.push(pidFromUpLine(upLine), pidFromUpLine(up2Line));
+        expect(portFromUpLine(upLine)).toBeGreaterThan(0);
+        expect(portFromUpLine(up2Line)).toBeGreaterThan(0);
 
-    const signalFixture = createFixture();
-    const signalSupervisor = spawnSupervisor(signalFixture.directory, ["up", "up2"]);
-    const signalPids = [];
-    try {
-      const upLine = await signalSupervisor.stdout.waitFor((line) => line.startsWith("UP up "));
-      const up2Line = await signalSupervisor.stdout.waitFor((line) => line.startsWith("UP up2 "));
-      signalPids.push(pidFromUpLine(upLine), pidFromUpLine(up2Line));
-      expect(portFromUpLine(upLine)).toBeGreaterThan(0);
-      expect(portFromUpLine(up2Line)).toBeGreaterThan(0);
-
-      expect(signalSupervisor.child.kill("SIGINT")).toBe(true);
-      const signalExit = await waitForExit(signalSupervisor.close);
-      expect(signalExit.code).toBe(130);
-      expect(signalExit.signal).toBeNull();
-      expect(await waitUntil(() => signalPids.every((pid) => !processIsAlive(pid)))).toBe(true);
-    } finally {
-      await terminateForCleanup(signalSupervisor, signalPids);
-      rmSync(signalFixture.directory, { recursive: true, force: true });
-    }
+        expect(supervisor.child.kill("SIGINT")).toBe(true);
+        const signalExit = await waitForExit(supervisor.close);
+        expect(signalExit.code).toBe(130);
+        expect(signalExit.signal).toBeNull();
+        expect(await waitUntil(() => childPids.every((pid) => !processIsAlive(pid)))).toBe(true);
+      });
+    });
   });
 });
