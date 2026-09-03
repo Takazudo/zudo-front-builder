@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "checkedAt": "2026-09-02T21:08:22.477Z",
   "comment": "Anti-gaming rule: refresh this baseline only as part of a recorded triage; never bump it merely to turn the lane green.",
   "candidates": {
@@ -7,6 +7,7 @@
       "crate": "serde_yaml_ng",
       "repo": "acatton/serde-yaml-ng",
       "versions": ["0.10.0", "0.9.35", "0.9.36"],
+      "yanked": [],
       "branches": {
         "master": "3628102977f3ec9e02b95ef32fcec30b3df91390"
       },
@@ -34,6 +35,7 @@
         "0.0.8",
         "0.0.9"
       ],
+      "yanked": [],
       "branches": {
         "gh-pages": "ac29e73ef25d3cab64d75e77860c7a5cd5783137",
         "master": "5caeeec0512296f985135502d36cd08e8ffb23d1"
@@ -61,6 +63,7 @@
         "0.0.8",
         "0.0.9"
       ],
+      "yanked": [],
       "branches": {
         "annotations": "7fd699859f676a13183b1917cd2072982426c1ab",
         "custom-tags": "fbe258358508cde9e12c5e3cb1342443c9f1031e",
@@ -93,6 +96,7 @@
       "crate": "serde_norway",
       "repo": "cafkafk/serde-norway",
       "versions": ["0.9.35", "0.9.36", "0.9.37", "0.9.38", "0.9.39", "0.9.41", "0.9.42"],
+      "yanked": [],
       "branches": {
         "2024-10-27-bump": "7c98aa6355da90dfdbde957320bf463dff682da1",
         "main": "1d37c159fc01c269a17ab72d021b271faf29472a",
@@ -240,6 +244,7 @@
         "0.0.7",
         "0.0.8"
       ],
+      "yanked": [],
       "branches": {
         "chore/cleanup": "c4f4ef9dba9ffccacd441225156bdbbb4c04adb6",
         "feat/v0.0.31": "a1fb50918d8b7484b928118c9adffe852aacc5f1",
@@ -313,6 +318,7 @@
       "crate": "noyalib-serde-yaml",
       "repo": "sebastienrousseau/noyalib-serde-yaml",
       "versions": ["0.0.29", "0.0.30"],
+      "yanked": [],
       "branches": {
         "feat/v0.0.30": "58a23f239c061d898230748fc0745da67ca3e978",
         "feat/v0.0.31": "d6e29a7b048f630f3bda691de489515fe9a158e8",
@@ -366,6 +372,7 @@
         "1.1.0",
         "1.2.0"
       ],
+      "yanked": ["0.0.8-alpha-pre", "0.0.9"],
       "branches": {
         "bw/emit_comments": "ea07952417c157c36119a94058dc936b3e9c1839",
         "bw/esnbs": "c829f07b6487855bac5213f06bd511a4c53fe71d",
