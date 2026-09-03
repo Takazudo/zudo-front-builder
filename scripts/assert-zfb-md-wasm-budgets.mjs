@@ -23,6 +23,10 @@ const MANIFEST_ARTIFACTS = {
   "render-only": "render",
   "parse-only": "parse",
 };
+// node:zlib gzipSync(level 9) drifts by single bytes across runner CPU
+// features (#2878); wasm-bindgen/wasm-opt outputs stay byte-exact.
+export const GZIP_DRIFT_TOLERANCE_BYTES = 64;
+const TOLERANT_COLUMNS = ["gzip9", "glueGzip9"];
 const REPAIR_INSTRUCTIONS =
   "re-run with --update-manifest, then node scripts/assert-md-wasm-size-docs.mjs --fix, then pnpm format:mdx";
 
@@ -135,22 +139,84 @@ function measuredValues({ wasm, wasmGzip, glue, glueGzip }) {
   return { finalWasm: wasm, gzip9: wasmGzip, glue, glueGzip9: glueGzip };
 }
 
-function manifestMismatch(artifact, measured, documented) {
-  const manifestArtifact = MANIFEST_ARTIFACTS[artifact.label];
-  for (const column of MANIFEST_COLUMNS) {
-    if (measured[column] !== documented[manifestArtifact][column]) {
-      return new Error(
-        `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
-          `documented=${documented[manifestArtifact][column]}; ${REPAIR_INSTRUCTIONS}`,
-      );
+// Findings never throw mid-loop: main() collects every mismatch/breach across
+// all four artifacts first, so a CI run reports them all in one round trip
+// instead of one per rerun (zfb#2879). gzip9/glueGzip9 get a warning-only
+// band for compressor drift (#2878); every other column stays byte-exact.
+export function compareManifest(
+  measuredByArtifact,
+  documented,
+  { tolerance = GZIP_DRIFT_TOLERANCE_BYTES } = {},
+) {
+  const findings = [];
+  for (const artifact of ARTIFACTS) {
+    const manifestArtifact = MANIFEST_ARTIFACTS[artifact.label];
+    const measured = measuredByArtifact[artifact.label];
+    const documentedValues = documented[manifestArtifact];
+    for (const column of MANIFEST_COLUMNS) {
+      const delta = measured[column] - documentedValues[column];
+      if (delta === 0) continue;
+      const base = {
+        artifact: artifact.label,
+        column,
+        measured: measured[column],
+        documented: documentedValues[column],
+        delta,
+      };
+      if (TOLERANT_COLUMNS.includes(column) && Math.abs(delta) <= tolerance) {
+        findings.push({
+          ...base,
+          code: "gzip-drift-within-tolerance",
+          severity: "warning",
+          tolerance,
+          message:
+            `${artifact.label} ${column} (measured=${measured[column]}, ` +
+            `documented=${documentedValues[column]}, delta=${delta}) is within the ` +
+            `${tolerance}-byte compressor-drift tolerance; realigning with ` +
+            `--update-manifest is only expected alongside a real artifact change`,
+        });
+        continue;
+      }
+      findings.push({
+        ...base,
+        code: "manifest-mismatch",
+        severity: "error",
+        message:
+          `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
+          `documented=${documentedValues[column]}`,
+      });
     }
   }
-  return undefined;
+  return findings;
 }
 
-function assertManifestMatches(artifact, measured, documented) {
-  const mismatch = manifestMismatch(artifact, measured, documented);
-  if (mismatch) throw mismatch;
+export function checkCeilings(measuredByArtifact) {
+  const findings = [];
+  for (const artifact of ARTIFACTS) {
+    const measured = measuredByArtifact[artifact.label];
+    if (measured.gzip9 > artifact.ceiling) {
+      findings.push({
+        code: "ceiling-exceeded",
+        severity: "error",
+        artifact: artifact.label,
+        measured: measured.gzip9,
+        ceiling: artifact.ceiling,
+        message: `${artifact.label} gzip-9 size ${measured.gzip9} exceeds ceiling ${artifact.ceiling}`,
+      });
+    }
+  }
+  return findings;
+}
+
+export function formatFindings(findings) {
+  const errors = findings.filter((finding) => finding.severity === "error");
+  const lines = errors.map((finding) => finding.message);
+  // --update-manifest rewrites measured values only; it cannot repair a
+  // ceiling breach, so the repair line belongs to manifest mismatches alone.
+  if (errors.some((finding) => finding.code === "manifest-mismatch")) {
+    lines.push(REPAIR_INSTRUCTIONS);
+  }
+  return lines.join("\n");
 }
 
 function writeMeasuredManifest(manifestPath, measured, measuredOnVersion) {
@@ -206,14 +272,14 @@ function selfTest() {
   }
 
   const documented = SHIPPED_SIZES.measured;
-  const mismatched = { ...documented.root, finalWasm: documented.root.finalWasm + 1 };
-  let mismatch;
-  try {
-    assertManifestMatches(ARTIFACTS[0], { ...mismatched }, documented);
-  } catch (error) {
-    mismatch = error;
-  }
-  if (!mismatch?.message.includes("default finalWasm")) {
+  const mismatchedMeasuredByArtifact = {
+    default: { ...documented.root, finalWasm: documented.root.finalWasm + 1 },
+    "highlight-only": documented.highlight,
+    "render-only": documented.render,
+    "parse-only": documented.parse,
+  };
+  const mismatchFindings = compareManifest(mismatchedMeasuredByArtifact, documented);
+  if (mismatchFindings.length !== 1 || !mismatchFindings[0].message.includes("default finalWasm")) {
     throw new Error("manifest mismatch fixture did not name artifact and column");
   }
 
@@ -291,16 +357,19 @@ function main() {
         `final-wasm=${fmt(wasm)} gzip-9=${fmt(wasmGzip)} ` +
         `glue=${fmt(glue)} glue-gzip-9=${fmt(glueGzip)} ceiling=${fmt(artifact.ceiling)}`,
     );
-    if (wasmGzip > artifact.ceiling) {
-      throw new Error(
-        `${artifact.label} gzip-9 size ${wasmGzip} exceeds ceiling ${artifact.ceiling}`,
-      );
-    }
 
-    if (!args["update-manifest"]) {
-      assertManifestMatches(artifact, measured, SHIPPED_SIZES.measured);
-    }
     measuredByArtifact[artifact.label] = measured;
+  }
+
+  const findings = [
+    ...checkCeilings(measuredByArtifact),
+    ...(args["update-manifest"] ? [] : compareManifest(measuredByArtifact, SHIPPED_SIZES.measured)),
+  ];
+  for (const finding of findings) {
+    if (finding.severity === "warning") console.log(`::warning::${finding.message}`);
+  }
+  if (findings.some((finding) => finding.severity === "error")) {
+    throw new Error(formatFindings(findings));
   }
 
   const totalDist = distBytes(dist);

@@ -244,8 +244,10 @@ declaration is removable even if its package remains in `Cargo.lock`.
   eight synced doc tables were provisionally refreshed from this Mac build
   (`measuredOnVersion` stays `2.14.3`); every artifact stayed comfortably
   under its ceiling. **Those Mac bytes are not the final manifest.** The
-  `wasm-md (default)` job asserts byte-exact equality against its own ubuntu
-  build, and the #2873 section below records that the CI-versus-local gap is
+  `wasm-md (default)` job asserts equality against its own ubuntu build — the
+  two gzip columns (`gzip9`, `glueGzip9`) banded within a 64-byte tolerance
+  (#2878), the remaining columns (`finalWasm`, `glue`) byte-exact — and the
+  #2873 section below records that the CI-versus-local gap is
   up to 5,982 B at the same pin — so before this PR merges the manifest must
   be aligned from the PR's own CI build summary and the doc tables re-synced
   via `assert-md-wasm-size-docs.mjs --fix`, exactly as `a6509185` did for
