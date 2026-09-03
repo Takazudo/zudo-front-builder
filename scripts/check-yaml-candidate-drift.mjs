@@ -11,27 +11,34 @@ import { pathToFileURL } from "node:url";
  * release-PR state, archive/unarchive state, and the severity each of those
  * deltas carries.
  *
- * Out of scope: #2755 acceptance criteria 2-6 — Error::location()
- * compatibility, the 18-case differential JSON corpus, wasm32 plus
- * `pnpm test:md-wasm`, gzip-9 size deltas, transitive dependency/license
- * differences, and `cargo deny`. Those semantic checks live in the committed
+ * Out of scope: Error::location() compatibility, the 18-case differential
+ * JSON corpus, wasm32 plus `pnpm test:md-wasm`, gzip-9 size deltas,
+ * transitive dependency/license differences, and `cargo deny`. Those
+ * semantic checks live in the committed
  * `crates/zfb-content/tests/yaml_differential_harness.rs` harness.
  *
  * This watches the known candidate set only; it does not discover a brand-new
- * fork. CANDIDATE_DRIFT is evidence requiring triage against #2755. It never
- * means that #2755's semantic trigger fired.
+ * fork. The adopted pair (`noyalib`, `noyalib-serde-yaml`) is pinned in the
+ * root `Cargo.toml` (history in the DEPENDENCIES.md ledger; the standing
+ * trigger #2755 closed 2026-09-03 after PR #2854 merged the migration).
+ * CANDIDATE_DRIFT on that pair is evidence requiring a pin-bump evaluation
+ * with the committed differential harness; it never means the evaluation's
+ * verdict is decided.
  *
- * Severity. `DELTA_KINDS` is the single source of truth for both the severity
- * and the human-readable text of every delta kind, and an unknown kind throws
- * rather than defaulting, so a kind added later can never be silently
- * downgraded into a green run:
+ * Severity. `DELTA_KINDS` is the single source of truth for both the base
+ * severity and the human-readable text of every delta kind, and an unknown
+ * kind throws rather than defaulting, so a kind added later can never be
+ * silently downgraded into a green run. Severity is also role-aware: every
+ * kind below is `informational` on a `candidate`-role crate regardless of
+ * this table, so the five fallback candidates never page; on the `adopted`
+ * pair each kind keeps the severity below:
  *
  *   triage         version-published, version-yanked, version-unyanked,
  *                  tag-added, release-added, release-pr-state-changed,
  *                  release-pr-changed, repository-archived,
  *                  repository-unarchived
  *   informational  branch-added, branch-deleted, branch-advanced,
- *                  branch-diverged
+ *                  branch-diverged, version-record-touched
  *
  * Branch movement is informational because the 2026-08-31 lesson was "observe
  * every branch", not "page on every branch" — upstream feature branches take
@@ -40,6 +47,20 @@ import { pathToFileURL } from "node:url";
  * which moves only at recorded triages; a rewrite that preserves the baseline
  * head as an ancestor is reported as `branch-advanced`. A changed head with no
  * ancestry evidence at all is still an operational failure.
+ *
+ * `version-record-touched` is the between-runs tripwire. A weekly cadence
+ * cannot see an event that happens and reverts before the next run, but
+ * crates.io's per-version `updated_at` survives that reversion: sampled on
+ * 2026-09-03 it equalled `created_at` on every never-yanked version and
+ * differed only on the two yanked ones, so a vanished yank/unyank cycle still
+ * leaves an observable timestamp move. It is informational on both roles and
+ * never pages — a transient leaves no state the exact pin and its Cargo.lock
+ * checksum depend on. `updated_at` proves the record changed; it never proves
+ * a yank. The delta is suppressed for any version whose yank state changed in
+ * the same comparison, because that movement is already reported as
+ * `version-yanked`/`version-unyanked`, and a newly published version cannot
+ * produce one at all. Like `branch-advanced` it repeats every week until a
+ * recorded triage writes the observed timestamp into the baseline.
  *
  * Statuses and exit codes:
  *
@@ -54,17 +75,20 @@ import { pathToFileURL } from "node:url";
  * `scripts/file-exam-issue.sh --green` key on — `informational-drift` exits 0,
  * so it reads as a green run and never opens a tracking issue.
  *
- * Roles say which protocol a CANDIDATE_DRIFT invokes. `noyalib` and
- * `noyalib-serde-yaml` are `adopted`: the root `Cargo.toml` pins
- * `serde_yaml = { package = "noyalib-serde-yaml" }` (history in the
- * DEPENDENCIES.md ledger), so drift there calls for a pin-bump evaluation with
+ * Roles say which protocol a CANDIDATE_DRIFT invokes, and gate severity
+ * itself. `noyalib` and `noyalib-serde-yaml` are `adopted`: the root
+ * `Cargo.toml` pins `serde_yaml = { package = "noyalib-serde-yaml" }`
+ * (history in the DEPENDENCIES.md ledger), so drift there keeps each kind's
+ * table severity and calls for a pin-bump evaluation with
  * `crates/zfb-content/tests/yaml_differential_harness.rs`. The other five are
- * `candidate` and call for a re-scan against #2755. Role is configuration: it
- * is never persisted in a baseline and never compared.
+ * `candidate`: every delta on them is informational — fallback-ledger
+ * information only, with no evaluation triggered unless the adopted pair
+ * itself degrades. Role is configuration: it is never persisted in a
+ * baseline and never compared.
  *
- * Baseline/snapshot schema (schemaVersion 2):
+ * Baseline/snapshot schema (schemaVersion 3):
  * {
- *   schemaVersion: 2,
+ *   schemaVersion: 3,
  *   checkedAt: ISO-8601 string,
  *   candidates: {
  *     [candidateName]: {
@@ -72,6 +96,7 @@ import { pathToFileURL } from "node:url";
  *       repo: "owner/repository",
  *       versions: string[],
  *       yanked: string[],  // required; sorted unique; subset of versions
+ *       versionUpdatedAt: { [version]: ISO-8601 string },  // key set equals versions
  *       branches: { [branchName]: string | { sha: string } },
  *       tags: string[],
  *       releases: string[],
@@ -98,7 +123,7 @@ import { pathToFileURL } from "node:url";
  * read it.
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const NO_DRIFT = "no-drift";
 export const INFORMATIONAL_DRIFT = "informational-drift";
 export const CANDIDATE_DRIFT = "CANDIDATE_DRIFT";
@@ -138,6 +163,12 @@ export const DELTA_KINDS = Object.freeze({
   "version-unyanked": {
     severity: TRIAGE,
     describe: (delta) => `crates.io version ${delta.version} unyanked`,
+  },
+  "version-record-touched": {
+    severity: INFORMATIONAL,
+    describe: (delta) =>
+      `crates.io record for ${delta.version} modified ${delta.from} -> ${delta.to} ` +
+      "with no visible yank-state change (may indicate a yank/unyank cycle between runs)",
   },
   "tag-added": {
     severity: TRIAGE,
@@ -188,9 +219,18 @@ function deltaKind(kind) {
   return DELTA_KINDS[kind];
 }
 
-/** Severity of one delta kind. Throws rather than defaulting on an unknown kind. */
-export function deltaSeverity(kind) {
-  return deltaKind(kind).severity;
+/**
+ * Severity of one delta kind, gated by role. The kind is validated first —
+ * an unknown kind throws regardless of role — then only "adopted" or
+ * "candidate" is accepted; any other role throws rather than silently
+ * downgrading severity. Every kind is informational on a candidate-role
+ * crate; an adopted-role crate keeps each kind's table severity.
+ */
+export function deltaSeverity(kind, role) {
+  const { severity } = deltaKind(kind);
+  if (role === CANDIDATE_ROLE) return INFORMATIONAL;
+  if (role === ADOPTED_ROLE) return severity;
+  throw new Error(`unknown candidate role: ${role}`);
 }
 
 const ADOPTED_ROLE = "adopted";
@@ -389,7 +429,15 @@ export function createNetworkClients(options = {}) {
         )
         .map((version) => [version.num, version.yank_message]),
     );
-    return { versions, yanked, yankMessages };
+    const versionUpdatedAt = Object.fromEntries(
+      data.versions.map((version) => {
+        if (typeof version.updated_at !== "string" || version.updated_at === "") {
+          throw new Error(`${crate}: crates.io version ${version.num} has no updated_at`);
+        }
+        return [version.num, version.updated_at];
+      }),
+    );
+    return { versions, yanked, yankMessages, versionUpdatedAt };
   }
 
   async function githubPages(repo, resource) {
@@ -467,7 +515,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
               ? clients.pullRequest(config.repo, config.pendingReleasePr)
               : Promise.resolve(null),
           ]);
-        const { versions, yanked, yankMessages } = crateVersionsResult;
+        const { versions, yanked, yankMessages, versionUpdatedAt } = crateVersionsResult;
         const oldBranches = baseline?.candidates?.[name]?.branches ?? {};
         const branches = Object.fromEntries(
           await Promise.all(
@@ -492,6 +540,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
             repo: config.repo,
             versions,
             yanked,
+            versionUpdatedAt,
             branches,
             tags: sortedUnique(tagList.map((tag) => tag.name)),
             releases: sortedUnique(releaseList.map((release) => release.tag_name)),
@@ -552,6 +601,32 @@ function validateStringArray(value, field) {
   return null;
 }
 
+/**
+ * crates.io stamps every version with an `updated_at` that stays equal to its
+ * `created_at` until the record itself is touched — the only evidence a weekly
+ * run has of an event that reverted between two runs.
+ */
+function isIsoTimestamp(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
+function validateVersionUpdatedAt(value, versions) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "versionUpdatedAt must be an object keyed by version";
+  }
+  const keys = Object.keys(value);
+  const known = new Set(versions);
+  if (keys.length !== known.size || keys.some((version) => !known.has(version))) {
+    return "versionUpdatedAt must have exactly one entry per published version";
+  }
+  for (const [version, timestamp] of Object.entries(value)) {
+    if (!isIsoTimestamp(timestamp)) {
+      return `versionUpdatedAt.${version} must be an ISO-8601 timestamp`;
+    }
+  }
+  return null;
+}
+
 function validatePr(value, field) {
   if (value === null) return null;
   if (
@@ -586,6 +661,11 @@ export function validateCandidateRecord(candidate, { observed = false } = {}) {
   if (removals(candidate.yanked, candidate.versions).length > 0) {
     return "yanked must be a subset of versions";
   }
+  const versionUpdatedAtError = validateVersionUpdatedAt(
+    candidate.versionUpdatedAt,
+    candidate.versions,
+  );
+  if (versionUpdatedAtError) return versionUpdatedAtError;
   if (
     !candidate.branches ||
     typeof candidate.branches !== "object" ||
@@ -605,7 +685,7 @@ export function validateCandidateRecord(candidate, { observed = false } = {}) {
   const prError = validatePr(candidate.pendingReleasePr, "pendingReleasePr");
   if (prError) return prError;
   if (typeof candidate.archived !== "boolean") return "archived must be boolean";
-  if (typeof candidate.checkedAt !== "string" || Number.isNaN(Date.parse(candidate.checkedAt))) {
+  if (!isIsoTimestamp(candidate.checkedAt)) {
     return "checkedAt must be an ISO-8601 timestamp";
   }
   return null;
@@ -697,6 +777,21 @@ export function compareCandidate(name, baseline, observed) {
   for (const version of removals(baseline.yanked, observed.yanked)) {
     deltas.push({ kind: "version-unyanked", version });
   }
+  // Only versions the baseline already knew can be touched: a version-published
+  // delta carries no earlier timestamp to compare against. Where this same
+  // comparison already reports the yank-state move, that move is the report.
+  const yankStateChanged = new Set(
+    deltas
+      .filter((delta) => delta.kind === "version-yanked" || delta.kind === "version-unyanked")
+      .map((delta) => delta.version),
+  );
+  for (const version of sortedUnique(baseline.versions)) {
+    if (yankStateChanged.has(version)) continue;
+    const from = baseline.versionUpdatedAt[version];
+    const to = observed.versionUpdatedAt[version];
+    if (from === to) continue;
+    deltas.push({ kind: "version-record-touched", version, from, to });
+  }
   for (const tag of additions(baseline.tags, observed.tags)) {
     deltas.push({ kind: "tag-added", tag });
   }
@@ -733,7 +828,7 @@ export function compareCandidate(name, baseline, observed) {
   // whole candidate to CANDIDATE_DRIFT, and its informational deltas still ship.
   let status = NO_DRIFT;
   if (deltas.length > 0) {
-    status = deltas.some((delta) => deltaSeverity(delta.kind) === TRIAGE)
+    status = deltas.some((delta) => deltaSeverity(delta.kind, role) === TRIAGE)
       ? CANDIDATE_DRIFT
       : INFORMATIONAL_DRIFT;
   }
@@ -747,7 +842,7 @@ function validateSnapshot(snapshot, label) {
   if (snapshot.schemaVersion !== SCHEMA_VERSION) {
     return `${label} schemaVersion must be ${SCHEMA_VERSION}`;
   }
-  if (typeof snapshot.checkedAt !== "string" || Number.isNaN(Date.parse(snapshot.checkedAt))) {
+  if (!isIsoTimestamp(snapshot.checkedAt)) {
     return `${label} checkedAt must be an ISO-8601 timestamp`;
   }
   if (
@@ -817,12 +912,12 @@ export function compareSnapshots(baseline, observed) {
   };
 }
 
-/** The protocol a CANDIDATE_DRIFT on this candidate invokes. */
-function driftProtocol(role) {
-  return role === ADOPTED_ROLE
-    ? "adopted dependency: evaluate a pin bump with the differential harness"
-    : "candidate: re-scan against #2755";
-}
+/**
+ * The protocol a CANDIDATE_DRIFT invokes. Only an adopted-role row can carry
+ * that status — every candidate-role delta is informational — so there is
+ * exactly one protocol.
+ */
+const DRIFT_PROTOCOL = "adopted dependency: evaluate a pin bump with the differential harness";
 
 /** Render a comparison result for a human-readable CI log or issue body. */
 export function formatReport(result) {
@@ -837,14 +932,17 @@ export function formatReport(result) {
       lines.push(`- ${candidate.name}: operational failure: ${candidate.error}`);
       continue;
     }
+    // A report saved before roles existed carries no `role` on its candidate
+    // rows; recover it from configuration so a legacy --render still works.
+    const role = candidate.role ?? candidateRole(candidate.name);
     const note =
       candidate.status === INFORMATIONAL_DRIFT
-        ? "branch movement only; no triage required"
-        : driftProtocol(candidate.role);
+        ? "informational only; no triage required"
+        : DRIFT_PROTOCOL;
     lines.push(`- ${candidate.name}: ${candidate.status} (${note})`);
     for (const delta of candidate.deltas) {
-      const { severity, describe } = deltaKind(delta.kind);
-      lines.push(`  - [${severity}] ${describe(delta)}`);
+      const { describe } = deltaKind(delta.kind);
+      lines.push(`  - [${deltaSeverity(delta.kind, role)}] ${describe(delta)}`);
     }
   }
   // Snapshot-level failures (schema mismatch, monitor throw) carry no
@@ -857,16 +955,16 @@ export function formatReport(result) {
   }
   if (result.status === CANDIDATE_DRIFT) {
     lines.push(
-      "CANDIDATE_DRIFT requires triage; this report does not decide the #2755 trigger. " +
-        "Adopted-dependency deltas (noyalib, noyalib-serde-yaml) call for a pin-bump evaluation " +
-        "via crates/zfb-content/tests/yaml_differential_harness.rs; candidate deltas call for a " +
-        "re-scan against #2755. Deltas marked [informational] need neither triage nor a baseline " +
-        "refresh.",
+      "CANDIDATE_DRIFT requires triage: an adopted-dependency delta (noyalib, " +
+        "noyalib-serde-yaml) calls for a pin-bump evaluation via " +
+        "crates/zfb-content/tests/yaml_differential_harness.rs. This report never decides " +
+        "that evaluation — the harness does. Deltas marked [informational] need neither " +
+        "triage nor a baseline refresh.",
     );
   } else if (result.status === INFORMATIONAL_DRIFT) {
     lines.push(
-      "Informational drift only (branch movement on tracked upstream repositories): no triage, " +
-        "no tracking issue, and no baseline refresh is required.",
+      "Informational drift only: no triage, no tracking issue, and no baseline refresh is " +
+        "required.",
     );
   } else if (result.status === OPERATIONAL_FAILURE) {
     lines.push(

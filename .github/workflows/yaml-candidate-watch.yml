@@ -1,16 +1,24 @@
-# YAML candidate watch — weekly pre-trigger monitor for issue #2755.
+# YAML candidate watch — weekly monitor for the adopted noyalib /
+# noyalib-serde-yaml YAML pin and its five fallback candidates.
 #
-# The detector classifies every delta by severity. Triage-severity deltas —
+# The detector classifies every delta by severity, and severity is
+# role-aware: on the adopted pair, the nine triage-severity kinds —
 # crates.io publish/yank/unyank, tag, GitHub Release, release-PR
 # state/pointer, and archive state — exit 10 as CANDIDATE_DRIFT and
-# file/append the deduped tracker (#2845). Informational-severity deltas —
-# branch added/deleted/advanced/diverged — are observed and reported but
-# exit 0 as informational-drift, closing or keeping closed the tracker
-# exactly like no-drift. A CANDIDATE_DRIFT on the adopted noyalib /
-# noyalib-serde-yaml pin means a pin-bump evaluation with the committed
-# differential harness; on the other five candidates it means a re-scan
-# against #2755. The report never decides that #2755's trigger condition is
-# met. An operational failure stays distinct from both.
+# file/append the deduped tracker (#2845). Every delta on the five candidate
+# crates is informational regardless of kind, so they never page; branch
+# added/deleted/advanced/diverged and version-record-touched are always
+# informational on every crate. version-record-touched is the between-runs
+# tripwire — a crates.io per-version updated_at that moved with no yank-state
+# change to explain it — which is how a yank/unyank cycle completed between two
+# weekly runs still becomes visible.
+# Informational-severity deltas are observed and reported but exit 0 as
+# informational-drift, closing or keeping closed the tracker exactly like
+# no-drift. A CANDIDATE_DRIFT on the adopted pair means a pin-bump evaluation
+# with the committed differential harness — see the "YAML candidate watch"
+# lane paragraph in DEPENDENCIES.md for the full protocol. The report never
+# decides that evaluation's verdict. An operational failure stays distinct
+# from both.
 #
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names
@@ -115,7 +123,7 @@ jobs:
 
       - name: Surface informational drift (exit 0, no triage)
         if: steps.run_detector.outputs.rc == '0' && steps.run_detector.outputs.status == 'informational-drift'
-        run: echo "::notice title=YAML candidate watch::informational drift only (branch movement on tracked upstream repositories). Exit 0 - the tracking issue is closed or stays closed; no triage or baseline refresh is needed. See the job summary for the deltas."
+        run: echo "::notice title=YAML candidate watch::informational drift only (branch movement, or a crates.io record touch, on tracked upstream repositories). Exit 0 - the tracking issue is closed or stays closed; no triage or baseline refresh is needed. See the job summary for the deltas."
 
   file-or-close-issue:
     # One deduped tracking issue per workflow: red runs (rc 10 triage-severity
@@ -144,11 +152,12 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: >-
-            triage-severity candidate drift detected (CANDIDATE_DRIFT):
-            crates.io publish/yank/unyank, tag, Release, release-PR, or
-            archive delta; adopted noyalib/noyalib-serde-yaml deltas mean a
-            pin-bump evaluation, other candidates a re-scan against #2755:
-            https://github.com/Takazudo/zudo-front-builder/issues/2755
+            triage-severity candidate drift detected (CANDIDATE_DRIFT) on the
+            adopted noyalib/noyalib-serde-yaml pair: crates.io
+            publish/yank/unyank, tag, Release, release-PR, or archive delta
+            means a pin-bump evaluation with the differential harness. See
+            the "YAML candidate watch" lane paragraph in DEPENDENCIES.md for
+            the full protocol.
         run: bash scripts/file-exam-issue.sh "YAML candidate watch"
 
       - name: File or comment on tracking issue (operational failure)
@@ -156,9 +165,9 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: >-
-            operational failure; the monitor did not complete, so no conclusion
-            about drift may be drawn; see #2755:
-            https://github.com/Takazudo/zudo-front-builder/issues/2755
+            operational failure; the monitor did not complete, so no
+            conclusion about drift may be drawn. See the "YAML candidate
+            watch" lane paragraph in DEPENDENCIES.md for the full protocol.
         run: bash scripts/file-exam-issue.sh "YAML candidate watch"
 
       - name: Close tracking issue (green)
@@ -190,9 +199,9 @@ jobs:
         run: |
           FAILURE_KIND=""
           if [ "$DETECTOR_RC" = "10" ]; then
-            FAILURE_KIND="candidate drift detected (CANDIDATE_DRIFT; triage-severity delta, see the run summary; #2755)"
+            FAILURE_KIND="candidate drift detected (CANDIDATE_DRIFT; triage-severity delta on the adopted pair, see the run summary)"
           elif [ "$DETECTOR_RC" != "0" ]; then
-            FAILURE_KIND="operational failure (monitor incomplete; no conclusion about drift; see #2755)"
+            FAILURE_KIND="operational failure (monitor incomplete; no conclusion about drift)"
           fi
 
           if [ -z "$FAILURE_KIND" ]; then

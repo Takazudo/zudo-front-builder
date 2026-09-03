@@ -29,8 +29,11 @@ import {
   validateCandidateRecord,
 } from "../check-yaml-candidate-drift.mjs";
 
+const BASE_UPDATED_AT = "2026-08-01T00:00:00.000000Z";
+const TOUCHED_UPDATED_AT = "2026-09-01T12:00:00.000000Z";
+
 function candidate(overrides = {}) {
-  return {
+  const record = {
     crate: "noyalib",
     repo: "noyato/noyalib",
     versions: ["0.0.28"],
@@ -46,6 +49,10 @@ function candidate(overrides = {}) {
     checkedAt: "2026-08-31T17:36:36Z",
     ...overrides,
   };
+  record.versionUpdatedAt =
+    overrides.versionUpdatedAt ??
+    Object.fromEntries(record.versions.map((version) => [version, BASE_UPDATED_AT]));
+  return record;
 }
 
 function snapshots(changedName, changedCandidate) {
@@ -54,12 +61,12 @@ function snapshots(changedName, changedCandidate) {
   );
   return {
     baseline: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       checkedAt: "2026-08-31T17:36:36Z",
       candidates,
     },
     observed: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       checkedAt: "2026-09-01T00:00:00Z",
       candidates: {
         ...structuredClone(candidates),
@@ -81,6 +88,7 @@ const DOCUMENTED_DELTA_KINDS = [
   "repository-unarchived",
   "tag-added",
   "version-published",
+  "version-record-touched",
   "version-unyanked",
   "version-yanked",
 ];
@@ -110,9 +118,18 @@ describe("severity classification", () => {
   it("classifies exactly the documented delta kinds and fails closed on any other", () => {
     expect(Object.keys(DELTA_KINDS).sort()).toEqual(DOCUMENTED_DELTA_KINDS);
     for (const kind of DOCUMENTED_DELTA_KINDS) {
-      expect(deltaSeverity(kind)).toBe(kind.startsWith("branch-") ? INFORMATIONAL : TRIAGE);
+      const tableSeverity =
+        kind.startsWith("branch-") || kind === "version-record-touched" ? INFORMATIONAL : TRIAGE;
+      expect(deltaSeverity(kind, "adopted")).toBe(tableSeverity);
+      // A candidate-role crate is informational for every kind, even a kind
+      // that carries triage severity in the table above.
+      expect(deltaSeverity(kind, "candidate")).toBe(INFORMATIONAL);
     }
-    expect(() => deltaSeverity("mystery")).toThrow(/unknown delta kind/);
+    expect(() => deltaSeverity("mystery", "adopted")).toThrow(/unknown delta kind/);
+    expect(() => deltaSeverity("mystery", "candidate")).toThrow(/unknown delta kind/);
+    expect(() => deltaSeverity("version-published", "unknown-role")).toThrow(
+      /unknown candidate role/,
+    );
     expect(() =>
       formatReport({
         status: CANDIDATE_DRIFT,
@@ -179,14 +196,69 @@ describe("compareCandidate", () => {
     });
   });
 
-  it("detects an unyank as CANDIDATE_DRIFT, never an operational failure", () => {
+  it("detects an unyank as informational drift on a candidate-role crate, never an operational failure", () => {
     const result = compareCandidate(
       "serde-saphyr",
       candidate({ yanked: ["0.0.28"] }),
       candidate({ yanked: [] }),
     );
+    expect(result.status).toBe(INFORMATIONAL_DRIFT);
+    expect(result.deltas).toContainEqual({ kind: "version-unyanked", version: "0.0.28" });
+  });
+
+  it("keeps the same unyank delta CANDIDATE_DRIFT on an adopted-role crate", () => {
+    const result = compareCandidate(
+      "noyalib",
+      candidate({ yanked: ["0.0.28"] }),
+      candidate({ yanked: [] }),
+    );
     expect(result.status).toBe(CANDIDATE_DRIFT);
     expect(result.deltas).toContainEqual({ kind: "version-unyanked", version: "0.0.28" });
+  });
+
+  it("reports a crates.io record touch on a version present in both snapshots", () => {
+    const result = compareCandidate(
+      "noyalib",
+      candidate(),
+      candidate({ versionUpdatedAt: { "0.0.28": TOUCHED_UPDATED_AT } }),
+    );
+    expect(result.status).toBe(INFORMATIONAL_DRIFT);
+    expect(result.deltas).toEqual([
+      {
+        kind: "version-record-touched",
+        version: "0.0.28",
+        from: BASE_UPDATED_AT,
+        to: TOUCHED_UPDATED_AT,
+      },
+    ]);
+  });
+
+  it.each([
+    ["a yank", { yanked: [] }, { yanked: ["0.0.28"] }],
+    ["an unyank", { yanked: ["0.0.28"] }, { yanked: [] }],
+  ])(
+    "suppresses the record touch when %s moved in the same comparison",
+    (_label, before, after) => {
+      const result = compareCandidate(
+        "noyalib",
+        candidate(before),
+        candidate({ ...after, versionUpdatedAt: { "0.0.28": TOUCHED_UPDATED_AT } }),
+      );
+      expect(result.deltas.map((delta) => delta.kind)).not.toContain("version-record-touched");
+      expect(result.deltas).toHaveLength(1);
+    },
+  );
+
+  it("never reports a record touch for a newly published version", () => {
+    const result = compareCandidate(
+      "noyalib",
+      candidate(),
+      candidate({
+        versions: ["0.0.28", "0.0.29"],
+        versionUpdatedAt: { "0.0.28": BASE_UPDATED_AT, "0.0.29": TOUCHED_UPDATED_AT },
+      }),
+    );
+    expect(result.deltas).toEqual([{ kind: "version-published", version: "0.0.29" }]);
   });
 
   it("treats an observation that omits a known published version as incomplete", () => {
@@ -405,11 +477,13 @@ describe("compareSnapshots", () => {
     });
   });
 
-  it("gives a triage-severity delta on any candidate precedence over informational drift", () => {
+  it("gives a triage-severity delta on an adopted-role candidate precedence over informational drift", () => {
     const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
-    observed.candidates.saphyr = candidate({
-      crate: "saphyr",
-      repo: "owner/saphyr",
+    // A candidate-role publish would only ever be informational now, so the
+    // triage-severity delta here must land on the other adopted-role crate.
+    observed.candidates["noyalib-serde-yaml"] = candidate({
+      crate: "noyalib-serde-yaml",
+      repo: "owner/noyalib-serde-yaml",
       versions: ["0.0.28", "0.0.29"],
     });
     const result = compareSnapshots(baseline, observed);
@@ -459,13 +533,47 @@ describe("candidate record validation", () => {
     );
   });
 
-  it("fails a schemaVersion 1 snapshot under the strict schemaVersion 2 equality check", () => {
+  it("requires versionUpdatedAt on every candidate record", () => {
+    const record = candidate();
+    delete record.versionUpdatedAt;
+    expect(validateCandidateRecord(record)).toBe(
+      "versionUpdatedAt must be an object keyed by version",
+    );
+    expect(validateCandidateRecord(candidate({ versionUpdatedAt: ["0.0.28"] }))).toBe(
+      "versionUpdatedAt must be an object keyed by version",
+    );
+  });
+
+  it("requires the versionUpdatedAt key set to equal versions", () => {
+    expect(
+      validateCandidateRecord(
+        candidate({
+          versions: ["0.0.28", "0.0.29"],
+          versionUpdatedAt: { "0.0.28": BASE_UPDATED_AT },
+        }),
+      ),
+    ).toMatch(/exactly one entry per published version/);
+    expect(
+      validateCandidateRecord(candidate({ versionUpdatedAt: { "0.0.29": BASE_UPDATED_AT } })),
+    ).toMatch(/exactly one entry per published version/);
+  });
+
+  it("rejects a versionUpdatedAt value that is not an ISO-8601 timestamp", () => {
+    expect(
+      validateCandidateRecord(candidate({ versionUpdatedAt: { "0.0.28": "yesterday" } })),
+    ).toBe("versionUpdatedAt.0.0.28 must be an ISO-8601 timestamp");
+    expect(validateCandidateRecord(candidate({ versionUpdatedAt: { "0.0.28": 17 } }))).toMatch(
+      /must be an ISO-8601 timestamp/,
+    );
+  });
+
+  it("fails a schemaVersion 2 snapshot under the strict schemaVersion 3 equality check", () => {
     const { baseline, observed } = snapshots();
-    baseline.schemaVersion = 1;
+    baseline.schemaVersion = 2;
     expect(compareSnapshots(baseline, observed)).toMatchObject({
       status: OPERATIONAL_FAILURE,
       exitCode: 1,
-      errors: ["baseline schemaVersion must be 2"],
+      errors: ["baseline schemaVersion must be 3"],
     });
   });
 });
@@ -496,14 +604,14 @@ describe("report formatters", () => {
   it("never dresses branch-only movement as CANDIDATE_DRIFT", () => {
     const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("informational-drift (branch movement only; no triage required)");
+    expect(report).toContain("informational-drift (informational only; no triage required)");
     expect(report).toContain("[informational] branch");
     expect(report).toContain("no triage, no tracking issue, and no baseline refresh");
     expect(report).not.toContain("CANDIDATE_DRIFT");
     expect(report).not.toMatch(/trigger fired/i);
   });
 
-  it("names the re-scan protocol for a candidate-role crate and the harness in the footer", () => {
+  it("renders a candidate-role publish as informational, never CANDIDATE_DRIFT", () => {
     const changed = candidate({
       crate: "saphyr",
       repo: "owner/saphyr",
@@ -511,13 +619,29 @@ describe("report formatters", () => {
     });
     const { baseline, observed } = snapshots("saphyr", changed);
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).toContain("informational-drift (informational only; no triage required)");
+    expect(report).toContain("[informational] new crates.io version 0.0.29");
+    expect(report).not.toContain("CANDIDATE_DRIFT");
+    expect(report).not.toMatch(/trigger fired/i);
+  });
+
+  it("keeps the same publish delta CANDIDATE_DRIFT with a triage tag and the harness in the footer on an adopted-role crate", () => {
+    const changed = candidate({
+      crate: "noyalib-serde-yaml",
+      repo: "owner/noyalib-serde-yaml",
+      versions: ["0.0.28", "0.0.29"],
+    });
+    const { baseline, observed } = snapshots("noyalib-serde-yaml", changed);
+    const result = compareSnapshots(baseline, observed);
+    expect(result.exitCode).toBe(10);
+    const report = formatReport(result);
+    expect(report).toContain("CANDIDATE_DRIFT (adopted dependency");
     expect(report).toContain("[triage] new crates.io version 0.0.29");
     expect(report).toContain("yaml_differential_harness.rs");
     expect(report).not.toMatch(/trigger fired/i);
   });
 
-  it("renders a serde-saphyr yank with no upstream message and the candidate re-scan protocol", () => {
+  it("renders a serde-saphyr yank with no upstream message as informational", () => {
     const changed = candidate({
       crate: "serde-saphyr",
       repo: "owner/serde-saphyr",
@@ -526,20 +650,27 @@ describe("report formatters", () => {
     });
     const { baseline, observed } = snapshots("serde-saphyr", changed);
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("[triage] crates.io version 0.0.9 yanked (no upstream message)");
-    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).toContain(
+      "[informational] crates.io version 0.0.9 yanked (no upstream message)",
+    );
+    expect(report).toContain("informational-drift (informational only; no triage required)");
+    expect(report).not.toContain("CANDIDATE_DRIFT");
     expect(report).not.toMatch(/trigger fired/i);
   });
 
-  it("renders an unyank", () => {
+  it("renders an unyank on a candidate-role crate as informational", () => {
     const versions = ["0.0.8-alpha-pre", "0.0.9"];
     const { baseline, observed } = snapshots(
       "serde-saphyr",
       candidate({ crate: "serde-saphyr", repo: "owner/serde-saphyr", versions, yanked: [] }),
     );
-    Object.assign(baseline.candidates["serde-saphyr"], { versions, yanked: ["0.0.9"] });
+    Object.assign(baseline.candidates["serde-saphyr"], {
+      versions,
+      yanked: ["0.0.9"],
+      versionUpdatedAt: Object.fromEntries(versions.map((version) => [version, BASE_UPDATED_AT])),
+    });
     const report = formatReport(compareSnapshots(baseline, observed));
-    expect(report).toContain("[triage] crates.io version 0.0.9 unyanked");
+    expect(report).toContain("[informational] crates.io version 0.0.9 unyanked");
   });
 
   it("keeps an upstream yank message on one line and inside the summary's text fence", () => {
@@ -554,9 +685,31 @@ describe("report formatters", () => {
     const report = formatReport(compareSnapshots(baseline, observed));
     const line = report.split("\n").find((entry) => entry.includes("0.0.9 yanked"));
     expect(line).toBe(
-      '  - [triage] crates.io version 0.0.9 yanked (upstream message: "line one ``` line \\"two\\"")',
+      '  - [informational] crates.io version 0.0.9 yanked (upstream message: "line one ``` line \\"two\\"")',
     );
     expect(report).not.toContain("\n```");
+  });
+
+  it("renders a crates.io record touch as informational drift, never a proven yank", () => {
+    const { baseline, observed } = snapshots(
+      "noyalib",
+      candidate({
+        crate: "noyalib",
+        repo: "owner/noyalib",
+        versionUpdatedAt: { "0.0.28": TOUCHED_UPDATED_AT },
+      }),
+    );
+    const result = compareSnapshots(baseline, observed);
+    expect(result).toMatchObject({ status: INFORMATIONAL_DRIFT, exitCode: 0, errors: [] });
+    const report = formatReport(result);
+    expect(report).toContain(
+      `[informational] crates.io record for 0.0.28 modified ${BASE_UPDATED_AT} -> ` +
+        `${TOUCHED_UPDATED_AT} with no visible yank-state change (may indicate a yank/unyank ` +
+        "cycle between runs)",
+    );
+    expect(report).toContain("informational-drift (informational only; no triage required)");
+    expect(report).toContain("no triage, no tracking issue, and no baseline refresh");
+    expect(report).not.toContain("CANDIDATE_DRIFT");
   });
 
   it("renders the cause of a snapshot-level operational failure", () => {
@@ -573,7 +726,7 @@ describe("report formatters", () => {
     ).toContain("- monitor: operational failure: bad");
   });
 
-  it("still renders a saved report from before roles existed", () => {
+  it("still renders a saved report from before roles existed, recovering role from configuration", () => {
     const { baseline, observed } = snapshots(
       "saphyr",
       candidate({ crate: "saphyr", repo: "owner/saphyr", versions: ["0.0.28", "0.0.29"] }),
@@ -581,7 +734,8 @@ describe("report formatters", () => {
     const result = compareSnapshots(baseline, observed);
     for (const row of result.candidates) delete row.role;
     const report = formatReport(result);
-    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).toContain("informational-drift (informational only; no triage required)");
+    expect(report).toContain("[informational] new crates.io version 0.0.29");
     expect(report).not.toContain("undefined");
   });
 });
@@ -600,7 +754,12 @@ function response(data, { status = 200, responseHeaders = {} } = {}) {
 
 function completeClients(overrides = {}) {
   return {
-    crateVersions: async () => ({ versions: ["1.0.0"], yanked: [], yankMessages: {} }),
+    crateVersions: async () => ({
+      versions: ["1.0.0"],
+      yanked: [],
+      yankMessages: {},
+      versionUpdatedAt: { "1.0.0": "2026-08-01T00:00:00.000000Z" },
+    }),
     repo: async () => ({ archived: false }),
     branches: async () => [{ name: "main", commit: { sha: "abc" } }],
     tags: async () => [{ name: "v1.0.0" }],
@@ -634,8 +793,13 @@ describe("network clients", () => {
         requests.push({ url: String(url), options });
         return response({
           versions: [
-            { num: "1.0.0", yanked: false, yank_message: null },
-            { num: "0.9.0", yanked: true, yank_message: "broken build" },
+            { num: "1.0.0", yanked: false, yank_message: null, updated_at: "2026-08-01T00:00:00Z" },
+            {
+              num: "0.9.0",
+              yanked: true,
+              yank_message: "broken build",
+              updated_at: "2026-08-02T00:00:00Z",
+            },
           ],
         });
       },
@@ -644,9 +808,22 @@ describe("network clients", () => {
       versions: ["0.9.0", "1.0.0"],
       yanked: ["0.9.0"],
       yankMessages: { "0.9.0": "broken build" },
+      versionUpdatedAt: { "1.0.0": "2026-08-01T00:00:00Z", "0.9.0": "2026-08-02T00:00:00Z" },
     });
     expect(requests).toHaveLength(1);
     expect(requests[0].options.headers["User-Agent"]).toContain("github.com");
+  });
+
+  it.each([
+    ["missing", { num: "1.0.0", yanked: false }],
+    ["non-string", { num: "1.0.0", yanked: false, updated_at: 17 }],
+  ])("fails operationally when a crates.io updated_at is %s", async (_label, version) => {
+    const clients = createNetworkClients({
+      fetchImpl: async () => response({ versions: [version] }),
+    });
+    await expect(clients.crateVersions("demo")).rejects.toThrow(
+      /demo: crates.io version 1\.0\.0 has no updated_at/,
+    );
   });
 
   it.each([
@@ -766,7 +943,11 @@ describe("observation and CLI", () => {
   it("emits yanked and yankMessages from the crates.io client result on every candidate", async () => {
     const observedEmpty = await observeSnapshot({ clients: completeClients() });
     for (const name of TRACKED_CANDIDATES) {
-      expect(observedEmpty.candidates[name]).toMatchObject({ yanked: [], yankMessages: {} });
+      expect(observedEmpty.candidates[name]).toMatchObject({
+        yanked: [],
+        yankMessages: {},
+        versionUpdatedAt: { "1.0.0": "2026-08-01T00:00:00.000000Z" },
+      });
     }
 
     const observedYanked = await observeSnapshot({
@@ -775,6 +956,7 @@ describe("observation and CLI", () => {
           versions: ["1.0.0"],
           yanked: ["1.0.0"],
           yankMessages: { "1.0.0": "m" },
+          versionUpdatedAt: { "1.0.0": "2026-08-02T00:00:00.000000Z" },
         }),
       }),
     });
@@ -782,6 +964,7 @@ describe("observation and CLI", () => {
       expect(observedYanked.candidates[name]).toMatchObject({
         yanked: ["1.0.0"],
         yankMessages: { "1.0.0": "m" },
+        versionUpdatedAt: { "1.0.0": "2026-08-02T00:00:00.000000Z" },
       });
     }
   });
@@ -848,8 +1031,15 @@ describe("observation and CLI", () => {
     };
     const baseline = snapshotForBaseline(observed);
     expect(baseline).toMatchObject({
+      schemaVersion: 3,
       comment: BASELINE_COMMENT,
-      candidates: { demo: { branches: { main: "new" }, yanked: ["0.0.28"] } },
+      candidates: {
+        demo: {
+          branches: { main: "new" },
+          yanked: ["0.0.28"],
+          versionUpdatedAt: { "0.0.28": BASE_UPDATED_AT },
+        },
+      },
     });
     expect(baseline.candidates.demo).not.toHaveProperty("yankMessages");
   });
@@ -966,11 +1156,11 @@ describe("committed baseline guard", () => {
     });
   });
 
-  it("is a valid, self-consistent schemaVersion 2 baseline with no drift against itself", async () => {
+  it("is a valid, self-consistent schemaVersion 3 baseline with no drift against itself", async () => {
     const baseline = JSON.parse(
       await readFile(new URL("../yaml-candidate-baseline.json", import.meta.url), "utf8"),
     );
-    expect(baseline.schemaVersion).toBe(2);
+    expect(baseline.schemaVersion).toBe(3);
     for (const name of TRACKED_CANDIDATES) {
       const record = baseline.candidates[name];
       expect(validateCandidateRecord(record)).toBeNull();
