@@ -126,7 +126,9 @@ jobs:
     # exit 10 from an operational failure.
     name: File/close YAML candidate watch tracking issue
     needs: [detector]
-    if: always()
+    # The tracker is an exact-`main` contract: an off-main workflow_dispatch may
+    # exercise the detector but must never file, append to, or --green-close it.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -172,7 +174,7 @@ jobs:
     # than the detector job result.
     name: Notify via IFTTT on failure
     needs: [detector]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
