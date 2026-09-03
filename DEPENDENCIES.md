@@ -239,12 +239,21 @@ declaration is removable even if its package remains in `Cargo.lock`.
   `pnpm format:check`. The Mac build's measured wasm bytes differed from
   this repository's committed manifest for reasons unrelated to the pin
   (platform-specific `wasm-opt`/`wasm-bindgen` codegen, not a semantic
-  regression — the eval topic's Linux-measured deltas do not reproduce
-  byte-for-byte on this Mac), so `crates/zfb-md-wasm/shipped-sizes.json` and
-  its eight synced doc tables were refreshed from this build
+  regression — the eval topic's Mac-measured deltas do not reproduce
+  byte-for-byte on CI), so `crates/zfb-md-wasm/shipped-sizes.json` and its
+  eight synced doc tables were provisionally refreshed from this Mac build
   (`measuredOnVersion` stays `2.14.3`); every artifact stayed comfortably
-  under its ceiling. **Next trigger:** unchanged from above — the next
-  lockstep release beyond 0.0.31, or a yank of either adopted version.
+  under its ceiling. **Those Mac bytes are not the final manifest.** The
+  `wasm-md (default)` job asserts byte-exact equality against its own ubuntu
+  build, and the #2873 section below records that the CI-versus-local gap is
+  up to 5,982 B at the same pin — so before this PR merges the manifest must
+  be aligned from the PR's own CI build summary and the doc tables re-synced
+  via `assert-md-wasm-size-docs.mjs --fix`, exactly as `a6509185` did for
+  0.0.30. The harness label pair (`CURRENT_ADAPTER_NAME` and the fixture's
+  `adapter` field) was relabelled to `0.0.31` in lockstep; the corpus and the
+  18 baseline cases are untouched. **Next trigger:** unchanged from above —
+  the next lockstep release beyond 0.0.31, or a yank of either adopted
+  version.
 
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
@@ -1403,7 +1412,10 @@ alongside it and was removed before commit. The harness's
 equal to the baseline fixture's own `adapter` field, so the two must agree
 with each other rather than with the resolved crate version. Editing it
 without editing the immutable fixture would have broken a passing assertion
-for no evidentiary gain, so it was deliberately left alone.
+for no evidentiary gain, so it was deliberately left alone. (The pin-bump
+topic [#2875](https://github.com/Takazudo/zudo-front-builder/issues/2875)
+later relabelled both strings to `0.0.31` together; the 18 cases themselves
+are unchanged.)
 
 Every protected assertion passed unchanged under P1:
 `crates/zfb-content/tests/error_messages.rs` (2/2),
