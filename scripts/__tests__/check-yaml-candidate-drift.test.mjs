@@ -387,6 +387,19 @@ describe("compareSnapshots", () => {
       exitCode: 1,
     });
   });
+
+  it("echoes the configured role onto failure rows, and null onto the unknown-candidate row", () => {
+    const { baseline, observed } = snapshots();
+    observed.candidates.noyalib = { error: "crates.io responded 503" };
+    delete observed.candidates.saphyr;
+    baseline.candidates.mystery_fork = candidate();
+    const rows = Object.fromEntries(
+      compareSnapshots(baseline, observed).candidates.map((row) => [row.name, row]),
+    );
+    expect(rows.noyalib).toMatchObject({ role: "adopted", status: OPERATIONAL_FAILURE });
+    expect(rows.saphyr).toMatchObject({ role: "candidate", status: OPERATIONAL_FAILURE });
+    expect(rows.baseline).toMatchObject({ role: null, status: OPERATIONAL_FAILURE });
+  });
 });
 
 describe("report formatters", () => {
@@ -434,6 +447,18 @@ describe("report formatters", () => {
     expect(report).toContain("[triage] new crates.io version 0.0.29");
     expect(report).toContain("yaml_differential_harness.rs");
     expect(report).not.toMatch(/trigger fired/i);
+  });
+
+  it("still renders a saved report from before roles existed", () => {
+    const { baseline, observed } = snapshots(
+      "saphyr",
+      candidate({ crate: "saphyr", repo: "owner/saphyr", versions: ["0.0.28", "0.0.29"] }),
+    );
+    const result = compareSnapshots(baseline, observed);
+    for (const row of result.candidates) delete row.role;
+    const report = formatReport(result);
+    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).not.toContain("undefined");
   });
 });
 

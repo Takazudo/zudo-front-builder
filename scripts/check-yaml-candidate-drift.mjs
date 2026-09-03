@@ -807,7 +807,7 @@ export function formatReport(result) {
       );
       describeDeltas(candidate);
     } else {
-      lines.push(`- ${candidate.name}: CANDIDATE_DRIFT (${driftProtocol(candidate.role)})`);
+      lines.push(`- ${candidate.name}: ${CANDIDATE_DRIFT} (${driftProtocol(candidate.role)})`);
       describeDeltas(candidate);
     }
   }
