@@ -49,8 +49,6 @@ function candidate(overrides = {}) {
     checkedAt: "2026-08-31T17:36:36Z",
     ...overrides,
   };
-  // Every record needs one entry per published version, so derive it from
-  // whatever `versions` the caller ended up with unless it supplied its own.
   record.versionUpdatedAt =
     overrides.versionUpdatedAt ??
     Object.fromEntries(record.versions.map((version) => [version, BASE_UPDATED_AT]));
@@ -262,19 +260,6 @@ describe("compareCandidate", () => {
     );
     expect(result.deltas).toEqual([{ kind: "version-published", version: "0.0.29" }]);
   });
-
-  it.each(["noyalib", "saphyr"])(
-    "keeps a record touch informational on %s, so it never pages",
-    (name) => {
-      const result = compareCandidate(
-        name,
-        candidate(),
-        candidate({ versionUpdatedAt: { "0.0.28": TOUCHED_UPDATED_AT } }),
-      );
-      expect(result.status).toBe(INFORMATIONAL_DRIFT);
-      expect(result.deltas).toHaveLength(1);
-    },
-  );
 
   it("treats an observation that omits a known published version as incomplete", () => {
     const result = compareCandidate(

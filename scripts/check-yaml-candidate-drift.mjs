@@ -606,6 +606,10 @@ function validateStringArray(value, field) {
  * `created_at` until the record itself is touched — the only evidence a weekly
  * run has of an event that reverted between two runs.
  */
+function isIsoTimestamp(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
+}
+
 function validateVersionUpdatedAt(value, versions) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return "versionUpdatedAt must be an object keyed by version";
@@ -616,7 +620,7 @@ function validateVersionUpdatedAt(value, versions) {
     return "versionUpdatedAt must have exactly one entry per published version";
   }
   for (const [version, timestamp] of Object.entries(value)) {
-    if (typeof timestamp !== "string" || Number.isNaN(Date.parse(timestamp))) {
+    if (!isIsoTimestamp(timestamp)) {
       return `versionUpdatedAt.${version} must be an ISO-8601 timestamp`;
     }
   }
@@ -681,7 +685,7 @@ export function validateCandidateRecord(candidate, { observed = false } = {}) {
   const prError = validatePr(candidate.pendingReleasePr, "pendingReleasePr");
   if (prError) return prError;
   if (typeof candidate.archived !== "boolean") return "archived must be boolean";
-  if (typeof candidate.checkedAt !== "string" || Number.isNaN(Date.parse(candidate.checkedAt))) {
+  if (!isIsoTimestamp(candidate.checkedAt)) {
     return "checkedAt must be an ISO-8601 timestamp";
   }
   return null;
@@ -838,7 +842,7 @@ function validateSnapshot(snapshot, label) {
   if (snapshot.schemaVersion !== SCHEMA_VERSION) {
     return `${label} schemaVersion must be ${SCHEMA_VERSION}`;
   }
-  if (typeof snapshot.checkedAt !== "string" || Number.isNaN(Date.parse(snapshot.checkedAt))) {
+  if (!isIsoTimestamp(snapshot.checkedAt)) {
     return `${label} checkedAt must be an ISO-8601 timestamp`;
   }
   if (
@@ -908,12 +912,12 @@ export function compareSnapshots(baseline, observed) {
   };
 }
 
-/** The protocol a CANDIDATE_DRIFT on this candidate invokes. */
-function driftProtocol(role) {
-  return role === ADOPTED_ROLE
-    ? "adopted dependency: evaluate a pin bump with the differential harness"
-    : "candidate: fallback ledger only; no evaluation unless the adopted pair degrades";
-}
+/**
+ * The protocol a CANDIDATE_DRIFT invokes. Only an adopted-role row can carry
+ * that status — every candidate-role delta is informational — so there is
+ * exactly one protocol.
+ */
+const DRIFT_PROTOCOL = "adopted dependency: evaluate a pin bump with the differential harness";
 
 /** Render a comparison result for a human-readable CI log or issue body. */
 export function formatReport(result) {
@@ -934,7 +938,7 @@ export function formatReport(result) {
     const note =
       candidate.status === INFORMATIONAL_DRIFT
         ? "informational only; no triage required"
-        : driftProtocol(role);
+        : DRIFT_PROTOCOL;
     lines.push(`- ${candidate.name}: ${candidate.status} (${note})`);
     for (const delta of candidate.deltas) {
       const { describe } = deltaKind(delta.kind);
