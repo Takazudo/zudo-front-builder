@@ -38,7 +38,7 @@ import { pathToFileURL } from "node:url";
  *                  release-pr-changed, repository-archived,
  *                  repository-unarchived
  *   informational  branch-added, branch-deleted, branch-advanced,
- *                  branch-diverged
+ *                  branch-diverged, version-record-touched
  *
  * Branch movement is informational because the 2026-08-31 lesson was "observe
  * every branch", not "page on every branch" — upstream feature branches take
@@ -47,6 +47,20 @@ import { pathToFileURL } from "node:url";
  * which moves only at recorded triages; a rewrite that preserves the baseline
  * head as an ancestor is reported as `branch-advanced`. A changed head with no
  * ancestry evidence at all is still an operational failure.
+ *
+ * `version-record-touched` is the between-runs tripwire. A weekly cadence
+ * cannot see an event that happens and reverts before the next run, but
+ * crates.io's per-version `updated_at` survives that reversion: sampled on
+ * 2026-09-03 it equalled `created_at` on every never-yanked version and
+ * differed only on the two yanked ones, so a vanished yank/unyank cycle still
+ * leaves an observable timestamp move. It is informational on both roles and
+ * never pages — a transient leaves no state the exact pin and its Cargo.lock
+ * checksum depend on. `updated_at` proves the record changed; it never proves
+ * a yank. The delta is suppressed for any version whose yank state changed in
+ * the same comparison, because that movement is already reported as
+ * `version-yanked`/`version-unyanked`, and a newly published version cannot
+ * produce one at all. Like `branch-advanced` it repeats every week until a
+ * recorded triage writes the observed timestamp into the baseline.
  *
  * Statuses and exit codes:
  *
@@ -72,9 +86,9 @@ import { pathToFileURL } from "node:url";
  * itself degrades. Role is configuration: it is never persisted in a
  * baseline and never compared.
  *
- * Baseline/snapshot schema (schemaVersion 2):
+ * Baseline/snapshot schema (schemaVersion 3):
  * {
- *   schemaVersion: 2,
+ *   schemaVersion: 3,
  *   checkedAt: ISO-8601 string,
  *   candidates: {
  *     [candidateName]: {
@@ -82,6 +96,7 @@ import { pathToFileURL } from "node:url";
  *       repo: "owner/repository",
  *       versions: string[],
  *       yanked: string[],  // required; sorted unique; subset of versions
+ *       versionUpdatedAt: { [version]: ISO-8601 string },  // key set equals versions
  *       branches: { [branchName]: string | { sha: string } },
  *       tags: string[],
  *       releases: string[],
@@ -108,7 +123,7 @@ import { pathToFileURL } from "node:url";
  * read it.
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const NO_DRIFT = "no-drift";
 export const INFORMATIONAL_DRIFT = "informational-drift";
 export const CANDIDATE_DRIFT = "CANDIDATE_DRIFT";
@@ -148,6 +163,12 @@ export const DELTA_KINDS = Object.freeze({
   "version-unyanked": {
     severity: TRIAGE,
     describe: (delta) => `crates.io version ${delta.version} unyanked`,
+  },
+  "version-record-touched": {
+    severity: INFORMATIONAL,
+    describe: (delta) =>
+      `crates.io record for ${delta.version} modified ${delta.from} -> ${delta.to} ` +
+      "with no visible yank-state change (may indicate a yank/unyank cycle between runs)",
   },
   "tag-added": {
     severity: TRIAGE,
@@ -408,7 +429,15 @@ export function createNetworkClients(options = {}) {
         )
         .map((version) => [version.num, version.yank_message]),
     );
-    return { versions, yanked, yankMessages };
+    const versionUpdatedAt = Object.fromEntries(
+      data.versions.map((version) => {
+        if (typeof version.updated_at !== "string" || version.updated_at === "") {
+          throw new Error(`${crate}: crates.io version ${version.num} has no updated_at`);
+        }
+        return [version.num, version.updated_at];
+      }),
+    );
+    return { versions, yanked, yankMessages, versionUpdatedAt };
   }
 
   async function githubPages(repo, resource) {
@@ -486,7 +515,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
               ? clients.pullRequest(config.repo, config.pendingReleasePr)
               : Promise.resolve(null),
           ]);
-        const { versions, yanked, yankMessages } = crateVersionsResult;
+        const { versions, yanked, yankMessages, versionUpdatedAt } = crateVersionsResult;
         const oldBranches = baseline?.candidates?.[name]?.branches ?? {};
         const branches = Object.fromEntries(
           await Promise.all(
@@ -511,6 +540,7 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
             repo: config.repo,
             versions,
             yanked,
+            versionUpdatedAt,
             branches,
             tags: sortedUnique(tagList.map((tag) => tag.name)),
             releases: sortedUnique(releaseList.map((release) => release.tag_name)),
@@ -571,6 +601,28 @@ function validateStringArray(value, field) {
   return null;
 }
 
+/**
+ * crates.io stamps every version with an `updated_at` that stays equal to its
+ * `created_at` until the record itself is touched — the only evidence a weekly
+ * run has of an event that reverted between two runs.
+ */
+function validateVersionUpdatedAt(value, versions) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "versionUpdatedAt must be an object keyed by version";
+  }
+  const keys = Object.keys(value);
+  const known = new Set(versions);
+  if (keys.length !== known.size || keys.some((version) => !known.has(version))) {
+    return "versionUpdatedAt must have exactly one entry per published version";
+  }
+  for (const [version, timestamp] of Object.entries(value)) {
+    if (typeof timestamp !== "string" || Number.isNaN(Date.parse(timestamp))) {
+      return `versionUpdatedAt.${version} must be an ISO-8601 timestamp`;
+    }
+  }
+  return null;
+}
+
 function validatePr(value, field) {
   if (value === null) return null;
   if (
@@ -605,6 +657,11 @@ export function validateCandidateRecord(candidate, { observed = false } = {}) {
   if (removals(candidate.yanked, candidate.versions).length > 0) {
     return "yanked must be a subset of versions";
   }
+  const versionUpdatedAtError = validateVersionUpdatedAt(
+    candidate.versionUpdatedAt,
+    candidate.versions,
+  );
+  if (versionUpdatedAtError) return versionUpdatedAtError;
   if (
     !candidate.branches ||
     typeof candidate.branches !== "object" ||
@@ -715,6 +772,21 @@ export function compareCandidate(name, baseline, observed) {
   }
   for (const version of removals(baseline.yanked, observed.yanked)) {
     deltas.push({ kind: "version-unyanked", version });
+  }
+  // Only versions the baseline already knew can be touched: a version-published
+  // delta carries no earlier timestamp to compare against. Where this same
+  // comparison already reports the yank-state move, that move is the report.
+  const yankStateChanged = new Set(
+    deltas
+      .filter((delta) => delta.kind === "version-yanked" || delta.kind === "version-unyanked")
+      .map((delta) => delta.version),
+  );
+  for (const version of sortedUnique(baseline.versions)) {
+    if (yankStateChanged.has(version)) continue;
+    const from = baseline.versionUpdatedAt[version];
+    const to = observed.versionUpdatedAt[version];
+    if (from === to) continue;
+    deltas.push({ kind: "version-record-touched", version, from, to });
   }
   for (const tag of additions(baseline.tags, observed.tags)) {
     deltas.push({ kind: "tag-added", tag });
