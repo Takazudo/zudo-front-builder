@@ -532,33 +532,45 @@ describe("report formatters", () => {
   });
 
   it("renders an unyank", () => {
-    const baselineCandidate = candidate({
-      crate: "serde-saphyr",
-      repo: "owner/serde-saphyr",
-      versions: ["0.0.8-alpha-pre", "0.0.9"],
-      yanked: ["0.0.9"],
-    });
-    const observedCandidate = candidate({
-      crate: "serde-saphyr",
-      repo: "owner/serde-saphyr",
-      versions: ["0.0.8-alpha-pre", "0.0.9"],
-      yanked: [],
-    });
-    const candidates = Object.fromEntries(
-      TRACKED_CANDIDATES.map((name) => [name, candidate({ crate: name, repo: `owner/${name}` })]),
+    const versions = ["0.0.8-alpha-pre", "0.0.9"];
+    const { baseline, observed } = snapshots(
+      "serde-saphyr",
+      candidate({ crate: "serde-saphyr", repo: "owner/serde-saphyr", versions, yanked: [] }),
     );
-    const baseline = {
-      schemaVersion: 2,
-      checkedAt: "2026-08-31T17:36:36Z",
-      candidates: { ...candidates, "serde-saphyr": baselineCandidate },
-    };
-    const observed = {
-      schemaVersion: 2,
-      checkedAt: "2026-09-01T00:00:00Z",
-      candidates: { ...structuredClone(candidates), "serde-saphyr": observedCandidate },
-    };
+    Object.assign(baseline.candidates["serde-saphyr"], { versions, yanked: ["0.0.9"] });
     const report = formatReport(compareSnapshots(baseline, observed));
     expect(report).toContain("[triage] crates.io version 0.0.9 unyanked");
+  });
+
+  it("keeps an upstream yank message on one line and inside the summary's text fence", () => {
+    const changed = candidate({
+      crate: "serde-saphyr",
+      repo: "owner/serde-saphyr",
+      versions: ["0.0.28", "0.0.9"],
+      yanked: ["0.0.9"],
+      yankMessages: { "0.0.9": 'line one\n```\nline "two"' },
+    });
+    const { baseline, observed } = snapshots("serde-saphyr", changed);
+    const report = formatReport(compareSnapshots(baseline, observed));
+    const line = report.split("\n").find((entry) => entry.includes("0.0.9 yanked"));
+    expect(line).toBe(
+      '  - [triage] crates.io version 0.0.9 yanked (upstream message: "line one ``` line \\"two\\"")',
+    );
+    expect(report).not.toContain("\n```");
+  });
+
+  it("renders the cause of a snapshot-level operational failure", () => {
+    const report = formatReport({
+      status: OPERATIONAL_FAILURE,
+      exitCode: 1,
+      checkedAt: null,
+      candidates: [],
+      errors: [{ candidate: "monitor", message: "ENOENT: baseline missing" }],
+    });
+    expect(report).toContain("- monitor: operational failure: ENOENT: baseline missing");
+    expect(
+      formatReport({ status: OPERATIONAL_FAILURE, exitCode: 1, candidates: [], errors: ["bad"] }),
+    ).toContain("- monitor: operational failure: bad");
   });
 
   it("still renders a saved report from before roles existed", () => {
@@ -962,9 +974,6 @@ describe("committed baseline guard", () => {
     for (const name of TRACKED_CANDIDATES) {
       const record = baseline.candidates[name];
       expect(validateCandidateRecord(record)).toBeNull();
-      for (const version of record.yanked) {
-        expect(record.versions).toContain(version);
-      }
     }
     const observed = structuredClone(baseline);
     observed.checkedAt = new Date().toISOString();

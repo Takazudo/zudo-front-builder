@@ -55,9 +55,9 @@ import { pathToFileURL } from "node:url";
  * so it reads as a green run and never opens a tracking issue.
  *
  * Roles say which protocol a CANDIDATE_DRIFT invokes. `noyalib` and
- * `noyalib-serde-yaml` are `adopted`: zfb pins
- * `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.30" }` since
- * PR #2854, so drift there calls for a pin-bump evaluation with
+ * `noyalib-serde-yaml` are `adopted`: the root `Cargo.toml` pins
+ * `serde_yaml = { package = "noyalib-serde-yaml" }` (history in the
+ * DEPENDENCIES.md ledger), so drift there calls for a pin-bump evaluation with
  * `crates/zfb-content/tests/yaml_differential_harness.rs`. The other five are
  * `candidate` and call for a re-scan against #2755. Role is configuration: it
  * is never persisted in a baseline and never compared.
@@ -126,9 +126,13 @@ export const DELTA_KINDS = Object.freeze({
   },
   "version-yanked": {
     severity: TRIAGE,
+    // The message is upstream-controlled free text that lands inside a
+    // one-line-per-delta report and a ```text fence in the job summary.
     describe: (delta) =>
       delta.message
-        ? `crates.io version ${delta.version} yanked (upstream message: "${delta.message}")`
+        ? `crates.io version ${delta.version} yanked (upstream message: ${JSON.stringify(
+            delta.message.replace(/\s+/g, " ").trim().slice(0, 200),
+          )})`
         : `crates.io version ${delta.version} yanked (no upstream message)`,
   },
   "version-unyanked": {
@@ -240,6 +244,10 @@ export const CANDIDATE_CONFIG = Object.freeze({
 /** Role is configuration only: never persisted in a baseline, never compared. */
 function candidateRole(name) {
   return CANDIDATE_CONFIG[name]?.role ?? CANDIDATE_ROLE;
+}
+
+function failureRow(name, error) {
+  return { name, role: candidateRole(name), status: OPERATIONAL_FAILURE, error };
 }
 
 export const BASELINE_COMMENT =
@@ -371,19 +379,13 @@ export function createNetworkClients(options = {}) {
     const url = `https://crates.io/api/v1/crates/${encodeURIComponent(crate)}/versions`;
     const { data } = await get(url, cratesHeaders());
     if (!Array.isArray(data.versions)) throw new Error(`${crate}: malformed crates.io response`);
-    const versions = [...new Set(data.versions.map((version) => version.num))].sort();
-    const yanked = [
-      ...new Set(
-        data.versions.filter((version) => version.yanked === true).map((version) => version.num),
-      ),
-    ].sort();
+    const yankedEntries = data.versions.filter((version) => version.yanked === true);
+    const versions = sortedUnique(data.versions.map((version) => version.num));
+    const yanked = sortedUnique(yankedEntries.map((version) => version.num));
     const yankMessages = Object.fromEntries(
-      data.versions
+      yankedEntries
         .filter(
-          (version) =>
-            version.yanked === true &&
-            typeof version.yank_message === "string" &&
-            version.yank_message !== "",
+          (version) => typeof version.yank_message === "string" && version.yank_message !== "",
         )
         .map((version) => [version.num, version.yank_message]),
     );
@@ -491,8 +493,8 @@ export async function observeSnapshot({ baseline, clients = createNetworkClients
             versions,
             yanked,
             branches,
-            tags: [...new Set(tagList.map((tag) => tag.name))].sort(),
-            releases: [...new Set(releaseList.map((release) => release.tag_name))].sort(),
+            tags: sortedUnique(tagList.map((tag) => tag.name)),
+            releases: sortedUnique(releaseList.map((release) => release.tag_name)),
             pendingReleasePr: pullRequest
               ? { number: config.pendingReleasePr, state: pullRequestState(pullRequest) }
               : null,
@@ -581,7 +583,7 @@ export function validateCandidateRecord(candidate, { observed = false } = {}) {
     const error = validateStringArray(candidate[field], field);
     if (error) return error;
   }
-  if (candidate.yanked.some((version) => !candidate.versions.includes(version))) {
+  if (removals(candidate.yanked, candidate.versions).length > 0) {
     return "yanked must be a subset of versions";
   }
   if (
@@ -609,14 +611,17 @@ export function validateCandidateRecord(candidate, { observed = false } = {}) {
   return null;
 }
 
+function sortedUnique(values) {
+  return [...new Set(values)].sort();
+}
+
 function additions(before, after) {
   const known = new Set(before);
-  return [...new Set(after)].filter((value) => !known.has(value)).sort();
+  return sortedUnique(after).filter((value) => !known.has(value));
 }
 
 function removals(before, after) {
-  const observed = new Set(after);
-  return [...new Set(before)].filter((value) => !observed.has(value)).sort();
+  return additions(after, before);
 }
 
 function compareBranches(before, after) {
@@ -664,31 +669,20 @@ function compareBranches(before, after) {
 export function compareCandidate(name, baseline, observed) {
   const role = candidateRole(name);
   const baselineError = validateCandidateRecord(baseline);
-  if (baselineError) {
-    return { name, role, status: OPERATIONAL_FAILURE, error: `invalid baseline: ${baselineError}` };
-  }
+  if (baselineError) return failureRow(name, `invalid baseline: ${baselineError}`);
   const observedError = validateCandidateRecord(observed, { observed: true });
-  if (observedError) {
-    return { name, role, status: OPERATIONAL_FAILURE, error: observedError };
-  }
+  if (observedError) return failureRow(name, observedError);
   if (baseline.crate !== observed.crate || baseline.repo !== observed.repo) {
-    return {
-      name,
-      role,
-      status: OPERATIONAL_FAILURE,
-      error: "observed crate/repo identity does not match the baseline",
-    };
+    return failureRow(name, "observed crate/repo identity does not match the baseline");
   }
 
   const deltas = [];
   const missingVersions = removals(baseline.versions, observed.versions);
   if (missingVersions.length > 0) {
-    return {
+    return failureRow(
       name,
-      role,
-      status: OPERATIONAL_FAILURE,
-      error: `observation omitted known crates.io version(s): ${missingVersions.join(", ")}`,
-    };
+      `observation omitted known crates.io version(s): ${missingVersions.join(", ")}`,
+    );
   }
   for (const version of additions(baseline.versions, observed.versions)) {
     deltas.push({ kind: "version-published", version });
@@ -712,7 +706,7 @@ export function compareCandidate(name, baseline, observed) {
 
   const branchComparison = compareBranches(baseline.branches, observed.branches);
   if (branchComparison.errors.length > 0) {
-    return { name, role, status: OPERATIONAL_FAILURE, error: branchComparison.errors.join("; ") };
+    return failureRow(name, branchComparison.errors.join("; "));
   }
   deltas.push(...branchComparison.deltas);
 
@@ -783,20 +777,10 @@ export function compareSnapshots(baseline, observed) {
 
   const results = TRACKED_CANDIDATES.map((name) => {
     if (!(name in baseline.candidates)) {
-      return {
-        name,
-        role: candidateRole(name),
-        status: OPERATIONAL_FAILURE,
-        error: "candidate missing from baseline",
-      };
+      return failureRow(name, "candidate missing from baseline");
     }
     if (!(name in observed.candidates)) {
-      return {
-        name,
-        role: candidateRole(name),
-        status: OPERATIONAL_FAILURE,
-        error: "candidate was not observed",
-      };
+      return failureRow(name, "candidate was not observed");
     }
     return compareCandidate(name, baseline.candidates[name], observed.candidates[name]);
   });
@@ -833,10 +817,6 @@ export function compareSnapshots(baseline, observed) {
   };
 }
 
-function describeDelta(delta) {
-  return deltaKind(delta.kind).describe(delta);
-}
-
 /** The protocol a CANDIDATE_DRIFT on this candidate invokes. */
 function driftProtocol(role) {
   return role === ADOPTED_ROLE
@@ -848,24 +828,31 @@ function driftProtocol(role) {
 export function formatReport(result) {
   const lines = [`YAML candidate watch: ${result.status}`];
   if (result.checkedAt) lines.push(`Checked at: ${result.checkedAt}`);
-  const describeDeltas = (candidate) => {
-    for (const delta of candidate.deltas) {
-      lines.push(`  - [${deltaSeverity(delta.kind)}] ${describeDelta(delta)}`);
-    }
-  };
   for (const candidate of result.candidates) {
     if (candidate.status === NO_DRIFT) {
       lines.push(`- ${candidate.name}: no-drift`);
-    } else if (candidate.status === OPERATIONAL_FAILURE) {
+      continue;
+    }
+    if (candidate.status === OPERATIONAL_FAILURE) {
       lines.push(`- ${candidate.name}: operational failure: ${candidate.error}`);
-    } else if (candidate.status === INFORMATIONAL_DRIFT) {
-      lines.push(
-        `- ${candidate.name}: ${INFORMATIONAL_DRIFT} (branch movement only; no triage required)`,
-      );
-      describeDeltas(candidate);
-    } else {
-      lines.push(`- ${candidate.name}: ${CANDIDATE_DRIFT} (${driftProtocol(candidate.role)})`);
-      describeDeltas(candidate);
+      continue;
+    }
+    const note =
+      candidate.status === INFORMATIONAL_DRIFT
+        ? "branch movement only; no triage required"
+        : driftProtocol(candidate.role);
+    lines.push(`- ${candidate.name}: ${candidate.status} (${note})`);
+    for (const delta of candidate.deltas) {
+      const { severity, describe } = deltaKind(delta.kind);
+      lines.push(`  - [${severity}] ${describe(delta)}`);
+    }
+  }
+  // Snapshot-level failures (schema mismatch, monitor throw) carry no
+  // candidate rows; `errors` holds either bare strings or {candidate, message}.
+  for (const error of result.errors ?? []) {
+    if (typeof error === "string") lines.push(`- monitor: operational failure: ${error}`);
+    else if (!result.candidates.some((candidate) => candidate.name === error.candidate)) {
+      lines.push(`- ${error.candidate}: operational failure: ${error.message}`);
     }
   }
   if (result.status === CANDIDATE_DRIFT) {
@@ -916,7 +903,7 @@ export function parseCliArgs(args) {
   return options;
 }
 
-async function readBaseline(path) {
+async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
 }
 
@@ -929,12 +916,12 @@ export async function runCli(
     if (options.render) {
       // Pure formatter: it reads the saved --json result and nothing else — no
       // network, and deliberately no baseline read.
-      stdout.write(formatReport(JSON.parse(await readFile(options.render, "utf8"))));
+      stdout.write(formatReport(await readJson(options.render)));
       return 0;
     }
     let baseline;
     try {
-      baseline = await readBaseline(options.baseline);
+      baseline = await readJson(options.baseline);
     } catch (error) {
       if (!options.snapshot) throw error;
       if (error.code !== "ENOENT") throw error;

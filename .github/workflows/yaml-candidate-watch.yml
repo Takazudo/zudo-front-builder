@@ -47,7 +47,6 @@ jobs:
       GITHUB_TOKEN: ${{ github.token }}
     outputs:
       rc: ${{ steps.run_detector.outputs.rc }}
-      status: ${{ steps.run_detector.outputs.status }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1

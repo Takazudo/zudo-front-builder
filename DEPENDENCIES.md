@@ -429,8 +429,9 @@ declaration is removable even if its package remains in `Cargo.lock`.
   head that changed without ancestry evidence is still an operational
   failure — resolving it is itself a recorded triage that may refresh the
   baseline. What a `CANDIDATE_DRIFT` means depends on the crate's role: for
-  the adopted pair (`noyalib`, `noyalib-serde-yaml`, pinned `=0.0.30` since
-  PR #2854) run `crates/zfb-content/tests/yaml_differential_harness.rs`
+  the adopted pair (`noyalib`, `noyalib-serde-yaml`; the current pin lives in
+  the root `Cargo.toml`, its history in the ledger above) run
+  `crates/zfb-content/tests/yaml_differential_harness.rs`
   against the new lockstep pair and record the verdict as a new evaluation
   topic (pin bump if 18/18 plus the Phase 2 checks, otherwise record the
   blocker); for the five candidates re-scan under #2755. The watcher never
@@ -438,7 +439,7 @@ declaration is removable even if its package remains in `Cargo.lock`.
   part of a recorded triage, never merely to turn the lane green, and
   branch-only churn no longer requires one. The only refresh recipe is
   write-then-copy —
-  `GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
+  `S=$(mktemp -d) && GITHUB_TOKEN=$(gh auth token) node scripts/check-yaml-candidate-drift.mjs --snapshot > "$S/snap.json" && cp "$S/snap.json" scripts/yaml-candidate-baseline.json && pnpm exec prettier --write scripts/yaml-candidate-baseline.json`
   — because the detector reads the baseline it is about to replace for
   branch-ancestry evidence, so `--snapshot` output must never be redirected
   onto the baseline path.
