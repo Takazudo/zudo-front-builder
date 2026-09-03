@@ -36,7 +36,7 @@ migration. `./highlight` is also backward-compatible. New `./render` and
 | `.` | 1,514,540 B | `init`, `compile`, `renderHtml`, `parseToAst`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `toMdastRoot`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `MdastAdapterError` | Full current compile/render/parse/raw-mdast/highlight surface |
 | `./highlight` | 817,922 B | `init`, `highlightCode`, `version`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError` | `HighlightRole`, `HighlightCodeOptions`, `HighlightCodeResult`, `HighlightDiagnostic`, `HighlightDiagnosticSource` |
 | `./render` | 1,088,858 B | `init`, `renderHtml`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `RenderHtmlResult`, `Diagnostic`, `DiagnosticSource`, `ZfbMdWasmOptions`, `ParseDialect`, `PipelineOptions`, `GfmOptions`, `CodeHighlightMode`, `CodeHighlightOptions`, `MarkdownFeaturesConfig`, `JsxRuntime`, `HighlightRole` |
-| `./parse` | 281,395 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
+| `./parse` | 281,394 B | `init`, `parseToAst`, `toMdastRoot`, `MdastAdapterError`, `version`, `ZfbMdWasmTrapError`, `ZfbMdWasmTrapRecoveryLimitError`, `__forceTrapForTests`, `__getTrapRecoveryStateForTests` | `ParseToAstResult`, `ParseToAstOptions`, `ParseDialect`, `FrontmatterPolicy`, `ParsePipelineOptions`, `Diagnostic`, `DiagnosticSource`, `AstPoint`, `AstPosition`, `RawMdastData`, `MarkdownRsStop`, `MdastNode`, `MdastRoot`, `UnknownMdastNode`, `Root`, `Paragraph`, `Heading`, `ThematicBreak`, `Blockquote`, `List`, `ListItem`, `Html`, `Code`, `Definition`, `Text`, `DirectiveNodeBase`, `ContainerDirective`, `LeafDirective`, `TextDirective`, `Emphasis`, `Strong`, `InlineCode`, `Break`, `Link`, `Image`, `ReferenceKind`, `LinkReference`, `ImageReference`, `FootnoteDefinition`, `FootnoteReference`, `TableAlign`, `Table`, `TableRow`, `TableCell`, `Delete`, `Yaml`, `MdxFlowExpression`, `MdxTextExpression`, `MdxJsxFlowElement`, `MdxJsxTextElement`, `MdxJsxAttributeContent`, `MdxJsxAttribute`, `MdxJsxAttributeValueExpression`, `MdxJsxExpressionAttribute` |
 
 The focused entries own private resource pairs:
 
@@ -727,14 +727,14 @@ bytes/gzip:
 | root (full) | 3,394,144 B | 1,514,540 B | 14,998 B | 4,199 B |
 | highlight | 1,539,186 B | 817,922 B | 8,758 B | 2,637 B |
 | render | 2,189,671 B | 1,088,858 B | 8,772 B | 2,661 B |
-| parse | 693,479 B | 281,395 B | 11,159 B | 3,797 B |
+| parse | 693,479 B | 281,394 B | 11,159 B | 3,797 B |
 
 The #2447 decision snapshot measured the split package at 3,638,607 B versus
 2,314,818 B for the root-plus-highlight package. Locked gzip-9 ceilings are
 root 1,600,000 B, highlight 880,000 B, render 1,100,000 B, and parse
 325,000 B; the complete packed tarball ceiling is 3,900,000 B. All four ship
 inside their ceilings, with 85,460 B (root), 62,078 B (highlight), 11,142 B
-(render), and 43,605 B (parse) of headroom. These are 2.15.0 measurements, not
+(render), and 43,606 B (parse) of headroom. These are 2.15.0 measurements, not
 permanent promises — re-measure against the version you actually install.
 The clean four-step production ceiling is 210 seconds; the selected #2447
 median was 155.015 s [153.496, 165.977].

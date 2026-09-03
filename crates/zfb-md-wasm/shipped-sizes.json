@@ -21,7 +21,7 @@
     },
     "parse": {
       "finalWasm": 693479,
-      "gzip9": 281395,
+      "gzip9": 281394,
       "glue": 11159,
       "glueGzip9": 3797
     }
