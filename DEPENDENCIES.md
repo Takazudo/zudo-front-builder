@@ -218,6 +218,34 @@ declaration is removable even if its package remains in `Cargo.lock`.
   or a yank of either adopted version — run the evaluation protocol against
   it and never refresh the detector baseline over it.
 
+  **The 0.0.31 bump landed 2026-09-03 in the pin-bump topic
+  ([#2875](https://github.com/Takazudo/zudo-front-builder/issues/2875)),
+  refs [#2870](https://github.com/Takazudo/zudo-front-builder/issues/2870).**
+  Root `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml",
+  version = "=0.0.31" }`; zero production `.rs` lines changed under the
+  abandon rule, so every `serde_yaml::` call site in `zfb-content`, `zfb`,
+  and `zfb-md-wasm` still compiles unchanged. `Cargo.lock` moved exactly the
+  two adopted entries — `noyalib` and `noyalib-serde-yaml` — from `0.0.30` to
+  `0.0.31`, checksums equal to the authorized sha256 pair
+  (`6c34297b0e8a3fc5a5245f7ea28e50fc96d290b28e3d0d0da8e7c14235ec33b0` and
+  `8eaae0a5d646674f179b3ae62539049568ffa065aaadb89a7135ef5e1c1c274e`), with
+  package count unchanged at 597. Re-confirmed on crates.io immediately
+  before the bump: both versions still published, un-yanked, checksums
+  matching. All named checks passed: 1072/1072 `zfb-content` tests (harness
+  18/18 + `error_messages`), 57/57 protected md-wasm tests (`api.rs` +
+  `parse_to_ast.rs`), 12/12 `zfb` diagnostics unit tests
+  (`--no-default-features`), the `wasm32-unknown-unknown` target check,
+  `cargo deny check` clean, 219/219 `pnpm test:md-wasm`, and
+  `pnpm format:check`. The Mac build's measured wasm bytes differed from
+  this repository's committed manifest for reasons unrelated to the pin
+  (platform-specific `wasm-opt`/`wasm-bindgen` codegen, not a semantic
+  regression — the eval topic's Linux-measured deltas do not reproduce
+  byte-for-byte on this Mac), so `crates/zfb-md-wasm/shipped-sizes.json` and
+  its eight synced doc tables were refreshed from this build
+  (`measuredOnVersion` stays `2.14.3`); every artifact stayed comfortably
+  under its ceiling. **Next trigger:** unchanged from above — the next
+  lockstep release beyond 0.0.31, or a yank of either adopted version.
+
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
   `serde_yaml` baseline in 11 of 18 cases. A pinned pre-release re-check of
@@ -300,6 +328,13 @@ declaration is removable even if its package remains in `Cargo.lock`.
     ([#2852](https://github.com/Takazudo/zudo-front-builder/issues/2852)); see
     the `serde_yaml 0.9.34+deprecated` summary bullet above for the landed
     diff, checksums, and lock delta.
+
+    **Bumped to `0.0.31` the same day** in the pin-bump topic
+    ([#2875](https://github.com/Takazudo/zudo-front-builder/issues/2875)),
+    following the 18/18 MIGRATE verdict of the released differential
+    evaluation ([#2873](https://github.com/Takazudo/zudo-front-builder/issues/2873));
+    see the `serde_yaml 0.9.34+deprecated` summary bullet above for the
+    landed diff, checksums, and lock delta.
 
     Recorded branch-churn triage (live check
     `2026-09-02T17:02:57.258Z`): the detector returned rc 10 with no errors and
