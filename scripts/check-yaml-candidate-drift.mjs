@@ -2,11 +2,13 @@
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 /**
- * Pure comparison and reporting core for the YAML candidate watcher.
+ * Pure comparison, severity classification, and reporting core for the YAML
+ * candidate watcher.
  *
  * In scope: newly published versions, new tags and GitHub Releases, heads of
  * every branch (including non-default branches), branch addition/deletion and
- * force-push/divergence, pending release-PR state, and archive/unarchive state.
+ * force-push/divergence, pending release-PR state, archive/unarchive state, and
+ * the severity each of those deltas carries.
  *
  * Out of scope: #2755 acceptance criteria 2-6 — Error::location()
  * compatibility, the 18-case differential JSON corpus, wasm32 plus
@@ -17,6 +19,46 @@ import { pathToFileURL } from "node:url";
  * This watches the known candidate set only; it does not discover a brand-new
  * fork. CANDIDATE_DRIFT is evidence requiring triage against #2755. It never
  * means that #2755's semantic trigger fired.
+ *
+ * Severity. `DELTA_KINDS` is the single source of truth for both the severity
+ * and the human-readable text of every delta kind, and an unknown kind throws
+ * rather than defaulting, so a kind added later can never be silently
+ * downgraded into a green run:
+ *
+ *   triage         version-published, tag-added, release-added,
+ *                  release-pr-state-changed, release-pr-changed,
+ *                  repository-archived, repository-unarchived
+ *   informational  branch-added, branch-deleted, branch-advanced,
+ *                  branch-diverged
+ *
+ * Branch movement is informational because the 2026-08-31 lesson was "observe
+ * every branch", not "page on every branch" — upstream feature branches take
+ * ordinary commits daily, and the publish that matters still surfaces as a
+ * version/tag/release delta. Divergence is measured against the baseline head,
+ * which moves only at recorded triages; a rewrite that preserves the baseline
+ * head as an ancestor is reported as `branch-advanced`. A changed head with no
+ * ancestry evidence at all is still an operational failure.
+ *
+ * Statuses and exit codes:
+ *
+ *   no-drift              0  no delta
+ *   informational-drift   0  deltas, all informational; fully reported
+ *   CANDIDATE_DRIFT      10  at least one triage-severity delta
+ *   operational-failure   1  monitor incomplete, or input invalid
+ *
+ * The casing carries the meaning: lowercase-kebab for a status that requires
+ * nothing of a human, SHOUTY only for the one that demands action. 0/10/1 is
+ * the entire contract the workflow, its notify job, and
+ * `scripts/file-exam-issue.sh --green` key on — `informational-drift` exits 0,
+ * so it reads as a green run and never opens a tracking issue.
+ *
+ * Roles say which protocol a CANDIDATE_DRIFT invokes. `noyalib` and
+ * `noyalib-serde-yaml` are `adopted`: zfb pins
+ * `serde_yaml = { package = "noyalib-serde-yaml", version = "=0.0.30" }` since
+ * PR #2854, so drift there calls for a pin-bump evaluation with
+ * `crates/zfb-content/tests/yaml_differential_harness.rs`. The other five are
+ * `candidate` and call for a re-scan against #2755. Role is configuration: it
+ * is never persisted in a baseline and never compared.
  *
  * Baseline/snapshot schema (schemaVersion 1):
  * {
@@ -45,14 +87,86 @@ import { pathToFileURL } from "node:url";
 
 export const SCHEMA_VERSION = 1;
 export const NO_DRIFT = "no-drift";
+export const INFORMATIONAL_DRIFT = "informational-drift";
 export const CANDIDATE_DRIFT = "CANDIDATE_DRIFT";
 export const OPERATIONAL_FAILURE = "operational-failure";
 
 export const EXIT_CODES = Object.freeze({
   [NO_DRIFT]: 0,
+  [INFORMATIONAL_DRIFT]: 0,
   [CANDIDATE_DRIFT]: 10,
   [OPERATIONAL_FAILURE]: 1,
 });
+
+export const TRIAGE = "triage";
+export const INFORMATIONAL = "informational";
+
+/**
+ * Every delta kind, its severity, and its human-readable text. Adding a kind
+ * here is the only way to make it classifiable; `deltaSeverity` and the report
+ * formatter both throw on a kind that is missing from this table.
+ */
+export const DELTA_KINDS = Object.freeze({
+  "version-published": {
+    severity: TRIAGE,
+    describe: (delta) => `new crates.io version ${delta.version}`,
+  },
+  "tag-added": {
+    severity: TRIAGE,
+    describe: (delta) => `new tag ${delta.tag}`,
+  },
+  "release-added": {
+    severity: TRIAGE,
+    describe: (delta) => `new GitHub Release ${delta.release}`,
+  },
+  "release-pr-state-changed": {
+    severity: TRIAGE,
+    describe: (delta) => `release PR #${delta.number} ${delta.from} -> ${delta.to}`,
+  },
+  "release-pr-changed": {
+    severity: TRIAGE,
+    describe: (delta) =>
+      `pending release PR changed ${JSON.stringify(delta.from)} -> ${JSON.stringify(delta.to)}`,
+  },
+  "repository-archived": {
+    severity: TRIAGE,
+    describe: () => "repository archived",
+  },
+  "repository-unarchived": {
+    severity: TRIAGE,
+    describe: () => "repository unarchived",
+  },
+  "branch-added": {
+    severity: INFORMATIONAL,
+    describe: (delta) => `new branch ${delta.branch} at ${delta.sha}`,
+  },
+  "branch-deleted": {
+    severity: INFORMATIONAL,
+    describe: (delta) => `deleted branch ${delta.branch} (was ${delta.sha})`,
+  },
+  "branch-advanced": {
+    severity: INFORMATIONAL,
+    describe: (delta) => `branch ${delta.branch} advanced ${delta.from} -> ${delta.to}`,
+  },
+  "branch-diverged": {
+    severity: INFORMATIONAL,
+    describe: (delta) =>
+      `branch ${delta.branch} force-pushed/diverged ${delta.from} -> ${delta.to}`,
+  },
+});
+
+function deltaKind(kind) {
+  if (!Object.hasOwn(DELTA_KINDS, kind)) throw new Error(`unknown delta kind: ${kind}`);
+  return DELTA_KINDS[kind];
+}
+
+/** Severity of one delta kind. Throws rather than defaulting on an unknown kind. */
+export function deltaSeverity(kind) {
+  return deltaKind(kind).severity;
+}
+
+const ADOPTED_ROLE = "adopted";
+const CANDIDATE_ROLE = "candidate";
 
 export const TRACKED_CANDIDATES = Object.freeze([
   "serde_yaml_ng",
@@ -65,21 +179,44 @@ export const TRACKED_CANDIDATES = Object.freeze([
 ]);
 
 export const CANDIDATE_CONFIG = Object.freeze({
-  serde_yaml_ng: { crate: "serde_yaml_ng", repo: "acatton/serde-yaml-ng" },
-  serde_yml: { crate: "serde_yml", repo: "sebastienrousseau/serde_yml" },
-  saphyr: { crate: "saphyr", repo: "saphyr-rs/saphyr" },
-  serde_norway: { crate: "serde_norway", repo: "cafkafk/serde-norway" },
+  serde_yaml_ng: {
+    crate: "serde_yaml_ng",
+    repo: "acatton/serde-yaml-ng",
+    role: CANDIDATE_ROLE,
+  },
+  serde_yml: {
+    crate: "serde_yml",
+    repo: "sebastienrousseau/serde_yml",
+    role: CANDIDATE_ROLE,
+  },
+  saphyr: { crate: "saphyr", repo: "saphyr-rs/saphyr", role: CANDIDATE_ROLE },
+  serde_norway: {
+    crate: "serde_norway",
+    repo: "cafkafk/serde-norway",
+    role: CANDIDATE_ROLE,
+  },
   noyalib: {
     crate: "noyalib",
     repo: "sebastienrousseau/noyalib",
+    role: ADOPTED_ROLE,
     pendingReleasePr: null,
   },
   "noyalib-serde-yaml": {
     crate: "noyalib-serde-yaml",
     repo: "sebastienrousseau/noyalib-serde-yaml",
+    role: ADOPTED_ROLE,
   },
-  "serde-saphyr": { crate: "serde-saphyr", repo: "bourumir-wyngs/serde-saphyr" },
+  "serde-saphyr": {
+    crate: "serde-saphyr",
+    repo: "bourumir-wyngs/serde-saphyr",
+    role: CANDIDATE_ROLE,
+  },
 });
+
+/** Role is configuration only: never persisted in a baseline, never compared. */
+function candidateRole(name) {
+  return CANDIDATE_CONFIG[name]?.role ?? CANDIDATE_ROLE;
+}
 
 export const BASELINE_COMMENT =
   "Anti-gaming rule: refresh this baseline only as part of a recorded triage; never bump it merely to turn the lane green.";
@@ -478,17 +615,19 @@ function compareBranches(before, after) {
  * through their own injected client.
  */
 export function compareCandidate(name, baseline, observed) {
+  const role = candidateRole(name);
   const baselineError = validateCandidateRecord(baseline);
   if (baselineError) {
-    return { name, status: OPERATIONAL_FAILURE, error: `invalid baseline: ${baselineError}` };
+    return { name, role, status: OPERATIONAL_FAILURE, error: `invalid baseline: ${baselineError}` };
   }
   const observedError = validateCandidateRecord(observed, { observed: true });
   if (observedError) {
-    return { name, status: OPERATIONAL_FAILURE, error: observedError };
+    return { name, role, status: OPERATIONAL_FAILURE, error: observedError };
   }
   if (baseline.crate !== observed.crate || baseline.repo !== observed.repo) {
     return {
       name,
+      role,
       status: OPERATIONAL_FAILURE,
       error: "observed crate/repo identity does not match the baseline",
     };
@@ -499,6 +638,7 @@ export function compareCandidate(name, baseline, observed) {
   if (missingVersions.length > 0) {
     return {
       name,
+      role,
       status: OPERATIONAL_FAILURE,
       error: `observation omitted known crates.io version(s): ${missingVersions.join(", ")}`,
     };
@@ -515,7 +655,7 @@ export function compareCandidate(name, baseline, observed) {
 
   const branchComparison = compareBranches(baseline.branches, observed.branches);
   if (branchComparison.errors.length > 0) {
-    return { name, status: OPERATIONAL_FAILURE, error: branchComparison.errors.join("; ") };
+    return { name, role, status: OPERATIONAL_FAILURE, error: branchComparison.errors.join("; ") };
   }
   deltas.push(...branchComparison.deltas);
 
@@ -538,7 +678,15 @@ export function compareCandidate(name, baseline, observed) {
     });
   }
 
-  return { name, status: deltas.length === 0 ? NO_DRIFT : CANDIDATE_DRIFT, deltas };
+  // A mixed delta list is never filtered: one triage-severity delta raises the
+  // whole candidate to CANDIDATE_DRIFT, and its informational deltas still ship.
+  let status = NO_DRIFT;
+  if (deltas.length > 0) {
+    status = deltas.some((delta) => deltaSeverity(delta.kind) === TRIAGE)
+      ? CANDIDATE_DRIFT
+      : INFORMATIONAL_DRIFT;
+  }
+  return { name, role, status, deltas };
 }
 
 function validateSnapshot(snapshot, label) {
@@ -578,10 +726,20 @@ export function compareSnapshots(baseline, observed) {
 
   const results = TRACKED_CANDIDATES.map((name) => {
     if (!(name in baseline.candidates)) {
-      return { name, status: OPERATIONAL_FAILURE, error: "candidate missing from baseline" };
+      return {
+        name,
+        role: candidateRole(name),
+        status: OPERATIONAL_FAILURE,
+        error: "candidate missing from baseline",
+      };
     }
     if (!(name in observed.candidates)) {
-      return { name, status: OPERATIONAL_FAILURE, error: "candidate was not observed" };
+      return {
+        name,
+        role: candidateRole(name),
+        status: OPERATIONAL_FAILURE,
+        error: "candidate was not observed",
+      };
     }
     return compareCandidate(name, baseline.candidates[name], observed.candidates[name]);
   });
@@ -591,16 +749,22 @@ export function compareSnapshots(baseline, observed) {
   if (unknownBaseline.length > 0) {
     results.push({
       name: "baseline",
+      role: null,
       status: OPERATIONAL_FAILURE,
       error: `unknown candidate(s): ${unknownBaseline.sort().join(", ")}`,
     });
   }
 
   // A partial observation can contain genuine drift, but must never be emitted
-  // as a clean triage signal. Operational failure has global precedence.
+  // as a clean triage signal. Operational failure has global precedence, then
+  // any triage-severity drift, then informational-only movement.
   const hasFailure = results.some((result) => result.status === OPERATIONAL_FAILURE);
   const hasDrift = results.some((result) => result.status === CANDIDATE_DRIFT);
-  const status = hasFailure ? OPERATIONAL_FAILURE : hasDrift ? CANDIDATE_DRIFT : NO_DRIFT;
+  const hasInformational = results.some((result) => result.status === INFORMATIONAL_DRIFT);
+  let status = NO_DRIFT;
+  if (hasFailure) status = OPERATIONAL_FAILURE;
+  else if (hasDrift) status = CANDIDATE_DRIFT;
+  else if (hasInformational) status = INFORMATIONAL_DRIFT;
   return {
     status,
     exitCode: EXIT_CODES[status],
@@ -613,51 +777,52 @@ export function compareSnapshots(baseline, observed) {
 }
 
 function describeDelta(delta) {
-  switch (delta.kind) {
-    case "version-published":
-      return `new crates.io version ${delta.version}`;
-    case "tag-added":
-      return `new tag ${delta.tag}`;
-    case "release-added":
-      return `new GitHub Release ${delta.release}`;
-    case "branch-added":
-      return `new branch ${delta.branch} at ${delta.sha}`;
-    case "branch-deleted":
-      return `deleted branch ${delta.branch} (was ${delta.sha})`;
-    case "branch-advanced":
-      return `branch ${delta.branch} advanced ${delta.from} -> ${delta.to}`;
-    case "branch-diverged":
-      return `branch ${delta.branch} force-pushed/diverged ${delta.from} -> ${delta.to}`;
-    case "release-pr-state-changed":
-      return `release PR #${delta.number} ${delta.from} -> ${delta.to}`;
-    case "release-pr-changed":
-      return `pending release PR changed ${JSON.stringify(delta.from)} -> ${JSON.stringify(delta.to)}`;
-    case "repository-archived":
-      return "repository archived";
-    case "repository-unarchived":
-      return "repository unarchived";
-    default:
-      return delta.kind;
-  }
+  return deltaKind(delta.kind).describe(delta);
+}
+
+/** The protocol a CANDIDATE_DRIFT on this candidate invokes. */
+function driftProtocol(role) {
+  return role === ADOPTED_ROLE
+    ? "adopted dependency: evaluate a pin bump with the differential harness"
+    : "candidate: re-scan against #2755";
 }
 
 /** Render a comparison result for a human-readable CI log or issue body. */
 export function formatReport(result) {
   const lines = [`YAML candidate watch: ${result.status}`];
   if (result.checkedAt) lines.push(`Checked at: ${result.checkedAt}`);
+  const describeDeltas = (candidate) => {
+    for (const delta of candidate.deltas) {
+      lines.push(`  - [${deltaSeverity(delta.kind)}] ${describeDelta(delta)}`);
+    }
+  };
   for (const candidate of result.candidates) {
     if (candidate.status === NO_DRIFT) {
       lines.push(`- ${candidate.name}: no-drift`);
     } else if (candidate.status === OPERATIONAL_FAILURE) {
       lines.push(`- ${candidate.name}: operational failure: ${candidate.error}`);
+    } else if (candidate.status === INFORMATIONAL_DRIFT) {
+      lines.push(
+        `- ${candidate.name}: ${INFORMATIONAL_DRIFT} (branch movement only; no triage required)`,
+      );
+      describeDeltas(candidate);
     } else {
-      lines.push(`- ${candidate.name}: CANDIDATE_DRIFT`);
-      for (const delta of candidate.deltas) lines.push(`  - ${describeDelta(delta)}`);
+      lines.push(`- ${candidate.name}: ${CANDIDATE_DRIFT} (${driftProtocol(candidate.role)})`);
+      describeDeltas(candidate);
     }
   }
   if (result.status === CANDIDATE_DRIFT) {
     lines.push(
-      "CANDIDATE_DRIFT requires triage against #2755; this report does not decide its trigger.",
+      "CANDIDATE_DRIFT requires triage; this report does not decide the #2755 trigger. " +
+        "Adopted-dependency deltas (noyalib, noyalib-serde-yaml) call for a pin-bump evaluation " +
+        "via crates/zfb-content/tests/yaml_differential_harness.rs; candidate deltas call for a " +
+        "re-scan against #2755. Deltas marked [informational] need neither triage nor a baseline " +
+        "refresh.",
+    );
+  } else if (result.status === INFORMATIONAL_DRIFT) {
+    lines.push(
+      "Informational drift only (branch movement on tracked upstream repositories): no triage, " +
+        "no tracking issue, and no baseline refresh is required.",
     );
   } else if (result.status === OPERATIONAL_FAILURE) {
     lines.push(
@@ -673,19 +838,23 @@ export function formatJsonReport(result) {
 }
 
 export function parseCliArgs(args) {
-  const options = { baseline: DEFAULT_BASELINE_URL, snapshot: false, json: false };
+  const options = { baseline: DEFAULT_BASELINE_URL, snapshot: false, json: false, render: null };
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === "--snapshot") options.snapshot = true;
     else if (argument === "--json") options.json = true;
-    else if (argument === "--baseline") {
+    else if (argument === "--baseline" || argument === "--render") {
       const path = args[index + 1];
-      if (!path || path.startsWith("--")) throw new Error("--baseline requires a path");
-      options.baseline = path;
+      if (!path || path.startsWith("--")) throw new Error(`${argument} requires a path`);
+      if (argument === "--baseline") options.baseline = path;
+      else options.render = path;
       index += 1;
     } else {
       throw new Error(`unknown argument: ${argument}`);
     }
+  }
+  if (options.render && (options.snapshot || options.json)) {
+    throw new Error("--render cannot be combined with --snapshot or --json");
   }
   return options;
 }
@@ -700,6 +869,12 @@ export async function runCli(
 ) {
   try {
     const options = parseCliArgs(args);
+    if (options.render) {
+      // Pure formatter: it reads the saved --json result and nothing else — no
+      // network, and deliberately no baseline read.
+      stdout.write(formatReport(JSON.parse(await readFile(options.render, "utf8"))));
+      return 0;
+    }
     let baseline;
     try {
       baseline = await readBaseline(options.baseline);

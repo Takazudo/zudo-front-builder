@@ -7,12 +7,18 @@ import {
   BASELINE_COMMENT,
   CANDIDATE_CONFIG,
   CANDIDATE_DRIFT,
+  DELTA_KINDS,
+  EXIT_CODES,
+  INFORMATIONAL,
+  INFORMATIONAL_DRIFT,
   NO_DRIFT,
   OPERATIONAL_FAILURE,
   TRACKED_CANDIDATES,
+  TRIAGE,
   compareCandidate,
   compareSnapshots,
   createNetworkClients,
+  deltaSeverity,
   fetchJson,
   formatJsonReport,
   formatReport,
@@ -61,12 +67,74 @@ function snapshots(changedName, changedCandidate) {
   };
 }
 
+const DOCUMENTED_DELTA_KINDS = [
+  "branch-added",
+  "branch-advanced",
+  "branch-deleted",
+  "branch-diverged",
+  "release-added",
+  "release-pr-changed",
+  "release-pr-state-changed",
+  "repository-archived",
+  "repository-unarchived",
+  "tag-added",
+  "version-published",
+];
+
+function informationalNoyalib() {
+  return candidate({
+    crate: "noyalib",
+    repo: "owner/noyalib",
+    branches: {
+      main: "1111111",
+      "feat/v0.0.29": { sha: "8888888", relation: "ahead" },
+    },
+  });
+}
+
+describe("severity classification", () => {
+  it("maps every status to its documented exit code", () => {
+    for (const status of [NO_DRIFT, INFORMATIONAL_DRIFT, CANDIDATE_DRIFT, OPERATIONAL_FAILURE]) {
+      expect(Number.isInteger(EXIT_CODES[status])).toBe(true);
+    }
+    expect(EXIT_CODES[NO_DRIFT]).toBe(0);
+    expect(EXIT_CODES[INFORMATIONAL_DRIFT]).toBe(0);
+    expect(EXIT_CODES[CANDIDATE_DRIFT]).toBe(10);
+    expect(EXIT_CODES[OPERATIONAL_FAILURE]).toBe(1);
+  });
+
+  it("classifies exactly the documented delta kinds and fails closed on any other", () => {
+    expect(Object.keys(DELTA_KINDS).sort()).toEqual(DOCUMENTED_DELTA_KINDS);
+    for (const kind of DOCUMENTED_DELTA_KINDS) {
+      expect(deltaSeverity(kind)).toBe(kind.startsWith("branch-") ? INFORMATIONAL : TRIAGE);
+    }
+    expect(() => deltaSeverity("mystery")).toThrow(/unknown delta kind/);
+    expect(() =>
+      formatReport({
+        status: CANDIDATE_DRIFT,
+        exitCode: 10,
+        checkedAt: "2026-09-01T00:00:00Z",
+        candidates: [
+          {
+            name: "noyalib",
+            role: "adopted",
+            status: CANDIDATE_DRIFT,
+            deltas: [{ kind: "mystery" }],
+          },
+        ],
+        errors: [],
+      }),
+    ).toThrow(/unknown delta kind/);
+  });
+});
+
 describe("compareCandidate", () => {
   it("reports no-drift when only the checkedAt cutoff moved", () => {
     expect(
       compareCandidate("noyalib", candidate(), candidate({ checkedAt: "2026-09-01T00:00:00Z" })),
     ).toEqual({
       name: "noyalib",
+      role: "adopted",
       status: NO_DRIFT,
       deltas: [],
     });
@@ -103,7 +171,7 @@ describe("compareCandidate", () => {
       },
     });
     const result = compareCandidate("noyalib", candidate(), observed);
-    expect(result.status).toBe(CANDIDATE_DRIFT);
+    expect(result.status).toBe(INFORMATIONAL_DRIFT);
     expect(result.deltas).toContainEqual({
       kind: "branch-advanced",
       branch: "feat/v0.0.29",
@@ -138,7 +206,7 @@ describe("compareCandidate", () => {
     ],
   ])("distinguishes a %s", (_label, branches, expected) => {
     const result = compareCandidate("noyalib", candidate(), candidate({ branches }));
-    expect(result.status).toBe(CANDIDATE_DRIFT);
+    expect(result.status).toBe(INFORMATIONAL_DRIFT);
     expect(result.deltas).toContainEqual(expected);
   });
 
@@ -190,6 +258,46 @@ describe("compareCandidate", () => {
       candidate({ archived: after }),
     );
     expect(result.deltas).toContainEqual({ kind });
+  });
+
+  it("keeps every flavour of branch-only movement informational", () => {
+    const result = compareCandidate(
+      "noyalib",
+      candidate({ branches: { main: "1111111", "feat/v0.0.29": "697195f", legacy: "5555555" } }),
+      candidate({
+        branches: {
+          main: { sha: "9999999", relation: "ahead" },
+          "feat/v0.0.29": { sha: "3333333", relation: "diverged" },
+          release: "2222222",
+        },
+      }),
+    );
+    expect(result.status).toBe(INFORMATIONAL_DRIFT);
+    expect(result.deltas.map((delta) => delta.kind).sort()).toEqual([
+      "branch-added",
+      "branch-advanced",
+      "branch-deleted",
+      "branch-diverged",
+    ]);
+  });
+
+  it("raises a mixed delta list to CANDIDATE_DRIFT without filtering the informational deltas", () => {
+    const result = compareCandidate(
+      "noyalib",
+      candidate(),
+      candidate({
+        versions: ["0.0.28", "0.0.29"],
+        branches: { main: "1111111", "feat/v0.0.29": { sha: "8888888", relation: "ahead" } },
+      }),
+    );
+    expect(result.status).toBe(CANDIDATE_DRIFT);
+    expect(result.deltas).toContainEqual({ kind: "version-published", version: "0.0.29" });
+    expect(result.deltas).toContainEqual({
+      kind: "branch-advanced",
+      branch: "feat/v0.0.29",
+      from: "697195f",
+      to: "8888888",
+    });
   });
 });
 
@@ -246,6 +354,52 @@ describe("compareSnapshots", () => {
       exitCode: 1,
     });
   });
+
+  it("returns informational-drift and exit code 0 for branch-only movement", () => {
+    const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
+    const result = compareSnapshots(baseline, observed);
+    expect(result).toMatchObject({ status: INFORMATIONAL_DRIFT, exitCode: 0, errors: [] });
+    expect(result.candidates.find((item) => item.name === "noyalib")).toMatchObject({
+      role: "adopted",
+      status: INFORMATIONAL_DRIFT,
+    });
+  });
+
+  it("gives a triage-severity delta on any candidate precedence over informational drift", () => {
+    const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
+    observed.candidates.saphyr = candidate({
+      crate: "saphyr",
+      repo: "owner/saphyr",
+      versions: ["0.0.28", "0.0.29"],
+    });
+    const result = compareSnapshots(baseline, observed);
+    expect(result).toMatchObject({ status: CANDIDATE_DRIFT, exitCode: 10 });
+    expect(result.candidates.find((item) => item.name === "noyalib").status).toBe(
+      INFORMATIONAL_DRIFT,
+    );
+  });
+
+  it("gives an operational failure precedence over informational drift", () => {
+    const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
+    observed.candidates.serde_yml = { error: "crates.io responded 503" };
+    expect(compareSnapshots(baseline, observed)).toMatchObject({
+      status: OPERATIONAL_FAILURE,
+      exitCode: 1,
+    });
+  });
+
+  it("echoes the configured role onto failure rows, and null onto the unknown-candidate row", () => {
+    const { baseline, observed } = snapshots();
+    observed.candidates.noyalib = { error: "crates.io responded 503" };
+    delete observed.candidates.saphyr;
+    baseline.candidates.mystery_fork = candidate();
+    const rows = Object.fromEntries(
+      compareSnapshots(baseline, observed).candidates.map((row) => [row.name, row]),
+    );
+    expect(rows.noyalib).toMatchObject({ role: "adopted", status: OPERATIONAL_FAILURE });
+    expect(rows.saphyr).toMatchObject({ role: "candidate", status: OPERATIONAL_FAILURE });
+    expect(rows.baseline).toMatchObject({ role: null, status: OPERATIONAL_FAILURE });
+  });
 });
 
 describe("report formatters", () => {
@@ -258,7 +412,8 @@ describe("report formatters", () => {
     const { baseline, observed } = snapshots("noyalib", changed);
     const report = formatReport(compareSnapshots(baseline, observed));
     expect(report).toContain("CANDIDATE_DRIFT");
-    expect(report).toContain("release PR #365 OPEN -> MERGED");
+    expect(report).toContain("adopted dependency");
+    expect(report).toContain("[triage] release PR #365 OPEN -> MERGED");
     expect(report).not.toMatch(/trigger fired/i);
   });
 
@@ -268,6 +423,42 @@ describe("report formatters", () => {
     const json = formatJsonReport(result);
     expect(json.endsWith("\n")).toBe(true);
     expect(JSON.parse(json)).toEqual(result);
+  });
+
+  it("never dresses branch-only movement as CANDIDATE_DRIFT", () => {
+    const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
+    const report = formatReport(compareSnapshots(baseline, observed));
+    expect(report).toContain("informational-drift (branch movement only; no triage required)");
+    expect(report).toContain("[informational] branch");
+    expect(report).toContain("no triage, no tracking issue, and no baseline refresh");
+    expect(report).not.toContain("CANDIDATE_DRIFT");
+    expect(report).not.toMatch(/trigger fired/i);
+  });
+
+  it("names the re-scan protocol for a candidate-role crate and the harness in the footer", () => {
+    const changed = candidate({
+      crate: "saphyr",
+      repo: "owner/saphyr",
+      versions: ["0.0.28", "0.0.29"],
+    });
+    const { baseline, observed } = snapshots("saphyr", changed);
+    const report = formatReport(compareSnapshots(baseline, observed));
+    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).toContain("[triage] new crates.io version 0.0.29");
+    expect(report).toContain("yaml_differential_harness.rs");
+    expect(report).not.toMatch(/trigger fired/i);
+  });
+
+  it("still renders a saved report from before roles existed", () => {
+    const { baseline, observed } = snapshots(
+      "saphyr",
+      candidate({ crate: "saphyr", repo: "owner/saphyr", versions: ["0.0.28", "0.0.29"] }),
+    );
+    const result = compareSnapshots(baseline, observed);
+    for (const row of result.candidates) delete row.role;
+    const report = formatReport(result);
+    expect(report).toContain("CANDIDATE_DRIFT (candidate: re-scan against #2755)");
+    expect(report).not.toContain("undefined");
   });
 });
 
@@ -293,6 +484,21 @@ function completeClients(overrides = {}) {
     pullRequest: async () => ({ state: "open", merged_at: null }),
     compare: async () => ({ status: "ahead" }),
     ...overrides,
+  };
+}
+
+function throwingClients() {
+  const fail = async () => {
+    throw new Error("--render must not reach the network");
+  };
+  return {
+    crateVersions: fail,
+    repo: fail,
+    branches: fail,
+    tags: fail,
+    releases: fail,
+    pullRequest: fail,
+    compare: fail,
   };
 }
 
@@ -513,6 +719,57 @@ describe("observation and CLI", () => {
     expect(await readFile(baselinePath, "utf8")).toBe("sentinel\n");
     await rm(directory, { recursive: true });
   });
+
+  it("--render is a pure formatter: no network, and no baseline read", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "yaml-candidate-watch-"));
+    const reportPath = join(directory, "report.json");
+    const { baseline, observed } = snapshots("noyalib", informationalNoyalib());
+    await writeFile(reportPath, formatJsonReport(compareSnapshots(baseline, observed)));
+    let stdout = "";
+    let stderr = "";
+    const exitCode = await runCli(
+      ["--render", reportPath, "--baseline", join(directory, "missing.json")],
+      {
+        clients: throwingClients(),
+        stdout: { write: (value) => (stdout += value) },
+        stderr: { write: (value) => (stderr += value) },
+      },
+    );
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("YAML candidate watch: informational-drift");
+    expect(stdout).toContain("[informational] branch feat/v0.0.29 advanced 697195f -> 8888888");
+    expect(() => parseCliArgs(["--render", "x", "--json"])).toThrow(/cannot be combined/);
+    await rm(directory, { recursive: true });
+  });
+
+  it("exits 0 end-to-end when every observed delta is branch movement", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "yaml-candidate-watch-"));
+    const baselinePath = join(directory, "baseline.json");
+    const observedBefore = await observeSnapshot({
+      clients: completeClients({
+        branches: async () => [{ name: "main", commit: { sha: "old" } }],
+      }),
+      now: new Date("2026-09-01T00:00:00Z"),
+    });
+    await writeFile(baselinePath, formatJsonReport(snapshotForBaseline(observedBefore)));
+    let stdout = "";
+    let stderr = "";
+    const exitCode = await runCli(["--json", "--baseline", baselinePath], {
+      clients: completeClients(),
+      now: new Date("2026-09-02T00:00:00Z"),
+      stdout: { write: (value) => (stdout += value) },
+      stderr: { write: (value) => (stderr += value) },
+    });
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe("");
+    const parsed = JSON.parse(stdout);
+    expect(parsed).toMatchObject({ status: "informational-drift", exitCode: 0, errors: [] });
+    expect(
+      parsed.candidates.flatMap((item) => item.deltas).filter((d) => d.kind === "branch-advanced"),
+    ).toHaveLength(TRACKED_CANDIDATES.length);
+    await rm(directory, { recursive: true });
+  });
 });
 
 describe("committed baseline guard", () => {
@@ -543,6 +800,7 @@ describe("committed baseline guard", () => {
     expect(CANDIDATE_CONFIG["noyalib-serde-yaml"]).toEqual({
       crate: "noyalib-serde-yaml",
       repo: "sebastienrousseau/noyalib-serde-yaml",
+      role: "adopted",
     });
   });
 });
