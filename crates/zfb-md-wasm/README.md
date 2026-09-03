@@ -268,6 +268,9 @@ three-step repair sequence:
    `BUILD_LOG=/tmp/zfb-md-wasm-build.log; node crates/zfb-md-wasm/npm/scripts/build.mjs 2>&1 | tee "$BUILD_LOG"`.
 2. Run `node scripts/assert-zfb-md-wasm-budgets.mjs --build-log "$BUILD_LOG" --dist crates/zfb-md-wasm/npm/dist --update-manifest`.
 3. Run `node scripts/assert-md-wasm-size-docs.mjs --fix`, then `pnpm format:mdx`.
+   `gzip-9` and `glue gzip-9` are compared with a 64-byte tolerance because
+   they are compressor output (CI prints a warning inside the band), while
+   final wasm and glue remain byte-exact.
 
 These are the shipped **2.15.0** artifact rows — optimized final wasm after
 wasm-bindgen and wasm-opt, Node `gzipSync(..., { level: 9 })`, and glue
