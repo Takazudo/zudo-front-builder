@@ -6,8 +6,11 @@
 # crates.io publish/yank/unyank, tag, GitHub Release, release-PR
 # state/pointer, and archive state — exit 10 as CANDIDATE_DRIFT and
 # file/append the deduped tracker (#2845). Every delta on the five candidate
-# crates is informational regardless of kind, so they never page, and branch
-# added/deleted/advanced/diverged is always informational on every crate.
+# crates is informational regardless of kind, so they never page; branch
+# added/deleted/advanced/diverged and version-record-touched are always
+# informational on every crate. version-record-touched is the between-runs
+# tripwire: crates.io's per-version updated_at moved with no yank-state change
+# to explain it, which a weekly cadence would otherwise never see.
 # Informational-severity deltas are observed and reported but exit 0 as
 # informational-drift, closing or keeping closed the tracker exactly like
 # no-drift. A CANDIDATE_DRIFT on the adopted pair means a pin-bump evaluation
@@ -119,7 +122,7 @@ jobs:
 
       - name: Surface informational drift (exit 0, no triage)
         if: steps.run_detector.outputs.rc == '0' && steps.run_detector.outputs.status == 'informational-drift'
-        run: echo "::notice title=YAML candidate watch::informational drift only (branch movement on tracked upstream repositories). Exit 0 - the tracking issue is closed or stays closed; no triage or baseline refresh is needed. See the job summary for the deltas."
+        run: echo "::notice title=YAML candidate watch::informational drift only (branch movement, or a crates.io record touch, on tracked upstream repositories). Exit 0 - the tracking issue is closed or stays closed; no triage or baseline refresh is needed. See the job summary for the deltas."
 
   file-or-close-issue:
     # One deduped tracking issue per workflow: red runs (rc 10 triage-severity
