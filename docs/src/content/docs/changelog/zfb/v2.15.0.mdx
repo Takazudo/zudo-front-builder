@@ -1,0 +1,23 @@
+---
+title: v2.15.0
+sidebar_position: 124
+---
+
+# v2.15.0
+
+Released: 2026-09-04
+
+## Features
+
+- Highlight TypeScript and TSX with their own grammars (2fd04475). The `ts`
+  and `typescript` tags now resolve to the `TypeScript` grammar and `tsx` to
+  `TypeScriptReact`; both previously fell back to JavaScript highlighting.
+
+## Other Changes
+
+- Migrate the frontmatter YAML dependency from `serde_yaml` to the
+  lockstep `noyalib-serde-yaml 0.0.31` package alias (Refs #2755, #2870).
+  Frontmatter YAML error text and locations are unchanged by contract.
+- Bump the content pipeline fingerprint to `v3` (2fd04475), so the first
+  build after upgrading re-renders cached content under the new grammar set
+  instead of serving HTML highlighted by the old one.
