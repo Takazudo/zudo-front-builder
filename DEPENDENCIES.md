@@ -249,7 +249,13 @@ declaration is removable even if its package remains in `Cargo.lock`.
   up to 5,982 B at the same pin — so before this PR merges the manifest must
   be aligned from the PR's own CI build summary and the doc tables re-synced
   via `assert-md-wasm-size-docs.mjs --fix`, exactly as `a6509185` did for
-  0.0.30. The harness label pair (`CURRENT_ADAPTER_NAME` and the fixture's
+  0.0.30. That alignment was then performed in the epic's root PR from health
+  run 33765674744's `wasm-md (default)` build summary (ubuntu): `finalWasm` /
+  `gzip9` root 3,394,144 / 1,514,540, highlight 1,539,186 / 817,922, render
+  2,189,671 / 1,088,857, parse 693,479 / 281,395 (glue fields unchanged),
+  so versus the committed 0.0.30 manifest the pin moved gzip-9 by −884 /
+  +741 / +992 / −364 B and `render-only` keeps 11,143 B of headroom under its
+  1,100,000 B ceiling. The harness label pair (`CURRENT_ADAPTER_NAME` and the fixture's
   `adapter` field) was relabelled to `0.0.31` in lockstep; the corpus and the
   18 baseline cases are untouched. **Next trigger:** unchanged from above —
   the next lockstep release beyond 0.0.31, or a yank of either adopted
