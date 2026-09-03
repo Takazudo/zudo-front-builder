@@ -156,15 +156,18 @@ export function compareManifest(
     for (const column of MANIFEST_COLUMNS) {
       const delta = measured[column] - documentedValues[column];
       if (delta === 0) continue;
+      const base = {
+        artifact: artifact.label,
+        column,
+        measured: measured[column],
+        documented: documentedValues[column],
+        delta,
+      };
       if (TOLERANT_COLUMNS.includes(column) && Math.abs(delta) <= tolerance) {
         findings.push({
+          ...base,
           code: "gzip-drift-within-tolerance",
           severity: "warning",
-          artifact: artifact.label,
-          column,
-          measured: measured[column],
-          documented: documentedValues[column],
-          delta,
           tolerance,
           message:
             `${artifact.label} ${column} (measured=${measured[column]}, ` +
@@ -175,13 +178,9 @@ export function compareManifest(
         continue;
       }
       findings.push({
+        ...base,
         code: "manifest-mismatch",
         severity: "error",
-        artifact: artifact.label,
-        column,
-        measured: measured[column],
-        documented: documentedValues[column],
-        delta,
         message:
           `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
           `documented=${documentedValues[column]}`,
@@ -210,10 +209,14 @@ export function checkCeilings(measuredByArtifact) {
 }
 
 export function formatFindings(findings) {
-  const lines = findings
-    .filter((finding) => finding.severity === "error")
-    .map((finding) => finding.message);
-  return [...lines, REPAIR_INSTRUCTIONS].join("\n");
+  const errors = findings.filter((finding) => finding.severity === "error");
+  const lines = errors.map((finding) => finding.message);
+  // --update-manifest rewrites measured values only; it cannot repair a
+  // ceiling breach, so the repair line belongs to manifest mismatches alone.
+  if (errors.some((finding) => finding.code === "manifest-mismatch")) {
+    lines.push(REPAIR_INSTRUCTIONS);
+  }
+  return lines.join("\n");
 }
 
 function writeMeasuredManifest(manifestPath, measured, measuredOnVersion) {
@@ -365,8 +368,7 @@ function main() {
   for (const finding of findings) {
     if (finding.severity === "warning") console.log(`::warning::${finding.message}`);
   }
-  const errorFindings = findings.filter((finding) => finding.severity === "error");
-  if (errorFindings.length > 0) {
+  if (findings.some((finding) => finding.severity === "error")) {
     throw new Error(formatFindings(findings));
   }
 

@@ -26,6 +26,10 @@ const documented = {
   parse: { finalWasm: 693_479, gzip9: 281_394, glue: 11_159, glueGzip9: 3_797 },
 };
 
+const CEILING_BY_LABEL = Object.fromEntries(
+  ARTIFACTS.map((artifact) => [artifact.label, artifact.ceiling]),
+);
+
 function matchingMeasuredByArtifact() {
   return {
     default: { ...documented.root },
@@ -102,8 +106,8 @@ describe("checkCeilings", () => {
   it("reports breaches on two artifacts and leaves the rest alone", () => {
     const measuredByArtifact = {
       ...underCeiling,
-      "highlight-only": { gzip9: ARTIFACTS.find((a) => a.label === "highlight-only").ceiling + 1 },
-      "parse-only": { gzip9: ARTIFACTS.find((a) => a.label === "parse-only").ceiling + 2 },
+      "highlight-only": { gzip9: CEILING_BY_LABEL["highlight-only"] + 1 },
+      "parse-only": { gzip9: CEILING_BY_LABEL["parse-only"] + 2 },
     };
 
     expect(checkCeilings(measuredByArtifact)).toEqual([
@@ -137,8 +141,8 @@ describe("formatFindings", () => {
 
     const manifestFindings = compareManifest(measuredByArtifact, documented);
     const ceilingFindings = checkCeilings({
-      default: { gzip9: ARTIFACTS.find((a) => a.label === "default").ceiling + 1 },
-      "highlight-only": { gzip9: ARTIFACTS.find((a) => a.label === "highlight-only").ceiling + 1 },
+      default: { gzip9: CEILING_BY_LABEL.default + 1 },
+      "highlight-only": { gzip9: CEILING_BY_LABEL["highlight-only"] + 1 },
       "render-only": { gzip9: 1_000 },
       "parse-only": { gzip9: 1_000 },
     });
@@ -154,6 +158,20 @@ describe("formatFindings", () => {
     expect(
       outputLines.filter((line) => line.includes("re-run with --update-manifest")),
     ).toHaveLength(1);
+  });
+
+  it("omits the --update-manifest repair line when only ceilings are breached", () => {
+    const ceilingFindings = checkCeilings({
+      default: { gzip9: CEILING_BY_LABEL.default + 1 },
+      "highlight-only": { gzip9: 1_000 },
+      "render-only": { gzip9: 1_000 },
+      "parse-only": { gzip9: 1_000 },
+    });
+    expect(ceilingFindings).toHaveLength(1);
+
+    const output = formatFindings(ceilingFindings);
+    expect(output).toBe(ceilingFindings[0].message);
+    expect(output).not.toContain("--update-manifest");
   });
 });
 
@@ -275,12 +293,9 @@ describe("compareManifest gzip drift tolerance (#2878)", () => {
 
   it("still reports a ceiling breach alongside an unrelated in-band gzip drift", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
-    const highlightCeiling = ARTIFACTS.find(
-      (artifact) => artifact.label === "highlight-only",
-    ).ceiling;
     measuredByArtifact["highlight-only"] = {
       ...documented.highlight,
-      gzip9: highlightCeiling + 1,
+      gzip9: CEILING_BY_LABEL["highlight-only"] + 1,
     };
     measuredByArtifact["parse-only"] = {
       ...documented.parse,
