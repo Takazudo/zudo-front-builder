@@ -9,6 +9,7 @@ import {
   checkCeilings,
   compareManifest,
   formatFindings,
+  GZIP_DRIFT_TOLERANCE_BYTES,
 } from "../assert-zfb-md-wasm-budgets.mjs";
 
 const scriptPath = resolve(
@@ -43,7 +44,7 @@ describe("compareManifest", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
     measuredByArtifact["render-only"] = {
       ...documented.render,
-      gzip9: documented.render.gzip9 + 1,
+      gzip9: documented.render.gzip9 + GZIP_DRIFT_TOLERANCE_BYTES + 1,
     };
     measuredByArtifact["parse-only"] = {
       ...documented.parse,
@@ -61,7 +62,7 @@ describe("compareManifest", () => {
     measuredByArtifact["highlight-only"] = {
       ...documented.highlight,
       finalWasm: documented.highlight.finalWasm + 3,
-      glueGzip9: documented.highlight.glueGzip9 + 4,
+      glueGzip9: documented.highlight.glueGzip9 + GZIP_DRIFT_TOLERANCE_BYTES + 4,
     };
 
     expect(compareManifest(measuredByArtifact, documented)).toEqual([
@@ -127,7 +128,7 @@ describe("formatFindings", () => {
     const measuredByArtifact = matchingMeasuredByArtifact();
     measuredByArtifact["render-only"] = {
       ...documented.render,
-      gzip9: documented.render.gzip9 + 1,
+      gzip9: documented.render.gzip9 + GZIP_DRIFT_TOLERANCE_BYTES + 1,
     };
     measuredByArtifact["parse-only"] = {
       ...documented.parse,
@@ -153,6 +154,208 @@ describe("formatFindings", () => {
     expect(
       outputLines.filter((line) => line.includes("re-run with --update-manifest")),
     ).toHaveLength(1);
+  });
+});
+
+describe("compareManifest gzip drift tolerance (#2878)", () => {
+  it("treats a +-1 B drift on render.gzip9 and parse.gzip9 as warnings, not errors", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    measuredByArtifact["render-only"] = {
+      ...documented.render,
+      gzip9: documented.render.gzip9 + 1,
+    };
+    measuredByArtifact["parse-only"] = {
+      ...documented.parse,
+      gzip9: documented.parse.gzip9 - 1,
+    };
+
+    const findings = compareManifest(measuredByArtifact, documented);
+    expect(findings.filter((finding) => finding.severity === "error")).toEqual([]);
+    expect(findings).toEqual([
+      expect.objectContaining({
+        code: "gzip-drift-within-tolerance",
+        severity: "warning",
+        artifact: "render-only",
+        column: "gzip9",
+        delta: 1,
+        tolerance: GZIP_DRIFT_TOLERANCE_BYTES,
+      }),
+      expect.objectContaining({
+        code: "gzip-drift-within-tolerance",
+        severity: "warning",
+        artifact: "parse-only",
+        column: "gzip9",
+        delta: -1,
+        tolerance: GZIP_DRIFT_TOLERANCE_BYTES,
+      }),
+    ]);
+  });
+
+  it("treats a drift at exactly the tolerance boundary as a warning", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    measuredByArtifact["render-only"] = {
+      ...documented.render,
+      gzip9: documented.render.gzip9 + GZIP_DRIFT_TOLERANCE_BYTES,
+    };
+
+    expect(compareManifest(measuredByArtifact, documented)).toEqual([
+      expect.objectContaining({
+        code: "gzip-drift-within-tolerance",
+        severity: "warning",
+        artifact: "render-only",
+        column: "gzip9",
+        delta: GZIP_DRIFT_TOLERANCE_BYTES,
+      }),
+    ]);
+  });
+
+  it("treats a drift one byte beyond the tolerance as an error", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    measuredByArtifact["render-only"] = {
+      ...documented.render,
+      gzip9: documented.render.gzip9 + GZIP_DRIFT_TOLERANCE_BYTES + 1,
+    };
+
+    expect(compareManifest(measuredByArtifact, documented)).toEqual([
+      expect.objectContaining({
+        code: "manifest-mismatch",
+        severity: "error",
+        artifact: "render-only",
+        column: "gzip9",
+        delta: GZIP_DRIFT_TOLERANCE_BYTES + 1,
+      }),
+    ]);
+  });
+
+  it("still reports a +-1 B drift on finalWasm or glue as an error (exact columns unaffected)", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    measuredByArtifact["render-only"] = {
+      ...documented.render,
+      finalWasm: documented.render.finalWasm + 1,
+    };
+    measuredByArtifact["parse-only"] = {
+      ...documented.parse,
+      glue: documented.parse.glue - 1,
+    };
+
+    expect(compareManifest(measuredByArtifact, documented)).toEqual([
+      expect.objectContaining({
+        code: "manifest-mismatch",
+        severity: "error",
+        artifact: "render-only",
+        column: "finalWasm",
+      }),
+      expect.objectContaining({
+        code: "manifest-mismatch",
+        severity: "error",
+        artifact: "parse-only",
+        column: "glue",
+      }),
+    ]);
+  });
+
+  it("treats an in-band glueGzip9 drift as a warning", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    measuredByArtifact["highlight-only"] = {
+      ...documented.highlight,
+      glueGzip9: documented.highlight.glueGzip9 + 10,
+    };
+
+    expect(compareManifest(measuredByArtifact, documented)).toEqual([
+      expect.objectContaining({
+        code: "gzip-drift-within-tolerance",
+        severity: "warning",
+        artifact: "highlight-only",
+        column: "glueGzip9",
+        delta: 10,
+        tolerance: GZIP_DRIFT_TOLERANCE_BYTES,
+      }),
+    ]);
+  });
+
+  it("still reports a ceiling breach alongside an unrelated in-band gzip drift", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    const highlightCeiling = ARTIFACTS.find(
+      (artifact) => artifact.label === "highlight-only",
+    ).ceiling;
+    measuredByArtifact["highlight-only"] = {
+      ...documented.highlight,
+      gzip9: highlightCeiling + 1,
+    };
+    measuredByArtifact["parse-only"] = {
+      ...documented.parse,
+      gzip9: documented.parse.gzip9 + 1,
+    };
+
+    const ceilingFindings = checkCeilings(measuredByArtifact);
+    const manifestFindings = compareManifest(measuredByArtifact, documented);
+    const allFindings = [...ceilingFindings, ...manifestFindings];
+
+    expect(ceilingFindings).toEqual([
+      expect.objectContaining({
+        code: "ceiling-exceeded",
+        severity: "error",
+        artifact: "highlight-only",
+      }),
+    ]);
+    expect(
+      allFindings.some(
+        (finding) =>
+          finding.severity === "warning" &&
+          finding.artifact === "parse-only" &&
+          finding.column === "gzip9",
+      ),
+    ).toBe(true);
+    expect(
+      allFindings.filter(
+        (finding) => finding.severity === "error" && finding.code === "ceiling-exceeded",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("reproduces byte-exact behaviour when tolerance is 0", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    measuredByArtifact["render-only"] = {
+      ...documented.render,
+      gzip9: documented.render.gzip9 + 1,
+    };
+
+    expect(compareManifest(measuredByArtifact, documented, { tolerance: 0 })).toEqual([
+      expect.objectContaining({
+        code: "manifest-mismatch",
+        severity: "error",
+        artifact: "render-only",
+        column: "gzip9",
+        delta: 1,
+      }),
+    ]);
+  });
+
+  it("omits warnings from formatFindings while every warning names its artifact, column, and tolerance", () => {
+    const measuredByArtifact = matchingMeasuredByArtifact();
+    measuredByArtifact["render-only"] = {
+      ...documented.render,
+      gzip9: documented.render.gzip9 + 1,
+    };
+    measuredByArtifact["parse-only"] = {
+      ...documented.parse,
+      finalWasm: documented.parse.finalWasm + 2,
+    };
+
+    const findings = compareManifest(measuredByArtifact, documented);
+    const warnings = findings.filter((finding) => finding.severity === "warning");
+    const errors = findings.filter((finding) => finding.severity === "error");
+    expect(warnings).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+    for (const warning of warnings) {
+      expect(warning.message).toContain(warning.artifact);
+      expect(warning.message).toContain(warning.column);
+      expect(warning.message).toContain(`${warning.tolerance}`);
+    }
+
+    const output = formatFindings(findings);
+    expect(output).not.toContain(warnings[0].message);
+    expect(output).toContain(errors[0].message);
   });
 });
 

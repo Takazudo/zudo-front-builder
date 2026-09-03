@@ -23,6 +23,10 @@ const MANIFEST_ARTIFACTS = {
   "render-only": "render",
   "parse-only": "parse",
 };
+// node:zlib gzipSync(level 9) drifts by single bytes across runner CPU
+// features (#2878); wasm-bindgen/wasm-opt outputs stay byte-exact.
+export const GZIP_DRIFT_TOLERANCE_BYTES = 64;
+const TOLERANT_COLUMNS = ["gzip9", "glueGzip9"];
 const REPAIR_INSTRUCTIONS =
   "re-run with --update-manifest, then node scripts/assert-md-wasm-size-docs.mjs --fix, then pnpm format:mdx";
 
@@ -137,28 +141,51 @@ function measuredValues({ wasm, wasmGzip, glue, glueGzip }) {
 
 // Findings never throw mid-loop: main() collects every mismatch/breach across
 // all four artifacts first, so a CI run reports them all in one round trip
-// instead of one per rerun (zfb#2879).
-export function compareManifest(measuredByArtifact, documented) {
+// instead of one per rerun (zfb#2879). gzip9/glueGzip9 get a warning-only
+// band for compressor drift (#2878); every other column stays byte-exact.
+export function compareManifest(
+  measuredByArtifact,
+  documented,
+  { tolerance = GZIP_DRIFT_TOLERANCE_BYTES } = {},
+) {
   const findings = [];
   for (const artifact of ARTIFACTS) {
     const manifestArtifact = MANIFEST_ARTIFACTS[artifact.label];
     const measured = measuredByArtifact[artifact.label];
     const documentedValues = documented[manifestArtifact];
     for (const column of MANIFEST_COLUMNS) {
-      if (measured[column] !== documentedValues[column]) {
+      const delta = measured[column] - documentedValues[column];
+      if (delta === 0) continue;
+      if (TOLERANT_COLUMNS.includes(column) && Math.abs(delta) <= tolerance) {
         findings.push({
-          code: "manifest-mismatch",
-          severity: "error",
+          code: "gzip-drift-within-tolerance",
+          severity: "warning",
           artifact: artifact.label,
           column,
           measured: measured[column],
           documented: documentedValues[column],
-          delta: measured[column] - documentedValues[column],
+          delta,
+          tolerance,
           message:
-            `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
-            `documented=${documentedValues[column]}`,
+            `${artifact.label} ${column} (measured=${measured[column]}, ` +
+            `documented=${documentedValues[column]}, delta=${delta}) is within the ` +
+            `${tolerance}-byte compressor-drift tolerance; realigning with ` +
+            `--update-manifest is only expected alongside a real artifact change`,
         });
+        continue;
       }
+      findings.push({
+        code: "manifest-mismatch",
+        severity: "error",
+        artifact: artifact.label,
+        column,
+        measured: measured[column],
+        documented: documentedValues[column],
+        delta,
+        message:
+          `${artifact.label} ${column} mismatch: measured=${measured[column]}, ` +
+          `documented=${documentedValues[column]}`,
+      });
     }
   }
   return findings;
@@ -335,6 +362,9 @@ function main() {
     ...checkCeilings(measuredByArtifact),
     ...(args["update-manifest"] ? [] : compareManifest(measuredByArtifact, SHIPPED_SIZES.measured)),
   ];
+  for (const finding of findings) {
+    if (finding.severity === "warning") console.log(`::warning::${finding.message}`);
+  }
   const errorFindings = findings.filter((finding) => finding.severity === "error");
   if (errorFindings.length > 0) {
     throw new Error(formatFindings(findings));
