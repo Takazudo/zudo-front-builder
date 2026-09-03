@@ -11,20 +11,27 @@ import { pathToFileURL } from "node:url";
  * release-PR state, archive/unarchive state, and the severity each of those
  * deltas carries.
  *
- * Out of scope: #2755 acceptance criteria 2-6 — Error::location()
- * compatibility, the 18-case differential JSON corpus, wasm32 plus
- * `pnpm test:md-wasm`, gzip-9 size deltas, transitive dependency/license
- * differences, and `cargo deny`. Those semantic checks live in the committed
+ * Out of scope: Error::location() compatibility, the 18-case differential
+ * JSON corpus, wasm32 plus `pnpm test:md-wasm`, gzip-9 size deltas,
+ * transitive dependency/license differences, and `cargo deny`. Those
+ * semantic checks live in the committed
  * `crates/zfb-content/tests/yaml_differential_harness.rs` harness.
  *
  * This watches the known candidate set only; it does not discover a brand-new
- * fork. CANDIDATE_DRIFT is evidence requiring triage against #2755. It never
- * means that #2755's semantic trigger fired.
+ * fork. The adopted pair (`noyalib`, `noyalib-serde-yaml`) is pinned in the
+ * root `Cargo.toml` (history in the DEPENDENCIES.md ledger; the standing
+ * trigger #2755 closed 2026-09-03 after PR #2854 merged the migration).
+ * CANDIDATE_DRIFT on that pair is evidence requiring a pin-bump evaluation
+ * with the committed differential harness; it never means the evaluation's
+ * verdict is decided.
  *
- * Severity. `DELTA_KINDS` is the single source of truth for both the severity
- * and the human-readable text of every delta kind, and an unknown kind throws
- * rather than defaulting, so a kind added later can never be silently
- * downgraded into a green run:
+ * Severity. `DELTA_KINDS` is the single source of truth for both the base
+ * severity and the human-readable text of every delta kind, and an unknown
+ * kind throws rather than defaulting, so a kind added later can never be
+ * silently downgraded into a green run. Severity is also role-aware: every
+ * kind below is `informational` on a `candidate`-role crate regardless of
+ * this table, so the five fallback candidates never page; on the `adopted`
+ * pair each kind keeps the severity below:
  *
  *   triage         version-published, version-yanked, version-unyanked,
  *                  tag-added, release-added, release-pr-state-changed,
@@ -54,13 +61,16 @@ import { pathToFileURL } from "node:url";
  * `scripts/file-exam-issue.sh --green` key on — `informational-drift` exits 0,
  * so it reads as a green run and never opens a tracking issue.
  *
- * Roles say which protocol a CANDIDATE_DRIFT invokes. `noyalib` and
- * `noyalib-serde-yaml` are `adopted`: the root `Cargo.toml` pins
- * `serde_yaml = { package = "noyalib-serde-yaml" }` (history in the
- * DEPENDENCIES.md ledger), so drift there calls for a pin-bump evaluation with
+ * Roles say which protocol a CANDIDATE_DRIFT invokes, and gate severity
+ * itself. `noyalib` and `noyalib-serde-yaml` are `adopted`: the root
+ * `Cargo.toml` pins `serde_yaml = { package = "noyalib-serde-yaml" }`
+ * (history in the DEPENDENCIES.md ledger), so drift there keeps each kind's
+ * table severity and calls for a pin-bump evaluation with
  * `crates/zfb-content/tests/yaml_differential_harness.rs`. The other five are
- * `candidate` and call for a re-scan against #2755. Role is configuration: it
- * is never persisted in a baseline and never compared.
+ * `candidate`: every delta on them is informational — fallback-ledger
+ * information only, with no evaluation triggered unless the adopted pair
+ * itself degrades. Role is configuration: it is never persisted in a
+ * baseline and never compared.
  *
  * Baseline/snapshot schema (schemaVersion 2):
  * {
@@ -188,9 +198,18 @@ function deltaKind(kind) {
   return DELTA_KINDS[kind];
 }
 
-/** Severity of one delta kind. Throws rather than defaulting on an unknown kind. */
-export function deltaSeverity(kind) {
-  return deltaKind(kind).severity;
+/**
+ * Severity of one delta kind, gated by role. The kind is validated first —
+ * an unknown kind throws regardless of role — then only "adopted" or
+ * "candidate" is accepted; any other role throws rather than silently
+ * downgrading severity. Every kind is informational on a candidate-role
+ * crate; an adopted-role crate keeps each kind's table severity.
+ */
+export function deltaSeverity(kind, role) {
+  const { severity } = deltaKind(kind);
+  if (role === CANDIDATE_ROLE) return INFORMATIONAL;
+  if (role === ADOPTED_ROLE) return severity;
+  throw new Error(`unknown candidate role: ${role}`);
 }
 
 const ADOPTED_ROLE = "adopted";
@@ -733,7 +752,7 @@ export function compareCandidate(name, baseline, observed) {
   // whole candidate to CANDIDATE_DRIFT, and its informational deltas still ship.
   let status = NO_DRIFT;
   if (deltas.length > 0) {
-    status = deltas.some((delta) => deltaSeverity(delta.kind) === TRIAGE)
+    status = deltas.some((delta) => deltaSeverity(delta.kind, role) === TRIAGE)
       ? CANDIDATE_DRIFT
       : INFORMATIONAL_DRIFT;
   }
@@ -821,7 +840,7 @@ export function compareSnapshots(baseline, observed) {
 function driftProtocol(role) {
   return role === ADOPTED_ROLE
     ? "adopted dependency: evaluate a pin bump with the differential harness"
-    : "candidate: re-scan against #2755";
+    : "candidate: fallback ledger only; no evaluation unless the adopted pair degrades";
 }
 
 /** Render a comparison result for a human-readable CI log or issue body. */
@@ -837,14 +856,17 @@ export function formatReport(result) {
       lines.push(`- ${candidate.name}: operational failure: ${candidate.error}`);
       continue;
     }
+    // A report saved before roles existed carries no `role` on its candidate
+    // rows; recover it from configuration so a legacy --render still works.
+    const role = candidate.role ?? candidateRole(candidate.name);
     const note =
       candidate.status === INFORMATIONAL_DRIFT
-        ? "branch movement only; no triage required"
-        : driftProtocol(candidate.role);
+        ? "informational only; no triage required"
+        : driftProtocol(role);
     lines.push(`- ${candidate.name}: ${candidate.status} (${note})`);
     for (const delta of candidate.deltas) {
-      const { severity, describe } = deltaKind(delta.kind);
-      lines.push(`  - [${severity}] ${describe(delta)}`);
+      const { describe } = deltaKind(delta.kind);
+      lines.push(`  - [${deltaSeverity(delta.kind, role)}] ${describe(delta)}`);
     }
   }
   // Snapshot-level failures (schema mismatch, monitor throw) carry no
@@ -857,16 +879,16 @@ export function formatReport(result) {
   }
   if (result.status === CANDIDATE_DRIFT) {
     lines.push(
-      "CANDIDATE_DRIFT requires triage; this report does not decide the #2755 trigger. " +
-        "Adopted-dependency deltas (noyalib, noyalib-serde-yaml) call for a pin-bump evaluation " +
-        "via crates/zfb-content/tests/yaml_differential_harness.rs; candidate deltas call for a " +
-        "re-scan against #2755. Deltas marked [informational] need neither triage nor a baseline " +
-        "refresh.",
+      "CANDIDATE_DRIFT requires triage: an adopted-dependency delta (noyalib, " +
+        "noyalib-serde-yaml) calls for a pin-bump evaluation via " +
+        "crates/zfb-content/tests/yaml_differential_harness.rs. This report never decides " +
+        "that evaluation — the harness does. Deltas marked [informational] need neither " +
+        "triage nor a baseline refresh.",
     );
   } else if (result.status === INFORMATIONAL_DRIFT) {
     lines.push(
-      "Informational drift only (branch movement on tracked upstream repositories): no triage, " +
-        "no tracking issue, and no baseline refresh is required.",
+      "Informational drift only: no triage, no tracking issue, and no baseline refresh is " +
+        "required.",
     );
   } else if (result.status === OPERATIONAL_FAILURE) {
     lines.push(
