@@ -474,9 +474,13 @@ declaration is removable even if its package remains in `Cargo.lock`.
   at that `checkedAt` because crates.io records `updated_at`
   `2025-11-24T13:24:30Z` and `2025-11-19T20:36:13Z` for the two yanks and no
   other tracked crate has a yanked version; the tracker (#2845) is closed by
-  the first green exact-`main` run. As of this writing (2026-09-03T05:23
-  UTC), the next scheduled run (Thu 05:29 UTC) had not yet fired; the most
-  recent run remains 33688523915 above, per the newest comment on #2845.
+  the first green exact-`main` run. The scheduled run fired at
+  `2026-09-03T05:50:30Z` as
+  [33720566956](https://github.com/Takazudo/zudo-front-builder/actions/runs/33720566956),
+  still on the pre-fix single-tier `main` detector: rc 10, `errors: []`,
+  the same `noyalib` `branch-advanced feat/v0.0.31` delta ending at
+  `b76f1aad8b773e1482f3cb12cdc760f86177bde6`, and it appended one more rc-10
+  comment on #2845 before this classification landed on `main`.
 
 ### Candidate desk research (#2785; no-build, checked 2026-08-30)
 
