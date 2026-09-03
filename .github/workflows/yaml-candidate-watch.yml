@@ -9,8 +9,9 @@
 # crates is informational regardless of kind, so they never page; branch
 # added/deleted/advanced/diverged and version-record-touched are always
 # informational on every crate. version-record-touched is the between-runs
-# tripwire: crates.io's per-version updated_at moved with no yank-state change
-# to explain it, which a weekly cadence would otherwise never see.
+# tripwire — a crates.io per-version updated_at that moved with no yank-state
+# change to explain it — which is how a yank/unyank cycle completed between two
+# weekly runs still becomes visible.
 # Informational-severity deltas are observed and reported but exit 0 as
 # informational-drift, closing or keeping closed the tracker exactly like
 # no-drift. A CANDIDATE_DRIFT on the adopted pair means a pin-bump evaluation

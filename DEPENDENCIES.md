@@ -425,12 +425,12 @@ declaration is removable even if its package remains in `Cargo.lock`.
   or append the deduped tracking issue, but only on the adopted pair
   (`noyalib`, `noyalib-serde-yaml`; the current pin lives in the root
   `Cargo.toml`, its history in the ledger above): severity is role-aware.
-  The same nine kinds on any of the five candidates, plus the four
-  branch kinds — `branch-added`, `branch-deleted`, `branch-advanced`,
+  The same nine kinds on any of the five candidates, plus the four branch
+  kinds — `branch-added`, `branch-deleted`, `branch-advanced`,
   `branch-diverged` — and `version-record-touched` on every crate regardless
-  of role, are still observed
-  and listed but make the run `informational-drift` (exit 0), which closes or
-  keeps closed the tracker exactly like `no-drift`; divergence is measured
+  of role, are still observed and listed but make the run
+  `informational-drift` (exit 0), which closes or keeps closed the tracker
+  exactly like `no-drift`; divergence is measured
   against the baseline head, which moves only at recorded triages, so a
   rewrite that preserves the baseline head as an ancestor is reported as
   `branch-advanced`, and a branch head that changed without ancestry evidence
@@ -461,7 +461,8 @@ declaration is removable even if its package remains in `Cargo.lock`.
   and never pages: a transient leaves no state the exact pin and its
   `Cargo.lock` checksum depend on, and `updated_at` proves only that the
   record changed, never that a yank happened. Like `branch-advanced` it
-  repeats every week until a recorded triage records the observed timestamp.
+  repeats every week until a recorded triage writes the observed timestamp
+  into the baseline.
   The values were back-filled into the existing baseline at schemaVersion 3
   rather than taken from a refresh, and that back-fill is fully determined at
   the baseline's `checkedAt` (`2026-09-02T21:08:22.477Z`): each of the 99
