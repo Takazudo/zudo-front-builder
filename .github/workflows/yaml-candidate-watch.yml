@@ -1,9 +1,16 @@
 # YAML candidate watch — weekly pre-trigger monitor for issue #2755.
 #
-# The detector reports mechanical candidate drift only. CANDIDATE_DRIFT is
-# evidence requiring triage against #2755; it never claims that the semantic
-# trigger has fired. A failed monitor is operational failure and must remain
-# distinct from a completed run that found drift.
+# The detector classifies every delta by severity. Triage-severity deltas —
+# crates.io publish/yank/unyank, tag, GitHub Release, release-PR
+# state/pointer, and archive state — exit 10 as CANDIDATE_DRIFT and
+# file/append the deduped tracker (#2845). Informational-severity deltas —
+# branch added/deleted/advanced/diverged — are observed and reported but
+# exit 0 as informational-drift, closing or keeping closed the tracker
+# exactly like no-drift. A CANDIDATE_DRIFT on the adopted noyalib /
+# noyalib-serde-yaml pin means a pin-bump evaluation with the committed
+# differential harness; on the other five candidates it means a re-scan
+# against #2755. The report never decides that #2755's trigger condition is
+# met. An operational failure stays distinct from both.
 #
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names
@@ -69,11 +76,29 @@ jobs:
           node scripts/check-yaml-candidate-drift.mjs --json > yaml-candidate-watch-report.json
           rc=$?
           set -e
-          cat yaml-candidate-watch-report.json
-          cat yaml-candidate-watch-report.json >> "$GITHUB_STEP_SUMMARY"
+          # Write rc to the job output IMMEDIATELY — before any rendering,
+          # jq, or summary work — so a diagnostic failure below can never
+          # turn a known rc into an empty downstream output.
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          # Downstream jobs branch on outputs.rc, including the distinction
-          # between CANDIDATE_DRIFT (10) and operational failures.
+          cat yaml-candidate-watch-report.json
+          status=$(jq -r '.status // "unknown"' yaml-candidate-watch-report.json 2>/dev/null || echo unknown)
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          {
+            echo "## YAML candidate watch"
+            echo '```text'
+            node scripts/check-yaml-candidate-drift.mjs --render yaml-candidate-watch-report.json || echo "(report could not be rendered; see the JSON below)"
+            echo '```'
+            echo "<details><summary>JSON report</summary>"
+            echo
+            echo '```json'
+            cat yaml-candidate-watch-report.json
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Downstream jobs (file-or-close-issue, notify) branch on
+          # outputs.rc, including the distinction between CANDIDATE_DRIFT
+          # (10) and operational failures; the informational-drift notice
+          # step below branches on outputs.status instead.
           exit 0
 
       - name: Mark a non-clean detector outcome as failed
@@ -88,9 +113,15 @@ jobs:
           fi
           exit 1
 
+      - name: Surface informational drift (exit 0, no triage)
+        if: steps.run_detector.outputs.rc == '0' && steps.run_detector.outputs.status == 'informational-drift'
+        run: echo "::notice title=YAML candidate watch::informational drift only (branch movement on tracked upstream repositories). Exit 0 - the tracking issue is closed or stays closed; no triage or baseline refresh is needed. See the job summary for the deltas."
+
   file-or-close-issue:
-    # One deduped tracking issue per workflow: red runs append to the open
-    # issue, while a completed no-drift run closes it. This job branches on
+    # One deduped tracking issue per workflow: red runs (rc 10 triage-severity
+    # drift, or any other non-zero operational failure) append to the open
+    # issue, while a completed run with no triage-severity drift (rc 0:
+    # no-drift or informational-drift) closes it. This job branches on
     # detector.outputs.rc because the detector job result cannot distinguish
     # exit 10 from an operational failure.
     name: File/close YAML candidate watch tracking issue
@@ -111,7 +142,10 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: >-
-            candidate drift detected (CANDIDATE_DRIFT); triage against #2755:
+            triage-severity candidate drift detected (CANDIDATE_DRIFT):
+            crates.io publish/yank/unyank, tag, Release, release-PR, or
+            archive delta; adopted noyalib/noyalib-serde-yaml deltas mean a
+            pin-bump evaluation, other candidates a re-scan against #2755:
             https://github.com/Takazudo/zudo-front-builder/issues/2755
         run: bash scripts/file-exam-issue.sh "YAML candidate watch"
 
@@ -154,7 +188,7 @@ jobs:
         run: |
           FAILURE_KIND=""
           if [ "$DETECTOR_RC" = "10" ]; then
-            FAILURE_KIND="candidate drift detected (CANDIDATE_DRIFT; triage against #2755)"
+            FAILURE_KIND="candidate drift detected (CANDIDATE_DRIFT; triage-severity delta, see the run summary; #2755)"
           elif [ "$DETECTOR_RC" != "0" ]; then
             FAILURE_KIND="operational failure (monitor incomplete; no conclusion about drift; see #2755)"
           fi
