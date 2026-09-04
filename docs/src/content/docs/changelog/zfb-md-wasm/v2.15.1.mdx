@@ -1,0 +1,15 @@
+---
+title: v2.15.1
+sidebar_position: 11
+---
+
+# v2.15.1
+
+Released: 2026-09-04
+
+## Other Changes
+
+- Document the artifact-size repair sequence's compression tolerance in the
+  shipped README (6a5d9c02). `gzip-9` and `glue gzip-9` are compared with a
+  64-byte band because they are compressor output; final wasm and glue stay
+  byte-exact. Shipped artifacts and their sizes are unchanged.
