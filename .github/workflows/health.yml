@@ -315,7 +315,15 @@ jobs:
       # a plain recursive invocation skips the root, so the scripts/** vitest
       # suite (vitest.config.mjs, scoped to scripts/**/__tests__) would silently
       # never run here.
+      # ZFB_SUPERVISOR_TIMELINE opts the docs-dev-supervisor suite into emitting
+      # [supervisor-timeline] phase lines to stderr (#2889). Nothing else in the
+      # repo set this, so the platform this job runs on (ubuntu) had produced
+      # zero samples for #2887's R-B/R-C rules (#2904). This is observability
+      # only, not aggregation or storage: lines land in this job's own log
+      # under GitHub's retention.
       - run: pnpm test:workspace
+        env:
+          ZFB_SUPERVISOR_TIMELINE: "1"
 
       - run: pnpm format:check
 
