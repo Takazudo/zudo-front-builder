@@ -904,7 +904,16 @@ describe("docs dev supervisor", () => {
       process.env.ZFB_SUPERVISOR_TIMELINE = "1";
       process.stderr.write = (chunk, ...rest) => {
         const text = chunk.toString();
-        if (text.startsWith("[supervisor-timeline]")) timelineLines.push(text.trim());
+        // Swallow ONLY the captured [supervisor-timeline] line -- it is a real
+        // outcome=failed line, and letting it through to the real stderr would
+        // leak the exact false positive #2904 exists to remove into CI logs
+        // once ZFB_SUPERVISOR_TIMELINE is on there. Anything else (e.g. a
+        // cleanup-path error report) still passes through so a genuine
+        // failure in this test remains debuggable.
+        if (text.startsWith("[supervisor-timeline]")) {
+          timelineLines.push(text.trim());
+          return true;
+        }
         return originalWrite(chunk, ...rest);
       };
 
