@@ -161,7 +161,7 @@ function envSlice(env) {
   const reported = REPORTED_ENV_KEYS.map((key) => {
     const value = env[key];
     if (value === undefined) return `${key}=<unset>`;
-    return `${key}=${truncateTail(value, EVIDENCE_ENV_VALUE_CHARS)}`;
+    return `${key}=${truncateHead(value, EVIDENCE_ENV_VALUE_CHARS)}`;
   });
   return { digest: `${digestOf(serialized)} over ${Object.keys(env).length} vars`, reported };
 }
@@ -174,6 +174,10 @@ function envSlice(env) {
  */
 function captureSpawnInput(directory, scripts, env) {
   const fixtureSource = readFileSync(join(directory, "package.json"), "utf8");
+  // The fixture lives in a fresh mkdtemp directory, so its raw bytes differ on
+  // every run by design. Eliding that one path yields a digest that is stable
+  // across runs and is therefore the comparator Rule 1 actually wants.
+  const fixtureShape = fixtureSource.replaceAll(directory, "<FIXTURE_DIR>");
   const runner = resolveRunnerForEnv(env);
   let runParallel = "missing";
   try {
@@ -192,7 +196,11 @@ function captureSpawnInput(directory, scripts, env) {
     argv: [process.execPath, RUN_PARALLEL_PATH, ...scripts],
     cwd: directory,
     env: envSlice(env),
-    fixture: { digest: digestOf(fixtureSource), source: fixtureSource },
+    fixture: {
+      digest: digestOf(fixtureSource),
+      shapeDigest: digestOf(fixtureShape),
+      source: fixtureSource,
+    },
     node: process.version,
     runParallel,
     runner: {
@@ -217,7 +225,7 @@ function formatInput(input) {
     `  run-parallel.mjs: ${input.runParallel}`,
     `  env: ${input.env.reported.join(" ")}`,
     `  env digest: ${input.env.digest}`,
-    `  fixture package.json (${input.fixture.digest}):`,
+    `  fixture package.json: ${input.fixture.digest} (path-independent shape ${input.fixture.shapeDigest})`,
     indent(truncateHead(input.fixture.source, EVIDENCE_FIXTURE_CHARS), "    "),
   ].join("\n");
 }
@@ -280,7 +288,6 @@ function createDiagnostics(input) {
       readStreams = reader;
     },
     childPids,
-    elapsedMs,
     /** Bounded evidence block appended to every inner-wait rejection. */
     evidence(phase, timeoutMs) {
       const streams = readStreams();
@@ -302,8 +309,20 @@ function createDiagnostics(input) {
       ].join("\n");
     },
     mark,
+    /**
+     * One machine-parseable line per supervisor run: the identity of the INPUT
+     * alongside the phase timings, so a sampled distribution can be checked for
+     * input drift instead of assuming there was none.
+     */
     timelineLine(label, outcome) {
-      return `[supervisor-timeline] case=${label} outcome=${outcome} total=${elapsedMs()} ${marks
+      const identity = [
+        `runner=${input.runner.command}`,
+        `zudoDoc=${input.zudoDocVersion}`,
+        `runParallel=${input.runParallel.split(" ").pop()}`,
+        `fixtureShape=${input.fixture.shapeDigest}`,
+        `env=${input.env.digest.split(" ")[0]}`,
+      ].join(" ");
+      return `[supervisor-timeline] case=${label} outcome=${outcome} total=${elapsedMs()} ${identity} ${marks
         .map((entry) => `${entry.phase}=${entry.atMs}`)
         .join(" ")}`;
     },
@@ -445,7 +464,7 @@ function watchForMarker(diagnostics, markerPath) {
     diagnostics.mark("marker-file-created");
     clearInterval(timer);
   }, POLL_INTERVAL_MS);
-  timer.unref?.();
+  timer.unref();
   return () => clearInterval(timer);
 }
 
