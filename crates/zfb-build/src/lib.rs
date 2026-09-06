@@ -52,9 +52,12 @@ pub mod adapter;
 pub mod atomic;
 pub mod bundler;
 pub mod content_provenance;
-/// Internal: bounded ETXTBSY spawn retries shared by the crate's two esbuild
-/// spawn sites (#2378, #2380). Not part of the public surface.
-pub(crate) mod etxtbsy;
+/// Bounded ETXTBSY spawn retries shared by the crate's two esbuild spawn
+/// sites (#2378, #2380) and by `zfb-islands`' esbuild version gate (#2896).
+/// Only [`crate::etxtbsy::spawn_with_etxtbsy_retry_blocking`] is exported;
+/// the budget constants, the classification predicate, the backoff, and
+/// the async form all stay crate-internal.
+pub mod etxtbsy;
 pub mod glob_expand;
 pub mod head_inject;
 pub mod link_base_rewrite;
