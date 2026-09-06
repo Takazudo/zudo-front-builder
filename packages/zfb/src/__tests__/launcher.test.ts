@@ -187,9 +187,8 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
     chmodSync(fakeBinPath, 0o755);
   }
 
-  /** Poll until `check` returns true or `timeoutMs` elapses. */
-  async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
+  /** Poll until `check` returns true or the absolute `deadline` (ms since epoch) passes. */
+  async function waitFor(check: () => boolean, deadline: number): Promise<boolean> {
     while (Date.now() < deadline) {
       if (check()) return true;
       await new Promise((r) => setTimeout(r, 50));
@@ -225,6 +224,13 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
       return;
     }
 
+    // Single deadline shared by both spawn-waits below (pid-file appears,
+    // then child exits), so the two polls draw down one 10s budget instead
+    // of each getting an independent 5s allowance — the combined wait
+    // cannot exceed 10s of this test's 15s it-scoped timeout by
+    // construction (10000 / 15000 = 66.7%).
+    const spawnDeadline = Date.now() + 10000;
+
     // The fake binary records its PID, then idles — mimicking the
     // long-running `zfb dev` server.
     const pidFile = join(tmpDir, "child.pid");
@@ -240,7 +246,7 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
 
     try {
       // Wait for the native child to be up and registered.
-      expect(await waitFor(() => existsSync(pidFile), 5000)).toBe(true);
+      expect(await waitFor(() => existsSync(pidFile), spawnDeadline)).toBe(true);
       const childPid = Number(readFileSync(pidFile, "utf8").trim());
       expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
       expect(isProcessAlive(childPid)).toBe(true);
@@ -249,7 +255,7 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
       wrapper.kill("SIGTERM");
 
       // The native child must be terminated too, not orphaned to PPID 1.
-      expect(await waitFor(() => !isProcessAlive(childPid), 5000)).toBe(true);
+      expect(await waitFor(() => !isProcessAlive(childPid), spawnDeadline)).toBe(true);
 
       // The wrapper must die by the re-raised signal so callers see the
       // real termination cause, not a plain exit code.
