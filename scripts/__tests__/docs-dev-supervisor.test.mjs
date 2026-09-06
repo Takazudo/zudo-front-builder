@@ -396,14 +396,21 @@ function createDiagnostics(input) {
      * input drift instead of assuming there was none.
      */
     timelineLine(label, outcome) {
+      // Every value has to stay one whitespace-free token: the consumer
+      // (scripts/supervisor-timeline-summary.mjs) splits the line on
+      // whitespace, so a single embedded space makes the whole line -- and
+      // therefore the whole log it sits in -- a parse error instead of a
+      // sample. `zudoDocVersion` is the one field that can carry one: its
+      // read-failure fallback is `unreadable (ENOENT)`.
+      const token = (value) => String(value).replace(/\s+/g, "_");
       const identity = [
-        `runner=${input.runner.command}`,
-        `zudoDoc=${input.zudoDocVersion}`,
-        `runParallel=${input.runParallel.split(" ").pop()}`,
-        `fixtureShape=${input.fixture.shapeDigest}`,
-        `env=${input.env.digest.split(" ")[0]}`,
+        `runner=${token(input.runner.command)}`,
+        `zudoDoc=${token(input.zudoDocVersion)}`,
+        `runParallel=${token(input.runParallel.split(" ").pop())}`,
+        `fixtureShape=${token(input.fixture.shapeDigest)}`,
+        `env=${token(input.env.digest.split(" ")[0])}`,
       ].join(" ");
-      return `[supervisor-timeline] case=${label} outcome=${outcome} total=${elapsedMs()} ${identity} ${marks
+      return `[supervisor-timeline] case=${token(label)} outcome=${outcome} total=${elapsedMs()} ${identity} ${marks
         .map((entry) => `${entry.phase}=${entry.atMs}`)
         .join(" ")}`;
     },

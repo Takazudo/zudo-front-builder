@@ -43,7 +43,28 @@ import { pathToFileURL } from "node:url";
 // run in practice. An anchored pattern silently drops every real captured
 // line -- the exact "join" defect #2902 exists to fix (verified live: see
 // #2905's confirm pass).
-export const TAG_PATTERN = /\[supervisor-timeline\]\s*(.*)$/;
+// The prefix before the tag may not contain a quote character. `pnpm -r`'s
+// reporter prefix (". test: ") has none, but a vitest code frame quoting the
+// tag always does -- and the emitting test file now contains such a literal,
+// so vitest prints exactly that frame when a supervisor test fails. Matching
+// it lets a fragment like `case=hidden");` clear the key=value guard below
+// and then throw on the missing `outcome`, taking the whole analysis down
+// with exit 64 and discarding the genuine samples beside it -- in the R-A
+// case (a failure happened), which is when the tool is needed most.
+export const TAG_PATTERN = /^[^"'`]*\[supervisor-timeline\]\s+(\S.*)$/;
+
+// A real emission's first token is always `case=<label>`, so requiring a
+// key=value shape there is what separates an actual record from a line that
+// merely *quotes* the tag. Two such lines occur in the documented pipeline
+// itself: a vitest code frame of the emitting test file (which contains the
+// literal `"[supervisor-timeline]"`), and this tool's own
+// `!!! NO [supervisor-timeline] LINES FOUND !!!` / `parsed N
+// [supervisor-timeline] line(s)` output when a whole CI job log is grepped.
+// Without this guard each of those throws and takes the entire analysis down
+// with exit 64, discarding the genuine samples sitting beside them -- and it
+// does so precisely in the R-A case (a failure happened) where the tool is
+// needed most.
+const FIRST_TOKEN_PATTERN = /^[A-Za-z][\w.-]*=/;
 
 export const IDENTITY_FIELDS = ["runner", "zudoDoc", "runParallel", "fixtureShape", "env"];
 
@@ -91,16 +112,19 @@ function toMs(value, key, line) {
 
 /**
  * Parses one line. Returns `null` for a line that does not carry the
- * `[supervisor-timeline]` tag (ignored, not an error — the expected usage
- * pipes a whole vitest log through this tool). Throws when the tag is
- * present but the content does not parse, since that must surface as a
- * usage error (exit 64), never as "no data" (exit 1).
+ * `[supervisor-timeline]` tag, or that carries it only as quoted prose rather
+ * than as a record (ignored, not an error — the expected usage pipes a whole
+ * vitest log through this tool). Throws when the line really is a record
+ * (tag + a leading `key=value` token) but the content does not parse, since
+ * that must surface as a usage error (exit 64), never as "no data" (exit 1).
  */
 export function parseTimelineLine(line) {
   const match = TAG_PATTERN.exec(line);
   if (!match) return null;
 
   const tokens = match[1].split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || !FIRST_TOKEN_PATTERN.test(tokens[0])) return null;
+
   const fields = {};
   const marks = {};
   for (const token of tokens) {

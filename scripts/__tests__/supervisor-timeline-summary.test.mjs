@@ -124,6 +124,33 @@ describe("distributionStats", () => {
 });
 
 describe("parseTimelineLine", () => {
+  // Regression for the residual half of the /code-review high-severity finding:
+  // the emitting test file contains the tag inside a string literal, so vitest
+  // prints that code frame whenever a supervisor test fails. The frame's first
+  // token after the tag (`case=hidden");`) is key=value-shaped, so the
+  // first-token guard alone lets it through and it then throws on the missing
+  // `outcome` -- aborting the whole run with exit 64 exactly in the R-A case.
+  it("ignores a vitest code frame whose first token is key=value-shaped", () => {
+    const frame =
+      '  913|       expect(timelineLines[0]).toContain("[supervisor-timeline] case=hidden");';
+    expect(parseTimelineLine(frame)).toBeNull();
+  });
+
+  it("ignores a single-quoted or backticked source mention of the tag", () => {
+    expect(
+      parseTimelineLine("const t = '[supervisor-timeline] case=up+boom outcome=ok';"),
+    ).toBeNull();
+    expect(
+      parseTimelineLine("const t = `[supervisor-timeline] case=up+boom outcome=ok`;"),
+    ).toBeNull();
+  });
+
+  it("still parses a real emission behind the pnpm -r reporter prefix", () => {
+    const real =
+      ". test: [supervisor-timeline] case=up+boom outcome=ok total=540 runner=pnpm " +
+      "zudoDoc=5.15.0 runParallel=a fixtureShape=b env=c first-stdout-byte=354 first-up-line=430";
+    expect(parseTimelineLine(real)).toMatchObject({ case: "up+boom", outcome: "ok", total: 540 });
+  });
   it("parses a real captured up+boom line", () => {
     const record = parseTimelineLine(UP_BOOM_LINE);
     expect(record.case).toBe("up+boom");
@@ -167,6 +194,22 @@ describe("parseTimelineLine", () => {
     expect(record.total).toBe(540);
   });
 
+  // The tag is deliberately unanchored (pnpm -r prefixes it), so lines that
+  // merely QUOTE it must be ignored rather than throw: a vitest code frame of
+  // the emitting test file, and this tool's own banner/report lines when a
+  // whole CI job log is grepped. Throwing there aborts the entire analysis
+  // with exit 64 and discards the real samples beside it.
+  it("ignores a line that only quotes the tag inside source code", () => {
+    expect(parseTimelineLine('        if (text.startsWith("[supervisor-timeline]")) {')).toBeNull();
+  });
+
+  it("ignores this tool's own banner and report lines", () => {
+    expect(
+      parseTimelineLine("No input matched the [supervisor-timeline] tag -- nothing was parsed."),
+    ).toBeNull();
+    expect(parseTimelineLine("parsed 2 [supervisor-timeline] line(s)")).toBeNull();
+  });
+
   it("throws on a tagged line missing a required field", () => {
     expect(() => parseTimelineLine("[supervisor-timeline] outcome=ok total=1 runner=pnpm")).toThrow(
       /missing "case"/,
@@ -204,6 +247,15 @@ describe("parseTimelines", () => {
 
   it("returns an empty array for input with no tagged lines", () => {
     expect(parseTimelines("just some ordinary log\nPASS foo.test.mjs\n")).toEqual([]);
+  });
+
+  it("keeps the real samples when a quoted-tag line sits beside them", () => {
+    const blob = [
+      "FAIL scripts/__tests__/docs-dev-supervisor.test.mjs",
+      '  913|         if (text.startsWith("[supervisor-timeline]")) {',
+      UP_BOOM_LINE,
+    ].join("\n");
+    expect(parseTimelines(blob).map((record) => record.case)).toEqual(["up+boom"]);
   });
 
   it("throws when any tagged line is malformed, even amid valid ones", () => {
