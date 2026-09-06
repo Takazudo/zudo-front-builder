@@ -1,6 +1,14 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,6 +35,23 @@ const RUN_PARALLEL_PATH = join(
 );
 const PROCESS_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 20;
+
+// Deliberately short, and deliberately NOT PROCESS_TIMEOUT_MS: the pre-UP
+// regression below waits for a line that is designed never to arrive, so this is
+// the budget for proving a negative rather than the budget for a wait that is
+// expected to succeed.
+const PRE_UP_FAILURE_TIMEOUT_MS = 250;
+
+// Cleanup re-collects the descendant tree this many times. A mid-tier process can
+// exit and reparent its descendants between passes, so one pass is not enough;
+// more than a handful is gold-plating a teardown path that the product itself
+// ships as a single pass.
+const CLEANUP_TREE_PASSES = 3;
+
+// How long the pre-UP regression polls for the reaped tree to actually disappear.
+// Bottom-up SIGKILL leaves each intermediate process a zombie until its own
+// parent dies and init reaps it, so "gone" is reached by polling, not instantly.
+const REAP_CONFIRM_TIMEOUT_MS = 5_000;
 
 // Evidence budgets. A wait failure has to stay readable in a CI log, so every
 // captured blob is tail-truncated with an explicit "N chars omitted" marker
@@ -90,9 +115,24 @@ function waitingFailureScript(markerPath) {
   ].join(" ");
 }
 
+/**
+ * A leaf that announces its pid ONLY by writing it to a side-channel file, and
+ * never prints an `UP` line. Cleanup therefore cannot learn about it from stdout
+ * -- which is precisely the descendant #2894 leaked when an inner wait timed out
+ * before `UP`.
+ */
+function hiddenLeafScript(pidPath) {
+  return [
+    'const fs = require("node:fs");',
+    `fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join(" ");
+}
+
 function createFixture() {
   const directory = mkdtempSync(join(tmpdir(), "zfb-run-parallel-"));
   const markerPath = join(directory, "up.ready");
+  const hiddenPidPath = join(directory, "hidden.pid");
   writeFileSync(
     join(directory, "package.json"),
     JSON.stringify(
@@ -103,13 +143,14 @@ function createFixture() {
           up: nodeScript(serverScript("up", markerPath)),
           up2: nodeScript(serverScript("up2")),
           boom: nodeScript(waitingFailureScript(markerPath)),
+          hidden: nodeScript(hiddenLeafScript(hiddenPidPath)),
         },
       },
       null,
       2,
     ),
   );
-  return { directory, markerPath };
+  return { directory, hiddenPidPath, markerPath };
 }
 
 function digestOf(text) {
@@ -462,6 +503,22 @@ function processIsAlive(pid) {
 }
 
 /**
+ * Poll every pid until `process.kill(pid, 0)` reports ESRCH, and return whatever
+ * is still alive at the deadline. Polled rather than sampled once: killing a tree
+ * bottom-up leaves each intermediate process a zombie until its own parent dies
+ * and init reaps it, and a zombie still answers signal 0.
+ */
+async function waitForAllGone(pids, timeoutMs = REAP_CONFIRM_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  let alive = pids.filter(processIsAlive);
+  while (alive.length > 0 && Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, POLL_INTERVAL_MS));
+    alive = alive.filter(processIsAlive);
+  }
+  return alive;
+}
+
+/**
  * Rejects with the same evidence block as the other two waits rather than
  * returning false: a bare `expected false to be true` names neither the phase
  * nor the process state that produced it.
@@ -503,17 +560,150 @@ function portFromUpLine(line) {
   return Number(match[1]);
 }
 
-async function terminateForCleanup(supervisor, childPids) {
-  if (supervisor.child.exitCode === null && supervisor.child.signalCode === null) {
-    supervisor.child.kill("SIGKILL");
-  }
-  for (const pid of childPids) {
-    if (processIsAlive(pid)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch (error) {
-        if (error.code !== "ESRCH") throw error;
+/**
+ * Parent pid -> child pids for every process on the box. Mirrors the enumeration
+ * half of run-parallel.mjs's own `collectTree` -- `/proc` on Linux, `ps`
+ * elsewhere -- and is mirrored rather than imported for the same reason
+ * `resolveRunnerForEnv` is: run-parallel is a shipped artifact of
+ * @takazudo/zudo-doc with no module entry point to import. Split out from the
+ * walk so a cleanup pass over several roots forks `ps` once, not once per root.
+ */
+function readProcessTable() {
+  const childrenByParent = new Map();
+  const record = (pid, ppid) => {
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) return;
+    // A self-parenting row can only come from a mis-parsed line, but `walk`
+    // below recurses, so letting one through would blow the stack rather than
+    // report anything useful.
+    if (pid === ppid) return;
+    const siblings = childrenByParent.get(ppid);
+    if (siblings) siblings.push(pid);
+    else childrenByParent.set(ppid, [pid]);
+  };
+
+  try {
+    if (process.platform === "linux") {
+      for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+        let stat;
+        try {
+          stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+        } catch {
+          continue; // the process exited between readdir and read
+        }
+        // The comm field is parenthesised and may itself contain spaces or
+        // parentheses, so split after the LAST ')' rather than on whitespace.
+        const tail = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        record(Number(entry), Number(tail[1]));
       }
+    } else {
+      const out = execFileSync("ps", ["-Ao", "pid=,ppid="], { encoding: "utf8" });
+      for (const line of out.split("\n")) {
+        const [pid, ppid] = line.trim().split(/\s+/);
+        record(Number(pid), Number(ppid));
+      }
+    }
+  } catch {
+    // Enumeration failed; callers fall back to signalling just their roots.
+  }
+
+  return childrenByParent;
+}
+
+/** A pid and all of its descendants, parents before children. */
+function treeFrom(childrenByParent, rootPid) {
+  const ordered = [];
+  const walk = (pid) => {
+    ordered.push(pid);
+    for (const child of childrenByParent.get(pid) ?? []) walk(child);
+  };
+  walk(rootPid);
+  return ordered;
+}
+
+function collectTree(rootPid) {
+  return treeFrom(readProcessTable(), rootPid);
+}
+
+/**
+ * Signal every descendant of every root, deepest first, recording each pid seen.
+ *
+ * Deepest-first is the same ordering run-parallel.mjs uses, for the same reason:
+ * an intermediate `pnpm run x` must not be left briefly holding a still-live
+ * grandchild it does not forward signals to.
+ *
+ * This NEVER throws. It runs from `withSupervisor`'s `finally`, after the catch
+ * that rethrows the real failure, so a throw here would replace the original
+ * diagnostic the evidence blocks exist to preserve.
+ */
+function killTree(rootPids, signal, seen) {
+  const table = readProcessTable();
+  const ordered = [];
+  const queued = new Set();
+  for (const root of rootPids) {
+    for (const pid of treeFrom(table, root)) {
+      if (queued.has(pid)) continue;
+      // init and this very process are never ours to kill; a mis-parsed row is
+      // the only way either could reach this list, and the cost of being wrong
+      // is killing the test runner. Filtered here rather than at signal time so
+      // neither can be recorded and then re-used as a root on the next pass.
+      if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) continue;
+      queued.add(pid);
+      ordered.push(pid);
+    }
+  }
+  for (const pid of ordered.reverse()) {
+    seen.add(pid);
+    try {
+      process.kill(pid, signal);
+    } catch (error) {
+      // ESRCH just means it already exited, the common case in a tree that is
+      // collapsing anyway. Anything else is worth a line, but must never mask
+      // the original failure by throwing here.
+      if (error.code !== "ESRCH") {
+        process.stderr.write(
+          `docs-dev-supervisor cleanup: could not signal pid ${pid}: ${error.code ?? error.message}\n`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Kill the supervisor AND every descendant it still owns.
+ *
+ * `childPids` alone is not enough: it is only ever populated by parsing an `UP`
+ * line, so a wait that times out BEFORE `UP` leaves it empty and the
+ * `pnpm run <task>` -> `node -e` tree survives the test (#2894). Survivors keep
+ * the inherited stdout/stderr pipe open, so the supervisor's `close` never fires
+ * and the `waitForExit` below always paid its full second.
+ *
+ * Bounded re-collect rather than one pass: a mid-tier process can exit and
+ * reparent its descendants between passes, which would hide them from a tree
+ * walked only once. Pids already seen are re-used as roots so a reparented
+ * descendant is still reachable after its ancestor is gone.
+ */
+async function terminateForCleanup(supervisor, childPids) {
+  const seen = new Set();
+  for (let pass = 0; pass < CLEANUP_TREE_PASSES; pass += 1) {
+    const roots = [];
+    // Only walk from the supervisor while it is still ours. Once Node has reaped
+    // it the pid can be recycled, and walking a recycled pid would signal some
+    // unrelated tree.
+    if (
+      supervisor.child.pid !== undefined &&
+      supervisor.child.exitCode === null &&
+      supervisor.child.signalCode === null
+    ) {
+      roots.push(supervisor.child.pid);
+    }
+    for (const pid of new Set([...childPids, ...seen])) {
+      if (processIsAlive(pid)) roots.push(pid);
+    }
+    if (roots.length === 0) break;
+    killTree(roots, "SIGKILL", seen);
+    if (pass + 1 < CLEANUP_TREE_PASSES) {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, POLL_INTERVAL_MS));
     }
   }
   try {
@@ -540,7 +730,7 @@ async function withSupervisor(scripts, run) {
   const childPids = supervisor.diagnostics.childPids;
   let outcome = "ok";
   try {
-    await run(supervisor, childPids);
+    await run(supervisor, childPids, fixture);
   } catch (error) {
     outcome = "failed";
     throw error;
@@ -607,6 +797,62 @@ describe("docs dev supervisor", () => {
           childPids.every((pid) => !processIsAlive(pid)),
         );
       });
+    });
+
+    // Regression for #2894: cleanup used to SIGKILL the supervisor plus whatever
+    // pids the UP line had disclosed. A wait that times out BEFORE any UP line
+    // disclosed nothing, so the `pnpm run <task>` -> `node -e` tree outlived the
+    // test -- still holding the inherited pipe, so the supervisor's `close`
+    // never fired either. The `hidden` task reproduces that exactly: it
+    // publishes its pid only through a side-channel file and never prints UP.
+    it("reaps the whole descendant tree when cleanup runs before any UP line", async () => {
+      const observed = { childPidsAtFailure: null, leafPid: null, tree: null };
+      let surfaced = null;
+
+      try {
+        await withSupervisor(["hidden"], async (supervisor, childPids, fixture) => {
+          // Wait for a *parseable* pid rather than for the file to exist: the
+          // leaf's write is not atomic, and an empty read would make this test
+          // flaky instead of failing on the thing it guards.
+          const readLeafPid = () => {
+            try {
+              return Number(readFileSync(fixture.hiddenPidPath, "utf8").trim());
+            } catch {
+              return Number.NaN;
+            }
+          };
+          await waitUntil(supervisor, "hidden-pid-file", () => Number.isInteger(readLeafPid()));
+          observed.leafPid = readLeafPid();
+          observed.tree = collectTree(supervisor.child.pid);
+          observed.childPidsAtFailure = [...childPids];
+          // `hidden` never prints an UP line, so this wait is guaranteed to be
+          // the pre-UP failure #2887 hit.
+          await supervisor.stdout.waitFor(
+            (line) => line.startsWith("UP hidden "),
+            "UP hidden <port> pid=<pid>",
+            PRE_UP_FAILURE_TIMEOUT_MS,
+          );
+        });
+      } catch (error) {
+        surfaced = error;
+      }
+
+      // The ORIGINAL diagnostic has to be what surfaces. Cleanup runs in
+      // withSupervisor's finally, so a throw there would silently replace it.
+      expect(surfaced).toBeInstanceOf(Error);
+      expect(surfaced.message).toContain("Timed out waiting for child output");
+      expect(surfaced.message).toContain("UP hidden <port> pid=<pid>");
+      expect(surfaced.message).toContain("--- supervisor diagnostics ---");
+
+      // The leaf really was invisible to the UP-line channel, and really was a
+      // descendant rather than the supervisor itself.
+      expect(observed.childPidsAtFailure).toEqual([]);
+      expect(Number.isInteger(observed.leafPid)).toBe(true);
+      expect(observed.tree).toContain(observed.leafPid);
+      expect(observed.tree.length).toBeGreaterThan(1);
+
+      const survivors = await waitForAllGone([...new Set([...observed.tree, observed.leafPid])]);
+      expect(survivors).toEqual([]);
     });
   });
 });
