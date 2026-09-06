@@ -36,7 +36,14 @@ import { pathToFileURL } from "node:url";
  * parse error that must never be confused with "no data".
  */
 
-export const TAG_PATTERN = /^\[supervisor-timeline\]\s*(.*)$/;
+// Not anchored to line-start: `pnpm -r`'s parallel reporter prefixes every
+// line with a package label (e.g. ". test: [supervisor-timeline] ...") when
+// the emitting test lives at the workspace root, which is exactly how the
+// documented pipeline (`pnpm test:workspace` piped through `grep -h`) is
+// run in practice. An anchored pattern silently drops every real captured
+// line -- the exact "join" defect #2902 exists to fix (verified live: see
+// #2905's confirm pass).
+export const TAG_PATTERN = /\[supervisor-timeline\]\s*(.*)$/;
 
 export const IDENTITY_FIELDS = ["runner", "zudoDoc", "runParallel", "fixtureShape", "env"];
 
