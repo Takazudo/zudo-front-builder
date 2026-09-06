@@ -74,6 +74,38 @@ export const DOCUMENTATION_ALLOWANCES = [
   },
 ];
 
+// #2885: a release note claimed "shipped artifacts and their sizes are unchanged" for a
+// documentation-only patch. Sizes were indeed unchanged, but every release stamps its own
+// `ZFB_RELEASE_VERSION` string into each `.wasm`, so all four SHA-256 digests moved anyway and a
+// digest-pinning consumer nearly skipped a required re-pin. The four files that carry the size
+// tables must therefore also carry the digest disclaimer, so "sizes are guarded" is never read
+// alone. Matched with all whitespace stripped, so prose reflow by the MDX formatter cannot break it.
+export const DIGEST_DISCLAIMER_ANCHORS = {
+  en: "**Sizes are guarded; content digests are not.**",
+  ja: "**サイズは保証されますが、コンテンツダイジェストは保証されません。**",
+};
+
+export const DIGEST_DISCLAIMER_FILES = DOC_FILES.slice(0, 4);
+
+function stripWhitespace(value) {
+  return value.replace(/\s+/g, "");
+}
+
+export function validateDigestDisclaimer(file, content) {
+  if (!DIGEST_DISCLAIMER_FILES.includes(file)) return [];
+  const locale = file.includes("docs-ja/") ? "ja" : "en";
+  const anchor = DIGEST_DISCLAIMER_ANCHORS[locale];
+  if (stripWhitespace(content).includes(stripWhitespace(anchor))) return [];
+  return [
+    finding(
+      "missing-digest-disclaimer",
+      file,
+      `${file}: shipped-size section is missing the digest disclaimer anchored on ${anchor} — see zfb#2885; add it by hand, --fix cannot write prose`,
+      { locale, anchor },
+    ),
+  ];
+}
+
 // `1,361` / `21,846` are benchmark document sizes and intentionally excluded by
 // the ` B` suffix scope. Do not widen the closure regex to bare grouped digits.
 const BYTE_LITERAL = /\b\d{1,3}(?:,\d{3})+ B\b/g;
@@ -758,6 +790,7 @@ export function validateMdWasmSizeDocs({ files, manifest, ceilings }) {
         index >= 6 ? 1 : 0,
       ),
     );
+    findings.push(...validateDigestDisclaimer(file, content));
     findings.push(...validateClosure(file, content, manifest, ceilings));
     findings.push(
       ...validateAllowanceScopes(
