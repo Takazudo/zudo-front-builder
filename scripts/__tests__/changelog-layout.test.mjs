@@ -519,4 +519,18 @@ describe("integrated changelog contract", () => {
       expect(releaseEntries(lane).filter((entry) => isHistorical(entry.version))).toEqual([]);
     }
   });
+
+  // zfb#2885: this note claimed "Shipped artifacts and their sizes are unchanged." Both halves were
+  // true, but a consumer verifying the artifacts by SHA-256 read it as "nothing to re-verify" —
+  // digests move on every release, because ZFB_RELEASE_VERSION is stamped into each .wasm. Pinned as
+  // a regression on the one page that carried the claim, not as a phrase blocklist over every note.
+  it("keeps the v2.15.1 md-wasm note from claiming unchanged artifacts without the digest caveat", () => {
+    const note = read("docs/src/content/docs/changelog/zfb-md-wasm/v2.15.1.mdx").replace(
+      /\s+/g,
+      " ",
+    );
+    expect(note).not.toContain("Shipped artifacts and their sizes are unchanged.");
+    expect(note).toContain("content digests");
+    expect(note).toMatch(/re-pin on every release/);
+  });
 });

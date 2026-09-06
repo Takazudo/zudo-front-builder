@@ -293,6 +293,15 @@ permanent promises — re-measure against the version you actually install. The
 four-step clean production reference ceiling is 210 seconds, with the #2447
 selected median at 155.015 s [153.496, 165.977].
 
+**Sizes are guarded; content digests are not.** The byte sizes above are held by
+`shipped-sizes.json` and asserted in CI, so they move only on a deliberate
+artifact change. SHA-256 digests are a different matter: every release stamps
+its own version string into each `.wasm` — the value `version()` returns — so
+all four digests change on **every** release, including a documentation-only
+patch whose compiled code is identical and whose byte sizes do not move at all.
+If you verify these artifacts by content digest rather than by semver, re-pin on
+every upgrade; never read "sizes unchanged" as "nothing to re-verify".
+
 Gating `swc_core` out of the highlight graph (#2449/#2450) was a
 **provability win, not a size win**. The #2447 SWC-retaining baseline was
 1,484,705 B raw and 767,009 B gzip-9; the #2450 result was 7,965 B smaller

@@ -110,6 +110,11 @@ pages, validates their positions, and adds one to its maximum; never use the ret
 after its historical maximum. An empty lane starts at position 1, and its first-ever page must set
 `pagination_next: null` so pager traversal cannot cross into another package lane.
 
+A `zfb-md-wasm` note must never call shipped artifacts "unchanged" without saying what that covers.
+`ZFB_RELEASE_VERSION` is stamped into each `.wasm`, so every release moves all four SHA-256 digests
+even when the compiled code and the byte sizes do not (#2885). Every file carrying a shipped-size
+table must keep the digest disclaimer that `scripts/assert-md-wasm-size-docs.mjs` asserts.
+
 The GitHub Release body has five explicit package headings and independently extracts the body of
 the matching MDX source beneath each heading. Never reuse one lane's extracted notes for another.
 Before the direct release push, run the package/Rust focused checks plus docs check, strict docs
