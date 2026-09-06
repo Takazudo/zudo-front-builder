@@ -154,6 +154,19 @@ describe("parseTimelineLine", () => {
     expect(parseTimelineLine("")).toBeNull();
   });
 
+  // Regression for the join defect #2905 caught live: `pnpm -r`'s parallel
+  // reporter prefixes every line from a root-level test file with a package
+  // label (". test: ") before the [supervisor-timeline] tag. The documented
+  // pipeline (`pnpm test:workspace` piped through `grep -h`) hands the
+  // summarizer exactly this shape, not the bare tagged line the other
+  // fixtures above use.
+  it("parses a line still carrying its pnpm -r package-label prefix", () => {
+    const record = parseTimelineLine(`. test: ${UP_BOOM_LINE}`);
+    expect(record.case).toBe("up+boom");
+    expect(record.outcome).toBe("ok");
+    expect(record.total).toBe(540);
+  });
+
   it("throws on a tagged line missing a required field", () => {
     expect(() => parseTimelineLine("[supervisor-timeline] outcome=ok total=1 runner=pnpm")).toThrow(
       /missing "case"/,
