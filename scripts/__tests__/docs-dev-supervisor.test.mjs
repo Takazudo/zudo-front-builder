@@ -42,6 +42,23 @@ const POLL_INTERVAL_MS = 20;
 // expected to succeed.
 const PRE_UP_FAILURE_TIMEOUT_MS = 250;
 
+/**
+ * Narrow predicate for the ONE deliberate throw the pre-UP regression test
+ * (#2894) induces: the "hidden" case's wait for a "UP hidden ..." line that is
+ * designed never to arrive. Matched on the exact wait label and timeout
+ * message -- never a blanket "the hidden case threw" -- so a genuine
+ * regression in that test (a bad assertion, a setup failure) still reports
+ * outcome=failed instead of re-poisoning the field this fix exists to clean
+ * up (#2904).
+ */
+function isExpectedHiddenTimeout(error) {
+  return (
+    error instanceof Error &&
+    error.message.includes("Timed out waiting for child output") &&
+    error.message.includes("UP hidden <port> pid=<pid>")
+  );
+}
+
 // Cleanup re-collects the descendant tree this many times. A mid-tier process can
 // exit and reparent its descendants between passes, so one pass is not enough;
 // more than a handful is gold-plating a teardown path that the product itself
@@ -379,14 +396,21 @@ function createDiagnostics(input) {
      * input drift instead of assuming there was none.
      */
     timelineLine(label, outcome) {
+      // Every value has to stay one whitespace-free token: the consumer
+      // (scripts/supervisor-timeline-summary.mjs) splits the line on
+      // whitespace, so a single embedded space makes the whole line -- and
+      // therefore the whole log it sits in -- a parse error instead of a
+      // sample. `zudoDocVersion` is the one field that can carry one: its
+      // read-failure fallback is `unreadable (ENOENT)`.
+      const token = (value) => String(value).replace(/\s+/g, "_");
       const identity = [
-        `runner=${input.runner.command}`,
-        `zudoDoc=${input.zudoDocVersion}`,
-        `runParallel=${input.runParallel.split(" ").pop()}`,
-        `fixtureShape=${input.fixture.shapeDigest}`,
-        `env=${input.env.digest.split(" ")[0]}`,
+        `runner=${token(input.runner.command)}`,
+        `zudoDoc=${token(input.zudoDocVersion)}`,
+        `runParallel=${token(input.runParallel.split(" ").pop())}`,
+        `fixtureShape=${token(input.fixture.shapeDigest)}`,
+        `env=${token(input.env.digest.split(" ")[0])}`,
       ].join(" ");
-      return `[supervisor-timeline] case=${label} outcome=${outcome} total=${elapsedMs()} ${identity} ${marks
+      return `[supervisor-timeline] case=${token(label)} outcome=${outcome} total=${elapsedMs()} ${identity} ${marks
         .map((entry) => `${entry.phase}=${entry.atMs}`)
         .join(" ")}`;
     },
@@ -723,7 +747,15 @@ if (process.env.CI && !runParallelAvailable) {
   );
 }
 
-async function withSupervisor(scripts, run) {
+/**
+ * @param {object} [options]
+ * @param {(error: unknown) => boolean} [options.isExpectedFailure] Narrow
+ *   predicate identifying the ONE deliberately induced throw a caller
+ *   declared in advance -- never a blanket "this case threw". Any throw that
+ *   does not match (including no predicate at all) reports outcome=failed,
+ *   which is the only value #2887's rule R-A should ever match.
+ */
+async function withSupervisor(scripts, run, { isExpectedFailure } = {}) {
   const fixture = createFixture();
   const supervisor = spawnSupervisor(fixture.directory, scripts);
   const stopMarkerWatch = watchForMarker(supervisor.diagnostics, fixture.markerPath);
@@ -732,7 +764,7 @@ async function withSupervisor(scripts, run) {
   try {
     await run(supervisor, childPids, fixture);
   } catch (error) {
-    outcome = "failed";
+    outcome = isExpectedFailure?.(error) ? "expected-failure" : "failed";
     throw error;
   } finally {
     stopMarkerWatch();
@@ -810,36 +842,40 @@ describe("docs dev supervisor", () => {
       let surfaced = null;
 
       try {
-        await withSupervisor(["hidden"], async (supervisor, childPids, fixture) => {
-          // Wait for a *parseable* pid rather than for the file to exist: the
-          // leaf's write is not atomic, and an empty read would make this test
-          // flaky instead of failing on the thing it guards. `> 0` is not
-          // decoration -- `Number("")` is 0, not NaN, so an integer check alone
-          // accepts the created-but-not-yet-written file, and pid 0 would then
-          // be handed to `process.kill`, which reads it as "this process group".
-          const readLeafPid = () => {
-            try {
-              return Number(readFileSync(fixture.hiddenPidPath, "utf8").trim());
-            } catch {
-              return Number.NaN;
-            }
-          };
-          const leafPidIsReadable = () => {
-            const pid = readLeafPid();
-            return Number.isInteger(pid) && pid > 0;
-          };
-          await waitUntil(supervisor, "hidden-pid-file", leafPidIsReadable);
-          observed.leafPid = readLeafPid();
-          observed.tree = collectTree(supervisor.child.pid);
-          observed.childPidsAtFailure = [...childPids];
-          // `hidden` never prints an UP line, so this wait is guaranteed to be
-          // the pre-UP failure #2887 hit.
-          await supervisor.stdout.waitFor(
-            (line) => line.startsWith("UP hidden "),
-            "UP hidden <port> pid=<pid>",
-            PRE_UP_FAILURE_TIMEOUT_MS,
-          );
-        });
+        await withSupervisor(
+          ["hidden"],
+          async (supervisor, childPids, fixture) => {
+            // Wait for a *parseable* pid rather than for the file to exist: the
+            // leaf's write is not atomic, and an empty read would make this test
+            // flaky instead of failing on the thing it guards. `> 0` is not
+            // decoration -- `Number("")` is 0, not NaN, so an integer check alone
+            // accepts the created-but-not-yet-written file, and pid 0 would then
+            // be handed to `process.kill`, which reads it as "this process group".
+            const readLeafPid = () => {
+              try {
+                return Number(readFileSync(fixture.hiddenPidPath, "utf8").trim());
+              } catch {
+                return Number.NaN;
+              }
+            };
+            const leafPidIsReadable = () => {
+              const pid = readLeafPid();
+              return Number.isInteger(pid) && pid > 0;
+            };
+            await waitUntil(supervisor, "hidden-pid-file", leafPidIsReadable);
+            observed.leafPid = readLeafPid();
+            observed.tree = collectTree(supervisor.child.pid);
+            observed.childPidsAtFailure = [...childPids];
+            // `hidden` never prints an UP line, so this wait is guaranteed to be
+            // the pre-UP failure #2887 hit.
+            await supervisor.stdout.waitFor(
+              (line) => line.startsWith("UP hidden "),
+              "UP hidden <port> pid=<pid>",
+              PRE_UP_FAILURE_TIMEOUT_MS,
+            );
+          },
+          { isExpectedFailure: isExpectedHiddenTimeout },
+        );
       } catch (error) {
         surfaced = error;
       }
@@ -860,6 +896,54 @@ describe("docs dev supervisor", () => {
 
       const survivors = await waitForAllGone([...new Set([...observed.tree, observed.leafPid])]);
       expect(survivors).toEqual([]);
+    });
+
+    // The narrowness guarantee for #2904: isExpectedHiddenTimeout must match
+    // ONLY the specific pre-UP timeout above, never "the hidden case threw"
+    // in general. An unrelated throw from inside the same ["hidden"] case has
+    // to keep reporting outcome=failed -- otherwise the fix here would just
+    // move the false positive from "always failed" to "always
+    // expected-failure", re-poisoning the exact field rule R-A reads.
+    it("reports outcome=failed, not expected-failure, for an unrelated throw in the hidden case", async () => {
+      const timelineLines = [];
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      const originalEnv = process.env.ZFB_SUPERVISOR_TIMELINE;
+      process.env.ZFB_SUPERVISOR_TIMELINE = "1";
+      process.stderr.write = (chunk, ...rest) => {
+        const text = chunk.toString();
+        // Swallow ONLY the captured [supervisor-timeline] line -- it is a real
+        // outcome=failed line, and letting it through to the real stderr would
+        // leak the exact false positive #2904 exists to remove into CI logs
+        // once ZFB_SUPERVISOR_TIMELINE is on there. Anything else (e.g. a
+        // cleanup-path error report) still passes through so a genuine
+        // failure in this test remains debuggable.
+        if (text.startsWith("[supervisor-timeline]")) {
+          timelineLines.push(text.trim());
+          return true;
+        }
+        return originalWrite(chunk, ...rest);
+      };
+
+      try {
+        await expect(
+          withSupervisor(
+            ["hidden"],
+            async () => {
+              throw new Error("unrelated assertion failure, not the pre-UP timeout");
+            },
+            { isExpectedFailure: isExpectedHiddenTimeout },
+          ),
+        ).rejects.toThrow("unrelated assertion failure, not the pre-UP timeout");
+      } finally {
+        process.stderr.write = originalWrite;
+        if (originalEnv === undefined) delete process.env.ZFB_SUPERVISOR_TIMELINE;
+        else process.env.ZFB_SUPERVISOR_TIMELINE = originalEnv;
+      }
+
+      expect(timelineLines).toHaveLength(1);
+      expect(timelineLines[0]).toContain("case=hidden");
+      expect(timelineLines[0]).toContain("outcome=failed");
+      expect(timelineLines[0]).not.toContain("outcome=expected-failure");
     });
   });
 });
