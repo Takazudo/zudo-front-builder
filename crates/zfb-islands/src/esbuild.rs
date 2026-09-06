@@ -43,12 +43,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use zfb_build::etxtbsy::spawn_with_etxtbsy_retry_blocking;
 use zfb_build::metafile_deps::audit_metafile_stage_escape_at_path;
 use zfb_types::json_string;
 
@@ -244,12 +245,33 @@ fn ensure_binary_verified(binary_path: &Path, skip: bool) -> Result<()> {
     }
 
     // 1. Version gate.
-    let version_output = Command::new(binary_path)
+    //
+    // Bounded ETXTBSY retry (issue #2896). A packaged `zfb` extracts the
+    // embedded esbuild into a tempdir, and this gate is the *first* exec of
+    // that just-written file — the spawn most exposed to the fork-to-exec
+    // race `zfb_build::etxtbsy` documents. `.output()` is unrolled into
+    // spawn + `wait_with_output` because only the `execve` inside `spawn()`
+    // can yield ETXTBSY, so the wait must stay outside the retried closure;
+    // the stdio triple below is what `.output()` would have set implicitly.
+    // This crate's other esbuild spawns are gated behind this one, so they
+    // never meet a binary that has not already been exec'd successfully.
+    let mut version_command = Command::new(binary_path);
+    version_command
         .arg("--version")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let version_output = spawn_with_etxtbsy_retry_blocking(|| version_command.spawn())
         .with_context(|| {
             format!(
                 "failed to spawn `{} --version` for the version gate",
+                binary_path.display()
+            )
+        })?
+        .wait_with_output()
+        .with_context(|| {
+            format!(
+                "failed to run `{} --version` for the version gate",
                 binary_path.display()
             )
         })?;
