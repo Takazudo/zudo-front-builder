@@ -15,7 +15,8 @@ Released: 2026-09-04
   byte-exact. No compiled code changed in this release, and every shipped
   artifact keeps its 2.15.0 byte size — but all four `.wasm` **content digests
   still move**, because each release stamps its own version string into the
-  binary (the string `version()` returns). Against 2.15.0 each artifact differs
-  by exactly that one embedded string and nothing else. If you pin these
-  artifacts by SHA-256 rather than by semver, re-pin on every release,
-  including a documentation-only one like this.
+  binary (the string `version()` returns). Byte-diffing the published 2.15.0 and
+  2.15.1 tarballs shows each artifact differing by exactly that embedded string
+  — one byte here — and nothing else. If you pin these artifacts by SHA-256
+  rather than by semver, re-pin on every release, including a
+  documentation-only one like this.

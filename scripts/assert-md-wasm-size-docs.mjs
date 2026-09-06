@@ -77,15 +77,17 @@ export const DOCUMENTATION_ALLOWANCES = [
 // #2885: a release note claimed "shipped artifacts and their sizes are unchanged" for a
 // documentation-only patch. Sizes were indeed unchanged, but every release stamps its own
 // `ZFB_RELEASE_VERSION` string into each `.wasm`, so all four SHA-256 digests moved anyway and a
-// digest-pinning consumer nearly skipped a required re-pin. The four files that carry the size
-// tables must therefore also carry the digest disclaimer, so "sizes are guarded" is never read
-// alone. Matched with all whitespace stripped, so prose reflow by the MDX formatter cannot break it.
+// digest-pinning consumer nearly skipped a required re-pin. Every file that carries a shipped-size
+// table (`TABLE_FILE_SET`) must therefore also carry the digest disclaimer, so "sizes are guarded"
+// is never read alone. Matched with all whitespace stripped, so prose reflow by the MDX formatter
+// cannot break it. One occurrence per file is enough: the two preview guides print the table twice,
+// and their second copy carries a cross-reference to the disclaimer rather than repeating it.
 export const DIGEST_DISCLAIMER_ANCHORS = {
   en: "**Sizes are guarded; content digests are not.**",
   ja: "**サイズは保証されますが、コンテンツダイジェストは保証されません。**",
 };
 
-export const DIGEST_DISCLAIMER_FILES = DOC_FILES.slice(0, 4);
+export const DIGEST_DISCLAIMER_FILES = [...TABLE_FILE_SET];
 
 function stripWhitespace(value) {
   return value.replace(/\s+/g, "");

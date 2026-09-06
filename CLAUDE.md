@@ -112,9 +112,8 @@ after its historical maximum. An empty lane starts at position 1, and its first-
 
 A `zfb-md-wasm` note must never call shipped artifacts "unchanged" without saying what that covers.
 `ZFB_RELEASE_VERSION` is stamped into each `.wasm`, so every release moves all four SHA-256 digests
-even when the compiled code and the byte sizes do not (#2885). The four files carrying the
-shipped-size tables must each keep the digest disclaimer that `scripts/assert-md-wasm-size-docs.mjs`
-asserts.
+even when the compiled code and the byte sizes do not (#2885). Every file carrying a shipped-size
+table must keep the digest disclaimer that `scripts/assert-md-wasm-size-docs.mjs` asserts.
 
 The GitHub Release body has five explicit package headings and independently extracts the body of
 the matching MDX source beneath each heading. Never reuse one lane's extracted notes for another.
