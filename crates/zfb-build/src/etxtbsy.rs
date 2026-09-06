@@ -1,8 +1,15 @@
 //! Bounded ETXTBSY ("Text file busy", raw OS error 26) spawn retries, shared
 //! by this crate's two esbuild spawn sites: [`crate::plugin_bundler`]'s async
-//! plugin-bundle spawn (issue #2378) and [`crate::adapter::run_capturing`]'s
+//! plugin-bundle spawn (issue #2378) and `crate::adapter::run_capturing`'s
 //! blocking spawn, which is what the main bundler's `run_esbuild` goes
 //! through (issue #2380).
+//!
+//! [`crate::etxtbsy::spawn_with_etxtbsy_retry_blocking`] is additionally
+//! exported to `zfb-islands`, whose esbuild version gate is a fourth spawn
+//! of the same just-staged binary (issue #2896). Nothing else here is
+//! public: the budget, the classification predicate, the backoff, and the
+//! async form stay crate-internal so external callers cannot fork the
+//! policy.
 //!
 //! # The race
 //!
@@ -69,10 +76,15 @@ where
 
 /// Blocking form, for callers that are synchronous end to end.
 ///
-/// [`crate::adapter::run_capturing`] already blocks its thread for up to
+/// `crate::adapter::run_capturing` already blocks its thread for up to
 /// 300s waiting on the child, so a bounded `thread::sleep` here changes
-/// nothing about its concurrency shape.
-pub(crate) fn spawn_with_etxtbsy_retry_blocking<T, F>(mut attempt: F) -> std::io::Result<T>
+/// nothing about its concurrency shape. `zfb-islands`' version gate is
+/// likewise synchronous, and this is the only item it needs.
+///
+/// `attempt` must perform exactly one spawn and nothing else: the retry is
+/// side-effect free only because ETXTBSY can originate solely from the
+/// `execve` inside `spawn()`, so waiting on the child belongs outside.
+pub fn spawn_with_etxtbsy_retry_blocking<T, F>(mut attempt: F) -> std::io::Result<T>
 where
     F: FnMut() -> std::io::Result<T>,
 {
@@ -193,6 +205,26 @@ mod tests {
             ETXTBSY_MAX_RETRIES + 1,
             "the blocking loop must share the async loop's bound"
         );
+    }
+
+    /// Mirrors `async_retry_absorbs_transient_etxtbsy_and_then_succeeds`:
+    /// the blocking loop must also *recover*, not merely bound its failures.
+    /// Without this, nothing here would catch a blocking loop that returned
+    /// the last error after a run of retries that ended in success.
+    #[test]
+    fn blocking_retry_absorbs_transient_etxtbsy_and_then_succeeds() {
+        let mut attempts = 0u32;
+        let result = spawn_with_etxtbsy_retry_blocking(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(etxtbsy())
+            } else {
+                Ok("spawned")
+            }
+        });
+
+        assert_eq!(result.expect("should succeed after retries"), "spawned");
+        assert_eq!(attempts, 3, "expected 2 ETXTBSY attempts plus 1 success");
     }
 
     #[test]

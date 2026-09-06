@@ -10,7 +10,6 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -187,9 +186,8 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
     chmodSync(fakeBinPath, 0o755);
   }
 
-  /** Poll until `check` returns true or `timeoutMs` elapses. */
-  async function waitFor(check: () => boolean, timeoutMs: number): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
+  /** Poll until `check` returns true or the absolute `deadline` (ms since epoch) passes. */
+  async function waitFor(check: () => boolean, deadline: number): Promise<boolean> {
     while (Date.now() < deadline) {
       if (check()) return true;
       await new Promise((r) => setTimeout(r, 50));
@@ -225,6 +223,13 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
       return;
     }
 
+    // Single deadline shared by both spawn-waits below (pid-file appears,
+    // then child exits), so the two polls draw down one 10s budget instead
+    // of each getting an independent 5s allowance — the combined wait
+    // cannot exceed 10s of this test's 15s it-scoped timeout by
+    // construction (10000 / 15000 = 66.7%).
+    const spawnDeadline = Date.now() + 10000;
+
     // The fake binary records its PID, then idles — mimicking the
     // long-running `zfb dev` server.
     const pidFile = join(tmpDir, "child.pid");
@@ -239,9 +244,24 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
     });
 
     try {
-      // Wait for the native child to be up and registered.
-      expect(await waitFor(() => existsSync(pidFile), 5000)).toBe(true);
-      const childPid = Number(readFileSync(pidFile, "utf8").trim());
+      // Wait for a *parseable* pid, not merely for the file to exist: the fake
+      // binary's `writeFileSync` creates the file before it writes to it, so
+      // `existsSync` can win the race and hand back an empty read (`Number("")`
+      // is 0, not NaN).
+      const readChildPid = (): number => {
+        try {
+          return Number(readFileSync(pidFile, "utf8").trim());
+        } catch {
+          return Number.NaN;
+        }
+      };
+      expect(
+        await waitFor(() => {
+          const pid = readChildPid();
+          return Number.isInteger(pid) && pid > 0;
+        }, spawnDeadline),
+      ).toBe(true);
+      const childPid = readChildPid();
       expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
       expect(isProcessAlive(childPid)).toBe(true);
 
@@ -249,7 +269,7 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
       wrapper.kill("SIGTERM");
 
       // The native child must be terminated too, not orphaned to PPID 1.
-      expect(await waitFor(() => !isProcessAlive(childPid), 5000)).toBe(true);
+      expect(await waitFor(() => !isProcessAlive(childPid), spawnDeadline)).toBe(true);
 
       // The wrapper must die by the re-raised signal so callers see the
       // real termination cause, not a plain exit code.
