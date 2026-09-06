@@ -37,7 +37,9 @@ const EVIDENCE_ENV_VALUE_CHARS = 120;
 
 // Environment entries that actually steer this spawn: the two run-parallel reads
 // to pick a package manager, plus the ones that change how node/pnpm start up or
-// which vitest worker we are sharing the machine with.
+// which vitest worker we are sharing the machine with. `npm_execpath` is always
+// <unset> here by construction (spawnSupervisor deletes it); the ambient value
+// vitest itself was launched with is reported separately on its own line.
 const REPORTED_ENV_KEYS = [
   "npm_execpath",
   "npm_config_user_agent",
@@ -48,7 +50,15 @@ const REPORTED_ENV_KEYS = [
   "TMPDIR",
   "VITEST_POOL_ID",
   "VITEST_WORKER_ID",
+  "TINYPOOL_WORKER_ID",
 ];
+
+// Vitest reassigns these per run purely from worker scheduling -- a single-file
+// run and a full-suite run of the same commit differ in nothing else. Folding
+// them into the env digest would make every baseline-vs-load comparison report
+// input drift that is not there, so they are reported by name and excluded from
+// the comparator.
+const VOLATILE_ENV_KEYS = new Set(["TINYPOOL_WORKER_ID", "VITEST_POOL_ID", "VITEST_WORKER_ID"]);
 
 const docsPackage = JSON.parse(readFileSync(DOCS_PACKAGE_PATH, "utf8"));
 const runParallelAvailable = existsSync(RUN_PARALLEL_PATH);
@@ -118,6 +128,13 @@ function truncateHead(text, limit) {
   return `${text.slice(0, limit)}\n...(${text.length - limit} later chars omitted)...`;
 }
 
+/** Newline-free variant, for values spliced into a single-line field. */
+function truncateInline(text, limit) {
+  if (!text) return "(empty)";
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}...(${text.length - limit} more chars)`;
+}
+
 function indent(text, prefix = "    ") {
   return text
     .split("\n")
@@ -154,16 +171,20 @@ function resolveOnPath(command, pathValue) {
 }
 
 function envSlice(env) {
-  const serialized = Object.keys(env)
-    .sort()
-    .map((key) => `${key}=${env[key]}`)
-    .join("\n");
+  const comparedKeys = Object.keys(env)
+    .filter((key) => !VOLATILE_ENV_KEYS.has(key))
+    .sort();
+  const serialized = comparedKeys.map((key) => `${key}=${env[key]}`).join("\n");
   const reported = REPORTED_ENV_KEYS.map((key) => {
     const value = env[key];
     if (value === undefined) return `${key}=<unset>`;
-    return `${key}=${truncateHead(value, EVIDENCE_ENV_VALUE_CHARS)}`;
+    return `${key}=${truncateInline(value, EVIDENCE_ENV_VALUE_CHARS)}`;
   });
-  return { digest: `${digestOf(serialized)} over ${Object.keys(env).length} vars`, reported };
+  const skipped = Object.keys(env).length - comparedKeys.length;
+  return {
+    digest: `${digestOf(serialized)} over ${comparedKeys.length} vars (${skipped} volatile excluded)`,
+    reported,
+  };
 }
 
 /**
@@ -179,20 +200,21 @@ function captureSpawnInput(directory, scripts, env) {
   // across runs and is therefore the comparator Rule 1 actually wants.
   const fixtureShape = fixtureSource.replaceAll(directory, "<FIXTURE_DIR>");
   const runner = resolveRunnerForEnv(env);
-  let runParallel = "missing";
+  let runParallel;
   try {
     const source = readFileSync(RUN_PARALLEL_PATH);
     runParallel = `${statSync(RUN_PARALLEL_PATH).size} bytes ${digestOf(source)}`;
   } catch (error) {
     runParallel = `unreadable (${error.code ?? error.message})`;
   }
-  let zudoDocVersion = "unknown";
+  let zudoDocVersion;
   try {
     zudoDocVersion = JSON.parse(readFileSync(ZUDO_DOC_PACKAGE_PATH, "utf8")).version;
   } catch (error) {
     zudoDocVersion = `unreadable (${error.code ?? error.message})`;
   }
   return {
+    ambientNpmExecpath: process.env.npm_execpath ?? "<unset>",
     argv: [process.execPath, RUN_PARALLEL_PATH, ...scripts],
     cwd: directory,
     env: envSlice(env),
@@ -221,6 +243,7 @@ function formatInput(input) {
     `  runner run-parallel will resolve: ${input.runner.command} -> ${input.runner.resolved}${
       input.runner.viaNode ? " (run through node)" : ""
     }`,
+    `  npm_execpath vitest itself was launched with: ${input.ambientNpmExecpath}`,
     `  @takazudo/zudo-doc: ${input.zudoDocVersion}`,
     `  run-parallel.mjs: ${input.runParallel}`,
     `  env: ${input.env.reported.join(" ")}`,
