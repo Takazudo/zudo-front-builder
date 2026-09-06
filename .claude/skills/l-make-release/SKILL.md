@@ -391,6 +391,12 @@ Rules:
 - Each entry: commit subject followed by the short hash in parentheses.
 - Duplicate cross-package changes into every affected page.
 - Omit repo-only docs/tests/CI/maintenance changes with no package-facing effect.
+- **Never call shipped artifacts "unchanged" without saying what that covers.** The four
+  `zfb-md-wasm` `.wasm` artifacts embed `ZFB_RELEASE_VERSION`, so **every** release moves all four
+  SHA-256 digests — including a documentation-only patch whose compiled code is identical and whose
+  byte sizes do not move at all. A note saying only "artifacts and their sizes are unchanged" reads
+  to a digest-pinning consumer as "nothing to re-verify"; that wording in v2.15.1 nearly caused a
+  skipped re-pin (#2885). Say *sizes* when you mean sizes, and say that digests still move.
 - Compute `sidebar_position` independently in each package directory as if the target page were
   absent. For each target, call the executable helper with that target path; it scans only that
   lane's non-index `v*.mdx` pages, validates their positions, takes the maximum, and adds one.

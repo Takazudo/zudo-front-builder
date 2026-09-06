@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DIGEST_DISCLAIMER_ANCHORS,
+  DIGEST_DISCLAIMER_FILES,
   DOC_FILES,
   validateAllowanceScopes,
+  validateDigestDisclaimer,
   validateCeilingTable,
   validateClosure,
   validateEntryTables,
@@ -88,7 +91,10 @@ function correctFiles() {
       ).join("\n\n");
       const pair =
         index === 1 ? "payload shows it: 758,244 B gzip-9 versus 1,458,444 B for root." : "";
-      return [file, `${entryTable({ ja })}\n\n${sections}\n${pair}`];
+      const disclaimer = DIGEST_DISCLAIMER_FILES.includes(file)
+        ? `\n\n${DIGEST_DISCLAIMER_ANCHORS[ja ? "ja" : "en"]}`
+        : "";
+      return [file, `${entryTable({ ja })}\n\n${sections}\n${pair}${disclaimer}`];
     }),
   );
 }
@@ -288,6 +294,28 @@ raw バイトの約 9%、gzip 後のバイトの約 8% に収まります。`;
         literal: "9,999,999 B",
       }),
     );
+  });
+
+  it("requires the digest disclaimer in every file that carries a shipped-size table", () => {
+    for (const file of DIGEST_DISCLAIMER_FILES) {
+      const anchor = DIGEST_DISCLAIMER_ANCHORS[file.includes("docs-ja/") ? "ja" : "en"];
+      expect(validateDigestDisclaimer(file, `prose\n\n${anchor}\n\nmore`)).toEqual([]);
+      expect(validateDigestDisclaimer(file, "sizes are unchanged")).toMatchObject([
+        { code: "missing-digest-disclaimer", file },
+      ]);
+    }
+  });
+
+  it("matches a digest disclaimer the MDX formatter reflowed across lines", () => {
+    const file = DIGEST_DISCLAIMER_FILES[0];
+    const reflowed = DIGEST_DISCLAIMER_ANCHORS.en.replace("content digests", "content\ndigests");
+    expect(validateDigestDisclaimer(file, reflowed)).toEqual([]);
+  });
+
+  it("leaves the digest disclaimer unrequired outside the shipped-size files", () => {
+    for (const file of DOC_FILES.filter((entry) => !DIGEST_DISCLAIMER_FILES.includes(entry))) {
+      expect(validateDigestDisclaimer(file, "no disclaimer here")).toEqual([]);
+    }
   });
 
   it("--fix never rewrites a registered documentation allowance", () => {
