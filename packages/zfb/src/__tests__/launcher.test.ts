@@ -10,7 +10,6 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -245,9 +244,24 @@ describe("launcher signal forwarding and exit propagation (issue #873)", () => {
     });
 
     try {
-      // Wait for the native child to be up and registered.
-      expect(await waitFor(() => existsSync(pidFile), spawnDeadline)).toBe(true);
-      const childPid = Number(readFileSync(pidFile, "utf8").trim());
+      // Wait for a *parseable* pid, not merely for the file to exist: the fake
+      // binary's `writeFileSync` creates the file before it writes to it, so
+      // `existsSync` can win the race and hand back an empty read (`Number("")`
+      // is 0, not NaN).
+      const readChildPid = (): number => {
+        try {
+          return Number(readFileSync(pidFile, "utf8").trim());
+        } catch {
+          return Number.NaN;
+        }
+      };
+      expect(
+        await waitFor(() => {
+          const pid = readChildPid();
+          return Number.isInteger(pid) && pid > 0;
+        }, spawnDeadline),
+      ).toBe(true);
+      const childPid = readChildPid();
       expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
       expect(isProcessAlive(childPid)).toBe(true);
 

@@ -813,7 +813,10 @@ describe("docs dev supervisor", () => {
         await withSupervisor(["hidden"], async (supervisor, childPids, fixture) => {
           // Wait for a *parseable* pid rather than for the file to exist: the
           // leaf's write is not atomic, and an empty read would make this test
-          // flaky instead of failing on the thing it guards.
+          // flaky instead of failing on the thing it guards. `> 0` is not
+          // decoration -- `Number("")` is 0, not NaN, so an integer check alone
+          // accepts the created-but-not-yet-written file, and pid 0 would then
+          // be handed to `process.kill`, which reads it as "this process group".
           const readLeafPid = () => {
             try {
               return Number(readFileSync(fixture.hiddenPidPath, "utf8").trim());
@@ -821,7 +824,11 @@ describe("docs dev supervisor", () => {
               return Number.NaN;
             }
           };
-          await waitUntil(supervisor, "hidden-pid-file", () => Number.isInteger(readLeafPid()));
+          const leafPidIsReadable = () => {
+            const pid = readLeafPid();
+            return Number.isInteger(pid) && pid > 0;
+          };
+          await waitUntil(supervisor, "hidden-pid-file", leafPidIsReadable);
           observed.leafPid = readLeafPid();
           observed.tree = collectTree(supervisor.child.pid);
           observed.childPidsAtFailure = [...childPids];
@@ -847,7 +854,7 @@ describe("docs dev supervisor", () => {
       // The leaf really was invisible to the UP-line channel, and really was a
       // descendant rather than the supervisor itself.
       expect(observed.childPidsAtFailure).toEqual([]);
-      expect(Number.isInteger(observed.leafPid)).toBe(true);
+      expect(Number.isInteger(observed.leafPid) && observed.leafPid > 0).toBe(true);
       expect(observed.tree).toContain(observed.leafPid);
       expect(observed.tree.length).toBeGreaterThan(1);
 
