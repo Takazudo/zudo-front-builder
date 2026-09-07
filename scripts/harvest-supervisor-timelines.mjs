@@ -17,10 +17,17 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * in one command:
  *
  *   node scripts/harvest-supervisor-timelines.mjs \
- *     | node scripts/supervisor-timeline-summary.mjs --strict --allow-drift env
+ *     | node scripts/supervisor-timeline-summary.mjs --strict
  *
- * This adds aggregation, not storage: nothing is persisted between runs
- * (see `--save-dir` below for an opt-in exception used for debugging).
+ * This adds aggregation, not storage: nothing is persisted between runs.
+ * `--save-dir` keeps the raw job logs it fetched; the weekly watch
+ * (`.github/workflows/supervisor-watch.yml`) uses that to upload the logs an
+ * R-A triage reads and to judge its `main`-only pass without a second fetch.
+ *
+ * `parseTimelines` already tolerates the `pnpm -r` package-label prefix and
+ * vitest code frames quoting the tag (see the summarizer's `TAG_PATTERN`
+ * comment) — keep that when touching this harvest path, since a job log is
+ * exactly the kind of blob those guards exist for.
  *
  * Per run, only the `health` job's log lines are read, never the whole
  * run's. On 2026-09-07 the whole-run `gh run view <id> --log` for a real run
@@ -48,13 +55,24 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * does write the records from the runs that succeeded — the exit code is
  * what says the population is incomplete.
  *
- * stderr carries a per-run manifest line (emitted as each run completes,
- * so not necessarily in enumeration order) plus one final summary line:
+ * stderr carries one leading `window:` line (the effective `--since`,
+ * `--limit`, and branch, since a reader cannot recover them from the rest),
+ * a per-run manifest line (emitted as each run completes, so not
+ * necessarily in enumeration order), and one final summary line:
  *
- *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> lines=<n>
+ *   window: since=<iso> limit=<n> branch=<b|all>
+ *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> lines=<n> failed=<m>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> skipped=<reason>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> error=<reason>
  *   runs=<enumerated> harvested=<k> failed=<f> records=<r>
+ *
+ * The per-run `failed=<m>` and the final summary's `failed=<f>` are
+ * deliberately different counters sharing a name: the per-run one counts
+ * that run's own parsed records whose `outcome=failed` (an R-A candidate
+ * inside an otherwise-successful harvest), the summary one counts runs the
+ * harvester itself could not fetch/save/parse. The weekly watch (#2915)
+ * greps the per-run lines (`^run=… failed=[1-9]`) to name the run whose job
+ * log holds the R-A diagnostic block, without re-running the summarizer.
  *
  * Skipped (counts toward neither `harvested` nor `failed`):
  *   - a run whose `status` is not yet `completed` (no complete log to fetch);
@@ -62,9 +80,12 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *   - a `health` job that never started (cancelled while still queued by
  *     `cancel-in-progress`, or skipped) — GitHub has no log for it and
  *     `gh run view --job <id> --log` fails with `log not found`, which must
- *     not read as a partial harvest. A job that started and was then
- *     cancelled does have a (partial) log and is harvested normally; its
- *     run-level `conclusion=cancelled` stays visible in the manifest.
+ *     not read as a partial harvest;
+ *   - a `health` job whose conclusion is not `success` and whose log carries
+ *     no records (`skipped=no-records-health-<conclusion>`): it went red or
+ *     was cancelled before the `pnpm test:workspace` step, so the missing
+ *     records say nothing about the emitter. A job that started, emitted,
+ *     and was then cancelled is harvested normally.
  *
  * When `gh run list` returns exactly `--limit` runs the window is capped,
  * not complete: a `notice:` line says so, because the manifest's
@@ -76,13 +97,20 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * no data"):
  *
  *   0  every attempted run succeeded and at least one record was extracted
- *   1  no run failed, but zero records were extracted
+ *   1  at least one run was harvested, yet zero records were extracted —
+ *      a green `health` job with no `[supervisor-timeline]` lines, i.e. the
+ *      emitter (or this parser) went silent
  *   3  at least one run failed (its log could not be fetched, saved, or
  *      parsed as `[supervisor-timeline]` records) — a partial harvest,
  *      distinct from 0/1 regardless of how many records the other runs
  *      still yielded. A failed run contributes no records at all.
+ *   4  nothing was harvestable: zero runs enumerated, or every enumerated
+ *      run was skipped (see above). A quiet window, not a silent emitter.
  *  64  a usage error (bad flag, `gh run list` itself failed or returned
  *      unparsable JSON, or `--save-dir` could not be created)
+ *
+ * Every gh call is attempted twice with a short pause between, so one
+ * transient API failure does not by itself demote a harvest to 3 (or 64).
  *
  * In the documented pipeline the shell reports the summarizer's exit code
  * (`$?`), and even under `set -o pipefail` it is the *rightmost* non-zero
@@ -96,16 +124,54 @@ const execFileAsync = promisify(execFile);
 
 const HEALTH_WORKFLOW = "health.yml";
 const HEALTH_JOB_NAME = "health";
-const DEFAULT_SINCE = "2026-09-06T22:00:00Z";
+// A planning-time constant for when the `env=` token switched to the
+// steering digest (#2913). It is a floor on the default `--since`, not a
+// contract boundary: which digest a run emits depends on whether its commit
+// contains that change, not on the run's date — a stale PR branch keeps
+// emitting the old per-run-unique digest after this instant, and `main` runs
+// carry the new one only from the merge onwards. Mixed populations across
+// that change need `--branch main` or `--allow-drift env`.
+export const IDENTITY_CONTRACT_EPOCH = "2026-09-08T00:00:00Z";
+// One weekly cadence plus a day of overlap: a run still in progress at
+// harvest time is skipped this week, and without the overlap its `createdAt`
+// would already sit behind next week's window start, so it would never be
+// enumerated at all.
+export const DEFAULT_WINDOW_DAYS = 8;
+const DEFAULT_WINDOW_MS = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
 const DEFAULT_GH = "gh";
 // Bounded so a full default harvest is minutes, not a quarter hour, while
-// staying far below GitHub's secondary rate limit (~5 GETs per run).
+// staying below GitHub's secondary rate limit. The two gh invocations per run
+// fan out into several REST GETs each (gh resolves the run and workflow
+// again for every call), so a capped 200-run harvest is on the order of a
+// thousand GETs, not two hundred.
 const CONCURRENCY = 4;
+// One retry with a short pause: a single transient 5xx or secondary-rate-limit
+// 403 on one of hundreds of calls must not turn a complete population into a
+// partial harvest (exit 3) that the weekly watch escalates.
+const GH_ATTEMPTS = 2;
+const DEFAULT_RETRY_DELAY_MS = 2000;
+
+// ISO-8601 with seconds and a trailing `Z`, matching `--since`'s documented
+// shape (`Date#toISOString` includes milliseconds, which this trims).
+function toIsoSeconds(date) {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// The default `--since`: a rolling window floored at the identity epoch, so
+// a harvest run in the first week after the change never reaches back across
+// it on its own — an explicit `--since` (with `--branch main` or
+// `--allow-drift env`) is required to deliberately mix the two populations.
+function defaultSince(now) {
+  const windowStart = now.getTime() - DEFAULT_WINDOW_MS;
+  const epochMs = Date.parse(IDENTITY_CONTRACT_EPOCH);
+  return toIsoSeconds(new Date(Math.max(windowStart, epochMs)));
+}
 
 export const EXIT_OK = 0;
 export const EXIT_NO_RECORDS = 1;
 export const EXIT_PARTIAL = 3;
+export const EXIT_NO_RUNS = 4;
 export const EXIT_USAGE = 64;
 
 const RUN_LIST_JSON_FIELDS =
@@ -132,9 +198,9 @@ function takeFlagValue(argv, index, flag) {
   return value;
 }
 
-export function parseCliArgs(argv) {
+export function parseCliArgs(argv, { now = new Date() } = {}) {
   const options = {
-    since: DEFAULT_SINCE,
+    since: defaultSince(now),
     limit: DEFAULT_LIMIT,
     branch: undefined,
     saveDir: undefined,
@@ -178,17 +244,28 @@ export function buildRunListArgs({ since, limit, branch }) {
   return args;
 }
 
-async function runGh(gh, args) {
-  const { stdout } = await execFileAsync(gh, args, {
-    encoding: "utf8",
-    maxBuffer: MAX_BUFFER,
-  });
-  return stdout;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runGh({ gh, retryDelayMs }, args) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const { stdout } = await execFileAsync(gh, args, {
+        encoding: "utf8",
+        maxBuffer: MAX_BUFFER,
+      });
+      return stdout;
+    } catch (error) {
+      if (attempt >= GH_ATTEMPTS) throw error;
+      await sleep(retryDelayMs);
+    }
+  }
 }
 
 /** Resolves a run's `health` job, or `null` if the run has none. */
-async function findHealthJob(gh, runId) {
-  const stdout = await runGh(gh, ["run", "view", String(runId), "--json", "jobs"]);
+async function findHealthJob(ghOptions, runId) {
+  const stdout = await runGh(ghOptions, ["run", "view", String(runId), "--json", "jobs"]);
   const parsed = JSON.parse(stdout);
   return (parsed.jobs ?? []).find((candidate) => candidate.name === HEALTH_JOB_NAME) ?? null;
 }
@@ -200,8 +277,8 @@ function jobNeverStarted(job) {
   return job.conclusion === "skipped" || (Array.isArray(job.steps) && job.steps.length === 0);
 }
 
-async function fetchJobLog(gh, jobId) {
-  return runGh(gh, ["run", "view", "--job", String(jobId), "--log"]);
+async function fetchJobLog(ghOptions, jobId) {
+  return runGh(ghOptions, ["run", "view", "--job", String(jobId), "--log"]);
 }
 
 // `parseTimelines` hands back lines sliced out of the whole job log, and V8
@@ -239,7 +316,7 @@ async function harvestRun(run, options, stderr) {
 
   let jobId = null;
   try {
-    const job = await findHealthJob(options.gh, run.databaseId);
+    const job = await findHealthJob(options.ghOptions, run.databaseId);
     if (job === null) {
       stderr.write(`${base} job=none skipped=no-health-job\n`);
       return skipped;
@@ -250,14 +327,25 @@ async function harvestRun(run, options, stderr) {
       return skipped;
     }
 
-    const log = await fetchJobLog(options.gh, jobId);
+    const log = await fetchJobLog(options.ghOptions, jobId);
 
     if (options.saveDir) {
       writeFileSync(join(options.saveDir, `run-${run.databaseId}-job-${jobId}.log`), log);
     }
 
-    const rawLines = parseTimelines(log).map((record) => detachFromParentString(record.raw));
-    stderr.write(`${base} job=${jobId} lines=${rawLines.length}\n`);
+    const records = parseTimelines(log);
+    // A `health` job that went red (or was cancelled) before its
+    // `pnpm test:workspace` step has a log and no records, and that is not
+    // the emitter vanishing — only a job that ran to a green conclusion with
+    // zero records is. A supervisor failure itself still shows up as records
+    // (`outcome=failed` is emitted on the way out), so it is never hidden here.
+    if (records.length === 0 && job.conclusion !== "success") {
+      stderr.write(`${base} job=${jobId} skipped=no-records-health-${job.conclusion ?? "null"}\n`);
+      return skipped;
+    }
+    const rawLines = records.map((record) => detachFromParentString(record.raw));
+    const failedLines = records.filter((record) => record.outcome === "failed").length;
+    stderr.write(`${base} job=${jobId} lines=${rawLines.length} failed=${failedLines}\n`);
     return { kind: "harvested", rawLines };
   } catch (error) {
     stderr.write(`${base} job=${jobId ?? "none"} error=${flattenErrorMessage(error)}\n`);
@@ -286,18 +374,39 @@ async function mapWithConcurrency(items, limit, worker) {
  * `process.exit` itself, so tests can drive it with a stub `gh` script and
  * fake output streams.
  */
-export async function runCli(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function runCli(
+  argv,
+  {
+    stdout = process.stdout,
+    stderr = process.stderr,
+    now = new Date(),
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+  } = {},
+) {
   let options;
   try {
-    options = parseCliArgs(argv);
+    options = parseCliArgs(argv, { now });
   } catch (error) {
     stderr.write(`usage error: ${error.message}\n`);
     return EXIT_USAGE;
   }
+  options.ghOptions = { gh: options.gh, retryDelayMs };
+
+  // The window is the one input a reader of the manifest cannot otherwise
+  // recover — and a default floored at the identity epoch can lie in the
+  // future, which enumerates nothing and would otherwise read as a quiet week.
+  stderr.write(
+    `window: since=${options.since} limit=${options.limit} branch=${options.branch ?? "all"}\n`,
+  );
+  if (Date.parse(options.since) > now.getTime()) {
+    stderr.write(
+      `warning: --since ${options.since} lies in the future; gh run list will enumerate nothing\n`,
+    );
+  }
 
   let runs;
   try {
-    const raw = await runGh(options.gh, buildRunListArgs(options));
+    const raw = await runGh(options.ghOptions, buildRunListArgs(options));
     runs = JSON.parse(raw);
     if (!Array.isArray(runs)) {
       throw new Error("expected a JSON array from `gh run list`");
@@ -338,6 +447,7 @@ export async function runCli(argv, { stdout = process.stdout, stderr = process.s
   );
 
   if (failed > 0) return EXIT_PARTIAL;
+  if (harvested === 0) return EXIT_NO_RUNS;
   if (outputLines.length === 0) return EXIT_NO_RECORDS;
   return EXIT_OK;
 }

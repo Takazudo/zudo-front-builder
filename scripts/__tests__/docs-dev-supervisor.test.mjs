@@ -1,5 +1,4 @@
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -13,6 +12,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import {
+  REPORTED_ENV_KEYS,
+  STEERING_ENV_KEYS,
+  VOLATILE_ENV_KEYS,
+  digestOf,
+  steeringEnvDigest,
+} from "../supervisor-env-identity.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DOCS_PACKAGE_PATH = join(REPO_ROOT, "docs", "package.json");
@@ -79,31 +85,6 @@ const REAP_CONFIRM_TIMEOUT_MS = 5_000;
 const EVIDENCE_STREAM_CHARS = 1_500;
 const EVIDENCE_FIXTURE_CHARS = 1_400;
 const EVIDENCE_ENV_VALUE_CHARS = 120;
-
-// Environment entries that actually steer this spawn: the two run-parallel reads
-// to pick a package manager, plus the ones that change how node/pnpm start up or
-// which vitest worker we are sharing the machine with. `npm_execpath` is always
-// <unset> here by construction (spawnSupervisor deletes it); the ambient value
-// vitest itself was launched with is reported separately on its own line.
-const REPORTED_ENV_KEYS = [
-  "npm_execpath",
-  "npm_config_user_agent",
-  "NODE_OPTIONS",
-  "NODE_ENV",
-  "CI",
-  "PNPM_HOME",
-  "TMPDIR",
-  "VITEST_POOL_ID",
-  "VITEST_WORKER_ID",
-  "TINYPOOL_WORKER_ID",
-];
-
-// Vitest reassigns these per run purely from worker scheduling -- a single-file
-// run and a full-suite run of the same commit differ in nothing else. Folding
-// them into the env digest would make every baseline-vs-load comparison report
-// input drift that is not there, so they are reported by name and excluded from
-// the comparator.
-const VOLATILE_ENV_KEYS = new Set(["TINYPOOL_WORKER_ID", "VITEST_POOL_ID", "VITEST_WORKER_ID"]);
 
 const docsPackage = JSON.parse(readFileSync(DOCS_PACKAGE_PATH, "utf8"));
 const runParallelAvailable = existsSync(RUN_PARALLEL_PATH);
@@ -173,10 +154,6 @@ function createFixture() {
   return { directory, hiddenPidPath, markerPath };
 }
 
-function digestOf(text) {
-  return `sha256:${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
-}
-
 function truncateTail(text, limit) {
   if (!text) return "(empty)";
   if (text.length <= limit) return text;
@@ -243,7 +220,8 @@ function envSlice(env) {
   });
   const skipped = Object.keys(env).length - comparedKeys.length;
   return {
-    digest: `${digestOf(serialized)} over ${comparedKeys.length} vars (${skipped} volatile excluded)`,
+    digest: steeringEnvDigest(env),
+    fullDigest: `${digestOf(serialized)} over ${comparedKeys.length} vars (${skipped} volatile excluded)`,
     reported,
   };
 }
@@ -253,6 +231,12 @@ function envSlice(env) {
  * versions, environment, fixture contents -- BEFORE the spawn. A run whose child
  * never starts still has to produce this, because "no child appeared" is an
  * outcome, not evidence that the input differed.
+ *
+ * - env: `envSlice(env)` carries two digests -- `digest` is the steering-only
+ *   identity (`scripts/supervisor-env-identity.mjs`'s `steeringEnvDigest`)
+ *   that becomes the timeline's `env=` token, and `fullDigest` is the
+ *   full-environment digest, printed in the failure-evidence block for a
+ *   human comparing two evidence blocks by eye. Nothing parses it.
  */
 function captureSpawnInput(directory, scripts, env) {
   const fixtureSource = readFileSync(join(directory, "package.json"), "utf8");
@@ -308,7 +292,8 @@ function formatInput(input) {
     `  @takazudo/zudo-doc: ${input.zudoDocVersion}`,
     `  run-parallel.mjs: ${input.runParallel}`,
     `  env: ${input.env.reported.join(" ")}`,
-    `  env digest: ${input.env.digest}`,
+    `  env identity (steering keys; = timeline env=): ${input.env.digest} over ${STEERING_ENV_KEYS.length} keys`,
+    `  env digest (full environment): ${input.env.fullDigest}`,
     `  fixture package.json: ${input.fixture.digest} (path-independent shape ${input.fixture.shapeDigest})`,
     indent(truncateHead(input.fixture.source, EVIDENCE_FIXTURE_CHARS), "    "),
   ].join("\n");
@@ -396,7 +381,10 @@ function createDiagnostics(input) {
     /**
      * One machine-parseable line per supervisor run: the identity of the INPUT
      * alongside the phase timings, so a sampled distribution can be checked for
-     * input drift instead of assuming there was none.
+     * input drift instead of assuming there was none. `env=` is the
+     * steering-only digest (`scripts/supervisor-env-identity.mjs`'s
+     * `steeringEnvDigest`) -- stable across CI runs and shell sessions, unlike
+     * the full-environment digest kept only in the failure-evidence block.
      */
     timelineLine(label, outcome) {
       // Every value has to stay one whitespace-free token: the consumer
@@ -411,7 +399,7 @@ function createDiagnostics(input) {
         `zudoDoc=${token(input.zudoDocVersion)}`,
         `runParallel=${token(input.runParallel.split(" ").pop())}`,
         `fixtureShape=${token(input.fixture.shapeDigest)}`,
-        `env=${token(input.env.digest.split(" ")[0])}`,
+        `env=${token(input.env.digest)}`,
       ].join(" ");
       return `[supervisor-timeline] case=${token(label)} outcome=${outcome} total=${elapsedMs()} ${identity} ${marks
         .map((entry) => `${entry.phase}=${entry.atMs}`)
