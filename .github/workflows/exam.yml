@@ -339,17 +339,18 @@ jobs:
       # `cargo build --workspace --all-targets` — filed nothing at all.
       # `always()` did not rescue that, though this comment used to claim it
       # did. The old claim was that an unset `outputs.rc` makes `'' != '0'`
-      # true. It does not: the output of a step that never ran compares EQUAL
-      # to '0' — measured in run 34105846729, case A, where this exact
-      # condition was observed skipping — so the fallback was skipped in
-      # precisely the case it was written for. `failure()` covers the never-ran
-      # case outright and, unlike the comparison, does not depend on how an
-      # unset output is typed at all. The rule being enforced: a result that
-      # cannot tell "never ran" apart from "passed" is not a proof, so absence
-      # has to read as red and file. `!cancelled()` is the other half — a
-      # cancelled run (a workflow_dispatch landing on a scheduled one, a manual
-      # cancel, a `timeout-minutes` expiry) has no result behind it and must
-      # not file.
+      # true. It does not. GitHub never carries an unwritten output as an
+      # empty string: it omits the key, so the reference is null, the
+      # comparison coerces null to 0, and `!= '0'` is FALSE — measured in run
+      # 34105846729 case A (this exact condition observed skipping) and again
+      # by inspecting the raw outputs object, which comes back `{}`. The
+      # fallback was skipped in precisely the case it was written for.
+      # `failure()` covers the never-ran case outright and does not touch the
+      # comparison at all. The rule being enforced: a result that cannot tell
+      # "never ran" apart from "passed" is not a proof, so absence has to read
+      # as red and file. `!cancelled()` is the other half — a cancelled run (a
+      # workflow_dispatch landing on a scheduled one, a manual cancel, a
+      # `timeout-minutes` expiry) has no result behind it and must not file.
       - name: File or comment on tracking issue (failure)
         if: ${{ !cancelled() && (failure() || steps.run_manifest.outputs.rc != '0') }}
         env:
@@ -518,10 +519,12 @@ jobs:
       # (issues #1394, #2928), for the same reason and with the same
       # correction: a failure BEFORE run_macos_suite (the staging assert
       # above, or a compile error) must file rather than pass silently, and
-      # `always() && rc != '0'` never did — an unset `outputs.rc` compares
-      # equal to '0' (measured in run 34105846729, case A), so the never-ran
-      # case was skipped, not caught. `failure()` catches it; `!cancelled()`
-      # keeps a cancelled run from filing an issue with no result behind it.
+      # `always() && rc != '0'` never did — an output that was never written is
+      # absent, not empty, so it coerces to 0 and `!= '0'` is false (run
+      # 34105846729, case A). The never-ran case was skipped, not caught.
+      # `failure()` catches it; `!cancelled()` keeps a cancelled run — proven
+      # to run an `always()` step, same run, case D — from filing an issue
+      # with no result behind it.
       - name: File or comment on tracking issue (failure)
         if: ${{ !cancelled() && (failure() || steps.run_macos_suite.outputs.rc != '0') }}
         env:
@@ -538,12 +541,17 @@ jobs:
     #     test jobs are green by design (see header), so a completed leg
     #     always reports "success" whatever the tests did.
     #   - `outputs.rc` alone can't tell a passing leg from a leg that DIED
-    #     before writing rc. An unset output compares EQUAL to '0' — measured
-    #     in run 34105846729, case A — so this step used to run and close the
-    #     tracking issue as green on an infra failure, erasing a standing
-    #     alert. That is the same defect as the filing steps above, mirrored:
-    #     there absence read as "nothing to report", here as "both legs
-    #     passed".
+    #     before writing rc. GitHub does not carry an unwritten output as an
+    #     empty string — it OMITS THE KEY (`needs.<job>.outputs` measured as
+    #     `{}`, identically for a job that died and a job that succeeded with
+    #     the rc step skipped), so the comparison coerces null to 0 and BOTH
+    #     `== '0'` and `== ''` are true. This step therefore used to run and
+    #     close the tracking issue as green on an infra failure, erasing a
+    #     standing alert — confirmed live in run 34106339546, where it
+    #     executed with both legs dead and was stopped only by DRY_RUN and by
+    #     no issue happening to be open. Same defect as the filing steps
+    #     above, mirrored: there absence read as "nothing to report", here as
+    #     "both legs passed".
     # Together they do distinguish the cases: `.result == 'success'` means the
     # leg ran to completion (so its rc WAS written, since the test step is
     # unconditional), and `rc == '0'` then means it reported green. A leg that
@@ -551,7 +559,10 @@ jobs:
     # result that cannot tell "never ran" apart from "passed" is not a proof.
     name: Close exam tracking issue if both legs are green
     needs: [quarantine-heavy, macos-exam]
-    if: always()
+    # `!cancelled()` rather than `always()`: this job must still run when a leg
+    # is red (that is how a green run closes the issue the previous red one
+    # filed), but a cancelled run has no verdict to act on at all.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

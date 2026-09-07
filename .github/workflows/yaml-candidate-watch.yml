@@ -118,11 +118,13 @@ jobs:
       # Fail-closed gate (#2928): `failure()` carries the case where the
       # detector step never ran at all — checkout, the Node setup, or the
       # install above failing — which `always() && rc != '0'` did not: an
-      # unset `outputs.rc` compares EQUAL to '0' (measured in run
-      # 34105846729, case A), so the step was skipped in exactly the case its
-      # empty-DETECTOR_RC branch below was written for. A run that cannot tell
-      # "never ran" apart from "clean" is not a proof; absence must read as
-      # red. `!cancelled()` keeps a cancelled run from being reported as a
+      # output that was never written is absent rather than empty, so it
+      # coerces to 0 and `!= '0'` is false (measured in run 34105846729,
+      # case A). The step was skipped in exactly the case its empty-
+      # DETECTOR_RC branch below was written for — a branch first reached in
+      # run 34106342601, after this fix. A run that cannot tell "never ran"
+      # apart from "clean" is not a proof; absence must read as red.
+      # `!cancelled()` keeps a cancelled run from being reported as a
       # detector failure.
       - name: Mark a non-clean detector outcome as failed
         if: ${{ !cancelled() && (failure() || steps.run_detector.outputs.rc != '0') }}
