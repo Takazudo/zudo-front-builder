@@ -1,8 +1,8 @@
 #!/bin/sh
 # scripts/__tests__/fixtures/gh-stub.sh
 #
-# Shared `gh` stub for scripts/__tests__/harvest-supervisor-timelines.test.mjs
-# and tests/unit/run-supervisor-watch.sh (issue #2930). Dispatches on argv
+# Shared `gh` stub for the harvester and supervisor-watch suites (issue #2930).
+# Dispatches on argv
 # exactly like the real thing -- `run list`, and (since #2931) the two REST
 # calls `gh api repos/{owner}/{repo}/actions/runs/<id>/jobs?per_page=100` and
 # `gh api repos/{owner}/{repo}/actions/jobs/<id>/logs` -- and reads its

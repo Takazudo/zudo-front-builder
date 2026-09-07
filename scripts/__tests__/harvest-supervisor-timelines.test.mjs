@@ -2,9 +2,9 @@
 //
 // Drives the real CLI (runCli) against a stub `gh` shell script passed via
 // --gh, so the test exercises the actual subprocess/argv contract rather
-// than a JS-level mock of gh. The stub (shared with
-// tests/unit/run-supervisor-watch.sh, #2930 -- see
-// scripts/__tests__/fixtures/gh-stub.sh) dispatches on argv and reads its
+// than a JS-level mock of gh. The stub (shared with the supervisor-watch
+// suites, #2930 -- see scripts/__tests__/fixtures/gh-stub.sh) dispatches on
+// argv and reads its
 // fixture data from files under a per-test tmp directory, whose path it
 // learns via the GH_STUB_FIXTURES_DIR env var (inherited by the child
 // process the same way a real `gh` invocation would inherit the shell's
@@ -16,12 +16,11 @@
 // is GitHub's, so it comes from a real captured REST body
 // (fixtures/rest-job-log-capture.log) and is never hand-written here.
 
-import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { cleanupFixtures, makeRun, readCalls, setupFixtures } from "./fixtures/gh-fixture-tree.mjs";
 import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";
 import { REST_JOB_LOG_CAPTURE, REST_LOG_PREFIX } from "./fixtures/load-rest-job-log-capture.mjs";
 import { parseTimelineLine, parseTimelines } from "../supervisor-timeline-summary.mjs";
@@ -42,12 +41,6 @@ import {
   resolveDefaultRetryDelayMs,
   runCli,
 } from "../harvest-supervisor-timelines.mjs";
-
-// The shared stub (also used by tests/unit/run-supervisor-watch.sh) honours
-// both `<name>.fail` (fails every time) and `<name>.fail-once` (consumed by
-// the first failure, so the harvester's single retry then sees the real
-// fixture) for both the run list and job log fetches.
-const GH_STUB_PATH = fileURLToPath(new URL("./fixtures/gh-stub.sh", import.meta.url));
 
 // Not invented: sliced off a record line in the captured REST body, so every
 // synthetic log below is wrapped in bytes GitHub actually emitted. Since
@@ -78,76 +71,6 @@ const JOB_LOG_NO_RECORDS = [
   `${LOG_PREFIX}PASS some-other.test.mjs`,
 ].join("\n");
 
-function makeRun(overrides = {}) {
-  return {
-    databaseId: 1000,
-    headBranch: "main",
-    headSha: "0123456789abcdef0123456789abcdef01234567",
-    conclusion: "success",
-    status: "completed",
-    createdAt: "2026-09-07T00:00:00Z",
-    event: "push",
-    attempt: 1,
-    url: "https://github.com/Takazudo/zudo-front-builder/actions/runs/1000",
-    ...overrides,
-  };
-}
-
-let activeDirs = [];
-
-function setupFixtures({
-  runs,
-  jobsById = {},
-  jobsTotalCountById = {},
-  extraJobPagesById = {},
-  logsByJobId = {},
-  failingJobIds = [],
-  notFoundJobIds = [],
-  transientlyFailingJobIds = [],
-  failRunList = false,
-  failRunListOnce = false,
-}) {
-  const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
-  activeDirs.push(dir);
-
-  writeFileSync(join(dir, "run-list.json"), JSON.stringify(runs));
-  if (failRunList) writeFileSync(join(dir, "run-list.fail"), "");
-  if (failRunListOnce) writeFileSync(join(dir, "run-list.fail-once"), "");
-
-  // The real endpoint wraps its page in `{ total_count, jobs }`, and
-  // total_count is the whole run's job count, not the page's -- that is what
-  // tells the harvester whether another page exists.
-  for (const [runId, jobs] of Object.entries(jobsById)) {
-    const totalCount = jobsTotalCountById[runId] ?? jobs.length;
-    writeFileSync(
-      join(dir, `jobs-${runId}.json`),
-      JSON.stringify({ total_count: totalCount, jobs }),
-    );
-  }
-  for (const [runId, pages] of Object.entries(extraJobPagesById)) {
-    for (const [page, jobs] of Object.entries(pages)) {
-      writeFileSync(
-        join(dir, `jobs-${runId}-p${page}.json`),
-        JSON.stringify({ total_count: jobsTotalCountById[runId] ?? jobs.length, jobs }),
-      );
-    }
-  }
-  for (const [jobId, log] of Object.entries(logsByJobId)) {
-    writeFileSync(join(dir, `job-${jobId}.log`), log);
-  }
-  for (const jobId of failingJobIds) {
-    writeFileSync(join(dir, `job-${jobId}.fail`), "");
-  }
-  for (const jobId of notFoundJobIds) {
-    writeFileSync(join(dir, `job-${jobId}.notfound`), "");
-  }
-  for (const jobId of transientlyFailingJobIds) {
-    writeFileSync(join(dir, `job-${jobId}.fail-once`), "");
-  }
-
-  return { dir, stubPath: GH_STUB_PATH };
-}
-
 // Doubles as runCli's options bag: `retryDelayMs: 0` keeps the retry path
 // instant (every persistent-failure case below goes through it), and a
 // pinned `now` keeps the default window deterministic in cases that are not
@@ -166,18 +89,9 @@ function sink() {
   };
 }
 
-function readCalls(dir) {
-  try {
-    return readFileSync(join(dir, "calls.log"), "utf8").trim().split("\n");
-  } catch {
-    return [];
-  }
-}
-
 afterEach(() => {
   delete process.env.GH_STUB_FIXTURES_DIR;
-  for (const dir of activeDirs) rmSync(dir, { recursive: true, force: true });
-  activeDirs = [];
+  cleanupFixtures();
 });
 
 describe("buildRunListArgs", () => {

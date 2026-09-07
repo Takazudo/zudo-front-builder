@@ -105,5 +105,5 @@ doc-history-out/
 /test-results/
 /playwright-report/
 
-# scripts/run-supervisor-watch.sh default output tree (harvested CI job logs)
+# scripts/supervisor-watch.mjs default output tree (harvested CI job logs)
 supervisor-watch-out/

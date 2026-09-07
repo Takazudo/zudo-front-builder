@@ -201,14 +201,12 @@ jobs:
       # pins install.sh's prerelease tag resolution (jq path + awk fallback +
       # brace-injection fail-loud, added by #788) but was never executed by any
       # workflow. Runs here, after setup-node, because
-      # tests/unit/run-supervisor-watch.sh (#2918) drives the harvester and
-      # summarizer through `node` against a stub `gh` and needs
-      # Object.hasOwn + ESM top-level await — the pinned node-version above,
-      # not whatever node the runner image happens to preinstall (#2929). No
-      # `command -v node` guard: if node is missing, the step must fail
-      # loudly rather than silently skip. The glob auto-wires future
-      # tests/unit/*.sh files — #791's root cause was a test that existed
-      # but was never wired.
+      # tests/unit/publish-npm-packages.sh and tests/unit/check-sse-endpoint.sh
+      # invoke `node` and must use the pinned node-version above, not whatever
+      # node the runner image happens to preinstall (#2929). No `command -v
+      # node` guard: if node is missing, the step must fail loudly rather than
+      # silently skip. The glob auto-wires future tests/unit/*.sh files —
+      # #791's root cause was a test that existed but was never wired.
       - name: Run offline shell unit tests
         run: |
           for t in tests/unit/*.sh; do
