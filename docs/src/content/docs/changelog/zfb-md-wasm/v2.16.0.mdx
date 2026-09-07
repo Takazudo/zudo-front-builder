@@ -1,0 +1,24 @@
+---
+title: v2.16.0
+sidebar_position: 12
+---
+
+# v2.16.0
+
+Released: 2026-09-08
+
+## Other Changes
+
+- Add a digest disclaimer beside the shipped-size table in the package README
+  (d4093b2e, 6bbf4782). The sizes in that table are held by `shipped-sizes.json`
+  and asserted in CI, so they move only on a deliberate artifact change — but
+  SHA-256 content digests are not guarded the same way. Every release stamps its
+  own version string into each `.wasm` (the value `version()` returns), so all
+  four digests move on **every** release, including a documentation-only patch
+  whose compiled code is identical and whose byte sizes do not move at all. The
+  README now says so, because reading "sizes unchanged" as "nothing to
+  re-verify" nearly caused a downstream consumer to skip a required re-pin.
+
+No compiled code changed in this release, and every shipped artifact keeps its
+2.15.1 byte size. All four `.wasm` content digests still move, for the reason
+above — if you pin these artifacts by SHA-256 rather than by semver, re-pin.

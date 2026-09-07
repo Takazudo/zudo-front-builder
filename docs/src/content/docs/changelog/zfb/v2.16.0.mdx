@@ -1,0 +1,18 @@
+---
+title: v2.16.0
+sidebar_position: 126
+---
+
+# v2.16.0
+
+Released: 2026-09-08
+
+## Bug Fixes
+
+- Retry the esbuild version-gate spawn on `ETXTBSY` (1d66118d). `ensure_binary_verified`
+  exec'd the esbuild binary with a bare `.output()`. That gate is the first exec of a
+  binary a packaged `zfb` has only just written into a tempdir, so it was the spawn most
+  exposed to the fork-to-exec race already fixed at the crate's three other esbuild call
+  sites; losing it failed the build with `Text file busy (os error 26)`. It now routes
+  through `zfb-build`'s existing retry loop, so a build that previously died on that race
+  completes.
