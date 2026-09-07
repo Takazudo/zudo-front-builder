@@ -522,9 +522,9 @@ jobs:
       # `always() && rc != '0'` never did — an output that was never written is
       # absent, not empty, so it coerces to 0 and `!= '0'` is false (run
       # 34105846729, case A). The never-ran case was skipped, not caught.
-      # `failure()` catches it; `!cancelled()` keeps a cancelled run — proven
-      # to run an `always()` step, same run, case D — from filing an issue
-      # with no result behind it.
+      # `failure()` catches it; `!cancelled()` keeps a cancelled run — which
+      # does still execute an `always()` step, as the probe's case D showed —
+      # from filing an issue with no result behind it.
       - name: File or comment on tracking issue (failure)
         if: ${{ !cancelled() && (failure() || steps.run_macos_suite.outputs.rc != '0') }}
         env:
