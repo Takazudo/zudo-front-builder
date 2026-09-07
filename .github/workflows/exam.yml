@@ -342,14 +342,14 @@ jobs:
       # true. It does not: the output of a step that never ran compares EQUAL
       # to '0' — measured in run 34105846729, case A, where this exact
       # condition was observed skipping — so the fallback was skipped in
-      # precisely the case it was written for. `failure()` covers the
-      # never-ran case outright and, unlike the comparison, does not depend
-      # on how an unset output is typed at all. The rule being
-      # enforced: a result that cannot tell "never ran" apart from "passed" is
-      # not a proof, so absence has to read as red and file. `!cancelled()` is
-      # the other half — a cancelled run (a workflow_dispatch landing on a
-      # scheduled one, a manual cancel, a `timeout-minutes` expiry) has no
-      # result behind it and must not file.
+      # precisely the case it was written for. `failure()` covers the never-ran
+      # case outright and, unlike the comparison, does not depend on how an
+      # unset output is typed at all. The rule being enforced: a result that
+      # cannot tell "never ran" apart from "passed" is not a proof, so absence
+      # has to read as red and file. `!cancelled()` is the other half — a
+      # cancelled run (a workflow_dispatch landing on a scheduled one, a manual
+      # cancel, a `timeout-minutes` expiry) has no result behind it and must
+      # not file.
       - name: File or comment on tracking issue (failure)
         if: ${{ !cancelled() && (failure() || steps.run_manifest.outputs.rc != '0') }}
         env:
