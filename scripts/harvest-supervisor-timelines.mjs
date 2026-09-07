@@ -150,18 +150,13 @@ const execFileAsync = promisify(execFile);
 
 const HEALTH_WORKFLOW = "health.yml";
 const HEALTH_JOB_NAME = "health";
-// A planning-time constant for when the `env=` token switched to the
-// steering digest (#2913). It is a floor on the default `--since`, not a
-// contract boundary: which digest a run emits depends on whether its commit
-// contains that change, not on the run's date — a stale PR branch keeps
-// emitting the old per-run-unique digest after this instant, and `main` runs
-// carry the new one only from the merge onwards. Mixed populations across
-// that change need `--branch main` or `--allow-drift env`.
-export const IDENTITY_CONTRACT_EPOCH = "2026-09-08T00:00:00Z";
 // One weekly cadence plus a day of overlap: a run still in progress at
 // harvest time is skipped this week, and without the overlap its `createdAt`
 // would already sit behind next week's window start, so it would never be
-// enumerated at all.
+// enumerated at all. The window is purely rolling: an `env=` identity
+// contract change is carried as a version on the record itself (#2933) and
+// the summarizer splits the population by that, so no date floor is needed
+// here to keep the old and new contracts apart.
 export const DEFAULT_WINDOW_DAYS = 8;
 const DEFAULT_WINDOW_MS = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
@@ -197,14 +192,8 @@ function toIsoSeconds(date) {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-// The default `--since`: a rolling window floored at the identity epoch, so
-// a harvest run in the first week after the change never reaches back across
-// it on its own — an explicit `--since` (with `--branch main` or
-// `--allow-drift env`) is required to deliberately mix the two populations.
 function defaultSince(now) {
-  const windowStart = now.getTime() - DEFAULT_WINDOW_MS;
-  const epochMs = Date.parse(IDENTITY_CONTRACT_EPOCH);
-  return toIsoSeconds(new Date(Math.max(windowStart, epochMs)));
+  return toIsoSeconds(new Date(now.getTime() - DEFAULT_WINDOW_MS));
 }
 
 export const EXIT_OK = 0;
@@ -491,8 +480,8 @@ export async function runCli(
   options.ghOptions = { gh: options.gh, retryDelayMs };
 
   // The window is the one input a reader of the manifest cannot otherwise
-  // recover — and a default floored at the identity epoch can lie in the
-  // future, which enumerates nothing and would otherwise read as a quiet week.
+  // recover — and an explicit `--since` can lie in the future, which
+  // enumerates nothing and would otherwise read as a quiet week.
   stderr.write(
     `window: since=${options.since} limit=${options.limit} branch=${options.branch ?? "all"}\n`,
   );

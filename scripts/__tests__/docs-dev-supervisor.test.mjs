@@ -17,7 +17,7 @@ import {
   STEERING_ENV_KEYS,
   VOLATILE_ENV_KEYS,
   digestOf,
-  steeringEnvDigest,
+  steeringEnvIdentity,
 } from "../supervisor-env-identity.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -220,7 +220,7 @@ function envSlice(env) {
   });
   const skipped = Object.keys(env).length - comparedKeys.length;
   return {
-    digest: steeringEnvDigest(env),
+    digest: steeringEnvIdentity(env),
     fullDigest: `${digestOf(serialized)} over ${comparedKeys.length} vars (${skipped} volatile excluded)`,
     reported,
   };
@@ -232,11 +232,12 @@ function envSlice(env) {
  * never starts still has to produce this, because "no child appeared" is an
  * outcome, not evidence that the input differed.
  *
- * - env: `envSlice(env)` carries two digests -- `digest` is the steering-only
- *   identity (`scripts/supervisor-env-identity.mjs`'s `steeringEnvDigest`)
- *   that becomes the timeline's `env=` token, and `fullDigest` is the
- *   full-environment digest, printed in the failure-evidence block for a
- *   human comparing two evidence blocks by eye. Nothing parses it.
+ * - env: `envSlice(env)` carries two digests -- `digest` is the versioned
+ *   steering-only identity (`scripts/supervisor-env-identity.mjs`'s
+ *   `steeringEnvIdentity`, `v<N>:sha256:…`) that becomes the timeline's
+ *   `env=` token verbatim, and `fullDigest` is the full-environment digest,
+ *   printed in the failure-evidence block for a human comparing two evidence
+ *   blocks by eye. Nothing parses it.
  */
 function captureSpawnInput(directory, scripts, env) {
   const fixtureSource = readFileSync(join(directory, "package.json"), "utf8");
@@ -382,9 +383,10 @@ function createDiagnostics(input) {
      * One machine-parseable line per supervisor run: the identity of the INPUT
      * alongside the phase timings, so a sampled distribution can be checked for
      * input drift instead of assuming there was none. `env=` is the
-     * steering-only digest (`scripts/supervisor-env-identity.mjs`'s
-     * `steeringEnvDigest`) -- stable across CI runs and shell sessions, unlike
-     * the full-environment digest kept only in the failure-evidence block.
+     * versioned steering-only digest (`scripts/supervisor-env-identity.mjs`'s
+     * `steeringEnvIdentity`, `v<N>:sha256:…`) -- stable across CI runs and
+     * shell sessions, unlike the full-environment digest kept only in the
+     * failure-evidence block, and comparable only under the same `v<N>`.
      */
     timelineLine(label, outcome) {
       // Every value has to stay one whitespace-free token: the consumer

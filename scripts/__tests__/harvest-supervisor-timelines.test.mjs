@@ -25,6 +25,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";
 import { REST_JOB_LOG_CAPTURE, REST_LOG_PREFIX } from "./fixtures/load-rest-job-log-capture.mjs";
 import { parseTimelineLine, parseTimelines } from "../supervisor-timeline-summary.mjs";
+import * as harvester from "../harvest-supervisor-timelines.mjs";
 import {
   DEFAULT_RETRY_DELAY_MS,
   DEFAULT_WINDOW_DAYS,
@@ -33,7 +34,6 @@ import {
   EXIT_OK,
   EXIT_PARTIAL,
   EXIT_USAGE,
-  IDENTITY_CONTRACT_EPOCH,
   JOBS_PER_PAGE,
   buildJobLogArgs,
   buildRunJobsArgs,
@@ -150,8 +150,8 @@ function setupFixtures({
 
 // Doubles as runCli's options bag: `retryDelayMs: 0` keeps the retry path
 // instant (every persistent-failure case below goes through it), and a
-// pinned `now` well past the identity epoch keeps the default window -- and
-// the future-`--since` warning -- out of cases that are not about them.
+// pinned `now` keeps the default window deterministic in cases that are not
+// about it.
 function sink() {
   const outWrites = [];
   const errWrites = [];
@@ -235,23 +235,26 @@ describe("REST argv builders", () => {
 });
 
 describe("parseCliArgs", () => {
-  it("applies documented defaults with no flags: --since floors at the identity epoch", () => {
-    // "now" sits within the window of the epoch, so the floor -- not the
-    // rolling window -- decides the default.
-    const options = parseCliArgs([], { now: new Date("2026-09-10T00:00:00Z") });
-    expect(options.since).toBe(IDENTITY_CONTRACT_EPOCH);
+  it("applies documented defaults with no flags: --since is a purely rolling window", () => {
+    // 8 days, not 7: a run in progress at one Sunday harvest must still be
+    // enumerated by the next one, so consecutive windows overlap by a day.
+    expect(DEFAULT_WINDOW_DAYS).toBe(8);
+    const options = parseCliArgs([], { now: new Date("2026-10-01T12:00:00Z") });
+    expect(options.since).toBe("2026-09-23T12:00:00Z");
     expect(options.limit).toBe(200);
     expect(options.branch).toBeUndefined();
     expect(options.saveDir).toBeUndefined();
     expect(options.gh).toBe("gh");
   });
 
-  it("defaults --since to a rolling window (one weekly cadence plus a day of overlap) once past the epoch", () => {
-    // 8 days, not 7: a run in progress at one Sunday harvest must still be
-    // enumerated by the next one, so consecutive windows overlap by a day.
-    expect(DEFAULT_WINDOW_DAYS).toBe(8);
-    const options = parseCliArgs([], { now: new Date("2026-10-01T12:00:00Z") });
-    expect(options.since).toBe("2026-09-23T12:00:00Z");
+  it("has no identity epoch: the default window reaches back across the #2913 contract change (#2933)", () => {
+    // The retired IDENTITY_CONTRACT_EPOCH ("2026-09-08T00:00:00Z") floored
+    // this default; a contract change is now a version on the record itself,
+    // so a "now" two days past that instant gets the full window, not a
+    // floor -- and the constant is gone, not merely unused.
+    const options = parseCliArgs([], { now: new Date("2026-09-10T00:00:00Z") });
+    expect(options.since).toBe("2026-09-02T00:00:00Z");
+    expect(Object.keys(harvester)).not.toContain("IDENTITY_CONTRACT_EPOCH");
   });
 
   it("an explicit --since overrides the computed default", () => {
@@ -262,9 +265,13 @@ describe("parseCliArgs", () => {
   });
 
   it("uses the real clock when no now is injected", () => {
+    const before = Date.now();
     const options = parseCliArgs([]);
-    // Whatever "now" really is, the default can never predate the epoch.
-    expect(Date.parse(options.since)).toBeGreaterThanOrEqual(Date.parse(IDENTITY_CONTRACT_EPOCH));
+    const windowMs = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    // `since` is trimmed to whole seconds, so allow that plus the call's own
+    // duration.
+    expect(Date.parse(options.since)).toBeGreaterThanOrEqual(before - windowMs - 1000);
+    expect(Date.parse(options.since)).toBeLessThanOrEqual(Date.now() - windowMs);
   });
 
   it("parses all flags", () => {
@@ -502,12 +509,15 @@ describe("runCli", () => {
     const { dir, stubPath } = setupFixtures({ runs: [] });
     process.env.GH_STUB_FIXTURES_DIR = dir;
 
-    // A pre-epoch "now": the default --since is floored at the epoch and so
-    // sits in the future, which enumerates nothing and must say so.
+    // An explicit --since ahead of "now" enumerates nothing and must say so
+    // rather than read as a quiet week.
     const early = sink();
-    await runCli(["--gh", stubPath], { ...early, now: new Date("2026-09-07T00:00:00Z") });
+    await runCli(["--gh", stubPath, "--since", "2026-09-08T00:00:00Z"], {
+      ...early,
+      now: new Date("2026-09-07T00:00:00Z"),
+    });
     const earlyLines = early.err().trimEnd().split("\n");
-    expect(earlyLines[0]).toBe(`window: since=${IDENTITY_CONTRACT_EPOCH} limit=200 branch=all`);
+    expect(earlyLines[0]).toBe("window: since=2026-09-08T00:00:00Z limit=200 branch=all");
     expect(earlyLines[1]).toMatch(/^warning: --since 2026-09-08T00:00:00Z lies in the future/);
 
     const later = sink();
