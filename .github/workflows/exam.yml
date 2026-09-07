@@ -69,10 +69,25 @@
 # failure mode is "two tracking issues" not "no tracking issue", so the
 # signal is never lost. Closing on green needs BOTH legs to have passed, which
 # a single job can't know about itself, so that (and the IFTTT notify) is
-# centralized in two small downstream jobs that read the two test jobs'
-# `outputs.rc` (not `needs.*.result`, which is always "success" by design
-# here) — reusing the exact IFTTT pattern from release.yml's `notify` job
-# (issue #1335).
+# centralized in two small downstream jobs — reusing the exact IFTTT pattern
+# from release.yml's `notify` job (issue #1335).
+#
+# Those downstream jobs read the two test jobs' `outputs.rc` AND
+# `needs.*.result`, and BOTH operands are load-bearing (#2928):
+#   - `.result` is the LIVENESS gate — did the leg reach its rc step at all.
+#     It is "always success by design" ONLY when that step ran, which is what
+#     the unconditional step plus its `exit 0` buys. A leg that dies at
+#     checkout or toolchain setup reports "failure", and that is the only
+#     signal separating "died" from "passed".
+#   - `outputs.rc` is the VERDICT — a completed leg's real test outcome,
+#     which `.result` deliberately cannot express here.
+# Neither alone is sufficient, and each covers exactly what the other cannot:
+# `.result` can't tell a passing exam from a failing one, and `rc` can't tell
+# a passing leg from a dead one, because an unwritten output is ABSENT rather
+# than empty and so compares EQUAL to '0' (measured, run 34106407484). Do not
+# "simplify" either operand out of those conditions as redundant — dropping
+# `.result` restores the bug where an infra failure closed the tracking issue
+# as green.
 #
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
@@ -556,11 +571,14 @@ jobs:
     #     tracking issue happened to be open. Same defect as the filing steps
     #     above, mirrored: there absence read as "nothing to report", here as
     #     "both legs passed".
-    # Together they do distinguish the cases: `.result == 'success'` means the
-    # leg ran to completion (so its rc WAS written, since the test step is
-    # unconditional), and `rc == '0'` then means it reported green. A leg that
-    # died reports a non-success result and no longer closes anything — a
-    # result that cannot tell "never ran" apart from "passed" is not a proof.
+    # Together they do distinguish the cases — `.result` is the liveness gate
+    # (did the leg reach its rc step at all) and `rc` is the verdict:
+    # `.result == 'success'` means the leg ran to completion, so its rc WAS
+    # written (the test step is unconditional), and `rc == '0'` then means it
+    # reported green. A leg that died reports a non-success result and no
+    # longer closes anything — a result that cannot tell "never ran" apart
+    # from "passed" is not a proof. Neither operand is redundant; dropping
+    # `.result` restores the bug.
     name: Close exam tracking issue if both legs are green
     needs: [quarantine-heavy, macos-exam]
     if: always()

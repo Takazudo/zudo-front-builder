@@ -157,8 +157,10 @@ jobs:
     #     nothing and silently CLOSED any open drift tracker. `!cancelled()`
     #     on this job means it runs even when `detector` failed, so that path
     #     was live, not theoretical.
-    # Together they partition cleanly, because `result == 'success'` holds if
-    # and only if the detector ran AND reported rc 0:
+    # `.result` is the liveness gate (did the detector reach its rc step at
+    # all) and `rc` is the verdict. Neither operand is redundant. Together
+    # they partition cleanly, because `result == 'success'` holds if and only
+    # if the detector ran AND reported rc 0:
     #     ran rc=0  -> success, '0'    -> close
     #     ran rc=10 -> failure, '10'   -> drift
     #     ran rc=3  -> failure, '3'    -> operational failure
