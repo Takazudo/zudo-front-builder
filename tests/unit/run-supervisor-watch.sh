@@ -128,10 +128,10 @@ job_log_no_records() {
   printf 'PASS some-other.test.mjs\n'
 }
 
-# run_json <databaseId> <headBranch> [status]
+# run_json <databaseId> <headBranch> [status] [event]
 run_json() {
-  printf '{"databaseId":%s,"headBranch":"%s","headSha":"0123456789abcdef0123456789abcdef01234567","conclusion":"success","status":"%s","createdAt":"2026-09-07T00:00:00Z","event":"push","attempt":1}' \
-    "$1" "$2" "${3:-completed}"
+  printf '{"databaseId":%s,"headBranch":"%s","headSha":"0123456789abcdef0123456789abcdef01234567","conclusion":"success","status":"%s","createdAt":"2026-09-07T00:00:00Z","event":"%s","attempt":1}' \
+    "$1" "$2" "${3:-completed}" "${4:-push}"
 }
 
 # jobs_json <jobId> [conclusion] — the run's job list, with a `health` job
@@ -340,8 +340,59 @@ jobs_json 5001 >"$FIX/jobs-1001.json"
 job_log_no_records >"$FIX/job-5001.log"
 assert_case 'red telemetry-vanished: green health job, no records' "$FIX" 2 red
 # The record-less green run IS harvested (that is the finding), so pass B
-# sees it too and reports the same silence on main.
-assert_detail 'red telemetry-vanished' "$FIX" 'all=red:1/1 main=red:1/1'
+# sees it too and names the silence on main.
+assert_detail 'red telemetry-vanished' "$FIX" 'all=red:1/1 main=silent:1/1'
+
+# ── red silent-on-main: one green main job with no records beside an emitting one
+#
+# The harvester's no-records exit is population-level, so this population is
+# exit 0 and pass A is ok; pass B must still catch the single silent trunk job.
+
+FIX=$(new_fixture_dir red-silent-main)
+printf '[%s,%s]' "$(run_json 1001 main)" "$(run_json 1003 main)" >"$FIX/run-list.json"
+jobs_json 5001 >"$FIX/jobs-1001.json"
+jobs_json 5003 >"$FIX/jobs-1003.json"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
+job_log_no_records >"$FIX/job-5003.log"
+assert_case 'red silent-on-main: one green main job with zero records' "$FIX" 2 red
+assert_detail 'red silent-on-main' "$FIX" 'all=ok:0/0 main=silent:2/0'
+
+if grep -q '^run=1003 .* lines=0 ' "$FIX/out/silent-runs.txt"; then
+  pass 'red silent-on-main: silent-runs.txt names run 1003'
+else
+  fail "red silent-on-main: expected run 1003 in silent-runs.txt, got: $(cat "$FIX/out/silent-runs.txt")"
+fi
+
+# ── green: a silent PR-branch job is listed but not judged ───────────────────
+
+FIX=$(new_fixture_dir green-silent-pr)
+printf '[%s,%s]' "$(run_json 1001 main)" "$(run_json 1002 feat/pre-emitter)" >"$FIX/run-list.json"
+jobs_json 5001 >"$FIX/jobs-1001.json"
+jobs_json 5002 >"$FIX/jobs-1002.json"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
+job_log_no_records >"$FIX/job-5002.log"
+assert_case 'green: silent green job on a PR branch only' "$FIX" 0 green
+assert_detail 'green (silent PR job)' "$FIX" 'all=ok:0/0 main=ok:1/0'
+
+if grep -q '^run=1002 .* lines=0 ' "$FIX/out/silent-runs.txt"; then
+  pass 'green (silent PR job): silent-runs.txt still lists run 1002'
+else
+  fail "green (silent PR job): expected run 1002 in silent-runs.txt, got: $(cat "$FIX/out/silent-runs.txt")"
+fi
+
+# ── green: a fork PR whose head branch is named main is not trunk ───────────
+#
+# health.yml's only trunk trigger is push; pass B must key on the event too,
+# or a contributor's fork `main` (different identity) reddens the strict pass.
+
+FIX=$(new_fixture_dir fork-main-pr)
+printf '[%s,%s]' "$(run_json 1001 main)" "$(run_json 1004 main completed pull_request)" >"$FIX/run-list.json"
+jobs_json 5001 >"$FIX/jobs-1001.json"
+jobs_json 5004 >"$FIX/jobs-1004.json"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
+job_log ok 430 540 "$ENV_B" >"$FIX/job-5004.log"
+assert_case 'green: pull_request run from a fork branch named main is not trunk' "$FIX" 0 green
+assert_detail 'green (fork main PR)' "$FIX" 'all=ok:0/0 main=ok:1/0'
 
 # ── red partial harvest: a job log that cannot be fetched ────────────────────
 

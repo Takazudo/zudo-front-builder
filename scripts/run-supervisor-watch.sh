@@ -41,17 +41,20 @@ set -euo pipefail
 # NO-DATA IS NOT RED, BUT VANISHED TELEMETRY IS. The harvester keeps those
 # apart by exit code (see its header): 4 means nothing was harvestable (zero
 # runs enumerated, or every run skipped — in progress, no `health` job, red
-# before the test step), which is a quiet week; 1 means at least one green
-# `health` job was harvested and carried no records, which is the emitter
-# (or the parser) going silent — exactly the silent no-op #2902 exists to
-# prevent, so it is RED.
+# before the test step), which is a quiet week; 1 means every harvested
+# green `health` job carried no records, which is the emitter (or the
+# parser) going silent — exactly the silent no-op #2902 exists to prevent,
+# so it is RED. Pass B tightens that for trunk: ONE silent green `main` job
+# beside emitting ones is already red (`silent`), because every green trunk
+# job has emitted since #2906; a silent PR-branch job is listed, not judged
+# (a branch predating the emitter is legitimately silent).
 #
 # Exit codes (informational — the workflow keys on the `verdict=` token it
 # writes to $GITHUB_OUTPUT, never on this code, because a `set -e` death
 # inside this script also exits 1 and must not read as a quiet week):
 #   0  green    — pass A ok (pass B may legitimately be `empty` on a quiet trunk week)
 #   1  no-data  — pass A harvested nothing
-#   2  red      — either pass is red
+#   2  red      — either pass is red (pass B: `red` or `silent`)
 #
 # Env:
 #   WATCH_OUT_DIR     output tree (default ./supervisor-watch-out; gitignored)
@@ -135,13 +138,17 @@ log "==> pass A (all branches): status=$STATUS_A hrc=$HRC_A src=$SRC_A"
 # ── Pass B: the trunk subset of pass A's saved logs, strict identity ────────
 
 # Harvested manifest lines only (`lines=` — skipped/errored runs have no
-# usable log), on the trunk branch. Fixed-string match on the branch token so
-# a branch name is never read as a regex.
+# usable log), on the trunk branch AND from a push: health.yml's only trunk
+# trigger is `push: [main]`, and a pull_request run from a fork whose head
+# branch is also named `main` carries `branch=main` too. Fixed-string matches
+# on the tokens so a branch name is never read as a regex.
 grep -E '^run=[0-9]+ .* job=[0-9]+ lines=[0-9]+ ' "$OUT/all/manifest.txt" 2>/dev/null \
+  | grep -F -- " event=push " \
   | grep -F -- " branch=$MAIN_BRANCH " >"$OUT/main/runs.txt" || true
 
 MAIN_LOGS=()
 MAIN_COUNT=0
+MAIN_SILENT=0
 while IFS= read -r line; do
   run_id=${line#run=}
   run_id=${run_id%% *}
@@ -149,6 +156,9 @@ while IFS= read -r line; do
   job_id=${job_id%% *}
   MAIN_LOGS+=("$OUT/job-logs/run-$run_id-job-$job_id.log")
   MAIN_COUNT=$((MAIN_COUNT + 1))
+  case "$line" in
+    *" lines=0 "*) MAIN_SILENT=$((MAIN_SILENT + 1)) ;;
+  esac
 done <"$OUT/main/runs.txt"
 
 if [ "$MAIN_COUNT" -eq 0 ]; then
@@ -162,13 +172,21 @@ else
   node "$SUMMARIZE" --strict "${MAIN_LOGS[@]}" >"$OUT/main/summary.txt" 2>&1
   SRC_B=$?
   set -e
-  if [ "$SRC_B" -eq 0 ]; then
+  # `silent` outranks the summarizer: its no-records exit fires only when the
+  # WHOLE input is silent, so one green trunk job with zero records beside an
+  # emitting one would otherwise pass as ok. Every green `health` job on
+  # trunk emits (the emitter has been on `main` since #2906), so a single
+  # silent one is the emitter breaking — the same red as a wholly silent
+  # week, caught up to a week earlier.
+  if [ "$MAIN_SILENT" -gt 0 ]; then
+    STATUS_B=silent
+  elif [ "$SRC_B" -eq 0 ]; then
     STATUS_B=ok
   else
     STATUS_B=red
   fi
 fi
-log "==> pass B ($MAIN_BRANCH only): status=$STATUS_B runs=$MAIN_COUNT src=$SRC_B"
+log "==> pass B ($MAIN_BRANCH only): status=$STATUS_B runs=$MAIN_COUNT silent=$MAIN_SILENT src=$SRC_B"
 
 # ── Provenance for triage ────────────────────────────────────────────────────
 
@@ -179,12 +197,17 @@ log "==> pass B ($MAIN_BRANCH only): status=$STATUS_B runs=$MAIN_COUNT src=$SRC_
 # run and describes a harvest problem, which the `error=` lines below cover.
 grep -E '^run=[0-9]+ .* failed=[1-9]' "$OUT/all/manifest.txt" >"$OUT/failed-runs.txt" || true
 grep -E '^run=[0-9]+ .* error=' "$OUT/all/manifest.txt" >"$OUT/harvest-errors.txt" || true
+# Green `health` jobs that emitted nothing. Only the trunk ones decide the
+# verdict (a PR branch predating the emitter is legitimately silent), but
+# every one is listed: a silent branch run is the first place a broken
+# emitter shows up before it merges.
+grep -E '^run=[0-9]+ .* lines=0 ' "$OUT/all/manifest.txt" >"$OUT/silent-runs.txt" || true
 # The effective window, the --limit cap notice, and a future-`--since` warning.
 grep -E '^(window|notice|warning):' "$OUT/all/manifest.txt" >"$OUT/harvest-notices.txt" || true
 
 VERDICT=green
 EXIT_CODE=0
-if [ "$STATUS_A" = red ] || [ "$STATUS_B" = red ]; then
+if [ "$STATUS_A" = red ] || [ "$STATUS_B" = red ] || [ "$STATUS_B" = silent ]; then
   VERDICT=red
   EXIT_CODE=2
 elif [ "$STATUS_A" = empty ]; then
@@ -192,7 +215,7 @@ elif [ "$STATUS_A" = empty ]; then
   EXIT_CODE=1
 fi
 
-# all=<status>:<harvester rc>/<summarizer rc> main=<status>:<runs>/<summarizer rc>
+# all=<ok|empty|red>:<harvester rc>/<summarizer rc> main=<ok|empty|red|silent>:<runs>/<summarizer rc>
 DETAIL="all=$STATUS_A:$HRC_A/$SRC_A main=$STATUS_B:$MAIN_COUNT/$SRC_B"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -218,6 +241,11 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     printf '### Runs with failed supervisor records (R-A: read the saved job log)\n\n'
     printf '```\n'
     print_file_or_none "$OUT/failed-runs.txt"
+    printf '```\n\n'
+
+    printf '### Green health jobs with zero records (silent emitter; red when on %s)\n\n' "$MAIN_BRANCH"
+    printf '```\n'
+    print_file_or_none "$OUT/silent-runs.txt"
     printf '```\n\n'
 
     printf '### Runs the harvester could not fetch or parse\n\n'
