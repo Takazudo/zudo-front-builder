@@ -34,6 +34,19 @@ REPO_ROOT=$(CDPATH= cd -- "$SELF_DIR/../.." && pwd)
 cd "$REPO_ROOT"
 
 SCRIPT="scripts/run-supervisor-watch.sh"
+WATCH_IMPL=${WATCH_IMPL:-sh}
+
+case "$WATCH_IMPL" in
+  sh) WATCH_COMMAND="bash $SCRIPT" ;;
+  mjs)
+    SCRIPT="scripts/supervisor-watch.mjs"
+    WATCH_COMMAND="node $SCRIPT"
+    ;;
+  *)
+    printf 'unknown WATCH_IMPL: %s (expected sh or mjs)\n' "$WATCH_IMPL" >&2
+    exit 1
+    ;;
+esac
 
 PASS=0
 FAIL=0
@@ -171,7 +184,7 @@ run_watch() {
     WATCH_TAR="$RW_TAR" \
     GITHUB_OUTPUT="$RW_FIX/gh-output.txt" \
     GITHUB_STEP_SUMMARY="$RW_FIX/gh-step-summary.md" \
-    bash "$SCRIPT" >"$RW_FIX/stdout.txt" 2>"$RW_FIX/stderr.txt"; then
+    $WATCH_COMMAND >"$RW_FIX/stdout.txt" 2>"$RW_FIX/stderr.txt"; then
     RC=0
   else
     RC=$?
