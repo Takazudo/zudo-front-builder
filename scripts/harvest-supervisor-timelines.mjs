@@ -32,17 +32,42 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * Per run, only the `health` job's log lines are read, never the whole
  * run's. On 2026-09-07 the whole-run `gh run view <id> --log` for a real run
  * returned 18,615 lines with zero vitest output (the `health` job's log was
- * missing from the combined stream), while `gh run view --job <jobId> --log`
- * for that same run's `health` job returned 10,014 lines including the
- * records. Fetching the whole run is not merely wasteful here, it silently
- * loses the data. (On the wire gh still downloads the run's log archive
- * for `--job` and keeps it in its own cache directory; the per-job form is
- * about which lines come back, not about bytes transferred.)
+ * missing from the combined stream), while the single `health` job's own log
+ * returned 10,014 lines including the records. Fetching the whole run is not
+ * merely wasteful here, it silently loses the data.
+ *
+ * Both per-run fetches go through `gh api` at the REST endpoints rather than
+ * through `gh run view` (#2931). The porcelain resolves the run and its
+ * workflow again on every call, and its `--job … --log` form downloads the
+ * *whole run's* log archive just to slice one job out of it: measured with
+ * `GH_DEBUG=api` on 2026-09-07, `gh run view <id> --json jobs` cost 3
+ * metered GETs and `gh run view --job <id> --log` cost 4 more plus the
+ * archive download — ~7 per run, so a capped 200-run harvest sat near 1,400
+ * against `GITHUB_TOKEN`'s 1,000-per-hour primary limit and would 403
+ * mid-harvest, filing a tracking issue about its own rate limit. The two
+ * REST calls below cost 1 metered GET each (the log endpoint's 302 to a
+ * plaintext blob is a separate, unmetered host), so the same harvest is
+ * ~400.
+ *
+ * `{owner}` / `{repo}` in those paths are expanded by gh from the current
+ * repository (or `GH_REPO`) without an API call of its own — the same
+ * resolution `gh run list` already relies on, so the harvester gains no new
+ * way to be pointed at the wrong repo.
+ *
+ * The REST log body is NOT what `gh run view --job … --log` printed: the
+ * porcelain prefixes every line with `<job>\t<step>\t`, the REST body has
+ * only the runner's own `<ISO timestamp> ` prefix, and it opens with a UTF-8
+ * BOM. `parseTimelines` sees through all of it (its `TAG_PATTERN` accepts
+ * any quote-free prefix), but `record.raw` and the bytes `--save-dir` keeps
+ * did change with #2931 — the contract is the parsed records, not the raw
+ * line. `scripts/__tests__/fixtures/rest-job-log-capture.log` is a trimmed
+ * real capture of that body; the suites build their synthetic logs from its
+ * prefix rather than from a guess at it.
  *
  * Runs are harvested with bounded concurrency (`CONCURRENCY` below): each
- * run costs two `gh` invocations of roughly 1.5-3.5 s (measured
- * 2026-09-07), so a strictly sequential 200-run default harvest would take
- * 10-17 minutes.
+ * run costs two `gh` invocations of roughly 1.5-3.5 s (measured 2026-09-07,
+ * and re-measured across the REST migration at 3.4-3.9 s for the pair), so
+ * a strictly sequential 200-run default harvest would take 10-17 minutes.
  *
  * Output contract
  * ----------------
@@ -78,9 +103,9 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *   - a run whose `status` is not yet `completed` (no complete log to fetch);
  *   - a completed run with no `health` job at all;
  *   - a `health` job that never started (cancelled while still queued by
- *     `cancel-in-progress`, or skipped) — GitHub has no log for it and
- *     `gh run view --job <id> --log` fails with `log not found`, which must
- *     not read as a partial harvest;
+ *     `cancel-in-progress`, or skipped) — GitHub has no log for it and the
+ *     job-logs endpoint answers 404, which must not read as a partial
+ *     harvest;
  *   - a `health` job whose conclusion is not `success` and whose log carries
  *     no records (`skipped=no-records-health-<conclusion>`): it went red or
  *     was cancelled before the `pnpm test:workspace` step, so the missing
@@ -141,10 +166,10 @@ const DEFAULT_WINDOW_MS = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
 const DEFAULT_GH = "gh";
 // Bounded so a full default harvest is minutes, not a quarter hour, while
-// staying below GitHub's secondary rate limit. The two gh invocations per run
-// fan out into several REST GETs each (gh resolves the run and workflow
-// again for every call), so a capped 200-run harvest is on the order of a
-// thousand GETs, not two hundred.
+// staying below GitHub's secondary rate limit. Since #2931 the two gh
+// invocations per run are one metered GET each, so a capped 200-run harvest
+// is ~400 GETs — comfortably inside the primary hourly limit at this
+// concurrency.
 const CONCURRENCY = 4;
 // One retry with a short pause: a single transient 5xx or secondary-rate-limit
 // 403 on one of hundreds of calls must not turn a complete population into a
@@ -263,11 +288,43 @@ async function runGh({ gh, retryDelayMs }, args) {
   }
 }
 
-/** Resolves a run's `health` job, or `null` if the run has none. */
+// The run-jobs endpoint pages at 30 by default and a `health.yml` run
+// already carries 10 jobs, so the page size is pinned at the maximum: one
+// GET covers every realistic run. `gh api --paginate` is deliberately not
+// used — on a wrapped-collection endpoint it concatenates one JSON object
+// per page, which `JSON.parse` cannot read.
+export const JOBS_PER_PAGE = 100;
+
+/** `gh api` argv for one page of a run's jobs. */
+export function buildRunJobsArgs(runId, page = 1) {
+  const query = page > 1 ? `?per_page=${JOBS_PER_PAGE}&page=${page}` : `?per_page=${JOBS_PER_PAGE}`;
+  return ["api", `repos/{owner}/{repo}/actions/runs/${runId}/jobs${query}`];
+}
+
+/** `gh api` argv for one job's log. */
+export function buildJobLogArgs(jobId) {
+  return ["api", `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`];
+}
+
+/**
+ * Resolves a run's `health` job, or `null` if the run has none.
+ *
+ * Walks further pages only when `health` was not on the one already fetched
+ * and `total_count` says more jobs exist — so the >100-job case is supported
+ * without every ordinary run paying for it. The empty-page guard is what
+ * bounds the loop if `total_count` ever disagrees with the pages served.
+ */
 async function findHealthJob(ghOptions, runId) {
-  const stdout = await runGh(ghOptions, ["run", "view", String(runId), "--json", "jobs"]);
-  const parsed = JSON.parse(stdout);
-  return (parsed.jobs ?? []).find((candidate) => candidate.name === HEALTH_JOB_NAME) ?? null;
+  let seen = 0;
+  for (let page = 1; ; page += 1) {
+    const stdout = await runGh(ghOptions, buildRunJobsArgs(runId, page));
+    const parsed = JSON.parse(stdout);
+    const jobs = parsed.jobs ?? [];
+    const health = jobs.find((candidate) => candidate.name === HEALTH_JOB_NAME);
+    if (health) return health;
+    seen += jobs.length;
+    if (jobs.length === 0 || seen >= (parsed.total_count ?? seen)) return null;
+  }
 }
 
 // A job that never ran has no log to fetch: GitHub reports it with
@@ -277,8 +334,33 @@ function jobNeverStarted(job) {
   return job.conclusion === "skipped" || (Array.isArray(job.steps) && job.steps.length === 0);
 }
 
+// `gh api` exits non-zero on an HTTP error, so a JSON error envelope
+// arriving on stdout means the fetch "succeeded" while returning no log at
+// all. Unguarded that lands as `lines=0`, which the weekly watch reads as
+// the emitter going silent rather than as a broken fetch — the one failure
+// shape this lane must never mistake for data.
+function apiErrorMessage(body) {
+  if (!body.slice(0, 64).trimStart().startsWith("{")) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  return typeof parsed?.message === "string" ? parsed.message : null;
+}
+
+// One metered GET: the endpoint answers 302 to a plaintext blob on a
+// separate host and gh follows it itself (verified live 2026-09-07 with
+// `GH_DEBUG=api`: 302 Found -> actions-results blob, 200 OK). The body is
+// therefore the log itself, verbatim, and must not be post-processed here.
 async function fetchJobLog(ghOptions, jobId) {
-  return runGh(ghOptions, ["run", "view", "--job", String(jobId), "--log"]);
+  const body = await runGh(ghOptions, buildJobLogArgs(jobId));
+  const message = apiErrorMessage(body);
+  if (message !== null) {
+    throw new Error(`job ${jobId} log fetch returned an API error envelope: ${message}`);
+  }
+  return body;
 }
 
 // `parseTimelines` hands back lines sliced out of the whole job log, and V8
@@ -321,7 +403,9 @@ async function harvestRun(run, options, stderr) {
       stderr.write(`${base} job=none skipped=no-health-job\n`);
       return skipped;
     }
-    jobId = job.databaseId;
+    // REST names the job's numeric id `id`; only `gh run list --json`
+    // (the run enumeration above) calls it `databaseId`.
+    jobId = job.id;
     if (jobNeverStarted(job)) {
       stderr.write(`${base} job=${jobId} skipped=health-job-never-started\n`);
       return skipped;

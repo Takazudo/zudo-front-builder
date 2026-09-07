@@ -97,7 +97,8 @@ jobs:
     timeout-minutes: 15
     # A job-level `permissions:` block REPLACES the workflow default, so
     # contents: read must be restated. `actions: read` is what lets this job's
-    # GITHUB_TOKEN drive `gh run list` and `gh run view --job <id> --log`
+    # GITHUB_TOKEN drive `gh run list` and the harvester's two REST calls
+    # (the run-jobs and job-logs endpoints, #2931)
     # against health.yml's runs — an explicit permissions block sets every
     # unnamed scope to `none`, so without this line the harvester's very first
     # gh call 403s. `issues: write` is for scripts/file-exam-issue.sh.

@@ -13,12 +13,12 @@
 # passed through WATCH_GH -> the harvester's --gh flag, which is the same
 # subprocess/argv contract that the vitest suite drives.
 #
-# Fixtures are real emissions: the `[supervisor-timeline]` record shape comes
-# from the canonical corpus at scripts/__tests__/fixtures/supervisor-timeline-samples.txt
-# (also #2930), read via grep/sed rather than duplicated as a literal here,
-# and the `gh run view --job <id> --log` line prefix is copied from
-# scripts/__tests__/harvest-supervisor-timelines.test.mjs (LOG_PREFIX), not
-# hand-invented.
+# Fixtures are real emissions, from two corpora with two different owners
+# (#2930's addendum): the `[supervisor-timeline]` record shape is zfb's own
+# contract and comes from scripts/__tests__/fixtures/supervisor-timeline-samples.txt,
+# while the job-log envelope around it is GitHub's and is sliced out of a real
+# captured REST body, scripts/__tests__/fixtures/rest-job-log-capture.log
+# (#2931). Both are read via grep/sed rather than duplicated as literals here.
 #
 # Requires: sh, bash, node, mktemp, grep, sed, tail, wc. Unlike its siblings
 # this is not sub-second: every case spawns the real harvester and summarizer.
@@ -58,8 +58,10 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # ── Stub `gh` ────────────────────────────────────────────────────────────────
 #
 # The shared stub (scripts/__tests__/fixtures/gh-stub.sh, #2930) dispatches
-# on argv exactly like the real thing: `run list`, `run view <id> --json
-# jobs`, `run view --job <id> --log`. Fixture data comes from files under
+# on argv exactly like the real thing: `run list`, and since #2931 the two
+# REST calls `api repos/{owner}/{repo}/actions/runs/<id>/jobs?per_page=100`
+# and `api repos/{owner}/{repo}/actions/jobs/<id>/logs`. Fixture data comes
+# from files under
 # $GH_STUB_FIXTURES_DIR, inherited from the environment the same way a real
 # `gh` would inherit it. The watch never passes --branch (pass B is derived
 # from pass A's saved logs), so the stub does not filter on it.
@@ -67,10 +69,23 @@ STUB="$REPO_ROOT/scripts/__tests__/fixtures/gh-stub.sh"
 
 # ── Fixture builders ─────────────────────────────────────────────────────────
 
-# gh's `--log` output prefixes every line with "<job>\t<step>\t<timestamp> ",
-# and `pnpm -r`'s reporter adds its own ". test: " package label ahead of the
-# tag — both are part of the real shape the summarizer must see through.
-LOG_PREFIX_FMT='health\tUNKNOWN STEP\t2026-09-06T23:06:25.83Z . test: '
+# The REST job-log body prefixes every line with the runner's own
+# "<ISO timestamp>Z ", and `pnpm -r`'s reporter adds its ". test: " package
+# label ahead of the tag — both are part of the real shape the summarizer
+# must see through, and neither is invented here: the prefix is sliced off a
+# record line in the captured body (see its loader for provenance), so these
+# synthetic logs are wrapped in bytes GitHub actually emitted.
+# -a: the capture carries raw ANSI escapes and non-ASCII glyphs, and under a
+# C/POSIX locale (CI's default) grep would otherwise call it binary and print
+# "Binary file matches" instead of the line.
+CAPTURE_FILE="$REPO_ROOT/scripts/__tests__/fixtures/rest-job-log-capture.log"
+LOG_PREFIX=$(grep -a -m1 '\[supervisor-timeline\] case=' "$CAPTURE_FILE" |
+  sed 's/\[supervisor-timeline\].*//')
+if [ -z "$LOG_PREFIX" ]; then
+  fail "could not slice the REST log prefix out of $CAPTURE_FILE"
+  printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
 
 ENV_A="sha256:ed62f5285936a0ca"
 ENV_B="sha256:173aae2cffffffff"
@@ -86,7 +101,7 @@ UP_BOOM_TEMPLATE=$(grep '^UP_BOOM_LINE=' "$SAMPLES_FILE" | sed 's/^UP_BOOM_LINE=
 
 # timeline_line <outcome> <first-up-line> <total> <env-digest>
 timeline_line() {
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf '%s\n' "$UP_BOOM_TEMPLATE" | sed -E \
     -e "s/outcome=[^ ]+/outcome=$1/" \
     -e "s/first-up-line=[^ ]+/first-up-line=$2/" \
@@ -96,18 +111,18 @@ timeline_line() {
 
 # job_log <outcome> <first-up-line> <total> <env-digest> > file
 job_log() {
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf '##[section]Starting: Run tests\n'
   timeline_line "$@"
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf 'PASS scripts/__tests__/docs-dev-supervisor.test.mjs\n'
 }
 
 # job_log_no_records > file
 job_log_no_records() {
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf '##[section]Starting: Run tests\n'
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf 'PASS some-other.test.mjs\n'
 }
 
@@ -117,12 +132,14 @@ run_json() {
     "$1" "$2" "${3:-completed}" "${4:-push}"
 }
 
-# jobs_json <jobId> [conclusion] — the run's job list, with a `health` job
-# that started (a non-empty `steps` array is what tells the harvester it has
-# a log). The conclusion decides whether a record-less log means the emitter
-# went silent (`success`) or the job went red before the test step.
+# jobs_json <jobId> [conclusion] — one page of the run-jobs endpoint, with a
+# `health` job that started (a non-empty `steps` array is what tells the
+# harvester it has a log). REST names the numeric id `id` (only `gh run list
+# --json` calls it `databaseId`) and wraps the page in `total_count`. The
+# conclusion decides whether a record-less log means the emitter went silent
+# (`success`) or the job went red before the test step.
 jobs_json() {
-  printf '{"jobs":[{"name":"health","databaseId":%s,"conclusion":"%s","steps":[{"name":"Set up job"}]}]}' \
+  printf '{"total_count":1,"jobs":[{"name":"health","id":%s,"conclusion":"%s","steps":[{"name":"Set up job"}]}]}' \
     "$1" "${2:-success}"
 }
 
@@ -242,10 +259,19 @@ else
 fi
 
 # No second network harvest: each job log is fetched exactly once.
-if [ "$(grep -c 'run view --job 5001 --log' "$FIX/calls.log")" -eq 1 ]; then
+JOB_5001_LOG_CALL='api repos/{owner}/{repo}/actions/jobs/5001/logs'
+if [ "$(grep -cF "$JOB_5001_LOG_CALL" "$FIX/calls.log")" -eq 1 ]; then
   pass 'green: the main job log was fetched once, not once per pass'
 else
-  fail "green: expected one fetch of job 5001, got: $(grep -c 'run view --job 5001 --log' "$FIX/calls.log")"
+  fail "green: expected one fetch of job 5001, got: $(grep -cF "$JOB_5001_LOG_CALL" "$FIX/calls.log")"
+fi
+
+# Two metered GETs per run and no `gh run view` porcelain — the whole point
+# of #2931, and invisible in every verdict above.
+if [ "$(grep -c '^api ' "$FIX/calls.log")" -eq 4 ] && ! grep -q '^run view ' "$FIX/calls.log"; then
+  pass 'green: two REST calls per run, no gh run view porcelain'
+else
+  fail "green: unexpected gh calls: $(tr '\n' '; ' <"$FIX/calls.log")"
 fi
 
 if grep -q '^window: since=' "$FIX/out/harvest-notices.txt"; then
