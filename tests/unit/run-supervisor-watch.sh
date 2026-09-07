@@ -160,6 +160,7 @@ run_watch() {
   if GH_STUB_FIXTURES_DIR="$RW_FIX" \
     WATCH_GH="$STUB" \
     WATCH_OUT_DIR="$RW_FIX/out" \
+    WATCH_RETRY_DELAY_MS=0 \
     GITHUB_OUTPUT="$RW_FIX/gh-output.txt" \
     GITHUB_STEP_SUMMARY="$RW_FIX/gh-step-summary.md" \
     bash "$SCRIPT" >"$RW_FIX/stdout.txt" 2>"$RW_FIX/stderr.txt"; then
@@ -319,10 +320,10 @@ assert_case 'red R-A: outcome=failed on a PR branch' "$FIX" 2 red
 
 # failed-runs.txt is the R-A provenance: it must name the run holding the
 # diagnostic block, exactly once.
-if [ "$(wc -l <"$FIX/out/failed-runs.txt" | tr -d ' ')" -eq 1 ] && grep -q '^run=1002 .* job=5002 lines=1 failed=1' "$FIX/out/failed-runs.txt"; then
+if [ "$(wc -l <"$FIX/out/failed-runs.txt" | tr -d ' ')" -eq 1 ] && grep -q '^run=1002 .* job=5002 lines=1 failedRecords=1' "$FIX/out/failed-runs.txt"; then
   pass 'red R-A: failed-runs.txt names run 1002 once'
 else
-  fail "red R-A: expected one 'run=1002 ... failed=1' line, got: $(cat "$FIX/out/failed-runs.txt")"
+  fail "red R-A: expected one 'run=1002 ... failedRecords=1' line, got: $(cat "$FIX/out/failed-runs.txt")"
 fi
 
 # ── red R-B: max pre-UP reaches 0.75 x the 10s budget ────────────────────────

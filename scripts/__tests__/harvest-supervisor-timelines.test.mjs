@@ -26,6 +26,7 @@ import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";
 import { REST_JOB_LOG_CAPTURE, REST_LOG_PREFIX } from "./fixtures/load-rest-job-log-capture.mjs";
 import { parseTimelineLine, parseTimelines } from "../supervisor-timeline-summary.mjs";
 import {
+  DEFAULT_RETRY_DELAY_MS,
   DEFAULT_WINDOW_DAYS,
   EXIT_NO_RECORDS,
   EXIT_NO_RUNS,
@@ -38,6 +39,7 @@ import {
   buildRunJobsArgs,
   buildRunListArgs,
   parseCliArgs,
+  resolveDefaultRetryDelayMs,
   runCli,
 } from "../harvest-supervisor-timelines.mjs";
 
@@ -60,8 +62,8 @@ const UP_UP2_RECORD_LINE = `${LOG_PREFIX}${TIMELINE_SAMPLES.UP_UP2_LINE}`;
 // ignored, not parsed as a record (the summarizer's own TAG_PATTERN guard).
 const CODE_FRAME_LINE = `${LOG_PREFIX}  913|       expect(timelineLines[0]).toContain("[supervisor-timeline] case=hidden");`;
 
-// An R-A candidate: the harvester's per-run `failed=<m>` counts records
-// shaped like this one.
+// An R-A candidate: the harvester's per-run `failedRecords=<m>` counts
+// records shaped like this one.
 const FAILED_RECORD_LINE = `${LOG_PREFIX}${TIMELINE_SAMPLES.FAILED_LINE}`;
 
 const JOB_LOG_WITH_RECORD = [
@@ -308,6 +310,39 @@ describe("parseCliArgs", () => {
   });
 });
 
+describe("resolveDefaultRetryDelayMs (#2932)", () => {
+  const ENV_KEY = "HARVEST_RETRY_DELAY_MS";
+  const original = process.env[ENV_KEY];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
+  it("defaults to 2000 ms when the env var is unset, empty, or not a finite non-negative number", () => {
+    delete process.env[ENV_KEY];
+    expect(resolveDefaultRetryDelayMs()).toBe(2000);
+    expect(DEFAULT_RETRY_DELAY_MS).toBe(2000);
+
+    process.env[ENV_KEY] = "";
+    expect(resolveDefaultRetryDelayMs()).toBe(DEFAULT_RETRY_DELAY_MS);
+
+    process.env[ENV_KEY] = "not-a-number";
+    expect(resolveDefaultRetryDelayMs()).toBe(DEFAULT_RETRY_DELAY_MS);
+
+    process.env[ENV_KEY] = "-5";
+    expect(resolveDefaultRetryDelayMs()).toBe(DEFAULT_RETRY_DELAY_MS);
+  });
+
+  it("honors a valid override, which is how the sh unit test avoids two real 2 s sleeps", () => {
+    process.env[ENV_KEY] = "0";
+    expect(resolveDefaultRetryDelayMs()).toBe(0);
+
+    process.env[ENV_KEY] = "150";
+    expect(resolveDefaultRetryDelayMs()).toBe(150);
+  });
+});
+
 describe("runCli", () => {
   it("exit 0: harvests a completed run's health job log and emits round-trippable records", async () => {
     const runs = [makeRun({ databaseId: 1001 })];
@@ -336,7 +371,7 @@ describe("runCli", () => {
     expect(record.outcome).toBe("ok");
 
     expect(s.err()).toMatch(/run=1001 .* job=5001 lines=1/);
-    expect(s.err()).toMatch(/run=1001 .* job=5001 lines=1 failed=0/);
+    expect(s.err()).toMatch(/run=1001 .* job=5001 lines=1 failedRecords=0/);
     expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1/);
 
     const calls = readCalls(dir);
@@ -371,7 +406,7 @@ describe("runCli", () => {
     expect(saved).toBe(JOB_LOG_WITH_RECORD);
   });
 
-  it("manifest's failed=<m> counts parsed records with outcome=failed, an R-A candidate", async () => {
+  it("manifest's failedRecords=<m> counts parsed records with outcome=failed, an R-A candidate", async () => {
     const jobLog = [UP_UP2_RECORD_LINE, FAILED_RECORD_LINE].join("\n");
     const runs = [makeRun({ databaseId: 1009 })];
     const { dir, stubPath } = setupFixtures({
@@ -387,7 +422,7 @@ describe("runCli", () => {
     expect(code).toBe(EXIT_OK);
     // A run-level manifest failure count is untouched by a record-level one:
     // the run itself harvested successfully, it just carries an R-A record.
-    expect(s.err()).toMatch(/run=1009 .* job=5009 lines=2 failed=1/);
+    expect(s.err()).toMatch(/run=1009 .* job=5009 lines=2 failedRecords=1/);
     expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=2/);
   });
 
@@ -405,7 +440,7 @@ describe("runCli", () => {
 
     expect(code).toBe(EXIT_NO_RECORDS);
     expect(s.out()).toBe("");
-    expect(s.err()).toMatch(/run=2001 .* job=6001 lines=0 failed=0/);
+    expect(s.err()).toMatch(/run=2001 .* job=6001 lines=0 failedRecords=0/);
     expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=0/);
   });
 
@@ -448,7 +483,7 @@ describe("runCli", () => {
     const code = await runCli(["--gh", stubPath], s);
 
     expect(code).toBe(EXIT_OK);
-    expect(s.err()).toMatch(/run=2004 .* job=6004 lines=1 failed=1/);
+    expect(s.err()).toMatch(/run=2004 .* job=6004 lines=1 failedRecords=1/);
   });
 
   it("exit 4: an empty run list is a quiet window, distinct from a silent emitter", async () => {
@@ -499,12 +534,47 @@ describe("runCli", () => {
     const code = await runCli(["--gh", stubPath], s);
 
     expect(code).toBe(EXIT_OK);
-    expect(s.err()).toMatch(/run=1011 .* job=5011 lines=1 failed=0/);
+    expect(s.err()).toMatch(/run=1011 .* job=5011 lines=1 failedRecords=0/);
     const calls = readCalls(dir);
     expect(calls.filter((line) => line.startsWith("run list"))).toHaveLength(2);
     expect(
       calls.filter((line) => line === "api repos/{owner}/{repo}/actions/jobs/5011/logs"),
     ).toHaveLength(2);
+  });
+
+  it("wires HARVEST_RETRY_DELAY_MS through to the real retry pause, not just the sink's override (#2932)", async () => {
+    // Every other test pins retryDelayMs via sink() so the pause never
+    // reaches this suite's timeout budget. This one instead drives the
+    // production default-parameter path -- retryDelayMs omitted from the
+    // options bag entirely -- so a regression that stops reading the env
+    // var (e.g. an accidental revert to the bare DEFAULT_RETRY_DELAY_MS
+    // default) would show up as a ~2 s slowdown here, not silently.
+    const runs = [makeRun({ databaseId: 1019 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 1019: [{ id: 5019, name: "health" }] },
+      logsByJobId: { 5019: JOB_LOG_WITH_RECORD },
+      transientlyFailingJobIds: [5019],
+    });
+    process.env.GH_STUB_FIXTURES_DIR = dir;
+    process.env.HARVEST_RETRY_DELAY_MS = "0";
+    try {
+      const s = sink();
+      delete s.retryDelayMs; // force the default-parameter path, not the sink's override
+
+      const started = Date.now();
+      const code = await runCli(["--gh", stubPath], s);
+      const elapsedMs = Date.now() - started;
+
+      expect(code).toBe(EXIT_OK);
+      expect(s.err()).toMatch(/run=1019 .* job=5019 lines=1 failedRecords=0/);
+      // A generous ceiling well under the real 2000 ms default -- this
+      // guards against the env var being ignored, not against ordinary
+      // subprocess jitter.
+      expect(elapsedMs).toBeLessThan(1500);
+    } finally {
+      delete process.env.HARVEST_RETRY_DELAY_MS;
+    }
   });
 
   it("skips a run whose status is not completed, and a completed run with no health job", async () => {
@@ -671,7 +741,7 @@ describe("runCli", () => {
     // rule out. The trimmed capture carries three records.
     const emitted = s.out().trimEnd().split("\n");
     expect(emitted).toHaveLength(3);
-    expect(s.err()).toMatch(/run=1012 .* job=5012 lines=3 failed=0/);
+    expect(s.err()).toMatch(/run=1012 .* job=5012 lines=3 failedRecords=0/);
 
     // Semantically identical to what the summarizer gets from the capture
     // itself -- the acceptance bar is the parsed records, not the raw bytes
@@ -724,7 +794,7 @@ describe("runCli", () => {
 
     const s = sink();
     expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_OK);
-    expect(s.err()).toMatch(/run=1014 .* job=5014 lines=1 failed=0/);
+    expect(s.err()).toMatch(/run=1014 .* job=5014 lines=1 failedRecords=0/);
 
     const calls = readCalls(dir);
     expect(calls).toContain("api repos/{owner}/{repo}/actions/runs/1014/jobs?per_page=100&page=2");
@@ -780,7 +850,7 @@ describe("runCli", () => {
 
     const s = sink();
     expect(await runCli(["--gh", stubPath], s)).toBe(EXIT_OK);
-    expect(s.err()).toMatch(/run=1017 .* job=5017 lines=1 failed=0/);
+    expect(s.err()).toMatch(/run=1017 .* job=5017 lines=1 failedRecords=0/);
   });
 
   it("exit 3: a missing/expired log 404s, and that stays an error= line rather than a crash", async () => {

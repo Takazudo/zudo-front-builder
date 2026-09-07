@@ -31,7 +31,7 @@ import { pathToFileURL } from "node:url";
  *         automated form of "the next occurrence is the experiment"; a
  *         human still classifies an R-A hit from the diagnostic block in
  *         the run's job log (saved in the workflow artifact), and the
- *         harvester manifest's `failed=` field names the run.
+ *         harvester manifest's `failedRecords=` field names the run.
  *
  * `expected-failure` (the `hidden` case's deliberately induced pre-UP
  * timeout) is a distinct outcome from `failed` by construction, precisely so
