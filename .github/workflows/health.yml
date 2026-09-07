@@ -135,27 +135,14 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
-      # Offline shell unit tests (issue #791). tests/unit/install-prerelease.sh
-      # pins install.sh's prerelease tag resolution (jq path + awk fallback +
-      # brace-injection fail-loud, added by #788) but was never executed by any
-      # workflow. Most run in <1s and need only sh/awk/grep/sed, so the step
-      # sits here as a fail-fast gate before any toolchain setup. One exception
-      # (#2918): tests/unit/run-supervisor-watch.sh drives the harvester and
-      # summarizer through `node` against a stub `gh`, takes ~10-25s, and relies
-      # on the runner image's preinstalled node (>= 16.9) because this step runs
-      # before setup-node — a deliberate, documented dependency (#2925). The glob
-      # auto-wires future tests/unit/*.sh files — #791's root cause was a test
-      # that existed but was never wired. bash -n is a pure parse check (bash
-      # parses the POSIX-sh scripts fine) catching syntax errors in the
-      # otherwise untested scripts.
-      - name: Shell script syntax check + offline shell unit tests
+      # Syntax-only fail-fast gate (issue #791), kept before any toolchain
+      # setup. bash -n is a pure parse check (bash parses the POSIX-sh scripts
+      # fine) needing no node/toolchain, catching syntax errors in install.sh,
+      # scripts/*.sh, and tests/unit/*.sh before paying for setup.
+      - name: Shell script syntax check
         run: |
           for f in install.sh scripts/*.sh tests/unit/*.sh; do
             bash -n "$f"
-          done
-          for t in tests/unit/*.sh; do
-            echo "+ sh $t"
-            sh "$t"
           done
 
       # Keep a cleanup fallback before the rust-cache restore + V8 first-compile
@@ -209,6 +196,25 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      # Offline shell unit tests (issue #791). tests/unit/install-prerelease.sh
+      # pins install.sh's prerelease tag resolution (jq path + awk fallback +
+      # brace-injection fail-loud, added by #788) but was never executed by any
+      # workflow. Runs here, after setup-node, because
+      # tests/unit/run-supervisor-watch.sh (#2918) drives the harvester and
+      # summarizer through `node` against a stub `gh` and needs
+      # Object.hasOwn + ESM top-level await — the pinned node-version above,
+      # not whatever node the runner image happens to preinstall (#2929). No
+      # `command -v node` guard: if node is missing, the step must fail
+      # loudly rather than silently skip. The glob auto-wires future
+      # tests/unit/*.sh files — #791's root cause was a test that existed
+      # but was never wired.
+      - name: Run offline shell unit tests
+        run: |
+          for t in tests/unit/*.sh; do
+            echo "+ sh $t"
+            sh "$t"
+          done
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (2026-03-27)
         with:
