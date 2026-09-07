@@ -29,7 +29,8 @@
 # easy to re-run past and forget, and R-A/R-B must see those samples; that
 # population is heterogeneous by design, so every identity field goes to
 # --allow-drift. Pass B covers `main` only under a bare --strict, because that
-# is the one population where a second identity value is a real signal.
+# is the one population where a second identity value is a real signal. Both
+# passes read ONE harvest: pass B is the trunk subset of pass A's saved logs.
 #
 # ACCEPTED COST: a legitimate identity change on `main` — a zudo-doc bump, a
 # fixture edit, a node/runner-image bump, a steering-env change — makes pass B
@@ -37,18 +38,28 @@
 # following Sunday, once the whole window sits on the new value. That is the
 # deliberate trade for noticing an accidental change.
 #
-# NO-DATA IS NEUTRAL, VANISHED TELEMETRY IS RED. Zero enumerated runs is a
-# quiet week (verdict `no-data`, exit 1) and files nothing. Runs that WERE
-# enumerated but produced zero records is red — that is the emitter or the
-# harvester breaking, i.e. exactly the silent no-op #2902 exists to prevent.
+# NO-DATA IS NEUTRAL, VANISHED TELEMETRY IS RED. A week in which nothing was
+# harvestable (no `health` runs, or only runs that were still in progress /
+# went red before the test step) is quiet (verdict `no-data`) and files
+# nothing. A green `health` job whose log carries zero records is red — that
+# is the emitter or the harvester breaking, i.e. exactly the silent no-op
+# #2902 exists to prevent. The harvester keeps the two apart by exit code.
 #
 # ALLOWED-TO-FAIL WITHOUT SWALLOWING THE SIGNAL: no `continue-on-error: true`
 # anywhere. That flag has a sharp edge — a continue-on-error step never marks
 # its job "failed", so a downstream `if: failure()` never fires and the
 # failure this workflow exists to surface is silently dropped. Instead the
-# script step wraps the run in `set +e; ...; rc=$?; set -e`, writes `rc` to
-# `$GITHUB_OUTPUT` and `exit 0`s unconditionally; later steps read that
-# captured `rc` through explicit `if:` conditions. Same pattern as exam.yml.
+# script step wraps the run in `set +e; ...; rc=$?; set -e` and `exit 0`s
+# unconditionally; later steps branch on the `verdict` output the script
+# writes to `$GITHUB_OUTPUT` itself (green / no-data / red). Same shape as
+# exam.yml, but keyed on the verdict token rather than the raw exit code:
+# the script's no-data code is 1, and 1 is also what a `set -e` death inside
+# it exits with, so an rc-keyed condition would read a crashed watch as a
+# quiet week. A verdict that was never written (the script died, or a step
+# before it failed) is null, and GitHub's loose comparison makes
+# `null != 'green'` true and `null == 'green'` false — so a missing verdict
+# files and alerts. (`null != '0'`, the rc form, is FALSE — null and '0'
+# both cast to 0 — which is why the rc form cannot serve as that fallback.)
 #
 # T3, NOT A GATE: schedule + workflow_dispatch only, so it gates no PR, and it
 # is deliberately NOT in ruleset 18452968.
@@ -98,9 +109,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       WATCH_OUT_DIR: supervisor-watch-out
     outputs:
-      rc: ${{ steps.watch.outputs.rc }}
       verdict: ${{ steps.watch.outputs.verdict }}
-      detail: ${{ steps.watch.outputs.detail }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
@@ -118,7 +127,8 @@ jobs:
       # rc is captured explicitly (not via continue-on-error) and the step
       # always exits 0 — see the header comment for why. The script writes
       # `verdict` and `detail` into $GITHUB_OUTPUT itself, and renders
-      # $GITHUB_STEP_SUMMARY, so nothing needs reformatting here.
+      # $GITHUB_STEP_SUMMARY, so nothing needs reformatting here; rc is kept
+      # only for the tracking-issue text.
       - name: Harvest and summarize the supervisor-timeline population
         id: watch
         shell: bash
@@ -142,24 +152,31 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # `always()` is required: a bare `steps.watch.outputs.rc != '0'`
-      # condition implicitly ANDs in `success()` (GitHub Actions' default for
-      # any `if:` that doesn't itself reference always()/failure()/
-      # cancelled()), so a job that failed BEFORE this step — a checkout or
-      # setup-node failure — would file nothing at all. With `always()`, an
-      # infra failure that never reaches the watch step leaves `outputs.rc`
-      # empty, and `'' != '0'` / `'' != '1'` are both true, so the tracking
-      # issue is still filed. rc == '1' (no-data) is deliberately excluded: a
-      # week with zero enumerated runs is not a finding.
+      # `!cancelled()` rather than the bare condition: a bare `if:` implicitly
+      # ANDs in `success()`, so a job that failed BEFORE this step (setup-node)
+      # would file nothing; and rather than `always()`, because `always()`
+      # also runs on a CANCELLED job — a `workflow_dispatch` landing while the
+      # Sunday run is in flight (`cancel-in-progress`), a manual cancel, or
+      # the job timeout — and would file an issue with no verdict behind it.
+      # Missing verdict (setup-node failed, or the script died) still files:
+      # `null != 'green'` is true. If checkout itself failed this step cannot
+      # run the script and fails too; the notify job below still alerts.
+      # `no-data` is deliberately excluded: a quiet week is not a finding.
       - name: File or comment on tracking issue
-        if: always() && steps.watch.outputs.rc != '0' && steps.watch.outputs.rc != '1'
+        if: >-
+          !cancelled()
+          && steps.watch.outputs.verdict != 'green'
+          && steps.watch.outputs.verdict != 'no-data'
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          LEG: "supervisor watch (verdict=${{ steps.watch.outputs.verdict }} ${{ steps.watch.outputs.detail }}; failed runs and summaries in the run's job summary + supervisor-watch artifact)"
+          LEG: "supervisor watch (verdict=${{ steps.watch.outputs.verdict }} rc=${{ steps.watch.outputs.rc }} ${{ steps.watch.outputs.detail }}; failed runs and summaries in the run's job summary + supervisor-watch artifact)"
         run: bash scripts/file-exam-issue.sh "Supervisor watch"
 
+      # `!cancelled()` so an artifact-upload failure after a green watch still
+      # closes the open tracking issue; the job going red for that reason is
+      # what the notify job reports.
       - name: Close tracking issue (green)
-        if: steps.watch.outputs.rc == '0'
+        if: ${{ !cancelled() && steps.watch.outputs.verdict == 'green' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/file-exam-issue.sh "Supervisor watch" --green
@@ -168,8 +185,9 @@ jobs:
     # Alerting guard: a red watch otherwise sits unseen in the Actions tab —
     # nobody watches a scheduled run the way a release is watched live. Same
     # IFTTT pattern as release.yml's / exam.yml's / drift-net.yml's `notify`
-    # job (issue #1335), keyed on `outputs.rc` rather than `needs.*.result`
-    # because the watch job is green by design (see header).
+    # job (issue #1335), keyed on the `verdict` output rather than
+    # `needs.*.result` alone because the watch job is green by design (see
+    # header).
     name: Notify via IFTTT on failure
     needs: [watch]
     if: always()
@@ -178,22 +196,21 @@ jobs:
     env:
       IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
     steps:
-      # The rc condition mirrors the filing step's rather than testing
-      # `== '2'`: an infra failure that never reaches the script leaves rc
-      # empty, which files a tracking issue and so must alert too. rc '0'
-      # (green) and '1' (no-data) are the only quiet outcomes.
-      #
-      # A cancelled/skipped watch job ALSO leaves rc empty, but files no
-      # tracking issue (its filing step lives inside that job and never ran),
-      # so alerting on it would manufacture a notification out of someone
-      # cancelling a manual dispatch. Exclude those two results explicitly.
+      # Quiet only when the job succeeded AND the verdict is green or
+      # no-data. Everything else alerts: a red verdict, a verdict that was
+      # never written (infra failure before or inside the script), a job that
+      # went red after a green watch (artifact upload), and a cancelled job.
+      # Cancelled is included on purpose: a `timeout-minutes` expiry is
+      # reported as `cancelled` too, and a harvester hung on the API past 15
+      # minutes is the one failure this lane must never swallow — the cost is
+      # a ping when someone cancels a manual dispatch by hand. A skipped job
+      # (nothing ran at all) stays silent.
       - name: Notify via IFTTT on failure
         if: >-
           env.IFTTT_PROD_NOTIFY != ''
-          && needs.watch.result != 'cancelled'
           && needs.watch.result != 'skipped'
-          && needs.watch.outputs.rc != '0'
-          && needs.watch.outputs.rc != '1'
+          && !(needs.watch.result == 'success'
+               && (needs.watch.outputs.verdict == 'green' || needs.watch.outputs.verdict == 'no-data'))
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

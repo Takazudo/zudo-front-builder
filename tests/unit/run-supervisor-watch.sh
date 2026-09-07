@@ -18,7 +18,8 @@
 # scripts/__tests__/harvest-supervisor-timelines.test.mjs (LOG_PREFIX), not
 # hand-invented.
 #
-# Requires: sh, bash, node, jq, mktemp, grep, tail.
+# Requires: sh, bash, node, mktemp, grep, tail, wc. Unlike its siblings this
+# is not sub-second: every case spawns the real harvester and summarizer.
 #
 # Run:
 #   sh tests/unit/run-supervisor-watch.sh
@@ -54,11 +55,11 @@ trap 'rm -rf "$TMPROOT"' EXIT
 
 # ── Stub `gh` ────────────────────────────────────────────────────────────────
 #
-# Dispatches on argv exactly like the real thing: `run list` (honouring
-# --branch by filtering headBranch, so pass B really is a narrower
-# population), `run view <id> --json jobs`, `run view --job <id> --log`.
-# Fixture data comes from files under $WATCH_TEST_FIXTURES_DIR, inherited from
-# the environment the same way a real `gh` would inherit it.
+# Dispatches on argv exactly like the real thing: `run list`, `run view <id>
+# --json jobs`, `run view --job <id> --log`. Fixture data comes from files
+# under $WATCH_TEST_FIXTURES_DIR, inherited from the environment the same way
+# a real `gh` would inherit it. The watch never passes --branch (pass B is
+# derived from pass A's saved logs), so the stub does not filter on it.
 STUB="$TMPROOT/gh-stub.sh"
 cat >"$STUB" <<'GH_STUB'
 #!/bin/sh
@@ -71,16 +72,7 @@ if [ "$1" = "run" ] && [ "$2" = "list" ]; then
     echo "gh-stub: simulated run list failure" >&2
     exit 1
   fi
-  branch=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--branch" ]; then branch="${2:-}"; fi
-    shift
-  done
-  if [ -n "$branch" ]; then
-    jq --arg b "$branch" '[.[] | select(.headBranch == $b)]' "$FIXDIR/run-list.json"
-  else
-    cat "$FIXDIR/run-list.json"
-  fi
+  cat "$FIXDIR/run-list.json"
   exit 0
 fi
 
@@ -136,16 +128,19 @@ job_log_no_records() {
   printf 'PASS some-other.test.mjs\n'
 }
 
-# run_json <databaseId> <headBranch>
+# run_json <databaseId> <headBranch> [status]
 run_json() {
-  printf '{"databaseId":%s,"headBranch":"%s","headSha":"0123456789abcdef0123456789abcdef01234567","conclusion":"success","status":"completed","createdAt":"2026-09-07T00:00:00Z","event":"push","attempt":1}' \
-    "$1" "$2"
+  printf '{"databaseId":%s,"headBranch":"%s","headSha":"0123456789abcdef0123456789abcdef01234567","conclusion":"success","status":"%s","createdAt":"2026-09-07T00:00:00Z","event":"push","attempt":1}' \
+    "$1" "$2" "${3:-completed}"
 }
 
-# jobs_json <jobId> — the run's job list, with a `health` job that started
-# (a non-empty `steps` array is what tells the harvester it has a log).
+# jobs_json <jobId> [conclusion] — the run's job list, with a `health` job
+# that started (a non-empty `steps` array is what tells the harvester it has
+# a log). The conclusion decides whether a record-less log means the emitter
+# went silent (`success`) or the job went red before the test step.
 jobs_json() {
-  printf '{"jobs":[{"name":"health","databaseId":%s,"conclusion":"success","steps":[{"name":"Set up job"}]}]}' "$1"
+  printf '{"jobs":[{"name":"health","databaseId":%s,"conclusion":"%s","steps":[{"name":"Set up job"}]}]}' \
+    "$1" "${2:-success}"
 }
 
 # new_fixture_dir <case-name> — fresh fixture + output tree per case.
@@ -206,6 +201,15 @@ assert_case() {
   fi
 }
 
+# assert_detail <desc> <fixture-dir> <expected-detail>
+assert_detail() {
+  if grep -q "^detail=$3\$" "$2/gh-output.txt"; then
+    pass "$1: detail=$3"
+  else
+    fail "$1: want detail=$3, got: $(grep '^detail=' "$2/gh-output.txt")"
+  fi
+}
+
 # ── green: two runs, one on main and one on a PR branch, identical identity ──
 
 FIX=$(new_fixture_dir green)
@@ -224,11 +228,12 @@ fi
 
 # The workflow reads verdict/detail straight out of $GITHUB_OUTPUT and renders
 # $GITHUB_STEP_SUMMARY, so both handoffs are asserted rather than assumed.
-if grep -q '^verdict=green$' "$FIX/gh-output.txt" && grep -q '^detail=all=ok:0/0 main=ok:0/0$' "$FIX/gh-output.txt"; then
-  pass 'green: $GITHUB_OUTPUT carries verdict and detail'
+if grep -q '^verdict=green$' "$FIX/gh-output.txt"; then
+  pass 'green: $GITHUB_OUTPUT carries the verdict'
 else
   fail "green: unexpected \$GITHUB_OUTPUT: $(cat "$FIX/gh-output.txt")"
 fi
+assert_detail green "$FIX" 'all=ok:0/0 main=ok:1/0'
 
 if grep -q '^## Supervisor watch — green$' "$FIX/gh-step-summary.md"; then
   pass 'green: $GITHUB_STEP_SUMMARY carries the verdict heading'
@@ -236,12 +241,34 @@ else
   fail "green: \$GITHUB_STEP_SUMMARY missing the verdict heading"
 fi
 
-# Pass A's --save-dir is the artifact an R-A triage actually reads; a
-# regression that dropped the flag would still go green, so assert it.
+# Pass A's --save-dir is the artifact an R-A triage actually reads AND pass
+# B's input; a regression that dropped the flag would still go green, so
+# assert it.
 if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ] && [ -f "$FIX/out/job-logs/run-1002-job-5002.log" ]; then
   pass 'green: pass A saved both health job logs under job-logs/'
 else
   fail "green: expected saved job logs, got: $(ls "$FIX/out/job-logs" 2>&1 | tr '\n' ' ')"
+fi
+
+# Pass B is the trunk subset of that harvest, selected by the manifest's
+# branch token — one run here, never the PR run.
+if [ "$(wc -l <"$FIX/out/main/runs.txt" | tr -d ' ')" -eq 1 ] && grep -q '^run=1001 ' "$FIX/out/main/runs.txt"; then
+  pass 'green: pass B selected exactly the main run'
+else
+  fail "green: expected main/runs.txt to name run 1001 only, got: $(cat "$FIX/out/main/runs.txt")"
+fi
+
+# No second network harvest: each job log is fetched exactly once.
+if [ "$(grep -c 'run view --job 5001 --log' "$FIX/calls.log")" -eq 1 ]; then
+  pass 'green: the main job log was fetched once, not once per pass'
+else
+  fail "green: expected one fetch of job 5001, got: $(grep -c 'run view --job 5001 --log' "$FIX/calls.log")"
+fi
+
+if grep -q '^window: since=' "$FIX/out/harvest-notices.txt"; then
+  pass 'green: harvest-notices.txt carries the effective window'
+else
+  fail "green: expected a window: line in harvest-notices.txt, got: $(cat "$FIX/out/harvest-notices.txt")"
 fi
 
 # ── no-data: zero enumerated runs is neutral, not red ────────────────────────
@@ -249,6 +276,27 @@ fi
 FIX=$(new_fixture_dir no-data)
 printf '[]' >"$FIX/run-list.json"
 assert_case 'no-data: gh run list returns no runs' "$FIX" 1 no-data
+assert_detail no-data "$FIX" 'all=empty:4/1 main=empty:0/-'
+
+# ── no-data: every enumerated run skipped (still in progress at cron time) ───
+
+FIX=$(new_fixture_dir no-data-skipped)
+printf '[%s]' "$(run_json 1001 main in_progress)" >"$FIX/run-list.json"
+assert_case 'no-data: the only run is still in progress' "$FIX" 1 no-data
+
+# ── green: main went red before the test step, a PR run is healthy ───────────
+#
+# A record-less log from a failed health job is not vanished telemetry; the
+# harvester skips it, so pass B has nothing to judge and stays `empty`.
+
+FIX=$(new_fixture_dir main-red-before-tests)
+printf '[%s,%s]' "$(run_json 1001 main)" "$(run_json 1002 feat/x)" >"$FIX/run-list.json"
+jobs_json 5001 failure >"$FIX/jobs-1001.json"
+jobs_json 5002 >"$FIX/jobs-1002.json"
+job_log_no_records >"$FIX/job-5001.log"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5002.log"
+assert_case 'green: main health red before the test step, PR healthy' "$FIX" 0 green
+assert_detail 'green (main red before tests)' "$FIX" 'all=ok:0/0 main=empty:0/-'
 
 # ── red R-A: an outcome=failed record anywhere, including a PR branch ────────
 
@@ -260,15 +308,12 @@ job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
 job_log failed 430 540 "$ENV_A" >"$FIX/job-5002.log"
 assert_case 'red R-A: outcome=failed on a PR branch' "$FIX" 2 red
 
-# failed-runs.txt is asserted for existence only: pointing it at the specific
-# run needs the per-run `failed=<m>` manifest count a sibling sub-issue is
-# adding to the harvester. Today's harvester only emits a `failed=` count on
-# its final summary line (a PARTIAL harvest), which the partial-harvest case
-# below exercises.
-if [ -f "$FIX/out/failed-runs.txt" ]; then
-  pass 'red R-A: failed-runs.txt written'
+# failed-runs.txt is the R-A provenance: it must name the run holding the
+# diagnostic block, exactly once.
+if [ "$(wc -l <"$FIX/out/failed-runs.txt" | tr -d ' ')" -eq 1 ] && grep -q '^run=1002 .* job=5002 lines=1 failed=1' "$FIX/out/failed-runs.txt"; then
+  pass 'red R-A: failed-runs.txt names run 1002 once'
 else
-  fail 'red R-A: expected out/failed-runs.txt'
+  fail "red R-A: expected one 'run=1002 ... failed=1' line, got: $(cat "$FIX/out/failed-runs.txt")"
 fi
 
 # ── red R-B: max pre-UP reaches 0.75 x the 10s budget ────────────────────────
@@ -285,14 +330,18 @@ FIX=$(new_fixture_dir red-infra)
 printf '[%s]' "$(run_json 1001 main)" >"$FIX/run-list.json"
 : >"$FIX/run-list.fail"
 assert_case 'red infra: gh run list fails' "$FIX" 2 red
+assert_detail 'red infra' "$FIX" 'all=red:64/1 main=empty:0/-'
 
-# ── red telemetry-vanished: runs enumerated, zero records ────────────────────
+# ── red telemetry-vanished: a green health job with zero records ─────────────
 
 FIX=$(new_fixture_dir red-vanished)
 printf '[%s]' "$(run_json 1001 main)" >"$FIX/run-list.json"
 jobs_json 5001 >"$FIX/jobs-1001.json"
 job_log_no_records >"$FIX/job-5001.log"
-assert_case 'red telemetry-vanished: runs>0 but no records' "$FIX" 2 red
+assert_case 'red telemetry-vanished: green health job, no records' "$FIX" 2 red
+# The record-less green run IS harvested (that is the finding), so pass B
+# sees it too and reports the same silence on main.
+assert_detail 'red telemetry-vanished' "$FIX" 'all=red:1/1 main=red:1/1'
 
 # ── red partial harvest: a job log that cannot be fetched ────────────────────
 
@@ -304,10 +353,12 @@ job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
 : >"$FIX/job-5002.fail"
 assert_case 'red partial: one job log unfetchable (harvester exit 3)' "$FIX" 2 red
 
-if grep -q 'failed=1' "$FIX/out/failed-runs.txt"; then
-  pass 'red partial: failed-runs.txt captured the failed= manifest line'
+# A fetch failure is a harvest problem, not an R-A record: it belongs in
+# harvest-errors.txt and must not masquerade as a failed supervisor run.
+if [ ! -s "$FIX/out/failed-runs.txt" ] && grep -q '^run=1002 .* error=' "$FIX/out/harvest-errors.txt"; then
+  pass 'red partial: the unfetchable run is in harvest-errors.txt, not failed-runs.txt'
 else
-  fail "red partial: expected a failed= line, got: $(cat "$FIX/out/failed-runs.txt")"
+  fail "red partial: failed-runs=$(cat "$FIX/out/failed-runs.txt") harvest-errors=$(cat "$FIX/out/harvest-errors.txt")"
 fi
 
 # ── identity drift confined to a PR branch is green ──────────────────────────
@@ -332,6 +383,7 @@ jobs_json 5003 >"$FIX/jobs-1003.json"
 job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
 job_log ok 430 540 "$ENV_B" >"$FIX/job-5003.log"
 assert_case 'red: env drift between two main runs' "$FIX" 2 red
+assert_detail 'red (drift on main)' "$FIX" 'all=ok:0/0 main=red:2/2'
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then exit 1; fi

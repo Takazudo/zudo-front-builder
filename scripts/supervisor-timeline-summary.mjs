@@ -44,23 +44,23 @@ import { pathToFileURL } from "node:url";
  *
  * `--allow-drift <field>[,<field>]` (#2908) lists identity fields whose drift
  * is still reported but never trips `--strict`. It is a general escape
- * hatch for a *deliberately* mixed population: harvesting across the
- * identity-contract epoch `2026-09-08T00:00:00Z` (records from before it
- * carry the pre-epoch full-environment `env` digest), an intentional A/B,
- * or the weekly watch's all-branch pass (that population is heterogeneous
- * by design, so it allow-lists every identity field and judges identity
- * drift on `main` only — see the R-C bullet above). `env` is now a
- * **steering-only** digest over `STEERING_ENV_KEYS` from
- * `scripts/supervisor-env-identity.mjs` (7 keys): it no longer hashes
- * GitHub's per-run variables, so the documented harvester-to-summarizer
- * pipeline no longer passes `--allow-drift env`, and it changes exactly
- * when a steering input changes (a node patch bump via
- * `npm_config_user_agent`, a runner-image `PNPM_HOME` / `TMPDIR`, or
- * `NODE_OPTIONS`) — legitimate drift that `--strict` is meant to catch
- * (#2913). Field names are validated against `IDENTITY_FIELDS`; an unknown
- * name or an empty list is a usage error (64), not a silently-ignored
- * no-op, and a repeated flag accumulates rather than replacing the earlier
- * list. The drift report still prints allow-listed fields, marked as such.
+ * hatch for a *deliberately* mixed population: an intentional A/B, the
+ * weekly watch's all-branch pass (heterogeneous by design, so it allow-lists
+ * every `IDENTITY_FIELDS` entry and judges identity drift on `main` only —
+ * see the R-C bullet above), or a population straddling the `env` contract
+ * change of #2913. `env` is the **steering-only** digest from
+ * `scripts/supervisor-env-identity.mjs` (see its header for the contract):
+ * it no longer hashes GitHub's per-run variables, so the documented
+ * harvester-to-summarizer pipeline no longer passes `--allow-drift env`.
+ * Which digest a record carries depends on whether the emitting commit
+ * contains that change, not on the record's date — so during the
+ * transition, harvest `--branch main` or pass `--allow-drift env`; the
+ * harvester's `IDENTITY_CONTRACT_EPOCH` floor on its default window is a
+ * planning-time convenience, not the boundary. Field names are validated
+ * against `IDENTITY_FIELDS`; an unknown name or an empty list is a usage
+ * error (64), not a silently-ignored no-op, and a repeated flag accumulates
+ * rather than replacing the earlier list. The drift report still prints
+ * allow-listed fields, marked as such.
  */
 
 // Not anchored to line-start: `pnpm -r`'s parallel reporter prefixes every
