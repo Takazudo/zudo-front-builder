@@ -532,9 +532,23 @@ jobs:
   close-tracking-issue-if-green:
     # Centralized here (rather than in either test job) because closing
     # requires knowing BOTH legs passed — a single job can't see the other
-    # job's outcome. Reads `outputs.rc`, not `needs.*.result`: both test jobs
-    # are green by design (see header), so `.result` is always "success" and
-    # cannot distinguish a passing exam from a failing one.
+    # job's outcome. It takes BOTH `needs.*.result` and `needs.*.outputs.rc`
+    # to know that, and neither alone is enough (issue #2928):
+    #   - `.result` alone can't tell a passing exam from a failing one. Both
+    #     test jobs are green by design (see header), so a completed leg
+    #     always reports "success" whatever the tests did.
+    #   - `outputs.rc` alone can't tell a passing leg from a leg that DIED
+    #     before writing rc. An unset output compares EQUAL to '0' — measured
+    #     in run 34105846729, case A — so this step used to run and close the
+    #     tracking issue as green on an infra failure, erasing a standing
+    #     alert. That is the same defect as the filing steps above, mirrored:
+    #     there absence read as "nothing to report", here as "both legs
+    #     passed".
+    # Together they do distinguish the cases: `.result == 'success'` means the
+    # leg ran to completion (so its rc WAS written, since the test step is
+    # unconditional), and `rc == '0'` then means it reported green. A leg that
+    # died reports a non-success result and no longer closes anything — a
+    # result that cannot tell "never ran" apart from "passed" is not a proof.
     name: Close exam tracking issue if both legs are green
     needs: [quarantine-heavy, macos-exam]
     if: always()
@@ -549,7 +563,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Close tracking issue (both legs green)
-        if: ${{ needs.quarantine-heavy.outputs.rc == '0' && needs.macos-exam.outputs.rc == '0' }}
+        if: ${{ needs.quarantine-heavy.result == 'success' && needs.macos-exam.result == 'success' && needs.quarantine-heavy.outputs.rc == '0' && needs.macos-exam.outputs.rc == '0' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/file-exam-issue.sh "exam" --green
