@@ -344,6 +344,7 @@ describe("parseCliArgs", () => {
     expect(options.budgetMs).toBe(DEFAULT_BUDGET_MS);
     expect(options.threshold).toBe(DEFAULT_THRESHOLD);
     expect(options.strict).toBe(false);
+    expect(options.allowDrift).toEqual([]);
     expect(options.files).toEqual([]);
   });
 
@@ -356,6 +357,8 @@ describe("parseCliArgs", () => {
       "--threshold",
       "0.5",
       "--strict",
+      "--allow-drift",
+      "env,runner",
       "a.log",
       "b.log",
     ]);
@@ -364,8 +367,33 @@ describe("parseCliArgs", () => {
       budgetMs: 5000,
       threshold: 0.5,
       strict: true,
+      allowDrift: ["env", "runner"],
       files: ["a.log", "b.log"],
     });
+  });
+
+  it("throws when --allow-drift is missing its value", () => {
+    expect(() => parseCliArgs(["--allow-drift"])).toThrow(/--allow-drift requires a value/);
+  });
+
+  it("throws on an unknown --allow-drift field", () => {
+    expect(() => parseCliArgs(["--allow-drift", "bogus"])).toThrow(
+      /unknown field for --allow-drift: "bogus"/,
+    );
+  });
+
+  it("throws when --allow-drift is given an empty or comma-only list", () => {
+    expect(() => parseCliArgs(["--allow-drift", ""])).toThrow(
+      /--allow-drift requires at least one field name/,
+    );
+    expect(() => parseCliArgs(["--allow-drift", ","])).toThrow(
+      /--allow-drift requires at least one field name/,
+    );
+  });
+
+  it("accumulates a repeated --allow-drift instead of replacing the earlier list", () => {
+    const options = parseCliArgs(["--allow-drift", "env", "--allow-drift", "runner,env"]);
+    expect(options.allowDrift).toEqual(["env", "runner"]);
   });
 
   it("throws on an unknown flag", () => {
@@ -475,6 +503,41 @@ describe("runCli exit-code precedence (locked in #2902/#2903)", () => {
       stdin: UP_BOOM_LINE, // first-up-line=430 >= 0.5 * 500 = 250
     });
     expect(code).toBe(EXIT_STRICT);
+  });
+
+  it("step 4: --allow-drift suppresses --strict for the listed field, but the drift is still printed", async () => {
+    const drifted = upBoomLine({ env: "sha256:mutated-env" });
+    const s = sink();
+    const code = await runCli(["--strict", "--allow-drift", "env"], {
+      ...s,
+      stdin: [UP_BOOM_LINE, drifted].join("\n"),
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(s.out()).toMatch(/INPUT DRIFT DETECTED/);
+    expect(s.out()).toMatch(
+      /env: sha256:ed62f5285936a0ca, sha256:mutated-env \(allowed by --allow-drift\)/,
+    );
+    expect(s.out()).toMatch(/Every drifted field is allow-listed/);
+  });
+
+  it("step 4: --allow-drift on one field does not cover drift on another -> 2", async () => {
+    const drifted = upBoomLine({ env: "sha256:mutated-env", runner: "npm" });
+    const s = sink();
+    const code = await runCli(["--strict", "--allow-drift", "env"], {
+      ...s,
+      stdin: [UP_BOOM_LINE, drifted].join("\n"),
+    });
+    expect(code).toBe(EXIT_STRICT);
+    expect(s.out()).toMatch(/env: .* \(allowed by --allow-drift\)/);
+    expect(s.out()).toMatch(/runner: pnpm, npm\n/);
+    expect(s.out()).not.toMatch(/Every drifted field is allow-listed/);
+  });
+
+  it("step 1: usage/malformed -> 64, an unknown --allow-drift field", async () => {
+    const s = sink();
+    const code = await runCli(["--allow-drift", "bogus"], { ...s, stdin: UP_BOOM_LINE });
+    expect(code).toBe(EXIT_USAGE);
+    expect(s.err()).toMatch(/unknown field for --allow-drift: "bogus"/);
   });
 
   it("step 4 does not fire without --strict, even with drift and an R-B trip present", async () => {
