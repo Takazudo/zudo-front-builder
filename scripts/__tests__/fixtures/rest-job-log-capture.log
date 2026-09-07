@@ -1,0 +1,37 @@
+﻿2026-09-07T06:54:32.5908674Z Current runner version: '2.337.0'
+2026-09-07T06:54:32.5935534Z ##[group]Runner Image Provisioner
+2026-09-07T06:54:32.5936991Z Hosted Compute Agent
+2026-09-07T06:54:32.5937607Z Version: 20260828.587
+2026-09-07T06:54:32.5938436Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+2026-09-07T06:54:32.5939195Z Build Date: 2026-08-28T16:44:25Z
+2026-09-07T06:54:32.5939932Z Worker ID: {0b082e2f-8b06-44e1-a1b6-a455ad08b0aa}
+2026-09-07T06:54:32.5940721Z Azure Region: eastus2
+2026-09-07T06:56:09.5992907Z docs test: [2m   Duration [22m 2.46s[2m (transform 937ms, setup 0ms, collect 1.91s, tests 141ms, environment 1ms, prepare 1.28s)[22m
+2026-09-07T06:56:09.6116889Z . test:  [32m✓[39m scripts/__tests__/harvest-supervisor-timelines.test.mjs [2m([22m[2m27 tests[22m[2m)[22m[33m 1100[2mms[22m[39m
+2026-09-07T06:56:09.6645698Z packages/zfb-adapter-cloudflare test: Done
+2026-09-07T06:56:09.6657404Z docs test: Done
+2026-09-07T06:56:09.6802827Z . test:  [32m✓[39m scripts/__tests__/supervisor-timeline-summary.test.mjs [2m([22m[2m63 tests[22m[2m)[22m[90m 40[2mms[22m[39m
+2026-09-07T06:56:10.0343696Z . test: [supervisor-timeline] case=up+boom outcome=ok total=1577 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:1bf479c24e955c24 supervisor-spawned=5 first-stderr-byte=1383 first-stdout-byte=1450 first-up-line=1450 marker-file-created=1466 supervisor-error-line=1525 supervisor-closed=1577 sibling-death=1577
+2026-09-07T06:56:10.0731740Z . test:  [32m✓[39m scripts/__tests__/assert-md-wasm-size-docs.test.mjs [2m([22m[2m46 tests[22m[2m)[22m[90m 53[2mms[22m[39m
+2026-09-07T06:56:10.5464003Z . test:  [32m✓[39m scripts/__tests__/assert-zfb-md-wasm-budgets.test.mjs [2m([22m[2m17 tests[22m[2m)[22m[90m 93[2mms[22m[39m
+2026-09-07T06:56:10.6128740Z . test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-fGGEQD/v1.0.0.mdx: invalid sidebar_position (missing field)
+2026-09-07T06:56:10.6658523Z . test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-NGlwOJ/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "not-a-number")
+2026-09-07T06:56:10.7213363Z . test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-mDDSu8/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "2.5")
+2026-09-07T06:56:10.7756841Z . test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-1KjGde/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "0")
+2026-09-07T06:56:10.8025160Z . test: [supervisor-timeline] case=up+up2 outcome=ok total=764 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:1bf479c24e955c24 supervisor-spawned=2 first-stderr-byte=625 first-stdout-byte=684 first-up-line=684 marker-file-created=713 supervisor-error-line=751 supervisor-closed=764 sibling-death=764
+2026-09-07T06:56:10.8254000Z . test: next-changelog-sidebar-position: /tmp/zfb-changelog-position-FIyt8X/v1.0.0.mdx: invalid sidebar_position (expected a positive integer, got "-1")
+2026-09-07T06:56:10.8370908Z . test:  [32m✓[39m scripts/__tests__/changelog-layout.test.mjs [2m([22m[2m21 tests[22m[2m)[22m[33m 870[2mms[22m[39m
+2026-09-07T06:56:10.8986642Z . test:  [32m✓[39m scripts/__tests__/retire-next-dist-tag.test.mjs [2m([22m[2m27 tests[22m[2m)[22m[90m 19[2mms[22m[39m
+2026-09-07T06:56:11.1569202Z . test:  [32m✓[39m scripts/__tests__/check-provenance-drift.test.mjs [2m([22m[2m21 tests[22m[2m)[22m[90m 18[2mms[22m[39m
+2026-09-07T06:56:11.2123704Z . test:  [32m✓[39m scripts/__tests__/nextest-heavy-binary-drift.test.mjs [2m([22m[2m10 tests[22m[2m)[22m[90m 19[2mms[22m[39m
+2026-09-07T06:56:11.4313720Z . test:  [32m✓[39m scripts/__tests__/showcase-inject-banner.test.mjs [2m([22m[2m7 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+2026-09-07T06:56:11.4754025Z . test:  [32m✓[39m scripts/__tests__/workspace-test-contract.test.mjs [2m([22m[2m4 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+2026-09-07T06:56:11.6361041Z . test: [supervisor-timeline] case=hidden outcome=expected-failure total=832 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:1bf479c24e955c24 supervisor-spawned=3 first-stderr-byte=528 hidden-pid-file=575
+2026-09-07T06:56:11.6438430Z . test:  [32m✓[39m scripts/__tests__/showcase-workflow-tools.test.mjs [2m([22m[2m4 tests[22m[2m)[22m[90m 4[2mms[22m[39m
+2026-09-07T06:56:11.7058993Z . test:  [32m✓[39m scripts/__tests__/docs-dev-supervisor.test.mjs [2m([22m[2m5 tests[22m[2m)[22m[33m 3257[2mms[22m[39m
+2026-09-07T06:56:11.7062021Z . test:    [33m[2m✓[22m[39m docs dev supervisor[2m > [22msupervisor process behaviour[2m > [22maborts every sibling when a task exits non-zero [33m1583[2mms[22m[39m
+2026-09-07T06:56:11.7083137Z . test:    [33m[2m✓[22m[39m docs dev supervisor[2m > [22msupervisor process behaviour[2m > [22mforwards a supervisor-only SIGINT to the whole process tree [33m767[2mms[22m[39m
+2026-09-07T06:56:11.7085053Z . test:    [33m[2m✓[22m[39m docs dev supervisor[2m > [22msupervisor process behaviour[2m > [22mreaps the whole descendant tree when cleanup runs before any UP line [33m865[2mms[22m[39m
+2026-09-07T06:56:11.7257289Z . test:  [32m✓[39m scripts/__tests__/supervisor-env-identity.test.mjs [2m([22m[2m7 tests[22m[2m)[22m[90m 11[2mms[22m[39m
+2026-09-07T06:56:11.9052249Z . test:  [32m✓[39m scripts/__tests__/check-wrangler-pin.test.mjs [2m([22m[2m3 tests[22m[2m)[22m[90m 7[2mms[22m[39m
+2026-09-07T06:56:11.9157805Z . test: [2m Test Files [22m [1m[32m15 passed[39m[22m[90m (15)[39m

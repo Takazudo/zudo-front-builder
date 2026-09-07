@@ -1,0 +1,42 @@
+# scripts/__tests__/fixtures/supervisor-timeline-samples.txt
+#
+# Canonical [supervisor-timeline] record samples shared by every supervisor
+# test harness (issue #2930): scripts/__tests__/supervisor-timeline-summary.test.mjs,
+# scripts/__tests__/harvest-supervisor-timelines.test.mjs, and
+# tests/unit/run-supervisor-watch.sh.
+#
+# Format: one NAME=value pair per line. Blank lines and lines starting with
+# "#" are ignored. The value is the raw record starting at
+# "[supervisor-timeline]", with no job-log envelope around it -- a consumer
+# that needs the "<job>\t<step>\t<timestamp> " gh --log prefix or the
+# "pnpm -r"-style ". test: " reporter prefix (both are GitHub's/pnpm's
+# contract, not zfb's, per #2930's addendum) adds it itself.
+#
+# Values here are real captured samples from the epic (#2902) / sub-issue
+# (#2903) bodies, hand-authored against zfb's own emitter contract -- see
+# docs-dev-supervisor.test.mjs's timelineLine(). Do not hand-edit a value's
+# field shape without checking the emitter-compatibility assertion in
+# supervisor-timeline-summary.test.mjs ("emitter compatibility" describe
+# block): it fails loudly if a sample's shape no longer matches what the
+# real emitter produces, so it is the guard against silent drift between
+# this corpus and the emitter it is supposed to represent.
+#
+# The env= token is versioned (#2933): `v<N>:sha256:<16 hex>`, where N is
+# supervisor-env-identity.mjs's ENV_IDENTITY_VERSION. The digests below are
+# the captured ones with the `v1:` prefix added when the token was versioned
+# (the bytes behind the prefix did not change). A sample named UNVERSIONED_*
+# is the pre-#2933 wire form kept verbatim -- an already-emitted record the
+# parser must still accept, as implicit v1 -- and is the only kind allowed
+# to carry a bare `sha256:` token; the emitter-compatibility block asserts
+# both halves of that rule.
+#
+# Consumers needing varied per-scenario values (e.g. the sh harness's
+# multiple case/outcome/timing combinations) build their own lines with a
+# local helper instead of adding more named entries here -- see #2930's
+# scope note: one canonical corpus, not one construction site.
+
+UP_BOOM_LINE=[supervisor-timeline] case=up+boom outcome=ok total=540 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=v1:sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=354 first-up-line=430 marker-file-created=437 first-stderr-byte=505 supervisor-error-line=505 supervisor-closed=540 sibling-death=540
+UP_UP2_LINE=[supervisor-timeline] case=up+up2 outcome=ok total=357 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=v1:sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=233 first-up-line=292 marker-file-created=293 first-stderr-byte=343 supervisor-error-line=343 supervisor-closed=356 sibling-death=357
+HIDDEN_LINE=[supervisor-timeline] case=hidden outcome=expected-failure total=512 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=v1:sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=184 hidden-pid-file=236
+FAILED_LINE=[supervisor-timeline] case=up+boom outcome=failed total=10041 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=v1:sha256:ed62f5285936a0ca first-stdout-byte=233
+UNVERSIONED_UP_BOOM_LINE=[supervisor-timeline] case=up+boom outcome=ok total=540 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=354 first-up-line=430 marker-file-created=437 first-stderr-byte=505 supervisor-error-line=505 supervisor-closed=540 sibling-death=540

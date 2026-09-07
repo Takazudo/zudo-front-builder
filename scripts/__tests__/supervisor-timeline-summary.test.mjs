@@ -12,6 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";
+import {
+  ENV_IDENTITY_VERSION,
+  STEERING_ENV_KEYS,
+  steeringEnvIdentity,
+} from "../supervisor-env-identity.mjs";
 import {
   DEFAULT_BUDGET_MS,
   DEFAULT_CASE,
@@ -21,7 +27,9 @@ import {
   EXIT_STRICT,
   EXIT_USAGE,
   IDENTITY_FIELDS,
+  analyzeCase,
   distributionStats,
+  envVersionCohorts,
   evaluateRB,
   identityDrift,
   outcomeCounts,
@@ -33,13 +41,15 @@ import {
   summarizeCase,
 } from "../supervisor-timeline-summary.mjs";
 
-// Real captured samples from the epic (#2902) / sub-issue (#2903) bodies.
-const UP_BOOM_LINE =
-  "[supervisor-timeline] case=up+boom outcome=ok total=540 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=354 first-up-line=430 marker-file-created=437 first-stderr-byte=505 supervisor-error-line=505 supervisor-closed=540 sibling-death=540";
-const UP_UP2_LINE =
-  "[supervisor-timeline] case=up+up2 outcome=ok total=357 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=233 first-up-line=292 marker-file-created=293 first-stderr-byte=343 supervisor-error-line=343 supervisor-closed=356 sibling-death=357";
-const HIDDEN_LINE =
-  "[supervisor-timeline] case=hidden outcome=expected-failure total=512 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=184 hidden-pid-file=236";
+// Real captured samples from the epic (#2902) / sub-issue (#2903) bodies,
+// canonical-sourced from the corpus shared with the other supervisor test
+// harnesses (#2930) -- see scripts/__tests__/fixtures/supervisor-timeline-samples.txt.
+const UP_BOOM_LINE = TIMELINE_SAMPLES.UP_BOOM_LINE;
+const UP_UP2_LINE = TIMELINE_SAMPLES.UP_UP2_LINE;
+const HIDDEN_LINE = TIMELINE_SAMPLES.HIDDEN_LINE;
+// The same up+boom record in its pre-#2933 wire form (bare `env=sha256:…`):
+// an already-emitted record, which must parse as implicit v1.
+const UNVERSIONED_UP_BOOM_LINE = TIMELINE_SAMPLES.UNVERSIONED_UP_BOOM_LINE;
 
 const SAMPLE_LOG = [
   "stdout: some ordinary vitest noise",
@@ -60,7 +70,7 @@ function upBoomLine(overrides = {}) {
     zudoDoc: "5.15.0",
     runParallel: "sha256:646f90cc300185cb",
     fixtureShape: "sha256:2d146d48587c00f5",
-    env: "sha256:ed62f5285936a0ca",
+    env: "v1:sha256:ed62f5285936a0ca",
     "first-stdout-byte": 380,
     "first-up-line": 470,
     ...overrides,
@@ -161,8 +171,9 @@ describe("parseTimelineLine", () => {
       zudoDoc: "5.15.0",
       runParallel: "sha256:646f90cc300185cb",
       fixtureShape: "sha256:2d146d48587c00f5",
-      env: "sha256:ed62f5285936a0ca",
+      env: "v1:sha256:ed62f5285936a0ca",
     });
+    expect(record.envVersion).toBe(1);
     expect(record.marks["first-stdout-byte"]).toBe(354);
     expect(record.marks["first-up-line"]).toBe(430);
     expect(record.marks["supervisor-closed"]).toBe(540);
@@ -515,7 +526,7 @@ describe("runCli exit-code precedence (locked in #2902/#2903)", () => {
     expect(code).toBe(EXIT_OK);
     expect(s.out()).toMatch(/INPUT DRIFT DETECTED/);
     expect(s.out()).toMatch(
-      /env: sha256:ed62f5285936a0ca, sha256:mutated-env \(allowed by --allow-drift\)/,
+      /env: v1:sha256:ed62f5285936a0ca, v1:sha256:mutated-env \(allowed by --allow-drift\)/,
     );
     expect(s.out()).toMatch(/Every drifted field is allow-listed/);
   });
@@ -594,5 +605,360 @@ describe("drift guard: --budget-ms default tracks PROCESS_TIMEOUT_MS", () => {
     ).not.toBeNull();
     const processTimeoutMs = Number(match[1].replace(/_/g, ""));
     expect(DEFAULT_BUDGET_MS).toBe(processTimeoutMs);
+  });
+});
+
+// #2930's emitter-compatibility assertion: the shared corpus
+// (scripts/__tests__/fixtures/supervisor-timeline-samples.txt) is
+// hand-authored, not captured from a real run, so nothing forces it to keep
+// matching the real emitter (docs-dev-supervisor.test.mjs's timelineLine())
+// as that emitter changes. This describe block reads the emitter's own
+// source -- the same technique the drift guard above already uses -- and
+// fails loudly if either the identity-field order or the record's overall
+// token order has moved out from under the corpus.
+describe("emitter compatibility: the corpus still matches docs-dev-supervisor.test.mjs's timelineLine()", () => {
+  const source = readFileSync(new URL("./docs-dev-supervisor.test.mjs", import.meta.url), "utf8");
+
+  // The identity array literal inside timelineLine():
+  //   const identity = [`runner=${...}`, `zudoDoc=${...}`, ...].join(" ");
+  // Extracting the field NAMES from the emitter's own source (rather than
+  // hardcoding them here) is what makes both assertions below fail loudly on
+  // a real rename, instead of only on a rename nobody remembered to mirror.
+  // Not run inside an `it` (no test-scoped assertions here): every test in
+  // this block needs the extracted names, and a match failure means the
+  // extraction itself is broken, not any one sample -- collection-time
+  // failure of the whole file is the right blast radius for that.
+  const identityBlock = source.match(/const identity = \[([\s\S]*?)\]\.join\(" "\);/);
+  if (identityBlock === null) {
+    throw new Error(
+      "identity array literal not found in docs-dev-supervisor.test.mjs's timelineLine()",
+    );
+  }
+  const identityFieldNames = [...identityBlock[1].matchAll(/`([\w-]+)=\$\{/g)].map((m) => m[1]);
+  if (identityFieldNames.length === 0) {
+    throw new Error("no identity field names extracted from timelineLine()'s identity array");
+  }
+
+  it("the identity field order timelineLine() emits matches IDENTITY_FIELDS", () => {
+    // This is the tie that makes the corpus assertion below meaningful: the
+    // summarizer's own IDENTITY_FIELDS (used to parse every sample) must
+    // agree with what the emitter actually produces, not just with itself.
+    expect(identityFieldNames).toEqual(IDENTITY_FIELDS);
+  });
+
+  it("the record's case/outcome/total/identity/marks stay in that relative order", () => {
+    const returnStatement = source.match(/return `\[supervisor-timeline\][\s\S]*?`;/);
+    expect(returnStatement, "timelineLine()'s return template literal not found").not.toBeNull();
+    const snippet = returnStatement[0];
+    const indices = {
+      case: snippet.indexOf("case=$"),
+      outcome: snippet.indexOf("outcome=$"),
+      total: snippet.indexOf("total=$"),
+      identity: snippet.indexOf("${identity}"),
+      marks: snippet.indexOf("marks"),
+    };
+    for (const [field, index] of Object.entries(indices)) {
+      expect(
+        index,
+        `"${field}" token not found in timelineLine()'s return template`,
+      ).toBeGreaterThan(-1);
+    }
+    expect(indices.case).toBeLessThan(indices.outcome);
+    expect(indices.outcome).toBeLessThan(indices.total);
+    expect(indices.total).toBeLessThan(indices.identity);
+    expect(indices.identity).toBeLessThan(indices.marks);
+  });
+
+  it("every corpus sample matches the emitter's produced shape", () => {
+    const identityPattern = identityFieldNames.map((field) => `${field}=\\S+`).join(" ");
+    const recordShape = new RegExp(
+      `^\\[supervisor-timeline\\] case=\\S+ outcome=\\S+ total=\\d+ ${identityPattern}( \\S+=\\S+)+$`,
+    );
+
+    const sampleNames = Object.keys(TIMELINE_SAMPLES);
+    expect(sampleNames.length).toBeGreaterThan(0);
+    for (const name of sampleNames) {
+      expect(
+        recordShape.test(TIMELINE_SAMPLES[name]),
+        `${name} does not match: ${TIMELINE_SAMPLES[name]}`,
+      ).toBe(true);
+    }
+  });
+
+  // The `v<N>:` prefix is produced inside steeringEnvIdentity(), not in the
+  // identity array literal the assertions above read, so it needs its own
+  // tie to the live contract: a corpus sample must carry the version the
+  // emitter stamps TODAY, and only a sample declared UNVERSIONED_* may carry
+  // the pre-#2933 bare form (the already-emitted shape the parser must keep
+  // accepting). Bumping ENV_IDENTITY_VERSION without touching the corpus
+  // therefore fails here, by design.
+  it("every corpus sample carries the live env contract version, except the declared UNVERSIONED_* legacy samples", () => {
+    const versioned = new RegExp(`^v${ENV_IDENTITY_VERSION}:sha256:[0-9a-f]{16}$`);
+    const legacy = /^sha256:[0-9a-f]{16}$/;
+    const names = Object.keys(TIMELINE_SAMPLES);
+    expect(names.some((name) => name.startsWith("UNVERSIONED_"))).toBe(true);
+    for (const name of names) {
+      const env = / env=(\S+)/.exec(TIMELINE_SAMPLES[name])?.[1];
+      expect(env, `${name} has no env= token`).toBeDefined();
+      expect(
+        (name.startsWith("UNVERSIONED_") ? legacy : versioned).test(env),
+        `${name} carries env=${env}`,
+      ).toBe(true);
+    }
+  });
+});
+
+// #2933's cohort semantics -- the seven bullets in the summarizer's doc
+// comment, one describe block each so a regression names the bullet it
+// broke. Records are built with upBoomLine() so only the token under test
+// varies; the two "real contract" cases at the end use the identity module
+// itself to stage a genuine STEERING_ENV_KEYS bump.
+describe("env identity contract cohorts (#2933)", () => {
+  const V2 = "v2:sha256:0000000000000002";
+
+  describe("1. an unversioned env= record is v1", () => {
+    it("parses the legacy wire form to the same identity as the explicit v1 sample", () => {
+      const legacy = parseTimelineLine(UNVERSIONED_UP_BOOM_LINE);
+      const fresh = parseTimelineLine(UP_BOOM_LINE);
+      expect(legacy.envVersion).toBe(1);
+      expect(legacy.identity.env).toBe("v1:sha256:ed62f5285936a0ca");
+      expect(legacy.identity).toEqual(fresh.identity);
+      expect(legacy.raw).toBe(UNVERSIONED_UP_BOOM_LINE);
+    });
+
+    it("reports no drift and no split across a population straddling the prefix", async () => {
+      expect(
+        identityDrift([UNVERSIONED_UP_BOOM_LINE, UP_BOOM_LINE].map(parseTimelineLine)).hasDrift,
+      ).toBe(false);
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [UNVERSIONED_UP_BOOM_LINE, UP_BOOM_LINE].join("\n"),
+      });
+      expect(code).toBe(EXIT_OK);
+      expect(s.out()).not.toMatch(/DRIFT|SPLIT/);
+      expect(s.out()).toMatch(/identity env: v1:sha256:ed62f5285936a0ca\n/);
+    });
+  });
+
+  describe("2. R-A stays global across versions", () => {
+    it("--strict trips on outcome=failed under any contract version, even outside --case", async () => {
+      const s = sink();
+      const code = await runCli(["--strict", "--case", "up+boom"], {
+        ...s,
+        stdin: [UP_BOOM_LINE, upBoomLine({ case: "hidden", outcome: "failed", env: V2 })].join(
+          "\n",
+        ),
+      });
+      expect(code).toBe(EXIT_STRICT);
+      expect(s.err()).toMatch(/outcome=failed present/);
+    });
+  });
+
+  describe("3. identity drift is evaluated within each cohort", () => {
+    it("a field that differs only between cohorts is not drift", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [UP_BOOM_LINE, upBoomLine({ env: V2, runner: "npm" })].join("\n"),
+      });
+      expect(code).toBe(EXIT_OK);
+      expect(s.out()).not.toMatch(/INPUT DRIFT DETECTED/);
+      // Still visible, per cohort.
+      expect(s.out()).toMatch(/identity runner: pnpm\n/);
+      expect(s.out()).toMatch(/identity runner: npm\n/);
+    });
+
+    it("the same difference inside one cohort is drift, and --strict trips on it", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [UP_BOOM_LINE, upBoomLine({ env: V2 }), upBoomLine({ env: V2, runner: "npm" })].join(
+          "\n",
+        ),
+      });
+      expect(code).toBe(EXIT_STRICT);
+      expect(s.out()).toMatch(/runner: pnpm, npm\n/);
+    });
+  });
+
+  describe("4. R-B and the timing distributions are computed per cohort", () => {
+    const records = [
+      UP_BOOM_LINE, // v1, first-up-line=430
+      upBoomLine({ env: V2, "first-up-line": 7600, total: 7900 }),
+      upBoomLine({ env: V2, "first-up-line": 7700, total: 8000 }),
+    ].map(parseTimelineLine);
+
+    it("groups a case by version, ascending", () => {
+      const cohorts = envVersionCohorts(records);
+      expect(cohorts.map((cohort) => cohort.version)).toEqual([1, 2]);
+      expect(cohorts.map((cohort) => cohort.records.length)).toEqual([1, 2]);
+    });
+
+    it("never pools the distributions or the verdict across versions", async () => {
+      const { cohorts, split } = analyzeCase(records, {
+        budgetMs: DEFAULT_BUDGET_MS,
+        threshold: DEFAULT_THRESHOLD,
+      });
+      expect(split).toBe(true);
+      expect(cohorts[0].summary.preUp).toMatchObject({ n: 1, max: 430 });
+      expect(cohorts[1].summary.preUp).toMatchObject({ n: 2, min: 7600, max: 7700 });
+      expect(cohorts[0].rb.tripped).toBe(false);
+      expect(cohorts[1].rb.tripped).toBe(true);
+
+      const s = sink();
+      await runCli([], { ...s, stdin: records.map((record) => record.raw).join("\n") });
+      expect(s.out()).toMatch(/pre-UP \(spawn -> UP line\): n=1 min=430ms .* max=430ms\n/);
+      expect(s.out()).toMatch(/pre-UP \(spawn -> UP line\): n=2 min=7600ms .* max=7700ms\n/);
+      expect(s.out()).toMatch(/R-B verdict \[env contract v1\]: max pre-UP=430ms .* -> ok\n/);
+      expect(s.out()).toMatch(/R-B verdict \[env contract v2\]: max pre-UP=7700ms .* -> TRIPPED\n/);
+      // No pooled distribution anywhere: none of the four distribution lines
+      // may carry the combined n=3. Deliberately NOT a bare /n=3/ -- the
+      // required split report ("case ... (n=3) spans 2 env contract
+      // versions") states that total on purpose, and a bare match would
+      // forbid the very line semantic 7 asks for.
+      expect(s.out()).not.toMatch(
+        /(pre-UP \(spawn -> UP line\)|of which package-manager startup|of which server listen after that|whole case \(total\)): n=3/,
+      );
+    });
+  });
+
+  describe("5. --strict fails when ANY cohort trips R-B or carries disallowed drift", () => {
+    it("an R-B trip confined to one cohort is still a strict finding", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [UP_BOOM_LINE, upBoomLine({ env: V2, "first-up-line": 7600, total: 7900 })].join(
+          "\n",
+        ),
+      });
+      expect(code).toBe(EXIT_STRICT);
+    });
+
+    it("drift confined to the OLD cohort is still a strict finding", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [UP_BOOM_LINE, upBoomLine({ runner: "npm" }), upBoomLine({ env: V2 })].join("\n"),
+      });
+      expect(code).toBe(EXIT_STRICT);
+    });
+  });
+
+  describe("6. a version split is reported prominently but is not a strict finding", () => {
+    it("two clean cohorts under bare --strict exit 0 with the split banner", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [UP_BOOM_LINE, upBoomLine({ env: V2 }), upBoomLine({ env: V2 })].join("\n"),
+      });
+      expect(code).toBe(EXIT_OK);
+      expect(s.out()).toMatch(
+        /^case "up\+boom" \(n=3\) spans 2 env contract versions: v1 \(n=1\), v2 \(n=2\)$/m,
+      );
+      expect(s.out()).toMatch(/!!! ENV IDENTITY CONTRACT VERSION SPLIT !!!/);
+      expect(s.out()).toMatch(/the split itself is not a --strict finding/);
+      expect(s.out()).toMatch(/^case "up\+boom" \(n=1\) \[env contract v1\]:$/m);
+      expect(s.out()).toMatch(/^case "up\+boom" \(n=2\) \[env contract v2\]:$/m);
+    });
+
+    it("a single cohort prints no split banner and names its version", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], { ...s, stdin: SAMPLE_LOG });
+      expect(code).toBe(EXIT_OK);
+      expect(s.out()).not.toMatch(/SPLIT|spans/);
+      expect(s.out()).toMatch(/^case "up\+boom" \(n=1\) \[env contract v1\]:$/m);
+      expect(s.out()).toMatch(/^R-B verdict \[env contract v1\]: /m);
+    });
+  });
+
+  describe("7. --allow-drift env means: steering drift within a cohort is reported, not strict", () => {
+    it("two digests under the same version are drift; the allow-list downgrades it to a report", async () => {
+      const lines = [UP_BOOM_LINE, upBoomLine({ env: "v1:sha256:node-bumped" })].join("\n");
+      const strict = sink();
+      expect(await runCli(["--strict"], { ...strict, stdin: lines })).toBe(EXIT_STRICT);
+
+      const allowed = sink();
+      expect(await runCli(["--strict", "--allow-drift", "env"], { ...allowed, stdin: lines })).toBe(
+        EXIT_OK,
+      );
+      expect(allowed.out()).toMatch(
+        /env: v1:sha256:ed62f5285936a0ca, v1:sha256:node-bumped \(allowed by --allow-drift\)/,
+      );
+    });
+
+    it("it is scoped to the cohort it is reported in and covers no other field there", async () => {
+      // v1 clean; v2 has env drift (allow-listed) AND runner drift (not).
+      const s = sink();
+      const code = await runCli(["--strict", "--allow-drift", "env"], {
+        ...s,
+        stdin: [
+          UP_BOOM_LINE,
+          upBoomLine({ env: V2 }),
+          upBoomLine({ env: "v2:sha256:0000000000000003", runner: "npm" }),
+        ].join("\n"),
+      });
+      expect(code).toBe(EXIT_STRICT);
+      expect(s.out()).toMatch(/env: .* \(allowed by --allow-drift\)/);
+      expect(s.out()).toMatch(/runner: pnpm, npm\n/);
+    });
+
+    it("is not needed for a split: cross-version digests are never compared", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [UP_BOOM_LINE, upBoomLine({ env: V2 })].join("\n"),
+      });
+      expect(code).toBe(EXIT_OK);
+      expect(s.out()).not.toMatch(/INPUT DRIFT DETECTED/);
+    });
+  });
+
+  describe("a real STEERING_ENV_KEYS bump needs no epoch, no --branch, and no --allow-drift", () => {
+    const env = {
+      npm_config_user_agent: "pnpm/11.3.0 node/v22.0.0 linux/x64",
+      NODE_ENV: "test",
+      CI: "true",
+      PNPM_HOME: "/home/runner/setup-pnpm/node_modules/.bin",
+      TMPDIR: "/tmp",
+    };
+    const current = steeringEnvIdentity(env);
+    const next = steeringEnvIdentity(env, {
+      keys: [...STEERING_ENV_KEYS, "ZFB_NEXT_STEERING_KEY"],
+      version: ENV_IDENTITY_VERSION + 1,
+    });
+
+    it("the week the bump merges is a reported split, exit 0, under the bare --strict pass B runs", async () => {
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [upBoomLine({ env: current }), upBoomLine({ env: next })].join("\n"),
+      });
+      expect(code).toBe(EXIT_OK);
+      expect(s.out()).toMatch(/!!! ENV IDENTITY CONTRACT VERSION SPLIT !!!/);
+      expect(s.out()).toMatch(new RegExp(`identity env: ${current.replace(/[:]/g, "\\$&")}\n`));
+      expect(s.out()).toMatch(new RegExp(`identity env: ${next.replace(/[:]/g, "\\$&")}\n`));
+    });
+
+    it("a steering change inside the NEW cohort is still caught", async () => {
+      const nextBumped = steeringEnvIdentity(
+        { ...env, ZFB_NEXT_STEERING_KEY: "on" },
+        {
+          keys: [...STEERING_ENV_KEYS, "ZFB_NEXT_STEERING_KEY"],
+          version: ENV_IDENTITY_VERSION + 1,
+        },
+      );
+      const s = sink();
+      const code = await runCli(["--strict"], {
+        ...s,
+        stdin: [
+          upBoomLine({ env: current }),
+          upBoomLine({ env: next }),
+          upBoomLine({ env: nextBumped }),
+        ].join("\n"),
+      });
+      expect(code).toBe(EXIT_STRICT);
+      expect(s.out()).toMatch(/INPUT DRIFT DETECTED/);
+    });
   });
 });

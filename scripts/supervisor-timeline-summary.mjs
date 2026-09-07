@@ -2,6 +2,8 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+import { parseEnvIdentity } from "./supervisor-env-identity.mjs";
+
 /**
  * Parses `[supervisor-timeline]` lines — emitted by `timelineLine()` in
  * `scripts/__tests__/docs-dev-supervisor.test.mjs` behind
@@ -31,7 +33,7 @@ import { pathToFileURL } from "node:url";
  *         automated form of "the next occurrence is the experiment"; a
  *         human still classifies an R-A hit from the diagnostic block in
  *         the run's job log (saved in the workflow artifact), and the
- *         harvester manifest's `failed=` field names the run.
+ *         harvester manifest's `failedRecords=` field names the run.
  *
  * `expected-failure` (the `hidden` case's deliberately induced pre-UP
  * timeout) is a distinct outcome from `failed` by construction, precisely so
@@ -42,25 +44,58 @@ import { pathToFileURL } from "node:url";
  * failure mode this replaces), 2 is a --strict finding, and 64 is a usage or
  * parse error that must never be confused with "no data".
  *
+ * Env identity contract versions and cohorts (#2933)
+ * ---------------------------------------------------
+ * The `env` identity field is `v<N>:sha256:…` — the steering-only digest
+ * from `scripts/supervisor-env-identity.mjs` (its header owns the token
+ * grammar and the key list), prefixed with the version of the contract that
+ * produced it. An unversioned `env=sha256:…` record predates the prefix and
+ * is **v1**, the same contract v1 now labels explicitly: the parser
+ * canonicalises it, so a legacy `sha256:X` and a fresh `v1:sha256:X` are one
+ * identity, not drift. Every record's version is `record.envVersion`.
+ *
+ * Which digest a run emits is decided by the emitting commit, never by the
+ * run's date, so a population is split by *version*, not by time. The
+ * selected case's records are grouped into one cohort per version and the
+ * rules apply as follows — exactly this, because "compare within a version"
+ * alone would still let incompatible records be pooled:
+ *
+ *   - R-A stays GLOBAL. `outcome=failed` is a finding under any contract,
+ *     inside or outside `--case`, so it is counted before any split.
+ *   - Identity drift is evaluated WITHIN each cohort, over every
+ *     `IDENTITY_FIELDS` entry. A field that differs only *between* cohorts
+ *     is visible in each cohort's `identity` lines but is not drift: no
+ *     distribution mixes those records, so nothing is corrupted. (Accepted
+ *     cost: a change to another identity field that lands in the same week
+ *     as a contract bump is not a strict finding that week.)
+ *   - R-B and the four timing distributions are computed PER cohort, never
+ *     over mixed versions. Each cohort prints its own block and verdict.
+ *   - `--strict` fails when ANY cohort trips R-B or carries drift that is
+ *     not allow-listed.
+ *   - A version split is reported prominently (`!!! ENV IDENTITY CONTRACT
+ *     VERSION SPLIT !!!`) but is NOT, by itself, a `--strict` finding: it is
+ *     the expected shape of the week a `STEERING_ENV_KEYS` change merges, and
+ *     it heals as the old cohort rolls out of the harvest window. So a
+ *     contract bump needs no `--allow-drift`, no `--branch main`, and no
+ *     date epoch.
+ *
  * `--allow-drift <field>[,<field>]` (#2908) lists identity fields whose drift
- * is still reported but never trips `--strict`. It is a general escape
- * hatch for a *deliberately* mixed population: an intentional A/B, the
- * weekly watch's all-branch pass (heterogeneous by design, so it allow-lists
- * every `IDENTITY_FIELDS` entry and judges identity drift on `main` only —
- * see the R-C bullet above), or a population straddling the `env` contract
- * change of #2913. `env` is the **steering-only** digest from
- * `scripts/supervisor-env-identity.mjs` (see its header for the contract):
- * it no longer hashes GitHub's per-run variables, so the documented
- * harvester-to-summarizer pipeline no longer passes `--allow-drift env`.
- * Which digest a record carries depends on whether the emitting commit
- * contains that change, not on the record's date — so during the
- * transition, harvest `--branch main` or pass `--allow-drift env`; the
- * harvester's `IDENTITY_CONTRACT_EPOCH` floor on its default window is a
- * planning-time convenience, not the boundary. Field names are validated
- * against `IDENTITY_FIELDS`; an unknown name or an empty list is a usage
- * error (64), not a silently-ignored no-op, and a repeated flag accumulates
- * rather than replacing the earlier list. The drift report still prints
- * allow-listed fields, marked as such.
+ * is still reported but never trips `--strict`. It is the escape hatch for
+ * a *deliberately* mixed population: an intentional A/B, or the weekly
+ * watch's all-branch pass (heterogeneous by design, so it allow-lists every
+ * `IDENTITY_FIELDS` entry and judges identity drift on `main` only — see the
+ * R-C bullet above). `--allow-drift env` has one meaning, and it is within
+ * a cohort: two different steering digests under the SAME contract version
+ * — a real steering-input change such as a node patch bump, a runner-image
+ * change to `PNPM_HOME`/`TMPDIR`, or a new `NODE_OPTIONS` — is reported but
+ * does not trip `--strict`. It says nothing across cohorts, because
+ * cross-version digests are never compared in the first place; it is not
+ * the remedy for a contract change and the documented harvester-to-
+ * summarizer pipeline does not pass it. Field names are validated against
+ * `IDENTITY_FIELDS`; an unknown name or an empty list is a usage error (64),
+ * not a silently-ignored no-op, and a repeated flag accumulates rather than
+ * replacing the earlier list. The drift report still prints allow-listed
+ * fields, marked as such.
  */
 
 // Not anchored to line-start: `pnpm -r`'s parallel reporter prefixes every
@@ -183,11 +218,19 @@ export function parseTimelineLine(line) {
     );
   }
 
+  // Canonicalised: a legacy unversioned token and its explicit-v1 form must
+  // compare equal in the drift check (see the header), so the record carries
+  // `v<N>:…` whatever the wire said. `raw` keeps the original line.
+  const envIdentity = parseEnvIdentity(fields.env);
+  const identity = Object.fromEntries(IDENTITY_FIELDS.map((field) => [field, fields[field]]));
+  identity.env = envIdentity.token;
+
   return {
     case: fields.case,
     outcome: fields.outcome,
     total: fields.total,
-    identity: Object.fromEntries(IDENTITY_FIELDS.map((field) => [field, fields[field]])),
+    identity,
+    envVersion: envIdentity.version,
     marks,
     raw: line,
   };
@@ -252,6 +295,35 @@ export function evaluateRB(preUpStats, budgetMs, threshold) {
   return { boundary, max: preUpStats.max, tripped };
 }
 
+/** One case's records grouped by env contract version, ascending — the
+ * populations the distributions, drift check, and R-B are each scoped to. */
+export function envVersionCohorts(caseRecords) {
+  const byVersion = new Map();
+  for (const record of caseRecords) {
+    if (!byVersion.has(record.envVersion)) byVersion.set(record.envVersion, []);
+    byVersion.get(record.envVersion).push(record);
+  }
+  return [...byVersion.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([version, records]) => ({ version, records }));
+}
+
+/** Everything the report and `--strict` need for one case: a distribution
+ * summary, drift verdict, and R-B verdict per cohort, never pooled. */
+export function analyzeCase(caseRecords, { budgetMs, threshold }) {
+  const cohorts = envVersionCohorts(caseRecords).map(({ version, records }) => {
+    const summary = summarizeCase(records);
+    return {
+      version,
+      records,
+      summary,
+      drift: identityDrift(records),
+      rb: evaluateRB(summary.preUp, budgetMs, threshold),
+    };
+  });
+  return { cohorts, split: cohorts.length > 1 };
+}
+
 function fmt(value) {
   return Number.isFinite(value) ? `${value}ms` : "n/a";
 }
@@ -264,6 +336,24 @@ function formatDistribution(label, stats) {
  * `--strict` acts on. */
 function strictRelevantDrift(drift, allowDrift) {
   return drift.driftedFields.filter((field) => !allowDrift.includes(field));
+}
+
+/** True when `--strict` has something to act on in this cohort. */
+function cohortTripsStrict(cohort, allowDrift) {
+  return strictRelevantDrift(cohort.drift, allowDrift).length > 0 || cohort.rb.tripped;
+}
+
+function formatCohortSizes(cohorts) {
+  return cohorts.map((cohort) => `v${cohort.version} (n=${cohort.records.length})`).join(", ");
+}
+
+function formatVersionSplit(cohorts) {
+  return [
+    "!!! ENV IDENTITY CONTRACT VERSION SPLIT !!!",
+    `The sampled population mixes env contract versions: ${formatCohortSizes(cohorts)}.`,
+    "Distributions, identity drift, and R-B are judged per cohort below and never pooled",
+    "across versions; the split itself is not a --strict finding (see the doc comment).",
+  ].join("\n");
 }
 
 function formatDriftWarning(drift, allowDrift) {
@@ -374,10 +464,12 @@ async function collectInput(files, stdin) {
  * streams. Precedence (locked in #2902/#2903, tested exactly in this order):
  *
  *   1. usage/malformed              -> 64
- *   2. --strict and outcome=failed anywhere (even outside --case) -> 2
+ *   2. --strict and outcome=failed anywhere (even outside --case,
+ *      under any env contract version)                           -> 2
  *   3. no samples for the selected --case (including empty input) -> 1
- *   4. --strict and (non-allow-listed INPUT drift or R-B trip)    -> 2
- *   5. otherwise                                                  -> 0
+ *   4. --strict and, in ANY env-version cohort of the selected case,
+ *      non-allow-listed INPUT drift or an R-B trip                -> 2
+ *   5. otherwise (a version split alone lands here)               -> 0
  */
 export async function runCli(
   argv,
@@ -440,39 +532,53 @@ export async function runCli(
 
   const caseRecords = records.filter((record) => record.case === options.caseLabel);
 
-  let drift = null;
-  let rb = null;
+  let analysis = null;
 
   if (caseRecords.length === 0) {
     stdout.write(`no samples for case "${options.caseLabel}"\n`);
   } else {
-    const summary = summarizeCase(caseRecords);
-    drift = identityDrift(caseRecords);
-    rb = evaluateRB(summary.preUp, options.budgetMs, options.threshold);
+    analysis = analyzeCase(caseRecords, options);
 
-    stdout.write(`case "${options.caseLabel}" (n=${caseRecords.length}):\n`);
-    stdout.write(`${formatDistribution("pre-UP (spawn -> UP line)", summary.preUp)}\n`);
-    stdout.write(`${formatDistribution("of which package-manager startup", summary.pkgStartup)}\n`);
-    stdout.write(
-      `${formatDistribution("of which server listen after that", summary.serverListen)}\n`,
-    );
-    stdout.write(`${formatDistribution("whole case (total)", summary.wholeCase)}\n\n`);
-
-    for (const field of IDENTITY_FIELDS) {
-      stdout.write(`  identity ${field}: ${drift.distinct[field].join(", ")}\n`);
-    }
-    if (drift.hasDrift) {
-      stdout.write(`\n${formatDriftWarning(drift, options.allowDrift)}\n`);
+    if (analysis.split) {
+      stdout.write(
+        `case "${options.caseLabel}" (n=${caseRecords.length}) spans ${analysis.cohorts.length} env contract versions: ${formatCohortSizes(analysis.cohorts)}\n\n`,
+      );
+      stdout.write(`${formatVersionSplit(analysis.cohorts)}\n\n`);
     }
 
-    stdout.write(
-      `\nR-B verdict: max pre-UP=${fmt(rb.max)} vs threshold(${options.threshold}) x budget(${options.budgetMs}ms) = ${rb.boundary}ms -> ${rb.tripped ? "TRIPPED" : "ok"}\n`,
-    );
+    for (const cohort of analysis.cohorts) {
+      const { summary, drift, rb } = cohort;
+      const tag = `[env contract v${cohort.version}]`;
+
+      stdout.write(`case "${options.caseLabel}" (n=${cohort.records.length}) ${tag}:\n`);
+      stdout.write(`${formatDistribution("pre-UP (spawn -> UP line)", summary.preUp)}\n`);
+      stdout.write(
+        `${formatDistribution("of which package-manager startup", summary.pkgStartup)}\n`,
+      );
+      stdout.write(
+        `${formatDistribution("of which server listen after that", summary.serverListen)}\n`,
+      );
+      stdout.write(`${formatDistribution("whole case (total)", summary.wholeCase)}\n\n`);
+
+      for (const field of IDENTITY_FIELDS) {
+        stdout.write(`  identity ${field}: ${drift.distinct[field].join(", ")}\n`);
+      }
+      if (drift.hasDrift) {
+        stdout.write(`\n${formatDriftWarning(drift, options.allowDrift)}\n`);
+      }
+
+      stdout.write(
+        `\nR-B verdict ${tag}: max pre-UP=${fmt(rb.max)} vs threshold(${options.threshold}) x budget(${options.budgetMs}ms) = ${rb.boundary}ms -> ${rb.tripped ? "TRIPPED" : "ok"}\n\n`,
+      );
+    }
   }
 
   if (options.strict && anyFailed) return EXIT_STRICT;
   if (caseRecords.length === 0) return EXIT_NO_SAMPLES;
-  if (options.strict && (strictRelevantDrift(drift, options.allowDrift).length > 0 || rb.tripped)) {
+  if (
+    options.strict &&
+    analysis.cohorts.some((cohort) => cohortTripsStrict(cohort, options.allowDrift))
+  ) {
     return EXIT_STRICT;
   }
   return EXIT_OK;

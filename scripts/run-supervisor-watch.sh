@@ -60,10 +60,24 @@ set -euo pipefail
 #   WATCH_OUT_DIR     output tree (default ./supervisor-watch-out; gitignored)
 #   WATCH_SINCE       when set, passed to the harvester as --since; when UNSET the
 #                     flag is OMITTED so the harvester's own default applies (a
-#                     rolling window floored at IDENTITY_CONTRACT_EPOCH — keeping
-#                     that in one place is the point of omitting it)
+#                     plain rolling window — keeping that in one place is the
+#                     point of omitting it. There is no date floor: #2933
+#                     retired IDENTITY_CONTRACT_EPOCH in favour of per-version
+#                     env-identity cohorts)
 #   WATCH_GH          alternate `gh` executable, passed as --gh (used by the unit test)
 #   WATCH_MAIN_BRANCH trunk branch for pass B (default main)
+#   WATCH_RETRY_DELAY_MS
+#                     when set, forwarded to the harvester as
+#                     HARVEST_RETRY_DELAY_MS (#2932) -- test ergonomics only:
+#                     the unit test sets it to 0 so its red-infra / red-partial
+#                     cases don't sit through two real 2 s gh-retry sleeps.
+#                     UNSET in production, so the harvester's own 2000 ms
+#                     default applies.
+#   WATCH_TAR         alternate `tar` executable (default tar) used to archive
+#                     job-logs/ (#2934) -- test ergonomics only: the unit
+#                     test's archive-failure case points it at `false` to
+#                     simulate a broken archive without a dedicated stub.
+#                     UNSET in production, so the real `tar` on PATH is used.
 #
 # Also honours GITHUB_OUTPUT / GITHUB_STEP_SUMMARY when set, so the workflow
 # step needs no reformatting logic of its own.
@@ -95,6 +109,13 @@ if [ -n "${WATCH_SINCE:-}" ]; then
 fi
 if [ -n "${WATCH_GH:-}" ]; then
   HARVEST_COMMON+=(--gh "$WATCH_GH")
+fi
+
+# Forwarded, not defaulted: an unset WATCH_RETRY_DELAY_MS must leave
+# HARVEST_RETRY_DELAY_MS unset in the harvester's environment too, so its own
+# 2000 ms default applies in production.
+if [ -n "${WATCH_RETRY_DELAY_MS:-}" ]; then
+  export HARVEST_RETRY_DELAY_MS="$WATCH_RETRY_DELAY_MS"
 fi
 
 log() { printf '%s\n' "$*" >&2; }
@@ -190,12 +211,14 @@ log "==> pass B ($MAIN_BRANCH only): status=$STATUS_B runs=$MAIN_COUNT silent=$M
 
 # ── Provenance for triage ────────────────────────────────────────────────────
 
-# Per-run manifest lines whose `failed=<m>` record count is non-zero: these
+# Per-run manifest lines whose `failedRecords=<m>` count is non-zero: these
 # name the run (and saved job log) holding an R-A diagnostic block. The final
 # summary line's `failed=<f>` is a different counter (runs the harvester could
 # not fetch/parse) and is deliberately not matched here — it does not name a
 # run and describes a harvest problem, which the `error=` lines below cover.
-grep -E '^run=[0-9]+ .* failed=[1-9]' "$OUT/all/manifest.txt" >"$OUT/failed-runs.txt" || true
+# The two tokens no longer share a name (#2932): `^run=` below is just the
+# per-run manifest line shape, not disambiguation the way `failed=` needed it.
+grep -E '^run=[0-9]+ .* failedRecords=[1-9]' "$OUT/all/manifest.txt" >"$OUT/failed-runs.txt" || true
 grep -E '^run=[0-9]+ .* error=' "$OUT/all/manifest.txt" >"$OUT/harvest-errors.txt" || true
 # Green `health` jobs that emitted nothing. Only the trunk ones decide the
 # verdict (a PR branch predating the emitter is legitimately silent), but
@@ -217,13 +240,6 @@ fi
 
 # all=<ok|empty|red>:<harvester rc>/<summarizer rc> main=<ok|empty|red|silent>:<runs>/<summarizer rc>
 DETAIL="all=$STATUS_A:$HRC_A/$SRC_A main=$STATUS_B:$MAIN_COUNT/$SRC_B"
-
-if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  {
-    printf 'verdict=%s\n' "$VERDICT"
-    printf 'detail=%s\n' "$DETAIL"
-  } >>"$GITHUB_OUTPUT"
-fi
 
 print_file_or_none() {
   if [ -s "$1" ]; then
@@ -269,6 +285,55 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     cat "$OUT/main/summary.txt"
     printf '```\n'
   } >>"$GITHUB_STEP_SUMMARY"
+fi
+
+# ── Archive job-logs/ before upload (#2934) ─────────────────────────────────
+#
+# Both passes are done reading $OUT/job-logs above (pass A saved it via
+# --save-dir, pass B re-read the trunk subset), so it is safe to fold the
+# whole directory into one file before the workflow's upload-artifact step:
+# at ~1.7 MB / 10k lines per saved log this directory dominates the
+# artifact's size. Pruning was rejected -- pass B's own re-read above, and
+# R-B/drift triage, both want the non-failed logs too -- so every log is
+# kept, just no longer as loose files.
+#
+# WHERE this block sits is load-bearing twice over:
+#   - AFTER the provenance greps and the $GITHUB_STEP_SUMMARY render, so a
+#     broken archive cannot also erase the R-A triage pointers (failed-runs
+#     .txt, harvest-errors.txt, silent-runs.txt) and the job summary that the
+#     tracking issue's own text tells a reader to go and look at. The summary
+#     can therefore read `green` on a run whose verdict was withheld; the
+#     `!! archiving ... failed` line in the step log is the explanation, and
+#     the issue is filed either way.
+#   - BEFORE $GITHUB_OUTPUT (and its `verdict=` line) is written, so a broken
+#     archive still reaches supervisor-watch.yml as "a verdict that was never
+#     written", which its existing condition files and alerts on. That reuses
+#     the rule instead of needing new plumbing.
+#
+# The plain directory is deleted ONLY after the archive is created AND
+# verified. On either failure the partial archive is removed and the script
+# exits non-zero: leaving a truncated job-logs.tar.gz beside the intact
+# job-logs/ would make `if: always()` upload BOTH -- exactly the "artifact
+# grows instead of shrinking" outcome the removal below exists to prevent,
+# and with a corrupt file sitting where triage expects the real one. The
+# source logs are never removed on a broken archive.
+TAR="${WATCH_TAR:-tar}"
+JOB_LOGS_ARCHIVE="$OUT/job-logs.tar.gz"
+log "==> archiving $OUT/job-logs"
+if ! "$TAR" -czf "$JOB_LOGS_ARCHIVE" -C "$OUT" job-logs \
+  || ! "$TAR" -tzf "$JOB_LOGS_ARCHIVE" >/dev/null; then
+  rm -f "$JOB_LOGS_ARCHIVE"
+  log "!! archiving $OUT/job-logs failed; kept the plain directory, wrote no verdict"
+  exit 1
+fi
+rm -rf "$OUT/job-logs"
+log "==> archived job logs to $JOB_LOGS_ARCHIVE, removed the plain directory"
+
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  {
+    printf 'verdict=%s\n' "$VERDICT"
+    printf 'detail=%s\n' "$DETAIL"
+  } >>"$GITHUB_OUTPUT"
 fi
 
 # Last stdout line, by contract — the unit test reads it.

@@ -8,18 +8,20 @@
 # Runs entirely offline. The script under test is bash; this harness is POSIX
 # sh because run-b4push.sh and health.yml execute every tests/unit/*.sh with
 # `sh` (mirrors tests/unit/file-exam-issue.sh). Real `gh` is never invoked: a
-# stub is passed through WATCH_GH -> the harvester's --gh flag, which is the
-# same subprocess/argv contract that
-# scripts/__tests__/harvest-supervisor-timelines.test.mjs drives.
+# stub -- scripts/__tests__/fixtures/gh-stub.sh, SHARED with
+# scripts/__tests__/harvest-supervisor-timelines.test.mjs (#2930) -- is
+# passed through WATCH_GH -> the harvester's --gh flag, which is the same
+# subprocess/argv contract that the vitest suite drives.
 #
-# Fixtures are real emissions: the `[supervisor-timeline]` record shape and
-# the `gh run view --job <id> --log` line prefix are copied from
-# scripts/__tests__/supervisor-timeline-summary.test.mjs (UP_BOOM_LINE) and
-# scripts/__tests__/harvest-supervisor-timelines.test.mjs (LOG_PREFIX), not
-# hand-invented.
+# Fixtures are real emissions, from two corpora with two different owners
+# (#2930's addendum): the `[supervisor-timeline]` record shape is zfb's own
+# contract and comes from scripts/__tests__/fixtures/supervisor-timeline-samples.txt,
+# while the job-log envelope around it is GitHub's and is sliced out of a real
+# captured REST body, scripts/__tests__/fixtures/rest-job-log-capture.log
+# (#2931). Both are read via grep/sed rather than duplicated as literals here.
 #
-# Requires: sh, bash, node, mktemp, grep, tail, wc. Unlike its siblings this
-# is not sub-second: every case spawns the real harvester and summarizer.
+# Requires: sh, bash, node, mktemp, grep, sed, tail, wc. Unlike its siblings
+# this is not sub-second: every case spawns the real harvester and summarizer.
 #
 # Run:
 #   sh tests/unit/run-supervisor-watch.sh
@@ -55,76 +57,72 @@ trap 'rm -rf "$TMPROOT"' EXIT
 
 # ── Stub `gh` ────────────────────────────────────────────────────────────────
 #
-# Dispatches on argv exactly like the real thing: `run list`, `run view <id>
-# --json jobs`, `run view --job <id> --log`. Fixture data comes from files
-# under $WATCH_TEST_FIXTURES_DIR, inherited from the environment the same way
-# a real `gh` would inherit it. The watch never passes --branch (pass B is
-# derived from pass A's saved logs), so the stub does not filter on it.
-STUB="$TMPROOT/gh-stub.sh"
-cat >"$STUB" <<'GH_STUB'
-#!/bin/sh
-set -eu
-FIXDIR="${WATCH_TEST_FIXTURES_DIR:?WATCH_TEST_FIXTURES_DIR not set}"
-printf '%s\n' "$*" >>"$FIXDIR/calls.log"
-
-if [ "$1" = "run" ] && [ "$2" = "list" ]; then
-  if [ -f "$FIXDIR/run-list.fail" ]; then
-    echo "gh-stub: simulated run list failure" >&2
-    exit 1
-  fi
-  cat "$FIXDIR/run-list.json"
-  exit 0
-fi
-
-if [ "$1" = "run" ] && [ "$2" = "view" ]; then
-  if [ "$3" = "--job" ]; then
-    if [ -f "$FIXDIR/job-$4.fail" ]; then
-      echo "gh-stub: simulated failure fetching job $4" >&2
-      exit 1
-    fi
-    cat "$FIXDIR/job-$4.log"
-    exit 0
-  fi
-  cat "$FIXDIR/jobs-$3.json"
-  exit 0
-fi
-
-echo "gh-stub: unhandled invocation: $*" >&2
-exit 1
-GH_STUB
-chmod +x "$STUB"
+# The shared stub (scripts/__tests__/fixtures/gh-stub.sh, #2930) dispatches
+# on argv exactly like the real thing: `run list`, and since #2931 the two
+# REST calls `api repos/{owner}/{repo}/actions/runs/<id>/jobs?per_page=100`
+# and `api repos/{owner}/{repo}/actions/jobs/<id>/logs`. Fixture data comes
+# from files under
+# $GH_STUB_FIXTURES_DIR, inherited from the environment the same way a real
+# `gh` would inherit it. The watch never passes --branch (pass B is derived
+# from pass A's saved logs), so the stub does not filter on it.
+STUB="$REPO_ROOT/scripts/__tests__/fixtures/gh-stub.sh"
 
 # ── Fixture builders ─────────────────────────────────────────────────────────
 
-# gh's `--log` output prefixes every line with "<job>\t<step>\t<timestamp> ",
-# and `pnpm -r`'s reporter adds its own ". test: " package label ahead of the
-# tag — both are part of the real shape the summarizer must see through.
-LOG_PREFIX_FMT='health\tUNKNOWN STEP\t2026-09-06T23:06:25.83Z . test: '
+# The REST job-log body prefixes every line with the runner's own
+# "<ISO timestamp>Z ", and `pnpm -r`'s reporter adds its ". test: " package
+# label ahead of the tag — both are part of the real shape the summarizer
+# must see through, and neither is invented here: the prefix is sliced off a
+# record line in the captured body (see its loader for provenance), so these
+# synthetic logs are wrapped in bytes GitHub actually emitted.
+# -a: the capture carries raw ANSI escapes and non-ASCII glyphs, and under a
+# C/POSIX locale (CI's default) grep would otherwise call it binary and print
+# "Binary file matches" instead of the line.
+CAPTURE_FILE="$REPO_ROOT/scripts/__tests__/fixtures/rest-job-log-capture.log"
+LOG_PREFIX=$(grep -a -m1 '\[supervisor-timeline\] case=' "$CAPTURE_FILE" |
+  sed 's/\[supervisor-timeline\].*//')
+if [ -z "$LOG_PREFIX" ]; then
+  fail "could not slice the REST log prefix out of $CAPTURE_FILE"
+  printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
+  exit 1
+fi
 
 ENV_A="sha256:ed62f5285936a0ca"
 ENV_B="sha256:173aae2cffffffff"
 
+# The canonical up+boom sample (#2930): read once via grep/sed rather than
+# duplicated as a literal here, so a field rename in the corpus needs no
+# edit in this file. This case's own scenarios still need varied
+# outcome/total/env/first-up-line values (the scope note in #2930 -- one
+# corpus, not one construction site), so timeline_line() edits those four
+# tokens into the template instead of hand-writing a new record per case.
+SAMPLES_FILE="$REPO_ROOT/scripts/__tests__/fixtures/supervisor-timeline-samples.txt"
+UP_BOOM_TEMPLATE=$(grep '^UP_BOOM_LINE=' "$SAMPLES_FILE" | sed 's/^UP_BOOM_LINE=//')
+
 # timeline_line <outcome> <first-up-line> <total> <env-digest>
 timeline_line() {
-  printf "$LOG_PREFIX_FMT"
-  printf '[supervisor-timeline] case=up+boom outcome=%s total=%s runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=%s supervisor-spawned=1 first-stdout-byte=354 first-up-line=%s marker-file-created=437 first-stderr-byte=505 supervisor-error-line=505 supervisor-closed=540 sibling-death=540\n' \
-    "$1" "$3" "$4" "$2"
+  printf '%s' "$LOG_PREFIX"
+  printf '%s\n' "$UP_BOOM_TEMPLATE" | sed -E \
+    -e "s/outcome=[^ ]+/outcome=$1/" \
+    -e "s/first-up-line=[^ ]+/first-up-line=$2/" \
+    -e "s/total=[^ ]+/total=$3/" \
+    -e "s/env=[^ ]+/env=$4/"
 }
 
 # job_log <outcome> <first-up-line> <total> <env-digest> > file
 job_log() {
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf '##[section]Starting: Run tests\n'
   timeline_line "$@"
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf 'PASS scripts/__tests__/docs-dev-supervisor.test.mjs\n'
 }
 
 # job_log_no_records > file
 job_log_no_records() {
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf '##[section]Starting: Run tests\n'
-  printf "$LOG_PREFIX_FMT"
+  printf '%s' "$LOG_PREFIX"
   printf 'PASS some-other.test.mjs\n'
 }
 
@@ -134,12 +132,14 @@ run_json() {
     "$1" "$2" "${3:-completed}" "${4:-push}"
 }
 
-# jobs_json <jobId> [conclusion] — the run's job list, with a `health` job
-# that started (a non-empty `steps` array is what tells the harvester it has
-# a log). The conclusion decides whether a record-less log means the emitter
-# went silent (`success`) or the job went red before the test step.
+# jobs_json <jobId> [conclusion] — one page of the run-jobs endpoint, with a
+# `health` job that started (a non-empty `steps` array is what tells the
+# harvester it has a log). REST names the numeric id `id` (only `gh run list
+# --json` calls it `databaseId`) and wraps the page in `total_count`. The
+# conclusion decides whether a record-less log means the emitter went silent
+# (`success`) or the job went red before the test step.
 jobs_json() {
-  printf '{"jobs":[{"name":"health","databaseId":%s,"conclusion":"%s","steps":[{"name":"Set up job"}]}]}' \
+  printf '{"total_count":1,"jobs":[{"name":"health","id":%s,"conclusion":"%s","steps":[{"name":"Set up job"}]}]}' \
     "$1" "${2:-success}"
 }
 
@@ -154,12 +154,21 @@ new_fixture_dir() {
 
 # ── Runner ───────────────────────────────────────────────────────────────────
 #
+# run_watch <fixture-dir> [watch-tar] — the optional second arg feeds
+# WATCH_TAR (#2934); defaults to the real `tar` on PATH, same as the script's
+# own default, so every existing caller is unaffected. The archive-failure
+# case below passes `false` to simulate a broken archive with no dedicated
+# stub script.
+#
 # Returns the script's exit code in RC and its last stdout line in VERDICT_LINE.
 run_watch() {
   RW_FIX="$1"
-  if WATCH_TEST_FIXTURES_DIR="$RW_FIX" \
+  RW_TAR="${2:-tar}"
+  if GH_STUB_FIXTURES_DIR="$RW_FIX" \
     WATCH_GH="$STUB" \
     WATCH_OUT_DIR="$RW_FIX/out" \
+    WATCH_RETRY_DELAY_MS=0 \
+    WATCH_TAR="$RW_TAR" \
     GITHUB_OUTPUT="$RW_FIX/gh-output.txt" \
     GITHUB_STEP_SUMMARY="$RW_FIX/gh-step-summary.md" \
     bash "$SCRIPT" >"$RW_FIX/stdout.txt" 2>"$RW_FIX/stderr.txt"; then
@@ -243,11 +252,23 @@ fi
 
 # Pass A's --save-dir is the artifact an R-A triage actually reads AND pass
 # B's input; a regression that dropped the flag would still go green, so
-# assert it.
-if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ] && [ -f "$FIX/out/job-logs/run-1002-job-5002.log" ]; then
+# assert it. The script folds job-logs/ into job-logs.tar.gz and removes the
+# plain directory once both passes are done reading it (#2934), so the
+# saved logs are asserted inside the archive, and the plain directory's
+# absence is asserted separately -- if it survived, upload-artifact would
+# ship both and the artifact would grow instead of shrink.
+if [ -f "$FIX/out/job-logs.tar.gz" ] \
+  && tar -tzf "$FIX/out/job-logs.tar.gz" | grep -qx 'job-logs/run-1001-job-5001.log' \
+  && tar -tzf "$FIX/out/job-logs.tar.gz" | grep -qx 'job-logs/run-1002-job-5002.log'; then
   pass 'green: pass A saved both health job logs under job-logs/'
 else
-  fail "green: expected saved job logs, got: $(ls "$FIX/out/job-logs" 2>&1 | tr '\n' ' ')"
+  fail "green: expected job-logs.tar.gz containing both saved job logs, got: $(tar -tzf "$FIX/out/job-logs.tar.gz" 2>&1 | tr '\n' ' ')"
+fi
+
+if [ ! -e "$FIX/out/job-logs" ]; then
+  pass 'green: the plain job-logs/ directory was removed after archiving'
+else
+  fail "green: expected job-logs/ to be removed after archiving, got: $(ls "$FIX/out/job-logs" | tr '\n' ' ')"
 fi
 
 # Pass B is the trunk subset of that harvest, selected by the manifest's
@@ -259,10 +280,19 @@ else
 fi
 
 # No second network harvest: each job log is fetched exactly once.
-if [ "$(grep -c 'run view --job 5001 --log' "$FIX/calls.log")" -eq 1 ]; then
+JOB_5001_LOG_CALL='api repos/{owner}/{repo}/actions/jobs/5001/logs'
+if [ "$(grep -cF "$JOB_5001_LOG_CALL" "$FIX/calls.log")" -eq 1 ]; then
   pass 'green: the main job log was fetched once, not once per pass'
 else
-  fail "green: expected one fetch of job 5001, got: $(grep -c 'run view --job 5001 --log' "$FIX/calls.log")"
+  fail "green: expected one fetch of job 5001, got: $(grep -cF "$JOB_5001_LOG_CALL" "$FIX/calls.log")"
+fi
+
+# Two metered GETs per run and no `gh run view` porcelain — the whole point
+# of #2931, and invisible in every verdict above.
+if [ "$(grep -c '^api ' "$FIX/calls.log")" -eq 4 ] && ! grep -q '^run view ' "$FIX/calls.log"; then
+  pass 'green: two REST calls per run, no gh run view porcelain'
+else
+  fail "green: unexpected gh calls: $(tr '\n' '; ' <"$FIX/calls.log")"
 fi
 
 if grep -q '^window: since=' "$FIX/out/harvest-notices.txt"; then
@@ -310,10 +340,10 @@ assert_case 'red R-A: outcome=failed on a PR branch' "$FIX" 2 red
 
 # failed-runs.txt is the R-A provenance: it must name the run holding the
 # diagnostic block, exactly once.
-if [ "$(wc -l <"$FIX/out/failed-runs.txt" | tr -d ' ')" -eq 1 ] && grep -q '^run=1002 .* job=5002 lines=1 failed=1' "$FIX/out/failed-runs.txt"; then
+if [ "$(wc -l <"$FIX/out/failed-runs.txt" | tr -d ' ')" -eq 1 ] && grep -q '^run=1002 .* job=5002 lines=1 failedRecords=1' "$FIX/out/failed-runs.txt"; then
   pass 'red R-A: failed-runs.txt names run 1002 once'
 else
-  fail "red R-A: expected one 'run=1002 ... failed=1' line, got: $(cat "$FIX/out/failed-runs.txt")"
+  fail "red R-A: expected one 'run=1002 ... failedRecords=1' line, got: $(cat "$FIX/out/failed-runs.txt")"
 fi
 
 # ── red R-B: max pre-UP reaches 0.75 x the 10s budget ────────────────────────
@@ -435,6 +465,120 @@ job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
 job_log ok 430 540 "$ENV_B" >"$FIX/job-5003.log"
 assert_case 'red: env drift between two main runs' "$FIX" 2 red
 assert_detail 'red (drift on main)' "$FIX" 'all=ok:0/0 main=red:2/2'
+
+# ── archive failure: leaves job-logs/ intact and reports no verdict ─────────
+#
+# WATCH_TAR=false simulates a broken archive with no dedicated stub script
+# (`false` ignores its argv and exits 1). The archiving block in
+# run-supervisor-watch.sh must kill the whole script BEFORE $GITHUB_OUTPUT
+# (and its `verdict=` line) is written -- a broken archive must never be
+# reported as a quiet green week -- and it must never delete the source logs
+# it failed to fold into an archive. It sits AFTER the provenance greps and
+# the $GITHUB_STEP_SUMMARY render, though, so the R-A triage output a filed
+# tracking issue points at still exists.
+
+FIX=$(new_fixture_dir archive-failure)
+printf '[%s,%s]' "$(run_json 1001 main)" "$(run_json 1002 feat/x)" >"$FIX/run-list.json"
+jobs_json 5001 >"$FIX/jobs-1001.json"
+jobs_json 5002 >"$FIX/jobs-1002.json"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5002.log"
+run_watch "$FIX" false
+
+if [ "$RC" -ne 0 ]; then
+  pass 'archive failure: the script exits non-zero'
+else
+  fail 'archive failure: expected a non-zero exit, got 0'
+fi
+
+if [ -z "$VERDICT_LINE" ]; then
+  pass 'archive failure: no verdict line reached stdout'
+else
+  fail "archive failure: expected no stdout verdict line, got: $VERDICT_LINE"
+fi
+
+if ! grep -q '^verdict=' "$FIX/gh-output.txt" 2>/dev/null; then
+  pass 'archive failure: $GITHUB_OUTPUT carries no verdict (never written)'
+else
+  fail "archive failure: unexpected \$GITHUB_OUTPUT: $(cat "$FIX/gh-output.txt")"
+fi
+
+if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ] && [ -f "$FIX/out/job-logs/run-1002-job-5002.log" ]; then
+  pass 'archive failure: the source job logs are left intact'
+else
+  fail "archive failure: expected both source job logs to survive, got: $(ls "$FIX/out/job-logs" 2>&1 | tr '\n' ' ')"
+fi
+
+if [ ! -e "$FIX/out/job-logs.tar.gz" ]; then
+  pass 'archive failure: no partial job-logs.tar.gz was left behind'
+else
+  fail 'archive failure: expected no job-logs.tar.gz to exist after a failed archive'
+fi
+
+# The provenance files and the job summary are the only thing the filed
+# tracking issue's text points a reader at, so a broken archive must not take
+# them with it -- which is why the archiving block runs after them.
+if [ -f "$FIX/out/failed-runs.txt" ] && [ -f "$FIX/out/harvest-notices.txt" ] \
+  && grep -q '^## Supervisor watch — ' "$FIX/gh-step-summary.md"; then
+  pass 'archive failure: the provenance files and job summary survive'
+else
+  fail 'archive failure: expected the provenance files and $GITHUB_STEP_SUMMARY to be written before archiving'
+fi
+
+# ── archive failure, partial output: the truncated archive is removed ───────
+#
+# `false` never opens the output file, so it cannot show what a REAL tar
+# failure leaves behind: `tar -czf` truncates its target the moment it
+# starts, so a mid-write death (disk full on a 200-run harvest -- exactly
+# when job-logs/ is largest) leaves a corrupt job-logs.tar.gz beside the
+# intact job-logs/. upload-artifact's `if: always()` would then ship BOTH,
+# which is the "artifact grows instead of shrinking" outcome the whole
+# archiving step exists to avoid, with a corrupt file where triage expects
+# the real one. This stub reproduces that shape.
+
+FIX=$(new_fixture_dir archive-partial)
+printf '[%s]' "$(run_json 1001 main)" >"$FIX/run-list.json"
+jobs_json 5001 >"$FIX/jobs-1001.json"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
+
+PARTIAL_TAR="$FIX/partial-tar.sh"
+cat >"$PARTIAL_TAR" <<'PARTIAL_TAR_EOF'
+#!/bin/sh
+# Mimics `tar -czf <archive> ...` dying after it has already truncated and
+# partly written its output: create the file, write garbage, fail.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -czf)
+      printf 'not a real gzip stream' >"$2"
+      exit 1
+      ;;
+  esac
+  shift
+done
+exit 1
+PARTIAL_TAR_EOF
+chmod +x "$PARTIAL_TAR"
+
+run_watch "$FIX" "$PARTIAL_TAR"
+
+if [ "$RC" -ne 0 ] && [ -z "$VERDICT_LINE" ] \
+  && ! grep -q '^verdict=' "$FIX/gh-output.txt" 2>/dev/null; then
+  pass 'archive partial: non-zero exit and no verdict'
+else
+  fail "archive partial: want a non-zero exit and no verdict, got rc=$RC verdict='$VERDICT_LINE'"
+fi
+
+if [ ! -e "$FIX/out/job-logs.tar.gz" ]; then
+  pass 'archive partial: the truncated archive was removed'
+else
+  fail 'archive partial: expected the truncated job-logs.tar.gz to be removed'
+fi
+
+if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ]; then
+  pass 'archive partial: the source job log is left intact'
+else
+  fail 'archive partial: expected the source job log to survive'
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then exit 1; fi

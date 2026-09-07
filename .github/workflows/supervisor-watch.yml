@@ -97,7 +97,8 @@ jobs:
     timeout-minutes: 15
     # A job-level `permissions:` block REPLACES the workflow default, so
     # contents: read must be restated. `actions: read` is what lets this job's
-    # GITHUB_TOKEN drive `gh run list` and `gh run view --job <id> --log`
+    # GITHUB_TOKEN drive `gh run list` and the harvester's two REST calls
+    # (the run-jobs and job-logs endpoints, #2931)
     # against health.yml's runs — an explicit permissions block sets every
     # unnamed scope to `none`, so without this line the harvester's very first
     # gh call 403s. `issues: write` is for scripts/file-exam-issue.sh.
@@ -143,6 +144,11 @@ jobs:
       # `if: always()` — this is where the saved health job logs live, and an
       # R-A finding is triaged by reading the diagnostic block inside one of
       # them, so the artifact must survive every verdict including a red one.
+      # run-supervisor-watch.sh (#2934) folds job-logs/ into job-logs.tar.gz
+      # and removes the plain directory once both passes have read it, so
+      # `path:` below needs no exclusion of its own to avoid double-uploading
+      # the same logs — a failed archive already aborts the script (and
+      # leaves the plain directory in place) before this step runs.
       - name: Upload watch output
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
