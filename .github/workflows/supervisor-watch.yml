@@ -144,6 +144,11 @@ jobs:
       # `if: always()` — this is where the saved health job logs live, and an
       # R-A finding is triaged by reading the diagnostic block inside one of
       # them, so the artifact must survive every verdict including a red one.
+      # run-supervisor-watch.sh (#2934) folds job-logs/ into job-logs.tar.gz
+      # and removes the plain directory once both passes have read it, so
+      # `path:` below needs no exclusion of its own to avoid double-uploading
+      # the same logs — a failed archive already aborts the script (and
+      # leaves the plain directory in place) before this step runs.
       - name: Upload watch output
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

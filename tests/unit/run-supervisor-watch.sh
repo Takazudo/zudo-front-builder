@@ -154,13 +154,21 @@ new_fixture_dir() {
 
 # ── Runner ───────────────────────────────────────────────────────────────────
 #
+# run_watch <fixture-dir> [watch-tar] — the optional second arg feeds
+# WATCH_TAR (#2934); defaults to the real `tar` on PATH, same as the script's
+# own default, so every existing caller is unaffected. The archive-failure
+# case below passes `false` to simulate a broken archive with no dedicated
+# stub script.
+#
 # Returns the script's exit code in RC and its last stdout line in VERDICT_LINE.
 run_watch() {
   RW_FIX="$1"
+  RW_TAR="${2:-tar}"
   if GH_STUB_FIXTURES_DIR="$RW_FIX" \
     WATCH_GH="$STUB" \
     WATCH_OUT_DIR="$RW_FIX/out" \
     WATCH_RETRY_DELAY_MS=0 \
+    WATCH_TAR="$RW_TAR" \
     GITHUB_OUTPUT="$RW_FIX/gh-output.txt" \
     GITHUB_STEP_SUMMARY="$RW_FIX/gh-step-summary.md" \
     bash "$SCRIPT" >"$RW_FIX/stdout.txt" 2>"$RW_FIX/stderr.txt"; then
@@ -244,11 +252,23 @@ fi
 
 # Pass A's --save-dir is the artifact an R-A triage actually reads AND pass
 # B's input; a regression that dropped the flag would still go green, so
-# assert it.
-if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ] && [ -f "$FIX/out/job-logs/run-1002-job-5002.log" ]; then
+# assert it. The script folds job-logs/ into job-logs.tar.gz and removes the
+# plain directory once both passes are done reading it (#2934), so the
+# saved logs are asserted inside the archive, and the plain directory's
+# absence is asserted separately -- if it survived, upload-artifact would
+# ship both and the artifact would grow instead of shrink.
+if [ -f "$FIX/out/job-logs.tar.gz" ] \
+  && tar -tzf "$FIX/out/job-logs.tar.gz" | grep -qx 'job-logs/run-1001-job-5001.log' \
+  && tar -tzf "$FIX/out/job-logs.tar.gz" | grep -qx 'job-logs/run-1002-job-5002.log'; then
   pass 'green: pass A saved both health job logs under job-logs/'
 else
-  fail "green: expected saved job logs, got: $(ls "$FIX/out/job-logs" 2>&1 | tr '\n' ' ')"
+  fail "green: expected job-logs.tar.gz containing both saved job logs, got: $(tar -tzf "$FIX/out/job-logs.tar.gz" 2>&1 | tr '\n' ' ')"
+fi
+
+if [ ! -e "$FIX/out/job-logs" ]; then
+  pass 'green: the plain job-logs/ directory was removed after archiving'
+else
+  fail "green: expected job-logs/ to be removed after archiving, got: $(ls "$FIX/out/job-logs" | tr '\n' ' ')"
 fi
 
 # Pass B is the trunk subset of that harvest, selected by the manifest's
@@ -445,6 +465,54 @@ job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
 job_log ok 430 540 "$ENV_B" >"$FIX/job-5003.log"
 assert_case 'red: env drift between two main runs' "$FIX" 2 red
 assert_detail 'red (drift on main)' "$FIX" 'all=ok:0/0 main=red:2/2'
+
+# ── archive failure: leaves job-logs/ intact and reports no verdict ─────────
+#
+# WATCH_TAR=false simulates a broken archive with no dedicated stub script
+# (`false` ignores its argv and exits 1). The archiving block in
+# run-supervisor-watch.sh runs under the script's own `set -e` with no `set
+# +e` guard, so this must kill the whole script BEFORE $GITHUB_OUTPUT (and
+# its `verdict=` line) is written -- a broken archive must never be reported
+# as a quiet green week -- and it must never delete the source logs it
+# failed to fold into an archive.
+
+FIX=$(new_fixture_dir archive-failure)
+printf '[%s,%s]' "$(run_json 1001 main)" "$(run_json 1002 feat/x)" >"$FIX/run-list.json"
+jobs_json 5001 >"$FIX/jobs-1001.json"
+jobs_json 5002 >"$FIX/jobs-1002.json"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5002.log"
+run_watch "$FIX" false
+
+if [ "$RC" -ne 0 ]; then
+  pass 'archive failure: the script exits non-zero'
+else
+  fail 'archive failure: expected a non-zero exit, got 0'
+fi
+
+if [ -z "$VERDICT_LINE" ]; then
+  pass 'archive failure: no verdict line reached stdout'
+else
+  fail "archive failure: expected no stdout verdict line, got: $VERDICT_LINE"
+fi
+
+if ! grep -q '^verdict=' "$FIX/gh-output.txt" 2>/dev/null; then
+  pass 'archive failure: $GITHUB_OUTPUT carries no verdict (never written)'
+else
+  fail "archive failure: unexpected \$GITHUB_OUTPUT: $(cat "$FIX/gh-output.txt")"
+fi
+
+if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ] && [ -f "$FIX/out/job-logs/run-1002-job-5002.log" ]; then
+  pass 'archive failure: the source job logs are left intact'
+else
+  fail "archive failure: expected both source job logs to survive, got: $(ls "$FIX/out/job-logs" 2>&1 | tr '\n' ' ')"
+fi
+
+if [ ! -e "$FIX/out/job-logs.tar.gz" ]; then
+  pass 'archive failure: no partial job-logs.tar.gz was left behind'
+else
+  fail 'archive failure: expected no job-logs.tar.gz to exist after a failed archive'
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then exit 1; fi

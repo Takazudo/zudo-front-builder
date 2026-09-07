@@ -71,6 +71,11 @@ set -euo pipefail
 #                     cases don't sit through two real 2 s gh-retry sleeps.
 #                     UNSET in production, so the harvester's own 2000 ms
 #                     default applies.
+#   WATCH_TAR         alternate `tar` executable (default tar) used to archive
+#                     job-logs/ (#2934) -- test ergonomics only: the unit
+#                     test's archive-failure case points it at `false` to
+#                     simulate a broken archive without a dedicated stub.
+#                     UNSET in production, so the real `tar` on PATH is used.
 #
 # Also honours GITHUB_OUTPUT / GITHUB_STEP_SUMMARY when set, so the workflow
 # step needs no reformatting logic of its own.
@@ -201,6 +206,38 @@ else
   fi
 fi
 log "==> pass B ($MAIN_BRANCH only): status=$STATUS_B runs=$MAIN_COUNT silent=$MAIN_SILENT src=$SRC_B"
+
+# ── Archive job-logs/ before upload (#2934) ─────────────────────────────────
+#
+# Both passes are done reading $OUT/job-logs above (pass A saved it via
+# --save-dir, pass B re-read the trunk subset), so it is safe to fold the
+# whole directory into one file before the workflow's upload-artifact step:
+# at ~1.7 MB / 10k lines per saved log this directory dominates the
+# artifact's size. Pruning was rejected -- pass B's own re-read above, and
+# R-B/drift triage, both want the non-failed logs too -- so every log is
+# kept, just no longer as loose files.
+#
+# The plain directory is deleted ONLY after the archive is created AND
+# verified, and this whole block runs under the script's own `set -e` with
+# no `set +e` guard around it: a failing `tar` aborts the script immediately,
+# before $GITHUB_OUTPUT (and its `verdict=` line) is ever written. That
+# reuses supervisor-watch.yml's existing "a verdict that was never written
+# files and alerts" rule instead of needing new plumbing, and it guarantees
+# the source logs are never removed on a broken archive -- silently
+# uploading a missing or truncated archive would destroy the only triage
+# input this lane produces.
+#
+# If job-logs/ survived alongside job-logs.tar.gz, actions/upload-artifact
+# would upload BOTH and the artifact would grow instead of shrink, so the
+# directory is removed rather than merely left for the upload step's `path:`
+# to skip.
+TAR="${WATCH_TAR:-tar}"
+JOB_LOGS_ARCHIVE="$OUT/job-logs.tar.gz"
+log "==> archiving $OUT/job-logs"
+"$TAR" -czf "$JOB_LOGS_ARCHIVE" -C "$OUT" job-logs
+"$TAR" -tzf "$JOB_LOGS_ARCHIVE" >/dev/null
+rm -rf "$OUT/job-logs"
+log "==> archived job logs to $JOB_LOGS_ARCHIVE, removed the plain directory"
 
 # ── Provenance for triage ────────────────────────────────────────────────────
 
