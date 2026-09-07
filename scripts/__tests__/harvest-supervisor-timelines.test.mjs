@@ -348,6 +348,13 @@ describe("runCli", () => {
     expect(s.out().trimEnd().split("\n")).toHaveLength(1);
     expect(s.err()).toMatch(/run=1004 .* job=5004 error=/);
     expect(s.err()).toMatch(/runs=2 harvested=1 failed=1 records=1/);
+
+    // The manifest is documented as one line per run: a gh subprocess error
+    // (Node's execFile embeds the child's own stderr, often multi-line)
+    // must never fragment the run=1004 manifest entry across physical lines.
+    const errLines = s.err().trimEnd().split("\n");
+    const run1004Line = errLines.find((line) => line.startsWith("run=1004"));
+    expect(run1004Line).toMatch(/^run=1004 .*error=.+$/);
   });
 
   it("exit 64: gh run list itself failing is a usage error, not partial or no-records", async () => {

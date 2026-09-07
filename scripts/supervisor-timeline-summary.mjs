@@ -413,13 +413,16 @@ export async function runCli(
 
   let drift = null;
   let rb = null;
+  let driftIsStrictRelevant = false;
 
   if (caseRecords.length === 0) {
     stdout.write(`no samples for case "${options.caseLabel}"\n`);
   } else {
     const summary = summarizeCase(caseRecords);
     drift = identityDrift(caseRecords);
-    drift.strictRelevant = drift.driftedFields.some((field) => !options.allowDrift.includes(field));
+    driftIsStrictRelevant = drift.driftedFields.some(
+      (field) => !options.allowDrift.includes(field),
+    );
     rb = evaluateRB(summary.preUp, options.budgetMs, options.threshold);
 
     stdout.write(`case "${options.caseLabel}" (n=${caseRecords.length}):\n`);
@@ -444,7 +447,7 @@ export async function runCli(
 
   if (options.strict && anyFailed) return EXIT_STRICT;
   if (caseRecords.length === 0) return EXIT_NO_SAMPLES;
-  if (options.strict && (drift.strictRelevant || rb.tripped)) return EXIT_STRICT;
+  if (options.strict && (driftIsStrictRelevant || rb.tripped)) return EXIT_STRICT;
   return EXIT_OK;
 }
 

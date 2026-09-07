@@ -184,6 +184,15 @@ function manifestBase(run) {
   return `run=${run.databaseId} attempt=${run.attempt} branch=${run.headBranch} sha=${shortSha} created=${run.createdAt} conclusion=${run.conclusion ?? "null"}`;
 }
 
+// Node's execFile error messages embed the subprocess's own stderr (often
+// multi-line, e.g. "Command failed: gh ...\n<gh's own error output>"). The
+// manifest is documented as one line per run, so collapse it to a single
+// line rather than letting one failure fragment the stderr stream a
+// downstream parser expects to read line-by-line.
+function flattenErrorMessage(error) {
+  return String(error.message ?? error).replace(/\s*\r?\n\s*/g, " | ");
+}
+
 /**
  * Runs the CLI end to end and returns the exit code — never calls
  * `process.exit` itself, so tests can drive it with a stub `gh` script and
@@ -206,7 +215,7 @@ export async function runCli(argv, { stdout = process.stdout, stderr = process.s
       throw new Error("expected a JSON array from `gh run list`");
     }
   } catch (error) {
-    stderr.write(`usage error: gh run list failed: ${error.message}\n`);
+    stderr.write(`usage error: gh run list failed: ${flattenErrorMessage(error)}\n`);
     return EXIT_USAGE;
   }
 
@@ -260,7 +269,7 @@ export async function runCli(argv, { stdout = process.stdout, stderr = process.s
       stderr.write(`${base} job=${jobId} lines=${lineCount}\n`);
     } catch (error) {
       failed += 1;
-      stderr.write(`${base} job=${jobId ?? "none"} error=${error.message}\n`);
+      stderr.write(`${base} job=${jobId ?? "none"} error=${flattenErrorMessage(error)}\n`);
     }
   }
 
