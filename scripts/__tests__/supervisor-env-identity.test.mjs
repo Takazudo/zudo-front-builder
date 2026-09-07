@@ -54,13 +54,30 @@ describe("supervisor-env-identity", () => {
     expect(unset).not.toBe(empty);
   });
 
-  it("keeps REPORTED_ENV_KEYS, VOLATILE_ENV_KEYS, and STEERING_ENV_KEYS in agreement", () => {
+  it("reports every steering and volatile key, and nothing else", () => {
     for (const key of VOLATILE_ENV_KEYS) {
       expect(REPORTED_ENV_KEYS).toContain(key);
     }
-    expect(STEERING_ENV_KEYS).toHaveLength(7);
     expect(STEERING_ENV_KEYS).toEqual(
       REPORTED_ENV_KEYS.filter((key) => !VOLATILE_ENV_KEYS.has(key)),
+    );
+    expect(REPORTED_ENV_KEYS).toHaveLength(STEERING_ENV_KEYS.length + VOLATILE_ENV_KEYS.size);
+  });
+
+  it("serializes the steering keys in their declared order (the digest's contract)", () => {
+    // Pinned so a reorder -- which silently changes every future `env=`
+    // token -- cannot pass as a no-op refactor.
+    expect(STEERING_ENV_KEYS).toEqual([
+      "npm_execpath",
+      "npm_config_user_agent",
+      "NODE_OPTIONS",
+      "NODE_ENV",
+      "CI",
+      "PNPM_HOME",
+      "TMPDIR",
+    ]);
+    expect(steeringEnvDigest(BASE_ENV)).toBe(
+      digestOf(STEERING_ENV_KEYS.map((key) => `${key}=${BASE_ENV[key]}`).join("\n")),
     );
   });
 

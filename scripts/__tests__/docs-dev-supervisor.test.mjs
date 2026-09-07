@@ -234,9 +234,9 @@ function envSlice(env) {
  *
  * - env: `envSlice(env)` carries two digests -- `digest` is the steering-only
  *   identity (`scripts/supervisor-env-identity.mjs`'s `steeringEnvDigest`)
- *   that becomes the timeline's `env=` token, and `fullDigest` is today's
- *   full-environment digest, kept only for within-session A/B diffs in the
- *   failure-evidence block.
+ *   that becomes the timeline's `env=` token, and `fullDigest` is the
+ *   full-environment digest, printed in the failure-evidence block for a
+ *   human comparing two evidence blocks by eye. Nothing parses it.
  */
 function captureSpawnInput(directory, scripts, env) {
   const fixtureSource = readFileSync(join(directory, "package.json"), "utf8");
