@@ -140,9 +140,33 @@ jobs:
     # One deduped tracking issue per workflow: red runs (rc 10 triage-severity
     # drift, or any other non-zero operational failure) append to the open
     # issue, while a completed run with no triage-severity drift (rc 0:
-    # no-drift or informational-drift) closes it. This job branches on
-    # detector.outputs.rc because the detector job result cannot distinguish
-    # exit 10 from an operational failure.
+    # no-drift or informational-drift) closes it.
+    #
+    # The three steps below partition on `detector.outputs.rc` AND
+    # `detector.result` together, because neither alone is enough (#2928):
+    #   - `.result` alone can't tell exit 10 from an operational failure. The
+    #     "Mark a non-clean detector outcome as failed" step exits 1 for ANY
+    #     non-zero rc, so this job is red for both.
+    #   - `outputs.rc` alone can't tell a completed detector from one that
+    #     DIED before writing rc. An unwritten output is ABSENT, not empty —
+    #     GitHub omits the key, so the reference is null and coerces to 0
+    #     (measured in run 34106407484 on this exact producer shape: a job
+    #     declaring `rc: ${{ steps.<id>.outputs.rc }}` whose step never ran).
+    #     `rc != '0'` was therefore FALSE on a dead detector and `rc == '0'`
+    #     TRUE, so a checkout or Node-setup failure on the weekly cron filed
+    #     nothing and silently CLOSED any open drift tracker. `!cancelled()`
+    #     on this job means it runs even when `detector` failed, so that path
+    #     was live, not theoretical.
+    # Together they partition cleanly, because `result == 'success'` holds if
+    # and only if the detector ran AND reported rc 0:
+    #     ran rc=0  -> success, '0'    -> close
+    #     ran rc=10 -> failure, '10'   -> drift
+    #     ran rc=3  -> failure, '3'    -> operational failure
+    #     died      -> failure, absent -> operational failure
+    # Note the drift step must NOT gain a `result == 'success'` conjunct: this
+    # job is red on rc 10 by design, so that would disable drift filing
+    # entirely. A result that cannot tell "never ran" apart from "clean" is
+    # not a proof — absence has to read as red and report.
     name: File/close YAML candidate watch tracking issue
     needs: [detector]
     # The tracker is an exact-`main` contract: an off-main workflow_dispatch may
@@ -172,7 +196,7 @@ jobs:
         run: bash scripts/file-exam-issue.sh "YAML candidate watch"
 
       - name: File or comment on tracking issue (operational failure)
-        if: ${{ needs.detector.outputs.rc != '0' && needs.detector.outputs.rc != '10' }}
+        if: ${{ needs.detector.result != 'success' && needs.detector.outputs.rc != '10' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: >-
@@ -182,7 +206,7 @@ jobs:
         run: bash scripts/file-exam-issue.sh "YAML candidate watch"
 
       - name: Close tracking issue (green)
-        if: ${{ needs.detector.outputs.rc == '0' }}
+        if: ${{ needs.detector.result == 'success' && needs.detector.outputs.rc == '0' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/file-exam-issue.sh "YAML candidate watch" --green
