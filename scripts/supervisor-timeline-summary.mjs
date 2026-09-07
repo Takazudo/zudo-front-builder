@@ -25,6 +25,13 @@ import { pathToFileURL } from "node:url";
  *         distribution, not bumped by feel.
  *   R-C — no failure and pre-UP stays comfortably under budget: nothing to
  *         do; the next occurrence — local or CI — is the experiment.
+ *         `.github/workflows/supervisor-watch.yml` runs `harvest →
+ *         summarize --strict` weekly and files/closes the deduped
+ *         `[exam-failure] Supervisor watch is failing` issue — the
+ *         automated form of "the next occurrence is the experiment"; a
+ *         human still classifies an R-A hit from the diagnostic block in
+ *         the run's job log (saved in the workflow artifact), and the
+ *         harvester manifest's `failed=` field names the run.
  *
  * `expected-failure` (the `hidden` case's deliberately induced pre-UP
  * timeout) is a distinct outcome from `failed` by construction, precisely so
@@ -36,17 +43,24 @@ import { pathToFileURL } from "node:url";
  * parse error that must never be confused with "no data".
  *
  * `--allow-drift <field>[,<field>]` (#2908) lists identity fields whose drift
- * is still reported but never trips `--strict`. This exists for `env`: its
- * digest hashes GitHub's per-run variables (`GITHUB_RUN_ID`, `GITHUB_SHA`, …;
- * only three vitest pool keys are excluded), so every CI run produces a
- * distinct `env` by construction — verified live: a `main` run measured
- * `env=sha256:5febea60…` against a PR run's `env=sha256:173aae2c…`. Without
- * this escape hatch `--strict` would always exit 2 on any ubuntu population,
- * regardless of whether anything about the population actually changed.
- * Field names are validated against `IDENTITY_FIELDS`; an unknown name or an
- * empty list is a usage error (64), not a silently-ignored no-op, and a
- * repeated flag accumulates rather than replacing the earlier list. The
- * drift report still prints allow-listed fields, marked as such.
+ * is still reported but never trips `--strict`. It is a general escape
+ * hatch for a *deliberately* mixed population: harvesting across the
+ * identity-contract epoch `2026-09-08T00:00:00Z` (records from before it
+ * carry the pre-epoch full-environment `env` digest), an intentional A/B,
+ * or the weekly watch's all-branch pass (that population is heterogeneous
+ * by design, so it allow-lists every identity field and judges identity
+ * drift on `main` only — see the R-C bullet above). `env` is now a
+ * **steering-only** digest over `STEERING_ENV_KEYS` from
+ * `scripts/supervisor-env-identity.mjs` (7 keys): it no longer hashes
+ * GitHub's per-run variables, so the documented harvester-to-summarizer
+ * pipeline no longer passes `--allow-drift env`, and it changes exactly
+ * when a steering input changes (a node patch bump via
+ * `npm_config_user_agent`, a runner-image `PNPM_HOME` / `TMPDIR`, or
+ * `NODE_OPTIONS`) — legitimate drift that `--strict` is meant to catch
+ * (#2913). Field names are validated against `IDENTITY_FIELDS`; an unknown
+ * name or an empty list is a usage error (64), not a silently-ignored
+ * no-op, and a repeated flag accumulates rather than replacing the earlier
+ * list. The drift report still prints allow-listed fields, marked as such.
  */
 
 // Not anchored to line-start: `pnpm -r`'s parallel reporter prefixes every

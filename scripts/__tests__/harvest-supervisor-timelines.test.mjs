@@ -19,6 +19,7 @@ import {
   EXIT_OK,
   EXIT_PARTIAL,
   EXIT_USAGE,
+  IDENTITY_CONTRACT_EPOCH,
   buildRunListArgs,
   parseCliArgs,
   runCli,
@@ -71,6 +72,13 @@ const UP_UP2_RECORD_LINE =
 // A vitest code frame quoting the tag inside a string literal -- must be
 // ignored, not parsed as a record (the summarizer's own TAG_PATTERN guard).
 const CODE_FRAME_LINE = `${LOG_PREFIX}  913|       expect(timelineLines[0]).toContain("[supervisor-timeline] case=hidden");`;
+
+// An R-A candidate: the harvester's per-run `failed=<m>` counts records
+// shaped like this one.
+const FAILED_RECORD_LINE =
+  `${LOG_PREFIX}. test: [supervisor-timeline] case=up+boom outcome=failed total=10041 runner=pnpm ` +
+  "zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 " +
+  "env=sha256:ed62f5285936a0ca first-stdout-byte=233";
 
 const JOB_LOG_WITH_RECORD = [
   `${LOG_PREFIX}##[section]Starting: Run tests`,
@@ -177,13 +185,33 @@ describe("buildRunListArgs", () => {
 });
 
 describe("parseCliArgs", () => {
-  it("applies documented defaults with no flags", () => {
-    const options = parseCliArgs([]);
-    expect(options.since).toBe("2026-09-06T22:00:00Z");
+  it("applies documented defaults with no flags: --since floors at the identity epoch", () => {
+    // "now" sits within 7 days of the epoch, so the floor -- not the
+    // rolling window -- decides the default.
+    const options = parseCliArgs([], { now: new Date("2026-09-10T00:00:00Z") });
+    expect(options.since).toBe(IDENTITY_CONTRACT_EPOCH);
     expect(options.limit).toBe(200);
     expect(options.branch).toBeUndefined();
     expect(options.saveDir).toBeUndefined();
     expect(options.gh).toBe("gh");
+  });
+
+  it("defaults --since to a rolling 7-day window once that window is past the epoch", () => {
+    const options = parseCliArgs([], { now: new Date("2026-10-01T12:00:00Z") });
+    expect(options.since).toBe("2026-09-24T12:00:00Z");
+  });
+
+  it("an explicit --since overrides the computed default", () => {
+    const options = parseCliArgs(["--since", "2020-01-01T00:00:00Z"], {
+      now: new Date("2026-10-01T12:00:00Z"),
+    });
+    expect(options.since).toBe("2020-01-01T00:00:00Z");
+  });
+
+  it("uses the real clock when no now is injected", () => {
+    const options = parseCliArgs([]);
+    // Whatever "now" really is, the default can never predate the epoch.
+    expect(Date.parse(options.since)).toBeGreaterThanOrEqual(Date.parse(IDENTITY_CONTRACT_EPOCH));
   });
 
   it("parses all flags", () => {
@@ -257,6 +285,7 @@ describe("runCli", () => {
     expect(record.outcome).toBe("ok");
 
     expect(s.err()).toMatch(/run=1001 .* job=5001 lines=1/);
+    expect(s.err()).toMatch(/run=1001 .* job=5001 lines=1 failed=0/);
     expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1/);
 
     const calls = readCalls(dir);
@@ -286,6 +315,26 @@ describe("runCli", () => {
     expect(code).toBe(EXIT_OK);
     const saved = readFileSync(join(saveDir, "run-1001-job-5001.log"), "utf8");
     expect(saved).toBe(JOB_LOG_WITH_RECORD);
+  });
+
+  it("manifest's failed=<m> counts parsed records with outcome=failed, an R-A candidate", async () => {
+    const jobLog = [UP_UP2_RECORD_LINE, FAILED_RECORD_LINE].join("\n");
+    const runs = [makeRun({ databaseId: 1009 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 1009: [{ databaseId: 5009, name: "health" }] },
+      logsByJobId: { 5009: jobLog },
+    });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_OK);
+    // A run-level manifest failure count is untouched by a record-level one:
+    // the run itself harvested successfully, it just carries an R-A record.
+    expect(s.err()).toMatch(/run=1009 .* job=5009 lines=2 failed=1/);
+    expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=2/);
   });
 
   it("exit 1: zero records extracted from an otherwise successful harvest", async () => {
