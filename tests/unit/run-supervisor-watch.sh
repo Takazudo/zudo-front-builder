@@ -470,11 +470,12 @@ assert_detail 'red (drift on main)' "$FIX" 'all=ok:0/0 main=red:2/2'
 #
 # WATCH_TAR=false simulates a broken archive with no dedicated stub script
 # (`false` ignores its argv and exits 1). The archiving block in
-# run-supervisor-watch.sh runs under the script's own `set -e` with no `set
-# +e` guard, so this must kill the whole script BEFORE $GITHUB_OUTPUT (and
-# its `verdict=` line) is written -- a broken archive must never be reported
-# as a quiet green week -- and it must never delete the source logs it
-# failed to fold into an archive.
+# run-supervisor-watch.sh must kill the whole script BEFORE $GITHUB_OUTPUT
+# (and its `verdict=` line) is written -- a broken archive must never be
+# reported as a quiet green week -- and it must never delete the source logs
+# it failed to fold into an archive. It sits AFTER the provenance greps and
+# the $GITHUB_STEP_SUMMARY render, though, so the R-A triage output a filed
+# tracking issue points at still exists.
 
 FIX=$(new_fixture_dir archive-failure)
 printf '[%s,%s]' "$(run_json 1001 main)" "$(run_json 1002 feat/x)" >"$FIX/run-list.json"
@@ -512,6 +513,71 @@ if [ ! -e "$FIX/out/job-logs.tar.gz" ]; then
   pass 'archive failure: no partial job-logs.tar.gz was left behind'
 else
   fail 'archive failure: expected no job-logs.tar.gz to exist after a failed archive'
+fi
+
+# The provenance files and the job summary are the only thing the filed
+# tracking issue's text points a reader at, so a broken archive must not take
+# them with it -- which is why the archiving block runs after them.
+if [ -f "$FIX/out/failed-runs.txt" ] && [ -f "$FIX/out/harvest-notices.txt" ] \
+  && grep -q '^## Supervisor watch — ' "$FIX/gh-step-summary.md"; then
+  pass 'archive failure: the provenance files and job summary survive'
+else
+  fail 'archive failure: expected the provenance files and $GITHUB_STEP_SUMMARY to be written before archiving'
+fi
+
+# ── archive failure, partial output: the truncated archive is removed ───────
+#
+# `false` never opens the output file, so it cannot show what a REAL tar
+# failure leaves behind: `tar -czf` truncates its target the moment it
+# starts, so a mid-write death (disk full on a 200-run harvest -- exactly
+# when job-logs/ is largest) leaves a corrupt job-logs.tar.gz beside the
+# intact job-logs/. upload-artifact's `if: always()` would then ship BOTH,
+# which is the "artifact grows instead of shrinking" outcome the whole
+# archiving step exists to avoid, with a corrupt file where triage expects
+# the real one. This stub reproduces that shape.
+
+FIX=$(new_fixture_dir archive-partial)
+printf '[%s]' "$(run_json 1001 main)" >"$FIX/run-list.json"
+jobs_json 5001 >"$FIX/jobs-1001.json"
+job_log ok 430 540 "$ENV_A" >"$FIX/job-5001.log"
+
+PARTIAL_TAR="$FIX/partial-tar.sh"
+cat >"$PARTIAL_TAR" <<'PARTIAL_TAR_EOF'
+#!/bin/sh
+# Mimics `tar -czf <archive> ...` dying after it has already truncated and
+# partly written its output: create the file, write garbage, fail.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -czf)
+      printf 'not a real gzip stream' >"$2"
+      exit 1
+      ;;
+  esac
+  shift
+done
+exit 1
+PARTIAL_TAR_EOF
+chmod +x "$PARTIAL_TAR"
+
+run_watch "$FIX" "$PARTIAL_TAR"
+
+if [ "$RC" -ne 0 ] && [ -z "$VERDICT_LINE" ] \
+  && ! grep -q '^verdict=' "$FIX/gh-output.txt" 2>/dev/null; then
+  pass 'archive partial: non-zero exit and no verdict'
+else
+  fail "archive partial: want a non-zero exit and no verdict, got rc=$RC verdict='$VERDICT_LINE'"
+fi
+
+if [ ! -e "$FIX/out/job-logs.tar.gz" ]; then
+  pass 'archive partial: the truncated archive was removed'
+else
+  fail 'archive partial: expected the truncated job-logs.tar.gz to be removed'
+fi
+
+if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ]; then
+  pass 'archive partial: the source job log is left intact'
+else
+  fail 'archive partial: expected the source job log to survive'
 fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

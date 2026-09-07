@@ -218,6 +218,14 @@ jobs:
     # tab. The notification also preserves the distinction between candidate
     # drift and an operational failure, using the detector job output rather
     # than the detector job result.
+    #
+    # The rc comparisons below are SHELL, not workflow expressions, which is
+    # what makes them safe without the file-or-close job's `.result` conjunct:
+    # an absent output reaches `env:` as the EMPTY STRING, so `[ "" != "0" ]`
+    # is true and a detector that died before writing rc still notifies as an
+    # operational failure. The same `rc != '0'` written as an `if:` expression
+    # would be FALSE (the null coerces to 0 — see #2928 and the file-or-close
+    # job's comment), silencing the alert. Do not hoist these into an `if:`.
     name: Notify via IFTTT on failure
     needs: [detector]
     if: ${{ !cancelled() }}

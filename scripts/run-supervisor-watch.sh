@@ -209,38 +209,6 @@ else
 fi
 log "==> pass B ($MAIN_BRANCH only): status=$STATUS_B runs=$MAIN_COUNT silent=$MAIN_SILENT src=$SRC_B"
 
-# ── Archive job-logs/ before upload (#2934) ─────────────────────────────────
-#
-# Both passes are done reading $OUT/job-logs above (pass A saved it via
-# --save-dir, pass B re-read the trunk subset), so it is safe to fold the
-# whole directory into one file before the workflow's upload-artifact step:
-# at ~1.7 MB / 10k lines per saved log this directory dominates the
-# artifact's size. Pruning was rejected -- pass B's own re-read above, and
-# R-B/drift triage, both want the non-failed logs too -- so every log is
-# kept, just no longer as loose files.
-#
-# The plain directory is deleted ONLY after the archive is created AND
-# verified, and this whole block runs under the script's own `set -e` with
-# no `set +e` guard around it: a failing `tar` aborts the script immediately,
-# before $GITHUB_OUTPUT (and its `verdict=` line) is ever written. That
-# reuses supervisor-watch.yml's existing "a verdict that was never written
-# files and alerts" rule instead of needing new plumbing, and it guarantees
-# the source logs are never removed on a broken archive -- silently
-# uploading a missing or truncated archive would destroy the only triage
-# input this lane produces.
-#
-# If job-logs/ survived alongside job-logs.tar.gz, actions/upload-artifact
-# would upload BOTH and the artifact would grow instead of shrink, so the
-# directory is removed rather than merely left for the upload step's `path:`
-# to skip.
-TAR="${WATCH_TAR:-tar}"
-JOB_LOGS_ARCHIVE="$OUT/job-logs.tar.gz"
-log "==> archiving $OUT/job-logs"
-"$TAR" -czf "$JOB_LOGS_ARCHIVE" -C "$OUT" job-logs
-"$TAR" -tzf "$JOB_LOGS_ARCHIVE" >/dev/null
-rm -rf "$OUT/job-logs"
-log "==> archived job logs to $JOB_LOGS_ARCHIVE, removed the plain directory"
-
 # ── Provenance for triage ────────────────────────────────────────────────────
 
 # Per-run manifest lines whose `failedRecords=<m>` count is non-zero: these
@@ -272,13 +240,6 @@ fi
 
 # all=<ok|empty|red>:<harvester rc>/<summarizer rc> main=<ok|empty|red|silent>:<runs>/<summarizer rc>
 DETAIL="all=$STATUS_A:$HRC_A/$SRC_A main=$STATUS_B:$MAIN_COUNT/$SRC_B"
-
-if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  {
-    printf 'verdict=%s\n' "$VERDICT"
-    printf 'detail=%s\n' "$DETAIL"
-  } >>"$GITHUB_OUTPUT"
-fi
 
 print_file_or_none() {
   if [ -s "$1" ]; then
@@ -324,6 +285,55 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     cat "$OUT/main/summary.txt"
     printf '```\n'
   } >>"$GITHUB_STEP_SUMMARY"
+fi
+
+# ── Archive job-logs/ before upload (#2934) ─────────────────────────────────
+#
+# Both passes are done reading $OUT/job-logs above (pass A saved it via
+# --save-dir, pass B re-read the trunk subset), so it is safe to fold the
+# whole directory into one file before the workflow's upload-artifact step:
+# at ~1.7 MB / 10k lines per saved log this directory dominates the
+# artifact's size. Pruning was rejected -- pass B's own re-read above, and
+# R-B/drift triage, both want the non-failed logs too -- so every log is
+# kept, just no longer as loose files.
+#
+# WHERE this block sits is load-bearing twice over:
+#   - AFTER the provenance greps and the $GITHUB_STEP_SUMMARY render, so a
+#     broken archive cannot also erase the R-A triage pointers (failed-runs
+#     .txt, harvest-errors.txt, silent-runs.txt) and the job summary that the
+#     tracking issue's own text tells a reader to go and look at. The summary
+#     can therefore read `green` on a run whose verdict was withheld; the
+#     `!! archiving ... failed` line in the step log is the explanation, and
+#     the issue is filed either way.
+#   - BEFORE $GITHUB_OUTPUT (and its `verdict=` line) is written, so a broken
+#     archive still reaches supervisor-watch.yml as "a verdict that was never
+#     written", which its existing condition files and alerts on. That reuses
+#     the rule instead of needing new plumbing.
+#
+# The plain directory is deleted ONLY after the archive is created AND
+# verified. On either failure the partial archive is removed and the script
+# exits non-zero: leaving a truncated job-logs.tar.gz beside the intact
+# job-logs/ would make `if: always()` upload BOTH -- exactly the "artifact
+# grows instead of shrinking" outcome the removal below exists to prevent,
+# and with a corrupt file sitting where triage expects the real one. The
+# source logs are never removed on a broken archive.
+TAR="${WATCH_TAR:-tar}"
+JOB_LOGS_ARCHIVE="$OUT/job-logs.tar.gz"
+log "==> archiving $OUT/job-logs"
+if ! "$TAR" -czf "$JOB_LOGS_ARCHIVE" -C "$OUT" job-logs \
+  || ! "$TAR" -tzf "$JOB_LOGS_ARCHIVE" >/dev/null; then
+  rm -f "$JOB_LOGS_ARCHIVE"
+  log "!! archiving $OUT/job-logs failed; kept the plain directory, wrote no verdict"
+  exit 1
+fi
+rm -rf "$OUT/job-logs"
+log "==> archived job logs to $JOB_LOGS_ARCHIVE, removed the plain directory"
+
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  {
+    printf 'verdict=%s\n' "$VERDICT"
+    printf 'detail=%s\n' "$DETAIL"
+  } >>"$GITHUB_OUTPUT"
 fi
 
 # Last stdout line, by contract — the unit test reads it.

@@ -604,6 +604,15 @@ jobs:
     # way a release is watched live. Same IFTTT pattern as release.yml's /
     # drift-net.yml's `notify` job (issue #1335), keyed on the two test jobs'
     # `outputs.rc` for the same reason as the close job above.
+    #
+    # The rc comparison below is SHELL, not a workflow expression, and that
+    # is what makes it safe without the close job's `.result` conjunct: an
+    # absent output reaches `env:` as the EMPTY STRING, and `[ "" != "0" ]`
+    # is true, so a leg that died before writing rc still notifies. The same
+    # `rc != '0'` written as an `if:` expression would be FALSE (the null
+    # coerces to 0 — see the close job's comment and #2928), silencing the
+    # alert. Do not "align" this job with the close job by hoisting the
+    # comparison into an `if:`.
     name: Notify via IFTTT on failure
     needs: [quarantine-heavy, macos-exam]
     if: always()
