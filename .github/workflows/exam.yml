@@ -331,18 +331,25 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # `always()` (issue #1394): the bare `steps.run_manifest.outputs.rc !=
-      # '0'` condition implicitly ANDs in `success()` (GitHub Actions' default
-      # for any `if:` that doesn't itself reference always()/failure()/
-      # cancelled()), so a job that fails BEFORE this step runs — e.g. the
+      # Fail-closed gate (issues #1394, #2928). A bare
+      # `steps.run_manifest.outputs.rc != '0'` implicitly ANDs in `success()`
+      # (GitHub Actions' default for any `if:` referencing none of always()/
+      # failure()/cancelled()), so a job that failed BEFORE this step — the
       # esbuild/tailwindcss staging assert above, or a compile error in
-      # `cargo build --workspace --all-targets` — filed nothing at all. With
-      # `always()`, an infra failure that never reaches run_manifest leaves
-      # `outputs.rc` empty, and `'' != '0'` is true, so this step still runs
-      # and files the tracking issue — the empty-rc case is the fallback the
-      # comparison already provides, not extra logic.
+      # `cargo build --workspace --all-targets` — filed nothing at all.
+      # `always()` did NOT rescue that, though this comment used to claim it
+      # did: GitHub coerces both sides of a mismatched comparison to numbers,
+      # so an unset `outputs.rc` and '0' compare equal and the fallback was
+      # skipped in precisely the case it was written for. `failure()` carries
+      # that case directly, and — unlike the string comparison — does not rest
+      # on whether an unset output reads as '' or as null. The rule being
+      # enforced: a result that cannot tell "never ran" apart from "passed" is
+      # not a proof, so absence has to read as red and file. `!cancelled()` is
+      # the other half — a cancelled run (a workflow_dispatch landing on a
+      # scheduled one, a manual cancel, a `timeout-minutes` expiry) has no
+      # result behind it and must not file.
       - name: File or comment on tracking issue (failure)
-        if: always() && steps.run_manifest.outputs.rc != '0'
+        if: ${{ !cancelled() && (failure() || steps.run_manifest.outputs.rc != '0') }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "quarantine/heavy manifest (ubuntu-latest)"
@@ -505,13 +512,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # `always()` (issue #1394) — same implicit-success() gap as the
-      # quarantine-heavy job's filing step: without it, a failure BEFORE
-      # run_macos_suite (the staging assert above, or a compile error) filed
-      # nothing. Empty `outputs.rc` compares `!= '0'` as true, so this still
-      # fires for those infra failures too.
+      # Same fail-closed gate as the quarantine-heavy job's filing step above
+      # (issues #1394, #2928), for the same reason and with the same
+      # correction: a failure BEFORE run_macos_suite (the staging assert
+      # above, or a compile error) must file rather than pass silently, and
+      # `always() && rc != '0'` never did — an unset `outputs.rc` compares
+      # equal to '0' under GitHub's numeric coercion, so the never-ran case
+      # was skipped, not caught. `failure()` catches it; `!cancelled()` keeps
+      # a cancelled run from filing an issue with no result behind it.
       - name: File or comment on tracking issue (failure)
-        if: always() && steps.run_macos_suite.outputs.rc != '0'
+        if: ${{ !cancelled() && (failure() || steps.run_macos_suite.outputs.rc != '0') }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "macOS full workspace re-exam (macos-15)"
