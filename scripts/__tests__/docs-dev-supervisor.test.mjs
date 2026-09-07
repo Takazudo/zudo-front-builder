@@ -33,6 +33,9 @@ const RUN_PARALLEL_PATH = join(
   "bin",
   "run-parallel.mjs",
 );
+// Budget calibrated 2026-09-07 (#2887, R-C) against measured pre-UP (spawn -> UP), case=up+boom:
+// ubuntu health.yml n=2 max=1757ms; macOS arm64 6-core/8GB real-condition replay n=20 max=2425ms.
+// R-B line = 0.75 x budget = 7500ms; observed max = 24% of budget. Change only by measurement.
 const PROCESS_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 20;
 
