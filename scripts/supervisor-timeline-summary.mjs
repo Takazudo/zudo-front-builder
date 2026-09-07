@@ -43,8 +43,10 @@ import { pathToFileURL } from "node:url";
  * `env=sha256:5febea60…` against a PR run's `env=sha256:173aae2c…`. Without
  * this escape hatch `--strict` would always exit 2 on any ubuntu population,
  * regardless of whether anything about the population actually changed.
- * Field names are validated against `IDENTITY_FIELDS`; an unknown name is a
- * usage error (64), not a silently-ignored no-op.
+ * Field names are validated against `IDENTITY_FIELDS`; an unknown name or an
+ * empty list is a usage error (64), not a silently-ignored no-op, and a
+ * repeated flag accumulates rather than replacing the earlier list. The
+ * drift report still prints allow-listed fields, marked as such.
  */
 
 // Not anchored to line-start: `pnpm -r`'s parallel reporter prefixes every
@@ -244,15 +246,25 @@ function formatDistribution(label, stats) {
   return `  ${label}: n=${stats.n} min=${fmt(stats.min)} p50=${fmt(stats.p50)} p90=${fmt(stats.p90)} p99=${fmt(stats.p99)} max=${fmt(stats.max)}`;
 }
 
-function formatDriftWarning(drift) {
+/** The drifted fields that are not on the `--allow-drift` list — the ones
+ * `--strict` acts on. */
+function strictRelevantDrift(drift, allowDrift) {
+  return drift.driftedFields.filter((field) => !allowDrift.includes(field));
+}
+
+function formatDriftWarning(drift, allowDrift) {
   const lines = [
     "!!! INPUT DRIFT DETECTED !!!",
     "The sampled distribution mixes more than one value for:",
   ];
   for (const field of drift.driftedFields) {
-    lines.push(`  - ${field}: ${drift.distinct[field].join(", ")}`);
+    const suffix = allowDrift.includes(field) ? " (allowed by --allow-drift)" : "";
+    lines.push(`  - ${field}: ${drift.distinct[field].join(", ")}${suffix}`);
   }
   lines.push("Quantiles above may not be meaningful across mixed inputs — see #2902/#2903.");
+  if (strictRelevantDrift(drift, allowDrift).length === 0) {
+    lines.push("Every drifted field is allow-listed; --strict does not trip on this drift.");
+  }
   return lines.join("\n");
 }
 
@@ -281,12 +293,15 @@ export function parseCliArgs(argv) {
         .split(",")
         .map((field) => field.trim())
         .filter(Boolean);
+      if (fields.length === 0) {
+        throw new Error(`--allow-drift requires at least one field name, got: "${value}"`);
+      }
       for (const field of fields) {
         if (!IDENTITY_FIELDS.includes(field)) {
           throw new Error(`unknown field for --allow-drift: "${field}"`);
         }
+        if (!options.allowDrift.includes(field)) options.allowDrift.push(field);
       }
-      options.allowDrift = fields;
       index += 1;
     } else if (arg === "--budget-ms") {
       const value = argv[index + 1];
@@ -413,16 +428,12 @@ export async function runCli(
 
   let drift = null;
   let rb = null;
-  let driftIsStrictRelevant = false;
 
   if (caseRecords.length === 0) {
     stdout.write(`no samples for case "${options.caseLabel}"\n`);
   } else {
     const summary = summarizeCase(caseRecords);
     drift = identityDrift(caseRecords);
-    driftIsStrictRelevant = drift.driftedFields.some(
-      (field) => !options.allowDrift.includes(field),
-    );
     rb = evaluateRB(summary.preUp, options.budgetMs, options.threshold);
 
     stdout.write(`case "${options.caseLabel}" (n=${caseRecords.length}):\n`);
@@ -437,7 +448,7 @@ export async function runCli(
       stdout.write(`  identity ${field}: ${drift.distinct[field].join(", ")}\n`);
     }
     if (drift.hasDrift) {
-      stdout.write(`\n${formatDriftWarning(drift)}\n`);
+      stdout.write(`\n${formatDriftWarning(drift, options.allowDrift)}\n`);
     }
 
     stdout.write(
@@ -447,7 +458,9 @@ export async function runCli(
 
   if (options.strict && anyFailed) return EXIT_STRICT;
   if (caseRecords.length === 0) return EXIT_NO_SAMPLES;
-  if (options.strict && (driftIsStrictRelevant || rb.tripped)) return EXIT_STRICT;
+  if (options.strict && (strictRelevantDrift(drift, options.allowDrift).length > 0 || rb.tripped)) {
+    return EXIT_STRICT;
+  }
   return EXIT_OK;
 }
 

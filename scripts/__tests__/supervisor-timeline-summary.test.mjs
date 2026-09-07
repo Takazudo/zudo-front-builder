@@ -382,6 +382,20 @@ describe("parseCliArgs", () => {
     );
   });
 
+  it("throws when --allow-drift is given an empty or comma-only list", () => {
+    expect(() => parseCliArgs(["--allow-drift", ""])).toThrow(
+      /--allow-drift requires at least one field name/,
+    );
+    expect(() => parseCliArgs(["--allow-drift", ","])).toThrow(
+      /--allow-drift requires at least one field name/,
+    );
+  });
+
+  it("accumulates a repeated --allow-drift instead of replacing the earlier list", () => {
+    const options = parseCliArgs(["--allow-drift", "env", "--allow-drift", "runner,env"]);
+    expect(options.allowDrift).toEqual(["env", "runner"]);
+  });
+
   it("throws on an unknown flag", () => {
     expect(() => parseCliArgs(["--nope"])).toThrow(/unknown flag: --nope/);
   });
@@ -500,7 +514,23 @@ describe("runCli exit-code precedence (locked in #2902/#2903)", () => {
     });
     expect(code).toBe(EXIT_OK);
     expect(s.out()).toMatch(/INPUT DRIFT DETECTED/);
-    expect(s.out()).toMatch(/env: sha256:ed62f5285936a0ca, sha256:mutated-env/);
+    expect(s.out()).toMatch(
+      /env: sha256:ed62f5285936a0ca, sha256:mutated-env \(allowed by --allow-drift\)/,
+    );
+    expect(s.out()).toMatch(/Every drifted field is allow-listed/);
+  });
+
+  it("step 4: --allow-drift on one field does not cover drift on another -> 2", async () => {
+    const drifted = upBoomLine({ env: "sha256:mutated-env", runner: "npm" });
+    const s = sink();
+    const code = await runCli(["--strict", "--allow-drift", "env"], {
+      ...s,
+      stdin: [UP_BOOM_LINE, drifted].join("\n"),
+    });
+    expect(code).toBe(EXIT_STRICT);
+    expect(s.out()).toMatch(/env: .* \(allowed by --allow-drift\)/);
+    expect(s.out()).toMatch(/runner: pnpm, npm\n/);
+    expect(s.out()).not.toMatch(/Every drifted field is allow-listed/);
   });
 
   it("step 1: usage/malformed -> 64, an unknown --allow-drift field", async () => {

@@ -221,6 +221,12 @@ describe("parseCliArgs", () => {
   it("throws on an unexpected positional argument", () => {
     expect(() => parseCliArgs(["extra.log"])).toThrow(/unexpected positional argument/);
   });
+
+  it("rejects an empty value for a string flag instead of silently dropping the flag", () => {
+    expect(() => parseCliArgs(["--branch", ""])).toThrow(/--branch requires a value/);
+    expect(() => parseCliArgs(["--save-dir", ""])).toThrow(/--save-dir requires a value/);
+    expect(() => parseCliArgs(["--since", "--limit", "5"])).toThrow(/--since requires a value/);
+  });
 });
 
 describe("runCli", () => {
@@ -353,8 +359,77 @@ describe("runCli", () => {
     // (Node's execFile embeds the child's own stderr, often multi-line)
     // must never fragment the run=1004 manifest entry across physical lines.
     const errLines = s.err().trimEnd().split("\n");
+    expect(errLines).toHaveLength(runs.length + 1);
     const run1004Line = errLines.find((line) => line.startsWith("run=1004"));
-    expect(run1004Line).toMatch(/^run=1004 .*error=.+$/);
+    expect(run1004Line).toMatch(
+      /^run=1004 .*error=.*\| gh-stub: simulated failure fetching job 5004$/,
+    );
+  });
+
+  it("exit 3: a log with a malformed record is a failed run that contributes no records", async () => {
+    const malformedLog = [
+      UP_UP2_RECORD_LINE,
+      `${LOG_PREFIX}. test: [supervisor-timeline] case=up+boom outcome=ok total=oops`,
+    ].join("\n");
+    const runs = [makeRun({ databaseId: 1005 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 1005: [{ databaseId: 5005, name: "health" }] },
+      logsByJobId: { 5005: malformedLog },
+    });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_PARTIAL);
+    // The well-formed record ahead of the malformed line must not leak into
+    // stdout while the manifest reports the run as failed.
+    expect(s.out()).toBe("");
+    expect(s.err()).toMatch(/run=1005 .* job=5005 error=malformed \[supervisor-timeline\] line/);
+    expect(s.err()).toMatch(/runs=1 harvested=0 failed=1 records=0/);
+  });
+
+  it("skips a health job that never started instead of counting its missing log as a failure", async () => {
+    const runs = [
+      makeRun({ databaseId: 1006, conclusion: "cancelled" }),
+      makeRun({ databaseId: 1007, conclusion: "skipped" }),
+    ];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: {
+        1006: [{ databaseId: 5006, name: "health", conclusion: "cancelled", steps: [] }],
+        1007: [{ databaseId: 5007, name: "health", conclusion: "skipped", steps: [] }],
+      },
+    });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_NO_RECORDS);
+    expect(s.err()).toMatch(/run=1006 .* job=5006 skipped=health-job-never-started/);
+    expect(s.err()).toMatch(/run=1007 .* job=5007 skipped=health-job-never-started/);
+    expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0/);
+    expect(readCalls(dir).some((line) => line.startsWith("run view --job"))).toBe(false);
+  });
+
+  it("warns when gh run list returned exactly --limit runs, since the window may be capped", async () => {
+    const runs = [makeRun({ databaseId: 1001 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 1001: [{ databaseId: 5001, name: "health" }] },
+      logsByJobId: { 5001: JOB_LOG_WITH_RECORD },
+    });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const capped = sink();
+    expect(await runCli(["--gh", stubPath, "--limit", "1"], capped)).toBe(EXIT_OK);
+    expect(capped.err()).toMatch(/^notice: gh run list returned 1 run\(s\), the --limit cap/m);
+
+    const uncapped = sink();
+    expect(await runCli(["--gh", stubPath, "--limit", "2"], uncapped)).toBe(EXIT_OK);
+    expect(uncapped.err()).not.toMatch(/notice:/);
   });
 
   it("exit 64: gh run list itself failing is a usage error, not partial or no-records", async () => {
