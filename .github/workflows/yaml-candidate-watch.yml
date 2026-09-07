@@ -111,10 +111,9 @@ jobs:
 
       # Fail-closed gate (#2928): `failure()` carries the case where the
       # detector step never ran at all — checkout, the Node setup, or the
-      # install above failing — which `always() && rc != '0'` did not, because
-      # an unset `outputs.rc` is not reliably unequal to '0': if it reads as
-      # null rather than '', GitHub coerces the comparison to numbers and 0
-      # equals 0. The step was therefore skipped in exactly the case its
+      # install above failing — which `always() && rc != '0'` did not: an
+      # unset `outputs.rc` compares EQUAL to '0' (measured in run
+      # 34105846729, case A), so the step was skipped in exactly the case its
       # empty-DETECTOR_RC branch below was written for. A run that cannot tell
       # "never ran" apart from "clean" is not a proof; absence must read as
       # red. `!cancelled()` keeps a cancelled run from being reported as a
