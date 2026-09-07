@@ -548,8 +548,8 @@ jobs:
     #     `== '0'` and `== ''` are true. This step therefore used to run and
     #     close the tracking issue as green on an infra failure, erasing a
     #     standing alert — confirmed live in run 34106339546, where it
-    #     executed with both legs dead and was stopped only by DRY_RUN and by
-    #     no issue happening to be open. Same defect as the filing steps
+    #     executed with both legs dead and closed nothing only because no
+    #     tracking issue happened to be open. Same defect as the filing steps
     #     above, mirrored: there absence read as "nothing to report", here as
     #     "both legs passed".
     # Together they do distinguish the cases: `.result == 'success'` means the
