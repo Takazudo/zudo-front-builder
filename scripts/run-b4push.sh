@@ -15,7 +15,7 @@ set -uo pipefail
 #
 # Step order (cheap → expensive):
 #   1. Shell-script syntax check (bash -n)          — near-free, no compilation
-#   2. Offline shell unit tests (tests/unit/*.sh)   — near-free, sub-second; one
+#   2. Offline shell unit tests (tests/unit/*.sh)   — near-free, mostly sub-second; one
 #      step per test file, mirrors health.yml:47-50
 #   3. cargo machete --with-metadata (optional local tool) — fast
 #   4. cargo fmt --check                          — near-free, no compilation
@@ -146,7 +146,7 @@ fi
 
 # ── Step 2+: Offline shell unit tests ─────────────────
 # Actually EXECUTE tests/unit/*.sh (not just bash -n parse it above). These are
-# offline and sub-second by design (issue #1332) — mirrors health.yml:47-50,
+# offline and mostly sub-second by design (issue #1332; run-supervisor-watch.sh needs node and takes ~10-25s, #2925) — mirrors health.yml:47-50,
 # which runs them via `sh "$t"`. One step per file so a failing test is
 # individually attributable in the summary.
 for t in tests/unit/*.sh; do
