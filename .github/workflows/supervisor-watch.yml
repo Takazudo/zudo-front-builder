@@ -1,0 +1,196 @@
+# supervisor-watch.yml
+#
+# Weekly supervisor-timeline watch (issue #2918, epic #2915; zudo-test-wisdom
+# T3 scheduled exam). Since #2902/PR #2906, health.yml sets
+# ZFB_SUPERVISOR_TIMELINE=1 on its `pnpm test:workspace` step, so every ubuntu
+# CI run contributes a `[supervisor-timeline]` sample. That bought
+# observability, not storage: the lines land scattered across individual
+# workflow logs and expire with GitHub's retention. Nothing reads them unless
+# a human remembers to harvest.
+#
+# This workflow is the reopen trigger #2887 asked for. It re-fetches the
+# recent population (scripts/harvest-supervisor-timelines.mjs), runs #2887's
+# pre-registered rules over it (scripts/supervisor-timeline-summary.mjs
+# --strict), and files/closes ONE deduped tracking issue. R-A (`outcome=failed`
+# anywhere) and R-B (max pre-UP >= 0.75 x budget) become loud on a schedule.
+# It also guards #2913's identity contract: a `main` population that stops
+# being single-valued means the samples are no longer comparable.
+#
+# WHY A DEDICATED WORKFLOW, NOT A THIRD exam.yml JOB. Two reasons, both
+# structural. The dedup key is the workflow name (scripts/file-exam-issue.sh
+# titles its issue `[exam-failure] <name> is failing`), so folding this in
+# would merge supervisor findings into exam's quarantine/heavy tracking issue
+# and neither could close independently. And exam.yml's close/notify jobs are
+# keyed on exactly two `rc` outputs — a third leg means editing conditions
+# that are load-bearing for an unrelated lane.
+#
+# WHY TWO PASSES (see scripts/run-supervisor-watch.sh's header for the full
+# reasoning). Pass A covers ALL branches, because a red `health` on a PR is
+# easy to re-run past and forget, and R-A/R-B must see those samples; that
+# population is heterogeneous by design, so every identity field goes to
+# --allow-drift. Pass B covers `main` only under a bare --strict, because that
+# is the one population where a second identity value is a real signal.
+#
+# ACCEPTED COST: a legitimate identity change on `main` — a zudo-doc bump, a
+# fixture edit, a node/runner-image bump, a steering-env change — makes pass B
+# see two values for one week and yields ONE drift issue. It self-closes the
+# following Sunday, once the whole window sits on the new value. That is the
+# deliberate trade for noticing an accidental change.
+#
+# NO-DATA IS NEUTRAL, VANISHED TELEMETRY IS RED. Zero enumerated runs is a
+# quiet week (verdict `no-data`, exit 1) and files nothing. Runs that WERE
+# enumerated but produced zero records is red — that is the emitter or the
+# harvester breaking, i.e. exactly the silent no-op #2902 exists to prevent.
+#
+# ALLOWED-TO-FAIL WITHOUT SWALLOWING THE SIGNAL: no `continue-on-error: true`
+# anywhere. That flag has a sharp edge — a continue-on-error step never marks
+# its job "failed", so a downstream `if: failure()` never fires and the
+# failure this workflow exists to surface is silently dropped. Instead the
+# script step wraps the run in `set +e; ...; rc=$?; set -e`, writes `rc` to
+# `$GITHUB_OUTPUT` and `exit 0`s unconditionally; later steps read that
+# captured `rc` through explicit `if:` conditions. Same pattern as exam.yml.
+#
+# T3, NOT A GATE: schedule + workflow_dispatch only, so it gates no PR, and it
+# is deliberately NOT in ruleset 18452968.
+#
+# pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
+# commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
+# release for human readability. To bump: resolve the new tag's SHA via
+# `gh api repos/<org>/<repo>/git/refs/tags/<tag> --jq .object.sha` and replace
+# both the SHA and the version comment.
+
+name: Supervisor watch
+
+on:
+  schedule:
+    # Weekly, Sunday 05:37 UTC — an off-minute quiet hour, deliberately not a
+    # round number, and a different day from every other scheduled lane so the
+    # weekly exams don't collide on the same day's shared-runner load
+    # (exam Sat 04:17, drift-net Wed 03:43, security-audit Mon 07:17,
+    # yaml-candidate-watch Thu 05:29).
+    - cron: "37 5 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: supervisor-watch-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to least privilege; the watch job opts into what it needs below.
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    name: Supervisor timeline watch (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A job-level `permissions:` block REPLACES the workflow default, so
+    # contents: read must be restated. `actions: read` is what lets this job's
+    # GITHUB_TOKEN drive `gh run list` and `gh run view --job <id> --log`
+    # against health.yml's runs — an explicit permissions block sets every
+    # unnamed scope to `none`, so without this line the harvester's very first
+    # gh call 403s. `issues: write` is for scripts/file-exam-issue.sh.
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      WATCH_OUT_DIR: supervisor-watch-out
+    outputs:
+      rc: ${{ steps.watch.outputs.rc }}
+      verdict: ${{ steps.watch.outputs.verdict }}
+      detail: ${{ steps.watch.outputs.detail }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          # No pnpm in this job — the two harvest/summarize scripts are
+          # dependency-free ESM over node builtins, so nothing is installed.
+          # setup-node@v5 defaults package-manager-cache to true, reads the
+          # root package.json `packageManager: pnpm@…` field, then fails with
+          # "Unable to locate executable file: pnpm" because pnpm/action-setup
+          # never ran here (issue #2829). Disable it.
+          package-manager-cache: false
+
+      # rc is captured explicitly (not via continue-on-error) and the step
+      # always exits 0 — see the header comment for why. The script writes
+      # `verdict` and `detail` into $GITHUB_OUTPUT itself, and renders
+      # $GITHUB_STEP_SUMMARY, so nothing needs reformatting here.
+      - name: Harvest and summarize the supervisor-timeline population
+        id: watch
+        shell: bash
+        run: |
+          set +e
+          bash scripts/run-supervisor-watch.sh
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      # `if: always()` — this is where the saved health job logs live, and an
+      # R-A finding is triaged by reading the diagnostic block inside one of
+      # them, so the artifact must survive every verdict including a red one.
+      - name: Upload watch output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supervisor-watch
+          path: supervisor-watch-out
+          if-no-files-found: warn
+          retention-days: 14
+
+      # `always()` is required: a bare `steps.watch.outputs.rc != '0'`
+      # condition implicitly ANDs in `success()` (GitHub Actions' default for
+      # any `if:` that doesn't itself reference always()/failure()/
+      # cancelled()), so a job that failed BEFORE this step — a checkout or
+      # setup-node failure — would file nothing at all. With `always()`, an
+      # infra failure that never reaches the watch step leaves `outputs.rc`
+      # empty, and `'' != '0'` / `'' != '1'` are both true, so the tracking
+      # issue is still filed. rc == '1' (no-data) is deliberately excluded: a
+      # week with zero enumerated runs is not a finding.
+      - name: File or comment on tracking issue
+        if: always() && steps.watch.outputs.rc != '0' && steps.watch.outputs.rc != '1'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LEG: "supervisor watch (verdict=${{ steps.watch.outputs.verdict }} ${{ steps.watch.outputs.detail }}; failed runs and summaries in the run's job summary + supervisor-watch artifact)"
+        run: bash scripts/file-exam-issue.sh "Supervisor watch"
+
+      - name: Close tracking issue (green)
+        if: steps.watch.outputs.rc == '0'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/file-exam-issue.sh "Supervisor watch" --green
+
+  notify:
+    # Alerting guard: a red watch otherwise sits unseen in the Actions tab —
+    # nobody watches a scheduled run the way a release is watched live. Same
+    # IFTTT pattern as release.yml's / exam.yml's / drift-net.yml's `notify`
+    # job (issue #1335), keyed on `outputs.rc` rather than `needs.*.result`
+    # because the watch job is green by design (see header).
+    name: Notify via IFTTT on failure
+    needs: [watch]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+    steps:
+      # The rc condition mirrors the filing step's rather than testing
+      # `== '2'`: an infra failure that never reaches the script leaves rc
+      # empty, which files a tracking issue and so must alert too. rc '0'
+      # (green) and '1' (no-data) are the only quiet outcomes.
+      - name: Notify via IFTTT on failure
+        if: env.IFTTT_PROD_NOTIFY != '' && needs.watch.outputs.rc != '0' && needs.watch.outputs.rc != '1'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sSf --max-time 10 -X POST "$IFTTT_PROD_NOTIFY" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"value1\": \"Supervisor watch red\",
+              \"value2\": \"weekly supervisor-timeline harvest (R-A/R-B/identity drift)\",
+              \"value3\": \"${RUN_URL}\"
+            }" || echo "::warning::IFTTT notification failed"
