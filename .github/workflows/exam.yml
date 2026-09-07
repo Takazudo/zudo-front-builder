@@ -541,13 +541,17 @@ jobs:
     #     test jobs are green by design (see header), so a completed leg
     #     always reports "success" whatever the tests did.
     #   - `outputs.rc` alone can't tell a passing leg from a leg that DIED
-    #     before writing rc. GitHub does not carry an unwritten output as an
-    #     empty string — it OMITS THE KEY (`needs.<job>.outputs` measured as
-    #     `{}`, identically for a job that died and a job that succeeded with
-    #     the rc step skipped), so the comparison coerces null to 0 and BOTH
-    #     `== '0'` and `== ''` are true. This step therefore used to run and
-    #     close the tracking issue as green on an infra failure, erasing a
-    #     standing alert — confirmed live in run 34106339546, where it
+    #     before writing rc. The value is ABSENT, not empty: GitHub omits an
+    #     unwritten output's key from `needs` entirely, so the reference is
+    #     null, coerces to 0, and BOTH `== '0'` and `== ''` are true — which
+    #     no string comparison could produce. Measured in run 34106407484
+    #     (`needs.<job>.outputs` came back `{}`, identically for a job that
+    #     died before its rc step and one that merely had that step skipped);
+    #     run 34105846729 case A is the same finding for the `steps` context,
+    #     a different context, so do not read one as evidence for the other.
+    #     This step therefore used to run and close the tracking issue as
+    #     green on an infra failure, erasing a standing alert — confirmed
+    #     live in run 34106339546, where it
     #     executed with both legs dead and closed nothing only because no
     #     tracking issue happened to be open. Same defect as the filing steps
     #     above, mirrored: there absence read as "nothing to report", here as
@@ -559,10 +563,7 @@ jobs:
     # result that cannot tell "never ran" apart from "passed" is not a proof.
     name: Close exam tracking issue if both legs are green
     needs: [quarantine-heavy, macos-exam]
-    # `!cancelled()` rather than `always()`: this job must still run when a leg
-    # is red (that is how a green run closes the issue the previous red one
-    # filed), but a cancelled run has no verdict to act on at all.
-    if: ${{ !cancelled() }}
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
