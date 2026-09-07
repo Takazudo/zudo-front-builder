@@ -337,12 +337,14 @@ jobs:
       # failure()/cancelled()), so a job that failed BEFORE this step — the
       # esbuild/tailwindcss staging assert above, or a compile error in
       # `cargo build --workspace --all-targets` — filed nothing at all.
-      # `always()` did NOT rescue that, though this comment used to claim it
-      # did: GitHub coerces both sides of a mismatched comparison to numbers,
-      # so an unset `outputs.rc` and '0' compare equal and the fallback was
-      # skipped in precisely the case it was written for. `failure()` carries
-      # that case directly, and — unlike the string comparison — does not rest
-      # on whether an unset output reads as '' or as null. The rule being
+      # `always()` did not rescue that, though this comment used to claim it
+      # did. The old claim was that an unset `outputs.rc` makes `'' != '0'`
+      # true — which holds only if the output of a step that never ran reads
+      # as an empty string. If it reads as null the types differ, GitHub
+      # coerces both sides to numbers, and 0 != 0 is false; that is what
+      # #2928 measured, so the fallback was skipped in precisely the case it
+      # was written for. `failure()` covers the never-ran case outright and
+      # does not rest on which reading is authoritative. The rule being
       # enforced: a result that cannot tell "never ran" apart from "passed" is
       # not a proof, so absence has to read as red and file. `!cancelled()` is
       # the other half — a cancelled run (a workflow_dispatch landing on a
@@ -516,10 +518,10 @@ jobs:
       # (issues #1394, #2928), for the same reason and with the same
       # correction: a failure BEFORE run_macos_suite (the staging assert
       # above, or a compile error) must file rather than pass silently, and
-      # `always() && rc != '0'` never did — an unset `outputs.rc` compares
-      # equal to '0' under GitHub's numeric coercion, so the never-ran case
-      # was skipped, not caught. `failure()` catches it; `!cancelled()` keeps
-      # a cancelled run from filing an issue with no result behind it.
+      # `always() && rc != '0'` never did — an unset `outputs.rc` is not
+      # reliably unequal to '0', so the never-ran case was skipped, not
+      # caught. `failure()` catches it outright; `!cancelled()` keeps a
+      # cancelled run from filing an issue with no result behind it.
       - name: File or comment on tracking issue (failure)
         if: ${{ !cancelled() && (failure() || steps.run_macos_suite.outputs.rc != '0') }}
         env:
