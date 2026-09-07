@@ -2,17 +2,21 @@
 //
 // Drives the real CLI (runCli) against a stub `gh` shell script passed via
 // --gh, so the test exercises the actual subprocess/argv contract rather
-// than a JS-level mock of gh. The stub dispatches on argv and reads its
+// than a JS-level mock of gh. The stub (shared with
+// tests/unit/run-supervisor-watch.sh, #2930 -- see
+// scripts/__tests__/fixtures/gh-stub.sh) dispatches on argv and reads its
 // fixture data from files under a per-test tmp directory, whose path it
-// learns via the HARVEST_TEST_FIXTURES_DIR env var (inherited by the child
+// learns via the GH_STUB_FIXTURES_DIR env var (inherited by the child
 // process the same way a real `gh` invocation would inherit the shell's
 // environment).
 
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";
 import { parseTimelineLine } from "../supervisor-timeline-summary.mjs";
 import {
   DEFAULT_WINDOW_DAYS,
@@ -27,61 +31,18 @@ import {
   runCli,
 } from "../harvest-supervisor-timelines.mjs";
 
-// `<name>.fail` fails every time; `<name>.fail-once` is consumed by the first
-// failure, so the harvester's single retry then sees the real fixture.
-const GH_STUB = `#!/usr/bin/env bash
-set -euo pipefail
-FIXDIR="\${HARVEST_TEST_FIXTURES_DIR:?HARVEST_TEST_FIXTURES_DIR not set}"
-printf '%s\\n' "$*" >> "$FIXDIR/calls.log"
-
-if [ "$1" = "run" ] && [ "$2" = "list" ]; then
-  if [ -f "$FIXDIR/run-list.fail" ]; then
-    echo "gh-stub: simulated run list failure" >&2
-    exit 1
-  fi
-  if [ -f "$FIXDIR/run-list.fail-once" ]; then
-    rm "$FIXDIR/run-list.fail-once"
-    echo "gh-stub: simulated transient run list failure" >&2
-    exit 1
-  fi
-  cat "$FIXDIR/run-list.json"
-  exit 0
-fi
-
-if [ "$1" = "run" ] && [ "$2" = "view" ]; then
-  if [ "$3" = "--job" ]; then
-    jobId="$4"
-    if [ -f "$FIXDIR/job-$jobId.fail" ]; then
-      echo "gh-stub: simulated failure fetching job $jobId" >&2
-      exit 1
-    fi
-    if [ -f "$FIXDIR/job-$jobId.fail-once" ]; then
-      rm "$FIXDIR/job-$jobId.fail-once"
-      echo "gh-stub: simulated transient failure fetching job $jobId" >&2
-      exit 1
-    fi
-    cat "$FIXDIR/job-$jobId.log"
-    exit 0
-  else
-    runId="$3"
-    cat "$FIXDIR/jobs-$runId.json"
-    exit 0
-  fi
-fi
-
-echo "gh-stub: unhandled invocation: $*" >&2
-exit 1
-`;
+// The shared stub (also used by tests/unit/run-supervisor-watch.sh) honours
+// both `<name>.fail` (fails every time) and `<name>.fail-once` (consumed by
+// the first failure, so the harvester's single retry then sees the real
+// fixture) for both the run list and job log fetches.
+const GH_STUB_PATH = fileURLToPath(new URL("./fixtures/gh-stub.sh", import.meta.url));
 
 // Mirrors the real job-log shape quoted in the issue: gh's --log output
 // prefixes every line with "<job>\t<step>\t<timestamp> " ahead of whatever
 // the step actually printed.
 const LOG_PREFIX = "health\tUNKNOWN STEP\t2026-09-06T23:06:25.83Z ";
 
-const UP_UP2_RECORD_LINE =
-  `${LOG_PREFIX}. test: [supervisor-timeline] case=up+up2 outcome=ok total=357 runner=pnpm ` +
-  "zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 " +
-  "env=sha256:ed62f5285936a0ca first-stdout-byte=233 first-up-line=292";
+const UP_UP2_RECORD_LINE = `${LOG_PREFIX}. test: ${TIMELINE_SAMPLES.UP_UP2_LINE}`;
 
 // A vitest code frame quoting the tag inside a string literal -- must be
 // ignored, not parsed as a record (the summarizer's own TAG_PATTERN guard).
@@ -89,10 +50,7 @@ const CODE_FRAME_LINE = `${LOG_PREFIX}  913|       expect(timelineLines[0]).toCo
 
 // An R-A candidate: the harvester's per-run `failed=<m>` counts records
 // shaped like this one.
-const FAILED_RECORD_LINE =
-  `${LOG_PREFIX}. test: [supervisor-timeline] case=up+boom outcome=failed total=10041 runner=pnpm ` +
-  "zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 " +
-  "env=sha256:ed62f5285936a0ca first-stdout-byte=233";
+const FAILED_RECORD_LINE = `${LOG_PREFIX}. test: ${TIMELINE_SAMPLES.FAILED_LINE}`;
 
 const JOB_LOG_WITH_RECORD = [
   `${LOG_PREFIX}##[section]Starting: Run tests`,
@@ -135,10 +93,6 @@ function setupFixtures({
   const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
   activeDirs.push(dir);
 
-  const stubPath = join(dir, "gh-stub.sh");
-  writeFileSync(stubPath, GH_STUB);
-  chmodSync(stubPath, 0o755);
-
   writeFileSync(join(dir, "run-list.json"), JSON.stringify(runs));
   if (failRunList) writeFileSync(join(dir, "run-list.fail"), "");
   if (failRunListOnce) writeFileSync(join(dir, "run-list.fail-once"), "");
@@ -156,7 +110,7 @@ function setupFixtures({
     writeFileSync(join(dir, `job-${jobId}.fail-once`), "");
   }
 
-  return { dir, stubPath };
+  return { dir, stubPath: GH_STUB_PATH };
 }
 
 // Doubles as runCli's options bag: `retryDelayMs: 0` keeps the retry path
@@ -186,7 +140,7 @@ function readCalls(dir) {
 }
 
 afterEach(() => {
-  delete process.env.HARVEST_TEST_FIXTURES_DIR;
+  delete process.env.GH_STUB_FIXTURES_DIR;
   for (const dir of activeDirs) rmSync(dir, { recursive: true, force: true });
   activeDirs = [];
 });
@@ -299,7 +253,7 @@ describe("runCli", () => {
       },
       logsByJobId: { 5001: JOB_LOG_WITH_RECORD },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--since", "2026-09-06T22:00:00Z", "--gh", stubPath], s);
@@ -335,7 +289,7 @@ describe("runCli", () => {
       jobsById: { 1001: [{ databaseId: 5001, name: "health" }] },
       logsByJobId: { 5001: JOB_LOG_WITH_RECORD },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
     const saveDir = join(dir, "saved");
 
     const s = sink();
@@ -354,7 +308,7 @@ describe("runCli", () => {
       jobsById: { 1009: [{ databaseId: 5009, name: "health" }] },
       logsByJobId: { 5009: jobLog },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -373,7 +327,7 @@ describe("runCli", () => {
       jobsById: { 2001: [{ databaseId: 6001, name: "health", conclusion: "success" }] },
       logsByJobId: { 6001: JOB_LOG_NO_RECORDS },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -397,7 +351,7 @@ describe("runCli", () => {
       },
       logsByJobId: { 6002: JOB_LOG_NO_RECORDS, 6003: JOB_LOG_NO_RECORDS },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -417,7 +371,7 @@ describe("runCli", () => {
       jobsById: { 2004: [{ databaseId: 6004, name: "health", conclusion: "failure" }] },
       logsByJobId: { 6004: FAILED_RECORD_LINE },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -428,7 +382,7 @@ describe("runCli", () => {
 
   it("exit 4: an empty run list is a quiet window, distinct from a silent emitter", async () => {
     const { dir, stubPath } = setupFixtures({ runs: [] });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -440,7 +394,7 @@ describe("runCli", () => {
 
   it("prints the effective window first, and warns when --since lies in the future", async () => {
     const { dir, stubPath } = setupFixtures({ runs: [] });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     // A pre-epoch "now": the default --since is floored at the epoch and so
     // sits in the future, which enumerates nothing and must say so.
@@ -468,7 +422,7 @@ describe("runCli", () => {
       transientlyFailingJobIds: [5011],
       failRunListOnce: true,
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -489,7 +443,7 @@ describe("runCli", () => {
       runs,
       jobsById: { 1003: [{ databaseId: 5010, name: "docs" }] },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -517,7 +471,7 @@ describe("runCli", () => {
       logsByJobId: { 5001: JOB_LOG_WITH_RECORD },
       failingJobIds: [5004],
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -553,7 +507,7 @@ describe("runCli", () => {
       jobsById: { 1005: [{ databaseId: 5005, name: "health" }] },
       logsByJobId: { 5005: malformedLog },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -578,7 +532,7 @@ describe("runCli", () => {
         1007: [{ databaseId: 5007, name: "health", conclusion: "skipped", steps: [] }],
       },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
@@ -597,7 +551,7 @@ describe("runCli", () => {
       jobsById: { 1001: [{ databaseId: 5001, name: "health" }] },
       logsByJobId: { 5001: JOB_LOG_WITH_RECORD },
     });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const capped = sink();
     expect(await runCli(["--gh", stubPath, "--limit", "1"], capped)).toBe(EXIT_OK);
@@ -610,7 +564,7 @@ describe("runCli", () => {
 
   it("exit 64: gh run list itself failing is a usage error, not partial or no-records", async () => {
     const { dir, stubPath } = setupFixtures({ runs: [], failRunList: true });
-    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
