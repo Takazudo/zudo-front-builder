@@ -17,10 +17,15 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * in one command:
  *
  *   node scripts/harvest-supervisor-timelines.mjs \
- *     | node scripts/supervisor-timeline-summary.mjs --strict --allow-drift env
+ *     | node scripts/supervisor-timeline-summary.mjs --strict
  *
  * This adds aggregation, not storage: nothing is persisted between runs
  * (see `--save-dir` below for an opt-in exception used for debugging).
+ *
+ * `parseTimelines` already tolerates the `pnpm -r` package-label prefix and
+ * vitest code frames quoting the tag (see the summarizer's `TAG_PATTERN`
+ * comment) — keep that when touching this harvest path, since a job log is
+ * exactly the kind of blob those guards exist for.
  *
  * Per run, only the `health` job's log lines are read, never the whole
  * run's. On 2026-09-07 the whole-run `gh run view <id> --log` for a real run
@@ -51,10 +56,18 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * stderr carries a per-run manifest line (emitted as each run completes,
  * so not necessarily in enumeration order) plus one final summary line:
  *
- *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> lines=<n>
+ *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> lines=<n> failed=<m>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> skipped=<reason>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> error=<reason>
  *   runs=<enumerated> harvested=<k> failed=<f> records=<r>
+ *
+ * The per-run `failed=<m>` and the final summary's `failed=<f>` are
+ * deliberately different counters sharing a name: the per-run one counts
+ * that run's own parsed records whose `outcome=failed` (an R-A candidate
+ * inside an otherwise-successful harvest), the summary one counts runs the
+ * harvester itself could not fetch/save/parse. The weekly watch (#2915)
+ * greps the manifest for `failed=[1-9]` to name the run whose job log holds
+ * the R-A diagnostic block, without needing to re-run the summarizer first.
  *
  * Skipped (counts toward neither `harvested` nor `failed`):
  *   - a run whose `status` is not yet `completed` (no complete log to fetch);
@@ -96,12 +109,31 @@ const execFileAsync = promisify(execFile);
 
 const HEALTH_WORKFLOW = "health.yml";
 const HEALTH_JOB_NAME = "health";
-const DEFAULT_SINCE = "2026-09-06T22:00:00Z";
+// The day the `env=` token switched to the steering digest — this epic;
+// earlier records cannot be mixed with later ones without `--allow-drift env`.
+export const IDENTITY_CONTRACT_EPOCH = "2026-09-08T00:00:00Z";
+const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
 const DEFAULT_GH = "gh";
 // Bounded so a full default harvest is minutes, not a quarter hour, while
 // staying far below GitHub's secondary rate limit (~5 GETs per run).
 const CONCURRENCY = 4;
+
+// ISO-8601 with seconds and a trailing `Z`, matching `--since`'s documented
+// shape (`Date#toISOString` includes milliseconds, which this trims).
+function toIsoSeconds(date) {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// The default `--since`: a rolling 7-day window floored at the identity
+// epoch, so a harvest run today never reaches back across the `env` digest
+// change on its own — an explicit `--since` (or `--allow-drift env`) is
+// required to deliberately mix the two populations.
+function defaultSince(now) {
+  const windowStart = now.getTime() - DEFAULT_WINDOW_MS;
+  const epochMs = Date.parse(IDENTITY_CONTRACT_EPOCH);
+  return toIsoSeconds(new Date(Math.max(windowStart, epochMs)));
+}
 
 export const EXIT_OK = 0;
 export const EXIT_NO_RECORDS = 1;
@@ -132,9 +164,9 @@ function takeFlagValue(argv, index, flag) {
   return value;
 }
 
-export function parseCliArgs(argv) {
+export function parseCliArgs(argv, { now = new Date() } = {}) {
   const options = {
-    since: DEFAULT_SINCE,
+    since: defaultSince(now),
     limit: DEFAULT_LIMIT,
     branch: undefined,
     saveDir: undefined,
@@ -256,8 +288,10 @@ async function harvestRun(run, options, stderr) {
       writeFileSync(join(options.saveDir, `run-${run.databaseId}-job-${jobId}.log`), log);
     }
 
-    const rawLines = parseTimelines(log).map((record) => detachFromParentString(record.raw));
-    stderr.write(`${base} job=${jobId} lines=${rawLines.length}\n`);
+    const records = parseTimelines(log);
+    const rawLines = records.map((record) => detachFromParentString(record.raw));
+    const failedLines = records.filter((record) => record.outcome === "failed").length;
+    stderr.write(`${base} job=${jobId} lines=${rawLines.length} failed=${failedLines}\n`);
     return { kind: "harvested", rawLines };
   } catch (error) {
     stderr.write(`${base} job=${jobId ?? "none"} error=${flattenErrorMessage(error)}\n`);
