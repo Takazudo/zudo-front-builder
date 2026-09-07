@@ -2,9 +2,9 @@
 //
 // Drives the real CLI (runCli) against a stub `gh` shell script passed via
 // --gh, so the test exercises the actual subprocess/argv contract rather
-// than a JS-level mock of gh. The stub (shared with
-// tests/unit/run-supervisor-watch.sh, #2930 -- see
-// scripts/__tests__/fixtures/gh-stub.sh) dispatches on argv and reads its
+// than a JS-level mock of gh. The stub (shared with the supervisor-watch
+// suites, #2930 -- see scripts/__tests__/fixtures/gh-stub.sh) dispatches on
+// argv and reads its
 // fixture data from files under a per-test tmp directory, whose path it
 // learns via the GH_STUB_FIXTURES_DIR env var (inherited by the child
 // process the same way a real `gh` invocation would inherit the shell's
