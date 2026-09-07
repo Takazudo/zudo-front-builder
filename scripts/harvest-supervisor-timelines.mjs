@@ -86,18 +86,19 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * necessarily in enumeration order), and one final summary line:
  *
  *   window: since=<iso> limit=<n> branch=<b|all>
- *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> lines=<n> failed=<m>
+ *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> lines=<n> failedRecords=<m>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> skipped=<reason>
  *   run=<id> attempt=<n> event=<e> branch=<b> sha=<sha8> created=<iso> conclusion=<c> job=<jobId|none> error=<reason>
  *   runs=<enumerated> harvested=<k> failed=<f> records=<r>
  *
- * The per-run `failed=<m>` and the final summary's `failed=<f>` are
- * deliberately different counters sharing a name: the per-run one counts
- * that run's own parsed records whose `outcome=failed` (an R-A candidate
- * inside an otherwise-successful harvest), the summary one counts runs the
- * harvester itself could not fetch/save/parse. The weekly watch (#2915)
- * greps the per-run lines (`^run=… failed=[1-9]`) to name the run whose job
- * log holds the R-A diagnostic block, without re-running the summarizer.
+ * The per-run `failedRecords=<m>` and the final summary's `failed=<f>` count
+ * different things: the per-run one counts that run's own parsed records
+ * whose `outcome=failed` (an R-A candidate inside an otherwise-successful
+ * harvest), the summary one counts runs the harvester itself could not
+ * fetch/save/parse. They no longer share a name (#2932), so no anchor is
+ * needed to tell them apart. The weekly watch (#2915) greps the per-run
+ * lines (`^run=… failedRecords=[1-9]`) to name the run whose job log holds
+ * the R-A diagnostic block, without re-running the summarizer.
  *
  * Skipped (counts toward neither `harvested` nor `failed`):
  *   - a run whose `status` is not yet `completed` (no complete log to fetch);
@@ -175,7 +176,20 @@ const CONCURRENCY = 4;
 // 403 on one of hundreds of calls must not turn a complete population into a
 // partial harvest (exit 3) that the weekly watch escalates.
 const GH_ATTEMPTS = 2;
-const DEFAULT_RETRY_DELAY_MS = 2000;
+export const DEFAULT_RETRY_DELAY_MS = 2000;
+
+// Test-ergonomics escape hatch (#2932): tests/unit/run-supervisor-watch.sh
+// drives ~40 real `node` subprocesses and cannot afford two genuine 2 s
+// sleeps per invocation (a retryable gh failure x GH_ATTEMPTS - 1 pauses).
+// Reachable only via this env var -- a production caller never sets it, so
+// the default stays 2000 ms. An unset, empty, or non-numeric value falls
+// back to the default rather than silently coercing to 0.
+export function resolveDefaultRetryDelayMs() {
+  const raw = process.env.HARVEST_RETRY_DELAY_MS;
+  if (raw === undefined || raw === "") return DEFAULT_RETRY_DELAY_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RETRY_DELAY_MS;
+}
 
 // ISO-8601 with seconds and a trailing `Z`, matching `--since`'s documented
 // shape (`Date#toISOString` includes milliseconds, which this trims).
@@ -428,8 +442,8 @@ async function harvestRun(run, options, stderr) {
       return skipped;
     }
     const rawLines = records.map((record) => detachFromParentString(record.raw));
-    const failedLines = records.filter((record) => record.outcome === "failed").length;
-    stderr.write(`${base} job=${jobId} lines=${rawLines.length} failed=${failedLines}\n`);
+    const failedRecords = records.filter((record) => record.outcome === "failed").length;
+    stderr.write(`${base} job=${jobId} lines=${rawLines.length} failedRecords=${failedRecords}\n`);
     return { kind: "harvested", rawLines };
   } catch (error) {
     stderr.write(`${base} job=${jobId ?? "none"} error=${flattenErrorMessage(error)}\n`);
@@ -464,7 +478,7 @@ export async function runCli(
     stdout = process.stdout,
     stderr = process.stderr,
     now = new Date(),
-    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
+    retryDelayMs = resolveDefaultRetryDelayMs(),
   } = {},
 ) {
   let options;

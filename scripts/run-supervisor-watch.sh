@@ -64,6 +64,13 @@ set -euo pipefail
 #                     that in one place is the point of omitting it)
 #   WATCH_GH          alternate `gh` executable, passed as --gh (used by the unit test)
 #   WATCH_MAIN_BRANCH trunk branch for pass B (default main)
+#   WATCH_RETRY_DELAY_MS
+#                     when set, forwarded to the harvester as
+#                     HARVEST_RETRY_DELAY_MS (#2932) -- test ergonomics only:
+#                     the unit test sets it to 0 so its red-infra / red-partial
+#                     cases don't sit through two real 2 s gh-retry sleeps.
+#                     UNSET in production, so the harvester's own 2000 ms
+#                     default applies.
 #
 # Also honours GITHUB_OUTPUT / GITHUB_STEP_SUMMARY when set, so the workflow
 # step needs no reformatting logic of its own.
@@ -95,6 +102,13 @@ if [ -n "${WATCH_SINCE:-}" ]; then
 fi
 if [ -n "${WATCH_GH:-}" ]; then
   HARVEST_COMMON+=(--gh "$WATCH_GH")
+fi
+
+# Forwarded, not defaulted: an unset WATCH_RETRY_DELAY_MS must leave
+# HARVEST_RETRY_DELAY_MS unset in the harvester's environment too, so its own
+# 2000 ms default applies in production.
+if [ -n "${WATCH_RETRY_DELAY_MS:-}" ]; then
+  export HARVEST_RETRY_DELAY_MS="$WATCH_RETRY_DELAY_MS"
 fi
 
 log() { printf '%s\n' "$*" >&2; }
@@ -190,12 +204,14 @@ log "==> pass B ($MAIN_BRANCH only): status=$STATUS_B runs=$MAIN_COUNT silent=$M
 
 # ── Provenance for triage ────────────────────────────────────────────────────
 
-# Per-run manifest lines whose `failed=<m>` record count is non-zero: these
+# Per-run manifest lines whose `failedRecords=<m>` count is non-zero: these
 # name the run (and saved job log) holding an R-A diagnostic block. The final
 # summary line's `failed=<f>` is a different counter (runs the harvester could
 # not fetch/parse) and is deliberately not matched here — it does not name a
 # run and describes a harvest problem, which the `error=` lines below cover.
-grep -E '^run=[0-9]+ .* failed=[1-9]' "$OUT/all/manifest.txt" >"$OUT/failed-runs.txt" || true
+# The two tokens no longer share a name (#2932): `^run=` below is just the
+# per-run manifest line shape, not disambiguation the way `failed=` needed it.
+grep -E '^run=[0-9]+ .* failedRecords=[1-9]' "$OUT/all/manifest.txt" >"$OUT/failed-runs.txt" || true
 grep -E '^run=[0-9]+ .* error=' "$OUT/all/manifest.txt" >"$OUT/harvest-errors.txt" || true
 # Green `health` jobs that emitted nothing. Only the trunk ones decide the
 # verdict (a PR branch predating the emitter is legitimately silent), but
