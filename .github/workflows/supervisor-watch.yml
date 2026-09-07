@@ -182,8 +182,18 @@ jobs:
       # `== '2'`: an infra failure that never reaches the script leaves rc
       # empty, which files a tracking issue and so must alert too. rc '0'
       # (green) and '1' (no-data) are the only quiet outcomes.
+      #
+      # A cancelled/skipped watch job ALSO leaves rc empty, but files no
+      # tracking issue (its filing step lives inside that job and never ran),
+      # so alerting on it would manufacture a notification out of someone
+      # cancelling a manual dispatch. Exclude those two results explicitly.
       - name: Notify via IFTTT on failure
-        if: env.IFTTT_PROD_NOTIFY != '' && needs.watch.outputs.rc != '0' && needs.watch.outputs.rc != '1'
+        if: >-
+          env.IFTTT_PROD_NOTIFY != ''
+          && needs.watch.result != 'cancelled'
+          && needs.watch.result != 'skipped'
+          && needs.watch.outputs.rc != '0'
+          && needs.watch.outputs.rc != '1'
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

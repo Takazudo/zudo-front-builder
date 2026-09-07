@@ -150,11 +150,11 @@ jobs_json() {
 
 # new_fixture_dir <case-name> — fresh fixture + output tree per case.
 new_fixture_dir() {
-  FIX="$TMPROOT/$1"
-  mkdir -p "$FIX"
-  : >"$FIX/calls.log"
-  printf '[]' >"$FIX/run-list.json"
-  echo "$FIX"
+  NFD_DIR="$TMPROOT/$1"
+  mkdir -p "$NFD_DIR"
+  : >"$NFD_DIR/calls.log"
+  printf '[]' >"$NFD_DIR/run-list.json"
+  echo "$NFD_DIR"
 }
 
 # ── Runner ───────────────────────────────────────────────────────────────────
@@ -234,6 +234,14 @@ if grep -q '^## Supervisor watch — green$' "$FIX/gh-step-summary.md"; then
   pass 'green: $GITHUB_STEP_SUMMARY carries the verdict heading'
 else
   fail "green: \$GITHUB_STEP_SUMMARY missing the verdict heading"
+fi
+
+# Pass A's --save-dir is the artifact an R-A triage actually reads; a
+# regression that dropped the flag would still go green, so assert it.
+if [ -f "$FIX/out/job-logs/run-1001-job-5001.log" ] && [ -f "$FIX/out/job-logs/run-1002-job-5002.log" ]; then
+  pass 'green: pass A saved both health job logs under job-logs/'
+else
+  fail "green: expected saved job logs, got: $(ls "$FIX/out/job-logs" 2>&1 | tr '\n' ' ')"
 fi
 
 # ── no-data: zero enumerated runs is neutral, not red ────────────────────────
