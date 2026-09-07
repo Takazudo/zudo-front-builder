@@ -15,7 +15,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { parseTimelineLine } from "../supervisor-timeline-summary.mjs";
 import {
+  DEFAULT_WINDOW_DAYS,
   EXIT_NO_RECORDS,
+  EXIT_NO_RUNS,
   EXIT_OK,
   EXIT_PARTIAL,
   EXIT_USAGE,
@@ -25,6 +27,8 @@ import {
   runCli,
 } from "../harvest-supervisor-timelines.mjs";
 
+// `<name>.fail` fails every time; `<name>.fail-once` is consumed by the first
+// failure, so the harvester's single retry then sees the real fixture.
 const GH_STUB = `#!/usr/bin/env bash
 set -euo pipefail
 FIXDIR="\${HARVEST_TEST_FIXTURES_DIR:?HARVEST_TEST_FIXTURES_DIR not set}"
@@ -33,6 +37,11 @@ printf '%s\\n' "$*" >> "$FIXDIR/calls.log"
 if [ "$1" = "run" ] && [ "$2" = "list" ]; then
   if [ -f "$FIXDIR/run-list.fail" ]; then
     echo "gh-stub: simulated run list failure" >&2
+    exit 1
+  fi
+  if [ -f "$FIXDIR/run-list.fail-once" ]; then
+    rm "$FIXDIR/run-list.fail-once"
+    echo "gh-stub: simulated transient run list failure" >&2
     exit 1
   fi
   cat "$FIXDIR/run-list.json"
@@ -44,6 +53,11 @@ if [ "$1" = "run" ] && [ "$2" = "view" ]; then
     jobId="$4"
     if [ -f "$FIXDIR/job-$jobId.fail" ]; then
       echo "gh-stub: simulated failure fetching job $jobId" >&2
+      exit 1
+    fi
+    if [ -f "$FIXDIR/job-$jobId.fail-once" ]; then
+      rm "$FIXDIR/job-$jobId.fail-once"
+      echo "gh-stub: simulated transient failure fetching job $jobId" >&2
       exit 1
     fi
     cat "$FIXDIR/job-$jobId.log"
@@ -114,7 +128,9 @@ function setupFixtures({
   jobsById = {},
   logsByJobId = {},
   failingJobIds = [],
+  transientlyFailingJobIds = [],
   failRunList = false,
+  failRunListOnce = false,
 }) {
   const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
   activeDirs.push(dir);
@@ -125,6 +141,7 @@ function setupFixtures({
 
   writeFileSync(join(dir, "run-list.json"), JSON.stringify(runs));
   if (failRunList) writeFileSync(join(dir, "run-list.fail"), "");
+  if (failRunListOnce) writeFileSync(join(dir, "run-list.fail-once"), "");
 
   for (const [runId, jobs] of Object.entries(jobsById)) {
     writeFileSync(join(dir, `jobs-${runId}.json`), JSON.stringify({ jobs }));
@@ -135,16 +152,25 @@ function setupFixtures({
   for (const jobId of failingJobIds) {
     writeFileSync(join(dir, `job-${jobId}.fail`), "");
   }
+  for (const jobId of transientlyFailingJobIds) {
+    writeFileSync(join(dir, `job-${jobId}.fail-once`), "");
+  }
 
   return { dir, stubPath };
 }
 
+// Doubles as runCli's options bag: `retryDelayMs: 0` keeps the retry path
+// instant (every persistent-failure case below goes through it), and a
+// pinned `now` well past the identity epoch keeps the default window -- and
+// the future-`--since` warning -- out of cases that are not about them.
 function sink() {
   const outWrites = [];
   const errWrites = [];
   return {
     stdout: { write: (chunk) => outWrites.push(chunk) },
     stderr: { write: (chunk) => errWrites.push(chunk) },
+    retryDelayMs: 0,
+    now: new Date("2026-10-01T12:00:00Z"),
     out: () => outWrites.join(""),
     err: () => errWrites.join(""),
     outWriteCount: () => outWrites.length,
@@ -186,7 +212,7 @@ describe("buildRunListArgs", () => {
 
 describe("parseCliArgs", () => {
   it("applies documented defaults with no flags: --since floors at the identity epoch", () => {
-    // "now" sits within 7 days of the epoch, so the floor -- not the
+    // "now" sits within the window of the epoch, so the floor -- not the
     // rolling window -- decides the default.
     const options = parseCliArgs([], { now: new Date("2026-09-10T00:00:00Z") });
     expect(options.since).toBe(IDENTITY_CONTRACT_EPOCH);
@@ -196,9 +222,12 @@ describe("parseCliArgs", () => {
     expect(options.gh).toBe("gh");
   });
 
-  it("defaults --since to a rolling 7-day window once that window is past the epoch", () => {
+  it("defaults --since to a rolling window (one weekly cadence plus a day of overlap) once past the epoch", () => {
+    // 8 days, not 7: a run in progress at one Sunday harvest must still be
+    // enumerated by the next one, so consecutive windows overlap by a day.
+    expect(DEFAULT_WINDOW_DAYS).toBe(8);
     const options = parseCliArgs([], { now: new Date("2026-10-01T12:00:00Z") });
-    expect(options.since).toBe("2026-09-24T12:00:00Z");
+    expect(options.since).toBe("2026-09-23T12:00:00Z");
   });
 
   it("an explicit --since overrides the computed default", () => {
@@ -337,11 +366,11 @@ describe("runCli", () => {
     expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=2/);
   });
 
-  it("exit 1: zero records extracted from an otherwise successful harvest", async () => {
+  it("exit 1: a green health job whose log carries zero records is the emitter going silent", async () => {
     const runs = [makeRun({ databaseId: 2001 })];
     const { dir, stubPath } = setupFixtures({
       runs,
-      jobsById: { 2001: [{ databaseId: 6001, name: "health" }] },
+      jobsById: { 2001: [{ databaseId: 6001, name: "health", conclusion: "success" }] },
       logsByJobId: { 6001: JOB_LOG_NO_RECORDS },
     });
     process.env.HARVEST_TEST_FIXTURES_DIR = dir;
@@ -351,7 +380,104 @@ describe("runCli", () => {
 
     expect(code).toBe(EXIT_NO_RECORDS);
     expect(s.out()).toBe("");
+    expect(s.err()).toMatch(/run=2001 .* job=6001 lines=0 failed=0/);
     expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=0/);
+  });
+
+  it("skips a health job that went red before the test step (no records, conclusion != success)", async () => {
+    const runs = [
+      makeRun({ databaseId: 2002, conclusion: "failure" }),
+      makeRun({ databaseId: 2003, conclusion: "cancelled" }),
+    ];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: {
+        2002: [{ databaseId: 6002, name: "health", conclusion: "failure" }],
+        2003: [{ databaseId: 6003, name: "health", conclusion: "cancelled" }],
+      },
+      logsByJobId: { 6002: JOB_LOG_NO_RECORDS, 6003: JOB_LOG_NO_RECORDS },
+    });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    // A red-at-clippy health job has a log and no records; that is not the
+    // emitter vanishing, so it is neither harvested nor a no-records exit.
+    expect(code).toBe(EXIT_NO_RUNS);
+    expect(s.err()).toMatch(/run=2002 .* job=6002 skipped=no-records-health-failure/);
+    expect(s.err()).toMatch(/run=2003 .* job=6003 skipped=no-records-health-cancelled/);
+    expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0/);
+  });
+
+  it("a red health job that still emitted records (a supervisor failure) is harvested, not skipped", async () => {
+    const runs = [makeRun({ databaseId: 2004, conclusion: "failure" })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 2004: [{ databaseId: 6004, name: "health", conclusion: "failure" }] },
+      logsByJobId: { 6004: FAILED_RECORD_LINE },
+    });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_OK);
+    expect(s.err()).toMatch(/run=2004 .* job=6004 lines=1 failed=1/);
+  });
+
+  it("exit 4: an empty run list is a quiet window, distinct from a silent emitter", async () => {
+    const { dir, stubPath } = setupFixtures({ runs: [] });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_NO_RUNS);
+    expect(s.out()).toBe("");
+    expect(s.err()).toMatch(/runs=0 harvested=0 failed=0 records=0/);
+  });
+
+  it("prints the effective window first, and warns when --since lies in the future", async () => {
+    const { dir, stubPath } = setupFixtures({ runs: [] });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    // A pre-epoch "now": the default --since is floored at the epoch and so
+    // sits in the future, which enumerates nothing and must say so.
+    const early = sink();
+    await runCli(["--gh", stubPath], { ...early, now: new Date("2026-09-07T00:00:00Z") });
+    const earlyLines = early.err().trimEnd().split("\n");
+    expect(earlyLines[0]).toBe(`window: since=${IDENTITY_CONTRACT_EPOCH} limit=200 branch=all`);
+    expect(earlyLines[1]).toMatch(/^warning: --since 2026-09-08T00:00:00Z lies in the future/);
+
+    const later = sink();
+    await runCli(["--gh", stubPath, "--branch", "main", "--limit", "7"], {
+      ...later,
+      now: new Date("2026-10-01T12:00:00Z"),
+    });
+    expect(later.err()).toMatch(/^window: since=2026-09-23T12:00:00Z limit=7 branch=main$/m);
+    expect(later.err()).not.toMatch(/warning:/);
+  });
+
+  it("retries a transient gh failure once before giving up on the run", async () => {
+    const runs = [makeRun({ databaseId: 1011 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 1011: [{ databaseId: 5011, name: "health" }] },
+      logsByJobId: { 5011: JOB_LOG_WITH_RECORD },
+      transientlyFailingJobIds: [5011],
+      failRunListOnce: true,
+    });
+    process.env.HARVEST_TEST_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_OK);
+    expect(s.err()).toMatch(/run=1011 .* job=5011 lines=1 failed=0/);
+    const calls = readCalls(dir);
+    expect(calls.filter((line) => line.startsWith("run list"))).toHaveLength(2);
+    expect(calls.filter((line) => line === "run view --job 5011 --log")).toHaveLength(2);
   });
 
   it("skips a run whose status is not completed, and a completed run with no health job", async () => {
@@ -368,7 +494,7 @@ describe("runCli", () => {
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
 
-    expect(code).toBe(EXIT_NO_RECORDS);
+    expect(code).toBe(EXIT_NO_RUNS);
     expect(s.err()).toMatch(/run=1002 .* job=none skipped=status:in_progress/);
     expect(s.err()).toMatch(/run=1003 .* job=none skipped=no-health-job/);
     expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0/);
@@ -404,11 +530,12 @@ describe("runCli", () => {
     expect(s.err()).toMatch(/run=1004 .* job=5004 error=/);
     expect(s.err()).toMatch(/runs=2 harvested=1 failed=1 records=1/);
 
-    // The manifest is documented as one line per run: a gh subprocess error
-    // (Node's execFile embeds the child's own stderr, often multi-line)
-    // must never fragment the run=1004 manifest entry across physical lines.
+    // The manifest is documented as one line per run (plus the leading
+    // window line and the final summary): a gh subprocess error (Node's
+    // execFile embeds the child's own stderr, often multi-line) must never
+    // fragment the run=1004 manifest entry across physical lines.
     const errLines = s.err().trimEnd().split("\n");
-    expect(errLines).toHaveLength(runs.length + 1);
+    expect(errLines).toHaveLength(runs.length + 2);
     const run1004Line = errLines.find((line) => line.startsWith("run=1004"));
     expect(run1004Line).toMatch(
       /^run=1004 .*error=.*\| gh-stub: simulated failure fetching job 5004$/,
@@ -456,7 +583,7 @@ describe("runCli", () => {
     const s = sink();
     const code = await runCli(["--gh", stubPath], s);
 
-    expect(code).toBe(EXIT_NO_RECORDS);
+    expect(code).toBe(EXIT_NO_RUNS);
     expect(s.err()).toMatch(/run=1006 .* job=5006 skipped=health-job-never-started/);
     expect(s.err()).toMatch(/run=1007 .* job=5007 skipped=health-job-never-started/);
     expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0/);
