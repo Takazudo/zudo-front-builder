@@ -59,6 +59,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
+      # SCRATCH (#2928) — TO BE REVERTED.
+      # Kills the job before the detector runs, so the migrated condition
+      # below is exercised in the never-ran case.
+      - name: SCRATCH deliberate early failure
+        run: exit 1
+
       # This detector is dependency-free Node ESM over built-ins + fetch, so
       # it intentionally needs no package-manager setup or installation.
       - name: Setup Node.js
@@ -196,7 +202,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+      # SCRATCH (#2928) — TO BE REVERTED. Blanked so the step's existing
+      # `if: env.IFTTT_PROD_NOTIFY != ''` guard suppresses the real push
+      # during verification: the shell test below reads an unset rc as a
+      # failed leg (correctly — but this scaffold run is not a real failure).
+      # Was: ${{ secrets.IFTTT_PROD_NOTIFY }}
+      IFTTT_PROD_NOTIFY: ""
     steps:
       - name: Notify via IFTTT on failure
         if: env.IFTTT_PROD_NOTIFY != ''
