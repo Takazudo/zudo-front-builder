@@ -1,0 +1,104 @@
+# SCRATCH — TO BE REVERTED. Live proof for #2928 that
+# `!cancelled() && (failure() || steps.<id>.outputs.rc != '0')` fires in the
+# never-ran case where `always() && steps.<id>.outputs.rc != '0'` does not,
+# and that it does NOT fire on a cancelled run where the old form does.
+# Every job is echo-only. Push this branch, read the four jobs, then revert.
+name: SCRATCH verify 2928 expression semantics
+
+on:
+  push:
+    branches: [scratch/verify-2928-expr]
+
+permissions:
+  contents: read
+
+jobs:
+  case-a-never-ran:
+    name: "Case A — earlier step failed, rc step never ran"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail before the rc step
+        run: exit 1
+
+      - name: Capture rc (never reached)
+        id: rc
+        run: echo "rc=7" >> "$GITHUB_OUTPUT"
+
+      - name: OLD form
+        if: always() && steps.rc.outputs.rc != '0'
+        run: echo "OLD-RAN case-a" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: NEW form
+        if: ${{ !cancelled() && (failure() || steps.rc.outputs.rc != '0') }}
+        run: echo "NEW-RAN case-a" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  case-b-nonzero-rc:
+    name: "Case B — rc step ran, rc=7, exited 0"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Capture rc
+        id: rc
+        run: |
+          echo "rc=7" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: OLD form
+        if: always() && steps.rc.outputs.rc != '0'
+        run: echo "OLD-RAN case-b" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: NEW form
+        if: ${{ !cancelled() && (failure() || steps.rc.outputs.rc != '0') }}
+        run: echo "NEW-RAN case-b" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  case-c-zero-rc:
+    name: "Case C — rc step ran, rc=0"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Capture rc
+        id: rc
+        run: |
+          echo "rc=0" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: OLD form
+        if: always() && steps.rc.outputs.rc != '0'
+        run: echo "OLD-RAN case-c" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: NEW form
+        if: ${{ !cancelled() && (failure() || steps.rc.outputs.rc != '0') }}
+        run: echo "NEW-RAN case-c" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  case-d-cancelled:
+    name: "Case D — run cancelled with rc=7 pending"
+    # Runs last so its self-cancel cannot cut short cases A-C.
+    needs: [case-a-never-ran, case-b-nonzero-rc, case-c-zero-rc]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Capture rc
+        id: rc
+        run: |
+          echo "rc=7" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Cancel this run, then wait to be killed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          sleep 120
+
+      - name: OLD form
+        if: always() && steps.rc.outputs.rc != '0'
+        run: echo "OLD-RAN case-d" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: NEW form
+        if: ${{ !cancelled() && (failure() || steps.rc.outputs.rc != '0') }}
+        run: echo "NEW-RAN case-d" | tee -a "$GITHUB_STEP_SUMMARY"
