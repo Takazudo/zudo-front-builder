@@ -344,6 +344,7 @@ describe("parseCliArgs", () => {
     expect(options.budgetMs).toBe(DEFAULT_BUDGET_MS);
     expect(options.threshold).toBe(DEFAULT_THRESHOLD);
     expect(options.strict).toBe(false);
+    expect(options.allowDrift).toEqual([]);
     expect(options.files).toEqual([]);
   });
 
@@ -356,6 +357,8 @@ describe("parseCliArgs", () => {
       "--threshold",
       "0.5",
       "--strict",
+      "--allow-drift",
+      "env,runner",
       "a.log",
       "b.log",
     ]);
@@ -364,8 +367,19 @@ describe("parseCliArgs", () => {
       budgetMs: 5000,
       threshold: 0.5,
       strict: true,
+      allowDrift: ["env", "runner"],
       files: ["a.log", "b.log"],
     });
+  });
+
+  it("throws when --allow-drift is missing its value", () => {
+    expect(() => parseCliArgs(["--allow-drift"])).toThrow(/--allow-drift requires a value/);
+  });
+
+  it("throws on an unknown --allow-drift field", () => {
+    expect(() => parseCliArgs(["--allow-drift", "bogus"])).toThrow(
+      /unknown field for --allow-drift: "bogus"/,
+    );
   });
 
   it("throws on an unknown flag", () => {
@@ -475,6 +489,25 @@ describe("runCli exit-code precedence (locked in #2902/#2903)", () => {
       stdin: UP_BOOM_LINE, // first-up-line=430 >= 0.5 * 500 = 250
     });
     expect(code).toBe(EXIT_STRICT);
+  });
+
+  it("step 4: --allow-drift suppresses --strict for the listed field, but the drift is still printed", async () => {
+    const drifted = upBoomLine({ env: "sha256:mutated-env" });
+    const s = sink();
+    const code = await runCli(["--strict", "--allow-drift", "env"], {
+      ...s,
+      stdin: [UP_BOOM_LINE, drifted].join("\n"),
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(s.out()).toMatch(/INPUT DRIFT DETECTED/);
+    expect(s.out()).toMatch(/env: sha256:ed62f5285936a0ca, sha256:mutated-env/);
+  });
+
+  it("step 1: usage/malformed -> 64, an unknown --allow-drift field", async () => {
+    const s = sink();
+    const code = await runCli(["--allow-drift", "bogus"], { ...s, stdin: UP_BOOM_LINE });
+    expect(code).toBe(EXIT_USAGE);
+    expect(s.err()).toMatch(/unknown field for --allow-drift: "bogus"/);
   });
 
   it("step 4 does not fire without --strict, even with drift and an R-B trip present", async () => {
