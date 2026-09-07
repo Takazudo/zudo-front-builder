@@ -122,6 +122,12 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
+      # SCRATCH (#2928) — TO BE REVERTED.
+      # Kills the job before any heavy work so the migrated filing condition
+      # below is exercised in the never-ran case.
+      - name: SCRATCH deliberate early failure
+        run: exit 1
+
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
@@ -355,6 +361,7 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "quarantine/heavy manifest (ubuntu-latest)"
+          DRY_RUN: "1" # SCRATCH (#2928) — TO BE REVERTED.
         run: bash scripts/file-exam-issue.sh "exam"
 
   macos-exam:
@@ -376,6 +383,12 @@ jobs:
       rc: ${{ steps.run_macos_suite.outputs.rc }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      # SCRATCH (#2928) — TO BE REVERTED.
+      # Kills the job before any heavy work so the migrated filing condition
+      # below is exercised in the never-ran case.
+      - name: SCRATCH deliberate early failure
+        run: exit 1
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
@@ -527,6 +540,7 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "macOS full workspace re-exam (macos-15)"
+          DRY_RUN: "1" # SCRATCH (#2928) — TO BE REVERTED.
         run: bash scripts/file-exam-issue.sh "exam"
 
   close-tracking-issue-if-green:
@@ -552,6 +566,7 @@ jobs:
         if: ${{ needs.quarantine-heavy.outputs.rc == '0' && needs.macos-exam.outputs.rc == '0' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRY_RUN: "1" # SCRATCH (#2928) — TO BE REVERTED.
         run: bash scripts/file-exam-issue.sh "exam" --green
 
   notify:
@@ -566,7 +581,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      IFTTT_PROD_NOTIFY: ${{ secrets.IFTTT_PROD_NOTIFY }}
+      # SCRATCH (#2928) — TO BE REVERTED. Blanked so the step's existing
+      # `if: env.IFTTT_PROD_NOTIFY != ''` guard suppresses the ping for a
+      # scaffold run. Was: ${{ secrets.IFTTT_PROD_NOTIFY }}
+      IFTTT_PROD_NOTIFY: ""
     steps:
       - name: Notify via IFTTT on failure
         if: env.IFTTT_PROD_NOTIFY != ''
