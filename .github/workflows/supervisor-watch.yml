@@ -24,7 +24,7 @@
 # keyed on exactly two `rc` outputs — a third leg means editing conditions
 # that are load-bearing for an unrelated lane.
 #
-# WHY TWO PASSES (see scripts/run-supervisor-watch.sh's header for the full
+# WHY TWO PASSES (see scripts/supervisor-watch.mjs's header for the full
 # reasoning). Pass A covers ALL branches, because a red `health` on a PR is
 # easy to re-run past and forget, and R-A/R-B must see those samples; that
 # population is heterogeneous by design, so every identity field goes to
@@ -135,7 +135,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          bash scripts/run-supervisor-watch.sh
+          node scripts/supervisor-watch.mjs
           rc=$?
           set -e
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -144,7 +144,7 @@ jobs:
       # `if: always()` — this is where the saved health job logs live, and an
       # R-A finding is triaged by reading the diagnostic block inside one of
       # them, so the artifact must survive every verdict including a red one.
-      # run-supervisor-watch.sh (#2934) folds job-logs/ into job-logs.tar.gz
+      # supervisor-watch.mjs (#2934) folds job-logs/ into job-logs.tar.gz
       # and removes the plain directory once both passes have read it, so
       # `path:` below needs no exclusion of its own to avoid double-uploading
       # the same logs — a failed archive already aborts the script (and

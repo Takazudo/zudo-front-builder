@@ -173,9 +173,9 @@ const CONCURRENCY = 4;
 const GH_ATTEMPTS = 2;
 export const DEFAULT_RETRY_DELAY_MS = 2000;
 
-// Test-ergonomics escape hatch (#2932): tests/unit/run-supervisor-watch.sh
-// drives ~40 real `node` subprocesses and cannot afford two genuine 2 s
-// sleeps per invocation (a retryable gh failure x GH_ATTEMPTS - 1 pauses).
+// Test-ergonomics escape hatch (#2932): the harvester and supervisor-watch
+// suites drive many real subprocesses and cannot afford genuine 2 s sleeps
+// per invocation (a retryable gh failure x GH_ATTEMPTS - 1 pauses).
 // Reachable only via this env var -- a production caller never sets it, so
 // the default stays 2000 ms. An unset, empty, or non-numeric value falls
 // back to the default rather than silently coercing to 0.

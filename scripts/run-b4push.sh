@@ -146,7 +146,8 @@ fi
 
 # ── Step 2+: Offline shell unit tests ─────────────────
 # Actually EXECUTE tests/unit/*.sh (not just bash -n parse it above). These are
-# offline and mostly sub-second by design (issue #1332; run-supervisor-watch.sh needs node and takes ~10-25s, #2925) — mirrors health.yml:47-50,
+# offline and mostly sub-second by design (issue #1332) — mirrors health.yml's
+# offline shell unit-test step,
 # which runs them via `sh "$t"`. One step per file so a failing test is
 # individually attributable in the summary.
 for t in tests/unit/*.sh; do
