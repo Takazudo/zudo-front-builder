@@ -69,10 +69,25 @@
 # failure mode is "two tracking issues" not "no tracking issue", so the
 # signal is never lost. Closing on green needs BOTH legs to have passed, which
 # a single job can't know about itself, so that (and the IFTTT notify) is
-# centralized in two small downstream jobs that read the two test jobs'
-# `outputs.rc` (not `needs.*.result`, which is always "success" by design
-# here) — reusing the exact IFTTT pattern from release.yml's `notify` job
-# (issue #1335).
+# centralized in two small downstream jobs — reusing the exact IFTTT pattern
+# from release.yml's `notify` job (issue #1335).
+#
+# Those downstream jobs read the two test jobs' `outputs.rc` AND
+# `needs.*.result`, and BOTH operands are load-bearing (#2928):
+#   - `.result` is the LIVENESS gate — did the leg reach its rc step at all.
+#     It is "always success by design" ONLY when that step ran, which is what
+#     the unconditional step plus its `exit 0` buys. A leg that dies at
+#     checkout or toolchain setup reports "failure", and that is the only
+#     signal separating "died" from "passed".
+#   - `outputs.rc` is the VERDICT — a completed leg's real test outcome,
+#     which `.result` deliberately cannot express here.
+# Neither alone is sufficient, and each covers exactly what the other cannot:
+# `.result` can't tell a passing exam from a failing one, and `rc` can't tell
+# a passing leg from a dead one, because an unwritten output is ABSENT rather
+# than empty and so compares EQUAL to '0' (measured, run 34106407484). Do not
+# "simplify" either operand out of those conditions as redundant — dropping
+# `.result` restores the bug where an infra failure closed the tracking issue
+# as green.
 #
 # pin-update: every `uses: <action>@<sha>` line is pinned to an immutable 40-char
 # commit SHA per OpenSSF best practice. The trailing `# vX.Y.Z` comment names the
@@ -331,18 +346,28 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # `always()` (issue #1394): the bare `steps.run_manifest.outputs.rc !=
-      # '0'` condition implicitly ANDs in `success()` (GitHub Actions' default
-      # for any `if:` that doesn't itself reference always()/failure()/
-      # cancelled()), so a job that fails BEFORE this step runs — e.g. the
+      # Fail-closed gate (issues #1394, #2928). A bare
+      # `steps.run_manifest.outputs.rc != '0'` implicitly ANDs in `success()`
+      # (GitHub Actions' default for any `if:` referencing none of always()/
+      # failure()/cancelled()), so a job that failed BEFORE this step — the
       # esbuild/tailwindcss staging assert above, or a compile error in
-      # `cargo build --workspace --all-targets` — filed nothing at all. With
-      # `always()`, an infra failure that never reaches run_manifest leaves
-      # `outputs.rc` empty, and `'' != '0'` is true, so this step still runs
-      # and files the tracking issue — the empty-rc case is the fallback the
-      # comparison already provides, not extra logic.
+      # `cargo build --workspace --all-targets` — filed nothing at all.
+      # `always()` did not rescue that, though this comment used to claim it
+      # did. The old claim was that an unset `outputs.rc` makes `'' != '0'`
+      # true. It does not. GitHub never carries an unwritten output as an
+      # empty string: it omits the key, so the reference is null, the
+      # comparison coerces null to 0, and `!= '0'` is FALSE — measured in run
+      # 34105846729 case A (this exact condition observed skipping) and again
+      # by inspecting the raw outputs object, which comes back `{}`. The
+      # fallback was skipped in precisely the case it was written for.
+      # `failure()` covers the never-ran case outright and does not touch the
+      # comparison at all. The rule being enforced: a result that cannot tell
+      # "never ran" apart from "passed" is not a proof, so absence has to read
+      # as red and file. `!cancelled()` is the other half — a cancelled run (a
+      # workflow_dispatch landing on a scheduled one, a manual cancel, a
+      # `timeout-minutes` expiry) has no result behind it and must not file.
       - name: File or comment on tracking issue (failure)
-        if: always() && steps.run_manifest.outputs.rc != '0'
+        if: ${{ !cancelled() && (failure() || steps.run_manifest.outputs.rc != '0') }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "quarantine/heavy manifest (ubuntu-latest)"
@@ -505,13 +530,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # `always()` (issue #1394) — same implicit-success() gap as the
-      # quarantine-heavy job's filing step: without it, a failure BEFORE
-      # run_macos_suite (the staging assert above, or a compile error) filed
-      # nothing. Empty `outputs.rc` compares `!= '0'` as true, so this still
-      # fires for those infra failures too.
+      # Same fail-closed gate as the quarantine-heavy job's filing step above
+      # (issues #1394, #2928), for the same reason and with the same
+      # correction: a failure BEFORE run_macos_suite (the staging assert
+      # above, or a compile error) must file rather than pass silently, and
+      # `always() && rc != '0'` never did — an output that was never written is
+      # absent, not empty, so it coerces to 0 and `!= '0'` is false (run
+      # 34105846729, case A). The never-ran case was skipped, not caught.
+      # `failure()` catches it; `!cancelled()` keeps a cancelled run — which
+      # does still execute an `always()` step, as the probe's case D showed —
+      # from filing an issue with no result behind it.
       - name: File or comment on tracking issue (failure)
-        if: always() && steps.run_macos_suite.outputs.rc != '0'
+        if: ${{ !cancelled() && (failure() || steps.run_macos_suite.outputs.rc != '0') }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG: "macOS full workspace re-exam (macos-15)"
@@ -520,9 +550,35 @@ jobs:
   close-tracking-issue-if-green:
     # Centralized here (rather than in either test job) because closing
     # requires knowing BOTH legs passed — a single job can't see the other
-    # job's outcome. Reads `outputs.rc`, not `needs.*.result`: both test jobs
-    # are green by design (see header), so `.result` is always "success" and
-    # cannot distinguish a passing exam from a failing one.
+    # job's outcome. It takes BOTH `needs.*.result` and `needs.*.outputs.rc`
+    # to know that, and neither alone is enough (issue #2928):
+    #   - `.result` alone can't tell a passing exam from a failing one. Both
+    #     test jobs are green by design (see header), so a completed leg
+    #     always reports "success" whatever the tests did.
+    #   - `outputs.rc` alone can't tell a passing leg from a leg that DIED
+    #     before writing rc. The value is ABSENT, not empty: GitHub omits an
+    #     unwritten output's key from `needs` entirely, so the reference is
+    #     null, coerces to 0, and BOTH `== '0'` and `== ''` are true — which
+    #     no string comparison could produce. Measured in run 34106407484
+    #     (`needs.<job>.outputs` came back `{}`, identically for a job that
+    #     died before its rc step and one that merely had that step skipped);
+    #     run 34105846729 case A is the same finding for the `steps` context,
+    #     a different context, so do not read one as evidence for the other.
+    #     This step therefore used to run and close the tracking issue as
+    #     green on an infra failure, erasing a standing alert — confirmed
+    #     live in run 34106339546, where it
+    #     executed with both legs dead and closed nothing only because no
+    #     tracking issue happened to be open. Same defect as the filing steps
+    #     above, mirrored: there absence read as "nothing to report", here as
+    #     "both legs passed".
+    # Together they do distinguish the cases — `.result` is the liveness gate
+    # (did the leg reach its rc step at all) and `rc` is the verdict:
+    # `.result == 'success'` means the leg ran to completion, so its rc WAS
+    # written (the test step is unconditional), and `rc == '0'` then means it
+    # reported green. A leg that died reports a non-success result and no
+    # longer closes anything — a result that cannot tell "never ran" apart
+    # from "passed" is not a proof. Neither operand is redundant; dropping
+    # `.result` restores the bug.
     name: Close exam tracking issue if both legs are green
     needs: [quarantine-heavy, macos-exam]
     if: always()
@@ -537,7 +593,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Close tracking issue (both legs green)
-        if: ${{ needs.quarantine-heavy.outputs.rc == '0' && needs.macos-exam.outputs.rc == '0' }}
+        if: ${{ needs.quarantine-heavy.result == 'success' && needs.macos-exam.result == 'success' && needs.quarantine-heavy.outputs.rc == '0' && needs.macos-exam.outputs.rc == '0' }}
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash scripts/file-exam-issue.sh "exam" --green
