@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { TIMELINE_SAMPLES } from "./fixtures/load-timeline-samples.mjs";
 import {
   DEFAULT_BUDGET_MS,
   DEFAULT_CASE,
@@ -33,13 +34,12 @@ import {
   summarizeCase,
 } from "../supervisor-timeline-summary.mjs";
 
-// Real captured samples from the epic (#2902) / sub-issue (#2903) bodies.
-const UP_BOOM_LINE =
-  "[supervisor-timeline] case=up+boom outcome=ok total=540 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=354 first-up-line=430 marker-file-created=437 first-stderr-byte=505 supervisor-error-line=505 supervisor-closed=540 sibling-death=540";
-const UP_UP2_LINE =
-  "[supervisor-timeline] case=up+up2 outcome=ok total=357 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=233 first-up-line=292 marker-file-created=293 first-stderr-byte=343 supervisor-error-line=343 supervisor-closed=356 sibling-death=357";
-const HIDDEN_LINE =
-  "[supervisor-timeline] case=hidden outcome=expected-failure total=512 runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=sha256:ed62f5285936a0ca supervisor-spawned=1 first-stdout-byte=184 hidden-pid-file=236";
+// Real captured samples from the epic (#2902) / sub-issue (#2903) bodies,
+// canonical-sourced from the corpus shared with the other supervisor test
+// harnesses (#2930) -- see scripts/__tests__/fixtures/supervisor-timeline-samples.txt.
+const UP_BOOM_LINE = TIMELINE_SAMPLES.UP_BOOM_LINE;
+const UP_UP2_LINE = TIMELINE_SAMPLES.UP_UP2_LINE;
+const HIDDEN_LINE = TIMELINE_SAMPLES.HIDDEN_LINE;
 
 const SAMPLE_LOG = [
   "stdout: some ordinary vitest noise",
@@ -594,5 +594,83 @@ describe("drift guard: --budget-ms default tracks PROCESS_TIMEOUT_MS", () => {
     ).not.toBeNull();
     const processTimeoutMs = Number(match[1].replace(/_/g, ""));
     expect(DEFAULT_BUDGET_MS).toBe(processTimeoutMs);
+  });
+});
+
+// #2930's emitter-compatibility assertion: the shared corpus
+// (scripts/__tests__/fixtures/supervisor-timeline-samples.txt) is
+// hand-authored, not captured from a real run, so nothing forces it to keep
+// matching the real emitter (docs-dev-supervisor.test.mjs's timelineLine())
+// as that emitter changes. This describe block reads the emitter's own
+// source -- the same technique the drift guard above already uses -- and
+// fails loudly if either the identity-field order or the record's overall
+// token order has moved out from under the corpus.
+describe("emitter compatibility: the corpus still matches docs-dev-supervisor.test.mjs's timelineLine()", () => {
+  const source = readFileSync(new URL("./docs-dev-supervisor.test.mjs", import.meta.url), "utf8");
+
+  // The identity array literal inside timelineLine():
+  //   const identity = [`runner=${...}`, `zudoDoc=${...}`, ...].join(" ");
+  // Extracting the field NAMES from the emitter's own source (rather than
+  // hardcoding them here) is what makes both assertions below fail loudly on
+  // a real rename, instead of only on a rename nobody remembered to mirror.
+  // Not run inside an `it` (no test-scoped assertions here): every test in
+  // this block needs the extracted names, and a match failure means the
+  // extraction itself is broken, not any one sample -- collection-time
+  // failure of the whole file is the right blast radius for that.
+  const identityBlock = source.match(/const identity = \[([\s\S]*?)\]\.join\(" "\);/);
+  if (identityBlock === null) {
+    throw new Error(
+      "identity array literal not found in docs-dev-supervisor.test.mjs's timelineLine()",
+    );
+  }
+  const identityFieldNames = [...identityBlock[1].matchAll(/`([\w-]+)=\$\{/g)].map((m) => m[1]);
+  if (identityFieldNames.length === 0) {
+    throw new Error("no identity field names extracted from timelineLine()'s identity array");
+  }
+
+  it("the identity field order timelineLine() emits matches IDENTITY_FIELDS", () => {
+    // This is the tie that makes the corpus assertion below meaningful: the
+    // summarizer's own IDENTITY_FIELDS (used to parse every sample) must
+    // agree with what the emitter actually produces, not just with itself.
+    expect(identityFieldNames).toEqual(IDENTITY_FIELDS);
+  });
+
+  it("the record's case/outcome/total/identity/marks stay in that relative order", () => {
+    const returnStatement = source.match(/return `\[supervisor-timeline\][\s\S]*?`;/);
+    expect(returnStatement, "timelineLine()'s return template literal not found").not.toBeNull();
+    const snippet = returnStatement[0];
+    const indices = {
+      case: snippet.indexOf("case=$"),
+      outcome: snippet.indexOf("outcome=$"),
+      total: snippet.indexOf("total=$"),
+      identity: snippet.indexOf("${identity}"),
+      marks: snippet.indexOf("marks"),
+    };
+    for (const [field, index] of Object.entries(indices)) {
+      expect(
+        index,
+        `"${field}" token not found in timelineLine()'s return template`,
+      ).toBeGreaterThan(-1);
+    }
+    expect(indices.case).toBeLessThan(indices.outcome);
+    expect(indices.outcome).toBeLessThan(indices.total);
+    expect(indices.total).toBeLessThan(indices.identity);
+    expect(indices.identity).toBeLessThan(indices.marks);
+  });
+
+  it("every corpus sample matches the emitter's produced shape", () => {
+    const identityPattern = identityFieldNames.map((field) => `${field}=\\S+`).join(" ");
+    const recordShape = new RegExp(
+      `^\\[supervisor-timeline\\] case=\\S+ outcome=\\S+ total=\\d+ ${identityPattern}( \\S+=\\S+)+$`,
+    );
+
+    const sampleNames = Object.keys(TIMELINE_SAMPLES);
+    expect(sampleNames.length).toBeGreaterThan(0);
+    for (const name of sampleNames) {
+      expect(
+        recordShape.test(TIMELINE_SAMPLES[name]),
+        `${name} does not match: ${TIMELINE_SAMPLES[name]}`,
+      ).toBe(true);
+    }
   });
 });

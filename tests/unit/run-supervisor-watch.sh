@@ -8,18 +8,20 @@
 # Runs entirely offline. The script under test is bash; this harness is POSIX
 # sh because run-b4push.sh and health.yml execute every tests/unit/*.sh with
 # `sh` (mirrors tests/unit/file-exam-issue.sh). Real `gh` is never invoked: a
-# stub is passed through WATCH_GH -> the harvester's --gh flag, which is the
-# same subprocess/argv contract that
-# scripts/__tests__/harvest-supervisor-timelines.test.mjs drives.
+# stub -- scripts/__tests__/fixtures/gh-stub.sh, SHARED with
+# scripts/__tests__/harvest-supervisor-timelines.test.mjs (#2930) -- is
+# passed through WATCH_GH -> the harvester's --gh flag, which is the same
+# subprocess/argv contract that the vitest suite drives.
 #
-# Fixtures are real emissions: the `[supervisor-timeline]` record shape and
-# the `gh run view --job <id> --log` line prefix are copied from
-# scripts/__tests__/supervisor-timeline-summary.test.mjs (UP_BOOM_LINE) and
+# Fixtures are real emissions: the `[supervisor-timeline]` record shape comes
+# from the canonical corpus at scripts/__tests__/fixtures/supervisor-timeline-samples.txt
+# (also #2930), read via grep/sed rather than duplicated as a literal here,
+# and the `gh run view --job <id> --log` line prefix is copied from
 # scripts/__tests__/harvest-supervisor-timelines.test.mjs (LOG_PREFIX), not
 # hand-invented.
 #
-# Requires: sh, bash, node, mktemp, grep, tail, wc. Unlike its siblings this
-# is not sub-second: every case spawns the real harvester and summarizer.
+# Requires: sh, bash, node, mktemp, grep, sed, tail, wc. Unlike its siblings
+# this is not sub-second: every case spawns the real harvester and summarizer.
 #
 # Run:
 #   sh tests/unit/run-supervisor-watch.sh
@@ -55,44 +57,13 @@ trap 'rm -rf "$TMPROOT"' EXIT
 
 # ── Stub `gh` ────────────────────────────────────────────────────────────────
 #
-# Dispatches on argv exactly like the real thing: `run list`, `run view <id>
-# --json jobs`, `run view --job <id> --log`. Fixture data comes from files
-# under $WATCH_TEST_FIXTURES_DIR, inherited from the environment the same way
-# a real `gh` would inherit it. The watch never passes --branch (pass B is
-# derived from pass A's saved logs), so the stub does not filter on it.
-STUB="$TMPROOT/gh-stub.sh"
-cat >"$STUB" <<'GH_STUB'
-#!/bin/sh
-set -eu
-FIXDIR="${WATCH_TEST_FIXTURES_DIR:?WATCH_TEST_FIXTURES_DIR not set}"
-printf '%s\n' "$*" >>"$FIXDIR/calls.log"
-
-if [ "$1" = "run" ] && [ "$2" = "list" ]; then
-  if [ -f "$FIXDIR/run-list.fail" ]; then
-    echo "gh-stub: simulated run list failure" >&2
-    exit 1
-  fi
-  cat "$FIXDIR/run-list.json"
-  exit 0
-fi
-
-if [ "$1" = "run" ] && [ "$2" = "view" ]; then
-  if [ "$3" = "--job" ]; then
-    if [ -f "$FIXDIR/job-$4.fail" ]; then
-      echo "gh-stub: simulated failure fetching job $4" >&2
-      exit 1
-    fi
-    cat "$FIXDIR/job-$4.log"
-    exit 0
-  fi
-  cat "$FIXDIR/jobs-$3.json"
-  exit 0
-fi
-
-echo "gh-stub: unhandled invocation: $*" >&2
-exit 1
-GH_STUB
-chmod +x "$STUB"
+# The shared stub (scripts/__tests__/fixtures/gh-stub.sh, #2930) dispatches
+# on argv exactly like the real thing: `run list`, `run view <id> --json
+# jobs`, `run view --job <id> --log`. Fixture data comes from files under
+# $GH_STUB_FIXTURES_DIR, inherited from the environment the same way a real
+# `gh` would inherit it. The watch never passes --branch (pass B is derived
+# from pass A's saved logs), so the stub does not filter on it.
+STUB="$REPO_ROOT/scripts/__tests__/fixtures/gh-stub.sh"
 
 # ── Fixture builders ─────────────────────────────────────────────────────────
 
@@ -104,11 +75,23 @@ LOG_PREFIX_FMT='health\tUNKNOWN STEP\t2026-09-06T23:06:25.83Z . test: '
 ENV_A="sha256:ed62f5285936a0ca"
 ENV_B="sha256:173aae2cffffffff"
 
+# The canonical up+boom sample (#2930): read once via grep/sed rather than
+# duplicated as a literal here, so a field rename in the corpus needs no
+# edit in this file. This case's own scenarios still need varied
+# outcome/total/env/first-up-line values (the scope note in #2930 -- one
+# corpus, not one construction site), so timeline_line() edits those four
+# tokens into the template instead of hand-writing a new record per case.
+SAMPLES_FILE="$REPO_ROOT/scripts/__tests__/fixtures/supervisor-timeline-samples.txt"
+UP_BOOM_TEMPLATE=$(grep '^UP_BOOM_LINE=' "$SAMPLES_FILE" | sed 's/^UP_BOOM_LINE=//')
+
 # timeline_line <outcome> <first-up-line> <total> <env-digest>
 timeline_line() {
   printf "$LOG_PREFIX_FMT"
-  printf '[supervisor-timeline] case=up+boom outcome=%s total=%s runner=pnpm zudoDoc=5.15.0 runParallel=sha256:646f90cc300185cb fixtureShape=sha256:2d146d48587c00f5 env=%s supervisor-spawned=1 first-stdout-byte=354 first-up-line=%s marker-file-created=437 first-stderr-byte=505 supervisor-error-line=505 supervisor-closed=540 sibling-death=540\n' \
-    "$1" "$3" "$4" "$2"
+  printf '%s\n' "$UP_BOOM_TEMPLATE" | sed -E \
+    -e "s/outcome=[^ ]+/outcome=$1/" \
+    -e "s/first-up-line=[^ ]+/first-up-line=$2/" \
+    -e "s/total=[^ ]+/total=$3/" \
+    -e "s/env=[^ ]+/env=$4/"
 }
 
 # job_log <outcome> <first-up-line> <total> <env-digest> > file
@@ -157,7 +140,7 @@ new_fixture_dir() {
 # Returns the script's exit code in RC and its last stdout line in VERDICT_LINE.
 run_watch() {
   RW_FIX="$1"
-  if WATCH_TEST_FIXTURES_DIR="$RW_FIX" \
+  if GH_STUB_FIXTURES_DIR="$RW_FIX" \
     WATCH_GH="$STUB" \
     WATCH_OUT_DIR="$RW_FIX/out" \
     GITHUB_OUTPUT="$RW_FIX/gh-output.txt" \
