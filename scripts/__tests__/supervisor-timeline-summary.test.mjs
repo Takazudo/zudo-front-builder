@@ -812,8 +812,14 @@ describe("env identity contract cohorts (#2933)", () => {
       expect(s.out()).toMatch(/pre-UP \(spawn -> UP line\): n=2 min=7600ms .* max=7700ms\n/);
       expect(s.out()).toMatch(/R-B verdict \[env contract v1\]: max pre-UP=430ms .* -> ok\n/);
       expect(s.out()).toMatch(/R-B verdict \[env contract v2\]: max pre-UP=7700ms .* -> TRIPPED\n/);
-      // No pooled n=3 distribution anywhere.
-      expect(s.out()).not.toMatch(/n=3/);
+      // No pooled distribution anywhere: none of the four distribution lines
+      // may carry the combined n=3. Deliberately NOT a bare /n=3/ -- the
+      // required split report ("case ... (n=3) spans 2 env contract
+      // versions") states that total on purpose, and a bare match would
+      // forbid the very line semantic 7 asks for.
+      expect(s.out()).not.toMatch(
+        /(pre-UP \(spawn -> UP line\)|of which package-manager startup|of which server listen after that|whole case \(total\)): n=3/,
+      );
     });
   });
 

@@ -60,8 +60,10 @@ set -euo pipefail
 #   WATCH_OUT_DIR     output tree (default ./supervisor-watch-out; gitignored)
 #   WATCH_SINCE       when set, passed to the harvester as --since; when UNSET the
 #                     flag is OMITTED so the harvester's own default applies (a
-#                     rolling window floored at IDENTITY_CONTRACT_EPOCH — keeping
-#                     that in one place is the point of omitting it)
+#                     plain rolling window — keeping that in one place is the
+#                     point of omitting it. There is no date floor: #2933
+#                     retired IDENTITY_CONTRACT_EPOCH in favour of per-version
+#                     env-identity cohorts)
 #   WATCH_GH          alternate `gh` executable, passed as --gh (used by the unit test)
 #   WATCH_MAIN_BRANCH trunk branch for pass B (default main)
 #   WATCH_RETRY_DELAY_MS
