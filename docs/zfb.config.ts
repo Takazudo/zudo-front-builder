@@ -7,7 +7,7 @@ export default defineConfig(
     // ── Identity / URLs ────────────────────────────────────────────────
     siteName: "zfb",
     siteDescription:
-      "The Rust engine under your content-site framework — router, renderer, content pipeline. Author in TypeScript/JSX, runs as a single binary.",
+      "A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.",
     siteUrl: "https://zfb.takazudomodular.com",
     githubUrl: "https://github.com/Takazudo/zudo-front-builder",
     // zudoDoc() shallow-merges: a supplied nested object REPLACES the package
