@@ -43,5 +43,5 @@ export const chromeBindings = defineChromeBindings({
     ParsePlayground: ParsePlaygroundIsland,
     HighlightPlayground: HighlightPlaygroundIsland,
   },
-  homeExtras: ({ locale }) => <HomeExtras locale={locale} />,
+  homeExtras: HomeExtras,
 });
