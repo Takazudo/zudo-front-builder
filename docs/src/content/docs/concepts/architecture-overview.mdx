@@ -46,6 +46,9 @@ isolate is torn down. At build time the worker bundle never leaves your machine 
 same bundle shape also deploys unchanged to Cloudflare Workers for any
 `prerender = false` routes; that production path is covered later in
 this page and in the [SSR guide](../guides/ssr-and-cloudflare-bindings.mdx).)
+This build-time/request-time symmetry, and a third run shape in which another
+program spawns `zfb dev` as a local content server, are described in
+[Three ways to run zfb](./three-ways-to-run-zfb.mdx).
 
 **Browser output — shipped to end users, as up to two independent bundles.**
 
