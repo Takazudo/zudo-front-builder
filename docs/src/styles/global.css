@@ -26,6 +26,7 @@
 /* Scan this project's own source for Tailwind utility classes. */
 @source "src/content/**/*.{mdx,md}";
 @source "pages/**/*.{tsx,ts,jsx,js}";
+@source "src/chrome-bindings.tsx";
 
 /* ── Your token overrides ──────────────────────────────────────────────
    Override any default @theme token from @takazudo/zudo-doc/theme.css here. */

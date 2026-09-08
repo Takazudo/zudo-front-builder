@@ -14,7 +14,9 @@ const ParsePlaygroundIsland = () => Island({ when: "visible", children: <ParsePl
 const HighlightPlaygroundIsland = () =>
   Island({ when: "visible", children: <HighlightPlayground /> });
 
-const linkClass = "text-fg underline hover:text-accent";
+// whitespace-nowrap keeps "zudo-doc" from breaking mid-word: the package hero row is a
+// non-wrapping flex row that squeezes its items on narrow viewports.
+const linkClass = "text-fg underline hover:text-accent whitespace-nowrap";
 
 const HomeExtras = ({ locale }: { locale: string }) => {
   const label = locale === "ja" ? "zfb で作られたもの: " : "Built on zfb: ";
@@ -22,7 +24,7 @@ const HomeExtras = ({ locale }: { locale: string }) => {
   const ccResDocTitle = locale === "ja" ? "デスクトップアプリ" : "desktop app";
   return (
     <span>
-      {label}
+      <span class="hidden sm:inline">{label}</span>
       <a href="https://github.com/zudolab/zudo-doc" title={zudoDocTitle} class={linkClass}>
         zudo-doc
       </a>
