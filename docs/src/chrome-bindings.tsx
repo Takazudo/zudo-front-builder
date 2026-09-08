@@ -14,8 +14,9 @@ const ParsePlaygroundIsland = () => Island({ when: "visible", children: <ParsePl
 const HighlightPlaygroundIsland = () =>
   Island({ when: "visible", children: <HighlightPlayground /> });
 
-// whitespace-nowrap keeps "zudo-doc" from breaking mid-word: the package hero row is a
-// non-wrapping flex row that squeezes its items on narrow viewports.
+// Verified still necessary with @takazudo/zudo-doc@5.19.1 (issue #2960): the
+// non-wrapping hero flex row squeezes its items on narrow viewports. Keep both
+// whitespace-nowrap on links and hidden sm:inline on the explanatory label.
 const linkClass = "text-fg underline hover:text-accent whitespace-nowrap";
 
 const HomeExtras = ({ locale }: { locale: string }) => {
