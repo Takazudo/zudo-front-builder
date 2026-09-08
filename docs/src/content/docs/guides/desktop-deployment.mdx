@@ -91,6 +91,9 @@ is clean; the integration glue is not provided out of the box.
 **Tradeoff.** You carry extra moving parts: child process lifecycle management,
 port discovery, and IPC plumbing between Tauri and the sidecar. In exchange you
 get zfb's full render pipeline at runtime with no Node.js dependency.
+[CCResDoc](https://github.com/Takazudo/ccresdoc) is a working example: a Tauri
+host spawns the native `zfb` binary on a loopback port and Rust generators
+write MDX into its content tree.
 
 ---
 
@@ -111,9 +114,7 @@ pipeline into your binary. You want the smallest possible runtime footprint.
 purpose-built Rust server (or add Axum routes to an existing Tauri app) that
 reads markdown files at request time, renders them with a Rust markdown crate,
 and splices the result into the static shell via sentinel substitution or a
-similar pattern. [CCResDoc](https://github.com/Takazudo/ccresdoc) is a concrete,
-working example of this pattern: zfb compiles the Preact shell once and a
-hand-rolled Rust backend delivers content at runtime.
+similar pattern.
 
 **Tradeoff.** You write more Rust glue code, and you give up TSX-level page
 components at runtime. In exchange you get the smallest possible binary, full
