@@ -1,12 +1,20 @@
 ---
 title: はじめに
-description: zfb とは何か、誰のためのものか、Astro や Next.js とどう比較されるか。
+description: zfb とは何か、誰のためのものか、動かし方は 3 つあること、そしてそのコンセプトが Astro や Next.js とどう対応するか。
 sidebar_position: 1
 ---
 
-zfb は Rust で構築された静的サイトエンジンです。すでに Astro や Next.js を知っていて、ミリ秒単位のリビルド、単一バイナリのツールチェイン、オプトイン方式の島モデルを求める人に向いています。
+Web の Request/Response モデルの上に構築されたコンテンツサイトエンジンです。ページを TSX と MDX で一度書けば、それを静的 HTML にプリレンダリングすることも、Cloudflare Workers 上で配信することも、自分のアプリの中でローカルコンテンツサーバーとしてエンジンを動かすこともできます。単一の Rust バイナリとして配布されます。
 
 `pages/` ディレクトリツリーを読み解き、TSX コンポーネントを書けるなら、zfb が要求することの 90 パーセントはすでに身についています。
+
+## 誰のためのものか
+
+zfb は 1 人の開発者が、自分の作っているもののために作っているツールです。作っているものとは、zudo-doc のドキュメントサイト、CCResDoc、そしてそれらが配信するサイトです。公開しているのは、同じように考える人が欲しがるかもしれないからです。CCResDoc がやっているように Tauri のようなアプリにコンテンツエンジンを組み込みたい人、そしてサイト全体を支配するフレームワークではなく、SSG と SSR を小さく合成可能な部品として使いたい人に向いています。
+
+プロジェクトを始めた当時、何もかもが大きく感じられました。Next.js は大きく、Astro はもっと軽量とはいえ、作者には必要のない外部ライブラリの大きなエコシステムを引き込みます。今日では小さな機能の多くを AI の支援ですばやく高い品質で作れるので、ライブラリがその 1 つひとつに対するデフォルトの答えではなくなりました。そうした部品は他人のリリーススケジュールの下に置くより、自分の管理下に置いたほうが良いのです。小さなコア CLI はその目標に合っていたので、zfb はプラグインエコシステムではなく、少数のプリミティブを備えた 1 つの Rust バイナリとして配布されています。
+
+より詳しい議論は [Design philosophy](../concepts/design-philosophy.mdx) を、静的ビルド・Cloudflare Workers 上の SSR・ローカルコンテンツサーバーという 3 つの形がどう噛み合うのかは [zfb を動かす 3 つの方法](../concepts/three-ways-to-run-zfb.mdx) を参照してください。
 
 ## zfb が提供するもの
 
@@ -25,6 +33,8 @@ zfb は Rust で構築された静的サイトエンジンです。すでに Ast
 
 ## Astro から見て馴染みのある点
 
+Astro から来た人には、コンセプトは次のように対応します。
+
 | Astro のコンセプト | zfb での対応 |
 | --- | --- |
 | `src/pages/` のファイルシステムルーティング | `pages/` ディレクトリ、同じ命名規約 |
@@ -39,6 +49,8 @@ zfb は Rust で構築された静的サイトエンジンです。すでに Ast
 
 ## Next.js から見て馴染みのある点
 
+Next.js から来た人には、コンセプトは次のように対応します。
+
 | Next.js のコンセプト | zfb での対応 |
 | --- | --- |
 | `pages/` ディレクトリルーティング（Pages Router） | `pages/` — 同じファイル命名とネストのルール |
@@ -48,7 +60,7 @@ zfb は Rust で構築された静的サイトエンジンです。すでに Ast
 | 静的アセット用の `public/` | `public/` — 同じセマンティクス |
 | ページをラップするレイアウトコンポーネント | ページをラップするレイアウトコンポーネント — 素の TSX 合成 |
 
-異なる点: zfb は **デフォルトで SSG** です。すべてのページはビルド時に計算され、静的 HTML になります。本当にリクエスト時の挙動を必要とするルートは `prerender = false` でオプトアウトし、設定済みのアダプター（例: [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx) 経由の Cloudflare Workers Static Assets）が処理します。zfb が目指していないのは、フル機能のアプリフレームワークになることです。App Router も、React Server Components も、ミドルウェア層も、ページ単位の自動 ISR もありません。ランタイムの位置づけは「SSG にアダプター形状の脱出口を加えたもの」であって、「`output: export` だけの Next.js」ではありません。
+異なる点: zfb は **デフォルトで SSG** です。すべてのページはビルド時に計算され、静的 HTML になります。本当にリクエスト時の挙動を必要とするルートは `prerender = false` でオプトアウトし、設定済みのアダプター（例: [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx) 経由の Cloudflare Workers Static Assets）が処理します。Cloudflare Workers 上の SSR は、明示された制約を伴うサポートされた形です。アダプターは Cloudflare 向けの 1 つだけであり、App Router も、React Server Components も、ミドルウェア層も、自動 ISR もありません。デフォルトは静的ビルドのままです。
 
 ## クライアントルーターと View Transitions
 
