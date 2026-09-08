@@ -1,0 +1,162 @@
+---
+title: Three ways to run zfb
+description: One Request/Response application, three run shapes — prerendered to static HTML at build time, served on Cloudflare Workers at request time, or run as a local content server inside another program.
+sidebar_position: -0.8
+category: Concepts
+---
+
+<Info title="What this page covers">
+
+zfb compiles your pages into one application with a single contract — a
+Request/Response handler — and then runs that same application three ways:
+prerendered to static HTML, served on Cloudflare Workers, or spawned as a local
+content server inside another program.
+
+For whether zfb fits your project at all, read [Choosing zfb](./choosing-zfb.mdx).
+For the build-time pipeline in detail, read
+[Architecture overview](./architecture-overview.mdx). For what production SSR
+actually looks like, read [SSR on a Worker](./ssr-on-a-worker.mdx).
+
+</Info>
+
+## One application contract
+
+The generated application exposes a Request/Response handler. When you run a
+build, esbuild compiles your TSX pages, layouts, and components into a single
+worker bundle shaped as a Cloudflare Workers module:
+
+```ts
+export default {
+  fetch(request: Request, env: Env, ctx: ExecutionContext): Response { ... }
+};
+```
+
+Page components never implement `fetch` themselves. They stay ordinary
+functions; the bundle around them is what carries the handler. That handler is
+the whole contract, and it is what the three run shapes have in common.
+
+Fixing the contract is what makes those shapes one product rather than three.
+The same bundle is driven by synthetic requests at build time and by real
+requests at request time — nothing about the application changes when you move
+between them.
+
+```text
+                     one application contract
+             export default { fetch(request, env, ctx) }
+                                |
+       +------------------------+------------------------+
+       |                        |                        |
+  embedded V8                workerd                  zfb dev
+  at build time           at request time      inside another process
+       |                        |                        |
+  static HTML in dist/     SSR responses for        live pages on a
+                           prerender = false        loopback port
+```
+
+## Shape 1: static build
+
+`zfb build` loads the worker bundle into an embedded V8 isolate and drives it
+with one synthetic request per page URL. Each response is written to `dist/` as
+a plain `.html` file, and the isolate is torn down when the build finishes.
+
+The result is a directory of files. It drops into a Cloudflare Workers Static
+Assets deployment as-is: no server runtime to manage, no serverless function to
+configure, no adapter layer. The built `dist/` is the deployment artifact.
+
+This documentation site is the example: every page you are reading was rendered
+at build time and shipped as a file.
+
+## Shape 2: SSR on Cloudflare Workers
+
+A route that must run per request — reading a database, checking a session
+cookie, handling a `POST` — opts out of prerendering with one export:
+
+```tsx
+export const prerender = false;
+```
+
+With `@takazudo/zfb-adapter-cloudflare` configured, `zfb build` emits two files:
+`dist/_worker.js`, a small generated stub, and `dist/_zfb_inner.mjs`, the real
+application bundle. The stub opens an `AsyncLocalStorage` scope holding
+`(env, ctx, request)` and, for the requests it actually receives, dispatches
+each one either to the static asset server via `env.ASSETS` or to the inner
+bundle. Inside a page, `getCloudflareContext()` reads that scope, so Cloudflare
+bindings reach any layout or helper without prop-drilling.
+
+The engine that executes the bundle changes — workerd instead of embedded V8 —
+and the application does not.
+
+The limits are worth stating plainly:
+
+- **Cloudflare is the only adapter.** zfb ships
+  `@takazudo/zfb-adapter-cloudflare` and nothing else.
+- **Workers Static Assets is the verified deploy target.** Cloudflare Pages
+  advanced mode has not been verified for this adapter, so nothing here is a
+  support claim for it.
+- **No incremental static regeneration, no React Server Components, and no
+  request-time middleware layer in the deployed Worker.** A route is
+  prerendered at build time or handled per request; there is nothing in
+  between.
+
+For the mental model, read [SSR on a Worker](./ssr-on-a-worker.mdx). For
+hands-on setup — `wrangler.toml`, `compatibility_flags`, D1 queries — read
+[SSR and Cloudflare Bindings](../guides/ssr-and-cloudflare-bindings.mdx).
+
+## Shape 3: local content server
+
+The third shape does not deploy anything. A host program spawns the `zfb`
+binary as a child process, running `zfb dev` bound to a loopback port, and
+points its own UI at that port.
+
+What makes this practical is that the process stays small. A config with
+`plugins: []` spawns no Node plugin host, and on the standard embedded-V8 build
+the config itself is evaluated in-process by the V8 isolate that ships in the
+binary. Slim builds compile that evaluator out and evaluate the config through a
+`node` subprocess instead, so they do need `node` on `PATH`.
+
+From there the host drives content by writing files. Other parts of the program
+generate MDX into the content tree, and `zfb dev`'s content watcher picks the
+change up and hot-reloads the affected pages.
+
+[CCResDoc](https://github.com/Takazudo/ccresdoc) is the proof. It is a Tauri
+shell around Rust generators and watchers that turn local files into MDX; at
+launch it spawns the native `zfb` binary on a settings-selected loopback port.
+Because startup is asynchronous it then polls a real page — `GET /docs/` — until
+the response is successful and carries the shell it expects, rather than
+treating a bare `200` as readiness.
+
+This shape is deliberately supported. It is also narrow, so be clear about what
+it is not:
+
+- **Not a production HTTP server.** `zfb dev` is a development server, used
+  here on loopback inside a single machine's process tree.
+- **No authentication or authorization.** Anything the server can render, any
+  local client can read.
+- **Not an in-process library API.** The host owns a child process and a port.
+  A Rust host that wants the server inside its own process instead can use the
+  `zfb-server` builder — see [Embed as library](../guides/embed-as-library.mdx)
+  — but that is a separate path, the crate is not published to crates.io, and it
+  is not what CCResDoc does.
+
+## Why the contract is the claim, not Rust
+
+Rust does real work here. It makes file scanning, the dependency graph, build
+orchestration, incremental rebuilds, and V8 hosting fast, and it lets the whole
+engine ship as one binary with no runtime toolchain to install.
+
+But Rust is not the claim. It is how the engine is fast and how it ships; it is
+not what makes the three shapes cohere. The contract is. Because the
+application is a Request/Response handler and nothing more, the build-time
+host, the production host, and a local content server are three drivers of one
+thing instead of three separate products that happen to share a name.
+
+## Where to go next
+
+- [Choosing zfb](./choosing-zfb.mdx) — whether this shape of tool fits your
+  project.
+- [Architecture overview](./architecture-overview.mdx) — the build-time vs
+  browser split and the full build-time pipeline.
+- [SSR on a Worker](./ssr-on-a-worker.mdx) — the two-layer worker output and
+  request dispatch in production.
+- [Engine vs Framework](./engine-vs-framework.mdx) — the six primitives zfb
+  commits to, and what lives outside the engine.
