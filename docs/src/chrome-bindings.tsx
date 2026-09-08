@@ -14,6 +14,26 @@ const ParsePlaygroundIsland = () => Island({ when: "visible", children: <ParsePl
 const HighlightPlaygroundIsland = () =>
   Island({ when: "visible", children: <HighlightPlayground /> });
 
+const linkClass = "text-fg underline hover:text-accent";
+
+const HomeExtras = ({ locale }: { locale: string }) => {
+  const label = locale === "ja" ? "zfb で作られたもの: " : "Built on zfb: ";
+  const zudoDocTitle = locale === "ja" ? "ドキュメントフレームワーク" : "documentation framework";
+  const ccResDocTitle = locale === "ja" ? "デスクトップアプリ" : "desktop app";
+  return (
+    <span>
+      {label}
+      <a href="https://github.com/zudolab/zudo-doc" title={zudoDocTitle} class={linkClass}>
+        zudo-doc
+      </a>
+      {" · "}
+      <a href="https://github.com/Takazudo/ccresdoc" title={ccResDocTitle} class={linkClass}>
+        CCResDoc
+      </a>
+    </span>
+  );
+};
+
 export const chromeBindings = defineChromeBindings({
   mdxExtras: {
     RenderPlayground: RenderPlaygroundIsland,
@@ -21,4 +41,5 @@ export const chromeBindings = defineChromeBindings({
     ParsePlayground: ParsePlaygroundIsland,
     HighlightPlayground: HighlightPlaygroundIsland,
   },
+  homeExtras: ({ locale }) => <HomeExtras locale={locale} />,
 });
