@@ -1,6 +1,6 @@
 # @takazudo/zfb-runtime
 
-> Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.
+> A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.
 
 The JS-side runtime for [zfb][zfb-site]'s SSG-first build pipeline. It
 exposes `createPageRouter`, a Hono-backed page router whose returned

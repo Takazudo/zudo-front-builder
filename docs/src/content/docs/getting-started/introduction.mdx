@@ -1,12 +1,20 @@
 ---
 title: Introduction
-description: What zfb is, who it is for, and how it compares to Astro and Next.js.
+description: What zfb is, who it is for, the three ways to run it, and how its concepts map onto Astro and Next.js.
 sidebar_position: 1
 ---
 
-zfb is a Rust-built static-site engine for people who already know Astro or Next.js and want millisecond rebuilds, a single-binary toolchain, and an opt-in island model.
+A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.
 
 If you can read a `pages/` directory tree and write a TSX component, you already know 90 percent of what zfb requires.
+
+## Who this is for
+
+zfb is built by one developer for the things that developer is making — zudo-doc documentation sites, CCResDoc, and the sites those serve. It is published because someone who thinks the same way may want it: people who want to drop a content engine into a Tauri-style app the way CCResDoc does, and people who want SSG and SSR as small composable parts rather than a whole framework that owns the site.
+
+At the start of the project everything felt big. Next.js is big, and Astro is lighter but still pulls in a large ecosystem of external libraries the author did not need. Today many small features can be built with AI assistance quickly and at high quality, so a library is no longer the default answer for each of them — those pieces are better kept under your own control than under someone else's release schedule. A tiny core CLI matched that goal, so zfb ships as one Rust binary with a small set of primitives rather than a plugin ecosystem.
+
+See [Design philosophy](../concepts/design-philosophy.mdx) for the fuller argument, and [Three ways to run zfb](../concepts/three-ways-to-run-zfb.mdx) for how the static build, SSR on Cloudflare Workers, and local content server shapes fit together.
 
 ## What zfb provides
 
@@ -25,6 +33,8 @@ For the "why this shape" answer — narrow scope, recipes-over-plugins, no middl
 
 ## Familiar from Astro
 
+If you come from Astro, the concepts map like this:
+
 | Astro concept | zfb equivalent |
 | --- | --- |
 | `src/pages/` file-system routing | `pages/` directory, same naming conventions |
@@ -39,6 +49,8 @@ What is different: zfb has no component syntax of its own — everything is TSX.
 
 ## Familiar from Next.js
 
+If you come from Next.js, the concepts map like this:
+
 | Next.js concept | zfb equivalent |
 | --- | --- |
 | `pages/` directory routing (Pages Router) | `pages/` — same file naming and nesting rules |
@@ -48,7 +60,7 @@ What is different: zfb has no component syntax of its own — everything is TSX.
 | `public/` for static assets | `public/` — same semantics |
 | Layout components wrapping pages | Layout components wrapping pages — plain TSX composition |
 
-What is different: zfb is **SSG by default** — every page is computed at build time into static HTML. Routes that genuinely need request-time behavior opt out with `prerender = false` and are served by a configured adapter (e.g. Cloudflare Workers Static Assets via [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx)). What zfb does not aim to be is a full app framework — there is no App Router, no React Server Components, no middleware layer, and no per-page automatic ISR. The runtime story is "SSG plus an adapter-shaped escape hatch," not "Next.js with `output: export` only."
+What is different: zfb is **SSG by default** — every page is computed at build time into static HTML. Routes that genuinely need request-time behavior opt out with `prerender = false` and are served by a configured adapter (e.g. Cloudflare Workers Static Assets via [`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx)). SSR on Cloudflare Workers is a supported shape with stated limits: Cloudflare is the only adapter, and there is no App Router, no React Server Components, no middleware layer, and no automatic ISR. Static build stays the default.
 
 ## Client router and view transitions
 

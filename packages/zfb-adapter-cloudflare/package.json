@@ -3,7 +3,7 @@
   "version": "2.16.0",
   "private": false,
   "type": "module",
-  "description": "Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary. Cloudflare adapter: Workers Static Assets (Pages-compatible).",
+  "description": "Content-site engine on the web's Request/Response model — prerender to static HTML, serve on Cloudflare Workers, or run as a local content server inside your app. One Rust binary. Cloudflare adapter: Workers Static Assets (Pages-compatible).",
   "keywords": [
     "zfb",
     "zfb-adapter",
