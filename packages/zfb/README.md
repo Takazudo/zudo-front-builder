@@ -1,6 +1,6 @@
 # @takazudo/zfb
 
-> Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.
+> A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.
 
 The public SDK module for [zfb][zfb-site]: islands, content collections,
 pagination, config, plugins, and frontmatter helpers. User pages reach this

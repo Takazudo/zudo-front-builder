@@ -1,6 +1,6 @@
 ---
 title: Choosing zfb
-description: When zfb fits your project, when it does not, and where the scaling sweet spot is.
+description: Who zfb is for, how the three run shapes — static build, SSR on Cloudflare Workers, and a local content server — map onto real projects, and where the scaling sweet spot is.
 sidebar_position: -1
 category: Concepts
 ---
@@ -8,7 +8,8 @@ category: Concepts
 <Info title="What this page covers">
 
 Whether zfb is the right tool for your project — including an honest
-look at what it is not good at. Cross-linked to the
+look at what it is not good at. Cross-linked to
+[Three ways to run zfb](./three-ways-to-run-zfb.mdx), the
 [architecture overview](../architecture/build-engine.mdx), the
 [getting-started guide](../getting-started/index.mdx), and the scaling note in the
 [README](https://github.com/Takazudo/zudo-front-builder#limits).
@@ -19,71 +20,129 @@ zfb is a focused tool. It solves a specific problem well, and it
 deliberately leaves other problems to other tools. This page maps that
 out so you can make the call before you invest time.
 
+## Who this is for
+
+zfb is built by one developer for the things that developer is making:
+zudo-doc documentation sites, [CCResDoc](https://github.com/Takazudo/ccresdoc),
+and the sites those serve. It is published because someone who thinks the same
+way may want it — people who want to drop a content engine into a Tauri-style
+app the way CCResDoc does, and people who want SSG and SSR as small composable
+parts rather than a whole framework that owns the site.
+
+The origin story is plain. At the start of the project, everything felt big.
+Next.js is big. Astro is lighter, but it supports a large ecosystem of external
+libraries this project did not need. Today many small features can be built
+with AI assistance quickly and at high quality, so a library is no longer the
+default answer for each of them. "No need" would overstate it — but those
+pieces are better kept under your own control than under someone else's release
+schedule. A tiny core CLI matched that. The full argument for recipes over
+plugins lives in [Design philosophy](./design-philosophy.mdx).
+
+So this page is not trying to talk you out of Astro or Next.js. If one of them
+fits your project, use it. zfb is here for the projects where the interesting
+work happens somewhere other than page rendering.
+
 ## When zfb fits well
 
-zfb is a strong match if most of the following describe your project:
+zfb runs the same Request/Response application in three shapes, and most
+projects lean on one of them.
+[Three ways to run zfb](./three-ways-to-run-zfb.mdx) walks through all three in
+detail; this section is the fit test for each.
 
-**Content-heavy, statically generated site.** Your source of truth is
-Markdown or MDX files in a repository. You want a build step that turns
-those files into static HTML, and you want that build to be fast and
-deterministic. zfb's entire architecture is shaped around this case.
+### Static build
 
-**Per-page dependency graph.** You have hundreds of pages and you do
-not want a full rebuild on every edit. zfb tracks which source files
-each page depends on and rebuilds only the affected pages when
-something changes. The dependency graph (`crates/zfb-graph`) is a
-first-class part of the engine, not a bolt-on.
+A strong match when your source of truth is Markdown or MDX files in a
+repository and you want a fast, deterministic build step that turns them into
+static HTML. zfb's entire architecture is shaped around this case.
 
-**Workerd-shaped output bundle.** Your target is Cloudflare Workers,
-including Workers Static Assets (Pages-compatible). zfb's build-time
-JS host is V8-based (via embedded V8), the same engine family as
-workerd. The content snapshot and island bundles are sized for that
-environment. If you deploy to Workers, you get a bundle shape that
-actually fits.
+**Per-page dependency graph.** With hundreds of pages you do not want a full
+rebuild on every edit. zfb tracks which source files each page depends on and
+rebuilds only the affected pages when something changes. The dependency graph
+(`crates/zfb-graph`) is a first-class part of the engine, not a bolt-on.
 
-**Cloudflare Workers Static Assets–friendly deployment.** Static
-output from `zfb build` drops directly into a Workers Static Assets
-deployment (Pages-compatible). There is no server runtime to manage,
-no serverless function to configure, and no adapter layer. The built
-`dist/` is the deployment artifact.
+**Workers Static Assets drop-in.** Static output from `zfb build` drops directly
+into a Workers Static Assets deployment (Pages-compatible). There is no server
+runtime to manage, no serverless function to configure, and no adapter layer.
+The built `dist/` is the deployment artifact.
 
-**Light interactive islands.** Your pages are mostly static documents
-with a small number of interactive components — a search box, a
-counter, a modal trigger. zfb's islands model (`"use client"`) ships
-a single shared islands bundle for the project and injects it only on
-pages that contain island markers. A page with one island may download
-code for the project's other islands too; pages with no islands skip the
-islands script, though other client-script paths can still ship JavaScript.
+### SSR on Cloudflare Workers
 
-## Comparison
+A strong match when some routes have to run at request time and your target is
+Cloudflare Workers. Routes that opt out of prerendering with
+`prerender = false` are served by
+[`@takazudo/zfb-adapter-cloudflare`](../guides/ssr-and-cloudflare-bindings.mdx),
+and Cloudflare bindings reach any page component through
+`getCloudflareContext()` without prop-drilling.
 
-| | **zfb** | **Astro** | **Next.js** |
-|---|---|---|---|
-| CLI language | Rust | Node.js | Node.js |
-| TSX compile | SWC (embedded) | Vite/Rollup | SWC/Webpack |
-| Bundler | esbuild (islands) | Vite | Webpack/Turbopack |
-| Build-time JS host | Embedded V8 | Node.js | Node.js |
-| Client framework | Any TSX (`"use client"`) | Any (adapters) | React |
+The bundle contract does not change between the two shapes: the worker bundle
+the build drives in an embedded V8 isolate is the same shape that deploys to
+Workers for the dynamic routes. [SSR on a Worker](./ssr-on-a-worker.mdx) is the
+mental model; the [SSR and Cloudflare bindings guide](../guides/ssr-and-cloudflare-bindings.mdx)
+is the hands-on setup. This model is verified on Workers Static Assets;
+Cloudflare Pages advanced mode has not been verified for the adapter.
 
-The most meaningful difference is the **build-time JS host**. zfb uses
-embedded V8 directly — the same engine family as Cloudflare's workerd.
-Astro and Next.js both build in a full Node.js process. For
-Workers-targeted deployments, zfb's host is closer to the target
-runtime, which means fewer surprises around global availability and
-module resolution.
+### Local content server
+
+A strong match when another program owns the window and zfb owns the content.
+`zfb dev` is spawned by that program on a loopback port and answers requests
+from its WebView. In the standard embedded-V8 build with `plugins: []`, no Node
+plugin host is spawned, so the running server needs no Node.js on the machine.
+Other processes write MDX into the content tree while the server runs, and
+content-watch HMR picks the change up without a rebuild.
+
+[CCResDoc](https://github.com/Takazudo/ccresdoc) is the proof: a Tauri host
+spawns the native `zfb` binary as a subprocess on a settings-selected loopback
+port, Rust generators and watchers emit MDX from the configured Claude and
+Codex resource directories, and the host polls a real page until the response
+carries the expected shell before it treats the server as ready. See
+[Desktop deployment](../guides/desktop-deployment.mdx) for the composition
+matrix between a spawned server and the in-process
+[`zfb-server` crate](../guides/embed-as-library.mdx).
+
+### Light interactive islands
+
+This is a property shared by all three shapes, not a fourth one. zfb suits
+pages that are mostly static documents with a small number of interactive
+components — a search box, a counter, a modal trigger. The islands model
+(`"use client"`) ships a single shared islands bundle for the project and
+injects it only on pages that contain island markers. A page with one island may
+download code for the project's other islands too; pages with no islands skip
+the islands script, though other client-script paths can still ship JavaScript.
+
+## Where zfb sits
+
+zfb is one layer of a content site, not the whole of one. Reading the stack
+top-down:
+
+| Layer | What lives there |
+|---|---|
+| Framework / site experience | Astro, Next.js, VitePress, Starlight, zudo-doc |
+| Site engine | **zfb** — routing, SSG, SSR, islands, collections |
+| Content pipeline | remark/rehype, markdown-it, zfb's own MDX pipeline |
+| Parser / compiler / runtime | Rust, SWC, esbuild, V8 |
+
+Astro and Next.js own the site experience — sidebars, themes, blog conventions,
+the finished shape of a site. zfb owns the layer below that: it is the engine a
+framework such as zudo-doc sits on, or that an application such as CCResDoc sits
+on. Pick zfb when the hard parts of your project live outside page rendering and
+you want the rendering layer to be small, predictable, and yours to compose. If
+the hard part *is* the site experience, a framework will get you there faster.
+
+One technical difference is worth naming: zfb's build-time JS host is embedded
+V8, the same engine family as Cloudflare's workerd, while Astro and Next.js
+build in a full Node.js process — so for Workers-targeted deployments zfb's
+build host is closer to the target runtime.
 
 ## When to pick something else
 
 zfb is the wrong choice in several cases — be honest with yourself
 before committing.
 
-**Most or every page on your site is dynamic.** zfb is SSG-by-default:
-every page is computed at build time into static HTML. Routes that need
-request-time behavior can opt out with `prerender = false` and be served
-by an adapter (see [SSR and Cloudflare bindings](../guides/ssr-and-cloudflare-bindings.mdx)).
-That covers a sprinkle of dynamic routes on an otherwise-static site. If
-*every* page is dynamic — per-user, per-request — zfb is the wrong tool,
-and a full SSR framework is the right one.
+**You need SSR beyond what the Cloudflare adapter offers.** SSR is a supported
+shape, not an afterthought, but the only adapter targets Cloudflare Workers.
+There is no ISR, no React Server Components, no middleware layer, and no Node,
+Vercel, or Deno adapter. If your request-time story needs any of those, a full
+SSR framework is the right tool.
 
 **You need broad multi-framework support.** Astro's adapter ecosystem
 lets you swap between React, Vue, Svelte, Solid, and others inside the
@@ -142,6 +201,7 @@ lives in the [README scaling note](https://github.com/Takazudo/zudo-front-builde
 
 ## Where to go next
 
+- [Three ways to run zfb](./three-ways-to-run-zfb.mdx) — the static build, the Worker, and the local content server, side by side.
 - [Getting started](../getting-started/index.mdx) — scaffold your first site.
 - [Design philosophy](./design-philosophy.mdx) — the "narrow on purpose" stance and the recipes-over-plugins framing that explain why this set of trade-offs.
 - [Architecture: Build engine](../architecture/build-engine.mdx) — how the

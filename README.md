@@ -1,6 +1,6 @@
 # zudo-front-builder (zfb)
 
-`zfb` is a Rust-built static-site engine for TypeScript/JSX projects — millisecond rebuilds, single binary, no cargo needed by end users.
+A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.
 
 ## Install without Node
 
@@ -48,9 +48,19 @@ Rust makes the framework itself fast, memory-safe, and distributable as a single
 
 ## What zfb is
 
-zfb is the **engine**: router, renderer, content pipeline, and the small set of build-time primitives (frontmatter extraction, content collections, `paths()`, MDX directive registry, and non-HTML page emission) that a framework can build on. Frameworks like a future `zudo-doc-v2` sit on top of these primitives and own the opinionated layer — sidebar generation, search, theming, blog conventions, i18n routing, versioning UI, and so on.
+zfb is the **engine**: router, renderer, content pipeline, and the small set of build-time primitives (frontmatter extraction, content collections, `paths()`, MDX directive registry, and non-HTML page emission) that something else builds on. Frameworks like Astro and Next.js own the site experience; zfb is the engine a framework (zudo-doc) or an app (CCResDoc) sits on.
 
-zfb is the engine for content sites whose hard parts live outside page rendering — build-time data pipelines, custom content collections, project-specific glue. For sites whose hard parts are page rendering itself (multi-framework, ISR, RSC, server actions), use Astro or Next. See [`concepts/choosing-zfb.mdx`](./docs/src/content/docs/concepts/choosing-zfb.mdx) for the longer answer.
+zfb is built by one developer for the things that developer is making — zudo-doc documentation sites, CCResDoc, and the sites those serve. It is published because someone who thinks the same way may want it: people who want to drop a content engine into a Tauri-style app the way CCResDoc does, and people who want SSG and SSR as small composable parts rather than a whole framework that owns the site — the same Request/Response application, run three ways.
+
+At the start of the project everything felt big. Next.js is big, and Astro is lighter but still pulls in a large ecosystem of external libraries the author did not need. Today many small features can be built with AI assistance quickly and at high quality, so a library is no longer the default answer for each of them — those pieces are better kept under your own control than under someone else's release schedule. A tiny core CLI matched that goal, so zfb ships as one Rust binary with a small set of primitives rather than a plugin ecosystem. See [Design philosophy](./docs/src/content/docs/concepts/design-philosophy.mdx) for the fuller argument.
+
+| Shape | Drives `fetch` | Example |
+| --- | --- | --- |
+| Static build | prerendered to HTML at build time | this docs site |
+| SSR on Cloudflare Workers | the Worker request handler | `@takazudo/zfb-adapter-cloudflare` |
+| Local content server | a host process spawning the `zfb` binary | [CCResDoc](https://github.com/Takazudo/ccresdoc) |
+
+See [`concepts/choosing-zfb.mdx`](./docs/src/content/docs/concepts/choosing-zfb.mdx) for the longer answer on which shape fits.
 
 The full pipeline ships today: embedded V8 host, `zfb.config.ts` config loader, `syntect`-backed syntax highlighting, islands pipeline, client router with view transitions, content-collection bridge, and dev-server are all wired.
 

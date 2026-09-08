@@ -1,6 +1,6 @@
 # @takazudo/zfb-adapter-cloudflare
 
-> Rust-built static-site engine for Astro and Next.js users — millisecond rebuilds, single binary.
+> A content-site engine built on the web's Request/Response model. Write pages in TSX and MDX once, then prerender them to static HTML, serve them on Cloudflare Workers, or run the engine as a local content server inside your own app. Ships as one Rust binary.
 
 The Cloudflare adapter for [zfb][zfb-site], verified on **Workers Static
 Assets**. It wraps the `@takazudo/zfb-runtime` page router into a Worker entry
