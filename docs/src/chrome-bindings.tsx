@@ -14,10 +14,7 @@ const ParsePlaygroundIsland = () => Island({ when: "visible", children: <ParsePl
 const HighlightPlaygroundIsland = () =>
   Island({ when: "visible", children: <HighlightPlayground /> });
 
-// Verified still necessary with @takazudo/zudo-doc@5.19.1 (issue #2960): the
-// non-wrapping hero flex row squeezes its items on narrow viewports. Keep both
-// whitespace-nowrap on links and hidden sm:inline on the explanatory label.
-const linkClass = "text-fg underline hover:text-accent whitespace-nowrap";
+const linkClass = "text-fg underline hover:text-accent";
 
 const HomeExtras = ({ locale }: { locale: string }) => {
   const label = locale === "ja" ? "zfb で作られたもの: " : "Built on zfb: ";
@@ -25,7 +22,7 @@ const HomeExtras = ({ locale }: { locale: string }) => {
   const ccResDocTitle = locale === "ja" ? "デスクトップアプリ" : "desktop app";
   return (
     <span>
-      <span class="hidden sm:inline">{label}</span>
+      <span>{label}</span>
       <a href="https://github.com/zudolab/zudo-doc" title={zudoDocTitle} class={linkClass}>
         zudo-doc
       </a>
