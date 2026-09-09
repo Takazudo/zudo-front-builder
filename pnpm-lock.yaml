@@ -99,8 +99,8 @@ importers:
   docs:
     dependencies:
       '@takazudo/zdtp':
-        specifier: 0.5.2
-        version: 0.5.2(preact@10.29.1)
+        specifier: 0.7.0
+        version: 0.7.0(preact@10.29.1)
       '@takazudo/zfb':
         specifier: 2.16.0
         version: 2.16.0(react@19.2.6)
@@ -114,11 +114,11 @@ importers:
         specifier: 2.16.0
         version: 2.16.0(@takazudo/zfb@2.16.0(react@19.2.6))(react@19.2.6)
       '@takazudo/zudo-doc':
-        specifier: 5.19.1
-        version: 5.19.1(@takazudo/zdtp@0.5.2(preact@10.29.1))(@takazudo/zfb-md-wasm@2.16.0)(@takazudo/zfb-runtime@2.16.0(@takazudo/zfb@2.16.0(react@19.2.6))(react@19.2.6))(@takazudo/zfb@2.16.0(react@19.2.6))(@takazudo/zudo-doc-history-server@5.19.1)(@types/node@22.19.17)(diff@8.0.4)(katex@0.16.45)(preact@10.29.1)(zod@4.4.3)
+        specifier: 5.21.0
+        version: 5.21.0(@takazudo/zdtp@0.7.0(preact@10.29.1))(@takazudo/zfb-md-wasm@2.16.0)(@takazudo/zfb-runtime@2.16.0(@takazudo/zfb@2.16.0(react@19.2.6))(react@19.2.6))(@takazudo/zfb@2.16.0(react@19.2.6))(@takazudo/zudo-doc-history-server@5.21.0)(@types/node@22.19.17)(diff@8.0.4)(katex@0.16.45)(preact@10.29.1)(zod@4.4.3)
       '@takazudo/zudo-doc-history-server':
-        specifier: 5.19.1
-        version: 5.19.1
+        specifier: 5.21.0
+        version: 5.21.0
       diff:
         specifier: ^8.0.3
         version: 8.0.4
@@ -1387,8 +1387,8 @@ packages:
   '@tailwindcss/browser@4.3.2':
     resolution: {integrity: sha512-R6hewP9HHwLAY88bFkgAYFIQMRGi9bqx6sR1anI3IThTJtwhPlAm4aHIzDKrnJ8Ct4M3d5A9PCsah8Z5+EjLiQ==}
 
-  '@takazudo/zdtp@0.5.2':
-    resolution: {integrity: sha512-B2rc+2iVmlATfIvnATEF7oSDLgAAyQVBgU/TpXgqlJAyqv5ju6pNuaQE1/ZncnpPEyg4yG1yn6Gy9u9jZOj5hA==}
+  '@takazudo/zdtp@0.7.0':
+    resolution: {integrity: sha512-qSb9MwDNFpEui5yeOGGKULgV2h8xL5Zp5IYOZt8EQoGqP5n22xh4ZlUhVjFc5HFN506dhJRcWuxvsNKT2WKeDg==}
     engines: {node: '>=22.0.0', pnpm: '>=10.0.0'}
     hasBin: true
     peerDependencies:
@@ -1448,15 +1448,15 @@ packages:
       react:
         optional: true
 
-  '@takazudo/zudo-doc-history-server@5.19.1':
-    resolution: {integrity: sha512-4GGXsai/HCtohgNZ9yO3BGQMT8JTsHLfxbudiRsBG78WPygBUSjedPlgFqMRU9J8MjZBjEJ72xYPnYRhpbXW9Q==}
+  '@takazudo/zudo-doc-history-server@5.21.0':
+    resolution: {integrity: sha512-Q7e2cRZIRMxHJ6UQQcxxgf0NMbLo5jKgD9/rHzxWtBq5oxUs0LwIw5lMaxjs7eQ0NI+MMn/M1jD2Y44o25xHww==}
     hasBin: true
 
-  '@takazudo/zudo-doc@5.19.1':
-    resolution: {integrity: sha512-D305M4q/SmOXFADHvZzm4KUj530unbN0vEwYq+o/JQuuqn20bYn0ZtDJ5CwwNeXbJiTjs1aDP7V4/Mmll+JDgg==}
+  '@takazudo/zudo-doc@5.21.0':
+    resolution: {integrity: sha512-V3XfA7Mi/SQa3nFtUGLwcntTB7kJnY94Em2MMfrKrUsU/Smp7z3WeZgDY/OzgeQCKBKPCD1Sk9nBTMh3NSfVEg==}
     hasBin: true
     peerDependencies:
-      '@takazudo/zdtp': ^0.5.2
+      '@takazudo/zdtp': ^0.5.2 || ^0.6.0 || ^0.7.0
       '@takazudo/zfb': ^2.16.0
       '@takazudo/zfb-md-wasm': ^2.16.0
       '@takazudo/zfb-runtime': ^2.16.0
@@ -1663,6 +1663,10 @@ packages:
   entities@4.5.0:
     resolution: {integrity: sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw==}
     engines: {node: '>=0.12'}
+
+  entities@8.1.0:
+    resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
+    engines: {node: '>=20.19.0'}
 
   error-stack-parser-es@1.0.5:
     resolution: {integrity: sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA==}
@@ -2073,6 +2077,9 @@ packages:
 
   parse-entities@4.0.2:
     resolution: {integrity: sha512-GG2AQYWoLgL877gQIKeRPGO1xF9+eG1ujIb5soS5gPvLQ1y2o8FL90w2QWNdf9I361Mpp7726c+lj3U0qK1uGw==}
+
+  parse5@8.0.1:
+    resolution: {integrity: sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==}
 
   path-scurry@2.0.2:
     resolution: {integrity: sha512-3O/iVVsJAPsOnpwWIeD+d6z/7PmqApyQePUtCndjatj/9I5LylHvt5qluFaBT3I5h3r1ejfR056c+FCv+NnNXg==}
@@ -3072,7 +3079,7 @@ snapshots:
 
   '@tailwindcss/browser@4.3.2': {}
 
-  '@takazudo/zdtp@0.5.2(preact@10.29.1)':
+  '@takazudo/zdtp@0.7.0(preact@10.29.1)':
     dependencies:
       '@tailwindcss/browser': 4.3.2
       culori: 4.0.2
@@ -3120,9 +3127,9 @@ snapshots:
       '@takazudo/zfb-win32-x64-msvc': 2.16.0
       react: 19.2.6
 
-  '@takazudo/zudo-doc-history-server@5.19.1': {}
+  '@takazudo/zudo-doc-history-server@5.21.0': {}
 
-  '@takazudo/zudo-doc@5.19.1(@takazudo/zdtp@0.5.2(preact@10.29.1))(@takazudo/zfb-md-wasm@2.16.0)(@takazudo/zfb-runtime@2.16.0(@takazudo/zfb@2.16.0(react@19.2.6))(react@19.2.6))(@takazudo/zfb@2.16.0(react@19.2.6))(@takazudo/zudo-doc-history-server@5.19.1)(@types/node@22.19.17)(diff@8.0.4)(katex@0.16.45)(preact@10.29.1)(zod@4.4.3)':
+  '@takazudo/zudo-doc@5.21.0(@takazudo/zdtp@0.7.0(preact@10.29.1))(@takazudo/zfb-md-wasm@2.16.0)(@takazudo/zfb-runtime@2.16.0(@takazudo/zfb@2.16.0(react@19.2.6))(react@19.2.6))(@takazudo/zfb@2.16.0(react@19.2.6))(@takazudo/zudo-doc-history-server@5.21.0)(@types/node@22.19.17)(diff@8.0.4)(katex@0.16.45)(preact@10.29.1)(zod@4.4.3)':
     dependencies:
       '@inquirer/prompts': 8.5.2(@types/node@22.19.17)
       '@takazudo/zfb': 2.16.0(react@19.2.6)
@@ -3130,6 +3137,7 @@ snapshots:
       esbuild: 0.28.1
       fs-extra: 11.3.5
       minimist: 1.2.8
+      parse5: 8.0.1
       picocolors: 1.1.1
       pluralize: 8.0.0
       preact: 10.29.1
@@ -3138,9 +3146,9 @@ snapshots:
       yaml: 2.9.0
       zod: 4.4.3
     optionalDependencies:
-      '@takazudo/zdtp': 0.5.2(preact@10.29.1)
+      '@takazudo/zdtp': 0.7.0(preact@10.29.1)
       '@takazudo/zfb-md-wasm': 2.16.0
-      '@takazudo/zudo-doc-history-server': 5.19.1
+      '@takazudo/zudo-doc-history-server': 5.21.0
       diff: 8.0.4
       katex: 0.16.45
     transitivePeerDependencies:
@@ -3306,6 +3314,8 @@ snapshots:
   diff@8.0.4: {}
 
   entities@4.5.0: {}
+
+  entities@8.1.0: {}
 
   error-stack-parser-es@1.0.5: {}
 
@@ -4070,6 +4080,10 @@ snapshots:
       is-alphanumerical: 2.0.1
       is-decimal: 2.0.1
       is-hexadecimal: 2.0.1
+
+  parse5@8.0.1:
+    dependencies:
+      entities: 8.1.0
 
   path-scurry@2.0.2:
     dependencies:
