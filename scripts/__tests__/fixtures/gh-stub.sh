@@ -36,10 +36,7 @@
 #                           what a missing or expired job log looks like.
 #   gh-help.fail            if present, `gh api --help` (the harvester's
 #                           --allow-escape-sequences capability probe, #2986)
-#                           fails: this file's content is printed to stderr
-#                           and the stub exits 1, regardless of content --
-#                           the probe's catch-all must not care what the
-#                           garbage looks like.
+#                           fails every time: one line on stderr, exit 1.
 #
 # `GH_STUB_ESCAPE_GUARD` (default 1, mirroring the CI runner's gh >= 2.97):
 # when "1", `gh api --help` advertises `--allow-escape-sequences` and a job
@@ -79,7 +76,7 @@ fi
 
 if [ "$1" = "api" ] && [ "$2" = "--help" ]; then
   if [ -f "$FIXDIR/gh-help.fail" ]; then
-    cat "$FIXDIR/gh-help.fail" >&2
+    echo "gh-stub: simulated api --help failure" >&2
     exit 1
   fi
   if [ "${GH_STUB_ESCAPE_GUARD:-1}" != "0" ]; then

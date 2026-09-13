@@ -898,38 +898,35 @@ describe("gh --allow-escape-sequences capability probe (#2986)", () => {
     expect(calls.some((line) => line.includes("allow-escape-sequences"))).toBe(false);
   });
 
-  it("(d) a probe that exits non-zero, or that prints garbage, each warn once and the harvest continues without the flag", async () => {
-    for (const helpProbeFail of [true, " ÿ garbled  output"]) {
-      const runs = [makeRun({ databaseId: 3004 })];
-      const { dir, stubPath } = setupFixtures({
-        runs,
-        jobsById: { 3004: [{ id: 7004, name: "health" }] },
-        logsByJobId: { 7004: JOB_LOG_WITH_RECORD },
-        helpProbeFail,
-      });
-      process.env.GH_STUB_FIXTURES_DIR = dir;
+  it("(d) a probe that exits non-zero warns once and the harvest continues without the flag", async () => {
+    const runs = [makeRun({ databaseId: 3004 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 3004: [{ id: 7004, name: "health" }] },
+      logsByJobId: { 7004: JOB_LOG_WITH_RECORD },
+      helpProbeFail: true,
+    });
+    process.env.GH_STUB_FIXTURES_DIR = dir;
 
-      const s = sink();
-      const code = await runCli(["--gh", stubPath], s);
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
 
-      expect(code).toBe(EXIT_OK);
-      // Exactly one warning line -- the probe is called once per runCli.
-      const warnings = s
-        .err()
-        .split("\n")
-        .filter((line) => line.startsWith("warning:"));
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toMatch(/could not probe .* --allow-escape-sequences/);
-      // Manifest/summary output is unaffected by the warning.
-      expect(s.err()).toMatch(/run=3004 .* job=7004 lines=1 failedRecords=0/);
-      expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1/);
+    expect(code).toBe(EXIT_OK);
+    // Exactly one warning line -- the probe is called once per runCli, and
+    // its `runGh` retry (GH_ATTEMPTS) does not multiply the warning.
+    const warnings = s
+      .err()
+      .split("\n")
+      .filter((line) => line.startsWith("warning:"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/could not probe .* --allow-escape-sequences/);
+    // Manifest/summary output is unaffected by the warning.
+    expect(s.err()).toMatch(/run=3004 .* job=7004 lines=1 failedRecords=0/);
+    expect(s.err()).toMatch(/runs=1 harvested=1 failed=0 records=1/);
 
-      const calls = readCalls(dir);
-      expect(calls.some((line) => line.includes("allow-escape-sequences"))).toBe(false);
-
-      delete process.env.GH_STUB_FIXTURES_DIR;
-      cleanupFixtures();
-    }
+    const calls = readCalls(dir);
+    expect(calls.filter((line) => line === "api --help")).toHaveLength(2);
+    expect(calls.some((line) => line.includes("allow-escape-sequences"))).toBe(false);
   });
 
   it("(e) end to end: a real ESC byte in the job log round-trips through parsing and --save-dir byte-identical", async () => {

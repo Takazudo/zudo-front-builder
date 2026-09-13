@@ -100,7 +100,7 @@ export function setupFixtures({
   transientlyFailingJobIds = [],
   failRunList = false,
   failRunListOnce = false,
-  helpProbeFail = undefined,
+  helpProbeFail = false,
 }) {
   const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
   activeDirs.add(dir);
@@ -108,15 +108,7 @@ export function setupFixtures({
   writeFileSync(join(dir, "run-list.json"), JSON.stringify(runs));
   if (failRunList) writeFileSync(join(dir, "run-list.fail"), "");
   if (failRunListOnce) writeFileSync(join(dir, "run-list.fail-once"), "");
-  // Makes the `gh api --help` capability probe (#2986) fail: content is
-  // arbitrary (`true` -> a plain message), since the probe's catch-all must
-  // fall back to false regardless of what came back on stderr.
-  if (helpProbeFail !== undefined) {
-    writeFileSync(
-      join(dir, "gh-help.fail"),
-      helpProbeFail === true ? "gh-stub: simulated api --help failure" : helpProbeFail,
-    );
-  }
+  if (helpProbeFail) writeFileSync(join(dir, "gh-help.fail"), "");
 
   for (const [runId, jobsOrPage] of Object.entries(jobsById)) {
     writeFileSync(

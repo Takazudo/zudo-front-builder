@@ -324,21 +324,21 @@ export function buildJobLogArgs(jobId, { allowEscapeSequences = false } = {}) {
 
 // Probed once per `runCli` invocation (never per run) via a bare
 // `gh api --help` -- no API request, so this costs nothing against the rate
-// limit budget the header comment above is careful about. String-searching
-// the help text is deliberately looser than parsing `gh --version`: it
-// tracks whatever gh actually shipped rather than a version number this
-// repo would have to keep in sync, and needs no `semver` dependency (the
-// workspace root does not resolve one).
-export async function probeAllowEscapeSequences({ gh }, stderr) {
+// limit budget the header comment above is careful about. It goes through
+// `runGh` so a one-off spawn failure gets the same retry as every other gh
+// call here: a false negative is cached for the whole harvest, and on gh
+// >= 2.97 that would fail every job-log fetch. String-searching the help
+// text is deliberately looser than parsing `gh --version`: it tracks
+// whatever gh actually shipped rather than a version number this repo would
+// have to keep in sync, and needs no `semver` dependency (the workspace root
+// does not resolve one).
+export async function probeAllowEscapeSequences(ghOptions, stderr) {
   try {
-    const { stdout } = await execFileAsync(gh, ["api", "--help"], {
-      encoding: "utf8",
-      maxBuffer: MAX_BUFFER,
-    });
+    const stdout = await runGh(ghOptions, ["api", "--help"]);
     return stdout.includes("--allow-escape-sequences");
   } catch (error) {
     stderr.write(
-      `warning: could not probe "${gh} api --help" for --allow-escape-sequences support (${flattenErrorMessage(error)}); continuing without it\n`,
+      `warning: could not probe "${ghOptions.gh} api --help" for --allow-escape-sequences support (${flattenErrorMessage(error)}); continuing without it\n`,
     );
     return false;
   }
