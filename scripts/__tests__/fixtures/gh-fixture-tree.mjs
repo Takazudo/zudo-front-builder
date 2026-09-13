@@ -100,6 +100,7 @@ export function setupFixtures({
   transientlyFailingJobIds = [],
   failRunList = false,
   failRunListOnce = false,
+  helpProbeFail = false,
 }) {
   const dir = mkdtempSync(join(tmpdir(), "harvest-supervisor-timelines-test-"));
   activeDirs.add(dir);
@@ -107,6 +108,7 @@ export function setupFixtures({
   writeFileSync(join(dir, "run-list.json"), JSON.stringify(runs));
   if (failRunList) writeFileSync(join(dir, "run-list.fail"), "");
   if (failRunListOnce) writeFileSync(join(dir, "run-list.fail-once"), "");
+  if (helpProbeFail) writeFileSync(join(dir, "gh-help.fail"), "");
 
   for (const [runId, jobsOrPage] of Object.entries(jobsById)) {
     writeFileSync(

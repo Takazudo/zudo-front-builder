@@ -36,6 +36,18 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  * returned 10,014 lines including the records. Fetching the whole run is not
  * merely wasteful here, it silently loses the data.
  *
+ * gh >= 2.97.0 refuses to print a response body that contains terminal
+ * escape sequences unless `--allow-escape-sequences` is passed (a job log
+ * routinely carries ANSI color codes from the test runner); the CI runner
+ * image ships gh 2.100.0, so it hits this guard on every job-log fetch,
+ * while an older developer machine's gh predates the flag entirely and
+ * rejects it as unknown. `probeAllowEscapeSequences` runs `gh api --help`
+ * once per `runCli` invocation to see whether the installed gh advertises
+ * the flag, and only the job-log fetch (never the run-jobs or run-list
+ * calls) conditionally carries it — the log body itself is still passed
+ * through verbatim either way. A probe failure warns once on stderr and
+ * falls back to not passing the flag, matching gh < 2.97's own behavior.
+ *
  * Both per-run fetches go through `gh api` at the REST endpoints rather than
  * through `gh run view` (#2931). The porcelain resolves the run and its
  * workflow again on every call, and its `--job … --log` form downloads the
@@ -305,8 +317,31 @@ export function buildRunJobsArgs(runId, page = 1) {
 }
 
 /** `gh api` argv for one job's log. */
-export function buildJobLogArgs(jobId) {
-  return ["api", `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`];
+export function buildJobLogArgs(jobId, { allowEscapeSequences = false } = {}) {
+  const path = `repos/{owner}/{repo}/actions/jobs/${jobId}/logs`;
+  return allowEscapeSequences ? ["api", "--allow-escape-sequences", path] : ["api", path];
+}
+
+// Probed once per `runCli` invocation (never per run) via a bare
+// `gh api --help` -- no API request, so this costs nothing against the rate
+// limit budget the header comment above is careful about. It goes through
+// `runGh` so a one-off spawn failure gets the same retry as every other gh
+// call here: a false negative is cached for the whole harvest, and on gh
+// >= 2.97 that would fail every job-log fetch. String-searching the help
+// text is deliberately looser than parsing `gh --version`: it tracks
+// whatever gh actually shipped rather than a version number this repo would
+// have to keep in sync, and needs no `semver` dependency (the workspace root
+// does not resolve one).
+export async function probeAllowEscapeSequences(ghOptions, stderr) {
+  try {
+    const stdout = await runGh(ghOptions, ["api", "--help"]);
+    return stdout.includes("--allow-escape-sequences");
+  } catch (error) {
+    stderr.write(
+      `warning: could not probe "${ghOptions.gh} api --help" for --allow-escape-sequences support (${flattenErrorMessage(error)}); continuing without it\n`,
+    );
+    return false;
+  }
 }
 
 /**
@@ -358,7 +393,10 @@ function apiErrorMessage(body) {
 // `GH_DEBUG=api`: 302 Found -> actions-results blob, 200 OK). The body is
 // therefore the log itself, verbatim, and must not be post-processed here.
 async function fetchJobLog(ghOptions, jobId) {
-  const body = await runGh(ghOptions, buildJobLogArgs(jobId));
+  const body = await runGh(
+    ghOptions,
+    buildJobLogArgs(jobId, { allowEscapeSequences: ghOptions.allowEscapeSequences }),
+  );
   const message = apiErrorMessage(body);
   if (message !== null) {
     throw new Error(`job ${jobId} log fetch returned an API error envelope: ${message}`);
@@ -490,6 +528,13 @@ export async function runCli(
       `warning: --since ${options.since} lies in the future; gh run list will enumerate nothing\n`,
     );
   }
+
+  // One probe for the whole harvest, before any run-list or job fetch, so
+  // every job-log call below already knows whether to carry the flag.
+  options.ghOptions.allowEscapeSequences = await probeAllowEscapeSequences(
+    options.ghOptions,
+    stderr,
+  );
 
   let runs;
   try {

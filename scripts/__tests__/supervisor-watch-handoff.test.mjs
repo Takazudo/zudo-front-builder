@@ -128,11 +128,20 @@ describe("supervisor watch workflow handoff and artifacts", () => {
     expect(mainRuns[0]).not.toContain("run=1002");
 
     const calls = readCalls(fixtures.dir);
+    // The default stub guard (GH_STUB_ESCAPE_GUARD=1) mirrors CI's gh
+    // >= 2.97, so the probed job-log calls below carry the flag (#2986).
+    expect(calls.filter((call) => call === "api --help")).toHaveLength(1);
     expect(
-      calls.filter((call) => call === "api repos/{owner}/{repo}/actions/jobs/5001/logs"),
+      calls.filter(
+        (call) =>
+          call === "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/5001/logs",
+      ),
     ).toHaveLength(1);
     expect(
-      calls.filter((call) => call === "api repos/{owner}/{repo}/actions/jobs/5002/logs"),
+      calls.filter(
+        (call) =>
+          call === "api --allow-escape-sequences repos/{owner}/{repo}/actions/jobs/5002/logs",
+      ),
     ).toHaveLength(1);
     expect(
       calls.filter(
@@ -144,7 +153,7 @@ describe("supervisor watch workflow handoff and artifacts", () => {
         (call) => call === "api repos/{owner}/{repo}/actions/runs/1002/jobs?per_page=100",
       ),
     ).toHaveLength(1);
-    expect(calls.filter((call) => call.startsWith("api "))).toHaveLength(4);
+    expect(calls.filter((call) => call.startsWith("api "))).toHaveLength(5);
     expect(calls.filter((call) => call.startsWith("run view "))).toEqual([]);
 
     expect(readFileSync(join(result.outDir, "failed-runs.txt"), "utf8")).toBe("");
