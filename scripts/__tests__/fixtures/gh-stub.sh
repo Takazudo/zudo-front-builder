@@ -34,10 +34,20 @@
 #                           "gh: Not Found (HTTP 404)" line on stderr, exit 1
 #                           (captured from `gh api` on 2026-09-07). That is
 #                           what a missing or expired job log looks like.
+#   gh-help.fail            if present, `gh api --help` (the harvester's
+#                           --allow-escape-sequences capability probe, #2986)
+#                           fails every time: one line on stderr, exit 1.
+#
+# `GH_STUB_ESCAPE_GUARD` (default 1, mirroring the CI runner's gh >= 2.97):
+# when "1", `gh api --help` advertises `--allow-escape-sequences` and a job
+# log fetch containing a real ESC byte fails without the flag, reproducing
+# gh 2.97's terminal-escape-sequence guard (#2986). When "0" (the developer
+# machine's gh 2.88.1), `--help` does not advertise the flag and passing it
+# anyway fails with "unknown flag" -- exactly what an out-of-date gh does.
 #
 # Every invocation is appended to $GH_STUB_FIXTURES_DIR/calls.log, one line
-# of "$*" per call, so callers can assert on the exact argv shape and call
-# count.
+# of "$*" per call (full argv, including any --allow-escape-sequences), so
+# callers can assert on the exact argv shape and call count.
 #
 # An invocation this stub does not recognise fails loudly (exit 1, naming
 # the invocation on stderr) instead of returning a friendly default --
@@ -64,8 +74,27 @@ if [ "$1" = "run" ] && [ "$2" = "list" ]; then
   exit 0
 fi
 
+if [ "$1" = "api" ] && [ "$2" = "--help" ]; then
+  if [ -f "$FIXDIR/gh-help.fail" ]; then
+    echo "gh-stub: simulated api --help failure" >&2
+    exit 1
+  fi
+  if [ "${GH_STUB_ESCAPE_GUARD:-1}" != "0" ]; then
+    printf '      --allow-escape-sequences   Allow printing raw escape sequences to standard output\n'
+  else
+    printf '      --cache duration           Cache the response, e.g. "3600s", "60m", "1h"\n'
+  fi
+  exit 0
+fi
+
 if [ "$1" = "api" ]; then
-  path="$2"
+  allowEscape=0
+  if [ "$2" = "--allow-escape-sequences" ]; then
+    allowEscape=1
+    path="$3"
+  else
+    path="$2"
+  fi
   case "$path" in
     */actions/jobs/*/logs)
       jobId=${path#*/actions/jobs/}
@@ -83,6 +112,18 @@ if [ "$1" = "api" ]; then
         printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run","status":"404"}'
         echo "gh: Not Found (HTTP 404)" >&2
         exit 1
+      fi
+      guard="${GH_STUB_ESCAPE_GUARD:-1}"
+      if [ "$guard" = "0" ] && [ "$allowEscape" = "1" ]; then
+        echo "unknown flag: --allow-escape-sequences" >&2
+        exit 1
+      fi
+      if [ "$guard" != "0" ] && [ "$allowEscape" = "0" ]; then
+        esc=$(printf '\033')
+        if grep -q "$esc" "$FIXDIR/job-$jobId.log" 2>/dev/null; then
+          echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2
+          exit 1
+        fi
       fi
       cat "$FIXDIR/job-$jobId.log"
       exit 0
