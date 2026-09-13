@@ -300,7 +300,10 @@ declaration is removable even if its package remains in `Cargo.lock`.
   package count unchanged at 597. Re-confirmed on crates.io immediately
   before the bump: both versions still published, un-yanked, checksums
   matching. All named checks passed: `zfb-content` harness 18/18 +
-  `error_messages`, 2/2 protected md-wasm tests (`api.rs` + `parse_to_ast.rs`),
+  `error_messages`, 57/57 protected md-wasm tests (`api.rs` 32 +
+  `parse_to_ast.rs` 25, both files in full — the bump topic ran only the
+  two named pins; the review pass re-ran the pair, matching the 0.0.31
+  record's count),
   12/12 `zfb` diagnostics unit tests (`--no-default-features`), the
   `wasm32-unknown-unknown` target check, `cargo deny check` clean, `pnpm
   test:md-wasm`, `node scripts/assert-md-wasm-size-docs.mjs`, `pnpm
