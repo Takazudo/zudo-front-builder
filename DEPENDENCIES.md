@@ -286,6 +286,47 @@ declaration is removable even if its package remains in `Cargo.lock`.
   adopted version — run the evaluation protocol against it and never refresh
   the detector baseline over it.
 
+  **The 0.0.43 bump landed 2026-09-14 in the pin-bump topic
+  ([#2989](https://github.com/Takazudo/zudo-front-builder/issues/2989)),
+  refs [#2988](https://github.com/Takazudo/zudo-front-builder/issues/2988).**
+  Root `Cargo.toml` now pins `serde_yaml = { package = "noyalib-serde-yaml",
+  version = "=0.0.43" }`; zero production `.rs` lines changed under the
+  abandon rule, so every `serde_yaml::` call site in `zfb-content`, `zfb`,
+  and `zfb-md-wasm` still compiles unchanged. `Cargo.lock` moved exactly the
+  two adopted entries — `noyalib` and `noyalib-serde-yaml` — from `0.0.31` to
+  `0.0.43`, checksums equal to the authorized sha256 pair
+  (`55f03682003f288e23f94d8f6222de0dcf15c77329b5e42b2f37421243c1d373` and
+  `20846fcf3ba8bf676a2d85708086f7ab6b45c40eb3682a956ffccd7199ded7b2`), with
+  package count unchanged at 597. Re-confirmed on crates.io immediately
+  before the bump: both versions still published, un-yanked, checksums
+  matching. All named checks passed: `zfb-content` harness 18/18 +
+  `error_messages`, 2/2 protected md-wasm tests (`api.rs` + `parse_to_ast.rs`),
+  12/12 `zfb` diagnostics unit tests (`--no-default-features`), the
+  `wasm32-unknown-unknown` target check, `cargo deny check` clean, `pnpm
+  test:md-wasm`, `node scripts/assert-md-wasm-size-docs.mjs`, `pnpm
+  format:check`, and `cargo fmt --check`. The harness label pair
+  (`CURRENT_ADAPTER_NAME` and the fixture's `adapter` field) was relabelled to
+  `0.0.43` in lockstep; the corpus and the 18 baseline cases are untouched.
+  The Mac build's measured wasm bytes differed from this repository's
+  committed manifest for reasons unrelated to the pin (platform-specific
+  `wasm-opt`/`wasm-bindgen` codegen, not a semantic regression — the #2988
+  evaluation's Mac-measured deltas do not reproduce byte-for-byte on CI), so
+  `crates/zfb-md-wasm/shipped-sizes.json` and its eight synced doc tables
+  were provisionally refreshed from this Mac build (`measuredOnVersion` stays
+  `2.15.0`); every artifact stayed under its ceiling, with `render-only`
+  gzip-9 clearing its 1,100,000 B ceiling by only 4,106 B locally — the
+  headroom the #2988 evaluation projected, and the artifact nearest its
+  budget. **Those Mac bytes are not the final manifest.** As with the 0.0.31
+  bump, the `wasm-md (default)` job asserts equality against its own ubuntu
+  build, so before this PR merges the manifest must be aligned from the PR's
+  own CI build summary and the doc tables re-synced via
+  `assert-md-wasm-size-docs.mjs --fix`. `node scripts/check-yaml-candidate-drift.mjs
+  --json` was re-run after refreshing `scripts/yaml-candidate-baseline.json`
+  (write-then-copy from a fresh `--snapshot`) and exits 0 with `no-drift` on
+  every candidate, including the adopted pair. **Next trigger:** unchanged
+  from above — the next lockstep release beyond 0.0.43, or a yank of either
+  adopted version.
+
   Earlier rounds decided the other way, and that history stands. The released
   candidates evaluated in #2787 and #2788 each diverged from the committed
   `serde_yaml` baseline in 11 of 18 cases. A pinned pre-release re-check of
@@ -373,6 +414,13 @@ declaration is removable even if its package remains in `Cargo.lock`.
     ([#2875](https://github.com/Takazudo/zudo-front-builder/issues/2875)),
     following the 18/18 MIGRATE verdict of the released differential
     evaluation ([#2873](https://github.com/Takazudo/zudo-front-builder/issues/2873));
+    see the `serde_yaml 0.9.34+deprecated` summary bullet above for the
+    landed diff, checksums, and lock delta.
+
+    **Bumped to `0.0.43` on 2026-09-14** in the pin-bump topic
+    ([#2989](https://github.com/Takazudo/zudo-front-builder/issues/2989)),
+    following the 18/18 MIGRATE verdict of the released differential
+    evaluation ([#2988](https://github.com/Takazudo/zudo-front-builder/issues/2988));
     see the `serde_yaml 0.9.34+deprecated` summary bullet above for the
     landed diff, checksums, and lock delta.
 
