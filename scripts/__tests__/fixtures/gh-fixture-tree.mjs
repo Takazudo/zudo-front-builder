@@ -97,6 +97,7 @@ export function setupFixtures({
   logsByJobId = {},
   failingJobIds = [],
   notFoundJobIds = [],
+  goneJobIds = [],
   transientlyFailingJobIds = [],
   failRunList = false,
   failRunListOnce = false,
@@ -129,6 +130,7 @@ export function setupFixtures({
   }
   for (const jobId of failingJobIds) writeFileSync(join(dir, `job-${jobId}.fail`), "");
   for (const jobId of notFoundJobIds) writeFileSync(join(dir, `job-${jobId}.notfound`), "");
+  for (const jobId of goneJobIds) writeFileSync(join(dir, `job-${jobId}.gone`), "");
   for (const jobId of transientlyFailingJobIds) {
     writeFileSync(join(dir, `job-${jobId}.fail-once`), "");
   }
