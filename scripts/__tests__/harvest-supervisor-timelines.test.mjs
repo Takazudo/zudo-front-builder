@@ -16,7 +16,7 @@
 // is GitHub's, so it comes from a real captured REST body
 // (fixtures/rest-job-log-capture.log) and is never hand-written here.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -802,12 +802,13 @@ describe("runCli", () => {
     expect(s.err()).toMatch(/run=1017 .* job=5017 lines=1 failedRecords=0/);
   });
 
-  it("exit 3: a missing/expired log 404s, and that stays an error= line rather than a crash", async () => {
-    // A `health` job whose log GitHub no longer has (retention expired, or
-    // the log was deleted) still has a started-looking job object, so the
-    // harvester does fetch it. gh's real answer -- error body on stdout, a
-    // "gh: Not Found (HTTP 404)" line on stderr, exit 1 -- must land as one
-    // manifest line and a partial harvest, never as a thrown stack.
+  it("exit 3: a missing/deleted log 404s, and that stays an error= line rather than a crash", async () => {
+    // A `health` job whose log GitHub no longer has (deleted unexpectedly,
+    // not merely expired -- see the 410 cases below for that) still has a
+    // started-looking job object, so the harvester does fetch it. gh's real
+    // answer -- error body on stdout, a "gh: Not Found (HTTP 404)" line on
+    // stderr, exit 1 -- must land as one manifest line and a partial
+    // harvest, never as a thrown stack.
     const runs = [makeRun({ databaseId: 1018 })];
     const { dir, stubPath } = setupFixtures({
       runs,
@@ -825,6 +826,85 @@ describe("runCli", () => {
     // One line per run stays one line, even though gh printed a JSON body
     // and a message across two streams.
     expect(s.err().trimEnd().split("\n")).toHaveLength(3);
+  });
+
+  it("exit 0: a 410 job-log fetch beside a harvested job is a skip, not a partial harvest (#2995)", async () => {
+    const runs = [makeRun({ databaseId: 1020 }), makeRun({ databaseId: 1021 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: {
+        1020: [{ id: 5020, name: "health" }],
+        1021: [{ id: 5021, name: "health" }],
+      },
+      logsByJobId: { 5020: JOB_LOG_WITH_RECORD },
+      goneJobIds: [5021],
+    });
+    process.env.GH_STUB_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_OK);
+    expect(s.err()).toMatch(/run=1021 .* job=5021 skipped=log-expired/);
+    expect(s.err()).toMatch(/runs=2 harvested=1 failed=0 records=1/);
+
+    // Non-retryable: exactly one log fetch for the gone job, never a second
+    // attempt spending the retry pause on a foregone conclusion.
+    const calls = readCalls(dir);
+    expect(calls.filter((line) => line.includes("/actions/jobs/5021/logs"))).toHaveLength(1);
+  });
+
+  it("recognises a 410 that is stderr-only, with no envelope on stdout (#2995)", async () => {
+    const runs = [makeRun({ databaseId: 1022 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 1022: [{ id: 5022, name: "health" }] },
+    });
+    writeFileSync(join(dir, "job-5022.gone-stderr-only"), "");
+    process.env.GH_STUB_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_NO_RUNS);
+    expect(s.err()).toMatch(/run=1022 .* job=5022 skipped=log-expired/);
+  });
+
+  it("recognises a 410 that is stdout-envelope-only, numeric status, exit 0 (#2995)", async () => {
+    const runs = [makeRun({ databaseId: 1023 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: { 1023: [{ id: 5023, name: "health" }] },
+    });
+    writeFileSync(join(dir, "job-5023.gone-envelope-only"), "");
+    process.env.GH_STUB_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_NO_RUNS);
+    expect(s.err()).toMatch(/run=1023 .* job=5023 skipped=log-expired/);
+  });
+
+  it("exit 4: every enumerated job's log is expired -- a quiet window, not a silent emitter (#2995)", async () => {
+    const runs = [makeRun({ databaseId: 1024 }), makeRun({ databaseId: 1025 })];
+    const { dir, stubPath } = setupFixtures({
+      runs,
+      jobsById: {
+        1024: [{ id: 5024, name: "health" }],
+        1025: [{ id: 5025, name: "health" }],
+      },
+      goneJobIds: [5024, 5025],
+    });
+    process.env.GH_STUB_FIXTURES_DIR = dir;
+
+    const s = sink();
+    const code = await runCli(["--gh", stubPath], s);
+
+    expect(code).toBe(EXIT_NO_RUNS);
+    expect(s.err()).toMatch(/run=1024 .* job=5024 skipped=log-expired/);
+    expect(s.err()).toMatch(/run=1025 .* job=5025 skipped=log-expired/);
+    expect(s.err()).toMatch(/runs=2 harvested=0 failed=0 records=0/);
   });
 
   it("exit 64: an unknown flag never invokes gh at all", async () => {

@@ -33,7 +33,26 @@
 #                           real 404 shape: the API error body on stdout, a
 #                           "gh: Not Found (HTTP 404)" line on stderr, exit 1
 #                           (captured from `gh api` on 2026-09-07). That is
-#                           what a missing or expired job log looks like.
+#                           what a missing / deleted-unexpectedly job log
+#                           looks like -- a 410 (below) is what an expired
+#                           one looks like.
+#   job-<jobId>.gone        if present, that job's log fetch reproduces gh's
+#                           real 410 shape (#2995): the API error body on
+#                           stdout, a "gh: Server Error (HTTP 410)" line on
+#                           stderr, exit 1 (captured from `gh api` on
+#                           2026-09-14). That is what a job log GitHub has
+#                           already expired looks like.
+#   job-<jobId>.gone-stderr-only
+#                           if present, the same 410 exit but with nothing on
+#                           stdout -- one of the two OR-sides the harvester's
+#                           410 detection must recognise on its own.
+#   job-<jobId>.gone-envelope-only
+#                           if present, a *successful* exit (0) whose stdout
+#                           is the 410 envelope with a numeric `410` status
+#                           and nothing on stderr -- the other OR-side, and
+#                           the shape `gh api` itself never produces this way,
+#                           but which the harvester must still treat as gone
+#                           rather than as harvested "data".
 #   gh-help.fail            if present, `gh api --help` (the harvester's
 #                           --allow-escape-sequences capability probe, #2986)
 #                           fails every time: one line on stderr, exit 1.
@@ -112,6 +131,19 @@ if [ "$1" = "api" ]; then
         printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run","status":"404"}'
         echo "gh: Not Found (HTTP 404)" >&2
         exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.gone" ]; then
+        printf '{"message":"Server Error","documentation_url":"https://docs.github.com/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run","status":"410"}'
+        echo "gh: Server Error (HTTP 410)" >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.gone-stderr-only" ]; then
+        echo "gh: Server Error (HTTP 410)" >&2
+        exit 1
+      fi
+      if [ -f "$FIXDIR/job-$jobId.gone-envelope-only" ]; then
+        printf '{"message":"Server Error","documentation_url":"https://docs.github.com/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run","status":410}'
+        exit 0
       fi
       guard="${GH_STUB_ESCAPE_GUARD:-1}"
       if [ "$guard" = "0" ] && [ "$allowEscape" = "1" ]; then
