@@ -177,13 +177,13 @@ const HEALTH_JOB_NAME = "health";
 // enumerated at all. The window is purely rolling: an `env=` identity
 // contract change is carried as a version on the record itself (#2933) and
 // the summarizer splits the population by that, so no date floor is needed
-// here to keep the old and new contracts apart. The overlap day's logs are
-// usually already expired by the time they are re-enumerated (7-day
-// retention vs. an 8-day window, #2995) -- the overlap only rescues a run
-// that was still in progress last week and has since completed, whose log
-// is then still inside retention at this week's harvest. Keep the window at
-// 8: shrinking it to 7 would still race the retention boundary and lose
-// that rescue case.
+// here to keep the old and new contracts apart. Under this repo's 7-day
+// Actions retention (#2995) the overlap rarely rescues anything: a run that
+// was in progress at last week's harvest is itself about 7 days old by this
+// one, so its log has usually expired and it is enumerated as
+// `skipped=log-expired`. Keep the window at 8 anyway -- the lost run is then
+// named in the watch's step summary rather than vanishing unenumerated, and
+// the overlap starts harvesting again if retention is raised to >= 9 days.
 export const DEFAULT_WINDOW_DAYS = 8;
 const DEFAULT_WINDOW_MS = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
