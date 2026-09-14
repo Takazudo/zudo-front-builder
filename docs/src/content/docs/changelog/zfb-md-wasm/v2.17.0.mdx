@@ -1,0 +1,25 @@
+---
+title: v2.17.0
+sidebar_position: 13
+---
+
+# v2.17.0
+
+Released: 2026-09-14
+
+## Other Changes
+
+- Bump the YAML frontmatter parser to `noyalib-serde-yaml` 0.0.43 (6077d0bd), which
+  recompiles every `.wasm` artifact. The API and entries are unchanged; shipped sizes move
+  slightly and every artifact stays under its size ceiling (c510a564):
+
+  | Entry     | `.wasm` bytes (2.16.0 → 2.17.0) | gzip-9 bytes (2.16.0 → 2.17.0) |
+  | --------- | ------------------------------- | ------------------------------ |
+  | root      | 3,394,144 → 3,400,172           | 1,514,540 → 1,516,626          |
+  | highlight | 1,539,186 → 1,538,664           | 817,922 → 817,835              |
+  | render    | 2,189,671 → 2,196,673           | 1,088,858 → 1,091,615          |
+  | parse     | 693,479 → 701,306               | 281,394 → 284,265              |
+
+  JS glue sizes are unchanged. All four SHA-256 content digests move, as they do on every
+  release: each `.wasm` embeds its release version string. If you pin these artifacts by
+  SHA-256, re-pin.

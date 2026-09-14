@@ -1,0 +1,19 @@
+---
+title: v2.17.0
+sidebar_position: 127
+---
+
+# v2.17.0
+
+Released: 2026-09-14
+
+## Other Changes
+
+- Bump the YAML frontmatter parser to `noyalib-serde-yaml` 0.0.43 (6077d0bd, 9291958e).
+  The `serde_yaml` package alias moves from 0.0.31 to 0.0.43 with no production source
+  changes; the differential evaluation recorded an 18/18 migrate verdict, and every case
+  in the YAML corpus parses byte-identically to the previous release.
+- Replace the package description and README tagline (f1e7f5db). `@takazudo/zfb` now
+  describes itself as a content-site engine on the web's Request/Response model: prerender
+  to static HTML, serve on Cloudflare Workers, or run as a local content server inside your
+  app.
