@@ -206,3 +206,55 @@ describe("supervisor watch archive failures", () => {
     expect(readFileSync(result.stepSummary, "utf8")).toContain("## Supervisor watch — green");
   });
 });
+
+function populationWithExpiredRun() {
+  const runs = [
+    makeRun({ databaseId: 2001, headBranch: "main" }),
+    makeRun({ databaseId: 2002, headBranch: "main" }),
+  ];
+  const jobsById = { 2001: jobsJson(6001), 2002: jobsJson(6002) };
+  const logsByJobId = {
+    6001: jobLog({ outcome: "ok", firstUpLine: 430, total: 540, env: ENV_DIGEST }),
+  };
+  return setupFixtures({ runs, jobsById, logsByJobId, goneJobIds: [6002] });
+}
+
+function populationAllExpired() {
+  const runs = [makeRun({ databaseId: 2003, headBranch: "main" })];
+  const jobsById = { 2003: jobsJson(6003) };
+  return setupFixtures({ runs, jobsById, goneJobIds: [6003] });
+}
+
+describe("supervisor watch job-log expiry (#2996)", () => {
+  it("names a gone job beside a harvested job without turning the watch red", async () => {
+    const fixtures = populationWithExpiredRun();
+    const result = await runWatch(fixtures);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("verdict=green");
+    expect(readFileSync(join(result.outDir, "harvest-errors.txt"), "utf8")).toBe("");
+
+    const expiredRuns = readFileSync(join(result.outDir, "expired-runs.txt"), "utf8");
+    expect(expiredRuns).toMatch(/^run=2002 .* job=6002 skipped=log-expired$/m);
+
+    const summary = readFileSync(result.stepSummary, "utf8");
+    expect(summary).toContain(
+      "### Runs whose job log had already expired (retention; skipped, not red)",
+    );
+    expect(summary).toMatch(/run=2002 .* job=6002 skipped=log-expired/);
+  });
+
+  it("still names the expired run when the whole harvest is expired (verdict=no-data, not green)", async () => {
+    const fixtures = populationAllExpired();
+    const result = await runWatch(fixtures);
+
+    expect(result.stdout).toContain("verdict=no-data");
+    expect(result.stdout).not.toContain("verdict=green");
+
+    const expiredRuns = readFileSync(join(result.outDir, "expired-runs.txt"), "utf8");
+    expect(expiredRuns).toMatch(/^run=2003 .* job=6003 skipped=log-expired$/m);
+
+    const summary = readFileSync(result.stepSummary, "utf8");
+    expect(summary).toMatch(/run=2003 .* job=6003 skipped=log-expired/);
+  });
+});

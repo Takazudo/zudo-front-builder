@@ -32,7 +32,10 @@ const execFileAsync = promisify(execFile);
  * was harvestable and is a quiet week; harvester 1 means harvested green
  * health jobs carried no records and is red. Pass B is stricter: one silent
  * green trunk job beside emitting jobs is also red, because the summarizer's
- * no-records result only fires when its whole input is silent.
+ * no-records result only fires when its whole input is silent. A job log
+ * older than the repository's Actions retention (7 days here) answers 410
+ * and is skipped as `log-expired`; a window in which every log has expired
+ * is harvester 4 -> no-data, never green.
  *
  * Exit codes are informational (the workflow keys on the verdict output):
  *   0 green, 1 no-data, 2 red.
@@ -140,6 +143,7 @@ function buildStepSummary({
   failedRuns,
   silentRuns,
   harvestErrors,
+  expiredRuns,
   harvestNotices,
   manifest,
   allSummary,
@@ -160,6 +164,10 @@ function buildStepSummary({
     "### Runs the harvester could not fetch or parse\n\n",
     "```\n",
     fileOrNone(harvestErrors),
+    "```\n\n",
+    "### Runs whose job log had already expired (retention; skipped, not red)\n\n",
+    "```\n",
+    fileOrNone(expiredRuns),
     "```\n\n",
     "### Harvest window and notices\n\n",
     "```\n",
@@ -302,6 +310,9 @@ export async function runCli(
   const silentRuns = withFinalNewline(
     matchingLines(manifest, (line) => /^run=[0-9]+ .* lines=0 /.test(line)),
   );
+  const expiredRuns = withFinalNewline(
+    matchingLines(manifest, (line) => /^run=[0-9]+ .* skipped=log-expired$/.test(line)),
+  );
   const harvestNotices = withFinalNewline(
     matchingLines(manifest, (line) => /^(window|notice|warning):/.test(line)),
   );
@@ -309,6 +320,7 @@ export async function runCli(
     writeFile(join(out, "failed-runs.txt"), failedRuns),
     writeFile(join(out, "harvest-errors.txt"), harvestErrors),
     writeFile(join(out, "silent-runs.txt"), silentRuns),
+    writeFile(join(out, "expired-runs.txt"), expiredRuns),
     writeFile(join(out, "harvest-notices.txt"), harvestNotices),
   ]);
 
@@ -329,6 +341,7 @@ export async function runCli(
         failedRuns,
         silentRuns,
         harvestErrors,
+        expiredRuns,
         harvestNotices,
         manifest,
         allSummary,

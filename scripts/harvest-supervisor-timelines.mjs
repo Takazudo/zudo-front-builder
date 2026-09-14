@@ -124,6 +124,12 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *     was cancelled before the `pnpm test:workspace` step, so the missing
  *     records say nothing about the emitter. A job that started, emitted,
  *     and was then cancelled is harvested normally.
+ *   - a `health` job whose log GitHub has already expired
+ *     (`skipped=log-expired`): the job-logs endpoint answers `410 Gone` once
+ *     the run is older than the repository's Actions retention period (7
+ *     days on this repo, measured 2026-09-14), which the 8-day window
+ *     overlaps by design (see `DEFAULT_WINDOW_DAYS` below). This is a skip,
+ *     never a partial harvest -- the log is gone, not broken.
  *
  * When `gh run list` returns exactly `--limit` runs the window is capped,
  * not complete: a `notice:` line says so, because the manifest's
@@ -148,7 +154,10 @@ import { parseTimelines } from "./supervisor-timeline-summary.mjs";
  *      unparsable JSON, or `--save-dir` could not be created)
  *
  * Every gh call is attempted twice with a short pause between, so one
- * transient API failure does not by itself demote a harvest to 3 (or 64).
+ * transient API failure does not by itself demote a harvest to 3 (or 64) --
+ * except a `410 Gone` job-log fetch, which is never retried: the log is
+ * gone, not transiently unavailable, so a second attempt would only spend
+ * the pause on a foregone conclusion (see `LogGoneError` below).
  *
  * In the documented pipeline the shell reports the summarizer's exit code
  * (`$?`), and even under `set -o pipefail` it is the *rightmost* non-zero
@@ -168,7 +177,13 @@ const HEALTH_JOB_NAME = "health";
 // enumerated at all. The window is purely rolling: an `env=` identity
 // contract change is carried as a version on the record itself (#2933) and
 // the summarizer splits the population by that, so no date floor is needed
-// here to keep the old and new contracts apart.
+// here to keep the old and new contracts apart. Under this repo's 7-day
+// Actions retention (#2995) the overlap rarely rescues anything: a run that
+// was in progress at last week's harvest is itself about 7 days old by this
+// one, so its log has usually expired and it is enumerated as
+// `skipped=log-expired`. Keep the window at 8 anyway -- the lost run is then
+// named in the watch's step summary rather than vanishing unenumerated, and
+// the overlap starts harvesting again if retention is raised to >= 9 days.
 export const DEFAULT_WINDOW_DAYS = 8;
 const DEFAULT_WINDOW_MS = DEFAULT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const DEFAULT_LIMIT = 200;
@@ -288,6 +303,20 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Thrown when a gh call answers `410 Gone` -- GitHub has already expired the
+// job log's retention. Non-retryable (see `runGh`'s catch below), and
+// caught narrowly at the `fetchJobLog` call site in `harvestRun`, which is
+// the only place a 410 becomes `skipped=log-expired` rather than an ordinary
+// failure: a 410 from run enumeration or the run-jobs lookup still surfaces
+// as today's usage error / `error=` line, since only a job log is ever
+// expected to expire out from under a harvest.
+class LogGoneError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LogGoneError";
+  }
+}
+
 async function runGh({ gh, retryDelayMs }, args) {
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -297,6 +326,7 @@ async function runGh({ gh, retryDelayMs }, args) {
       });
       return stdout;
     } catch (error) {
+      if (isGoneError(error)) throw new LogGoneError(flattenErrorMessage(error));
       if (attempt >= GH_ATTEMPTS) throw error;
       await sleep(retryDelayMs);
     }
@@ -376,7 +406,9 @@ function jobNeverStarted(job) {
 // arriving on stdout means the fetch "succeeded" while returning no log at
 // all. Unguarded that lands as `lines=0`, which the weekly watch reads as
 // the emitter going silent rather than as a broken fetch — the one failure
-// shape this lane must never mistake for data.
+// shape this lane must never mistake for data. Returns `{ message, status }`
+// (status exactly as GitHub sent it — string or number) so a caller can also
+// tell a 410 Gone envelope apart from every other error shape.
 function apiErrorMessage(body) {
   if (!body.slice(0, 64).trimStart().startsWith("{")) return null;
   let parsed;
@@ -385,7 +417,26 @@ function apiErrorMessage(body) {
   } catch {
     return null;
   }
-  return typeof parsed?.message === "string" ? parsed.message : null;
+  if (typeof parsed?.message !== "string") return null;
+  return { message: parsed.message, status: parsed.status };
+}
+
+// GitHub has sent `status` as both the string "410" and the number 410
+// across the shapes this lane has observed (an exec-failure envelope vs. an
+// exit-0 envelope), so both are accepted here rather than trusting either
+// type.
+function isGoneStatus(status) {
+  return status === 410 || status === "410";
+}
+
+// Recognises a 410 Gone from either half of the OR: the real exec-failure
+// shape (exit 1, "gh: Server Error (HTTP 410)" on stderr, the envelope on
+// stdout) or a bare stderr-only / stdout-envelope-only variant, so a caller
+// does not have to depend on both halves being present together.
+function isGoneError(error) {
+  if (typeof error.stderr === "string" && /\(HTTP 410\)/.test(error.stderr)) return true;
+  const envelope = typeof error.stdout === "string" ? apiErrorMessage(error.stdout) : null;
+  return envelope !== null && isGoneStatus(envelope.status);
 }
 
 // One metered GET: the endpoint answers 302 to a plaintext blob on a
@@ -397,9 +448,17 @@ async function fetchJobLog(ghOptions, jobId) {
     ghOptions,
     buildJobLogArgs(jobId, { allowEscapeSequences: ghOptions.allowEscapeSequences }),
   );
-  const message = apiErrorMessage(body);
-  if (message !== null) {
-    throw new Error(`job ${jobId} log fetch returned an API error envelope: ${message}`);
+  const envelope = apiErrorMessage(body);
+  if (envelope !== null) {
+    // gh can exit 0 while still delivering an error envelope on stdout; a
+    // 410 here is the same "log is gone" fact as the exec-failure shape
+    // `runGh` already catches, just arriving through the success path.
+    if (isGoneStatus(envelope.status)) {
+      throw new LogGoneError(
+        `job ${jobId} log fetch returned a 410 Gone envelope on a successful exit: ${envelope.message}`,
+      );
+    }
+    throw new Error(`job ${jobId} log fetch returned an API error envelope: ${envelope.message}`);
   }
   return body;
 }
@@ -452,7 +511,16 @@ async function harvestRun(run, options, stderr) {
       return skipped;
     }
 
-    const log = await fetchJobLog(options.ghOptions, jobId);
+    let log;
+    try {
+      log = await fetchJobLog(options.ghOptions, jobId);
+    } catch (error) {
+      if (error instanceof LogGoneError) {
+        stderr.write(`${base} job=${jobId} skipped=log-expired\n`);
+        return skipped;
+      }
+      throw error;
+    }
 
     if (options.saveDir) {
       writeFileSync(join(options.saveDir, `run-${run.databaseId}-job-${jobId}.log`), log);
